@@ -164,6 +164,8 @@ ovis status    # whether the app runs, where, its account and its version
 ovis --help    # every command; ovis <command> --help for one
 ```
 
+**In the desktop app** nothing is installed with a terminal, so the command is one press away: **Settings → About → Terminal command → Add the command**. On a Mac it links `/usr/local/bin/ovis` after asking for your password (cancelled, `~/.local/bin/ovis`); on Linux, the `.deb` and the AppImage alike, `~/.local/bin/ovis` (the `.deb`'s `/usr/bin/ovis` stays the app); on Windows it adds the app's `cli` folder to your user Path. It runs the command line the app carries against the app's own server, so `ovis login`, `ovis status` and `ovis approve` work in a new terminal while the app runs. An `ovis` another install put there (the one-line installer's) is never replaced: Settings names it instead.
+
 `ovis --help` and `ovis <command> --help` only print, and a flag a command does not take is refused (exit 2) before
 anything runs. The older names keep working without a word: `add` and `link` are `login`, `link --code` is
 `pair --relay`, and `pair --approve` is `approve`. On Windows, `install.ps1` puts `ovis` (`ovis.cmd`, beside the

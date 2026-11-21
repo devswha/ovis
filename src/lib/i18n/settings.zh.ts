@@ -1,7 +1,7 @@
 /**
  * Simplified Chinese for the keys only the settings files use:
  * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
- * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, lib/paletteSettings.ts.
+ * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, components/TerminalCommandRow.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_ZH: Record<string, string> = {
@@ -303,4 +303,13 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Forget this PC?": "忘记这台电脑？",
   "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "此手机上的对应密钥将被删除；在电脑上撤销之前，它仍会列出这部手机。重新配对需要电脑上新的二维码。",
   "Forget": "忘记",
+  "Terminal command": "终端命令",
+  "Use ovis in a terminal": "在终端中使用 ovis",
+  "Adds the ovis command for this app: in a new terminal window, ovis login, ovis status and ovis approve work on this app's Ovis.": "为此应用添加 ovis 命令：在新的终端窗口中，ovis login、ovis status 和 ovis approve 将作用于此应用的 Ovis。",
+  "Add the command": "添加命令",
+  "Adding the command…": "正在添加命令…",
+  "Couldn't add the ovis command.": "无法添加 ovis 命令。",
+  "{path} is the ovis command of another Ovis install: it stays as it is, and this app adds none.": "{path} 是另一个 Ovis 安装的 ovis 命令：保持原样，此应用不添加命令。",
+  "{path} comes first on your terminal's PATH, so ovis runs that one.": "终端的 PATH 中 {path} 排在前面，因此 ovis 会运行它。",
+  "{dir} is not on your terminal's PATH: add it there to run ovis.": "{dir} 不在终端的 PATH 中：将其加入 PATH 才能运行 ovis。",
 };

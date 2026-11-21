@@ -3,7 +3,7 @@ import { app, autoUpdater as squirrel, BrowserWindow, ipcMain, Menu, nativeImage
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmSync, watch, type FSWatcher, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
@@ -16,7 +16,8 @@ import { openOutside } from "./openOutside.ts";
 import { findBrowsers, readLinkBrowser, webAddress, writeLinkBrowser, type FoundBrowsers, type LinkBrowser } from "./browsers.ts";
 import { BrowserTabs, type BrowserBounds } from "./browserTabs.ts";
 import { debuggingSwitch, ownAddresses, readBrowserState } from "./browserState.ts";
-import { networkInterfaces } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
+import { commandState, installCommand, READ_TERMINAL_PATH, SHELL_PATH_SCRIPT, shellPath, writeLauncher, type CommandHost } from "./terminalCommand.ts";
 import { BrowserBroker, brokerPath } from "./browserBroker.ts";
 import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
 
@@ -87,11 +88,51 @@ const brokerSocket = brokerPath(app.getPath("userData"), process.platform);
 const broker = brokerSocket === null ? null : new BrowserBroker(() => browser, join(stateDir, BROWSER_TOKENS_DIR), brokerSocket);
 
 const accountService = accountServiceOf(process.env);
+/** the `ovis` command (terminalCommand.ts): written on each start, linked onto the PATH from Settings → About */
+const commandDir = join(app.getPath("userData"), "cli");
+let commandLauncher: string | null = null;
 
 const accountProviders = (process.env["OVIS_ACCOUNT_PROVIDERS"] ?? "").split(",").map((name) => name.trim()).filter((name) => name === "github" || name === "google" || name === "apple");
 
 function serverOrigin(): string | null {
   return server ? new URL(server.url).origin : null;
+}
+
+function writeCommand(): void {
+  if (!isFile(programs.serverBinary)) return;
+  try {
+    commandLauncher = writeLauncher(commandDir, process.platform, {
+      serverBinary: programs.serverBinary,
+      desktopJson: savedPath,
+      stateDir,
+      configDir: join(app.getPath("userData"), "cli-settings"),
+      accountService: process.env["OVIS_ACCOUNT_SERVICE_URL"]?.trim() || null,
+    });
+  } catch (error) {
+    console.error(`Writing the ovis command in ${commandDir} failed: ${message(error)}`);
+  }
+}
+
+function programOutput(program: string, args: readonly string[], timeoutMs: number, env: Record<string, string> = {}): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve) => {
+    execFile(program, args, { env: { ...process.env, ...env }, timeout: timeoutMs, windowsHide: true }, (error, stdout) => {
+      resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : null, out: String(stdout) });
+    });
+  });
+}
+
+async function terminalPath(): Promise<string> {
+  if (process.platform === "win32") {
+    const { code, out } = await programOutput("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", READ_TERMINAL_PATH], 15_000);
+    return code === 0 ? out : process.env["PATH"] ?? "";
+  }
+  const { out } = await programOutput(process.env["SHELL"] || "/bin/sh", ["-ilc", SHELL_PATH_SCRIPT], 5_000);
+  return shellPath(out) ?? process.env["PATH"] ?? "";
+}
+
+function commandHost(launcher: string): CommandHost {
+  // the administrator prompt waits for the person
+  return { platform: process.platform, home: homedir(), systemBin: "/usr/local/bin", launcher, isFile, terminalPath, run: async (program, args, env) => (await programOutput(program, args, 300_000, env)).code };
 }
 
 function ours(url: string): boolean {
@@ -764,6 +805,12 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on("ovis:browser-open", (event, url: unknown) => {
     if (serverPage(event.senderFrame) && typeof url === "string") void openWebLink(url);
   });
+  // Settings → About → Terminal command (terminalCommand.ts): only the server's own page, and only once the launcher is written
+  ipcMain.handle("ovis:command", (event) => serverPage(event.senderFrame) && commandLauncher !== null ? commandState(commandHost(commandLauncher)) : null);
+  ipcMain.handle("ovis:command-install", (event) => {
+    if (!serverPage(event.senderFrame) || commandLauncher === null) throw new Error("Adding the ovis command is not offered here");
+    return installCommand(commandHost(commandLauncher));
+  });
 
   // the built-in browser (browserTabs.ts): only the server's own page reaches it, and only while its setting is on.
   // The page opens tabs of the person's own profile; it steers an agent's tab only while the person holds it
@@ -837,6 +884,7 @@ if (!app.requestSingleInstanceLock()) {
       app.setAsDefaultProtocolClient(LINK_SCHEME, process.execPath, ["--"]);
     }
     pendingLink ??= argvLinkQuery(process.argv);
+    writeCommand();
     // found before the first link: on Windows that takes several registry reads
     if (linkBrowser !== null) void browsers();
     allowPermissions();

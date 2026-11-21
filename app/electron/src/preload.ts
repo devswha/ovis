@@ -50,6 +50,11 @@ if (isConnectionScreen) {
     choose: (id: string | null): Promise<void> => ipcRenderer.invoke("ovis:browser-choose", id),
     open: (url: string): void => ipcRenderer.send("ovis:browser-open", url),
   });
+  // Settings → About → Terminal command (main.ts, terminalCommand.ts): where the `ovis` command is, and adding it
+  contextBridge.exposeInMainWorld("ovisCommand", {
+    state: (): Promise<unknown> => ipcRenderer.invoke("ovis:command"),
+    install: (): Promise<unknown> => ipcRenderer.invoke("ovis:command-install"),
+  });
   // the built-in browser's tabs (main.ts, browserTabs.ts): main answers only its own server's page, and
   // null while the setting is off. The page keeps the place a tab is drawn in and steers its own tabs
   contextBridge.exposeInMainWorld("ovisBrowser", {

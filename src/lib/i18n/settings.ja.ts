@@ -1,7 +1,7 @@
 /**
  * Japanese for the keys only the settings files use:
  * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
- * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, lib/paletteSettings.ts.
+ * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, components/TerminalCommandRow.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_JA: Record<string, string> = {
@@ -303,4 +303,13 @@ export const SETTINGS_JA: Record<string, string> = {
   "Forget this PC?": "このPCを削除しますか？",
   "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "このスマホ側のキーを削除します。PC側ではそこで取り消すまでこのスマホが一覧に残ります。再度ペアリングするにはPCの新しいQRコードが必要です。",
   "Forget": "削除",
+  "Terminal command": "ターミナルコマンド",
+  "Use ovis in a terminal": "ターミナルで ovis を使う",
+  "Adds the ovis command for this app: in a new terminal window, ovis login, ovis status and ovis approve work on this app's Ovis.": "このアプリの ovis コマンドを追加します。新しいターミナルウィンドウで ovis login、ovis status、ovis approve がこのアプリの Ovis に対して動きます。",
+  "Add the command": "コマンドを追加",
+  "Adding the command…": "コマンドを追加中…",
+  "Couldn't add the ovis command.": "ovis コマンドを追加できませんでした。",
+  "{path} is the ovis command of another Ovis install: it stays as it is, and this app adds none.": "{path} は別の Ovis インストールの ovis コマンドです。そのまま残し、このアプリは追加しません。",
+  "{path} comes first on your terminal's PATH, so ovis runs that one.": "ターミナルの PATH で {path} が先にあるため、ovis はそちらを実行します。",
+  "{dir} is not on your terminal's PATH: add it there to run ovis.": "{dir} はターミナルの PATH にありません。ovis を実行するには PATH に追加してください。",
 };

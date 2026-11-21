@@ -30,6 +30,7 @@ import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { LinkBrowserRow } from "./LinkBrowserRow.tsx";
+import { TerminalCommandRow } from "./TerminalCommandRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
 import { THEME_NAMES, ThemeCard } from "./ThemeCard.tsx";
@@ -1667,6 +1668,7 @@ function AboutPage({ updates, herdrVersion, herdrRuntime, herdrCore, herdrRuntim
       {/* herdr's own version and update: on herdr-core there is no herdr TUI here, and Terminals names the core */}
       {herdrRuntime !== "herdr-core" && <HerdrUpdateControls enabled herdrVersion={herdrVersion} showVersion={(herdrRuntimeFacts?.serving ?? herdrRuntime) === null} />}
       <PluginsGroup />
+      <TerminalCommandRow />
       <TelemetryControls />
       </div>
       <SettingsGroup title={t("About")} className="settings-about" section="about">
