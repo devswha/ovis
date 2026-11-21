@@ -34,6 +34,7 @@ declare global {
       restoreRoster(): void;
       failRoster(failing: boolean): void;
       holdRoster(holding: boolean): void;
+      setOffline(machineId: string, offline: boolean): Promise<void>;
       rosterReads: number;
     };
     inboxShells: string[];
@@ -48,7 +49,7 @@ declare global {
 function installInboxFixture(): void {
   const key = "inbox-mode-regression:forced";
   const stored = sessionStorage.getItem(key);
-  const state: { epoch: string; forced: Record<string, { status: AgentStatus; finish: number }> } = stored ? JSON.parse(stored) : {
+  const state: { epoch: string; forced: Record<string, { status: AgentStatus; finish: number }>; offline?: string[] } = stored ? JSON.parse(stored) : {
     epoch: `inbox-fixture-${Date.now()}`,
     forced: {
       "w1D:p1": { status: "blocked", finish: 0 },
@@ -62,7 +63,9 @@ function installInboxFixture(): void {
   const save = (): void => sessionStorage.setItem(key, JSON.stringify(state));
   save();
   const patch = (machines: Machine[]): Machine[] => {
+    const offline = new Set(state.offline ?? []);
     for (const machine of machines) {
+      if (offline.has(machine.id)) machine.state = "disconnected";
       const snapshot = machine.snapshot;
       if (!snapshot) continue;
       snapshot.finish_epoch = `${state.epoch}:${machine.id}`;
@@ -206,6 +209,14 @@ function installInboxFixture(): void {
       rosterHeld = null;
       for (const go of held) go();
     },
+    async setOffline(machineId, off) {
+      const next = new Set(state.offline ?? []);
+      if (off) next.add(machineId);
+      else next.delete(machineId);
+      state.offline = [...next];
+      save();
+      await this.publish();
+    },
     rosterReads: 0,
   };
 }
@@ -233,7 +244,7 @@ const failures: string[] = [];
 
 type Settings = Record<string, unknown>;
 interface Box { x: number; y: number; w: number; h: number; right: number; bottom: number }
-interface Row { pane: string | null; machine: string | null; state: string | null; name: string; words: string | null; mark: string | null; markLabel: string | null; asking: boolean; time: string | null; datetime: string | null; buttons: number; current: string | null }
+interface Row { pane: string | null; machine: string | null; state: string | null; name: string; words: string | null; mark: string | null; markLabel: string | null; asking: boolean; time: string | null; datetime: string | null; buttons: number; nestedButtons: number; current: string | null }
 interface Address { app: string | null; pane: string | null; machine: string | null }
 
 const rows = (page: Page): Promise<Row[]> => page.locator(".mode-inbox .inbox-item").evaluateAll((items) => items.map((item) => {
@@ -243,7 +254,7 @@ const rows = (page: Page): Promise<Row[]> => page.locator(".mode-inbox .inbox-it
     name: item.querySelector(".inbox-name")?.textContent ?? "", words: item.querySelector(".inbox-words")?.textContent ?? null,
     mark: mark?.getAttribute("data-status") ?? null, markLabel: mark?.getAttribute("aria-label") ?? null, asking: item.classList.contains("is-asking"),
     time: item.querySelector("time.inbox-time")?.textContent ?? null, datetime: item.querySelector("time.inbox-time")?.getAttribute("datetime") ?? null,
-    buttons: item.querySelectorAll("button").length, current: item.querySelector(".inbox-row")?.getAttribute("aria-current") ?? null,
+    buttons: item.querySelectorAll(":scope > button").length, nestedButtons: item.querySelectorAll(".inbox-row button").length, current: item.querySelector(".inbox-row")?.getAttribute("aria-current") ?? null,
   };
 }));
 const box = (page: Page, selector: string): Promise<Box> => page.locator(selector).first().evaluate((node) => {
@@ -522,7 +533,8 @@ try {
           assert.deepEqual(drawn.map((item) => item.mark), ["blocked", "working", "done", null, null, null], "each state its own mark, none for a ready agent");
           assert.deepEqual(drawn.slice(0, 3).map((item) => item.markLabel), ["Needs you", "Working", "Done"], "a state's mark is named in the words its chip and the filters use");
           assert.deepEqual(drawn.map((item) => item.asking), [true, false, true, false, false, false], "the rows that ask for a look draw their words stronger");
-          assert.deepEqual(drawn.map((item) => item.buttons), [1, 1, 1, 1, 1, 1], "a row is one button and holds no other");
+          assert.deepEqual(drawn.map((item) => item.nestedButtons), [0, 0, 0, 0, 0, 0], "a row holds no nested button inside it");
+          assert.deepEqual(drawn.map((item) => item.buttons), [2, 2, 2, 2, 2, 2], "each inbox item has its row button and sibling close button");
           assert.match(drawn[0]!.words ?? "", /Allow command\?/);
           assert.ok((drawn[2]!.words ?? "").trim() !== "", "the done row says what its agent last said");
           assert.match(drawn[2]!.time ?? "", /^(<1m|\d+[mhd])$/, "the done row says how long it has been done");
@@ -726,7 +738,12 @@ try {
           assert.equal(await page.locator('.header-more-dot.is-waiting[data-count="1"]').count(), 1, "More counts the other agent that waits");
           assert.match(await page.locator(".header-more-button").getAttribute("aria-label") ?? "", /1 waiting for you/);
           await openSheet(page, ".header-more-button");
-          const items = await page.locator(".row-sheet .row-sheet-item").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-item")));
+          const sheetItems = await page.locator(".row-sheet .row-sheet-item").evaluateAll((nodes) => nodes.map((node) => ({
+            id: node.getAttribute("data-item"),
+            danger: node.classList.contains("is-danger"),
+            divider: node.classList.contains("has-divider"),
+          })));
+          const items = sheetItems.map((item) => item.id);
           assert.deepEqual(items.slice(0, 2), ["exit-inbox", "palette"], `a thread's More begins with the way out and the palette: ${items.join()}`);
           const header = await page.locator(".row-sheet .header-more-crumb").evaluate((node) => ({ content: node.scrollHeight, box: node.clientHeight, lines: node.childElementCount }));
           assert.ok(header.lines >= 3 && header.content <= header.box, `More's header holds its ${header.lines} lines without scrolling: ${header.content}px in ${header.box}px`);
@@ -734,7 +751,11 @@ try {
           assert.ok(roles.crumb === "visible" && (roles.path === null || roles.path === "auto"), `a thread's More header is no scroller, only its path is: ${JSON.stringify(roles)}`);
           assert.equal(items[2], "next-waiting", `then the next agent that waits: ${items.join()}`);
           assert.ok(!items.includes("open-drawer"), `the mode has no drawer to open: ${items.join()}`);
-          assert.deepEqual(items.slice(-2), ["alerts", "settings"], `the app's items end a thread's More: ${items.join()}`);
+          assert.deepEqual(sheetItems.slice(-3), [
+            { id: "close", danger: true, divider: true },
+            { id: "alerts", danger: false, divider: true },
+            { id: "settings", danger: false, divider: false },
+          ], `Close ends the thread's items with a danger marker and divider before Alerts and Settings: ${JSON.stringify(sheetItems)}`);
           await shot(page, `inbox-mode-thread-more-390-${theme}.png`);
           await page.locator('.row-sheet [data-item="exit-inbox"]').tap();
           await page.locator("#drawer-toggle").waitFor();
@@ -839,7 +860,7 @@ try {
           pass(19, "the Settings row stores the device's choice and leaves the page as it is; the next cold start is the mode's list");
         });
 
-        await withPage(browser, base, { ...off, shortcutOverrides: { "close-pane": "ctrl+alt+x", "new-tab": "ctrl+alt+u" } }, "/?app=inbox", block("the keys the mode withholds"), async (page) => {
+        await withPage(browser, base, { ...off, shortcutOverrides: { "close-pane": "ctrl+alt+x", "new-tab": "ctrl+alt+u" } }, "/?app=inbox", block("the Close pane key in a thread, and what the mode withholds"), async (page) => {
           await rowCount(page, 6);
           await openThread(page, WORKING);
           await page.locator(".pane-slot").first().waitFor();
@@ -848,9 +869,14 @@ try {
           const confirm = page.locator(".confirm-dialog");
           await blur();
           await page.keyboard.press("Control+Alt+u");
-          await page.keyboard.press("Control+Alt+x");
           await frames(page);
-          assert.deepEqual([await newTab.count(), await confirm.count()], [0, 0], "in a thread the keys make no tab and ask to close no pane");
+          assert.equal(await newTab.count(), 0, "in a thread New tab makes no tab");
+          await page.keyboard.press("Control+Alt+x");
+          await confirm.waitFor();
+          assert.match((await confirm.textContent()) ?? "", new RegExp(`Close pane ${WORKING_TITLE}\\?`));
+          await page.keyboard.press("Escape");
+          await confirm.waitFor({ state: "detached" });
+          await sheetClosed(page);
           await backToList(page);
           await blur();
           await page.keyboard.press("Control+Alt+u");
@@ -867,7 +893,7 @@ try {
           await confirm.waitFor();
           await page.keyboard.press("Escape");
           await confirm.waitFor({ state: "detached" });
-          pass(20, "keys bound to Close pane and New tab do nothing in the mode, in a thread as on the list, and act again once the classic app is back");
+          pass(20, "New tab stays withheld in inbox mode; Close pane asks to close an open thread while staying withheld on the list, and acts in the classic app too");
         });
 
         await withPage(browser, base, { ...off, keepScreenOn: true }, "/?app=inbox", block("Keep screen on"), async (page) => {
@@ -1047,6 +1073,13 @@ try {
             const threadItems = await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item")));
             assert.ok(threadItems.includes("copy-link") && threadItems.includes("files"), `the pane's More holds the thread's items: ${threadItems.join()}`);
             assert.equal(threadItems[0], "palette", `the pane's More begins with the palette: ${threadItems.join()}`);
+            assert.equal(threadItems.at(-1), "close", `the pane's More ends with Close pane: ${threadItems.join()}`);
+            const closeMenuState = await page.locator('.row-menu [data-item="close"]').evaluate((node) => ({
+              danger: node.classList.contains("is-danger"),
+              afterDivider: node.previousElementSibling?.getAttribute("role") === "separator",
+              text: node.querySelector(".menu-item-main")?.textContent?.trim(),
+            }));
+            assert.deepEqual(closeMenuState, { danger: true, afterDivider: true, text: "Close pane" }, "wide thread More marks Close pane danger after a divider");
             for (const item of ["exit-inbox", "settings", "alerts", "next-waiting"]) assert.ok(!threadItems.includes(item), `the pane's More has no ${item}: ${threadItems.join()}`);
             await page.keyboard.press("Escape");
             await page.locator(".row-menu").waitFor({ state: "detached" });
@@ -1971,6 +2004,294 @@ try {
           console.log("PASS the system Back from a wide thread with the pane's More open closes the menu with its button, and shows the list with no agent chosen");
         }, desktop);
 
+        await withPage(browser, base, light, "/?app=inbox", "closing an agent from its inbox row on desktop, touch, watching, and locked", async (page) => {
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          const item = (pane: string) => page.locator(`.mode-inbox .inbox-item[data-machine="local"][data-pane="${pane}"]`);
+          const closeOf = (pane: string) => item(pane).locator(".inbox-close");
+
+          await row(page, WORKING).click();
+          await page.locator(".thread-chip").waitFor();
+          await addressIs(page, { app: "inbox", pane: WORKING }, "the working agent's thread is open");
+          const otherHidden = await closeOf(BLOCKED).evaluate((node) => {
+            const style = getComputedStyle(node);
+            return { opacity: style.opacity, pointerEvents: style.pointerEvents, title: node.getAttribute("aria-label") };
+          });
+          assert.deepEqual(otherHidden, { opacity: "0", pointerEvents: "none", title: `Close ${BLOCKED_TITLE}` }, "on desktop, an unhovered row's close button is hidden");
+          await page.mouse.move(700, 450);
+          await page.waitForFunction((pane) => {
+            const node = document.querySelector(`.mode-inbox .inbox-item[data-pane="${pane}"] .inbox-close`);
+            return node !== null && getComputedStyle(node).opacity === "0" && getComputedStyle(node).pointerEvents === "none";
+          }, WORKING, { timeout: 5_000 });
+          assert.equal(await closeOf(WORKING).getAttribute("aria-label"), `Close ${WORKING_TITLE}`);
+
+          await item(WORKING).hover();
+          await page.waitForFunction((pane) => {
+            const node = document.querySelector(`.mode-inbox .inbox-item[data-pane="${pane}"] .inbox-close`);
+            return node !== null && getComputedStyle(node).opacity === "1" && getComputedStyle(node).pointerEvents === "auto";
+          }, WORKING, { timeout: 5_000 });
+          await closeOf(WORKING).click();
+          const dialog = page.locator(".confirm-dialog");
+          await dialog.waitFor();
+          assert.match((await dialog.textContent()) ?? "", new RegExp(`Close pane ${WORKING_TITLE}\\?`));
+          await dialog.getByRole("button", { name: "Cancel" }).click();
+          await dialog.waitFor({ state: "detached" });
+          assert.equal(await item(WORKING).count(), 1, "cancelling keeps the row");
+          assert.equal(await page.locator(".thread-chip").count(), 1, "and keeps its open thread");
+
+          await item(WORKING).hover();
+          await closeOf(WORKING).click();
+          await dialog.waitFor();
+          await dialog.getByRole("button", { name: "Close pane" }).click();
+          await dialog.waitFor({ state: "detached" });
+          await rowCount(page, 5);
+          assert.equal(await item(WORKING).count(), 0, "confirming removes the closed agent's row");
+          await page.locator(".inbox-unchosen").waitFor();
+          assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row stays marked current");
+          await addressIs(page, { app: "inbox", pane: null }, "closing the open wide thread returns the address to the list");
+
+          const made = await page.evaluate(async (pane) => {
+            const response = await fetch("/api/pane/split", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, direction: "right" }) });
+            return (await response.json() as { pane?: { pane_id?: string } }).pane?.pane_id ?? "";
+          }, DONE);
+          assert.ok(made !== "", "split a second pane into Done's workspace so Done is no longer the last pane");
+          await item(DONE).hover();
+          await page.waitForFunction((pane) => {
+            const node = document.querySelector(`.mode-inbox .inbox-item[data-pane="${pane}"] .inbox-close`);
+            return node !== null && getComputedStyle(node).opacity === "1" && getComputedStyle(node).pointerEvents === "auto";
+          }, DONE, { timeout: 5_000 });
+          await closeOf(DONE).click();
+          await rowCount(page, 4);
+          assert.equal(await page.locator(".confirm-dialog").count(), 0, "closing a non-last non-working agent closes at once without confirmation");
+
+          const lockedKey = `local:${BLOCKED}`;
+          await page.evaluate(async (key) => {
+            const current = await (await fetch("/api/preferences")).json() as { revision?: number; settings?: Record<string, unknown> };
+            await fetch("/api/preferences", {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ revision: current.revision ?? 0, settings: { ...(current.settings ?? {}), agentLocks: true, lockedAgents: [key] }, pins: [key] }),
+            });
+          }, lockedKey);
+          await closeOf(BLOCKED).waitFor({ state: "detached" });
+
+          await page.locator(".inbox-rail .inbox-rail-exit").click();
+          await page.locator(".app-header.is-zoned").waitFor();
+          const classicPane = (await address(page)).pane;
+          assert.ok(classicPane !== null && classicPane !== WORKING && classicPane !== DONE, "leaving inbox after closing its thread lands on a live classic pane");
+          console.log("PASS desktop close-agent: hidden at rest, hover reveals, current working pane asks confirm and clears to unchosen, split non-working pane closes immediately, locked pinned agent hides close, Back to Ovis opens a live pane");
+        }, desktop);
+
+        await withPage(browser, base, light, "/?app=inbox&demo_devices=watch", "a watching device sees no inbox row or thread close actions", async (page) => {
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          assert.equal(await page.locator(".mode-inbox .inbox-close").count(), 0);
+          await row(page, WORKING).click();
+          await page.locator(".thread-chip").waitFor();
+          await page.locator(".thread-top .header-more-button").click();
+          await page.locator(".row-menu").waitFor();
+          assert.equal(await page.locator('.row-menu [data-item="close"]').count(), 0, "wide thread More hides Close pane on a watching device");
+          await page.locator('.row-menu [data-item="palette"]').click();
+          await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill(">close pane");
+          assert.equal(await page.locator('.command-palette [role="option"]').count(), 0, "command palette omits Close pane on a watching device");
+          console.log("PASS a watching device is offered no close buttons or thread Close pane actions in the agent inbox");
+        }, desktop);
+
+        await withPage(browser, base, light, "/?app=inbox&demo_devices=watch", "a phone watching device sees no Close pane in the thread's More", async (page) => {
+          await listScreen(page);
+          await rowCount(page, 6);
+          assert.equal(await page.locator(".mode-inbox .inbox-close").count(), 0);
+          await openThread(page, WORKING);
+          await openSheet(page, ".header-more-button");
+          assert.equal(await page.locator('.row-sheet [data-item="close"]').count(), 0, "phone thread More hides Close pane on a watching device");
+          await page.locator(".row-sheet-cancel").tap();
+          await sheetClosed(page);
+          console.log("PASS a phone watching device sees no row close buttons and no Close pane in the thread's More");
+        });
+
+        await withPage(browser, base, light, "/?app=inbox", "tapping close on a phone confirms without opening the thread", async (page) => {
+          await listScreen(page);
+          await rowCount(page, 6);
+          const close = page.locator(`.mode-inbox .inbox-item[data-pane="${DONE}"] .inbox-close`);
+          const shown = await close.evaluate((node) => {
+            const style = getComputedStyle(node);
+            const r = node.getBoundingClientRect();
+            return { opacity: style.opacity, pointerEvents: style.pointerEvents, w: Math.round(r.width), h: Math.round(r.height) };
+          });
+          assert.deepEqual(shown, { opacity: "1", pointerEvents: "auto", w: 44, h: 44 }, "on a phone, the close button is an always-visible 44px touch target");
+          await close.tap();
+          await page.locator(".confirm-dialog").waitFor();
+          await listScreen(page);
+          await addressIs(page, { app: "inbox", pane: null }, "tapping close does not open the row's thread");
+          await page.locator(".confirm-dialog").getByRole("button", { name: "Close pane" }).tap();
+          await rowCount(page, 5);
+          console.log("PASS phone close-agent: always-visible 44px close button opens ConfirmDialog on tap without opening the thread and removes the row on confirm");
+        });
+
+        await withPage(browser, base, light, "/?app=inbox", "closing the open thread from More on a phone", async (page) => {
+          await listScreen(page);
+          await rowCount(page, 6);
+          await openThread(page, WORKING);
+          await openSheet(page, ".header-more-button");
+          await page.locator('.row-sheet [data-item="close"]').tap();
+          const dialog = page.locator(".confirm-dialog");
+          await dialog.waitFor();
+          assert.match((await dialog.textContent()) ?? "", new RegExp(`Close pane ${WORKING_TITLE}\\?`));
+          await dialog.getByRole("button", { name: "Cancel" }).tap();
+          await dialog.waitFor({ state: "detached" });
+          await sheetClosed(page);
+          await page.locator(".thread-title").waitFor();
+          await addressIs(page, { app: "inbox", pane: WORKING }, "cancelling keeps the phone thread open");
+
+          await openSheet(page, ".header-more-button");
+          await page.locator('.row-sheet [data-item="close"]').tap();
+          await dialog.waitFor();
+          await dialog.getByRole("button", { name: "Close pane" }).tap();
+          await dialog.waitFor({ state: "detached" });
+          await sheetClosed(page);
+          await listScreen(page);
+          await rowCount(page, 5);
+          assert.equal(await page.locator(`.mode-inbox .inbox-item[data-pane="${WORKING}"]`).count(), 0, "confirming removes the open agent from the phone list");
+          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("mode-inbox") === true), true, "closing the open phone thread focuses the inbox list section");
+
+          const rostersBeforeSplit = await page.evaluate(() => window.inboxFixture.rosters);
+          const made = await page.evaluate(async (pane) => {
+            const response = await fetch("/api/pane/split", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, direction: "right" }) });
+            return (await response.json() as { pane?: { pane_id?: string } }).pane?.pane_id ?? "";
+          }, DONE);
+          assert.ok(made !== "", "split a second pane into Done's workspace before opening it");
+          await page.waitForFunction((before) => window.inboxFixture.rosters > before, rostersBeforeSplit, { timeout: 5_000 });
+          await openThread(page, DONE);
+          await openSheet(page, ".header-more-button");
+          await page.locator('.row-sheet [data-item="close"]').tap();
+          await sheetClosed(page);
+          await listScreen(page);
+          await rowCount(page, 4);
+          assert.equal(await page.locator(".confirm-dialog").count(), 0, "phone thread More closes a non-last non-working agent immediately without confirm");
+
+          const lockedKey = `local:${BLOCKED}`;
+          await page.evaluate(async (key) => {
+            const current = await (await fetch("/api/preferences")).json() as { revision?: number; settings?: Record<string, unknown> };
+            await fetch("/api/preferences", {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ revision: current.revision ?? 0, settings: { ...(current.settings ?? {}), agentLocks: true, lockedAgents: [key] }, pins: [key] }),
+            });
+          }, lockedKey);
+          await openThread(page, BLOCKED);
+          await openSheet(page, ".header-more-button");
+          assert.equal(await page.locator('.row-sheet [data-item="close"]').count(), 0, "a locked pinned agent omits Close pane from phone thread More");
+          await page.locator('.row-sheet [data-item="palette"]').tap();
+          await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill(">close pane");
+          assert.equal(await page.locator('.command-palette [role="option"]').count(), 0, "a locked pinned agent omits Close pane from the command palette");
+          console.log("PASS phone thread More Close: confirm returns to the list with focus on the inbox section, non-last non-working closes at once, and locked pinned agents omit Close pane");
+        });
+
+        await withPage(browser, base, { ...light, shortcutOverrides: { "close-pane": "ctrl+alt+x" } }, "/?app=inbox", "closing the open agent from a wide thread's More, palette, and shortcut; withheld when locked or offline", async (page) => {
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          const item = (pane: string, machine = "local") => page.locator(`.mode-inbox .inbox-item[data-machine="${machine}"][data-pane="${pane}"]`);
+
+          await row(page, WORKING).click();
+          await page.locator(".thread-chip").waitFor();
+          await page.locator(".thread-top .header-more-button").click();
+          await page.locator(".row-menu").waitFor();
+          await page.locator('.row-menu [data-item="close"]').click();
+          const dialog = page.locator(".confirm-dialog");
+          await dialog.waitFor();
+          assert.match((await dialog.textContent()) ?? "", new RegExp(`Close pane ${WORKING_TITLE}\\?`));
+          await dialog.getByRole("button", { name: "Cancel" }).click();
+          await dialog.waitFor({ state: "detached" });
+          assert.equal(await item(WORKING).count(), 1, "cancelling keeps the wide thread's row");
+          assert.equal(await page.locator(".thread-chip").count(), 1, "and keeps the wide thread open");
+          assert.equal(await page.evaluate(() => document.activeElement?.closest(".thread-top")?.querySelector(".header-more-button") === document.activeElement), true, "cancelling returns focus to More");
+
+          await page.locator(".thread-top .header-more-button").click();
+          await page.locator(".row-menu").waitFor();
+          await page.locator('.row-menu [data-item="palette"]').click();
+          await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill(">close pane");
+          const closeOption = page.locator('.command-palette [role="option"]', { hasText: "Close pane" });
+          assert.equal(await closeOption.count(), 1, "palette offers Close pane for an open wide thread");
+          await closeOption.click();
+          await dialog.waitFor();
+          await page.keyboard.press("Escape");
+          await dialog.waitFor({ state: "detached" });
+
+          await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+          await page.keyboard.press("Control+Alt+x");
+          await dialog.waitFor();
+          await dialog.getByRole("button", { name: "Close pane" }).click();
+          await dialog.waitFor({ state: "detached" });
+          await rowCount(page, 5);
+          assert.equal(await item(WORKING).count(), 0, "confirming via shortcut removes the agent row");
+          await page.locator(".inbox-unchosen").waitFor();
+          assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0);
+          await addressIs(page, { app: "inbox", pane: null }, "closing the open wide thread clears the address to the list");
+          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("mode-inbox") === true), true, "closing the open wide thread moves focus to the inbox list section");
+
+          await page.keyboard.press("Control+Alt+x");
+          await frames(page);
+          assert.equal(await dialog.count(), 0, "Close pane shortcut does nothing with no wide thread chosen");
+
+          const rostersBeforeSplit = await page.evaluate(() => window.inboxFixture.rosters);
+          const made = await page.evaluate(async (pane) => {
+            const response = await fetch("/api/pane/split", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, direction: "right" }) });
+            return (await response.json() as { pane?: { pane_id?: string } }).pane?.pane_id ?? "";
+          }, DONE);
+          assert.ok(made !== "", "split a second pane into Done's workspace before closing Done from wide thread More");
+          await page.waitForFunction((before) => window.inboxFixture.rosters > before, rostersBeforeSplit, { timeout: 5_000 });
+          await row(page, DONE).click();
+          await page.locator(".thread-chip").waitFor();
+          await page.locator(".thread-top .header-more-button").click();
+          await page.locator(".row-menu").waitFor();
+          await page.locator('.row-menu [data-item="close"]').click();
+          await page.locator(".inbox-unchosen").waitFor();
+          await rowCount(page, 4);
+          assert.equal(await dialog.count(), 0, "wide thread More closes a non-last non-working agent at once without confirm");
+
+          const lockedKey = `local:${BLOCKED}`;
+          await page.evaluate(async (key) => {
+            const current = await (await fetch("/api/preferences")).json() as { revision?: number; settings?: Record<string, unknown> };
+            await fetch("/api/preferences", {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ revision: current.revision ?? 0, settings: { ...(current.settings ?? {}), agentLocks: true, lockedAgents: [key] }, pins: [key] }),
+            });
+          }, lockedKey);
+          await row(page, BLOCKED).click();
+          await page.locator(".thread-chip").waitFor();
+          await page.locator(".thread-top .header-more-button").click();
+          await page.locator(".row-menu").waitFor();
+          assert.equal(await page.locator('.row-menu [data-item="close"]').count(), 0, "wide thread More hides Close pane for a locked pinned agent");
+          await page.keyboard.press("Escape");
+          await page.locator(".row-menu").waitFor({ state: "detached" });
+          await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+          await page.keyboard.press("Control+Alt+x");
+          await frames(page);
+          assert.equal(await dialog.count(), 0, "Close pane shortcut ignores a locked pinned agent");
+
+          await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
+          await rowCount(page, 8);
+          await row(page, IDLE[0]!, "laptop").click();
+          await page.locator(".thread-chip").waitFor();
+          await page.locator(".thread-top .header-more-button").click();
+          await page.locator(".row-menu").waitFor();
+          await page.locator('.row-menu [data-item="close"]').click();
+          await dialog.waitFor();
+          await page.evaluate(() => window.inboxFixture.setOffline("laptop", true));
+          await dialog.waitFor({ state: "detached" });
+          await page.locator(".thread-top .header-more-button").click();
+          await page.locator(".row-menu").waitFor();
+          assert.equal(await page.locator('.row-menu [data-item="close"]').count(), 0, "an offline PC removes Close pane from the open thread's More");
+          await page.keyboard.press("Escape");
+          await page.locator(".row-menu").waitFor({ state: "detached" });
+          await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+          await page.keyboard.press("Control+Alt+x");
+          await frames(page);
+          assert.equal(await dialog.count(), 0, "an offline PC blocks the Close pane shortcut");
+          console.log("PASS wide thread Close: More, palette and Ctrl+Alt+x confirm working panes and land back on InboxUnchosen with focus on .mode-inbox, non-last non-working panes close at once, and locked pinned agents or offline PCs drop confirmation and withhold Close pane");
+        }, desktop);
+
       }
       if (part === "rail") {
         for (const gone of [
@@ -2513,7 +2834,7 @@ try {
             const own = (prefix: string, shared: string): string | undefined => [...at.classList].find((name) => name.startsWith(prefix) && name !== shared);
             if (at.closest(".inbox-rail")) return own("inbox-rail-", "inbox-rail-item") ?? "the rail";
             const item = at.closest(".mode-inbox .inbox-item");
-            if (item) return `row ${item.getAttribute("data-pane")}`;
+            if (item) return at.classList.contains("inbox-close") ? `close ${item.getAttribute("data-pane")}` : `row ${item.getAttribute("data-pane")}`;
             if (at.closest(".mode-inbox")) return own("inbox-", "inbox-round") ?? "the list";
             if (at.classList.contains("sidebar-resizer")) return "the resize grip";
             return at.closest(".pane-column") ? "the thread" : `elsewhere (${at.className})`;
@@ -2524,15 +2845,16 @@ try {
           };
           await page.locator(".inbox-rail .inbox-rail-exit").focus();
           const stops = [await stop()];
-          while (stops.length < 40 && /^(inbox-|row |the resize grip$)/.test(stops.at(-1)!)) {
+          while (stops.length < 40 && /^(inbox-|row |close |the resize grip$)/.test(stops.at(-1)!)) {
             await page.keyboard.press("Tab");
             stops.push(await stop());
           }
-          const listed = (await rows(page)).map((item) => `row ${item.pane}`);
-          assert.equal(listed.length, 6);
+          const drawnRows = await rows(page);
+          assert.equal(drawnRows.length, 6);
+          const listed = drawnRows.flatMap((item) => [`row ${item.pane}`, `close ${item.pane}`]);
           assert.deepEqual(stops, ["inbox-rail-exit", "inbox-rail-place", "inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs",
             "inbox-search-input", "inbox-filter-toggle", "inbox-add", ...listed, "the resize grip", "the thread"],
-            "Tab goes down the rail from the Ovis mark to the PC, then to the list's top row and its rows, the column's resize grip, and the thread");
+            "Tab goes down the rail from the Ovis mark to the PC, then to the list's top row and its rows with their close buttons, the column's resize grip, and the thread");
           await page.locator(".inbox-rail .inbox-rail-place").focus();
           await page.keyboard.press("Shift+Tab");
           assert.equal(await stop(), "inbox-rail-exit", "Shift+Tab goes back up the rail");
@@ -2565,7 +2887,7 @@ try {
           await page.keyboard.press("Escape");
           await page.locator(".settings-dialog").waitFor({ state: "detached" });
           await focused("inbox-rail-settings", "Settings closed gives the focus back to the rail's gear");
-          console.log(`PASS the keyboard's order is the rail's six buttons from the Ovis mark down to the PC, the list's search field, filter and New workspace, its ${listed.length} rows, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; Settings and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
+          console.log(`PASS the keyboard's order is the rail's six buttons from the Ovis mark down to the PC, the list's search field, filter and New workspace, its ${drawnRows.length} rows and their close buttons, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; Settings and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
         }, desktop);
         await withPage(browser, base, light, "/?app=inbox", "the palette from the pane's More with the list alone", async (page) => {
           await page.locator(".inbox-column .mode-inbox").waitFor();
