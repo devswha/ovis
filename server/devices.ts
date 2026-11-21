@@ -891,7 +891,6 @@ export class DeviceStore {
     if (!this.pc.migrating) {
       this.pc.checkAbove(numbered);
       this.pc.checkMembers(members);
-      if (this.accountIntegrityError === null) this.stampLegacyRows();
       return;
     }
     // a PC that ever had a device, its rows revoked since, is no first-device PC (T67): its gate stayed closed
@@ -2048,7 +2047,9 @@ export class DeviceStore {
   catchingUp(id: string, credential = true): boolean {
     const device = this.devices.find((d) => d.id === id);
     if (device === undefined) return false;
-    const legacy = credential && device.origin?.from === "legacy" && !device.imported && !device.invalid_origin;
+    // A Step-1 writer may have added a credential during rollback. It gets no admission order.
+    const legacy = credential && !device.imported && !device.invalid_origin
+      && (device.origin?.from === "legacy" || this.legacyFromRegistry(device));
     return this.catchUp?.waits({ id, origin: device.origin }, legacy
       ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential") : undefined) ?? false;
   }

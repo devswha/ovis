@@ -90,6 +90,8 @@ jobs:
           node: 'true'
           cache: none
       - run: bun install --frozen-lockfile
+      - name: Fetch the previous release for the upgrade matrix
+        run: git fetch --no-tags --depth=1 origin refs/tags/v0.5.7:refs/tags/v0.5.7
       - run: bun run check fast
       - name: Release guards
         env:
