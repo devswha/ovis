@@ -273,6 +273,14 @@ export const APPROVED_COMMANDS: ReadonlySet<string> = new Set([
   "windows|iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
   "macos|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
   "linux|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
+  "macos|curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash",
+  "macos|npm install -g @qwen-code/qwen-code@latest",
+  "macos|brew install qwen-code",
+  "linux|curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash",
+  "linux|npm install -g @qwen-code/qwen-code@latest",
+  "linux|brew install qwen-code",
+  "windows|irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex",
+  "windows|npm install -g @qwen-code/qwen-code@latest",
 ]);
 
 /** An allowed address: HTTPS, a host, and a path on it, so a prefix can never stand for a whole host. */
@@ -969,6 +977,46 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     // Sign in opens dsh-tui itself: the key goes into its own first-run prompt; Ovis has no field that asks for it
     sign_in: { provider: null, command: null, in_agent: "on its first start: a DeepSeek API key from https://platform.deepseek.com/api_keys typed into its own prompt, or an OpenAI- or Anthropic-compatible provider", api_keys: ["DEEPSEEK_API_KEY"], required: true },
     after_install: ["It needs a model before it can work: a DeepSeek API key (https://platform.deepseek.com/api_keys) or an OpenAI- or Anthropic-compatible provider, entered in dsh-tui's own first-run prompt: Ovis does not ask for the key."],
+    min_version: null,
+  },
+  {
+    id: "qwen",
+    name: "Qwen Code",
+    vendor: "Qwen",
+    kind: "harness",
+    description: "Qwen's terminal coding agent for Qwen models and other model providers.",
+    install: {
+      macos: only(
+        method("posix", "curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash", CURL_BASH),
+        method("posix", "npm install -g @qwen-code/qwen-code@latest", [{ tool: "node", min: "22" }, { tool: "npm" }]),
+        method("posix", "brew install qwen-code", [{ tool: "brew" }]),
+      ),
+      linux: only(
+        method("posix", "curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh | bash", CURL_BASH),
+        method("posix", "npm install -g @qwen-code/qwen-code@latest", [{ tool: "node", min: "22" }, { tool: "npm" }]),
+        method("posix", "brew install qwen-code", [{ tool: "brew" }]),
+      ),
+      windows: only(
+        method("powershell", "irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex", POWERSHELL),
+        method("powershell", "npm install -g @qwen-code/qwen-code@latest", [{ tool: "node", min: "22" }, { tool: "npm" }]),
+      ),
+    },
+    no_install: {},
+    url_prefixes: [
+      "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
+      "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1",
+    ],
+    packages: ["npm:@qwen-code/qwen-code", "brew:qwen-code"],
+    sources: [{ url: "https://github.com/QwenLM/qwen-code#installation", checked: "2026-11-19" }],
+    detect: {
+      binaries: ["qwen"],
+      version_args: ["--version"],
+      install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"], windows: ["%LOCALAPPDATA%/qwen-code/bin"] },
+    },
+    // No usage provider: Qwen Code exposes no plan-usage source (no billing or quota endpoint; its
+    // /usage is local token stats), so it stays out of Subscription usage.
+    sign_in: { provider: null, command: null, in_agent: "/auth", api_keys: ["OPENAI_API_KEY", "BAILIAN_CODING_PLAN_API_KEY", "BAILIAN_TOKEN_PLAN_API_KEY"], required: true },
+    after_install: ["Open a new terminal after installing Qwen Code so it picks up any PATH changes."],
     min_version: null,
   },
   {
