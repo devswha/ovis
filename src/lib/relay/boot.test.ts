@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { AppLoadFailed } from "../../components/AppCrash.tsx";
-import { reloadAfterFailedLoad, reloadEntry, shellLoaded, takeEntryUrl, type TabMemory } from "./boot.ts";
+import { reloadAddress, reloadAfterFailedLoad, reloadAt, shellLoaded, type TabMemory } from "./boot.ts";
 
 function tab(): TabMemory {
   const items = new Map<string, string>();
@@ -24,27 +24,28 @@ describe("a shell whose code failed to load", () => {
     expect(reloadAfterFailedLoad(memory)).toBe(true);
   });
 
-  it("reloads at the address it was entered by, so a pairing offer the boot took off the address is still there", () => {
-    const entered = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/#offer=abc";
-    let address = entered;
+  it("reloads at the entry's address with its offer or sign-in's return, never sending its query again, unless the tab navigated", () => {
+    const id = "0123456789abcdef0123456789abcdef";
+    expect(reloadAddress(`https://app.ovis.sh/s/${id}/#offer=abc`, false)).toBe(`/s/${id}/#offer=abc`);
+    expect(reloadAddress("https://app.ovis.sh/#code=c&state=s", false)).toBe("/#code=c&state=s");
+    expect(reloadAddress("https://app.ovis.sh/?file=%2Fhome%2Fnotes.md", false)).toBe("/#file=%2Fhome%2Fnotes.md");
+    expect(reloadAddress("https://app.ovis.sh/?sign-in=github", false)).toBe("/");
+    expect(reloadAddress("https://app.ovis.sh/#pcs", true)).toBeNull();
+  });
+
+  it("puts the address back before the reload, and leaves where the tab went alone", () => {
     const steps: string[] = [];
-    const history = { replaceState: (_data: unknown, _unused: string, url: string) => { address = new URL(url, address).href; steps.push(`at ${address}`); } };
-    const location = {
-      get href() { return address; }, get pathname() { return new URL(address).pathname; },
-      get search() { return new URL(address).search; }, get hash() { return new URL(address).hash; },
-      reload: () => { steps.push(`reload ${address}`); },
-    };
-    const entryUrl = takeEntryUrl({ location, history });
-    expect(address).not.toContain("#offer=");
-    reloadEntry({ history, location }, entryUrl);
-    expect(steps.at(-1)).toBe(`reload ${entered}`);
+    const page = { history: { replaceState: (_data: unknown, _unused: string, url: string) => { steps.push(`at ${url}`); } }, location: { reload: () => { steps.push("reload"); } } };
+    reloadAt(page, "/s/x/#offer=abc");
+    reloadAt(page, null);
+    expect(steps).toEqual(["at /s/x/#offer=abc", "reload", "reload"]);
   });
 
   it("says it could not load in the device's language, though no settings provider set one yet", () => {
     const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
     Object.defineProperty(navigator, "languages", { configurable: true, value: ["ko-KR"] });
     try {
-      const html = renderToStaticMarkup(createElement(AppLoadFailed));
+      const html = renderToStaticMarkup(createElement(AppLoadFailed, { retry: () => {} }));
       expect(html).toContain("Ovis를 불러오지 못했습니다");
       expect(html).toContain("다시 시도");
     } finally {

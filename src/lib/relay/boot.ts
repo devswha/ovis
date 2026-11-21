@@ -96,11 +96,20 @@ export function shellLoaded(memory: TabMemory | null): void {
 }
 
 /**
- * Reloads the page at the address it was entered by: takeEntryUrl took an offer, a sign-in's return or a query off the
- * address before the shell loaded, and a reload of what is left would drop them. The reloaded page takes them off again.
+ * The address a reload after a failed load opens: the entry's, whose offer or sign-in's return takeEntryUrl took off the
+ * address before the shell could read it (the reloaded page takes it off again), with a query in the fragment as
+ * takeEntryUrl keeps it, so no request carries it again. Null once the tab navigated since: the address it went to stays.
  */
-export function reloadEntry(page: { history: Page["history"]; location: { reload(): void } }, entryUrl: string): void {
-  page.history.replaceState(null, "", entryUrl);
+export function reloadAddress(entryUrl: string, navigated: boolean): string | null {
+  if (navigated) return null;
+  const { pathname, search, hash } = new URL(entryUrl);
+  if (search.length <= 1) return pathname + hash;
+  const query = queryWithoutSignIn(search);
+  return pathname + (query !== "" ? `#${query}` : "");
+}
+
+export function reloadAt(page: { history: Page["history"]; location: { reload(): void } }, address: string | null): void {
+  if (address !== null) page.history.replaceState(null, "", address);
   page.location.reload();
 }
 
@@ -124,8 +133,9 @@ export function bootRelayShell(container: HTMLElement, renderApp: () => Root, lo
     },
     (error: unknown) => {
       console.error("Ovis: the relay shell did not load", error);
-      if (reloadAfterFailedLoad(memory)) reloadEntry(window, entryUrl);
-      else createRoot(container).render(createElement(AppLoadFailed));
+      const retry = (): void => reloadAt(window, reloadAddress(entryUrl, navigatedSinceEntry()));
+      if (reloadAfterFailedLoad(memory)) retry();
+      else createRoot(container).render(createElement(AppLoadFailed, { retry }));
     },
   ).catch((error: unknown) => {
     console.error("Ovis: the relay shell did not start", error);
