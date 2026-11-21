@@ -340,7 +340,7 @@ describe("starts at the same moment", () => {
     mkdirSync(legacy, { recursive: true });
     const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
     try {
-      writeFileSync(join(legacy, "server.pid"), `${server.pid}\n`);
+      recordStarted(legacy, server.pid!);
       const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: current, PORT: "1" });
       expect(stopped.exitCode, stopped.err).toBe(0);
       expect(existsSync(join(current, "lifecycle.lock.guard"))).toBe(true);
@@ -642,13 +642,27 @@ describe("stop", () => {
     mkdirSync(legacy, { recursive: true });
     const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
     try {
-      writeFileSync(join(legacy, "server.pid"), `${server.pid}\n`);
+      recordStarted(legacy, server.pid!);
       const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: join(plugins, "devswha.ovis"), PORT: "1" });
       expect(stopped.exitCode, stopped.err).toBe(0);
       expect(existsSync(join(legacy, "server.pid"))).toBe(false);
       expect(() => process.kill(server.pid!, 0)).toThrow();
     } finally {
       try { process.kill(-server.pid!, "SIGKILL"); } catch {}
+    }
+  });
+
+  it("signals nothing for a live process a bare pid file names, with no owner record to prove it is the server", async () => {
+    const other = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    try {
+      mkdirSync(join(scratch, "state"));
+      writeFileSync(join(scratch, "state", "server.pid"), `${other.pid}\n`);
+      const stopped = await run("stop", { PORT: "1" });
+      expect(stopped.exitCode).toBe(1);
+      expect(() => process.kill(other.pid!, 0), "regression: stop signalled a process it could not prove is the server").not.toThrow();
+      expect(readFileSync(join(scratch, "state", "server.pid"), "utf8")).toBe(`${other.pid}\n`);
+    } finally {
+      try { process.kill(-other.pid!, "SIGKILL"); } catch {}
     }
   });
 
@@ -672,8 +686,7 @@ describe("stop", () => {
   it("returns only once the server's process group is gone", async () => {
     const server = spawn("sh", ["-c", "trap 'sleep 1; exit 0' TERM; while :; do sleep 0.1; done"], { detached: true, stdio: "ignore" });
     const pid = server.pid!;
-    mkdirSync(join(scratch, "state"));
-    writeFileSync(join(scratch, "state", "server.pid"), `${pid}\n`);
+    recordStarted(join(scratch, "state"), pid);
     const started = Date.now();
     const stopped = await run("stop");
     expect(stopped.exitCode, stopped.err).toBe(0);
@@ -693,8 +706,7 @@ describe("stop", () => {
       expect(state()).toBe("Z");
       // what `stop` waited on: the zombie's group still answers signal 0
       expect(() => process.kill(-pid, 0)).not.toThrow();
-      mkdirSync(join(scratch, "state"));
-      writeFileSync(join(scratch, "state", "server.pid"), `${pid}\n`);
+      recordStarted(join(scratch, "state"), pid);
       const started = Date.now();
       const stopped = await run("stop");
       expect(stopped.exitCode, stopped.err).toBe(0);
@@ -704,6 +716,15 @@ describe("stop", () => {
     } finally { parent.kill("SIGKILL"); }
   }, 30_000);
 });
+
+/** The pid and owner record a start writes for the server it spawned (the pid and its birth). */
+function recordStarted(dir: string, pid: number): void {
+  const reading = readProcessBirth(pid);
+  if (reading.state !== "identified") throw new Error(`no birth for ${pid}: ${reading.state}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "server.pid"), `${pid}\n`);
+  writeFileSync(join(dir, "server.owner"), JSON.stringify({ pid, birth: reading.birth }));
+}
 
 describe("the state dir when run by hand", () => {
   const legacy = () => join(scratch, ".local", "state", "herdr-web-ui");

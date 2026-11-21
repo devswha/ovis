@@ -420,6 +420,21 @@ function recordedServer(pid: number): "ours" | "replaced" | "unrecorded" {
   return now.state === "identified" && startedAfter(now.birth.value, recordedAt) ? "replaced" : "ours";
 }
 
+/**
+ * Whether the recorded pid is positively the server start recorded: the owner record names this pid and its birth (the
+ * start time, with the boot id on Linux), and the live process has that same birth now. A bare pid file (a 0.5.9 record
+ * after a reboot), a record without a birth, or a birth that cannot be read now proves nothing, so `stop` signals none of them.
+ */
+function provenServer(pid: number): boolean {
+  try {
+    const owner = JSON.parse(readFileSync(OWNER_FILE, "utf8")) as { pid?: unknown; birth?: unknown };
+    const birth = parseBirth(owner.birth);
+    if (owner.pid !== pid || birth === null || birth.platform !== process.platform) return false;
+    const now = readProcessBirth(pid);
+    return now.state === "identified" && now.birth.value === birth.value;
+  } catch { return false; }
+}
+
 function startedAfter(birth: string, time: number): boolean {
   if (process.platform === "win32") return Number(birth) > time;
   if (process.platform === "darwin") {
@@ -870,6 +885,20 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
       forgetServer(pid);
       process.stdout.write(`Ovis is not running (pid ${pid} now belongs to another process)\n`);
       return 0;
+    }
+    if (!provenServer(pid)) {
+      if ((liveProcess(pid) ?? dependencies.isAlive(pid)) === false) {
+        forgetServer(pid);
+        process.stdout.write("Ovis is not running\n");
+        return 0;
+      }
+      process.stderr.write([
+        `could not confirm that pid ${pid} is this Ovis server, so nothing was signalled and its pid file was kept.`,
+        `If it is an older Ovis, quit it where it runs (its herdr plugin's stop, or the window it runs in), or restart this PC.`,
+        `To stop it by hand, first check what it is with: ps -p ${pid} -o command=`,
+        `and only if that shows Ovis: kill ${pid}`,
+      ].join("\n") + "\n");
+      return 1;
     }
     try {
       process.kill(target, "SIGTERM");
