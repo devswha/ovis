@@ -664,15 +664,14 @@ function ChatPage() {
 function BuiltInBrowserRows() {
   const t = useT();
   const { settings, update } = useSettings();
-  // what is typed in the blocked-sites box is kept when it goes away too (Settings closed with Escape before a blur)
-  const latest = useRef({ settings, update });
-  latest.current = { settings, update };
+  // what is typed in the blocked-sites box is kept when it goes away too (Settings closed with Escape before a blur);
+  // a box only replaced (the list saved, or reset to its default) has no edit of its own to keep
+  const update$ = useRef(update);
+  update$.current = update;
   const holdBlockedBox = useCallback((box: HTMLTextAreaElement | null) => {
     if (box === null) return;
     return () => {
-      const kept = browserBlockedSites(box.value.split("\n"));
-      const { settings: now, update: save } = latest.current;
-      if (kept.join("\n") !== now.browserBlockedSites.join("\n")) save({ browserBlockedSites: kept });
+      if (box.dataset["edited"] === "true") update$.current({ browserBlockedSites: browserBlockedSites(box.value.split("\n")) });
     };
   }, []);
   return <>
@@ -681,10 +680,11 @@ function BuiltInBrowserRows() {
     </SettingsRow>
     {settings.builtInBrowser && <SettingsRow icon={Ban} label={t("Blocked sites")} description={t("The built-in browser never loads these sites or their subdomains, in your tabs or an agent's. One site per line.")} wide reset={["browserBlockedSites"]}>
       <textarea ref={holdBlockedBox} key={settings.browserBlockedSites.join("\n")} className="input settings-blocked-sites" rows={4} aria-label={t("Blocked sites")} placeholder="bank.example" defaultValue={settings.browserBlockedSites.join("\n")}
-        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onBlur={(event) => {
+        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onInput={(event) => { event.currentTarget.dataset["edited"] = "true"; }} onBlur={(event) => {
           // what is kept, shown as kept: lines that are not a site are dropped from the box too
           const kept = browserBlockedSites(event.currentTarget.value.split("\n"));
           event.currentTarget.value = kept.join("\n");
+          delete event.currentTarget.dataset["edited"];
           update({ browserBlockedSites: kept });
         }} />
     </SettingsRow>}

@@ -188,6 +188,11 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await page.getByRole("dialog").first().getByText("채팅", { exact: true }).first().click();
   assert.equal(await page.getByRole("textbox", { name: "차단한 사이트", exact: true }).inputValue(), "tracker.example", `${tag}: a blocked site typed before Escape is kept`);
+  // reset to the default empties it once, and Settings stays up
+  await page.getByRole("button", { name: "기본값으로 되돌리기: 차단한 사이트", exact: true }).click();
+  await page.waitForFunction(() => (document.querySelector('textarea[aria-label="차단한 사이트"]') as HTMLTextAreaElement | null)?.value === "");
+  assert.equal(await page.getByText("설정을 표시할 수 없습니다", { exact: false }).count(), 0, `${tag}: Settings stays up after a reset`);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").browserBlockedSites ?? []), [], `${tag}: the reset is kept`);
   await page.context().close();
 }
 
