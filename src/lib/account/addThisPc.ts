@@ -211,6 +211,8 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   if (membership !== undefined) return { ...result, membership };
   let refreshed = false;
   if (listed !== undefined && Date.now() - Date.parse(listed.invited_at ?? listed.added_at) >= NEW_PC_MS - options.relistMs) {
+    // only an old service omits the ID; a malformed one is no licence for its removal fallback, so nothing is written
+    if (listed.listing_id === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent an unusable listing ID");
     running();
     const outcome = await directory.refreshPc(offer.server_id, listed.listing_id);
     // A new service preserves an admission even if the PC binds after the first status read. Read again
