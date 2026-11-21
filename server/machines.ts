@@ -40,6 +40,7 @@ import { readMoveOffer } from "./remote-move.ts";
 
 import { TargetAccountPcError, type RelaySocket } from "../shared/relay-channel.ts";
 import { savedIdentityReader } from "./relay/identity.ts";
+import { MuxProtocolError } from "../shared/relay-mux.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey, RelayPcOutdated, RelayPcRefused, relayPcLabel, removeRelayPcKey, vouchedSupport, type RelayPcTunnel, type RouteProbes, type VouchedSupport } from "./relay-pc.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
@@ -53,7 +54,7 @@ const RELAY_FOUND_MS = 10 * 60_000;
 const ACCOUNT_PC_MS = 10 * 60_000;
 const ACCOUNT_PC_ANSWER_MS = 10_000;
 
-export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "cancelled";
+export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
 /** A key this PC made for another PC of the account (startAccountPc), in memory only, and its comparison while one runs. */
 type HeldAccountPc = { offer: RelayOffer; key: RelayPcKey; id: string; name: string; at: number; running?: { comparison: AbortController; done: Promise<void> } };
@@ -2444,11 +2445,7 @@ export class MachineManager {
     } catch (error) {
       removeRelayPcKey(keyPath);
       if (key.paired && this.accountPcs.get(serverId) === held) this.accountPcs.delete(serverId);
-      if (comparison.signal.aborted) throw new AccountPcError("cancelled", "Cancelled. Nothing was added.", { cause: error });
-      if (error instanceof RelayPcOutdated) throw new AccountPcError("outdated", error.message, { cause: error });
-      if (shown) throw new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
-      if (error instanceof RelayPcRefused) throw new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
-      throw new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      throw accountPcFailure(error, { shown, aborted: comparison.signal.aborted });
     } finally {
       this.pairing.delete(id);
       signal.removeEventListener("abort", cancel);
@@ -2541,6 +2538,24 @@ function snapshotAfterStatus(snapshot: SessionSnapshot, message: Extract<ServerM
     const { finish_id: _finish, ...rest } = pane;
     return rest;
   }) };
+}
+
+/**
+ * Why adding another PC of the account failed (pairAccountPc). Once the request was shown there, the PC closing it at its
+ * deadline (`timeout`, server/relay/session.ts) is nobody answering, kept apart from a member's Deny: a page remembers a
+ * Deny, never an unanswered request.
+ */
+export function accountPcFailure(error: unknown, { shown, aborted }: { shown: boolean; aborted: boolean }): AccountPcError {
+  if (aborted) return new AccountPcError("cancelled", "Cancelled. Nothing was added.", { cause: error });
+  if (error instanceof RelayPcOutdated) return new AccountPcError("outdated", error.message, { cause: error });
+  if (shown) {
+    for (let at: unknown = error; at instanceof Error; at = at.cause) {
+      if (at instanceof MuxProtocolError && at.code === "timeout") return new AccountPcError("unanswered", "Nobody approved that PC in time. Nothing was added.", { cause: error });
+    }
+    return new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
+  }
+  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
+  return new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
 }
 
 /** A PC that admitted this one only to watch says so, so no device here is offered writes that PC refuses. */
