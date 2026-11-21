@@ -103,6 +103,27 @@ describe("deleting the account from the hosted shell", () => {
     expect((await accountStore.get("session"))?.account).toBe("acct-two");
   });
 
+  it("says the previous account was deleted when another tab's sign-in took its place while the delete was out", async () => {
+    const { fake } = await signedInShell(Date.now, "github", async (store, service) => {
+      const mine = (await store.get("session"))!;
+      await store.set("session", { ...mine, account: "acct-two", access_token: service.issueToken("acct-two"), refresh_token: "refresh-two", sign_in_id: "another-sign-in" });
+    });
+    const said = await shellAccountActions()?.deleteAccount();
+    expect(fake.deleted(ACCOUNT)).toBe(true);
+    expect(said).toBe("The previous account was deleted. You're now signed in to another account.");
+    expect(accountView()).toMatchObject({ kind: "signed-in", deleteError: said });
+  });
+
+  it("says nothing was deleted when another tab signed in to another account before the press", async () => {
+    const { fake, accountStore } = await signedInShell();
+    const shown = (await accountStore.get("session"))!;
+    await accountStore.set("session", { ...shown, account: "acct-two", access_token: fake.issueToken("acct-two"), refresh_token: "refresh-two", sign_in_id: "another-sign-in" });
+    const said = await shellAccountActions()?.deleteAccount();
+    expect([fake.deleted(ACCOUNT), fake.deleted("acct-two")]).toEqual([false, false]);
+    expect(said).toBe("Not deleted: you're signed in to another account. Sign in to the account you want to delete.");
+    expect(accountView()).toMatchObject({ kind: "signed-in", deleteError: said });
+  });
+
   it("draws the signed-out page when another tab signed out before the press, and sends nothing", async () => {
     const { fake, accountStore } = await signedInShell();
     await accountStore.set("session", undefined);

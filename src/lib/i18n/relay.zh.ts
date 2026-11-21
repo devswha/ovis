@@ -119,6 +119,8 @@ export const RELAY_ZH: Record<string, string> = {
   "Turn on Tailscale to connect": "打开 Tailscale 才能连接",
   "PCs on Tailscale": "Tailscale 上的电脑",
   "Address or SSH": "地址或 SSH",
+  "The previous account was deleted. You're now signed in to another account.": "已删除之前的账户。你现在登录的是另一个账户。",
+  "Not deleted: you're signed in to another account. Sign in to the account you want to delete.": "当前登录的是另一个账户，因此没有删除。请用要删除的账户重新登录。",
   "Scan a QR code": "扫描二维码",
   "The QR on the PC's screen": "PC 屏幕上的二维码",
   "Enter an address": "输入地址",

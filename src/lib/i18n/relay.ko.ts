@@ -119,6 +119,8 @@ export const RELAY_KO: Record<string, string> = {
   "Turn on Tailscale to connect": "Tailscale을 켜야 연결할 수 있어요",
   "PCs on Tailscale": "Tailscale의 PC",
   "Address or SSH": "주소 또는 SSH",
+  "The previous account was deleted. You're now signed in to another account.": "이전 계정을 삭제했어요. 지금은 다른 계정으로 로그인돼 있어요.",
+  "Not deleted: you're signed in to another account. Sign in to the account you want to delete.": "다른 계정으로 로그인돼 있어 삭제하지 않았어요. 삭제할 계정으로 다시 로그인하세요.",
   "Scan a QR code": "QR 찍기",
   "The QR on the PC's screen": "PC 화면의 QR",
   "Enter an address": "주소 입력",

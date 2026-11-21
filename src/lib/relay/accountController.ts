@@ -349,8 +349,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       }
     }).then(async () => {
       if (!current()) return;
-      // a sign-in that took the deleted one's place while the delete was out stays (deleteAccount.ts): it is shown
-      if (await account.session().catch(() => undefined) !== undefined) { await refresh(true); return; }
+      // a sign-in that took the deleted one's place while the delete was out stays (deleteAccount.ts): it is shown, saying
+      // the account asked for went and that this is another one, so the delete never ends in silence
+      if (await account.session().catch(() => undefined) !== undefined) {
+        await refresh(true);
+        if (current() && accountView?.kind === "signed-in") {
+          accountView = { ...accountView, deleteError: t("The previous account was deleted. You're now signed in to another account.") };
+          await changed();
+        }
+        return;
+      }
       if (!current()) return;
       for (const serverId of running.values()) cancelEnrollment(serverId);
       directory = [];
@@ -372,7 +380,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         await changed();
         return;
       }
-      if (accountView?.kind === "signed-in" && !(error instanceof SignedOutError)) accountView = { ...accountView, deleteError: deleteFailure(error) };
+      // another tab's sign-in to another account took the place of the one asked about: nothing was deleted, and it says so
+      const signedInElsewhere = error instanceof SignedOutError && accountView?.kind === "signed-in"
+        && (await account.session().catch(() => undefined))?.account !== from?.account;
+      if (accountView?.kind === "signed-in" && (signedInElsewhere || !(error instanceof SignedOutError))) {
+        accountView = { ...accountView, deleteError: signedInElsewhere ? t("Not deleted: you're signed in to another account. Sign in to the account you want to delete.") : deleteFailure(error) };
+      }
       await changed();
     }).finally(() => { if (deletion === mine) deletion = undefined; });
   };
