@@ -242,6 +242,30 @@ final class SshTunnelTests: XCTestCase {
         XCTAssertEqual(dials.value, 1)
     }
 
+    func testATailscaleCheckStopsUntilTryAgainAndOtherStopsStay() async throws {
+        dialFailure.value = SshFailure("tailscale-check", "approve", command: "https://login.tailscale.com/a/x")
+        let first = try await send()
+        XCTAssertTrue(first.contains("X-Ovis-Ssh: tailscale-check"))
+        now.value = 2000
+        _ = try await send()
+        XCTAssertEqual(dials.value, 1)
+        dialFailure.value = nil
+        await tunnel.resume()
+        let again = try await send()
+        XCTAssertTrue(again.hasPrefix("HTTP/1.1 200"))
+        XCTAssertEqual(dials.value, 2)
+        await tunnel.close()
+        port = try await Self.freePort()
+        tunnel = makeTunnel()
+        try await tunnel.listen()
+        dialFailure.value = SshFailure("auth", "refused")
+        _ = try await send()
+        await tunnel.resume()
+        now.value = 3000
+        _ = try await send()
+        XCTAssertEqual(dials.value, 3)
+    }
+
     func testAConnectionThatEndedIsMadeAgainOnTheNextRequestAskingNothing() async throws {
         _ = try await send()
         links.value?.first?.ended.value = true

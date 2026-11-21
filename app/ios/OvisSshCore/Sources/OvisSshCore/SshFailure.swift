@@ -16,9 +16,10 @@ public struct SshFailure: Error, Equatable, CustomStringConvertible {
         self.command = command
     }
 
-    /// Whether reconnecting stops on it until the PC is set up again (SshTunnel).
+    /// Whether reconnecting stops on it until the PC is set up again (SshTunnel); Tailscale's check until Try again, as
+    /// each new sign-in would ask for another check the person never sees.
     public var stops: Bool {
-        ["host-key-changed", "host-key-unknown", "auth", "key-unreadable", "key-lost"].contains(kind)
+        ["host-key-changed", "host-key-unknown", "auth", "key-unreadable", "key-lost", "tailscale-check"].contains(kind)
     }
 
     public var description: String { "\(kind): \(message)" }

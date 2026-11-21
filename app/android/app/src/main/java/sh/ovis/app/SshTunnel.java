@@ -159,6 +159,13 @@ final class SshTunnel {
         pipes.shutdownNow();
     }
 
+    /** Try again on the error page: a Tailscale check the person has now approved is tried again; every other stop stays. */
+    synchronized void resume() {
+        if (stopped == null || !"tailscale-check".equals(stopped.kind)) return;
+        stopped = null;
+        lastFailure = null;
+    }
+
     /** Ends the SSH connection (a network change): the next request makes a new one. */
     void drop() {
         Link was;
@@ -305,7 +312,7 @@ final class SshTunnel {
      */
     String get(String path) throws SshFailure {
         Channel stream = channel();
-        java.util.concurrent.Future<String> reading = pipes.submit(() -> {
+        java.util.concurrent.Future<byte[]> reading = pipes.submit(() -> {
             OutputStream out = stream.output();
             out.write(("GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
             out.flush();
@@ -317,9 +324,9 @@ final class SshTunnel {
                 body.write(buffer, 0, read);
                 if (body.size() > 256 * 1024) throw new IOException("The answer is too long");
             }
-            return body.toString("UTF-8");
+            return body.toByteArray();
         });
-        String response;
+        byte[] response;
         try {
             response = reading.get(20, java.util.concurrent.TimeUnit.SECONDS);
         } catch (java.util.concurrent.TimeoutException late) {
@@ -333,12 +340,40 @@ final class SshTunnel {
             reading.cancel(true);
             stream.close();
         }
-        int split = response.indexOf("\r\n\r\n");
+        int split = -1;
+        for (int i = 0; i + 3 < response.length && split < 0; i++) {
+            if (response[i] == '\r' && response[i + 1] == '\n' && response[i + 2] == '\r' && response[i + 3] == '\n') split = i;
+        }
         if (split < 0) throw new SshFailure("internal", "No answer");
-        String head = response.substring(0, split).toLowerCase(Locale.ROOT);
+        String head = new String(response, 0, split, StandardCharsets.ISO_8859_1).toLowerCase(Locale.ROOT);
         if (!head.startsWith("http/1.1 200") && !head.startsWith("http/1.0 200")) throw new SshFailure("internal", head.split("\r\n")[0]);
-        String body = response.substring(split + 4);
-        return head.contains("transfer-encoding: chunked") ? SshLink.unchunk(body) : body;
+        byte[] body = java.util.Arrays.copyOfRange(response, split + 4, response.length);
+        return new String(head.contains("transfer-encoding: chunked") ? unchunkBytes(body) : body, StandardCharsets.UTF_8);
+    }
+
+    /** An HTTP/1.1 chunked body joined as bytes, so a character that spans two chunks stays whole. */
+    static byte[] unchunkBytes(byte[] chunked) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int at = 0;
+        while (at < chunked.length) {
+            int line = -1;
+            for (int i = at; i + 1 < chunked.length; i++) {
+                if (chunked[i] == '\r' && chunked[i + 1] == '\n') { line = i; break; }
+            }
+            if (line < 0) break;
+            int size;
+            try {
+                size = Integer.parseInt(new String(chunked, at, line - at, StandardCharsets.ISO_8859_1).split(";")[0].trim(), 16);
+            } catch (NumberFormatException damaged) {
+                break;
+            }
+            if (size == 0) break;
+            int from = line + 2;
+            int to = Math.min(chunked.length, from + size);
+            out.write(chunked, from, to - from);
+            at = to + 2;
+        }
+        return out.toByteArray();
     }
 
     private void serve(Socket client) {

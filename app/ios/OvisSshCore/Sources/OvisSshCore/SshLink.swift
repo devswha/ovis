@@ -64,12 +64,8 @@ public enum SshLink {
             guard let first else { throw SshFailure("timeout", "The machine did not answer in time") }
             return first
         }
-        let text = String(decoding: response, as: UTF8.self)
-        guard let split = text.range(of: "\r\n\r\n") else { return false }
-        let head = text[..<split.lowerBound].lowercased()
-        var body = String(text[split.upperBound...])
-        if head.contains("transfer-encoding: chunked") { body = SshCommands.unchunk(body) }
-        return SshCommands.answersAsOvis(body)
+        guard let parts = SshCommands.httpParts(response) else { return false }
+        return SshCommands.answersAsOvis(parts.body)
     }
 
     /// Installs Ovis for this account with the official installer, then starts it and waits for it, up to

@@ -131,6 +131,12 @@ final class SshTunnels {
         return answer;
     }
 
+    /** Try again for the PC `origin`: its tunnel signs in again after a Tailscale check (SshTunnel.resume). */
+    static synchronized void resume(String origin) {
+        Entry entry = origin == null ? null : tunnels.get(origin);
+        if (entry != null) entry.tunnel.resume();
+    }
+
     static synchronized void closeFor(String origin) {
         Entry entry = tunnels.remove(origin);
         if (entry != null) entry.tunnel.close();

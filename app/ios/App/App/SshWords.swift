@@ -65,7 +65,7 @@ enum SshWords {
         "ssh_fail_key_not_a_key": ("That is not a private key this app can read (%1$@).", "이 앱이 읽을 수 있는 개인 키가 아닙니다(%1$@)."),
         "ssh_fail_key_needs_passphrase": ("This key has a passphrase. Enter it below.", "암호 문구가 걸린 키입니다. 아래에 입력하세요."),
         "ssh_fail_key_wrong_passphrase": ("The passphrase does not open this key. Check it and try again.", "그 암호 문구로는 이 키가 열리지 않습니다. 확인하고 다시 시도하세요."),
-        "ssh_fail_key_unsupported": ("This kind of key is not supported (%1$@). Use an ed25519, RSA or ECDSA key.", "지원하지 않는 종류의 키입니다(%1$@). ed25519, RSA, ECDSA 키를 쓰세요."),
+        "ssh_fail_key_unsupported": ("This kind of key is not supported on the iPhone (%1$@). Use an ed25519 or ECDSA key.", "이 종류의 키는 iPhone에서 지원하지 않습니다(%1$@). ed25519 또는 ECDSA 키를 쓰세요."),
         "ssh_fail_key_lost": ("This phone could no longer read its own key, so it made a new one. Register it again: use the password once, or add the new line above.", "이 휴대폰이 자기 키를 더 이상 읽지 못해서 새 키를 만들었습니다. 다시 등록하세요: 비밀번호를 한 번 쓰거나, 위의 새 줄을 추가하세요."),
         "ssh_fail_key_unreadable": ("This phone can no longer open the key saved for this PC. Paste the key again.", "이 휴대폰이 이 PC용으로 저장한 키를 더 이상 열지 못합니다. 키를 다시 붙여 넣으세요."),
         "ssh_fail_host_key_pinned": ("The PC answered with another SSH host key than the one this phone confirmed for it:\n\n%1$@\n\nNothing was sent. If you know why it changed (the machine was reinstalled, its keys replaced), tap Forget host key under Manage beside this PC, then set it up again to confirm the new key.", "PC가 이 휴대폰이 확인한 것과 다른 SSH 호스트 키로 응답했습니다:\n\n%1$@\n\n아무것도 보내지 않았습니다. 바뀐 이유를 안다면(기기를 다시 설치했거나 키를 바꾼 경우) 이 PC 옆의 관리에서 호스트 키 지우기를 누른 뒤, 다시 설정해서 새 키를 확인하세요."),

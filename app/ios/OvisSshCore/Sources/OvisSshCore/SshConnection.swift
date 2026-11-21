@@ -147,11 +147,37 @@ public final class SshConnection: @unchecked Sendable {
         try await open(host: host, port: port, check: check, signIn: SignIn(user: user, way: .password(password)))
     }
 
+    /// A connection being made, which the setup screen may give up on while it waits (Tailscale's check): cancel closes
+    /// it, now or as soon as it exists.
+    public final class Attempt: @unchecked Sendable {
+        private let lock = NSLock()
+        private var channel: Channel?
+        private var cancelled = false
+
+        public init() {}
+
+        public func cancel() {
+            lock.lock()
+            cancelled = true
+            let open = channel
+            lock.unlock()
+            open?.close(promise: nil)
+        }
+
+        func started(_ made: Channel) {
+            lock.lock()
+            channel = made
+            let gone = cancelled
+            lock.unlock()
+            if gone { made.close(promise: nil) }
+        }
+    }
+
     /// Signs in with Tailscale SSH, no key: `banner` hears what the PC says while it waits (its check link, which the
     /// person opens to approve this phone), and may end the wait with a failure; it waits up to `waitSeconds`.
-    public static func openTailscale(host: String, port: Int, check: HostKeyCheck, user: String, waitSeconds: Int64,
+    public static func openTailscale(host: String, port: Int, check: HostKeyCheck, user: String, waitSeconds: Int64, attempt: Attempt? = nil,
                                      banner: @escaping @Sendable (String) -> SshFailure?) async throws -> SshConnection {
-        try await open(host: host, port: port, check: check, signIn: SignIn(user: user, way: .tailscale), waitSeconds: waitSeconds, banner: banner)
+        try await open(host: host, port: port, check: check, signIn: SignIn(user: user, way: .tailscale), waitSeconds: waitSeconds, banner: banner, attempt: attempt)
     }
 
     /// The check link in a Tailscale SSH banner ("To authenticate, visit: https://login.tailscale.com/a/…"), or nil.
@@ -168,7 +194,7 @@ public final class SshConnection: @unchecked Sendable {
     }
 
     private static func open(host: String, port: Int, check: HostKeyCheck, signIn: SignIn, waitSeconds: Int64 = signInSeconds,
-                             banner: (@Sendable (String) -> SshFailure?)? = nil) async throws -> SshConnection {
+                             banner: (@Sendable (String) -> SshFailure?)? = nil, attempt: Attempt? = nil) async throws -> SshConnection {
         let signedIn = group.next().makePromise(of: Void.self)
         let watch = Watch(signedIn: signedIn)
         watch.banner = banner
@@ -190,6 +216,7 @@ public final class SshConnection: @unchecked Sendable {
             watch.finish(.failure(error))
             throw unreachable(error)
         }
+        attempt?.started(channel)
         let deadline = channel.eventLoop.scheduleTask(in: .seconds(15 + waitSeconds)) {
             watch.finish(.failure(SshFailure("timeout", "The machine did not answer in time")))
             channel.close(promise: nil)
@@ -226,8 +253,17 @@ public final class SshConnection: @unchecked Sendable {
 
     public func close() { channel.close(promise: nil) }
 
-    private func childChannel(_ type: SSHChannelType, initialize: @escaping @Sendable (Channel) throws -> Void) async throws -> Channel {
+    /// A new channel of `type`, within `seconds`: a connection that died without a word (the app suspended, a NAT entry
+    /// gone) answers nothing, and waiting on a NIO future ignores task cancellation, so the deadline closes the whole
+    /// connection, which fails the channel's creation and lets the tunnel make a new one.
+    private func childChannel(_ type: SSHChannelType, seconds: Int64 = 15, initialize: @escaping @Sendable (Channel) throws -> Void) async throws -> Channel {
         let promise = channel.eventLoop.makePromise(of: Channel.self)
+        let expired = Holder<Bool>()
+        let deadline = channel.eventLoop.scheduleTask(in: .seconds(seconds)) { [channel] in
+            expired.value = true
+            channel.close(promise: nil)
+        }
+        defer { deadline.cancel() }
         let ssh = self.ssh
         channel.eventLoop.execute {
             ssh.createChannel(promise, channelType: type) { child, _ in
@@ -240,6 +276,7 @@ public final class SshConnection: @unchecked Sendable {
         do {
             return try await promise.futureResult.get()
         } catch {
+            if expired.value == true { throw SshFailure("timeout", "The PC did not answer in time") }
             if !channel.isActive { throw SshFailure("unreachable", "The connection ended") }
             throw error
         }
@@ -259,21 +296,9 @@ public final class SshConnection: @unchecked Sendable {
 
     /// Whether the connection still answers, within `seconds`: a session channel opened and closed again.
     public func alive(seconds: Int64 = 4) async -> Bool {
-        guard channel.isActive else { return false }
-        return await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                guard let child = try? await self.childChannel(.session, initialize: { _ in }) else { return false }
-                child.close(promise: nil)
-                return true
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
+        guard channel.isActive, let child = try? await childChannel(.session, seconds: seconds, initialize: { _ in }) else { return false }
+        child.close(promise: nil)
+        return true
     }
 
     /// `command`'s output (stdout only), at most 512 KiB, each line also handed to `lines` as it comes; with

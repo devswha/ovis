@@ -55,9 +55,18 @@ final class SshCommandsTests: XCTestCase {
     }
 
     func testReadsAChunkedHealthAnswer() {
-        XCTAssertEqual(SshCommands.unchunk("7\r\n{\"ok\":t\r\n9\r\nrue,\"auth\r\n5;x=1\r\n\":{}}\r\n0\r\n\r\n"), "{\"ok\":true,\"auth\":{}}")
-        XCTAssertTrue(SshCommands.answersAsOvis("{\"ok\":true,\"auth\":{}}"))
-        XCTAssertFalse(SshCommands.answersAsOvis("{\"ok\":true}"))
+        XCTAssertEqual(SshCommands.unchunk(Data("7\r\n{\"ok\":t\r\n9\r\nrue,\"auth\r\n5;x=1\r\n\":{}}\r\n0\r\n\r\n".utf8)), Data("{\"ok\":true,\"auth\":{}}".utf8))
+        XCTAssertTrue(SshCommands.answersAsOvis(Data("{\"ok\":true,\"auth\":{}}".utf8)))
+        XCTAssertFalse(SshCommands.answersAsOvis(Data("{\"ok\":true}".utf8)))
+    }
+
+    func testAChunkBoundaryInsideACharacterKeepsTheCharacter() {
+        let name = Array("{\"name\":\"집\"}".utf8)
+        let cut = name.firstIndex(of: 0xEC)! + 1
+        var chunked = Data(String(format: "%x\r\n", cut).utf8) + Data(name[..<cut]) + Data("\r\n".utf8)
+        chunked += Data(String(format: "%x\r\n", name.count - cut).utf8) + Data(name[cut...]) + Data("\r\n0\r\n\r\n".utf8)
+        let parts = SshCommands.httpParts(Data("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".utf8) + chunked)
+        XCTAssertEqual(parts.map { String(decoding: $0.body, as: UTF8.self) }, "{\"name\":\"집\"}")
     }
 
     private func shell(_ script: String, home: URL) throws -> String {

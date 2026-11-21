@@ -60,6 +60,23 @@ final class SshFixtureTests: XCTestCase {
         XCTAssertTrue(String(decoding: answer, as: UTF8.self).hasPrefix("HTTP/1."))
     }
 
+    /// A connection whose PC stops answering without a word (its sshd stopped here, as a suspended app or a lost NAT
+    /// entry looks from the phone) is found dead within the check's deadline, not when TCP gives up.
+    func testAConnectionThatStopsAnsweringIsFoundDeadInTime() async throws {
+        let f = try fixture()
+        let connection = try await SshConnection.open(host: f.host, port: f.port, check: try await confirmed(f), user: f.user, key: f.key)
+        defer { connection.close() }
+        let session = try await connection.run("echo $PPID", timeout: 10).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertNotNil(Int(session))
+        kill(pid_t(Int32(session)!), SIGSTOP)
+        defer { kill(pid_t(Int32(session)!), SIGCONT) }
+        let started = Date()
+        let alive = await connection.alive(seconds: 2)
+        XCTAssertFalse(alive)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        XCTAssertFalse(connection.isActive)
+    }
+
     func testAnotherHostKeyFailsClosedAndAnotherKeyIsRefused() async throws {
         let f = try fixture()
         let check = try await confirmed(f)

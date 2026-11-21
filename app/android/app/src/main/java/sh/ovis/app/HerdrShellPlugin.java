@@ -166,6 +166,12 @@ public class HerdrShellPlugin extends Plugin {
      */
     @PluginMethod
     public void openSshSetup(PluginCall call) {
+        // only the connect screen and the hosted app (Add a PC's SSH): a PC's own page may not drop the person off it
+        // to stage a login of its choosing
+        if (!showingConnectScreen() && !PCStore.showsHostedShell(PCStore.current(getContext()))) {
+            call.reject("Only the app's own pages open the SSH setup.");
+            return;
+        }
         String target = call.getString("target", "");
         if (target == null || target.length() > 300) {
             call.reject("That is not an SSH login.");
@@ -214,6 +220,8 @@ public class HerdrShellPlugin extends Plugin {
 
     @PluginMethod
     public void retry(PluginCall call) {
+        // a Tailscale check the person has just approved: the PC's tunnel signs in again
+        SshTunnels.resume(PCStore.current(getContext()));
         PCStore.fail(null, null);
         PCStore.redirects = 0;
         call.resolve();

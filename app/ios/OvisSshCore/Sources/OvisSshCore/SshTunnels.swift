@@ -85,6 +85,12 @@ public final class SshTunnels: @unchecked Sendable {
         return (answers[0], answers[1])
     }
 
+    /// Try again for the PC `origin`: its tunnel signs in again after a Tailscale check (SshTunnel.resume).
+    public func resume(_ origin: String) async {
+        guard let tunnel = lock.locked({ tunnels[origin]?.tunnel }) else { return }
+        await tunnel.resume()
+    }
+
     public func closeFor(_ origin: String) {
         let entry = lock.locked { tunnels.removeValue(forKey: origin) }
         if let entry { Task { await entry.tunnel.close() } }

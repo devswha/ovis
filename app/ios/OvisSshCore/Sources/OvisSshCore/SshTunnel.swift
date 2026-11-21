@@ -118,6 +118,13 @@ public actor SshTunnel {
         drop()
     }
 
+    /// Try again on the error page: a Tailscale check the person has now approved is tried again; every other stop stays.
+    public func resume() {
+        guard stopped?.kind == "tailscale-check" else { return }
+        stopped = nil
+        lastFailure = nil
+    }
+
     /// Ends the SSH connection (a network change, the app in the background): the next request makes a new one.
     public func drop() {
         let was = link
@@ -235,14 +242,11 @@ public actor SshTunnel {
             let first = try await group.next() ?? nil
             group.cancelAll()
             guard let answer = first else { throw SshFailure("timeout", "The PC's Ovis did not answer in time") }
-            let text = String(decoding: answer, as: UTF8.self)
-            guard let split = text.range(of: "\r\n\r\n") else { throw SshFailure("internal", "No answer") }
-            let head = text[..<split.lowerBound].lowercased()
-            guard head.hasPrefix("http/1.1 200") || head.hasPrefix("http/1.0 200") else {
-                throw SshFailure("internal", String(head.prefix(while: { $0 != "\r" })))
+            guard let parts = SshCommands.httpParts(answer) else { throw SshFailure("internal", "No answer") }
+            guard parts.head.hasPrefix("http/1.1 200") || parts.head.hasPrefix("http/1.0 200") else {
+                throw SshFailure("internal", String(parts.head.prefix(while: { $0 != "\r" })))
             }
-            let body = String(text[split.upperBound...])
-            return Data((head.contains("transfer-encoding: chunked") ? SshCommands.unchunk(body) : body).utf8)
+            return parts.body
         }
     }
 

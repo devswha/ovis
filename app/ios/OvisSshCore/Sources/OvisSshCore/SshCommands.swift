@@ -154,25 +154,34 @@ public enum SshCommands {
         return Int(rest.split(whereSeparator: { $0.isWhitespace }).first ?? "") ?? -1
     }
 
-    /// An HTTP/1.1 chunked body, joined.
-    public static func unchunk(_ chunked: String) -> String {
-        var out = ""
-        var rest = Substring(chunked)
-        while let line = rest.range(of: "\r\n") {
-            guard let size = Int(rest[..<line.lowerBound].split(separator: ";").first?.trimmingCharacters(in: .whitespaces) ?? "", radix: 16), size > 0 else { break }
-            let body = rest[line.upperBound...]
-            let take = body.utf8.prefix(size)
-            out += String(decoding: take, as: UTF8.self)
-            let after = body.utf8.dropFirst(size).dropFirst(2)
-            rest = Substring(String(decoding: after, as: UTF8.self))
+    /// An HTTP/1.1 response split into its head (lowercased) and its body, a chunked one joined; nil without a blank line.
+    public static func httpParts(_ response: Data) -> (head: String, body: Data)? {
+        let bytes = [UInt8](response)
+        guard bytes.count >= 4, let split = (0...(bytes.count - 4)).first(where: { bytes[$0] == 13 && bytes[$0 + 1] == 10 && bytes[$0 + 2] == 13 && bytes[$0 + 3] == 10 }) else { return nil }
+        let head = String(decoding: bytes[..<split], as: UTF8.self).lowercased()
+        let body = Data(bytes[(split + 4)...])
+        return (head, head.contains("transfer-encoding: chunked") ? unchunk(body) : body)
+    }
+
+    /// An HTTP/1.1 chunked body, joined as bytes (a character may span two chunks).
+    public static func unchunk(_ chunked: Data) -> Data {
+        let bytes = [UInt8](chunked)
+        var out = Data()
+        var at = 0
+        while let end = (at..<max(at, bytes.count - 1)).first(where: { bytes[$0] == 13 && bytes[$0 + 1] == 10 }) {
+            let sizeText = String(decoding: bytes[at..<end], as: UTF8.self).split(separator: ";").first?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard let size = Int(sizeText, radix: 16), size > 0 else { break }
+            let from = end + 2, to = min(bytes.count, from + size)
+            out.append(contentsOf: bytes[from..<to])
+            at = to + 2
+            if at >= bytes.count { break }
         }
         return out
     }
 
     /// /api/health?scope=bridge as Ovis answers it: `ok` true and an `auth` object (Android's PCStore.answersAsServer).
-    public static func answersAsOvis(_ body: String) -> Bool {
-        guard let data = body.data(using: .utf8),
-              let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+    public static func answersAsOvis(_ data: Data) -> Bool {
+        guard let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let ok = answer["ok"] as? Bool, ok, answer["auth"] is [String: Any] else { return false }
         return true
     }

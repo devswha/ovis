@@ -76,6 +76,13 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     /// `target` (an SSH login, user@host[:port], or empty) in its field. Nothing is added here, and no PC page is given
     /// OvisSsh: the connect screen, an app page, takes the login to the SSH setup screen, where the person adds the PC.
     @objc func openSshSetup(_ call: CAPPluginCall) {
+        // only the connect screen and the hosted app (Add a PC's SSH): a PC's own page may not drop the person off it
+        // to stage a login of its choosing
+        let shown = PCStore.shown.flatMap { PCStore.origin(ofKey: $0) }
+        guard bridge?.webView?.url?.scheme == "capacitor" || shown == "https://" + DirectCallGate.appHost else {
+            call.reject("Only the app's own pages open the SSH setup.")
+            return
+        }
         let target = call.getString("target") ?? ""
         guard target.count <= 300 else {
             call.reject("That is not an SSH login.")
@@ -123,6 +130,11 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         PCStore.failure = nil
         PCStore.redirects = 0
         call.resolve()
-        DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
+        let ssh = OvisSsh.pc(PCStore.shown)
+        Task { @MainActor in
+            // a Tailscale check the person has just approved: the PC's tunnel signs in again
+            if let ssh { await OvisSsh.tunnels.resume(ssh.origin) }
+            HerdrBridgeViewController.reopen()
+        }
     }
 }

@@ -44,6 +44,8 @@ final class SshSetupModel: ObservableObject {
     @Published private(set) var step = ""
     private var left = false
     private var active: SshConnection?
+    /// the connection being made while Tailscale waits for its check, which leaving closes
+    private var attempt: SshConnection.Attempt?
     private var done = false
 
     init(editing: SshPcs.Pc?, user: String?, host: String?, port: Int?) {
@@ -83,6 +85,7 @@ final class SshSetupModel: ObservableObject {
         left = true
         question?.answer(false)
         question = nil
+        attempt?.cancel()
         active?.close()
         end(false)
     }
@@ -223,7 +226,9 @@ final class SshSetupModel: ObservableObject {
             var saveAs = how
             if how == "tailscale" {
                 // the person approves this phone in the browser if Tailscale asks: up to ten minutes
-                let made = try await SshConnection.openTailscale(host: address, port: sshPort, check: check(), user: account, waitSeconds: 600) { banner in
+                let waiting = SshConnection.Attempt()
+                attempt = waiting
+                let made = try await SshConnection.openTailscale(host: address, port: sshPort, check: check(), user: account, waitSeconds: 600, attempt: waiting) { banner in
                     if let link = SshConnection.checkLink(banner) {
                         Task { @MainActor in
                             self.checkLink = link
