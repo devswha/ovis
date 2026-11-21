@@ -1,7 +1,8 @@
 name: Desktop app check
-# A pull request that changes the desktop app runs the app's unit tests, its type check and one build
-# (Linux x64). All five builds are desktop.yml's: every day on main, at a release, and for a pull request
-# that changes desktop.yml itself.
+# A pull request that changes the desktop app runs the app's unit tests, its type check and its build on
+# Linux x64 and Windows x64: the two systems whose tests differ (children.test.ts has Windows-only cases)
+# and two of the three packagers. The macOS and Linux arm64 builds are desktop.yml's: every day on main,
+# at a release, and for a pull request that changes desktop.yml itself.
 on:
   pull_request:
     paths:
@@ -14,12 +15,22 @@ concurrency:
   cancel-in-progress: true
 jobs:
   check:
-    name: check (linux-x64)
-    # GitHub's image: the tests start a real Electron, which needs GTK and other libraries the self-hosted
-    # runner image (scripts/self-hosted-runner/Dockerfile: Chromium's only) does not have, and a job there
-    # cannot install them
-    runs-on: ubuntu-24.04
+    name: check (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04 }
+          - { target: win32-x64, os: windows-2025 }
+    # GitHub's images: the Linux tests start a real Electron, which needs GTK and other libraries the
+    # self-hosted runner image (scripts/self-hosted-runner/Dockerfile: Chromium's only) does not have, and
+    # a job there cannot install them
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # the steps are bash on both runners (Git Bash on Windows)
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,9 +48,10 @@ jobs:
       - name: Install the app's packages
         working-directory: app/electron
         run: bun install --frozen-lockfile
-      # the built-in browser's tests run a real Electron without a display: its binary, which
+      # the built-in browser's tests run a real Electron without a display (Linux only): its binary, which
       # electron-builder fetches on its own later, is not there after bun install
       - name: Electron for the built-in browser tests
+        if: startsWith(matrix.target, 'linux-')
         working-directory: app/electron
         run: node node_modules/electron/install.js
       - name: Unit tests
@@ -48,15 +60,18 @@ jobs:
       - name: Type check
         working-directory: app/electron
         run: bun run typecheck
-      # unsigned, with no release tag and no update feed: what desktop.yml builds when it only builds
-      - name: Build linux-x64
+      # unsigned, with no release tag and no update feed, as desktop.yml builds when it only builds: both are
+      # set empty here, so a .env file in the pull request cannot give the build a feed
+      - name: Build ${{ matrix.target }}
         working-directory: app/electron
         env:
+          OVIS_RELEASE_TAG: ''
+          OVIS_UPDATE_FEED: ''
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: bun run dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ovis-desktop-check-linux-x64
+          name: ovis-desktop-check-${{ matrix.target }}
           path: |
             app/electron/dist/Ovis-*
             app/electron/dist/latest*.yml

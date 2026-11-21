@@ -1,9 +1,10 @@
 name: Desktop app
 # The feed is the latest release's assets, so an installed app sees a version once it
 # is GitHub's latest (docs/development.md#releasing).
-# A pull request that changes the app runs desktop-check.yml (tests, type check, one build) instead. The five
-# builds run here: for a pull request that changes this file, every day on main (a build that breaks on one
-# platform only shows the next day, not at a release), from Actions, and at a release.
+# A pull request that changes the app runs desktop-check.yml: the tests, the type check and the build on Linux
+# x64 and Windows x64. The five builds run here: for a pull request that changes this file, every day on main
+# (so a macOS or Linux arm64 build that broke shows the next day, unless a release is cut first), from Actions,
+# and at a release.
 on:
   pull_request:
     paths:
