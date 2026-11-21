@@ -257,11 +257,15 @@ describe("the account's PCs in the sidebar", () => {
     expect(text(row("Desk"))).toContain("Sign in again");
   });
 
-  it("tells the sidebar which PCs it shows as rows, and none once it shows none", async () => {
+  it("tells the sidebar only the PCs it is adding, so a device keeps its own link to one that is outdated, off or declined", async () => {
     const told: (readonly string[])[] = [];
     await act(async () => { renderer = create(<SettingsProvider><SidebarAccountPcs machines={[local, lab]} onAdded={() => {}} onListed={(ids) => told.push(ids)} source={source} /></SettingsProvider>); });
     await settle();
-    expect(told.at(-1)).toEqual([DESK.server_id, OLD.server_id, AWAY.server_id]);
+    // Desk is being added; Old box (outdated) and Away (off) are not, and keep any link of this device's own
+    expect(told.at(-1)).toEqual([DESK.server_id]);
+    await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
+    await settle();
+    expect(told.at(-1)).toEqual([]);
     relayPhase = "off";
     await comeBack();
     expect(told.at(-1)).toEqual([]);

@@ -22,7 +22,7 @@ import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource 
  * answer, or that its Ovis needs an update. The approval itself is asked on the account's devices, never here. A PC once
  * added is the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
  */
-export function SidebarAccountPcs({ machines, onAdded, onListed, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; /** the relay IDs of the rows shown, empty when none are (the hosted app's own list leaves them out) */ onListed?: (serverIds: readonly string[]) => void; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
+export function SidebarAccountPcs({ machines, onAdded, onListed, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; /** the relay IDs of the PCs being added, empty when none are (the hosted app's own list leaves those out) */ onListed?: (serverIds: readonly string[]) => void; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
   const [mine, setMine] = useState<string | null>(null);
@@ -78,16 +78,19 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
   }, [account, reads]);
   const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, refresh: reads, onAdded });
   const waiting = accountPcs.pcs?.filter((pc) => accountPcs.added(pc.server_id) === undefined) ?? [];
-  const listed = waiting.map((pc) => pc.server_id).join("\n");
-  useEffect(() => {
-    onListed?.(listed === "" ? [] : listed.split("\n"));
-    return () => onListed?.([]);
-  }, [listed, onListed]);
   // each PC is added on its own once: a declined or failed one is asked again only once the account lists something
   // new, never because the window came back, so a member's Deny is not asked of them again
   const [tried, setTried] = useState<ReadonlySet<string>>(new Set());
   const listing = accountPcs.pcs?.map((pc) => `${pc.server_id}:${pc.new_until ?? ""}`).join("\n") ?? "";
   useEffect(() => { setTried(new Set()); }, [listing]);
+  // only a PC being added stands in for this device's own link to it (ShellPcs.tsx): one that is outdated, off,
+  // declined or failed leaves that link where it was, so an update never costs a phone the way to a PC it drives
+  const adding = waiting.filter((pc) => accountPcs.stateOf(pc.server_id) === "ready" && (accountPcs.pairing?.server_id === pc.server_id || !tried.has(pc.server_id)));
+  const listed = adding.map((pc) => pc.server_id).join("\n");
+  useEffect(() => {
+    onListed?.(listed === "" ? [] : listed.split("\n"));
+    return () => onListed?.([]);
+  }, [listed, onListed]);
   const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id)) : undefined;
   useEffect(() => {
     if (next === undefined) return;
