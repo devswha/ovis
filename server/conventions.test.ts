@@ -330,7 +330,7 @@ describe("herdr focus", () => {
 
 describe("herdr update", () => {
   const REAL = "server/index.ts";
-  const STAND_IN = /^new HerdrUpdater\(\s*\{[^}]*\bbin\b/;
+  const STAND_IN = /^new HerdrUpdater\(\s*\{(?:[^}]*,)?\s*bin\s*[:,}]/;
 
   it("builds a HerdrUpdater for the real herdr only in the server's own start", () => {
     const code = files("{server,scripts,src,shared}/**/*.{ts,tsx,mjs,js}").filter((file) => file !== REAL && file !== "server/conventions.test.ts");
@@ -344,6 +344,7 @@ describe("herdr update", () => {
     expect(STAND_IN.test("new HerdrUpdater({ timeoutMs: 200, bin })")).toBe(true);
     expect(STAND_IN.test("new HerdrUpdater()")).toBe(false);
     expect(STAND_IN.test("new HerdrUpdater({ timeoutMs: 200 })")).toBe(false);
+    expect(STAND_IN.test("new HerdrUpdater({ socketPath: \"/tmp/bin/herdr.sock\" })")).toBe(false);
   });
 });
 
@@ -356,21 +357,39 @@ describe("test servers", () => {
     "server/ipv6-loopback.contract.test.ts": { calls: 1, why: "a port the test took itself, to see the start fail" },
   };
 
+  function closing(code: string, open: number): number {
+    let depth = 1;
+    let end = open + 1;
+    for (; depth > 0 && end < code.length; end++) depth += "({[".includes(code[end]!) ? 1 : ")}]".includes(code[end]!) ? -1 : 0;
+    return end;
+  }
+
+  function ownProperties(object: string): string {
+    let depth = 0;
+    let own = "";
+    for (const char of object) {
+      if ("({[".includes(char)) depth += 1;
+      if (depth <= 1) own += char;
+      if (")}]".includes(char)) depth -= 1;
+    }
+    return own;
+  }
+
   function serverCalls(file: string, code: string): { at: string; isolated: boolean }[] {
     if (!FROM_INDEX.test(code)) return [];
     return [...code.matchAll(CALL)].map((match) => {
-      let depth = 1;
-      let end = match.index + match[0].length;
-      for (; depth > 0 && end < code.length; end++) depth += code[end] === "(" ? 1 : code[end] === ")" ? -1 : 0;
-      const args = code.slice(match.index + match[0].length, end - 1);
-      const named = [...args.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*$|\.\.\.([A-Za-z_$][\w$]*)/g)].map((name) => name[1] ?? name[2]!);
+      const open = match.index + match[0].length - 1;
+      const args = code.slice(open + 1, closing(code, open) - 1).trim();
       const before = code.slice(0, match.index);
-      const options = args + named.map((name) => {
-        const declared = before.lastIndexOf(`const ${name} = {`);
-        return declared < 0 ? "" : before.slice(declared, before.indexOf("\n", declared));
-      }).join("");
+      const declared = (name: string): string => {
+        const at = before.lastIndexOf(`const ${name} = {`);
+        return at < 0 ? "" : ownProperties(code.slice(code.indexOf("{", at), closing(code, code.indexOf("{", at))));
+      };
+      const literal = args.startsWith("{") ? ownProperties(args) : "";
+      const named = literal ? [...literal.matchAll(/\.\.\.([A-Za-z_$][\w$]*)/g)].map((spread) => declared(spread[1]!)).join("") : /^[A-Za-z_$][\w$]*$/.test(args) ? declared(args) : "";
+      const port = /\bport:\s*([^,}\s]+)/.exec(literal) ?? /\bport:\s*([^,}\s]+)/.exec(named);
       const line = lineOf(code, match.index);
-      return { at: `${file}:${line}: ${code.split("\n")[line - 1]!.trim().slice(0, 160)}`, isolated: /\bport:\s*0\b/.test(options) && /\bstateDir\b/.test(options) };
+      return { at: `${file}:${line}: ${code.split("\n")[line - 1]!.trim().slice(0, 160)}`, isolated: port?.[1] === "0" && /(?<![\w$.])stateDir\b/.test(literal + named) };
     });
   }
 
@@ -391,6 +410,9 @@ describe("test servers", () => {
     expect(isolated("createServer({ port: 0, stateDir: dir, token: \"\" });")).toEqual([true]);
     expect(isolated("const base = { port: 0, token: \"\" } as const;\ncreateServer({ ...base, stateDir: tempDir() });")).toEqual([true]);
     expect(isolated("const options = { port: 0, stateDir: root } as const;\ncreateServer(options);")).toEqual([true]);
+    expect(isolated("const options = {\n  port: 0,\n  stateDir: root,\n} as const;\ncreateServer(options);")).toEqual([true]);
+    expect(isolated("const base = { port: 0, stateDir: dir };\ncreateServer({ ...base, port: 7317 });")).toEqual([false]);
+    expect(isolated("const base = { port: 0, token: \"\" };\ncreateServer({ ...base, stateDir: dir, lanHttps: { port: 8443 } });")).toEqual([true]);
     expect(isolated("createServer({ port: 0, siblingStateDir: legacy });")).toEqual([false]);
     expect(isolated("createServer({ port: 7317, stateDir: dir });")).toEqual([false]);
     expect(isolated("createServer(options);")).toEqual([false]);
