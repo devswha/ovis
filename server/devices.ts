@@ -1449,7 +1449,7 @@ export class DeviceStore {
     const gone = members.filter(row => {
       const origin = row.origin;
       const local = origin?.from === "pc" || (pairedHere(row) && row.account_add === undefined &&
-        (origin?.from === "legacy" || (origin?.from === "remote" && (origin.how === "code" || (origin.how === "digits" && origin.by === null)))));
+        (origin?.from === "legacy" || (origin?.from === "remote" && (origin.how === "code" || origin.how === "digits") && origin.by === null)));
       // A removal that covered the member must not stop covering it just because its account field is gone.
       return !local || row.imported || row.invalid_origin || this.coveredByEvidence(row);
     });

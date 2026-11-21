@@ -848,8 +848,9 @@ digits as before, and its notice says what to do if nobody added it. A PC bound 
 account as soon as a snapshot read finds the account no longer lists it. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
-after an offline restart from either state folder. A pairing by digits counts as local only when
-this PC approved the current key; one approved by an account member device does not qualify.
+after an offline restart from either state folder. A pairing by code or digits counts as local
+only when this PC approved the current key; one an account member device started or approved
+does not qualify.
 The sibling's old membership or signed add does not restore the cleared binding. An imported or
 invalid origin does not qualify. Unlisting does not
 lift a lock, block, freeze, Revoke or tombstone.
