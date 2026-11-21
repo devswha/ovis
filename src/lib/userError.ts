@@ -100,6 +100,10 @@ export function machineErrorText(words: string, translateIn: Translate): string 
     ["Choose this PC's Ovis server or a running herdr session.", t("Choose this PC's Ovis server or a running herdr session.")],
     ["A herdr session is already running on this PC. Choose it, or start a new one.", t("A herdr session is already running on this PC. Choose it, or start a new one.")],
     ["The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", t("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.")],
+    ["That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.", t("That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.")],
+    ["Ovis is not running on that PC. Install it there, then add it to your account.", t("Ovis is not running on that PC. Install it there, then add it to your account.")],
+    ["Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.", t("Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.")],
+    ["That PC's Ovis is too old to be added over SSH. Update it there, then try again.", t("That PC's Ovis is too old to be added over SSH. Update it there, then try again.")],
   ];
   return known.reduce((text, [english, local]) => text.replaceAll(english, local), words);
 }

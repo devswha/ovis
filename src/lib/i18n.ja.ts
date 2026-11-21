@@ -256,6 +256,10 @@ const BASE: Record<string, string> = {
   "Sign in again to add it: your sign-in is more than ten minutes old.": "サインインから 10 分以上たっているため追加できません。もう一度サインインしてください。",
   "Sign in on this device to add it.": "追加するには、このデバイスで直接サインインしてください。",
   "This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.": "このアカウントには 2 段階認証の情報がないため、ここからは追加できません。PC の画面で番号を使って追加してください。",
+  "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.": "その PC ではこのアプリが起動したブリッジだけが動いていて、独自の Ovis はありません。Ovis をインストールしてからアカウントに追加してください。",
+  "Ovis is not running on that PC. Install it there, then add it to your account.": "その PC では Ovis が動いていません。インストールしてからアカウントに追加してください。",
+  "Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.": "Windows PC を SSH でアカウントに追加することはまだできません。その PC の Ovis ページに表示された番号で追加してください。",
+  "That PC's Ovis is too old to be added over SSH. Update it there, then try again.": "その PC の Ovis は古いため SSH で追加できません。その PC で更新してからもう一度お試しください。",
   "New PC": "新しいPC",
   "Rename failed: {reason}": "名前を変更できませんでした: {reason}",
 
