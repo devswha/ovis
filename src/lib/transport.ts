@@ -32,6 +32,10 @@ export interface Transport {
   openSocket(url: string): WebSocketLike;
   openEventSource(url: string): EventSourceLike;
   resourceUrl(path: string, signal?: AbortSignal): string | Promise<string>;
+  /** The carrier a relay transport has up now; undefined while it reconnects. */
+  readonly route?: "relay" | "direct" | undefined;
+  /** Calls `listener` each time the carrier goes up, down or changes. */
+  onRouteChange?(listener: () => void): () => void;
 }
 
 /**
