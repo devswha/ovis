@@ -10,6 +10,22 @@ import { handleRequest } from "../dispatch.ts";
 import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, SERVER_ID, setUpFor, signedInWith, vouchFor, type Link, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
+
+test("Linux relay phone pairing switches with this PC's binding, without restart", async () => {
+  const f = await pc({ server: { accountOpensAll: true, platform: "linux" } });
+  const phoneKey = await phone();
+  const code = f.devices.startPairing().code;
+  const first = await pair(f, code, phoneKey);
+  if ("error" in first) throw new Error(`Unbound phone pairing refused: ${first.error}`);
+  expect(f.app.context.services.localConfirms).toBeUndefined();
+  expect(f.devices.linkAccountKey(first.id, phoneKey.spki, phoneKey.spki, "acct_phone")).not.toBeNull();
+  expect(f.devices.account()).toBe("acct_phone");
+  expect(f.app.context.services.localConfirms).toBeDefined();
+  expect(await pair(f, f.devices.startPairing().code, await phone())).toEqual({ error: "unsupported_version" });
+  expect(f.devices.clearAccountBinding("left_on_pc", "pc")).toBe(true);
+  expect(f.app.context.services.localConfirms).toBeUndefined();
+  expect(await pair(f, f.devices.startPairing().code, await phone())).not.toHaveProperty("error");
+});
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
 
 async function pc(options: Parameters<typeof pairingPc>[0] = {}): Promise<Pc> {
@@ -44,7 +60,7 @@ for (const [where, account] of [["in an account", "acct_1"], ["in no account", u
     const code = await f.startedCode();
     const key = await phone();
     const made = await pair(f, code, key);
-    if (accountOpensAll) {
+    if (accountOpensAll && account !== undefined) {
       expect(made).toEqual({ error: "unsupported_version" });
       expect(f.stored().some(row => row.relay_public_key === key.spki)).toBe(false);
       return;
@@ -63,7 +79,7 @@ for (const [where, account] of [["in an account", "acct_1"], ["in no account", u
 }
 
 test("a signed-in app joins a PC set up for its account through the relay tab's code: it pairs with its account key, signs in, reads its status and links, and is then a member that drives", async () => {
-  const f = await pc();
+  const f = await pc({ server: { accountOpensAll: false } });
   await setUpFor(f, "acct_1");
   const reached: string[] = [];
   const dispatch: typeof handleRequest = (request, context) => {
@@ -92,7 +108,7 @@ test("a signed-in app joins a PC set up for its account through the relay tab's 
 });
 
 test("a paired device's first link gives a PC in no account its first member; a link that names another account afterwards is refused, and its device drives on", async () => {
-  const f = await pc();
+  const f = await pc({ server: { accountOpensAll: false } });
   const first = await signedInWith(f, await f.startedCode());
   expect((await sendLink(first.session, await linkRecord(first.id, "acct_7", first.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_7", members: 1 });

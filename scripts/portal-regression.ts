@@ -145,11 +145,13 @@ try {
   await ownerPage.getByLabel("Access token", { exact: true }).fill(token);
   await ownerPage.getByRole("button", { name: "Unlock", exact: true }).click();
   await ownerPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
-  const ownerAuth = await ownerPage.evaluate(async () => (await (await fetch("/api/health?scope=bridge")).json()).auth);
-  assert.deepEqual(ownerAuth, {
-    required: false, authenticated: true, via: "token", role: "drive",
-    own_window: true,
-  }, "Step 2 token login receives the owner role and the own-window hint");
+  const ownerAuth = () => ownerPage.evaluate(async () => (await (await fetch("/api/health?scope=bridge")).json()).auth);
+  const tokenOwner = { required: false, authenticated: true, via: "token", role: "drive" };
+  assert.deepEqual(await ownerAuth(), tokenOwner, "an unbound token owner drives without a Step 2 lock hint");
+  server.context.services.devices.bindByService("acct_portal_fixture");
+  assert.deepEqual(await ownerAuth(), { ...tokenOwner, own_window: true }, "binding the same PC enables its own-window hint");
+  assert.equal(server.context.services.devices.clearAccountBinding("left_on_pc", "pc"), true);
+  assert.deepEqual(await ownerAuth(), tokenOwner, "leaving the account restores the unbound portal fixture");
 
   await openPhoneSettings(ownerPage);
   const ownerSettings = settingsOf(ownerPage);

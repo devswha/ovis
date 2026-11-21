@@ -13,6 +13,7 @@ async function welcomeFeatures(flag: string | undefined, offered: readonly strin
   else process.env[OVIS_ACCOUNT_OPENS_ALL] = flag;
   try {
     const f = relayFixture(false, { accountOpensAll: undefined });
+  if (flag !== "0") f.app.context.services.devices.bindByService("acct_hello");
     fixtures.push(f);
     const link = await relayConnection(f);
     link.mux.sendSession({ type: FrameType.HELLO, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", versions: [1], features: [...offered], required_features: [] } });

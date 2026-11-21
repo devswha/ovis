@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountDeviceId, newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import { createServer } from "../index.ts";
-import { rotateRelayIdentity } from "../relay/identity.ts";
+import { relayIdentityPath, rotateRelayIdentity } from "../relay/identity.ts";
+import { readDeviceRegistry } from "../devices.ts";
 import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
 import { provingDevice } from "./key-proof.test-helpers.ts";
 import { askRecovery } from "./recovery.ts";
@@ -22,8 +23,9 @@ beforeAll(async () => { if (available) release = await v057Fixture(join(root, "r
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const day = 86_400_000;
 
-async function fixture(history: "original" | "rollback", signer: "legacy" | "listed" = "legacy") {
+async function fixture(history: "original" | "rollback", signer: "legacy" | "listed" = "legacy", siblingPhones: Awaited<ReturnType<typeof phone>>[] = []) {
   const stateDir = mkdtempSync(join(root, "pc-"));
+  const sibling = siblingPhones.length ? mkdtempSync(join(root, "sibling-")) : undefined;
   const service = new FakeAccountService();
   service.opensAll = true;
   const serverId = await registerSnapshotPc(service, { stateDir }, rotateRelayIdentity(stateDir));
@@ -35,11 +37,19 @@ async function fixture(history: "original" | "rollback", signer: "legacy" | "lis
   const now = Date.now();
   let online = false;
   let omitKey: string | undefined;
+  let mailboxCopy: typeof record | undefined;
+  let acknowledged = false;
   const start = (desktopOwner?: { input: ReadableStream<Uint8Array>; write(line: string): void }) => createServer({
-    stateDir, port: 0, hostname: "127.0.0.1", token: "matrix-owner", tailscaleOwner: null, sidecar: false,
+    stateDir, ...(sibling ? { siblingStateDir: sibling } : {}), port: 0, hostname: "127.0.0.1", token: "matrix-owner", tailscaleOwner: null, sidecar: false,
     accountOpensAll: true, ...(desktopOwner ? { platform: "linux", desktopOwner } : {}), accountService: { url: "https://account.test", fetch: async request => {
       if (!online) return Promise.reject(new TypeError("fixture offline"));
+      const pendingMail = mailboxCopy && new URL(request.url).pathname === "/v1/pc/mailbox" ? mailboxCopy : undefined;
+      const ack: unknown = pendingMail ? (await request.clone().json()).ack : null;
       const response = await service.fetch(request);
+      if (response.ok && pendingMail) {
+        if (ack === 1) { mailboxCopy = undefined; acknowledged = true; }
+        else return Response.json({ ...await response.json(), records: [{ seq: 1, record: pendingMail }], more: false });
+      }
       if (omitKey && new URL(request.url).pathname === "/v1/pc/snapshot" && response.ok) {
         const page = parseSnapshotPage(await response.json());
         return Response.json({ ...page, devices: page.devices.filter(row => row.key !== omitKey) });
@@ -76,9 +86,30 @@ async function fixture(history: "original" | "rollback", signer: "legacy" | "lis
     for (const close of closes) close();
     await old.stop();
   }
+  const importedIds: string[] = [];
+  if (sibling) {
+    mkdirSync(join(sibling, "relay"), { recursive: true });
+    copyFileSync(relayIdentityPath(stateDir), relayIdentityPath(sibling));
+    const other = release(sibling);
+    try {
+      for (const key of siblingPhones) {
+        const store = other.context.services.devices;
+        const row = store.pairRelay(store.startPairing().code, "Sibling phone", key.spki);
+        if (!row) throw new Error("Release sibling failed to pair");
+        importedIds.push(row.device.id);
+      }
+    } finally { await other.stop(); }
+    const merged = release(stateDir, { siblingStateDir: sibling });
+    try {
+      const registry = readDeviceRegistry(join(stateDir, "devices.json"));
+      if (registry.kind !== "ok") throw new Error("No release-merged registry");
+      expect(importedIds.map(id => registry.devices.find(row => row.id === id)?.imported)).toEqual(siblingPhones.map(() => true));
+    } finally { await merged.stop(); }
+  }
   const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, signer: owner.spki, signer_no: 1,
     target: victim.spki, target_no: 2, nonce: newRecordId(), signed_at: new Date(now).toISOString() }, owner.keys.privateKey);
-  return { stateDir, service, serverId, owner, victim, targetId, cookie, record, start,
+  return { stateDir, service, serverId, owner, victim, targetId, importedIds, cookie, record, start,
+    deliverDuplicate: () => { mailboxCopy = record; }, acknowledged: () => acknowledged,
     omit: (key: string) => { omitKey = key; },
     connect: () => { online = true; }, disconnect: () => { online = false; } };
 }
@@ -138,6 +169,36 @@ async function rebind(pc: Awaited<ReturnType<typeof fixture>>, app: ReturnType<t
   expect((await post("/api/account/one-press", { account: ACCOUNT })).status).toBe(200);
 }
 
+test.skipIf(!available).each([
+  ["session", "mailbox-copy"], ["session", "single"], ["handed", "single"], ["pc", "single"],
+] as const)("a reconciled denial takes its exact target regardless of first delivery: %s / %s", async (first, delivery) => {
+  const pc = await fixture("original");
+  pc.omit(pc.victim.spki);
+  const app = pc.start();
+  try {
+    pc.connect();
+    const { devices, accountMailbox, safetyLog } = app.context.services;
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(await devices.applyBlock(pc.record, first)).toMatchObject({ outcome: "refused", reason: "unknown_target" });
+    if (delivery === "mailbox-copy") {
+      pc.deliverDuplicate();
+      await accountMailbox.pull();
+      expect(pc.acknowledged()).toBe(true);
+    }
+    expect(safetyLog?.waitingBlocks().map(entry => entry.record.id)).toEqual([pc.record.id]);
+    pc.omit("");
+    expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const closes: (() => void)[] = [];
+    try {
+      const link = await relayConnection({ stateDir: pc.stateDir, app, closes, close() {} }, { serverId: pc.serverId });
+      const request = await bounded(link.auth({ id: pc.targetId, keys: pc.victim.keys, publicKey: pc.victim.spki })
+        .then(() => ask(link, "/api/devices").then(answer => answer.status), () => 401));
+      expect({ pending: safetyLog?.waitingBlocks().map(entry => entry.record.id), receipt: safetyLog?.receipt(pc.record.id)?.outcome,
+        target: request, unrelated: await credentialStatus(app.port, pc.cookie) }).toEqual({ pending: [], receipt: "applied", target: 401, unrelated: 200 });
+    } finally { for (const close of closes) close(); }
+  } finally { await app.stop(); }
+}, 15_000);
+
 test.skipIf(!available)("a companion freeze still covers a newer account row before and after clock correction", async () => {
   const pc = await fixture("original");
   const newer = await phone();
@@ -174,7 +235,10 @@ test.skipIf(!available)("a companion freeze still covers a newer account row bef
 }, 15_000);
 
 test.skipIf(!available || process.platform !== "linux")("a service companion freeze preserves the owner's exact key decisions", async () => {
-  const pc = await fixture("original");
+  const [approvedCopy, otherCopy] = await Promise.all([phone(), phone()]);
+  const pc = await fixture("original", "legacy", [approvedCopy, otherCopy]);
+  const [approvedId, otherId] = pc.importedIds;
+  if (!approvedId || !otherId) throw new Error("Missing release import");
   const stream = new TransformStream<Uint8Array, Uint8Array>();
   const writer = stream.writable.getWriter();
   const app = pc.start({ input: stream.readable, write() {} });
@@ -210,29 +274,45 @@ test.skipIf(!available || process.platform !== "linux")("a service companion fre
     if (!relayRow) throw new Error("Ordinary pairing failed");
     const screenId = await confirm(screen, "screen");
     const priorId = await confirm(priorRecovery, "recover");
-    for (const key of [relay, screen, newScreen, recovered, priorRecovery]) expect(pc.service.registerDevice(ACCOUNT, key.spki, "Numbered phone")).toBeGreaterThan(pc.record.target_no);
+    for (const key of [relay, screen, newScreen, recovered, priorRecovery, approvedCopy, otherCopy]) expect(pc.service.registerDevice(ACCOUNT, key.spki, "Numbered phone")).toBeGreaterThan(pc.record.target_no);
     pc.connect();
     expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(await signedStatus(relay, relayRow.device.id)).toBe(200);
     expect(await signedStatus(screen, screenId)).toBe(200);
     expect(await signedStatus(priorRecovery, priorId)).toBe(200);
+    expect(await signedStatus(approvedCopy, approvedId)).toBe(200);
+    expect(await signedStatus(otherCopy, otherId)).toBe(200);
     expect((await pc.service.fetch(new Request("https://account.test/v1/safety-records", {
       method: "POST", headers: { authorization: `Bearer ${pc.service.issueToken(ACCOUNT)}` }, body: JSON.stringify({ record: pc.record }),
     }))).status).toBe(200);
     expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(safetyLog?.inForce.freezes.find(entry => entry.record.id === `f:${pc.record.id}`)?.targetOnlyCompanion).toBe(true);
+    expect(await signedStatus(approvedCopy, approvedId)).toBe(401);
+    expect(await signedStatus(otherCopy, otherId)).toBe(401);
+    expect(await confirm(approvedCopy, "screen")).toBe(approvedId);
     const newId = await confirm(newScreen, "screen");
     const recoverId = await confirm(recovered, "recover");
     expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect({ existingScreen: await signedStatus(screen, screenId), newScreen: await signedStatus(newScreen, newId),
       recovered: await signedStatus(recovered, recoverId), relay: await signedStatus(relay, relayRow.device.id),
-      priorRecovery: await signedStatus(priorRecovery, priorId), cookie: await credentialStatus(app.port, pc.cookie) })
-      .toEqual({ existingScreen: 200, newScreen: 200, recovered: 200, relay: 401, priorRecovery: 401, cookie: 200 });
+      priorRecovery: await signedStatus(priorRecovery, priorId), cookie: await credentialStatus(app.port, pc.cookie),
+      approvedCopy: await signedStatus(approvedCopy, approvedId), otherCopy: await signedStatus(otherCopy, otherId) })
+      .toEqual({ existingScreen: 200, newScreen: 200, recovered: 200, relay: 401, priorRecovery: 401, cookie: 200, approvedCopy: 200, otherCopy: 401 });
   } finally {
     for (const close of closes) close();
     await app.stop();
     writer.releaseLock();
   }
+  pc.disconnect();
+  const restarted = pc.start();
+  const reopened: (() => void)[] = [];
+  try {
+    for (const [key, id, status] of [[approvedCopy, approvedId, 200], [otherCopy, otherId, 401]] as const) {
+      const link = await relayConnection({ stateDir: pc.stateDir, app: restarted, closes: reopened, close() {} }, { serverId: pc.serverId });
+      const signed = await bounded(link.auth({ id, keys: key.keys, publicKey: key.spki }).then(() => true, () => false));
+      expect(signed ? (await ask(link, "/api/devices")).status : 401).toBe(status);
+    }
+  } finally { for (const close of reopened) close(); await restarted.stop(); }
 }, 20_000);
 
 test.skipIf(!available).each(["signer", "target"] as const)(

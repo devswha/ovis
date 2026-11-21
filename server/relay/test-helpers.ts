@@ -121,8 +121,7 @@ class DuplexTransport implements Transport {
 
 export function relayFixture(serveOnly = false, options: NonNullable<Parameters<typeof createServer>[0]> = {}) {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "ovis-relay-session-"));
-  // Most callers exercise the legacy relay flow; pass undefined to test the server's environment default.
-  const app = createServer({ port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, sidecar: false, tailscaleServeOnly: serveOnly, accountOpensAll: false, ...options, stateDir });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, sidecar: false, tailscaleServeOnly: serveOnly, ...options, stateDir });
   const closes: (() => void)[] = [];
   return {
     stateDir, app, closes,

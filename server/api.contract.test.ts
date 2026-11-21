@@ -4375,7 +4375,6 @@ describe("pairing and identity", () => {
       // a token held in the sign-in cookie is one signing out can clear
       const ownerAuth: HealthAuth = {
         required: false, authenticated: true, via: "token", role: "drive",
-        ...(accountOpensAll ? { own_window: true } : {}),
       };
       expect(await at({ cookie: "ovis_token=t0k3n" })).toEqual(ownerAuth);
       expect(await at({ cookie: "ovis_token=t0k3n", authorization: "Bearer wrong" })).toEqual(ownerAuth);

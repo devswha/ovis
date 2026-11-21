@@ -6,6 +6,7 @@ import { startBunRelay } from "../relay/bun.ts";
 import type { HerdrIdentity, Machine, MachineEvent, PcUpdateAll } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { createServer } from "./index.ts";
+import { bindTestPc, expectPcAddRefused, pcAddCases, type PcAddMode } from "./pc-add-policy.test-helpers.ts";
 import { RelayService } from "./relay/service.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey } from "./relay-pc.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
@@ -32,8 +33,8 @@ const TAILNET = "100.64.0.7";
 const listener = { port: 0 };
 
 // The shared transport fixture uses legacy offers; exercise the Step 2 refusal explicitly.
-async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] }; updates?: UpdateService; accountOpensAll?: boolean; platform?: NodeJS.Platform } = {}) {
-  const opensAll = options.accountOpensAll ?? false;
+async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] }; updates?: UpdateService; accountOpensAll?: boolean; mode?: PcAddMode; platform?: NodeJS.Platform } = {}) {
+  const opensAll = options.mode ? options.mode !== "off" : options.accountOpensAll ?? false;
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -56,6 +57,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number, host: stri
     return socket;
   };
   const bState = stateDir();
+  if (options.mode === "target-bound") bindTestPc(bState);
   const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}`,
     ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: (port: number) => { listener.port = port; return options.direct!.named?.(port) ?? [`ws://${LAN}:7319`]; }, peerAllowed: () => true, preferredPort: 0 } } : {}) });
   const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service, accountOpensAll: opensAll, ...(options.platform ? { platform: options.platform } : {}), ...(options.updates ? { updates: options.updates } : {}) });
@@ -73,6 +75,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number, host: stri
   expect(approvals.localOnlyOpen()).toBe(true);
   const { url: link } = await offered.json() as { url: string };
   const aState = stateDir();
+  if (options.mode === "source-bound") bindTestPc(aState);
   const lan = { dials: 0, dialed: [] as string[], ended: [] as string[] };
   const onLan = (url: string): WebSocket => {
     const target = new URL(url);
@@ -142,16 +145,12 @@ async function machineWhen(base: string, wanted: (machine: Machine) => boolean, 
   } finally { abort.abort(); }
 }
 
-it.each([false, true])("adds a PC through a legacy relay offer only with Step 2 opted out (%s)", async accountOpensAll => {
-  const { b, link, aState, startA } = await twoPcs({ accountOpensAll, platform: "linux" });
+it.each(pcAddCases)("relay-link PC add follows the live account binding: %s", async mode => {
+  const { b, link, aState, startA } = await twoPcs({ mode, platform: "linux" });
   let a = startA();
 
   const added = await addRelayPc(a.base, link, "Lab");
-  if (accountOpensAll) {
-    expect(added.status, await added.clone().text()).toBe(400);
-    expect(await errorCode(added)).toBe("machine_request_failed");
-    return;
-  }
+  if (mode === "source-bound" || mode === "target-bound") return expectPcAddRefused(added, mode, b);
   expect(added.status).toBe(201);
   const { machine } = await added.json() as { machine: Machine };
   expect(machine).toMatchObject({ kind: "relay", name: "Lab", relay: { server_id: new URL(link).pathname.split("/")[2] } });
@@ -203,9 +202,10 @@ it.each([false, true])("adds a PC through a legacy relay offer only with Step 2 
   expect(existsSync(keys) ? readdirSync(keys) : []).toEqual([]);
 }, 60_000);
 
-it("with Step 2 opted out, finds a PC by its typed code and adds it after ID confirmation", async () => {
-  const { bBase, startA } = await twoPcs({ accountOpensAll: false });
+it.each(pcAddCases)("typed-code PC add follows the live account binding: %s", async mode => {
+  const { b, bBase, startA } = await twoPcs({ mode, platform: "linux" });
   const a = startA();
+  if (mode === "source-bound") return expectPcAddRefused(await findRelayPc(a.base, "ZZZZZ-ZZZZZ"), mode, b);
   const notACode = await findRelayPc(a.base, "hello");
   expect(notACode.status).toBe(400);
   expect(await errorCode(notACode)).toBe("typed_code_not-a-code");
@@ -229,6 +229,7 @@ it("with Step 2 opted out, finds a PC by its typed code and adds it after ID con
   expect(other.status).toBe(400);
   expect((await other.json() as { error: { message: string } }).error.message).toContain("no longer waiting");
   const added = await postRelay(a.base, { found: answer.ticket });
+  if (mode === "target-bound") return expectPcAddRefused(added, mode, b);
   expect(added.status).toBe(201);
   const { machine } = await added.json() as { machine: Machine };
   expect(machine.relay?.server_id).toBe(server_id);

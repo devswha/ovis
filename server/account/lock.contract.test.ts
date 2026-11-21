@@ -60,7 +60,7 @@ test("N6: this PC's own programs keep working while it is locked", async () => {
 });
 
 test("T46: an unlocked PC is as before", async () => {
-  const made = await pairingPc({ server: { accountOpensAll: true } });
+  const made = await pairingPc({ prepare: bindTestPc, server: { accountOpensAll: true } });
   pcs.push(made);
   expect((await made.local("/api/devices")).status).toBe(200);
 });
@@ -69,8 +69,8 @@ test("T46: a PC in no account offers no lock", async () => {
   const made = await pairingPc({ server: { accountOpensAll: true } });
   pcs.push(made);
   const tried = await made.local("/api/account/lock", { method: "POST", headers: { "x-herdr-machine": "1" }, body: {} });
-  expect([tried.status, tried.body.error?.code]).toEqual([409, "not_bound"]);
-  expect((await made.local("/api/account/lock")).body.bound).toBe(false);
+  expect([tried.status, tried.body.error?.code]).toEqual([404, "not_found"]);
+  expect(made.app.context.services.localConfirms).toBeUndefined();
 });
 
 test("T47: on a locked PC, this PC's own window may read the lock and ask for an unlock, which only the screen grants", async () => {
@@ -268,6 +268,7 @@ test("T46, t13r: a code a member started from afar ends with the screen-approved
 test("S36-1: through dispatch, a Tailscale login, a token from another address, the open LAN and a gated LAN all get local_required for both requests, locked or not, and nothing reaches the screen", async () => {
   for (const [via, token, gated] of [["tailscale", "", true], ["remote token", "owner-token", true], ["open LAN", "", false], ["gated LAN", "", true]] as const) {
     const f = relayFixture(false, { accountOpensAll: true, token });
+    f.app.context.services.devices.bindByService("acct_lock");
     try {
       const { devices, safetyLog, localConfirms } = f.app.context.services;
       if (gated) devices.pairRelay(devices.startPairing().code, "Phone", "k".repeat(43));
@@ -302,3 +303,4 @@ test("T47, N4: a window that is not this PC's own gets health 'locked' on a lock
   const forwarded = await made.local("/api/health", { headers: { "x-forwarded-for": "100.64.0.9" } });
   expect((forwarded.body.auth as { reason?: string } | undefined)?.reason).toBe("locked");
 });
+import { bindTestPc } from "../pc-add-policy.test-helpers.ts";

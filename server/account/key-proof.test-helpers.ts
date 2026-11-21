@@ -2,13 +2,15 @@ import { pairFingerprint, signPairProof } from "../../shared/pair-fingerprint.ts
 import { FrameType, KEY_PROOF_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
 import { pairingPc, phone, SERVER_ID, type Phone } from "./pairing.test-helpers.ts";
+import { PcAccountState } from "./pc-binding.ts";
 
 export async function keyProofPc(accountOpensAll: boolean, platform: NodeJS.Platform = "linux") {
   const told: { pending: { id: string; action: { kind: string; pending?: string; fingerprint?: string } }[] }[] = [];
   const sender = Promise.withResolvers<(line: string) => void>();
   const input = new ReadableStream<Uint8Array>({ start(controller) { sender.resolve((line) => controller.enqueue(new TextEncoder().encode(line))); } });
   const push = await sender.promise;
-  const made = await pairingPc({ server: { accountOpensAll, platform, desktopOwner: { input, write: (line) => { told.push(JSON.parse(line)); } } } });
+  const made = await pairingPc({ prepare: dir => { PcAccountState.open(dir).migrate("acct_proof", true); },
+    server: { accountOpensAll, platform, desktopOwner: { input, write: (line) => { told.push(JSON.parse(line)); } } } });
   const screen = {
     told,
     approve: (id: string) => push(`${JSON.stringify({ approve: id })}\n`),

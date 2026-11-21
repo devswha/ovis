@@ -31,7 +31,8 @@ const fixtures: Fixture[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
 
 function fixture(options: Parameters<typeof relayFixture>[1] = {}): Fixture {
-  const made = relayFixture(false, options);
+  // This suite covers the released signed-add/enrollment protocol, not whole-list Step 2.
+  const made = relayFixture(false, { accountOpensAll: false, ...options });
   fixtures.push(made);
   return made;
 }
@@ -939,7 +940,7 @@ async function mailboxService(f: Fixture) {
 
 async function accountPc() {
   let fetch = (_request: Request): Promise<Response> => Promise.reject(new Error("no account service yet"));
-  const made = await relayAccountFixture("drive", ACCOUNT, { accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
+  const made = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: false, accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
   fixtures.push(made.fixture);
   const { service, identity, leave } = await mailboxService(made.fixture);
   await made.fixture.app.context.services.accountMailbox.pull();
