@@ -118,6 +118,9 @@ function PairingGate({ reason, initialCode, consumePairCode, pairingUnconfirmed,
         <h1 id="access-gate-title" className="access-gate-title">
           {t(reason === "token_required" ? "Unlock" : "Pair this device")}
         </h1>
+        {reason === "tailnet_blocked" && (
+          <p className="access-gate-refused" role="status">{t("This device was removed on the PC, so your Tailscale login no longer lets it in. Allow it on the PC's own screen, or pair it with a code.")}</p>
+        )}
         {reason === "other_user" && (
           <p className="access-gate-refused" role="status">{t("Tailscale says this device belongs to someone other than this PC's owner. The owner can still let it in with a pairing code.")}</p>
         )}

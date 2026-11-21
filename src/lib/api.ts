@@ -11,6 +11,7 @@ import type { SystemReport } from "../../shared/system.ts";
 import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllRequest, MoveStopRequest } from "../../shared/runtime-move.ts";
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
+import { TAILNET_NODE_ROUTES, type TailnetNodesAnswer } from "../../shared/tailnet-nodes.ts";
 import { machinePath, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
@@ -913,6 +914,21 @@ export async function renameDevice(id: string, label: string): Promise<PairedDev
 /** POST /api/devices/joins/seen: a join this window showed is seen, for every window of the PC (`device-paired-seen`). */
 export async function markJoinSeen(eventId: string): Promise<void> {
   await sendJson("/api/devices/joins/seen", "POST", { event_id: eventId });
+}
+
+/** GET /api/devices/tailnet-nodes: the tailnet nodes of the owner's login this PC has seen, and the one waiting on the card (this PC's own window only). */
+export function fetchTailnetNodes(): Promise<TailnetNodesAnswer> {
+  return getJson<TailnetNodesAnswer>(TAILNET_NODE_ROUTES.list);
+}
+
+/** POST /api/devices/tailnet-nodes/block: these nodes get nothing by the owner's Tailscale login until Allow. */
+export async function blockTailnetNodes(ids: readonly string[]): Promise<TailnetNodesAnswer> {
+  return (await sendJson(TAILNET_NODE_ROUTES.block, "POST", { ids })).json();
+}
+
+/** POST /api/devices/tailnet-nodes/answer: Allow or Decline of the blocked node on the card; refused while the PC is locked. */
+export async function answerTailnetNode(id: string, decision: "allow" | "decline"): Promise<void> {
+  await sendJson(TAILNET_NODE_ROUTES.answer, "POST", { id, decision });
 }
 
 export async function revokeDevice(id: string): Promise<void> {

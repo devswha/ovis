@@ -2063,7 +2063,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(count("/api/devices/revoke-all")).toBe(1);
     expect(revokedAll).toBe(1);
     expect(renderer!.root.findAllByType(ConfirmDialog)).toHaveLength(0);
-    expect(text(section())).toContain("Every paired device was revoked.");
+    expect(text(section())).toContain("Every paired device was revoked");
     expect(buttons()).toEqual(["Show a new code"]);
     expect(buttons()).toEqual(["Show a new code"]);
   });

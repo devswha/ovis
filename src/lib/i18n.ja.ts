@@ -503,6 +503,7 @@ const BASE: Record<string, string> = {
   "Confirm on this PC": "この PC で確認",
   "Run ovis confirm on this PC to open it.": "この PC のターミナルで ovis confirm を実行して開いてください。",
   "{name} wants to connect {digits}": "{name} が接続しようとしています {digits}",
+  "{name} was removed on this PC and asks to get back in over Tailscale. Node {digits}": "{name} はこの PC で削除されましたが、Tailscale で再び入ろうとしています。ノード {digits}",
   "Press [Allow] on your Mac": "Mac で [許可] を押してください",
   "Press [Allow] on your PC": "PC で [許可] を押してください",
   "Press [Allow] on your Linux PC": "Linux で [許可] を押してください",

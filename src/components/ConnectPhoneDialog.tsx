@@ -1176,7 +1176,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
     resetAccountQrWatch();
     setConfirming(false);
     onPcAccount(null);
-    setNote(t("Every paired device was revoked. The access token, this PC and its Tailscale login get in as before."));
+    setNote(t("Every paired device was revoked, and the Tailscale devices this PC has seen are kept out. The access token and this PC get in as before."));
     dismiss();
     onRevokedAll?.();
   };
@@ -1262,7 +1262,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
       {error !== null && <p className="settings-hint relay-error" role="alert">{error}</p>}
       {confirming && (
         <ConfirmDialog title={t("Revoke every paired device?")}
-          body={t("Every paired device loses its access to this PC, and this PC leaves that account. The access token, this PC and its Tailscale login still get in.")}
+          body={t("Every paired device loses its access to this PC, and this PC leaves that account. The Tailscale devices this PC has seen are kept out too. The access token and this PC still get in.")}
           confirmLabel={t("Revoke all")} onClose={() => setConfirming(false)} onConfirm={revokeAll} />
       )}
     </section>

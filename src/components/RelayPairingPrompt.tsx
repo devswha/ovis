@@ -5,8 +5,9 @@ import "./DevicePairedNotice.css";
 import "./RelayPairingPrompt.css";
 
 import type { OwnJoinRequest, PendingKey } from "../../shared/machines.ts";
+import type { TailnetNodePrompt } from "../../shared/tailnet-nodes.ts";
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
-import { declinePendingKey, decideOwnJoin, decideRelayPairing, openConfirmPage } from "../lib/api.ts";
+import { answerTailnetNode, declinePendingKey, decideOwnJoin, decideRelayPairing, openConfirmPage } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { inFocusTrap } from "../lib/useFocusTrap.ts";
 import { failureText } from "./RelayPanel.tsx";
@@ -15,7 +16,13 @@ import { failureText } from "./RelayPanel.tsx";
  * A prompt this layer decides: a device waiting with the same digits (`relay-pairings`), or, with `own_window: "join"`, a
  * first join (an account join on a PC with no member) that this PC's own window alone decides beside its digits.
  */
-export type DecidedPrompt = RelayPairingRequest & { readonly own_window?: "join" };
+export type DecidedPrompt = (RelayPairingRequest & { readonly own_window?: "join" }) | TailnetPrompt;
+/**
+ * A Tailscale device removed on this PC that asks to get back in by the owner's login (server/tailnet-nodes.ts): its node
+ * id in `digits`, shown as it is. Plain Allow or Decline, on this PC's own window: the tailnet authenticated the node and
+ * its login, so nothing is compared.
+ */
+export type TailnetPrompt = RelayPairingRequest & { readonly own_window: "tailnet"; readonly login: string | null };
 /**
  * A key a QR or code pairing waits with on this PC's screen (its fingerprint in `digits`): never approved here. Its
  * button has this PC open its confirm page on its desktop, which approves it with its own same-user check; Decline only
@@ -36,12 +43,18 @@ export function pendingKeyPrompts(pending: readonly PendingKey[]): KeyPrompt[] {
   return pending.map((key) => ({ id: key.id, label: key.label, digits: key.fingerprint, expires_at: "", own_window: "key" as const }));
 }
 
+/** The removed Tailscale device waiting on this PC's own window, as a prompt of this layer. */
+export function tailnetPrompts(prompt: TailnetNodePrompt | null): TailnetPrompt[] {
+  return prompt === null ? [] : [{ id: prompt.id, label: prompt.hostname, digits: prompt.id, expires_at: "", own_window: "tailnet", login: prompt.login }];
+}
+
 /** Where a decision on `pairing` goes. */
 function answer(pairing: DecidedPrompt, decision: "approve" | "decline"): Promise<unknown> {
   const own = pairing.own_window;
   switch (own) {
     case undefined: return decideRelayPairing(pairing.id, decision);
     case "join": return decideOwnJoin(pairing.id, decision);
+    case "tailnet": return answerTailnetNode(pairing.id, decision === "approve" ? "allow" : "decline");
     default: {
       const exhaustive: never = own;
       return exhaustive;
@@ -253,9 +266,11 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
       {pairings.map((pairing, index) => {
         const deciding = busy?.id === pairing.id ? busy.decision : null;
         // a key's fingerprint is shown as the device shows it; digits in two halves
-        const digits = <strong className="relay-pairing-digits">{pairing.own_window === "key" ? pairing.digits : `${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}`}</strong>;
+        const digits = <strong className="relay-pairing-digits">{pairing.own_window === "key" || pairing.own_window === "tailnet" ? pairing.digits : `${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}`}</strong>;
         // the device this PC is added from shows an input, not digits (AddPcSheet): its person types this PC's there
-        const [before, after] = pairing.own_window !== undefined
+        const [before, after] = pairing.own_window === "tailnet"
+          ? aroundDigits(t("{name} was removed on this PC and asks to get back in over Tailscale. Node {digits}"), pairing.label)
+          : pairing.own_window !== undefined
           ? aroundDigits(t("{name} wants to connect {digits}"), pairing.label)
           : pairing.local_only
           ? aroundDigits(t("{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here."), pairing.label)
@@ -271,6 +286,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
               <span id={`${id}-${pairing.id}`}>{before}{digits}{after}</span>
               {left !== null && <span className="relay-pairing-left" aria-live="off" data-testid="relay-pairing-left"> {t("{n} s left", { n: left })}</span>}
               {/* nobody else checks a first join's digits: the owner compares them with the phone here */}
+              {pairing.own_window === "tailnet" && pairing.login !== null && <span className="relay-pairing-left" data-testid="relay-pairing-login"> · {pairing.login}</span>}
               {pairing.own_window === "join" && <span className="relay-pairing-left" data-testid="relay-pairing-check"> · {t("Allow only if your phone shows this number")}</span>}
               {failure?.id === pairing.id && <span className="relay-error" role="alert"> {failure.text}</span>}
             </span>

@@ -501,6 +501,7 @@ const BASE: Record<string, string> = {
   "Confirm on this PC": "이 PC에서 확인",
   "Run ovis confirm on this PC to open it.": "이 PC 터미널에서 ovis confirm을 실행해 여세요.",
   "{name} wants to connect {digits}": "{name}에서 연결하려고 해요 {digits}",
+  "{name} was removed on this PC and asks to get back in over Tailscale. Node {digits}": "{name} 기기는 이 PC에서 제거됐는데, Tailscale로 다시 들어오려고 해요. 노드 {digits}",
   "Press [Allow] on your Mac": "맥에서 [허용]을 눌러 주세요",
   "Press [Allow] on your PC": "PC에서 [허용]을 눌러 주세요",
   "Press [Allow] on your Linux PC": "리눅스에서 [허용]을 눌러 주세요",

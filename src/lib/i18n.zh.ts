@@ -508,6 +508,7 @@ const BASE: Record<string, string> = {
   "Confirm on this PC": "在此 PC 上确认",
   "Run ovis confirm on this PC to open it.": "在此 PC 的终端运行 ovis confirm 打开它。",
   "{name} wants to connect {digits}": "{name} 想要连接 {digits}",
+  "{name} was removed on this PC and asks to get back in over Tailscale. Node {digits}": "{name} 已从这台 PC 移除，正尝试通过 Tailscale 重新进入。节点 {digits}",
   "Press [Allow] on your Mac": "在 Mac 上点按 [允许]",
   "Press [Allow] on your PC": "在 PC 上点按 [允许]",
   "Press [Allow] on your Linux PC": "在 Linux 上点按 [允许]",
