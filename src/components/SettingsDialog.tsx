@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeftRight, ArrowLeft, AudioLines, Ban, Bell, Bot, Box, Brain, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink as ExternalLinkIcon, FileClock, FilePen, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListCollapse, ListTree, Lock, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
+import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeft, AudioLines, Ban, Bell, Bot, Box, Brain, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink as ExternalLinkIcon, FileClock, FilePen, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListCollapse, ListTree, Lock, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -64,7 +64,7 @@ import { HostedAccountGroup } from "./AccountHead.tsx";
 import { useHostedSignIn } from "../lib/account/hostedSignIn.ts";
 import { shellAccountServiceOf } from "../lib/account/service.ts";
 import { AccountPcRows, NoAccountPcHint, removePcFromAccount } from "./AccountPcs.tsx";
-import { DRAWER_QUERY, leavePcList, pcListExit, removablePc, STATE_WORD } from "./MachineSidebar.tsx";
+import { removablePc, STATE_WORD } from "./MachineSidebar.tsx";
 import { AccountPcError, pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -1314,9 +1314,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
             )}
             {relayPc !== null && (
               <>
-                <SettingsRow label={t("Change PC")} description={t("This page shows one PC. The front page lists every PC this phone is paired with.")}>
-                  <button type="button" className="btn" onClick={() => window.location.assign("/")}>{t("Change PC")}</button>
-                </SettingsRow>
                 {/* the dashboard of the account's PCs, opened only on purpose: no launch or sign-in lands on it */}
                 {shellAccountServiceOf(document, window.location.origin, nativeApp) !== null && <SettingsRow label={t("Relayed connections")} description={t("Opens the page of every PC this device reaches through the relay, to check, join or forget them.")}>
                   <button type="button" className="btn" data-action="manage-relayed" onClick={() => window.location.assign("/#overview")}>{t("Manage|relayed connections")}</button>
@@ -1734,8 +1731,6 @@ function matchedGroups(result: Element | null, words: readonly string[]): string
 function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [], opensAll, withdrawn }: SettingsDialogProps) {
   const t = useT();
   const narrow = useNarrow();
-  const pcExit = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
-  const drawerWidth = useMediaQuery(DRAWER_QUERY);
   const [restored] = useState(() => shownBy(settingsEntry(window.history.state)));
   const linked = PAGES.find((candidate) => candidate.id === currentSettingsPage(linkPage))?.id ?? null;
   // the request is read, not taken, so a remount in development finds it again
@@ -1958,12 +1953,6 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
                 </button>
               ))}
             </div>
-            {drawerWidth && pcExit !== null && !searching && (
-              <button type="button" className="settings-tab settings-change-pc" onClick={() => leavePcList(pcExit)}>
-                <ArrowLeftRight aria-hidden="true" />
-                <span>{t("Change PC")}</span>
-              </button>
-            )}
           </nav>
         )}
         {searching ? (

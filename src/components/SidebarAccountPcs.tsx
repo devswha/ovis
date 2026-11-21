@@ -11,17 +11,17 @@ import { apiFetch } from "../lib/api-request-id.ts";
 import { fetchRelay } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
-import { MachineOffLine, useRecheck } from "./MachineOffLine.tsx";
-import { signedInAccount, spaced, useAccountPcs, type AccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
+import { MachineOffLine } from "./MachineOffLine.tsx";
+import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
 
 /**
  * Signed in to the Ovis account on a PC that is in that account with its relay online: the account's other PCs that
  * are not in this app yet, under the PCs the sidebar lists, each added to this PC on its own as soon as it answers, one
  * at a time (the relay tab's Add, and the same approval on another device), so every PC of the account lists every
- * other whichever one a device opens. Each row says where it is: Connecting… until its turn, the digits to approve
- * while it pairs, Retry once a pairing failed or was cancelled (never retried on its own, so a declined PC is not asked
- * again), Switched off with Check again where it did not answer, or that its Ovis needs an update. A PC once added is
- * the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
+ * other whichever one a device opens. Each row only says where it is, with nothing to press: Connecting… while it is
+ * added, why it was not once a pairing failed (asked again when the window comes back), Switched off where it did not
+ * answer, or that its Ovis needs an update. The approval itself is asked on the account's devices, never here. A PC once
+ * added is the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
  */
 export function SidebarAccountPcs({ machines, onAdded, onListed, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; /** the relay IDs of the rows shown, empty when none are (the hosted app's own list leaves them out) */ onListed?: (serverIds: readonly string[]) => void; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
   const account = useRef<AccountPcsSource | null>(null);
@@ -84,8 +84,9 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
     onListed?.(listed === "" ? [] : listed.split("\n"));
     return () => onListed?.([]);
   }, [listed, onListed]);
-  // each PC is added on its own once, for this sign-in on this page: a failed, declined or cancelled one waits for Retry
+  // each PC is added on its own once per look: a failed or declined one is asked again only when the window comes back
   const [tried, setTried] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => { setTried(new Set()); }, [reads]);
   const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id)) : undefined;
   useEffect(() => {
     if (next === undefined) return;
@@ -93,13 +94,12 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
     void accountPcs.add(next);
   }, [next?.server_id]);
   if (waiting.length === 0) return null;
-  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} queued={!tried.has(pc.server_id)} hidden={hidden} />)}</>;
+  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} hidden={hidden} />)}</>;
 }
 
-/** One PC of the account not in this app yet, as a PC group's header with its state under it. */
-function AccountPcRow({ pc, hidden, queued, pcs: { stateOf, pairing, failure, add, cancel, recheck } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; /** not added on its own yet: its turn comes */ queued: boolean; pcs: AccountPcs }) {
+/** One PC of the account not in this app yet, as a PC group's header with where it is under it, and nothing to press. */
+function AccountPcRow({ pc, hidden, pcs: { stateOf, pairing, failure } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; pcs: AccountPcs }) {
   const t = useT();
-  const row = useRef<HTMLElement>(null);
   const [expiredAt, setExpiredAt] = useState<string>();
   const newUntil = pc.new_until;
   useEffect(() => {
@@ -110,42 +110,28 @@ function AccountPcRow({ pc, hidden, queued, pcs: { stateOf, pairing, failure, ad
     return () => clearTimeout(timer);
   }, [newUntil]);
   const state = stateOf(pc.server_id);
-  // the same hold as a PC of the roster: one check per PC however often it is pressed (MachineOffLine.tsx)
-  const again = useRecheck(pc.server_id, () => recheck(pc), state === "offline");
   const adding = pairing?.server_id === pc.server_id;
+  const failed = !adding && failure?.server_id === pc.server_id;
   return (
-    <section ref={row} tabIndex={-1} hidden={hidden && !adding} className="machine-group is-offline account-pc-group" aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
+    <section hidden={hidden && !adding} className="machine-group is-offline account-pc-group" aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>
       <header className="machine-header">
         <div className="machine-title">
           <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
           <span className="machine-name" title={pc.name}>{pc.name}</span>
           {newUntil !== expiredAt && isNewAccountPc(pc, Date.now()) && <span className="machine-state-word">{t("New PC")}</span>}
-          <span className={`machine-dot is-${state === undefined ? "connecting" : state === "ready" ? "connected" : "disconnected"}`} aria-hidden="true" />
+          <span className={`machine-dot is-${state === undefined || (state === "ready" && !failed) ? "connecting" : "disconnected"}`} aria-hidden="true" />
         </div>
       </header>
       {state === "offline"
-        ? <MachineOffLine state="off" reason={null} checking={again.checking} failure={again.failure} onCheck={again.check} returnFocus={() => row.current} />
+        ? <MachineOffLine state="off" reason={null} checking={false} />
         : (
           <div className="account-pc-line">
             {state === undefined && <span className="machine-state-word" role="status">{t("Checking…")}</span>}
             {state === "outdated" && <span className="machine-state-word" role="status">{t("Update Ovis on that PC")}</span>}
-            {state === "ready" && (adding
-              ? <button type="button" className="btn account-pc-action" onClick={cancel}>{t("Cancel")}</button>
-              : queued ? <span className="machine-state-word" role="status">{t("Connecting…")}</span>
-              : <button type="button" className="btn account-pc-action" disabled={pairing !== null} aria-label={t("Add {name}", { name: pc.name })} onClick={() => void add(pc)}>{t("Retry")}</button>)}
+            {state === "ready" && !failed && <span className="machine-state-word" role="status">{t("Connecting…")}</span>}
           </div>
         )}
-      {adding && (
-        <div className="account-pc-wait" role="status">
-          {pairing.digits === null ? t("Asking {name}…", { name: pc.name }) : (
-            <>
-              <span>{t("Approve on another device of your account")}</span>
-              <span className="relay-account-digits">{spaced(pairing.digits)}</span>
-            </>
-          )}
-        </div>
-      )}
-      {failure?.server_id === pc.server_id && <p className="machine-error" role="alert">{failure.message}</p>}
+      {failed && <p className="machine-error" role="alert">{failure.message}</p>}
     </section>
   );
 }

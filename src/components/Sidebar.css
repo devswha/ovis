@@ -925,13 +925,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
-.sidebar-footer-pc-action {
-  flex: 0 0 auto;
-  margin-inline-start: var(--space-2);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
 .sidebar-footer-row {
   display: flex;
   align-items: center;

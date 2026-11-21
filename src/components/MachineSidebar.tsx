@@ -9,7 +9,7 @@ export function collapsedKey(machineId: string, page: { relayShell: boolean; pat
 
 import { tally } from "../lib/usageCounters.ts";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeftRight, ChevronDown, ChevronRight, Download, EyeOff, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, EyeOff, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
 import { OWN_UPDATE_OFFER, pairedPc, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, FULL_LAYOUT, MachineContext, type LayoutOffer } from "../lib/machineContext.tsx";
@@ -55,10 +55,6 @@ export function pcListExit(page: { nativeApp: boolean; relayShell: boolean; path
   if (page.nativeApp) return "app";
   if (page.relayShell && serverIdOfPath(page.pathname) !== null) return "shell";
   return null;
-}
-
-export function leavePcList(exit: "app" | "shell"): void {
-  if (exit === "app") void changePc(); else window.location.assign("/");
 }
 
 /**
@@ -123,7 +119,6 @@ export function MachineSidebar(props: Props) {
   // the lone host goes unnamed only while it is drawn without its header: beside other PCs its name is shown, and found
   const headerless = loneHost !== null && shellPcs.pcs.length === 0;
   const unnamed = useMemo(() => new Set(headerless ? [loneHost] : []), [headerless, loneHost]);
-  const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
   // the field offers the labels the rows show, as the browser's own suggestions: nothing typed is kept
@@ -281,14 +276,6 @@ export function MachineSidebar(props: Props) {
     {!settings.agentGroups && agentList}
     <footer className="sidebar-footer">
       {props.footerStart}
-      {exitToPcs !== null && !drawerWidth && (
-        <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc" onClick={() => leavePcList(exitToPcs)}>
-          <Monitor aria-hidden="true" />
-          <span className="sidebar-footer-pc-name">{loneHostName ?? t("Change PC")}</span>
-          {loneHostName !== null && <span className="sidebar-footer-pc-action">{t("Change PC")}</span>}
-          <ArrowLeftRight aria-hidden="true" />
-        </button>
-      )}
       {/* no Install app here: a page knows it is installed only in the app's own window, so a row kept
           showing in every tab. */}
       <div className="sidebar-footer-row">
@@ -485,7 +472,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       <button className="sidebar-row-action machine-new" disabled={!canCreate} aria-label={t("New workspace on {name}", { name: machine.name })} title={createTitle} onClick={() => props.onNew(machine.id)}><Plus aria-hidden="true" /></button>
     </header>}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
-    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching ? undefined : recheck.check} returnFocus={() => titleButton.current} />
+    {away !== null ? <MachineOffLine state={away === "off" ? "off" : "unreachable"} reason={awayReason} title={awayReason ?? machineErrorText(machine.error!, t)} checking={recheck.checking} failure={recheck.failure} onCheck={props.watching || machine.kind === "relay" ? undefined : recheck.check} returnFocus={() => titleButton.current} />
     : <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
       <span className="machine-state-word">{stateWord}</span>
       {!noticed && machine.error && <span className="machine-state-detail">{sshWords ?? machineErrorText(machine.error, t)}</span>}
