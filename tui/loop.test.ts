@@ -324,6 +324,34 @@ describe("the loop", () => {
     expect(await run.loop.done).toEqual({ kind: "quit" });
   }, TEST_MS);
 
+  it("a menu choice passes the rest of its read on: a place chosen by digit, then text and Enter, alike read whole, split and a byte at a time", async () => {
+    const outcome = async (reads: string[]) => {
+      const run = await Run.start({ fixture: demo });
+      try {
+        await run.live();
+        await run.advance(1);
+        for (const read of reads) {
+          run.type(read);
+          await run.advance(200);
+          await run.settle();
+          await run.advance(FRAME_PASS_MS);
+          await run.settle();
+          await run.advance(1);
+        }
+        const model = run.loop.model();
+        return { focus: model.focus, overlays: model.overlays.map((overlay) => overlay.kind), received: ["t1", "t2", "t3", "t4"].map((terminal) => run.core.program(terminal).receivedHex()) };
+      } finally {
+        await run.close();
+      }
+    };
+    // the prefix and Enter open the menu; 5 is a place in the shown tab; z and Enter go to the focused pane after it
+    const bytes = "\x02\r5z\r";
+    const joined = await outcome([bytes]);
+    expect(joined.received[0]).toBe(Buffer.from("z\r").toString("hex"));
+    expect({ outcome: await outcome([...bytes]) }).toEqual({ outcome: joined });
+    for (let cut = 1; cut < bytes.length; cut++) expect({ cut, outcome: await outcome([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ cut, outcome: joined });
+  }, TEST_MS);
+
   it("random key sequences route alike read whole, split at every byte, and a byte at a time", async () => {
     // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, rename, a new tab's name, detach), text
     // with combining marks, a ZWJ emoji, CJK and wide characters, and Enter; with the default prefix (a key of its own)
