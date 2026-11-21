@@ -152,7 +152,9 @@ interface Pending { rows: number[] | "all"; cursor: HostCursor }
  * and reports through `taken` whether the host took the write whole.
  */
 export class Painter {
-  /** the composed screen: what the host shows once the last frame's write is taken */
+  /** the screen as the chrome, the panes and the overlays draw it, before any cell the host cannot draw is blanked */
+  private composed = new Grid(0, 0);
+  /** what the host shows once the last frame's write is taken: the composed screen as the host can draw it (fitHost) */
   private next = new Grid(0, 0);
   /** what the host shows, as far as the painter knows */
   private prev = new Grid(0, 0);
@@ -181,6 +183,7 @@ export class Painter {
     const width = Math.max(0, Math.floor(scene.width));
     const height = Math.max(0, Math.floor(scene.height));
     if (width !== this.next.cols || height !== this.next.rows) {
+      this.composed = new Grid(width, height);
       this.next = new Grid(width, height);
       this.prev = new Grid(width, height);
       this.touched = new Uint8Array(height);
@@ -191,7 +194,7 @@ export class Painter {
     const full = layout !== this.layout;
     this.layout = layout;
     if (full) {
-      this.next.clear();
+      this.composed.clear();
       this.touched.fill(1);
       this.versions.clear();
       this.partHits.clear();
@@ -252,13 +255,13 @@ export class Painter {
     this.shape = null;
   }
 
-  /** one cell of `next`, keeping wide cells whole: a wide cell half covered by this one becomes a blank */
+  /** one cell of the composed screen, keeping wide cells whole: a wide cell half covered by this one becomes a blank */
   private put(col: number, row: number, text: string, width: 1 | 2, style: number): void {
-    const grid = this.next;
+    const grid = this.composed;
     const i = row * grid.cols + col;
-    if (grid.width[i] === 0 && col > 0) this.blankAt(i - 1);
+    if (grid.width[i] === 0 && col > 0) this.blankAt(grid, i - 1);
     const last = i + width - 1;
-    if (grid.width[last] === 2 && col + width < grid.cols) this.blankAt(last + 1);
+    if (grid.width[last] === 2 && col + width < grid.cols) this.blankAt(grid, last + 1);
     grid.text[i] = text;
     grid.width[i] = width;
     grid.style[i] = style;
@@ -270,8 +273,7 @@ export class Painter {
     this.touched[row] = 1;
   }
 
-  private blankAt(i: number): void {
-    const grid = this.next;
+  private blankAt(grid: Grid, i: number): void {
     grid.text[i] = " ";
     grid.width[i] = 1;
     grid.style[i] = this.styles.blank(grid.style[i]!);
@@ -366,16 +368,19 @@ export class Painter {
   }
 
   /**
-   * Cells a host cannot draw where the model has them become blanks, so the host and the model agree. Whether a cell lands as
-   * itself is asked of the host layout, for that cell after its left neighbour at its column (first, last, or on a screen one
-   * column wide): it catches a cell the host joins to its left neighbour (a mark with no base, a lone leading jamo, a cell
-   * ending in ZWJ before an emoji) and one it wraps (an emoji narrowed by U+FE0E in the last column). Only two plain ASCII
-   * cells side by side are never asked.
+   * Each row this frame touched is taken from the composed screen again, and a cell the host cannot draw where it is becomes
+   * a blank there, so the host and the model agree. The blank is the shown screen's alone: once the cell's left neighbour
+   * changes, the composed cell is asked again, as a fresh paint would ask it. Whether a cell lands as itself is asked of the
+   * host layout, for that cell after its left neighbour at its column (first, last, or on a screen one column wide): it
+   * catches a cell the host joins to its left neighbour (a mark with no base, a lone leading jamo, a cell ending in ZWJ before
+   * an emoji) and one it wraps (an emoji narrowed by U+FE0E in the last column). Only two plain ASCII cells side by side are
+   * never asked.
    */
   private fitHost(): void {
     const grid = this.next;
     for (let row = 0; row < grid.rows; row++) {
       if (!this.touched[row]) continue;
+      grid.copyRow(this.composed, row);
       const start = row * grid.cols;
       for (let col = 0; col < grid.cols; col++) {
         const i = start + col;
@@ -386,8 +391,8 @@ export class Painter {
         if (isPlainAscii(text) && (left === "" || isPlainAscii(left))) continue;
         if (this.host.fits(left, leftAt < start ? 0 : grid.width[leftAt]!, text, grid.width[i]!, col, grid.cols)) continue;
         const wide = grid.width[i] === 2;
-        this.blankAt(i);
-        if (wide) this.blankAt(i + 1);
+        this.blankAt(grid, i);
+        if (wide) this.blankAt(grid, i + 1);
       }
     }
   }

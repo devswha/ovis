@@ -7,6 +7,7 @@ import type { Emulator, EngineEvents, WrittenColor } from "../emulator/index.ts"
 import { placeholderChrome } from "./chrome.ts";
 import { cellsOf, holds, intersect, regions, type Rect } from "./geometry.ts";
 import { PaneGrid } from "./grid.ts";
+import { hostLayout } from "./host-layout.ts";
 import { Painter, type Frame, type HitTarget, type Part, type PaneScene, type Scene } from "./paint.ts";
 
 // The painter's writes are replayed into a second emulator standing in for the host terminal: after a frame whose write was
@@ -796,6 +797,71 @@ describe("pair sweep", () => {
   }, 120_000);
 });
 
+describe("a neighbour's change", () => {
+  /** four cases a row, eight columns each: two chrome parts side by side, the left one's text ending where the right one's begins */
+  const sideBySide = (cases: { left: string; leftVersion: number; right: string; rightVersion: number }[]): Scene => scene(32, Math.ceil(cases.length / 4), {
+    parts: cases.flatMap((one, n) => {
+      const [x, y] = [(n % 4) * 8, Math.floor(n / 4)];
+      return [
+        { key: `l${n}`, rect: { x, y, width: 4, height: 1 }, version: one.leftVersion, draw: (canvas: Parameters<Part["draw"]>[0]) => canvas.print(x + 4 - hostLayout.layout(one.left).end, y, one.left, 0) },
+        { key: `r${n}`, rect: { x: x + 4, y, width: 2, height: 1 }, version: one.rightVersion, draw: (canvas: Parameters<Part["draw"]>[0]) => canvas.print(x + 4, y, one.right, 0) },
+      ];
+    }),
+  });
+  /** paints `before` then `after` on one painter and host, and `after` alone on new ones: both must show the same */
+  async function incrementalAgainstFresh(before: Scene, after: Scene): Promise<Painter> {
+    const painter = new Painter({ sync: false });
+    const host = await hostOf(after.width, after.height);
+    step(painter, host, before);
+    expectReplay(host, painter, step(painter, host, after));
+    const fresh = new Painter({ sync: false }, painter.styles);
+    const freshHost = await hostOf(after.width, after.height);
+    expectReplay(freshHost, fresh, step(fresh, freshHost, after));
+    expect(modelCells(painter)).toEqual(modelCells(fresh));
+    expect(hostCells(host, after.width, after.height)).toEqual(hostCells(freshHost, after.width, after.height));
+    for (const target of [host, freshHost]) target.dispose();
+    return painter;
+  }
+
+  test("a cell blanked for its left neighbour comes back when that neighbour changes, as a fresh paint draws it", async () => {
+    const at = (left: string, leftVersion: number): Scene => scene(8, 1, {
+      parts: [
+        { key: "left", rect: { x: 0, y: 0, width: 2, height: 1 }, version: leftVersion, draw: (canvas) => canvas.print(0, 0, left, 0) },
+        { key: "right", rect: { x: 2, y: 0, width: 2, height: 1 }, version: 0, draw: (canvas) => canvas.print(2, 0, "\uAC00", 0) },
+      ],
+    });
+    // after a lone leading jamo the syllable would join it, so it is a blank; after "xx" it is drawn again
+    const painter = await incrementalAgainstFresh(at("\u1100", 0), at("xx", 1));
+    expect(painter.screen.text.slice(0, 4)).toEqual(["x", "x", "\uAC00", ""]);
+  });
+
+  test("every change of a wide or narrow neighbour, on either side, paints what a fresh paint draws", async () => {
+    const LEFTS = ["x", "xx", "\u1100", "\uAC00", "\u{1F600}\u200D", "e\u0301", "\u0301", "\u2764\uFE0E", " "];
+    const RIGHTS = ["\uAC00", "x", "\u1161", "\u0301", "\u{1F600}", "\u2764\uFE0E"];
+    const before: { left: string; leftVersion: number; right: string; rightVersion: number }[] = [];
+    const after: typeof before = [];
+    for (const right of RIGHTS) {
+      for (const a of LEFTS) {
+        for (const b of LEFTS) {
+          if (a === b) continue;
+          before.push({ left: a, leftVersion: 0, right, rightVersion: 0 });
+          after.push({ left: b, leftVersion: 1, right, rightVersion: 0 });
+        }
+      }
+    }
+    for (const left of LEFTS) {
+      for (const a of RIGHTS) {
+        for (const b of RIGHTS) {
+          if (a === b) continue;
+          before.push({ left, leftVersion: 0, right: a, rightVersion: 0 });
+          after.push({ left, leftVersion: 0, right: b, rightVersion: 1 });
+        }
+      }
+    }
+    await incrementalAgainstFresh(sideBySide(before), sideBySide(after));
+  }, 60_000);
+});
+
 describe("edges", () => {
   test("a 1x1 pane, no panes, a wide cell in the last column, a long cluster, and a pane removed between frames", async () => {
     const painter = new Painter({ sync: true });
@@ -970,6 +1036,12 @@ describe("property", () => {
         painter.taken(true);
         const wrong = mismatch(host, painter);
         if (wrong) throw new Error(`seed ${SEED} scene ${sceneNo} frame ${f} (${W}x${H}): ${wrong}`);
+        // the same scene drawn from nothing by a new painter: the incremental model must be the same, cell for cell
+        const fresh = new Painter({ sync: false }, painter.styles);
+        fresh.paint(sceneNow);
+        const [incremental, whole] = [modelCells(painter), modelCells(fresh)];
+        const stale = incremental.findIndex((cell, i) => !sameCell(cell, whole[i]!));
+        if (stale >= 0) throw new Error(`seed ${SEED} scene ${sceneNo} frame ${f}: cell ${stale % W},${Math.floor(stale / W)} is ${JSON.stringify(incremental[stale])} but a fresh paint gives ${JSON.stringify(whole[stale])}`);
         const cursor = hostCursor(host);
         const want = frame.cursor.visible ? frame.cursor : { ...frame.cursor };
         const seen = frame.cursor.visible ? cursor : { ...cursor, shape: "block", blinking: false };
@@ -978,7 +1050,7 @@ describe("property", () => {
       }
       for (const target of owned) target.dispose();
     }
-    console.log(`property: seed ${SEED}, ${SCENES} scenes, ${frames} frames, ${checked} replayed and equal, ${cuts} not taken whole`);
+    console.log(`property: seed ${SEED}, ${SCENES} scenes, ${frames} frames, ${checked} replayed and equal to the host and to a fresh paint, ${cuts} not taken whole`);
     expect(checked).toBeGreaterThan(SCENES);
   }, 600_000);
 });
