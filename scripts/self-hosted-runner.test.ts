@@ -168,7 +168,7 @@ async function runHookIsolated(
   }
 }
 
-type Peer = { name: string; labels: string; worker?: boolean; age?: number };
+type Peer = { name: string; labels: string; worker?: boolean; age?: number; repo?: string };
 
 function runRunner(options: {
   count?: number;
@@ -243,6 +243,8 @@ function launchRunner(options: RunnerOptions) {
     async stop() {
       child.kill("SIGKILL");
       await child.exited;
+      // its slot loops outlive a SIGKILL of the launcher (no EXIT trap runs): they would poll fixtures deleted below
+      spawnSync("pkill", ["-KILL", "-f", tempDir]);
       closeSync(stdout);
       closeSync(stderr);
       rmSync(tempDir, { recursive: true, force: true });
@@ -395,8 +397,9 @@ case "$1" in
       *Config.Env*)
         if [ -n "\${RUNNER_TEST_PEERS:-}" ] && [ -f "$RUNNER_TEST_PEERS" ]; then
           peer="$(awk -F'\t' -v n="$last" '$1 == n { print $2 }' "$RUNNER_TEST_PEERS")"
+          repo="$(awk -F'\t' -v n="$last" '$1 == n { print $5 }' "$RUNNER_TEST_PEERS")"
           if [ -n "$peer" ]; then
-            printf 'RUNNER_URL=https://github.com/owner/repo\nRUNNER_NAME=%s\nRUNNER_LABELS=%s\n' "$last" "$peer"
+            printf 'RUNNER_URL=https://github.com/%s\nRUNNER_NAME=%s\nRUNNER_LABELS=%s\n' "\${repo:-owner/repo}" "$last" "$peer"
             exit 0
           fi
         fi ;;
@@ -664,7 +667,7 @@ for arg; do case "$arg" in /*) [ -z "$(find "$arg" -maxdepth "$depth" -name fore
 }
 
 function writePeers(path: string, peers: Peer[]) {
-  writeFileSync(path, peers.map((peer) => `${peer.name}\t${peer.labels}\t${peer.worker ? 1 : 0}\t${peer.age ?? ""}\n`).join(""));
+  writeFileSync(path, peers.map((peer) => `${peer.name}\t${peer.labels}\t${peer.worker ? 1 : 0}\t${peer.age ?? ""}\t${peer.repo ?? "owner/repo"}\n`).join(""));
 }
 
 const runnerRun = /^docker run (?:--cpuset-cpus \S+ )?(?:--cgroup-parent \S+ )?--rm -i /;
@@ -1553,6 +1556,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     const host = spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim();
     const runnerRuns = (calls: string) => calls.split("\n").filter((call) => runnerRun.test(call));
     const peer = (slot: number, labels = "self-hosted-ovis", worker = false, age?: number) => ({ name: `herdr-ci-${host}-${slot}`, labels, worker, age });
+    /** A pool as the gate names it: the runner's repository URL and its labels. */
+    const pool = (labels: string, repo = "owner/repo") => `https://github.com/${repo} ${labels}`;
 
     it("starts every slot at once without --offer-when-room, whatever this host runs and how loaded it is", () => {
       const { result, calls } = runRunner({ count: 2, psi: { cpu: "99.00", memory: "99.00" }, peers: [peer(9)] });
@@ -1584,6 +1589,13 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
 
     it("ignores an idle runner of another pool, and the check slots' keeper", () => {
       const { result, calls } = runRunner({ count: 1, offer: true, peers: [peer(9, "self-hosted-ovis-main"), { name: `herdr-ci-${host}-check-slots`, labels: "" }] });
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("waiting for room");
+      expect(runnerRuns(calls)).toHaveLength(1);
+    });
+
+    it("ignores an idle runner of another repository with the same labels: it never takes this repository's jobs", () => {
+      const { result, calls } = runRunner({ count: 1, offer: true, peers: [{ ...peer(9), name: `herdr-ci-${host}-appb-9`, repo: "owner/app" }] });
       expect(result.status).toBe(0);
       expect(result.stderr).not.toContain("waiting for room");
       expect(runnerRuns(calls)).toHaveLength(1);
@@ -1653,10 +1665,11 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const offerDir = mkdtempSync(join(tmpdir(), "herdr-runner-offer-state-"));
       try {
         const claim = join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-7`);
-        writeFileSync(claim, "self-hosted-ovis\n");
-        writeFileSync(join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-8`), "self-hosted-ovis-main\n");
+        writeFileSync(claim, `${pool("self-hosted-ovis")}\n`);
+        writeFileSync(join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-8`), `${pool("self-hosted-ovis-main")}\n`);
+        writeFileSync(join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-6`), `${pool("self-hosted-ovis", "owner/app")}\n`);
         const stale = join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-9`);
-        writeFileSync(stale, "self-hosted-ovis\n");
+        writeFileSync(stale, `${pool("self-hosted-ovis")}\n`);
         utimesSync(stale, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
         const runner = launchRunner({ count: 1, offer: true, offerPause: undefined, offerDir, peers: [] });
         try {

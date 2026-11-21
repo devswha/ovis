@@ -431,8 +431,9 @@ A registered runner is an offer: GitHub hands it any job whose labels it matches
 already busy keeps taking work. `run.sh --offer-when-room` makes a slot wait until this host has room
 before it fetches a registration token and starts its runner:
 
-- no other runner of this host in the same pool is idle (both pull request pools and a launcher copy's
-  own runners count: the host's containers are `herdr-ci-<host>-*`, and a runner counts as idle until a
+- no other runner of this host in the same pool is idle (a pool is a repository and a label set: an
+  idle runner of another repository never takes this one's jobs, whatever its labels; both pull
+  request pools and a launcher copy's own runners count: the host's containers are `herdr-ci-<host>-*`, and a runner counts as idle until a
   `Runner.Worker` process is in it, one still registering included), so the host offers at most one
   idle runner per pool;
 - no job started on this host in the last 30 s and no runner of it started in the last 30 s (both

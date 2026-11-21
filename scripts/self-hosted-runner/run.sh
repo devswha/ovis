@@ -677,7 +677,8 @@ slot_network() {
 }
 
 # ---------------------------------------------------------------- the offer gate
-# One idle runner per host and pool, at least $OFFER_PAUSE s after this host started a runner, and only
+# One idle runner per host and pool (a repository and a label set: a runner of another repository never
+# takes this one's jobs, whatever its labels), at least $OFFER_PAUSE s after this host started a runner, and only
 # while this host's CPU and memory pressure are under its thresholds. A runner counts as running a job
 # while a Runner.Worker process is in it: one still registering is an offer already on its way.
 psi_avg10() {
@@ -690,7 +691,7 @@ psi_under() {
 
 # Sets OFFER_HOLD to the reason to wait when this host has no room right now.
 offer_room() {
-  local name slot labels procs youngest="" age value started claim
+  local name slot pool procs youngest="" age value started claim
   OFFER_HOLD=""
   # a slot that claimed room and has not started its container yet (token, network): an offer on its way.
   # Once that container runs, docker ps below counts it. Claims are removed only under the lock ($3), so
@@ -725,8 +726,9 @@ offer_room() {
       continue
     fi
     [ "$name" = "$1" ] && continue
-    labels="$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null | sed -n 's/^RUNNER_LABELS=//p' || true)"
-    [ "$labels" = "$2" ] || continue
+    pool="$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null \
+      | awk -F= '$1 == "RUNNER_URL" { url = substr($0, 12) } $1 == "RUNNER_LABELS" { labels = substr($0, 15) } END { print url " " labels }' || true)"
+    [ "$pool" = "$2" ] || continue
     OFFER_HOLD="the runner $name of this pool is idle and waiting for a job"
     return 1
   done
@@ -778,16 +780,16 @@ offer_claim() {
 
 # Waits for room, then claims it under the host-wide lock and records the start before releasing it.
 offer_wait() {
-  local name="$1" labels="$2" claimed reason=""
+  local name="$1" pool="$2" claimed reason=""
   while true; do
-    if offer_room "$name" "$labels"; then
+    if offer_room "$name" "$pool"; then
       claimed=0
       # >> and never >: the lock lives in the file's inode, which a truncation keeps. A lock file that
       # cannot be opened holds the slot instead of ending its loop.
       if ! {
         if flock -w 60 9; then
-          if offer_room "$name" "$labels" locked; then
-            if offer_claim "$name" "$labels"; then claimed=1; else OFFER_HOLD="the gate cannot write its state in $OFFER_STATE"; fi
+          if offer_room "$name" "$pool" locked; then
+            if offer_claim "$name" "$pool"; then claimed=1; else OFFER_HOLD="the gate cannot write its state in $OFFER_STATE"; fi
           fi
         else
           OFFER_HOLD="another slot of this host has held the gate's lock for 60s"
@@ -832,7 +834,8 @@ slot_loop() {
     # The check slots and the slot's network first: without the first a job's check.ts stops, without
     # the second no container starts, and neither is worth a registration token.
     problem=""
-    if [ "$OFFER" = 1 ] && [ "$slot" -gt "$((10#$RESERVED))" ]; then offer_wait "$name" "$labels"; fi
+    # the pool: this runner's repository and labels, as its container's RUNNER_URL and RUNNER_LABELS say
+    if [ "$OFFER" = 1 ] && [ "$slot" -gt "$((10#$RESERVED))" ]; then offer_wait "$name" "https://github.com/$REPO $labels"; fi
     if ! start_slots; then problem="could not make the check slots in $SLOTS"
     elif ! slot_network "$name-net" "$slot"; then problem="$NETWORK_PROBLEM"
     # bounded, so an offer claim (ten minutes) always outlives the attempt that made it
