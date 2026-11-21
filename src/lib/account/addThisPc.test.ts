@@ -63,7 +63,7 @@ test("reopening the add window asks the link route alone, for an approve-here wi
   setTransport({ ...nativeTransport, fetch: answer });
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
   try {
-    expect(await reopenAddWindow()).toBeNull();
+    expect((await reopenAddWindow()).serverId).toBeNull();
     expect(asked).toEqual([{ path: "/api/relay/link", localOnly: "1" }]);
   } finally { fetchSpy.mockRestore(); }
 });
@@ -74,7 +74,7 @@ test("reopening the add window says which PC opened it", async () => {
   const answer = async (_input: RequestInfo | URL): Promise<Response> => Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
   setTransport({ ...nativeTransport, fetch: answer });
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
-  try { expect(await reopenAddWindow()).toBe(serverId); } finally { fetchSpy.mockRestore(); }
+  try { expect((await reopenAddWindow()).serverId).toBe(serverId); } finally { fetchSpy.mockRestore(); }
 });
 
 function listing(signedIn: { account: string | null }) {

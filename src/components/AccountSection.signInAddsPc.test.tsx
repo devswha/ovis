@@ -85,7 +85,7 @@ describe("signing in on a PC's own page", () => {
         if (url.pathname === "/api/health") return Response.json({ ok: true, bridge_protocol: 1, auth: { required: false, authenticated: true, via: "loopback", role }, security: { pairing_gate: "closed", token_configured: false } });
         if (url.pathname === "/api/relay/link" && relay === "off") return Response.json({ error: { code: "relay_off", message: "Start the relay before pairing." } }, { status: 409 });
         if (url.pathname === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
-        if (url.pathname === "/api/relay/link") return Response.json({ url: OFFER });
+        if (url.pathname === "/api/relay/link") return Response.json({ url: OFFER, window_id: "1".repeat(32) });
         if (url.pathname === "/api/relay/link/close") return Response.json({ ok: true });
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }

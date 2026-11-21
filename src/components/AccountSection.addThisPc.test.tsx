@@ -141,7 +141,7 @@ describe("AddThisPc", () => {
       if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: at + 60_000 });
       if (path === "/api/devices/pair") { pc.paired = pc.cookieSticks; if (pc.paired) pc.via = "device"; return Response.json({ ok: true }); }
       if (path === "/api/relay/link" && pc.relay === "off") return Response.json({ error: { code: "relay_off", message: "Start the relay before pairing." } }, { status: 409 });
-      if (path === "/api/relay/link") return pc.linkError === null ? Response.json({ url: pc.offer }) : Response.json({ error: { code: pc.linkError.code, message: "refused" } }, { status: pc.linkError.status });
+      if (path === "/api/relay/link") return pc.linkError === null ? Response.json({ url: pc.offer, window_id: links().toString(16).padStart(32, "0") }) : Response.json({ error: { code: pc.linkError.code, message: "refused" } }, { status: pc.linkError.status });
       return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
     };
     setTransport({ ...nativeTransport, fetch: answer });
@@ -194,7 +194,11 @@ describe("AddThisPc", () => {
   };
 
   async function realRelay() {
+    // Keep the fixture server's background tasks off the browser's fake timer queue.
+    jest.useRealTimers();
     const fixture = await pairingPc();
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(at));
     const { context } = fixture.app;
     const base = `http://127.0.0.1:${fixture.app.port}`;
     relayRequest = (path, init) => {

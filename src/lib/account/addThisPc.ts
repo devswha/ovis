@@ -43,12 +43,12 @@ export async function thisPcInNoAccount(): Promise<boolean> {
 
 /**
  * Opens this PC's approve-here pairing window again and nothing else: no directory call, so nothing is listed
- * and no device of the account is rung. Answers the id of the PC that opened it (null when its link does not
- * say), so a screen that resumed a wait can tell the PC is the one it waited on.
+ * and no device of the account is rung. Returns the PC's ID for wait resumption and the window ID for cleanup.
  */
-export async function reopenAddWindow(): Promise<string | null> {
-  const { url } = await openAddWindow();
-  try { return decodeOffer(url)?.server_id ?? null; } catch { return null; }
+export async function reopenAddWindow(): Promise<{ readonly serverId: string | null; readonly windowId: string | undefined }> {
+  const { url, windowId } = await openAddWindow();
+  try { return { serverId: decodeOffer(url)?.server_id ?? null, windowId }; }
+  catch { return { serverId: null, windowId }; }
 }
 
 export const CLOSE_ANSWER_MS = 60_000;
@@ -56,19 +56,20 @@ export const CLOSE_ANSWER_MS = 60_000;
 let closing: Promise<unknown> = Promise.resolve();
 
 /**
- * The PC closes whatever window is open when the request arrives, so one asked for after this call is asked
- * for only once this close was answered (`openAddWindow`): a close that arrives late never closes the window
- * of a wait that began after it.
+ * Only an explicit Stop waiting closes the current window without an ID. Serialize later Add opens
+ * after that close; automatic cleanup names its own generation and cannot affect a later open.
  */
-export function closeAddWindow(): Promise<{ readonly ok: true }> {
-  const sent = closeRelayLink();
+export function closeAddWindow(windowId?: string): Promise<{ readonly ok: true }> {
+  const sent = closeRelayLink(windowId);
+  if (windowId !== undefined) return sent;
   closing = Promise.allSettled([closing, within(CLOSE_ANSWER_MS, sent)]);
   return sent;
 }
 
-async function openAddWindow(): Promise<{ url: string }> {
+async function openAddWindow(): Promise<{ readonly url: string; readonly windowId: string | undefined }> {
   for (let seen: Promise<unknown> | null = null; seen !== closing;) { seen = closing; await seen; }
-  return await requestRelayLink({ localOnly: true });
+  const { url, window_id } = await requestRelayLink({ localOnly: true });
+  return { url, windowId: typeof window_id === "string" && /^[0-9a-f]{32}$/.test(window_id) ? window_id : undefined };
 }
 
 const WAITING_KEY = "ovis-add-pc-waiting";
@@ -158,11 +159,8 @@ export interface ListedAs {
   readonly account: string;
   /** asked once the window opened, and right before every write to the directory and to the PC: false once the screen gave the attempt up */
   readonly running: () => boolean;
-  /**
-   * Told how far the listing came, for a screen that gives it up: `opened` once this PC opened its pairing
-   * window, `writing` right before the first write to the directory is sent (one sent cannot be taken back).
-   */
-  readonly reached?: (step: "opened" | "writing") => void;
+  /** Right before a directory write is sent; one sent cannot be taken back. */
+  readonly writing?: () => void;
 }
 
 /**
@@ -178,16 +176,17 @@ export interface ListedAs {
  * when the account stored at that read is another one or none, or the attempt was given up. A listing whose
  * wait or attempt ended while its entry was being written does not tell the PC the account either.
  */
-export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor; as?: ListedAs }): Promise<ListedPc> {
+export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor; as?: ListedAs; opened?: (windowId: string) => void }): Promise<ListedPc> {
   const wait = options.for;
   const as = options.as;
   // asked before the window: one is never opened on another PC than the wait's
   if (wait !== undefined && !await pcAnswers(wait.serverId)) throw new AddPcWaitOver("pc");
   // stopped while that was asked: no window is asked for after Stop waiting closed it
   if (wait !== undefined && !wait.running()) throw new AddPcWaitOver("ended");
-  const offer = decodeOffer((await openAddWindow()).url);
+  const { url, windowId } = await openAddWindow();
+  if (windowId !== undefined) options.opened?.(windowId);
+  const offer = decodeOffer(url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
-  as?.reached?.("opened");
   if (wait !== undefined && offer.server_id !== wait.serverId) throw new AddPcWaitOver("pc");
   // given up while the window was being opened: nothing more is read or written for it
   // (a stopped wait's listing is over at once, so whoever began it closes the late window without waiting for the directory)
@@ -197,7 +196,7 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   if (as !== undefined && session?.account !== as.account) throw new AddPcWaitOver("sign-in");
   const directory = session === undefined ? service : service.forSignIn(session);
   const runs = (): boolean => (wait === undefined || wait.running()) && (as === undefined || as.running());
-  const running = (): void => { if (!runs()) throw new AddPcWaitOver("ended"); as?.reached?.("writing"); };
+  const running = (): void => { if (!runs()) throw new AddPcWaitOver("ended"); as?.writing?.(); };
   const listed = (await directory.listPcs()).find((pc) => pc.server_id === offer.server_id);
   const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
   const result = { name, serverId: offer.server_id, account: session?.account ?? null };
