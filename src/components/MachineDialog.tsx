@@ -158,9 +158,16 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
       try {
         const next = await fetchPcInstall(install.id);
         if (cancelled) return;
+        // the add again on the PC the install's connection added (its setup job names it), never as a second PC; looked
+        // up before the install shows as done, as that re-render ends this poll
+        if (next.phase === "connected") {
+          const added = next.connect_job ? await fetchMachineSetup(next.connect_job) : null;
+          if (cancelled) return;
+          setInstall(next);
+          void begin(undefined, added?.machine_id ?? next.machine_id ?? undefined);
+          return;
+        }
         setInstall(next);
-        // the add again on the PC the install's connection added (its setup job names it), never as a second PC
-        if (next.phase === "connected") { const added = next.connect_job ? await fetchMachineSetup(next.connect_job) : null; if (!cancelled) void begin(undefined, added?.machine_id ?? next.machine_id ?? undefined); return; }
         if (["failed", "cancelled"].includes(next.phase)) return;
       } catch (e) { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); }
       if (!cancelled) timer = window.setTimeout(poll, 750);

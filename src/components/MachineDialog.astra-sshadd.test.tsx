@@ -66,4 +66,5 @@ async function exercise(action: "install_ovis" | "update_bridge") {
   }
 }
 
+test("install completion resumes the account add after its setup lookup returns", () => exercise("install_ovis"));
 test("update-and-connect submits a setup the server accepts", () => exercise("update_bridge"));
