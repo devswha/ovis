@@ -11,5 +11,7 @@ import { firstJoinPrompts, pendingKeyPrompts, type PromptPairing } from "../comp
  */
 export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[], pendingKeys: readonly PendingKey[], ownWindow: boolean): readonly PromptPairing[] {
   const ownJoins = useOwnJoins(ownWindow);
-  return useMemo(() => [...relayPairings, ...firstJoinPrompts(ownJoins), ...(ownWindow ? pendingKeyPrompts(pendingKeys) : [])], [relayPairings, ownJoins, ownWindow, pendingKeys]);
+  // a first join's deadline is counted from its own read: an unrelated update rebuilds the list, never that deadline
+  const firstJoins = useMemo(() => firstJoinPrompts(ownJoins), [ownJoins]);
+  return useMemo(() => [...relayPairings, ...firstJoins, ...(ownWindow ? pendingKeyPrompts(pendingKeys) : [])], [relayPairings, firstJoins, ownWindow, pendingKeys]);
 }
