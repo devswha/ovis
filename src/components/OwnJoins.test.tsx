@@ -8,7 +8,7 @@ import { OwnJoins } from "./OwnJoins.tsx";
 describe("account joins on the PC's own window", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
-  let joins: { id: string; label: string; asked_at: string; left_ms: number }[];
+  let joins: { id: string; label: string; asked_at: string; left_ms: number; digits?: string }[];
   let listAnswer: number;
   let lists: number;
   let typed: string[];
@@ -85,6 +85,12 @@ describe("account joins on the PC's own window", () => {
     await submit("482 913");
     expect(typed).toEqual(["482913"]);
     expect(renderer!.root.findAll((node) => node.props.role === "alert")).toHaveLength(0);
+  });
+
+  it("leaves the first phone's join, which this PC's window asks to allow beside its digits, out of the typed list", async () => {
+    joins = [{ id: "j0", label: "Android · Chrome", asked_at: new Date().toISOString(), left_ms: 60_000, digits: "482913" }];
+    await mount();
+    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "own-joins")).toHaveLength(0);
   });
 
   it("sends nothing for a number of another length, and keeps the field open", async () => {

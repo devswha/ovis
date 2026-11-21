@@ -135,6 +135,24 @@ describe("the Add-a-PC sheet", () => {
     expect([calls.cancels, calls.closes, calls.matches]).toEqual([1, 1, []]);
   });
 
+  it("tells the first phone of a PC with no member to press Allow on that PC, named by its system, in one line under the number", async () => {
+    const lines = { mac: "Press [Allow] on your Mac", windows: "Press [Allow] on your PC", linux: "Press [Allow] on your Linux PC", pc: "Press [Allow] on your PC" } as const;
+    for (const [approveOn, key] of Object.entries(lines) as [keyof typeof lines, string][]) {
+      await mount(props("join", pcOf(), { kind: "compare", name: "desk2", digits: "123456", confirmed: true, challenge: 1, alone: true, approveOn }));
+      expect(text(renderer!.root.findByProps({ className: "relay-shell-digits" }))).toBe("123 456");
+      expect(renderer!.root.findAll((instance) => instance.type === "p" && instance.props.className === "relay-shell-copy").map(text)).toEqual([translate("en", key)]);
+      // no other way to point at: nobody else can approve it
+      expect(renderer!.root.findAll((instance) => instance.type === "details")).toHaveLength(0);
+      await act(async () => { renderer!.unmount(); });
+    }
+    // the sheet a list or a typed Add opens waits on the same line, with the number to compare beside it
+    await mount(props("new", pcOf(), { kind: "compare", name: "desk2", digits: "123456", confirmed: true, challenge: 1, approveOn: "mac" }));
+    expect(renderer!.root.findByProps({ role: "dialog" }).props["data-add-pc-phase"]).toBe("approving");
+    expect(text(renderer!.root.findByProps({ className: "relay-shell-digits" }))).toBe("123 456");
+    expect(all()).toContain(translate("en", lines.mac));
+    expect(all()).not.toContain(translate("en", "Approve this device on {name} within 90 seconds to finish.", { name: "desk2" }));
+  });
+
   it("walks a new PC through the typed join: Step n of 4, visible label, footer actions, 90-second wait, wrong-number retry, and Ready", async () => {
     const pc = pcOf();
     await mount(props("new", pc, LIST));
