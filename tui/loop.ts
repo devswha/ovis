@@ -36,7 +36,7 @@ import { initialState, type ModelEvent, type ModelState, reduce } from "./model/
 import { PaneGrid } from "./view/grid.ts";
 import { CopyView } from "./view/copy.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
-import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
+import { type HitMap, Painter, type PaneScene, type Scene } from "./view/paint.ts";
 import { layOut, paneScene, type PaneSpot, type ScreenShape } from "./view/screen.ts";
 import type { ViewStore } from "./view-store.ts";
 
@@ -137,6 +137,8 @@ export function startLoop(options: LoopOptions): Loop {
   const copyView = new CopyView();
   /** the last frame's hit map and pane scenes: what the mouse lands on */
   let hits: HitMap | null = null;
+  /** the model `hits` was made for: the last frame's, or the one `hitsNow` made them for since */
+  let hitsOf: ModelState | null = null;
   const drawn = new Map<string, PaneScene>();
   /** the panes of the last frame the host took */
   let painted: ReadonlySet<string> = new Set();
@@ -352,7 +354,11 @@ export function startLoop(options: LoopOptions): Loop {
     // waits as text does
     if (typed && behindWrite === null && shownAfterWrites.active() && waitsForWrites(event)) holdUntil(shownAfterWrites.settled());
     if (behindWrite === null || !typed) {
+      const tab = focused(state.world, state.focus).tab?.id ?? null;
       dispatch(event);
+      // input that showed another tab (a click in the sidebar or a menu): what follows it waits for that tab's pictures, as
+      // the same input read later would meet them
+      if (typed && (focused(state.world, state.focus).tab?.id ?? null) !== tab) shownAfterWrites.shown();
       return;
     }
     // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order
@@ -388,6 +394,11 @@ export function startLoop(options: LoopOptions): Loop {
         this.waiters.push(done);
         this.check();
       });
+    },
+    /** The user's input showed another tab: what follows waits until its panes have their pictures. */
+    shown(): void {
+      this.following = true;
+      this.check();
     },
     started(writing: Promise<void>): void {
       this.pending++;
@@ -638,7 +649,7 @@ export function startLoop(options: LoopOptions): Loop {
     const tab = focused(state.world, state.focus).tab;
     const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
     return {
-      hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane),
+      hits: hitsNow(), focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane),
       boxAt: (col, row) => shape?.spots.find(({ cells, covered }) => !covered && col >= cells.outer.x && col < cells.outer.x + cells.outer.width && row >= cells.outer.y && row < cells.outer.y + cells.outer.height)?.pane ?? null,
       passthrough: (pane) => focused(state.world, state.focus).tab?.passthrough?.includes(pane) ?? false,
       sidebarCollapsed: state.sidebarCollapsed,
@@ -777,13 +788,11 @@ export function startLoop(options: LoopOptions): Loop {
     return scene;
   }
 
-  function pass(now: number): void {
-    if (!painter || !shape || ended) return;
-    passOwed = false;
-    lastPass = now;
-    passes++;
-    // the style table only grows: past its limit the painter and every grid are made anew
-    if (painter.styles.get(STYLE_TABLE_LIMIT) !== undefined) rebuildPainter();
+  /**
+   * What a frame shows for the model as it is now: the panes' scenes (their grids brought up to date, the copied rows still
+   * owed to the painter) and the chrome and overlays over them. `copied`: the panes whose emulator was copied in.
+   */
+  function compose(painter: Painter, shape: ScreenShape): Pick<Scene, "parts" | "panes" | "overlays" | "input" | "dim"> & { copied: Set<string> } {
     const scenes: PaneScene[] = [];
     let copying: ReturnType<CopyView["draw"]> = null;
     const copied = new Set<string>();
@@ -801,7 +810,6 @@ export function startLoop(options: LoopOptions): Loop {
       if (copy) copying = copy;
       scenes.push({ ...(copy?.pane ?? scene), scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(!copy && selection ? { selection: { ...selection, colors: selectionColors(theme, host.colorDepth) } } : {}) });
     }
-    const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
     const chrome = buildChrome({
       regions: shape.regions,
@@ -818,11 +826,33 @@ export function startLoop(options: LoopOptions): Loop {
       copying,
       copyLook: copyView.look(),
     });
-    const frame = painter.paint({
-      width: size.cols, height: size.rows, parts: chrome.parts,
-      panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input, dim: chrome.dim,
-    });
+    return { parts: chrome.parts, panes: scenes, overlays: chrome.overlays, input: chrome.input, dim: chrome.dim, copied };
+  }
+
+  /**
+   * The hit map for the model as it is now: the last frame's, unless input changed the model since (a menu opened, an entry
+   * hovered), when the pointer meets what the next frame will show, however the reads fell.
+   */
+  function hitsNow(): HitMap | null {
+    if (!painter || !shape || state === hitsOf) return hits;
+    const size = host.size();
+    hits = painter.hitMap({ width: size.cols, height: size.rows, ...compose(painter, shape) });
+    hitsOf = state;
+    return hits;
+  }
+
+  function pass(now: number): void {
+    if (!painter || !shape || ended) return;
+    passOwed = false;
+    lastPass = now;
+    passes++;
+    // the style table only grows: past its limit the painter and every grid are made anew
+    if (painter.styles.get(STYLE_TABLE_LIMIT) !== undefined) rebuildPainter();
+    const size = host.size();
+    const { copied, ...composed } = compose(painter, shape);
+    const frame = painter.paint({ width: size.cols, height: size.rows, ...composed, focus: paneFocus });
     hits = frame.hits;
+    hitsOf = state;
     let taken = true;
     if (frame.bytes.length > 0) {
       writes++;

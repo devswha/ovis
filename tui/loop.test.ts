@@ -386,7 +386,9 @@ describe("the loop", () => {
       zoomed: () => ({ core: oneTab(3, true) }),
       history: () => ({ fixture: { build: (core: FakeHcCore) => void place(core, { space: "w", spaceName: "w", tab: "t", tabName: "t" }, history) } }),
     };
-    const outcome = async (prefix: string, reads: Uint8Array[], start: keyof typeof starts = "demo") => {
+    // `glued`: byte offsets inside a mouse report; a read cut there is followed at once by the rest, as a terminal writes
+    // whole reports (one cut 200 ms apart would be an Escape key and text)
+    const outcome = async (prefix: string, reads: Uint8Array[], start: keyof typeof starts = "demo", glued: ReadonlySet<number> = new Set()) => {
       const run = await Run.start(starts[start]());
       try {
         await run.live();
@@ -397,13 +399,15 @@ describe("the loop", () => {
         const before = run.loop.model().world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort();
         let ended = false;
         void run.loop.done.then(() => { ended = true; });
+        let offset = 0;
         for (const [at, read] of reads.entries()) {
           run.host.feed(read);
+          offset += read.length;
           // a read cut inside a character is followed at once by the rest of it, as a terminal writes whole characters:
           // the framer stamps a character with the time of its first byte, and a pane refuses what was read before its
           // picture, so a character's halves read 200 ms apart would meet a newer picture; any other read comes once the
           // screen settled
-          const inside = (reads[at + 1]?.[0] ?? 0) >> 6 === 0b10;
+          const inside = (reads[at + 1]?.[0] ?? 0) >> 6 === 0b10 || glued.has(offset);
           if (inside) await run.advance(1);
           else await settled(run);
         }
@@ -435,6 +439,28 @@ describe("the loop", () => {
     // are compared.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
     const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
+    // mouse reports (SGR, 1-based) on the demo at 120x40: a right-click on the first pane, two left clicks and a move where
+    // the menu it opens lists its first entries, and a click in the sidebar
+    const report = (code: number, col: number, row: number, press = true) => `\x1b[<${code};${col};${row}${press ? "M" : "m"}`;
+    const click = (code: number, col: number, row: number) => report(code, col, row) + report(code, col, row, false);
+    const MOUSE = { right: click(2, 51, 6), first: click(0, 52, 7), second: click(0, 52, 8), hover: report(35, 53, 8), sidebar: click(0, 5, 4) };
+    /** the byte offsets inside each mouse report of `tokens` joined (every report is ASCII: one byte a character) */
+    const gluedIn = (tokens: readonly string[]): Set<number> => {
+      const glued = new Set<number>();
+      let at = 0;
+      for (const token of tokens) {
+        // a click is two reports: each is whole, the cut between them is a read boundary like any other
+        if (!token.startsWith("\x1b[<")) {
+          at += new TextEncoder().encode(token).length;
+          continue;
+        }
+        for (const one of token.match(/\x1b\[<[^Mm]*[Mm]/g)!) {
+          for (let inner = 1; inner < one.length; inner++) glued.add(at + inner);
+          at += one.length;
+        }
+      }
+      return glued;
+    };
     // the third variant: a zoomed tab, where the workspace picker's moves and directional focus move the shared zoom
     // to the pane the focus goes to (zoom_follow) and the last move wins; a zoom, a close and text typed among the moves,
     // so a command and text meet a zoom write still under way, read with them or apart
@@ -445,15 +471,20 @@ describe("the loop", () => {
       ["-", "demo", 10, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
       ["\x02", "zoomed", 30, ["\x02w", "\x02l", "\x02h", "\x02z", "\x02x", "l", "h", "a", "Z", "\r"]],
       ["-", "history", 30, ["-[", "q", "g", "k", "j", "f", "1", "v", "y", "/", "e", "\r", "Z"]],
+      // the fifth: the pointer: a right-click on a pane opens its menu, clicks and a hover over where its entries lie, a
+      // click in the sidebar, herdr's menu, Enter and text, so a click meets an overlay opened earlier in the same read
+      ["\x02", "demo", 30, [MOUSE.right, MOUSE.first, MOUSE.second, MOUSE.hover, MOUSE.sidebar, "\x02\r", "\r", "a", "\x02w"]],
     ];
     for (const [prefix, start, runs, tokens] of variants) {
       for (let n = 0; n < runs; n++) {
-        const text = Array.from({ length: 3 + Math.floor(random() * 4) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
+        const picked = Array.from({ length: 3 + Math.floor(random() * 4) }, () => tokens[Math.floor(random() * tokens.length)]!);
+        const text = picked.join("");
         const bytes = new TextEncoder().encode(text);
-        const joined = compared(await outcome(prefix, [bytes], start));
-        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), start)) }).toEqual({ text, outcome: joined });
+        const glued = gluedIn(picked);
+        const joined = compared(await outcome(prefix, [bytes], start, glued));
+        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), start, glued)) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
-          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], start)) }).toEqual({ text, cut, outcome: joined });
+          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], start, glued)) }).toEqual({ text, cut, outcome: joined });
         }
       }
     }
@@ -482,6 +513,17 @@ describe("the loop", () => {
       expect({ pinned, outcome: compared(await outcome("-", [...gate].map((byte) => Uint8Array.of(byte)), "history")) }).toEqual({ pinned, outcome: whole });
       for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("-", [gate.slice(0, cut), gate.slice(cut)], "history")) }).toEqual({ pinned, cut, outcome: whole });
     }
+    // the gate's pointer case: a right-click on a pane and a click on its menu's first entry (Rename) in one read open the
+    // rename field, as read apart; a hover onto the second entry and Enter choose it alike; and text after the choice
+    for (const tokens of [[MOUSE.right, MOUSE.first], [MOUSE.right, MOUSE.hover, "\r"], [MOUSE.right, MOUSE.first, "a"]]) {
+      const gate = new TextEncoder().encode(tokens.join(""));
+      const glued = gluedIn(tokens);
+      const whole = compared(await outcome("\x02", [gate], "demo", glued));
+      expect({ tokens, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), "demo", glued)) }).toEqual({ tokens, outcome: whole });
+      for (let cut = 1; cut < gate.length; cut++) expect({ tokens, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], "demo", glued)) }).toEqual({ tokens, cut, outcome: whole });
+    }
+    const renamed = await outcome("\x02", [new TextEncoder().encode(MOUSE.right + MOUSE.first)], "demo", gluedIn([MOUSE.right, MOUSE.first]));
+    expect(renamed.overlays.map((overlay) => overlay.split(":")[0])).toEqual(["text"]);
   }, SOAK_MS);
 
   it("copy mode's search box takes text alike read whole, split at every byte, and a byte at a time, and text after its choice goes on", async () => {
