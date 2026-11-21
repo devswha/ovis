@@ -165,12 +165,13 @@ else
 fi
 }
 
-# The Rust PTY host job: hosted where the Linux jobs are hosted by a rule (hosted_only, a fork, CI_SELF_HOSTED_LABELS
-# naming the hosted image, an event other than a pull request or a push), else on the Rust runners unless the
-# repository variable CI_RUST_LABELS names the hosted image, or a job of theirs has waited too long. CI_RUST_LABELS
-# only turns the Rust runners off: no value of it sends the job anywhere the rules above keep it from.
+# The Rust PTY host job: hosted unless the repository variable CI_RUST_SELF_HOSTED is "true" (an opt-in: unset,
+# empty or "false" is the hosted image, as before the Rust runners existed), and hosted wherever the Linux jobs are by
+# a rule (hosted_only, a fork, CI_SELF_HOSTED_LABELS naming the hosted image, an event other than a pull request or a
+# push) whatever it says. Opted in, the job goes to the Rust runners while their heartbeat is fresh and none of
+# their jobs has waited too long.
 route_rust() {
-  local configured_rust="${RUST_LABELS:-}" configured_all="${CONFIGURED_LABELS:-}" seen="${RUST_SEEN:-}" now="${ROUTE_NOW:-$(date +%s)}" counts waited
+  local opted_in="${RUST_SELF_HOSTED:-}" configured_all="${CONFIGURED_LABELS:-}" seen="${RUST_SEEN:-}" now="${ROUTE_NOW:-$(date +%s)}" counts waited
   if [[ "${HOSTED_ONLY:-}" == true ]]; then
     echo "Rust PTY host: ubuntu-24.04 (called with hosted_only)" >&2
     echo "rust=$hosted"
@@ -183,13 +184,12 @@ route_rust() {
   elif [[ "$event" != pull_request && "$event" != push ]]; then
     echo "Rust PTY host: ubuntu-24.04 ($event)" >&2
     echo "rust=$hosted"
-  elif [[ -n "${configured_rust//[[:space:]]/}" ]]; then
-    local parsed
-    if ! parsed=$(jq -c . <<<"$configured_rust" 2>/dev/null) || [[ "$parsed" != "$hosted" ]]; then
-      echo "::error::repository variable CI_RUST_LABELS may only be \"ubuntu-24.04\" (or unset), got: $configured_rust" >&2
+  elif [[ "$opted_in" != true ]]; then
+    if [[ -n "$opted_in" && "$opted_in" != false ]]; then
+      echo "::error::repository variable CI_RUST_SELF_HOSTED may only be \"true\" or \"false\" (or unset), got: $opted_in" >&2
       exit 1
     fi
-    echo "Rust PTY host: ubuntu-24.04 (from repository variable CI_RUST_LABELS)" >&2
+    echo "Rust PTY host: ubuntu-24.04 (CI_RUST_SELF_HOSTED is not \"true\")" >&2
     echo "rust=$hosted"
   elif ! [[ "$seen" =~ ^[0-9]{1,12}$ ]]; then
     echo "Rust PTY host: ubuntu-24.04 (the Rust runners' heartbeat CI_RUST_RUNNER_SEEN is unset or not a number)" >&2

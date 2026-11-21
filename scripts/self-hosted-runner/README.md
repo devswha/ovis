@@ -375,10 +375,18 @@ request runs to 2026-11-21: median 2 s, two waits of 14 and 23 minutes), so a sl
 it as quick here: in the shared pool the same runs' jobs waited 8 to 55 s at the median per host and 3 to 6
 minutes at the 90th percentile, behind Integration tests and the browser parts. HostHatch and old-desktop
 run one each. Rebuild the
-image with the toolchain (`--build`) before you add the label. `scripts/ci-runner-route.sh` keeps forks,
-`hosted_only` and manual runs on `ubuntu-24.04`, and sends the job there too while `CI_SELF_HOSTED_LABELS`
-names the hosted image, while no Rust slot has been seen online for five minutes, and once a job of these
-slots has waited more than a minute (both busy).
+image with the toolchain (`--build`) before you add the label. The job goes to these slots only once the
+repository variable `CI_RUST_SELF_HOSTED` is `true`; unset (the default), empty or `false` keeps it on
+`ubuntu-24.04` as before the slots existed, and any other value fails Detect changes:
+
+```sh
+gh variable set CI_RUST_SELF_HOSTED --body true   # the Rust job on the Rust slots
+gh variable delete CI_RUST_SELF_HOSTED            # back to ubuntu-24.04
+```
+
+Opted in, `scripts/ci-runner-route.sh` still keeps forks, `hosted_only` and manual runs on `ubuntu-24.04`,
+and sends the job there too while `CI_SELF_HOSTED_LABELS` names the hosted image, while no Rust slot has
+been seen online for five minutes, and once a job of these slots has waited more than a minute (both busy).
 
 The workflow token cannot list runners, so "seen online" is the repository variable `CI_RUST_RUNNER_SEEN`:
 the epoch seconds at which `rust-heartbeat.sh` last found a runner with the label online. It runs every
@@ -403,18 +411,18 @@ WantedBy=timers.target
 ```
 
 With both Rust slots gone, or the maintainer PC off, the value ages and every later run's job goes
-hosted before it queues. A run routed in the five minutes before that still waits for the slots, and
-GitHub never moves a queued job: so once no Rust runner has been seen for six minutes, the same timer
-cancels each run of this repository whose Rust job is still queued and runs it again in full, and its
-Detect changes then sends the job hosted (at most twice per run; a fork's run is never touched). Such a
-run waits about seven minutes at most, and its other jobs run again. With the maintainer PC off too,
-nothing re-runs it: cancel and re-run it by hand (`gh run cancel <id>`, then `gh run rerun <id>`). The repository variable `CI_RUST_LABELS` can only keep it hosted (any other value fails
-Detect changes):
+hosted before it queues. One window stays open: a run routed in the five minutes before the value aged
+still waits for the slots, and GitHub never moves a queued job, so that run's Rust PTY host job (not a
+required check) waits until a Rust slot is back, or until GitHub drops it after a day. Cancel that run and
+run it again in full; its Detect changes then sends the job hosted:
 
 ```sh
-gh variable set CI_RUST_LABELS --body '"ubuntu-24.04"'   # the Rust slots are gone: the job hosted
-gh variable delete CI_RUST_LABELS   # back to the Rust slots
+gh run cancel <run id> && gh run rerun <run id>   # after the heartbeat has aged (five minutes)
 ```
+
+On main a push run left so holds the next push's run behind it (one concurrency group), and a release
+cannot reuse it, so cancel and re-run it the same way. Turning the opt-in off (`gh variable delete
+CI_RUST_SELF_HOSTED`) sends every later run's job hosted at once.
 
 ## Per-host limits
 
@@ -629,7 +637,7 @@ the rules.
 | ci.yml | changes | HO ubuntu-24.04, else LIGHT | yes under hosted_only; else no: self-hosted unless a fork PR | - | none |
 | ci.yml | windows-install | `windows-latest` | yes | - | setup-ci save, none under hosted_only |
 | ci.yml | macos-session | HO macos-15, else MAC | yes under hosted_only; else yes unless CI_MAC_LABELS is set | - | setup-ci save, none under hosted_only |
-| ci.yml | rust-pty-host | HO ubuntu-24.04, else ROUTE rust | yes under hosted_only; else as routed: the Rust slots or hosted | - | setup-ci save, none under hosted_only |
+| ci.yml | rust-pty-host | HO ubuntu-24.04, else ROUTE rust | yes under hosted_only; else as routed: hosted unless CI_RUST_SELF_HOSTED is true | - | setup-ci save, none under hosted_only |
 | ci.yml | herdr-core-live | HO ubuntu-24.04, else LIGHT | yes under hosted_only; else no: self-hosted unless a fork PR | - | setup-ci restore, none under hosted_only; actions/cache (Cache hc, off under hosted_only) |
 | ci.yml | fast | HO ubuntu-24.04, else ROUTE fast | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only |
 | ci.yml | integration | HO ubuntu-24.04, else ROUTE linux | yes under hosted_only; else as routed: self-hosted or hosted | - | setup-ci save, none under hosted_only |

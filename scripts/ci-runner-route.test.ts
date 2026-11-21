@@ -196,8 +196,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     it("never asks the API for a fork, a configured label set or the hosted override", () => {
       for (const env of [
         { EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork" },
-        // the Rust PTY host's own route reads the API unless CI_RUST_LABELS keeps it hosted
-        { ...pr, CONFIGURED_LABELS: labels, RUST_LABELS: '"ubuntu-24.04"' },
+        { ...pr, CONFIGURED_LABELS: labels },
         { ...pr, CONFIGURED_LABELS: '"ubuntu-24.04"' },
       ]) {
         const state = actions({});
@@ -383,7 +382,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
 
     it("sends the Linux jobs and Fast checks to the hosted image when true, before it reads anything else", () => {
       for (const env of scenarios()) expect(outputs({ ...env, HOSTED_ONLY: "true" })).toEqual({ linux: "ubuntu-24.04", fast: "ubuntu-24.04" });
-      for (const env of scenarios()) expect(rust({ ...env, HOSTED_ONLY: "true", RUST_LABELS: '["self-hosted","other"]' })).toBe("ubuntu-24.04");
+      for (const env of scenarios()) expect(rust({ ...env, HOSTED_ONLY: "true", RUST_SELF_HOSTED: "true", RUST_SEEN: String(Math.floor(Date.now() / 1000)) })).toBe("ubuntu-24.04");
       expect(outputs({ EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: '"self-hosted"', HOSTED_ONLY: "true" })).toEqual({ linux: "ubuntu-24.04", fast: "ubuntu-24.04" });
     });
   });
@@ -393,8 +392,8 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     // the heartbeat rust-heartbeat.sh writes: a Rust runner was seen online `ago` seconds before ROUTE_NOW
     const now = 2_000_000_000;
     const seen = (ago: number) => ({ ROUTE_NOW: String(now), RUST_SEEN: String(now - ago) });
-    const pr = { EVENT_NAME: "pull_request", HEAD_REPO: repo, ...seen(30) };
-    const push = { EVENT_NAME: "push", REF: "refs/heads/main", ...seen(30) };
+    const pr = { EVENT_NAME: "pull_request", HEAD_REPO: repo, RUST_SELF_HOSTED: "true", ...seen(30) };
+    const push = { EVENT_NAME: "push", REF: "refs/heads/main", RUST_SELF_HOSTED: "true", ...seen(30) };
 
     it("goes to the Rust runners for a same-repository pull request and a push while none of its jobs has waited a minute", () => {
       expect(rust({ ...pr, FAKE_GH: actions({}) })).toEqual(ours);
@@ -421,7 +420,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
         [seen(-121), /heartbeat is 121s ahead of this clock/],
         [{ ROUTE_NOW: String(now), RUST_SEEN: "999999999999" }, /ahead of this clock/],
       ] as const) {
-        for (const base of [{ EVENT_NAME: "pull_request", HEAD_REPO: repo }, { EVENT_NAME: "push", REF: "refs/heads/main" }]) {
+        for (const base of [{ EVENT_NAME: "pull_request", HEAD_REPO: repo, RUST_SELF_HOSTED: "true" }, { EVENT_NAME: "push", REF: "refs/heads/main", RUST_SELF_HOSTED: "true" }]) {
           const state = actions({});
           const result = route({ ...base, ...heartbeat, FAKE_GH: state });
           expect(result.status).toBe(0);
@@ -453,7 +452,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     it("keeps a fork, a manual run and every run of a hosted CI_SELF_HOSTED_LABELS hosted, without asking the API", () => {
       for (const env of [
         { EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork" },
-        { EVENT_NAME: "pull_request_target", HEAD_REPO: "someone/fork", RUST_LABELS: '["self-hosted","other"]' },
+        { EVENT_NAME: "pull_request_target", HEAD_REPO: "someone/fork", RUST_SELF_HOSTED: "true" },
         { EVENT_NAME: "workflow_dispatch" },
         { EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: labels },
         { ...pr, CONFIGURED_LABELS: ' "ubuntu-24.04" ' },
@@ -465,18 +464,28 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       }
     });
 
-    it("follows CI_RUST_LABELS only to the hosted image, and never past the rules that keep the job hosted", () => {
-      expect(rust({ ...pr, RUST_LABELS: '"ubuntu-24.04"' })).toBe("ubuntu-24.04");
-      expect(rust({ ...pr, RUST_LABELS: " ", FAKE_GH: actions({}) })).toEqual(ours);
-      for (const env of [{ ...push, CONFIGURED_LABELS: '"ubuntu-24.04"' }, { EVENT_NAME: "workflow_dispatch" }, { ...pr, HOSTED_ONLY: "true" }]) {
-        expect(rust({ ...env, RUST_LABELS: '["self-hosted","self-hosted-ovis-rust"]' })).toBe("ubuntu-24.04");
+    it("stays hosted, as before the Rust runners existed, unless CI_RUST_SELF_HOSTED is \"true\", and reads no API then", () => {
+      for (const optIn of [undefined, "", "false"]) {
+        for (const base of [pr, push]) {
+          const state = actions({});
+          const env: Record<string, string> = { ...base, FAKE_GH: state };
+          if (optIn === undefined) delete env["RUST_SELF_HOSTED"];
+          else env["RUST_SELF_HOSTED"] = optIn;
+          expect(rust(env)).toBe("ubuntu-24.04");
+          if (base === push) expect(existsSync(join(state, "calls"))).toBe(false);
+        }
       }
-      expect(rust({ ...pr, RUST_LABELS: ' "ubuntu-24.04"\n' })).toBe("ubuntu-24.04");
-      for (const value of ['["self-hosted","self-hosted-ovis-rust"]', '["self-hosted","other"]', '["other"]', "[]", '["self-hosted",', '"ubuntu -24.04"', '"ubuntu-24.04 "', "ubuntu-24.04", '"ubuntu-24.04" garbage', '"ubuntu-24.04" "ubuntu-24.04"']) {
-        const result = route({ ...pr, RUST_LABELS: value, FAKE_GH: actions({}) });
+    });
+
+    it("refuses any other CI_RUST_SELF_HOSTED, and never lets it pass the rules that keep the job hosted", () => {
+      for (const value of ["yes", "TRUE", "1", " true", '"true"']) {
+        const result = route({ ...pr, RUST_SELF_HOSTED: value, FAKE_GH: actions({}) });
         expect(result.status).toBe(1);
         expect(result.stdout).toBe("");
-        expect(result.stderr).toContain("::error::repository variable CI_RUST_LABELS");
+        expect(result.stderr).toContain("::error::repository variable CI_RUST_SELF_HOSTED");
+      }
+      for (const env of [{ ...push, CONFIGURED_LABELS: '"ubuntu-24.04"' }, { EVENT_NAME: "workflow_dispatch", RUST_SELF_HOSTED: "true" }, { ...pr, HOSTED_ONLY: "true" }]) {
+        expect(rust({ ...env, FAKE_GH: actions({}) })).toBe("ubuntu-24.04");
       }
     });
 

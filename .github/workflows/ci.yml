@@ -71,8 +71,8 @@ jobs:
           LINUX_LABELS: ${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
-          # the Rust PTY host job's runners: '"ubuntu-24.04"' keeps it hosted (scripts/ci-runner-route.sh)
-          RUST_LABELS: ${{ vars.CI_RUST_LABELS }}
+          # "true" opts the Rust PTY host job in to the Rust runners; unset keeps it hosted (scripts/ci-runner-route.sh)
+          RUST_SELF_HOSTED: ${{ vars.CI_RUST_SELF_HOSTED }}
           # when scripts/self-hosted-runner/rust-heartbeat.sh last saw a Rust runner online (epoch seconds)
           RUST_SEEN: ${{ vars.CI_RUST_RUNNER_SEEN }}
           GH_TOKEN: ${{ github.token }}
