@@ -246,10 +246,9 @@ try {
           const press = async (target: Locator): Promise<void> => { if (phone) await target.tap(); else await target.click(); };
           const startCode = async (page: Page): Promise<void> => {
             await press(page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: label("Add a connection"), exact: true }));
-            await press(page.locator('.connect-phone-dialog .connect-ways [data-tab="devices"]'));
-            await press(page.locator('.connect-phone-dialog .connect-devices-ways [data-way="local"]'));
+            await press(page.locator('.connect-phone-dialog .connect-tabs [data-tab="direct"]'));
           };
-          const shownCode = (page: Page): Locator => page.locator('.connect-phone-dialog [data-tab-panel="devices"] .compact-pair-code');
+          const shownCode = (page: Page): Locator => page.locator('.connect-phone-dialog [data-tab-panel="direct"] .connect-phone-scan .compact-pair-code');
           const closeSettings = async (page: Page): Promise<void> => {
             await page.locator(".connect-phone-dialog").waitFor({ state: "detached", timeout: PAIRS_WITHIN_MS });
             await page.keyboard.press("Escape");

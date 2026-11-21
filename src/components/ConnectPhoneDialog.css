@@ -86,28 +86,10 @@
   color: var(--text);
 }
 
-/* the three ways to add a PC, and pairing a phone apart at their end */
-.connect-ways {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  align-self: stretch;
-}
-
-/* on a narrow phone the tabs keep the row, and pairing a phone goes under them */
+/* the three ways to connect, each tab with its own phone QR code (PhoneScan) */
 .connect-tabs {
-  flex: 1 1 18rem;
+  align-self: stretch;
   min-width: 0;
-}
-
-.connect-phone-way {
-  flex: none;
-}
-
-.connect-phone-way[aria-pressed="true"] {
-  color: var(--text);
-  background: var(--bg-elevated);
 }
 
 .connect-picks {
@@ -130,8 +112,7 @@
   flex: 1;
 }
 
-.connect-tab,
-.connect-devices-local {
+.connect-tab {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -143,9 +124,29 @@
 }
 
 /* a tab not chosen stays mounted (its pairing code is kept), hidden: the flex above would show it */
-.connect-tab[hidden],
-.connect-devices-local[hidden] {
+.connect-tab[hidden] {
   display: none;
+}
+
+/* under a way's own part, what a phone scans to connect that way: one line, then its QR code and code */
+.connect-phone-scan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.connect-phone-scan-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.connect-phone-scan-title svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  flex: none;
 }
 
 .connect-section {

@@ -602,7 +602,7 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
             assert.equal(await account.count(), 0, `signed out, Devices and PCs has no account card (${width}px)`);
             await add.click();
             const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
-            await sheet.locator('.connect-ways [data-tab="relay"]').click();
+            await sheet.locator('.connect-tabs [data-tab="relay"]').click();
             account = sheet.getByTestId("connect-signin");
             const buttons = account.locator(".account-provider");
             if (offered.length === 2) {
