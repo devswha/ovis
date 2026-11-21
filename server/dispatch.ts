@@ -155,7 +155,7 @@ export interface RequestServices {
    * Opens this PC's local confirm page in a browser on its own desktop, as `ovis confirm` does, so its port stays in no
    * answer (R8). False when no page listens or there is no desktop to open it on.
    */
-  readonly openConfirmPage?: () => boolean;
+  readonly openConfirmPage?: () => Promise<boolean>;
   /** the tailscale CLI /api/access reads and POST /api/access/tailscale/serve runs; unset, the one this PC has */
   readonly tailscaleBinary?: string | null | undefined;
   /** puts a waiting key on this PC's screen */
@@ -309,7 +309,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     if (request.method !== "POST") return refuse("method_not_allowed", "use POST", 405);
     if (!ownWindow) return refuse("local_required", "Open the confirm page on this PC's own screen.", 403);
     if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return refuse("invalid_origin", "Open it from this app", 403);
-    return ctx.services.openConfirmPage() ? new Response(null, { status: 204, headers: { "cache-control": "no-store" } })
+    return await ctx.services.openConfirmPage() ? new Response(null, { status: 204, headers: { "cache-control": "no-store" } })
       : refuse("confirm_page_unavailable", "The confirm page could not be opened here. Run ovis confirm on this PC.", 409);
   }
   // a Tailscale change (serve Ovis on the tailnet, open the app) is asked only from this PC's own window: any other

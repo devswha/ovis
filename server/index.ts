@@ -235,7 +235,7 @@ export function createServer(
     /** the desktop app's end of the desktop-owner channel (`takeDesktopOwnerFd`); used only with `accountOpensAll` */
     desktopOwner?: { input: ReadableStream<Uint8Array>; write(line: string): void };
     /** opens the local confirm page on this PC's desktop (openOnDesktop); tests name another */
-    openBrowser?: (url: string) => boolean;
+    openBrowser?: (url: string) => boolean | Promise<boolean>;
     backgroundWait?: { grace: number; limit: number };
     statusNow?: () => number;
     herdrIdentity?: () => string | null;
@@ -687,7 +687,7 @@ export function createServer(
     tailscaleBinary: options.tailscaleBinary,
     get openConfirmPage() {
       if (!devices.screenApprovalActive()) return undefined;
-      return () => confirmListener !== null && (options.openBrowser ?? openOnDesktop)(`http://127.0.0.1:${confirmListener.port}/`);
+      return async () => confirmListener !== null && await (options.openBrowser ?? openOnDesktop)(`http://127.0.0.1:${confirmListener.port}/`);
     },
     get lockRoutes() { return devices.screenApprovalActive() ? lockHandler : undefined; },
     get portalStartupResult() { return portalStartupResult; },
