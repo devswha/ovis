@@ -74,7 +74,8 @@ describe("Manage account's devices and PCs", () => {
     Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       location: { href: "https://pc.example/", search: "", origin: "https://pc.example", pathname: "/", protocol: "https:" },
-      history: { state: null, replaceState() {} }, matchMedia, innerWidth: 1440,
+      history: { state: null, replaceState() {} }, matchMedia, innerWidth: 1440, innerHeight: 900,
+      requestAnimationFrame: () => 1, cancelAnimationFrame() {},
       addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
       setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
     } });
@@ -205,20 +206,44 @@ describe("Manage account's devices and PCs", () => {
     expect(textOf(sheets(root)[0]!.find((node) => node.props.role === "alert"))).toBe("These PCs still have it, so revoke it on them: Desk");
   });
 
+  const startScreen = async (): Promise<ReactTestInstance> => {
+    const none = () => {};
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, {
+        state: { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [] } },
+        scoped: false, iosTab: false, onSignIn: none, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none,
+      }) }), {
+        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelector: () => null, querySelectorAll: () => [], getClientRects: () => [], getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }), closest: () => null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    return renderer!.root;
+  };
+  const menuItem = (root: ReactTestInstance, id: string) => root.find((node) => node.type === "button" && node.props["data-item"] === id);
+
+  it("keeps the signed-in start screen's account in its ⋮ menu: who is signed in, Manage account and Sign out, and no link under the tabs", async () => {
+    let signedOut = 0;
+    keepShellAccount({ signOut: () => { signedOut += 1; }, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null });
+    try {
+      const root = await startScreen();
+      expect(root.findAll((node) => node.type === "button" && node.props["data-action"] === "manage-account")).toHaveLength(0);
+      await act(async () => { action(root, "account-menu").props.onClick(); });
+      const menu = root.find((node) => node.props.role === "menu");
+      expect(textOf(menu)).toContain("Signed in with GitHub");
+      expect(menu.findAll((node) => node.type === "button").map((node) => node.props["data-item"])).toEqual(["manage-account", "sign-out"]);
+      await act(async () => { menuItem(root, "sign-out").props.onClick(); });
+      expect(signedOut).toBe(1);
+    } finally {
+      keepShellAccount(null);
+    }
+  });
+
   it("opens Manage account from the signed-in start screen with no PC open, and removes an offline PC through the account service", async () => {
     const none = () => {};
     keepShellAccount({ signOut: none, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null });
     try {
-      await act(async () => {
-        renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, {
-          state: { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [] } },
-          scoped: false, iosTab: false, onSignIn: none, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none,
-        }) }), {
-          createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
-        });
-      });
-      const root = renderer!.root;
-      await act(async () => { action(root, "manage-account").props.onClick(); });
+      const root = await startScreen();
+      await act(async () => { action(root, "account-menu").props.onClick(); });
+      await act(async () => { menuItem(root, "manage-account").props.onClick(); });
       // no PC answers here: the sheet asks none for its devices, and offers this device's own row
       expect(deviceReads).toBe(0);
       expect(rows(root, "account-devices")).toEqual(["This deviceDisconnect"]);

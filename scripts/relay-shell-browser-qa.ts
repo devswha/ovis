@@ -588,11 +588,11 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
     const pcLink = (page: Page, name: string) => front(page).locator(".relay-add-saved-pc", { hasText: name });
     const signIn = async (page: Page): Promise<void> => {
       await page.getByRole("button", { name: "Continue with GitHub" }).click();
-      // a sign-in lands on Add a PC, or on the join card of an account PC this device is not in yet
-      await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add, [data-add-pc-mode]').first().waitFor();
-      // the tab's launch is past: the front page stays Add a PC
+      // a sign-in lands on the connect tabs, or on the join card of an account PC this device is not in yet
+      await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode]').first().waitFor();
+      // the tab's launch is past: the front page stays the connect tabs
       await page.goto(`${APP}/`);
-      await front(page).locator(".relay-add").waitFor();
+      await front(page).locator(".connect-start-tabs").waitFor();
     };
     // signed out, the front page is the connect tabs (the desktop's Add a connection order), the relay's sign-in inside the first
     const signInScreen = async (page: Page): Promise<void> => {
@@ -665,7 +665,7 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       seenDesk.last_seen_at = new Date(Date.now() - 5 * 60_000).toISOString();
       const seenFirst = pc1.lastSeen();
       assert.equal(seenFirst, seenDesk.last_seen_at, "Desk PC's last_seen_at is five minutes ago");
-      // signed in, the front page is Add a PC, listing Desk PC
+      // signed in, the front page is the connect tabs, listing Desk PC under them
       await a.goto(`${APP}/`);
       await pcLink(a, "Desk PC").waitFor();
       await capture(a, "front-signed-in-1440-dark");
@@ -762,7 +762,7 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await until(async () => (await pc1.pairings()).length === 0 && pc1.joined() && (await saved(b, pc1.id))?.enrollment === "complete", "Desk PC settled and this device recorded completion after the member's approval", 75_000);
       log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) signed in -> Desk PC on Add a PC -> its own page's join sheet -> Ask to join (no confirm step after it, no second Pair) -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app`);
 
-      // the signed-in front page at both widths and themes, and its pairing dialog (Scan a QR code -> Pair with a code),
+      // the signed-in front page at both widths and themes, and its pairing dialog (the relay tab's Pair with a code),
       // whose Escape closes it and leaves no sheet entry in the history
       for (const [page, width] of [[a, 1440], [b, 390]] as const) {
         for (const theme of ["dark", "light"] as const) {
@@ -770,18 +770,26 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           await setTheme(page, theme);
           await pcLink(page, "Desk PC").waitFor();
           await capture(page, `front-${width}-${theme}`);
-          await front(page).locator('[data-action="add-qr"]').click();
-          await front(page).locator('[data-action="add-code"]').click();
+          await front(page).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
           await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
           await settledSheet(page);
           await capture(page, `pair-dialog-${width}-${theme}`);
           await page.keyboard.press("Escape");
           await page.locator("[role=dialog]").waitFor({ state: "detached" });
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
+          // the account is in the ⋮ menu at the top, not under the tabs: who is signed in, Manage account and Sign out
+          assert.equal(await front(page).locator('[data-action="manage-account"]').count(), 0, "no Manage account link under the tabs");
+          await front(page).locator('[data-action="account-menu"]').click();
+          const menu = page.locator(".row-menu, .row-sheet");
+          await menu.getByText("Signed in with GitHub").waitFor();
+          assert.deepEqual(await menu.locator("[data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["manage-account", "sign-out"], `the account menu holds Manage account and Sign out (${width}px)`);
+          await capture(page, `account-menu-${width}-${theme}`);
+          await page.keyboard.press("Escape");
+          await menu.waitFor({ state: "detached" });
         }
       }
       assert.deepEqual([...A.errors, ...B.errors], [], "no page error on either device");
-      log9("front page: Add a PC and its pairing dialog at 1440 and 390, dark and light; Escape closes the dialog and its history entry; page errors on both devices: none");
+      log9("front page: the connect tabs and their pairing dialog at 1440 and 390, dark and light; Escape closes the dialog and its history entry; page errors on both devices: none");
       keep("task-9-account.txt", `# relay-shell-browser-qa (n): the sign-in screen and Add a PC on ${APP} (routed to ${origin}), account service ${ACCOUNT_SERVICE} (shared/account-service-fake.ts), PCs on the Bun relay as ${RELAY}\n${lines.join("\n")}\n`);
     } finally {
       keep("task-9-console.txt", `${consoleLines.join("\n")}\n`);

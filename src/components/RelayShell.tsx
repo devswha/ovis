@@ -13,8 +13,9 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { StartScreenManage } from "./AccountHead.tsx";
+import { StartScreenAccountMenu } from "./AccountHead.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
+import { AccountRelayPanel, ConnectStart } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
@@ -208,11 +209,19 @@ export function RelayShell(props: RelayShellProps) {
     );
   }
 
+  // signed in, the front page is the same connect tabs, the account's PCs under them and its menu at the top; a code
+  // typed from the relay tab goes on in the pairing dialog over them
   if (account?.kind === "signed-in") {
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
-        <div inert={addingPc || undefined}>{noneOnline}{addPc()}<StartScreenManage /></div>
+        <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
+          {noneOnline}
+          <ConnectStart menu={<StartScreenAccountMenu />} devices={addPcs} relay={<AccountRelayPanel onCodeStart={() => { setAddingPc(true); onCodeStart(); }} />} />
+          {account.error !== null && (
+            <p className="account-error relay-add-directory-error" role="alert">{account.error}{onRefreshAccount && <> <button type="button" className="account-link" onClick={() => { void onRefreshAccount(); }}>{t("Try again")}</button></>}</p>
+          )}
+        </div>
         {addingPc && (
           <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {
             setAddingPc(false);

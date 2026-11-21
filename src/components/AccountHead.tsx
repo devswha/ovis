@@ -1,6 +1,6 @@
-import { useCallback, useContext, useEffect, useId, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { LogOut, UserRound, X } from "lucide-react";
+import { EllipsisVertical, LogOut, UserRound, X } from "lucide-react";
 
 import { useHostedSignIn, type HostedSignIn } from "../lib/account/hostedSignIn.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
@@ -10,7 +10,7 @@ import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { AccountManageLists } from "./AccountManage.tsx";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
-import type { RowMenuItem } from "./RowMenu.tsx";
+import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
 
 /**
@@ -133,17 +133,34 @@ export function HostedAccountGroup({ signIn, watching = false }: { signIn: Hoste
 }
 
 /**
- * The hosted app's start screen, signed in: Manage account, for an account whose PCs are all off (remove a dead one,
- * leave, delete the account), acting on the account service with this browser's own sign-in.
+ * The hosted app's start screen, signed in: its ⋮ menu, who is signed in, Manage account (for an account whose PCs are
+ * all off or that has none: remove a dead one, leave, delete the account) and Sign out, acting on the account service
+ * with this browser's own sign-in.
  */
-export function StartScreenManage() {
+export function StartScreenAccountMenu() {
   const t = useT();
   const signIn = useHostedSignIn();
+  const button = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   const [managing, setManaging] = useState(false);
   const close = useCallback(() => setManaging(false), []);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const who = signIn === null ? null : (
+    <span className="account-who"><ProviderMark provider={signIn.provider} /><span>{t("Signed in with {provider}", { provider: PROVIDER_NAMES[signIn.provider] })}</span></span>
+  );
   return (
     <>
-      {signIn !== null && <p className="relay-add-manage"><button type="button" className="account-link" data-action="manage-account" onClick={() => setManaging(true)}>{t("Manage account")}</button></p>}
+      {signIn !== null && (
+        <button ref={button} type="button" className="icon-button connect-start-menu" data-action="account-menu" aria-label={t("Account")} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((was) => !was)}>
+          <EllipsisVertical aria-hidden="true" />
+        </button>
+      )}
+      {open && signIn !== null && button.current !== null && (
+        <RowMenu anchor={button.current} title={t("Account")} header={who} onClose={closeMenu} items={[
+          { id: "manage-account", label: t("Manage account"), icon: UserRound, run: () => setManaging(true) },
+          { id: "sign-out", label: t("Sign out"), icon: LogOut, run: signIn.signOut },
+        ]} />
+      )}
       {managing && <HostedManageSheet signIn={signIn} watching={false} pcHere={false} onClose={close} />}
     </>
   );

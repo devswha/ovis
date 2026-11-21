@@ -16,7 +16,8 @@ import { KeyFingerprintWait } from "./PendingKeys.tsx";
 import { approveOnLine } from "./approveOnLine.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { CodeEntry, ReadyCheckpoint, type RelayShellProps } from "./RelayShell.tsx";
-import { AddressForm, RelayAddPc, SavedPcs, type SavedPc } from "./RelayAddPc.tsx";
+import { ConnectStart } from "./ConnectStart.tsx";
+import { RelayAddPc } from "./RelayAddPc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
 function PcCard({ name, detail = null }: { readonly name: string; readonly detail?: string | null }) {
@@ -173,47 +174,6 @@ export function ScanQrStep({ onCodeStart, back }: { readonly onCodeStart: () => 
   );
 }
 
-type ConnectWay = "relay" | "tailscale" | "direct";
-const CONNECT_WAYS: readonly ConnectWay[] = ["relay", "tailscale", "direct"];
-
-/**
- * The signed-out front page: the desktop's Add a connection tabs in its order, the Ovis relay chosen, its sign-in inside
- * it, so nothing asks for a sign-in first. A browser cannot see the tailnet or the Wi-Fi, so Tailscale and Direct each
- * take a PC's address (RelayAddPc's AddressForm, which opens that PC's own Ovis). `busy`: a sign-in is under way.
- */
-function ConnectStart({ signIn, busy, devices, onCodeStart }: { readonly signIn: ReactNode; readonly busy: boolean; readonly devices: readonly SavedPc[]; readonly onCodeStart: () => void }) {
-  const t = useT();
-  const [way, setWay] = useState<ConnectWay>("relay");
-  const label: Record<ConnectWay, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", direct: t("Direct") };
-  return (
-    <>
-      <h1 className="relay-shell-title connect-start-title">{t("Connect a PC")}</h1>
-      <div className="segmented connect-start-tabs" role="group" aria-label={t("How to connect")}>
-        {CONNECT_WAYS.map((each) => <button key={each} type="button" aria-pressed={way === each} data-tab={each} onClick={() => setWay(each)}>{label[each]}</button>)}
-      </div>
-      {way === "relay" && (
-        <div className="connect-start-panel" data-tab-panel="relay">
-          {signIn}
-          <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>
-          <button type="button" className="btn btn-ghost account-link connect-start-code" data-action="add-code" disabled={busy} onClick={onCodeStart}>{t("Pair with a code")}</button>
-        </div>
-      )}
-      {way === "tailscale" && (
-        <div className="connect-start-panel" data-tab-panel="tailscale">
-          <AddressForm labelShown label={t("Tailscale address")} placeholder="my-pc.tailnet.ts.net" submit={t("Connect")} />
-          <p className="relay-shell-detail">{t("The phone needs the Tailscale app turned on too.")}</p>
-        </div>
-      )}
-      {way === "direct" && (
-        <div className="connect-start-panel" data-tab-panel="direct">
-          <AddressForm labelShown label={t("PC address")} placeholder="192.168.0.10:7317" submit={t("Connect")} />
-        </div>
-      )}
-      {devices.length > 0 && <SavedPcs devices={devices} />}
-    </>
-  );
-}
-
 export function RelayShellCardContent({ props, view, signInFirst, addingPc, setSignedOutView, setAddingPc }: RelayShellCardContentProps) {
   const { state, pcStatus, onCheckPcs, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, onSignIn, accountProviders } = props;
   const t = useT();
@@ -248,7 +208,15 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
     <>
       <div className="visually-hidden" role="status">{announcedStatus}</div>
       {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} state={state} retry={onRetry} />}
-      {signInFirst && <ConnectStart signIn={signIn} busy={signingIn} devices={state.kind === "list" ? state.devices : []} onCodeStart={onCodeStart} />}
+      {signInFirst && (
+        <ConnectStart devices={state.kind === "list" ? state.devices : []} relay={(
+          <>
+            {signIn}
+            <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>
+            <button type="button" className="btn btn-ghost account-link connect-start-code" data-action="add-code" disabled={signingIn} onClick={onCodeStart}>{t("Pair with a code")}</button>
+          </>
+        )} />
+      )}
       {state.kind === "list" && account === null && (
         <>
           <h1 className="relay-shell-title">{t("Your PCs")}</h1>

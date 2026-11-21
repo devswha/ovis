@@ -3,7 +3,7 @@ import "./RelayAddPc.css";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Globe, QrCode, SquareTerminal, type LucideIcon } from "lucide-react";
 
-import { useT } from "../lib/i18n.ts";
+import { useT, type Translate } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { SheepMascot } from "./SheepMascot.tsx";
@@ -51,7 +51,7 @@ async function openAddress(url: URL): Promise<void> {
   else window.location.assign(url.href);
 }
 
-function Way({ icon: Icon, title, sub, onClick, action }: { readonly icon: LucideIcon; readonly title: string; readonly sub: string; readonly onClick: () => void; readonly action: string }) {
+export function Way({ icon: Icon, title, sub, onClick, action }: { readonly icon: LucideIcon; readonly title: string; readonly sub: string; readonly onClick: () => void; readonly action: string }) {
   return (
     <button type="button" className="relay-add-way" data-action={action} onClick={onClick}>
       <span className="relay-add-way-icon"><Icon aria-hidden="true" /></span>
@@ -78,11 +78,28 @@ export function SavedPcs({ devices }: { readonly devices: readonly SavedPc[] }) 
   );
 }
 
+/** Whether the phone app around this page can scan a PC's QR code itself (a browser cannot). */
+export function canScanQr(): boolean {
+  return hasNativePlugin(SCANNER);
+}
+
+/**
+ * Scans a PC's QR code with the phone app's scanner and hands what it read to `take`; `failed`: the scanner could not
+ * run (the camera refused). The plugin's own JS fills these defaults; the page calls the bridge without it (app/web/connect.js).
+ */
+export function scanQr(t: Translate, take: (url: URL | null) => void, failed: (cause: unknown) => void): void {
+  void callNative<{ ScanResult?: string }>(SCANNER, "scanBarcode", { hint: 0, scanInstructions: t("Point at the QR code on the PC's screen"), scanButton: false, scanText: " ", cameraDirection: 1, scanOrientation: 3 }).then((result) => {
+    if (result.ScanResult) take(addressOf(result.ScanResult));
+  }, failed);
+}
+
+export type AddressOpen = ReturnType<typeof useAddressOpen>;
+
 /**
  * What a scanned or typed address does, with the error it ends on: `cancel` stops an address the phone app is still
  * checking (Android asks it for up to 20 s), which leaving the screen does by itself.
  */
-function useAddressOpen() {
+export function useAddressOpen() {
   const t = useT();
   const [error, setError] = useState<string | null>(null);
   // the public http address the person was just warned about: opening it again goes ahead
@@ -120,12 +137,16 @@ function useAddressOpen() {
   return { error, setError, failed, cancel, take };
 }
 
-/** A PC's address in one field (`label` names it) and its submit button, then what opening it ended on. */
-export function AddressForm({ label, placeholder, submit: submitLabel, labelShown = false, autoFocus = false }: {
-  readonly label: string; readonly placeholder: string; readonly submit: string; readonly labelShown?: boolean; readonly autoFocus?: boolean;
+/**
+ * A PC's address in one field (`label` names it) and its submit button, then what opening it ended on; `open`: the
+ * opener of a screen that has other ways to open a PC beside it, which then shows what opening ended on itself.
+ */
+export function AddressForm({ label, placeholder, submit: submitLabel, labelShown = false, autoFocus = false, open }: {
+  readonly label: string; readonly placeholder: string; readonly submit: string; readonly labelShown?: boolean; readonly autoFocus?: boolean; readonly open?: AddressOpen;
 }) {
   const fieldId = useId();
-  const { error, take } = useAddressOpen();
+  const own = useAddressOpen();
+  const { error, take } = open ?? own;
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     take(addressOf((event.currentTarget.elements.namedItem("address") as HTMLInputElement).value));
@@ -137,7 +158,7 @@ export function AddressForm({ label, placeholder, submit: submitLabel, labelShow
         <input id={fieldId} name="address" className="input" type="url" inputMode="url" {...(labelShown ? {} : { "aria-label": label })} placeholder={placeholder} autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="url" autoFocus={autoFocus} />
         <button type="submit" className="btn btn-primary">{submitLabel}</button>
       </form>
-      {error !== null && <p className="account-error" role="alert">{error}</p>}
+      {open === undefined && error !== null && <p className="account-error" role="alert">{error}</p>}
     </>
   );
 }
@@ -160,13 +181,10 @@ export function RelayAddPc({ onBack, devices, qr }: {
   // a step that replaces the control that had the focus gives it to its own title, so a keyboard keeps its place
   useEffect(() => { if (step === "ways" && document.activeElement === document.body) title.current?.focus(); }, [step]);
   const scan = (): void => {
-    if (!hasNativePlugin(SCANNER)) { go("qr"); return; }
+    if (!canScanQr()) { go("qr"); return; }
     setError(null);
-    // the plugin's own JS fills these defaults; the page calls the bridge without it (app/web/connect.js). A scanner that
-    // cannot run (the camera refused) leads to the QR step, which offers a code instead
-    void callNative<{ ScanResult?: string }>(SCANNER, "scanBarcode", { hint: 0, scanInstructions: t("Point at the QR code on the PC's screen"), scanButton: false, scanText: " ", cameraDirection: 1, scanOrientation: 3 }).then((result) => {
-      if (result.ScanResult) take(addressOf(result.ScanResult));
-    }, () => go("qr"));
+    // a scanner that cannot run (the camera refused) leads to the QR step, which offers a code instead
+    scanQr(t, take, () => go("qr"));
   };
   const back = step === "ways" ? onBack : () => go("ways");
   if (step === "qr") return <>{qr(() => go("ways"))}</>;

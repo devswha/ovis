@@ -156,7 +156,7 @@ const PART_FILES: Record<string, string[]> = {
   updates: ["components/UpdateControls.tsx", "lib/updateProgress.ts"],
   palette: ["components/CommandPalette.tsx"],
   setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx"],
-  relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/NoPcOnline.tsx", "components/RelayAddPc.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
+  relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/NoPcOnline.tsx", "components/RelayAddPc.tsx", "components/ConnectStart.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
   guide: ["components/SetupGuide.tsx", "components/RelayOnlyWarning.tsx"],
   dashboard: ["components/AddPcSheet.tsx", "components/relayPcState.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
