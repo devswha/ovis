@@ -57,6 +57,8 @@ export interface UsageContext {
 interface Account {
   id: string;
   label: string | null;
+  /** Keep the existing source-based key when adding a label to a previously unnamed sign-in. */
+  sourceKey?: true;
 }
 
 interface SignIn {
@@ -693,9 +695,11 @@ function antigravitySignIn(value: string | null): SignIn | null {
   if (!access) return null;
   const idToken = text(root["id_token"]);
   const claims = idToken ? jwtClaims(idToken) : {};
-  const email = text(claims["email"]);
+  const email = idToken ? text(claims["email"]) : text(root["id_token_email"]);
   const sub = text(claims["sub"]);
-  const account = sub || email ? { id: sub ?? email!, label: email } : null;
+  const account: Account | null = sub || email
+    ? { id: sub ?? email!, label: email, ...(idToken ? {} : { sourceKey: true as const }) }
+    : null;
   return { token: access, expiresAt: epochMs(token["expiry"]), account };
 }
 
@@ -721,6 +725,11 @@ function antigravityWindows(groups: unknown): UsageWindow[] {
   return windows;
 }
 
+async function antigravityCliWindows(ctx: UsageContext): Promise<UsageWindow[]> {
+  const cli = record(parseJson(await ctx.run(["agy", "--print", "/usage", "--output-format", "json", "--print-timeout", "30s"], 35_000).catch(() => null)));
+  return cli["status"] === "SUCCESS" ? antigravityWindows(record(record(cli["command"])["data"])["groups"]) : [];
+}
+
 const antigravity: UsageProvider = {
   id: "antigravity",
   async signIns(ctx) {
@@ -741,19 +750,24 @@ const antigravity: UsageProvider = {
     };
     let body: Json;
     try {
-      body = await requestJson(ctx, "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init);
+      try {
+        body = await requestJson(ctx, "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init);
+      } catch (error) {
+        if (error instanceof UsageHttpError && (error.status === 401 || error.status === 403 || error.status === 429)) throw error;
+        body = await requestJson(ctx, "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init);
+      }
     } catch (error) {
-      if (error instanceof UsageHttpError && (error.status === 401 || error.status === 403 || error.status === 429)) throw error;
-      body = await requestJson(ctx, "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init);
+      // Starter plans can have CLI quota even when the quota service refuses the account.
+      if (error instanceof UsageHttpError && error.status === 403) {
+        const windows = await antigravityCliWindows(ctx);
+        if (windows.length > 0) return { plan: null, windows };
+      }
+      throw error;
     }
     const windows = antigravityWindows(body["groups"] ?? record(body["response"])["groups"]);
     if (windows.some((window) => window.scope === null)) return { plan: null, windows };
-    const cli = record(parseJson(await ctx.run(["agy", "--print", "/usage", "--output-format", "json", "--print-timeout", "30s"], 35_000).catch(() => null)));
-    if (cli["status"] === "SUCCESS") {
-      const cliWindows = antigravityWindows(record(record(cli["command"])["data"])["groups"]);
-      if (cliWindows.length > 0) return { plan: null, windows: cliWindows };
-    }
-    return { plan: null, windows };
+    const cliWindows = await antigravityCliWindows(ctx);
+    return { plan: null, windows: cliWindows.length > 0 ? cliWindows : windows };
   },
 };
 
@@ -1304,9 +1318,9 @@ function holderOf(found: Found): string {
   return "locked" in found ? "locked" : `token:${createHash("sha256").update(found.token).digest("hex")}`;
 }
 
-/** The key an account is listed by: its id, or, for a sign-in that names none, where it was found, hashed. */
+/** The key an account is listed by: its id or, for a source-keyed sign-in, where it was found, hashed. */
 function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
-  return account ? `${id}:${account.id}` : `${id}@${createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
+  return account && !account.sourceKey ? `${id}:${account.id}` : `${id}@${createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
 }
 
 /**

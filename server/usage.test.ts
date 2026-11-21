@@ -721,7 +721,7 @@ describe("providers", () => {
     expect(requests).toHaveLength(1);
   });
 
-  it.each([401, 403, 429])("preserves HTTP %s handling without starting the CLI", async (status) => {
+  it.each([401, 429])("preserves HTTP %s handling without starting the CLI", async (status) => {
     write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
       token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() },
     });
@@ -731,6 +731,63 @@ describe("providers", () => {
     const [usage] = (await new UsageService(ctx, only("antigravity")).report()).providers;
     expect(usage!.problem).toBe(status === 429 ? "rate_limited" : "expired");
     expect(calls).toBe(0);
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each([403, 503])("reads Antigravity Starter quota from the CLI after HTTP %s", async (status) => {
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
+      token: { access_token: "fake-antigravity-token", expiry: new Date(NOW + HOUR).toISOString() },
+      id_token_email: "starter@example.com",
+    });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status });
+    replies.set("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status: 403 });
+    const argv = ["agy", "--print", "/usage", "--output-format", "json", "--print-timeout", "30s"];
+    commands.set(argv.join(" "), JSON.stringify({ status: "SUCCESS", command: { data: { groups: [{ buckets: [
+      { id: "gemini-weekly", remaining_fraction: 0.75, reset_time: "2026-10-04T00:00:00Z" },
+      { id: "3p-weekly", remaining_fraction: 0.5 },
+    ] }] } } }));
+    const [usage] = (await new UsageService(context(), only("antigravity")).report()).providers;
+    expect(usage).toMatchObject({
+      key: expect.stringMatching(/^antigravity@[0-9a-f]+$/), account: "starter@example.com", problem: null,
+      windows: [
+        { kind: "week", scope: null, used_percent: 25, resets_at: "2026-10-04T00:00:00.000Z", starts_at: null },
+        { kind: "week", scope: "Other models", used_percent: 50, resets_at: null, starts_at: null },
+      ],
+    });
+    expect(commandCalls).toContainEqual(argv);
+    expect(requests).toHaveLength(status === 403 ? 1 : 2);
+  });
+
+  it("keeps a previously removed Antigravity account removed after learning its email", async () => {
+    const path = join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+    const token = { access_token: "fake-antigravity-token", expiry: new Date(NOW + HOUR).toISOString() };
+    write(path, { token });
+    const url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+    replies.set(url, { body: { groups: [{ buckets: [{ id: "gemini-weekly", remaining_fraction: 0.5 }] }] } });
+    const ctx = context("darwin");
+    const [original] = (await new UsageService(ctx, only("antigravity")).report()).providers;
+    write(path, { token, id_token_email: "starter@example.com" });
+    const service = new UsageService(ctx, only("antigravity"));
+    service.skipAccounts(() => new Set([original!.key]));
+    expect((await service.report()).providers).toMatchObject([{ key: original!.key, account: "starter@example.com" }]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each(["no windows", "run failure"])("keeps Antigravity expired after HTTP 403 and CLI %s", async (outcome) => {
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
+      token: { access_token: "fake-antigravity-token", expiry: new Date(NOW + HOUR).toISOString() },
+    });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status: 403 });
+    const argv = ["agy", "--print", "/usage", "--output-format", "json", "--print-timeout", "30s"];
+    const calls: string[][] = [];
+    const ctx: UsageContext = { ...context("darwin"), async run(args) {
+      calls.push(args);
+      if (outcome === "run failure") throw new Error("CLI failed");
+      return JSON.stringify({ status: "SUCCESS", command: { data: { groups: [] } } });
+    } };
+    const [usage] = (await new UsageService(ctx, only("antigravity")).report()).providers;
+    expect(usage).toMatchObject({ problem: "expired", windows: [] });
+    expect(calls).toEqual([argv]);
     expect(requests).toHaveLength(1);
   });
 
@@ -789,6 +846,7 @@ describe("providers", () => {
     write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
       token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() },
       id_token: jwt({ email: "user@example.com", sub: "sub-123" }),
+      id_token_email: "fallback@example.com",
     });
     replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { body: { response: { groups: [{ buckets: [
       { bucketId: "gemini-5h", remainingFraction: 0.8, resetTime: "2026-09-29T16:00:00Z" },
