@@ -51,6 +51,17 @@ describe("esc", () => {
     expect(framer.feed(bytes("[A"), T0 + ESC_WAIT_MS - 1)).toEqual([{ ...UP, at: T0 }]);
   });
 
+  it("gives ESC ], ESC P or ESC _ alone as its Alt key at the wait, and reads what follows as typed", () => {
+    const cases = [["]", "BRACKET_RIGHT", "]"], ["P", "P", "p"], ["_", "MINUS", "-"]] as const;
+    for (const [introducer, key, unshifted] of cases) {
+      const framer = new Framer();
+      expect(framer.feed(bytes(`\x1b${introducer}`), T0)).toEqual([]);
+      expect(framer.deadline()).toBe(T0 + ESC_WAIT_MS);
+      expect(framer.tick(T0 + ESC_WAIT_MS)).toEqual([{ type: "key", key, mods: { alt: true }, action: "press", text: introducer, unshifted, at: T0 }]);
+      expect(normalize(framer.feed(bytes("abc\r"), T0 + ESC_WAIT_MS + 1))).toEqual([{ type: "text", text: "abc" }, { type: "key", key: "ENTER", mods: {}, action: "press" }]);
+    }
+  });
+
   it("gives ESC ESC as two Escapes", () => {
     expectEveryWay(bytes("\x1b\x1b"), [ESCAPE, ESCAPE]);
   });

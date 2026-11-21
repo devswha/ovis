@@ -55,6 +55,9 @@ const ROWS: Row[] = [
   ["ESC ESC", bytes("\x1b\x1b"), [key("ESCAPE"), key("ESCAPE")]],
   ["ESC [ alone is alt+[", bytes("\x1b["), [typed("BRACKET_LEFT", "[", "[", A)]],
   ["ESC O alone is alt+shift+o", bytes("\x1bO"), [typed("O", "O", "o", A)]],
+  ["ESC ] alone is alt+]", bytes("\x1b]"), [typed("BRACKET_RIGHT", "]", "]", A)]],
+  ["ESC P alone is alt+shift+p", bytes("\x1bP"), [typed("P", "P", "p", A)]],
+  ["ESC _ alone is alt+shift+-", bytes("\x1b_"), [typed("MINUS", "_", "-", A)]],
   ["ESC before an arrow", bytes("\x1b\x1b[A"), [key("ESCAPE"), key("ARROW_UP")]],
   // CSI and SS3
   ["up", bytes("\x1b[A"), [key("ARROW_UP")]],

@@ -45,8 +45,9 @@ function firstContinuation(lead: number): [number, number] {
  * no clock: the caller passes its time with each read (`feed`), asks when the next wait ends
  * (`deadline`) and calls `tick` then. A read may end anywhere, inside a character or a sequence; the
  * events are the same however the bytes were cut, as long as no wait passes between the reads.
- * - A read that ends in a lone ESC, `ESC [` or `ESC O` waits ESC_WAIT_MS (ESC_WAIT_SLOW_MS while the host
- *   reports the mouse or has the kitty flag on) for the rest, then gives Escape, Alt+[ or Alt+O.
+ * - A read that ends in a lone ESC or in an introducer alone (`ESC [`, `ESC O`, or `ESC ]`, `ESC P` or `ESC _`, which
+ *   start a string) waits ESC_WAIT_MS (ESC_WAIT_SLOW_MS while the host reports the mouse or has the kitty flag on) for
+ *   the rest, then gives Escape or the Alt key that sends those bytes: Alt+[, Alt+O, Alt+], Alt+P or Alt+_.
  * - A longer unfinished sequence never becomes a key: it is dropped as `unknown` SEQUENCE_DROP_MS after
  *   its first byte.
  * - An unfinished UTF-8 character waits for the next read, however late, and is never split.
@@ -395,8 +396,14 @@ export class Framer {
   }
 
   /** Sets the wait a read leaves behind: the Esc wait after a lone ESC, `ESC [` or `ESC O`, the drop wait inside a longer sequence. */
+  /** Only the introducer of a CSI, an SS3 or a string is read, nothing after it: the bytes a lone Alt key also sends. */
+  private introducerOnly(): boolean {
+    if (this.seq.length !== 2) return false;
+    return this.state === "csi" || this.state === "ss3" || (this.state === "string" && this.stringEscAt === undefined);
+  }
+
   private arm(now: number): void {
-    const introducerOnly = this.state === "esc" || ((this.state === "csi" || this.state === "ss3") && this.seq.length === 2);
+    const introducerOnly = this.state === "esc" || this.introducerOnly();
     if (introducerOnly) this.pending = now + (this.modes.mouse || this.modes.kitty ? ESC_WAIT_SLOW_MS : ESC_WAIT_MS);
     else if (this.state === "csi" || this.state === "string") this.pending = this.seqAt + SEQUENCE_DROP_MS;
     else this.pending = undefined;
@@ -423,8 +430,8 @@ export class Framer {
     if (this.state === "esc") {
       this.ground();
       this.emit(typedEscape, at);
-    } else if ((this.state === "csi" || this.state === "ss3") && this.seq.length === 2) {
-      const char = this.state === "csi" ? "[" : "O";
+    } else if (this.introducerOnly()) {
+      const char = String.fromCharCode(this.seq[1]!);
       this.ground();
       this.emit(typedKey(char, { alt: true }), at);
     } else if (this.state === "csi" || this.state === "string") {
