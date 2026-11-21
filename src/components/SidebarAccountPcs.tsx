@@ -18,7 +18,7 @@ import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource 
  * are not in this app yet, under the PCs the sidebar lists, each added to this PC on its own as soon as it answers, one
  * at a time (the relay tab's Add, and the same approval on another device), so every PC of the account lists every
  * other whichever one a device opens. Each row only says where it is, with nothing to press: Connecting… while it is
- * added, why it was not once a pairing failed (asked again when the window comes back), Switched off where it did not
+ * added, why it was not once a pairing failed (asked again once the account lists something new), Switched off where it did not
  * answer, or that its Ovis needs an update. The approval itself is asked on the account's devices, never here. A PC once
  * added is the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
  */
@@ -83,9 +83,11 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
     onListed?.(listed === "" ? [] : listed.split("\n"));
     return () => onListed?.([]);
   }, [listed, onListed]);
-  // each PC is added on its own once per look: a failed or declined one is asked again only when the window comes back
+  // each PC is added on its own once: a declined or failed one is asked again only once the account lists something
+  // new, never because the window came back, so a member's Deny is not asked of them again
   const [tried, setTried] = useState<ReadonlySet<string>>(new Set());
-  useEffect(() => { setTried(new Set()); }, [reads]);
+  const listing = accountPcs.pcs?.map((pc) => `${pc.server_id}:${pc.new_until ?? ""}`).join("\n") ?? "";
+  useEffect(() => { setTried(new Set()); }, [listing]);
   const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id)) : undefined;
   useEffect(() => {
     if (next === undefined) return;

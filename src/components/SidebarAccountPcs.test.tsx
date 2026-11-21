@@ -190,14 +190,17 @@ describe("the account's PCs in the sidebar", () => {
     expect(opened.map((machine) => machine.id)).toEqual(["desk-id"]);
   });
 
-  it("says why a PC was not added and asks it again only when the window comes back", async () => {
+  it("says why a PC was not added and asks it nothing more, also when the window comes back, until the account's list changes", async () => {
     await mount();
     await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
     await settle();
     expect(text(row("Desk"))).toContain("That PC was not approved.");
     expect(text(row("Desk"))).not.toContain("Connecting…");
-    await settle();
+    await comeBack();
+    await comeBack();
     expect(starts()).toBe(1);
+    // the account lists something new: each PC gets one more look
+    source.list = async () => { lists += 1; return { account: "acct", pcs: [OWN, DESK, LAB, OLD, AWAY, { ...pc("4", "New one"), server_id: "4".repeat(32) }] }; };
     await comeBack();
     expect(starts()).toBe(2);
     expect(admitted).toEqual([DESK.server_id, DESK.server_id]);
