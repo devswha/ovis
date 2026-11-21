@@ -4,20 +4,22 @@
 # file). Each round, one job:
 #   1. takes the winvm lease and keeps it while it runs: a lane that holds the VM keeps the runner off (CI then takes
 #      windows-latest), and a lane that wants the VM stops this unit first;
-#   2. fences the VM (winvm-fence.ps1 over ssh: the other repositories' runner services kept in its snapshot are
-#      stopped, each once it is not in a job) and only on its answer "FENCE 0 0", `winvm reset` and `winvm start`:
-#      every job starts from the snapshot. Without that answer it resets nothing and tries again later;
+#   2. fences the VM (winvm-fence.ps1 -IncludeOwn over ssh: the other repositories' runner services kept in its
+#      snapshot are stopped, each once it is not in a job, and a job of this runner still running counts too) and only
+#      on its answer "FENCE 0 0", `winvm reset` and `winvm start`: every job starts from the snapshot. Without that
+#      answer it resets nothing and tries again later. A fence that stopped a service has touched the VM;
 #   3. copies the newest actions/runner package and this folder's winvm-*.ps1 into the VM, and registers one ephemeral
 #      runner (labels self-hosted, self-hosted-ovis-win) in the VM's desktop session through Invoke-InSession, as the
 #      Windows checks need; the registration token goes over ssh's stdin into a file the VM script deletes;
 #   4. while that runner listens and no other runner in the VM is in a job, writes the Unix time into the repository
 #      variable CI_WINVM_READY every minute, which ci-runner-route.sh reads; a job's start sets it to 0.
 # An idle runner is recycled after 100 minutes (Invoke-InSession ends its task after two hours). A stop waits for a job
-# in progress; an idle runner first clears the mark and waits for a job a route sent just before (a route's Detect
-# changes job ends within five minutes), then is deleted, which GitHub refuses while it is in a job. Before it ends,
-# a stop waits until that long has passed since winvm was last offered, then reads the queue: a job queued for
-# winvm's label, or a queue it cannot read, gets another round (three at most; then it fails). Then, if it touched
-# the VM, it fences and resets it, and releases the lease. When the VM cannot be fenced and reset, or the lease not
+# in progress; an idle runner first clears the mark and waits for a job a route sent before (a route takes a mark up
+# to three minutes old, and its Detect changes job ends within five), then is deleted, which GitHub refuses while it
+# is in a job. A session that does not listen within 10 minutes is ended. Before it ends, a stop waits until every
+# route that could have read the last offer has queued its job, then reads the queue: a job queued for winvm's
+# label, or a queue it cannot read, gets another round (three at most; then it fails). Then, if it touched the VM,
+# it fences and resets it, and releases the lease. When the VM cannot be fenced and reset, or the lease not
 # released, the lease stays held and the script fails, so a lane sees it.
 # --once: one round, then the same stop; it fails when that round failed.
 set -uo pipefail
@@ -30,9 +32,13 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/winvm-runner
 VM_DIR='C:\ProgramData\winvm\ovis-runner'
 IDLE_LIMIT=6000
+LISTEN_LIMIT=600
+# ci-runner-route.sh takes a mark up to this old; a route's Detect changes job ends within five minutes (DRAIN)
+MARK_AGE=180
 DRAIN=330
 once=0
 failed=0
+capped=0
 [ "${1:-}" = --once ] && once=1
 mkdir -p "$CACHE"
 exec 9>"$CACHE/launcher.lock"
@@ -78,18 +84,34 @@ offer() {
   fi
 }
 
-# A reset must not kill another runner's job, nor one it takes right before. fence_vm <seconds> [stop]: 0 once the
-# VM is off, or winvm-fence.ps1 answered "FENCE 0 0" (no other runner service left to take a job, none in one); 1
-# after <seconds> without that (or at a stop, with "stop").
+# Waits until every route that could have read the last offer has queued its job: a route takes a mark up to
+# MARK_AGE old, and its Detect changes job ends within DRAIN.
+routes_wait() {
+  local offered left
+  offered=$(cat "$RUN/offered" 2>/dev/null || echo 0)
+  left=$(( offered + MARK_AGE + DRAIN - $(date +%s) ))
+  if (( left > 0 )); then
+    log "waiting ${left}s for a job a route sent before winvm was last offered"
+    sleep "$left"
+  fi
+}
+
+# A reset must not kill another runner's job, nor one it takes right before, nor this runner's own job (the ssh that
+# watched it can end while it goes on). fence_vm <seconds> [stop]: 0 once the VM is off, or winvm-fence.ps1
+# -IncludeOwn answered "FENCE 0 0" (no other runner service left to take a job, no job running); 1 after <seconds>
+# without that (or at a stop, with "stop"). A service it stopped stays stopped until a reset: the VM is touched.
 fence_vm() {
-  local state answer waited=0 script
-  script=$(iconv -f UTF-8 -t UTF-16LE "$HERE/winvm-fence.ps1" | base64 -w 0) || return 1
+  local state out rc answer waited=0 script
+  script=$({ printf '& {\n'; cat "$HERE/winvm-fence.ps1"; printf '\n} -IncludeOwn\n'; } | iconv -f UTF-8 -t UTF-16LE | base64 -w 0) || return 1
   while :; do
     state=$(winvm status | head -1)
     [ "$state" = "shut off" ] && return 0
     answer=
-    if [ "$state" = running ] && answer=$(vm "pwsh -NoProfile -EncodedCommand $script" </dev/null); then
-      answer=$(tail -n 1 <<<"$answer" | tr -d '\r')
+    if [ "$state" = running ]; then
+      out=$(vm "pwsh -NoProfile -EncodedCommand $script" </dev/null)
+      rc=$?
+      if grep -q '^Stopped ' <<<"$out"; then touch "$RUN/touched"; fi
+      (( rc == 0 )) && answer=$(tail -n 1 <<<"$out" | tr -d '\r')
       [ "$answer" = "FENCE 0 0" ] && return 0
     fi
     if (( waited % 300 == 0 )); then log "winvm is ${state:-unknown}, ${answer:-no answer}; not resetting yet"; fi
@@ -119,11 +141,18 @@ runner_id() { gh api --paginate "repos/$REPO/actions/runners" --jq ".runners[] |
 heartbeat() {
   local ssh_pid=$1 since=$SECONDS id
   while kill -0 "$ssh_pid" 2>/dev/null; do
+    if [ ! -e "$RUN/listening" ] && (( SECONDS - since > LISTEN_LIMIT )); then
+      log "runner $NAME did not listen within $((LISTEN_LIMIT / 60)) minutes; ending its session"
+      kill "$ssh_pid" 2>/dev/null
+      return
+    fi
     if [ -e "$RUN/listening" ] && [ ! -e "$RUN/job" ]; then
       if stopping || (( SECONDS - since > IDLE_LIMIT )); then
         mark 0
-        log "no new job routes here now; waiting ${DRAIN}s for one a route sent before"
-        sleep "$DRAIN"
+        # the session this ends counts as a round that went well, unless a job came
+        touch "$RUN/drained"
+        log "no new job routes here now"
+        routes_wait
         for _ in 1 2 3; do
           [ -e "$RUN/job" ] && break
           if id=$(runner_id) && [ -n "$id" ] && gh api -X DELETE "repos/$REPO/actions/runners/$id" >/dev/null 2>&1; then
@@ -148,7 +177,7 @@ heartbeat() {
 }
 
 round() {
-  local version token ssh_pid beat_pid busy desktop=0
+  local version token ssh_pid beat_pid busy rc desktop=0
   until busy=$(winvm lease "$LEASE"); do
     log "$busy"
     (( once )) && return 0
@@ -174,7 +203,7 @@ round() {
   printf '%s\n' "$token" | vm "pwsh -NoProfile -Command \"[Console]::In.ReadLine() | Set-Content -NoNewline -LiteralPath '$VM_DIR\\token'\"" \
     || { log "could not hand the token over"; return 1; }
   unset token
-  rm -f "$RUN/listening" "$RUN/job"
+  rm -f "$RUN/listening" "$RUN/job" "$RUN/drained"
   : >"$RUN/out"
   ssh -o BatchMode=yes winvm "pwsh -File C:\\ProgramData\\winvm\\Invoke-InSession.ps1 -Command '& $VM_DIR\\winvm-runner.ps1 -Version $version -Repository $REPO -Name $NAME'" \
     >"$RUN/out" 2>&1 </dev/null &
@@ -192,10 +221,13 @@ round() {
     esac
   done < <(tail -n +1 -f --pid="$ssh_pid" "$RUN/out")
   wait "$ssh_pid"
-  log "runner $NAME ended ($?)"
+  rc=$?
+  log "runner $NAME ended ($rc)"
   kill "$beat_pid" 2>/dev/null
   wait "$beat_pid" 2>/dev/null
   mark 0
+  # a session the drain ended went well; any other failure (one that never listened, a dropped ssh) is a failed round
+  (( rc == 0 )) || { [ -e "$RUN/drained" ] && [ ! -e "$RUN/job" ]; }
 }
 
 # Leaves the VM as a lane expects it: reset to the snapshot and running if a round touched it, no runner of this
@@ -214,22 +246,22 @@ cleanup() {
       log "winvm release failed; the lease may still name $LEASE"
     fi
   fi
-  id=$(runner_id) && for i in $id; do gh api -X DELETE "repos/$REPO/actions/runners/$i" >/dev/null || ok=1; done
+  if id=$(runner_id); then
+    for i in $id; do gh api -X DELETE "repos/$REPO/actions/runners/$i" >/dev/null || ok=1; done
+  else
+    ok=1
+    log "the runners could not be read; runner $NAME may still be registered"
+  fi
   rm -rf "$RUN"
   log "stopped"
   return "$ok"
 }
 
-# true when a job may still come for winvm's label: one is queued, or the queue cannot be read. First waits until a
-# route that read the last offer has had its Detect changes job end (DRAIN).
+# true when a job may still come for winvm's label: one is queued, or the queue cannot be read. First waits until every
+# route that read the last offer has queued its job (routes_wait).
 jobs_may_come() {
-  local offered n since
-  offered=$(cat "$RUN/offered" 2>/dev/null || echo 0)
-  since=$(( $(date +%s) - offered ))
-  if (( since < DRAIN )); then
-    log "waiting $((DRAIN - since))s for a job a route sent before winvm was last offered"
-    sleep $((DRAIN - since))
-  fi
+  local n
+  routes_wait
   for _ in 1 2 3; do
     if n=$(queued_jobs); then
       (( n > 0 )) && log "$n job(s) queued for $LABEL"
@@ -257,7 +289,7 @@ while :; do
     if [ -e "$RUN/leased" ] && jobs_may_come; then
       if (( extra >= 3 )); then
         log "a job may still wait for $LABEL after 3 more rounds; cancel it and re-run all jobs of its run (the route then takes windows-latest)"
-        failed=1
+        capped=1
         break
       fi
       extra=$((extra + 1))
@@ -268,5 +300,6 @@ while :; do
   fi
 done
 cleanup || exit 1
+(( capped )) && exit 1
 (( once )) && exit "$failed"
 exit 0

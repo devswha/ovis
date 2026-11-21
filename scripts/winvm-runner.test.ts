@@ -27,8 +27,9 @@ case "$1" in
   start) echo running > "$FAKE/state" ;;
 esac
 `,
-  // the VM: a fence stops the other runner services that are not in a job; Invoke-InSession runs one job a round, and from
-  // the second round on serves one of the jobs queued for the label
+  // the VM: a fence stops the other runner services that are not in a job (one service per worker), and counts this
+  // runner's own job only when the script it is sent asks for that; Invoke-InSession runs one job a round, and from the
+  // second round on serves one of the jobs queued for the label
   ssh: `#!/bin/bash
 cmd="\${@: -1}"
 case "$cmd" in
@@ -36,12 +37,16 @@ case "$cmd" in
     [ -f "$FAKE/fence-lies" ] && { echo "FENCE 0 0"; exit 255; }
     w=$(cat "$FAKE/workers"); [ -f "$FAKE/workers-after-job" ] && [ -s "$FAKE/rounds" ] && w=1
     s=$(cut -d' ' -f2 "$FAKE/services")
-    if [ "$w" = 0 ] && [ "$s" != 0 ]; then echo "Stopped actions.runner.other"; echo "services 0" > "$FAKE/services"; s=0; fi
+    while [ "$s" -gt "$w" ]; do echo "Stopped actions.runner.other-$s"; s=$((s - 1)); done
+    echo "services $s" > "$FAKE/services"
+    if [ -f "$FAKE/own-job-after-round" ] && [ -s "$FAKE/rounds" ] && base64 -d <<<"\${cmd##* }" | iconv -f UTF-16LE -t UTF-8 | grep -q -- '^} -IncludeOwn'; then w=$((w + 1)); fi
     echo "fence $s $w" >> "$FAKE/calls"; echo "FENCE $s $w" ;;
   *"Get-Process Runner.Worker"*) [ -f "$FAKE/unreachable" ] && exit 255; cat "$FAKE/workers" ;;
   *"Get-Process explorer"*) echo UP ;;
   *"ReadLine"*) cat > "$FAKE/token" ;;
   *Invoke-InSession*) echo "ssh $cmd" >> "$FAKE/calls"
+    [ -f "$FAKE/session-fails" ] && { echo round >> "$FAKE/rounds"; echo "LOW-DISK: not starting"; exit 3; }
+    [ -f "$FAKE/stop-in-round" ] && [ ! -s "$FAKE/rounds" ] && kill -TERM "$PPID"
     if [ -s "$FAKE/rounds" ]; then n=$(cat "$FAKE/queued" 2>/dev/null || echo 0); [ "$n" -gt 0 ] && echo $((n - 1)) > "$FAKE/queued"; fi
     echo round >> "$FAKE/rounds"
     echo "Current runner version: '9.9.9'"; echo "2026-11-21 00:00:00Z: Listening for Jobs"
@@ -51,7 +56,8 @@ esac
 `,
   scp: "#!/bin/sh\nexit 0\n",
   sleep: '#!/bin/sh\necho "$1" >> "$FAKE/sleeps"\n',
-  // a late job is queued only once the launcher has waited out the routes that read its last offer
+  // a late job: its route read the last offer when it was three minutes old, and its Detect changes took five; it is
+  // queued only once the launcher has waited that long
   gh: `#!/bin/bash
 echo "gh $*" >> "$FAKE/calls"
 case "$*" in
@@ -59,10 +65,10 @@ case "$*" in
   *releases/latest*) [ -f "$FAKE/package-fails" ] && exit 1; echo v9.9.9 ;;
   *registration-token*) echo SECRET-TOKEN ;;
   *"-X DELETE"*) echo deleted >> "$FAKE/deleted" ;;
-  *actions/runners*) echo 42 ;;
+  *actions/runners*) [ -f "$FAKE/runners-unreadable" ] && exit 1; echo 42 ;;
   *"runs?status=queued"*)
     if [ -f "$FAKE/queue-fails-once" ]; then rm "$FAKE/queue-fails-once"; exit 1; fi
-    if [ -f "$FAKE/late-job" ] && awk '$1 >= 300 { found = 1 } END { exit !found }' "$FAKE/sleeps"; then rm "$FAKE/late-job"; echo 1 > "$FAKE/queued"; fi
+    if [ -f "$FAKE/late-job" ] && awk '$1 >= 480 { found = 1 } END { exit !found }' "$FAKE/sleeps"; then rm "$FAKE/late-job"; echo 1 > "$FAKE/queued"; fi
     echo 7 ;;
   *runs/7/jobs*) cat "$FAKE/queued" 2>/dev/null || echo 0 ;;
   *) true ;;
@@ -93,8 +99,8 @@ function setup(state: State = {}) {
   if (state.lease) writeFileSync(join(fake, "lease"), `${state.lease} 2026-11-21T00:00:00+09:00\n`);
   const env = { PATH: `${bin}:${process.env.PATH ?? ""}`, FAKE: fake, XDG_CACHE_HOME: cache, HOME: dir };
   const lines = (file: string): string[] => readFileSync(join(fake, file), "utf8").split("\n").filter(Boolean);
-  const run = () => {
-    const result = spawnSync("bash", [script, "--once"], { encoding: "utf8", timeout: 30_000, env });
+  const run = (args: readonly string[] = ["--once"]) => {
+    const result = spawnSync("bash", [script, ...args], { encoding: "utf8", timeout: 30_000, env });
     expect(result.error).toBeUndefined();
     return result;
   };
@@ -162,6 +168,43 @@ describe.skipIf(process.platform === "win32")("winvm-runner.sh", () => {
     expect(result.stdout).toContain("winvm was not reset; the lease stays with ci-winvm-runner");
   }, 15_000);
 
+  it("keeps the lease and fails while its own job still runs in the VM after the ssh that watched it ended", () => {
+    const { run, lines, leaseHeld } = setup({ flags: ["own-job-after-round"] });
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(lines("rounds")).toHaveLength(1);
+    expect(lines("resets")).toHaveLength(1);
+    expect(leaseHeld()).toBe(true);
+    expect(result.stdout).toContain("winvm was not reset; the lease stays with ci-winvm-runner");
+  }, 15_000);
+
+  it("keeps the lease and fails when its fence stopped a service but another stays in a job", () => {
+    const { run, lines, leaseHeld } = setup({ workers: 1, services: 2 });
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(lines("rounds")).toEqual([]);
+    expect(lines("resets")).toEqual([]);
+    expect(leaseHeld()).toBe(true);
+    expect(result.stdout).toContain("winvm was not reset; the lease stays with ci-winvm-runner");
+  }, 15_000);
+
+  it("fails when its round's session failed, and still resets and frees the VM", () => {
+    const { run, lines, leaseHeld } = setup({ flags: ["session-fails"] });
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(lines("rounds")).toHaveLength(1);
+    expect(lines("resets")).toHaveLength(2);
+    expect(leaseHeld()).toBe(false);
+  });
+
+  it("fails when it cannot read whether its runner is still registered", () => {
+    const { run, leaseHeld } = setup({ flags: ["runners-unreadable"] });
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(leaseHeld()).toBe(false);
+    expect(result.stdout).toContain("runner ovis-winvm may still be registered");
+  });
+
   it("keeps the lease and fails when the reset after the job fails", () => {
     const { run, lines, leaseHeld } = setup({ flags: ["reset-fails-after-job"] });
     const result = run();
@@ -219,12 +262,14 @@ describe.skipIf(process.platform === "win32")("winvm-runner.sh", () => {
     });
   }
 
-  it("fails, saying what to do, when jobs still wait after three more rounds", () => {
-    const { run, lines } = setup({ queued: 9 });
-    const result = run();
-    expect(result.status).toBe(1);
-    expect(lines("rounds")).toHaveLength(4);
-    expect(result.stdout).toContain("cancel it and re-run all jobs of its run");
+  it("fails, saying what to do, when jobs still wait after three more rounds, as a unit stopped in a round too", () => {
+    for (const [args, flags] of [[["--once"], []], [[], ["stop-in-round"]]] as const) {
+      const { run, lines } = setup({ queued: 9, flags });
+      const result = run(args);
+      expect(result.status).toBe(1);
+      expect(lines("rounds")).toHaveLength(4);
+      expect(result.stdout).toContain("cancel it and re-run all jobs of its run");
+    }
   });
 
   it("refuses to run beside another copy", async () => {

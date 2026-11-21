@@ -69,10 +69,12 @@ while ($true) {
     $out | Select-Object -SkipLast 1 | Write-Output
     $fence = $out[-1]
     if ($fence -eq 'FENCE 0 0') { break }
-    if ((Get-Date) -gt $deadline) {
+    # the last fence runs at the deadline, never after it
+    $left = [Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds)
+    if ($left -le 0) {
         Write-Output "::error::Another repository's runner in winvm is still in a job after 3 minutes ($fence). Re-run all jobs of this run: winvm is not offered while it is busy, so the new route takes windows-latest (re-running this job alone keeps winvm's label)."
         exit 1
     }
     Write-Output "Another repository's runner in winvm is in a job ($fence); waiting for it"
-    Start-Sleep -Seconds 15
+    Start-Sleep -Seconds ([Math]::Min(15, $left))
 }
