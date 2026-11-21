@@ -22,7 +22,8 @@ function fixture() {
   return { home, cli, host, places, env };
 }
 
-it("preserves the login profile bash was actually reading", async () => {
+// Runs a real /bin/bash login shell and the POSIX launcher, which a Windows host has neither of.
+it.skipIf(process.platform === "win32")("preserves the login profile bash was actually reading", async () => {
   const { home, env, host } = fixture();
   const login = () => execFileSync("/bin/bash", ["-lc", 'printf %s "${LOGIN_MARKER:-missing}"'], { env, encoding: "utf8" });
   writeFileSync(join(home, ".profile"), "export LOGIN_MARKER=original-profile\n");
