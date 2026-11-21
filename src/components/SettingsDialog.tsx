@@ -670,7 +670,12 @@ function BuiltInBrowserRows() {
     </SettingsRow>
     {settings.builtInBrowser && <SettingsRow icon={Ban} label={t("Blocked sites")} description={t("The built-in browser never loads these sites or their subdomains, in your tabs or an agent's. One site per line.")} wide reset={["browserBlockedSites"]}>
       <textarea key={settings.browserBlockedSites.join("\n")} className="input settings-blocked-sites" rows={4} aria-label={t("Blocked sites")} placeholder="bank.example" defaultValue={settings.browserBlockedSites.join("\n")}
-        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onBlur={(event) => update({ browserBlockedSites: browserBlockedSites(event.currentTarget.value.split("\n")) })} />
+        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onBlur={(event) => {
+          // what is kept, shown as kept: lines that are not a site are dropped from the box too
+          const kept = browserBlockedSites(event.currentTarget.value.split("\n"));
+          event.currentTarget.value = kept.join("\n");
+          update({ browserBlockedSites: kept });
+        }} />
     </SettingsRow>}
   </>;
 }

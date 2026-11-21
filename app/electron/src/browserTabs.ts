@@ -237,7 +237,8 @@ export class BrowserTabs {
   /**
    * A picture of the tab as PNG data, or null when it cannot be drawn. A tab nobody looks at paints nothing, so it is put
    * on the stage (an off-screen window) only while its picture is taken, and taken off again: it costs nothing between
-   * pictures.
+   * pictures. Pictures are taken one at a time and each waits for a frame the page drew on the stage (up to PICTURE_MS),
+   * so with many agent tabs the right panel's cards refresh more slowly than every 4 s: correct pictures over cadence.
    */
   thumbnail(id: number): Promise<string | null> {
     // one picture of a tab asked for while another is waiting is that one
