@@ -114,7 +114,7 @@ export const RELAY_KO: Record<string, string> = {
   "Show a new QR code on {name} and scan it.": "{name}에서 새 QR 코드를 띄워 스캔하세요.",
   "Offline · {when}": "오프라인 · {when}",
   "First time? Your account is made right away.": "처음이면 계정이 바로 만들어져요",
-  "Start without signing in": "로그인 없이 시작",
+  "Connect a PC": "PC 연결",
   "Scan a QR code": "QR 찍기",
   "The QR on the PC's screen": "PC 화면의 QR",
   "Enter an address": "주소 입력",

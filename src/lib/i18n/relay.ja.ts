@@ -114,7 +114,7 @@ export const RELAY_JA: Record<string, string> = {
   "Show a new QR code on {name} and scan it.": "{name} で新しい QR コードを表示してスキャンしてください。",
   "Offline · {when}": "オフライン · {when}",
   "First time? Your account is made right away.": "初めてなら、アカウントはすぐに作られます",
-  "Start without signing in": "サインインせずに始める",
+  "Connect a PC": "PC を接続",
   "Scan a QR code": "QR を読み取る",
   "The QR on the PC's screen": "PC の画面の QR",
   "Enter an address": "アドレスを入力",

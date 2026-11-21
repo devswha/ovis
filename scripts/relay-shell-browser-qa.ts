@@ -594,12 +594,27 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await page.goto(`${APP}/`);
       await front(page).locator(".relay-add").waitFor();
     };
+    // signed out, the front page is the connect tabs (the desktop's Add a connection order), the relay's sign-in inside the first
     const signInScreen = async (page: Page): Promise<void> => {
-      await page.getByRole("heading", { name: /Sign in to your Ovis account/ }).waitFor();
-      assert.equal(await page.getByRole("button", { name: "Continue with GitHub" }).count(), 1);
-      assert.equal(await page.getByRole("button", { name: "Start without signing in" }).count(), 1);
-      assert.equal(await page.getByRole("button", { name: "Pair with a QR or code" }).count(), 0);
-      assert.equal(await page.locator(".relay-shell-pcs, .relay-add-saved, input").count(), 0, "no PC list or code field on the sign-in screen");
+      await page.getByRole("heading", { name: "Connect a PC" }).waitFor();
+      assert.deepEqual(await page.locator(".connect-start-tabs > button").evaluateAll((tabs) => tabs.map((tab) => [tab.textContent, tab.getAttribute("aria-pressed")])),
+        [["Ovis relay", "true"], ["Tailscale", "false"], ["Direct", "false"]], "the three tabs, Ovis relay chosen");
+      assert.equal(await page.locator('[data-tab-panel="relay"]').getByRole("button", { name: "Continue with GitHub" }).count(), 1, "the sign-in is inside the relay tab");
+      assert.equal(await page.getByRole("heading", { name: /Sign in to your Ovis account/ }).count(), 0, "no sign-in screen first");
+      assert.equal(await page.getByRole("button", { name: "Start without signing in" }).count(), 0);
+      assert.equal(await page.locator(".relay-shell-pcs, input").count(), 0, "no code field on the relay tab");
+    };
+    // Tailscale and Direct: a PC's address in one field with Connect, no sign-in
+    const addressTabs = async (page: Page): Promise<void> => {
+      for (const tab of ["tailscale", "direct"] as const) {
+        await page.locator(`.connect-start-tabs > [data-tab="${tab}"]`).click();
+        const panel = page.locator(`[data-tab-panel="${tab}"]`);
+        await panel.waitFor();
+        assert.equal(await panel.locator("input").count(), 1, `${tab}: one address field`);
+        assert.equal(await panel.getByRole("button", { name: "Connect", exact: true }).count(), 1, `${tab}: Connect`);
+        assert.equal(await panel.locator(".account-provider").count(), 0, `${tab}: no sign-in`);
+      }
+      await page.locator('.connect-start-tabs > [data-tab="relay"]').click();
     };
 
     try {
@@ -608,21 +623,20 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           const { context, page } = await hosted({ width, height, theme });
           await page.goto(`${APP}/`);
           await signInScreen(page);
-          assert.equal(await page.getByRole("button", { name: /Continue without an account/ }).count(), 0, "no way past the sign-in before any pairing");
+          assert.equal(await page.getByRole("button", { name: /Continue without an account/ }).count(), 0);
           await capture(page, `signin-${width}-${theme}`);
+          await addressTabs(page);
           await closeMarked(context);
         }
       }
-      log9("sign-in: Your PCs, anywhere. Sign in to your Ovis account, Continue with GitHub, Start without signing in; no PC list, code field or Continue without an account before a pairing");
+      log9("connect tabs: Connect a PC, Ovis relay (chosen, Continue with GitHub inside) / Tailscale / Direct (one address field + Connect each); no sign-in screen first, no Start without signing in");
 
       const pc1 = await accountPc("Desk PC");
       const A = await hosted({ width: 1440, height: 900, theme: "dark" });
       const a = A.page;
       await a.goto(`${APP}/`);
       await signInScreen(a);
-      await a.getByRole("button", { name: "Start without signing in" }).click();
-      await a.getByRole("heading", { name: "Add a PC" }).waitFor();
-      assert.equal(await a.locator(".relay-add-saved").count(), 0, "Add a PC lists no PCs before a pairing");
+      assert.equal(await a.locator(".relay-add-saved").count(), 0, "the connect tabs list no PCs before a pairing");
 
       await a.goto(encodeOffer(pc1.offer, APP));
       await state(a, "confirm").waitFor();
@@ -631,14 +645,10 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await inApp(a);
       await a.goto(`${APP}/`);
       await signInScreen(a);
-      await a.getByRole("button", { name: "Start without signing in" }).click();
-      await a.getByRole("heading", { name: "Add a PC" }).waitFor();
-      assert.equal(await a.locator(".relay-add-saved-pc").getAttribute("href"), `/s/${pc1.id}/`, "Add a PC lists the PC this device paired, by its page");
+      assert.equal(await a.locator(".relay-add-saved-pc").getAttribute("href"), `/s/${pc1.id}/`, "the connect tabs list the PC this device paired, by its page");
       await capture(a, "local-1440-dark");
-      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / (the tab's launch is past, so it stays) -> Start without signing in -> Add a PC lists Desk PC at /s/${pc1.id}/`);
+      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / (the tab's launch is past, so it stays) -> the connect tabs list Desk PC at /s/${pc1.id}/`);
 
-      await a.getByRole("button", { name: "Back" }).click();
-      await signInScreen(a);
       // the sign-in's return opens the PC this device paired, as a launch does: no list of PCs first. Opening it lists it in
       // the account, as Open on its row did
       assert.deepEqual(fake.pcs(ACCT), [], "the directory is empty before the PC is opened");

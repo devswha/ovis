@@ -888,8 +888,8 @@ invalid origin does not qualify. Unlisting does not
 lift a lock, block, freeze, Revoke or tombstone.
 
 A wrong number ends that comparison; the person starts again from **Add** in Add a PC. A device without an account
-pairs with a QR code or pairing code behind **Start without signing in** on the sign-in screen, which
-leads to **Add a PC**.
+pairs with a QR code, or with **Pair with a code** in the **Ovis relay** tab of the front page's
+**Connect a PC**.
 
 ### Adding a PC of your account
 

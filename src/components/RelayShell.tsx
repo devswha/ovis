@@ -158,10 +158,11 @@ export function RelayShell(props: RelayShellProps) {
   const [addFrom] = useState(() => props.addEntry === true ? takeAddFrom() : null);
   const signedOutOrSigningIn = account?.kind === "signed-out" || account?.kind === "signing-in";
   const view = signedOutOrSigningIn ? signedOutView : null;
-  const signInFirst = view === "sign-in";
-  // a sign-out found while the QR dialog is open closes it: the sign-in stays the only screen, and a later sign-in opens no stale dialog
+  // the connect tabs, the relay's sign-in inside them; a code typed from their relay tab stands alone, and its Cancel comes back
+  const signInFirst = view === "sign-in" && !addingPcOpen(state);
+  // a sign-out found while the QR dialog is open closes it: the connect tabs stay the only screen, and a later sign-in opens no stale dialog
   if (addingPc && signInFirst) setAddingPc(false);
-  // a sign-in puts Start without signing in behind it: a later sign-out opens on the sign-in again
+  // a sign-in puts Add a PC opened signed out behind it: a later sign-out opens on the connect tabs again
   if (account?.kind === "signed-in" && signedOutView !== "sign-in") setSignedOutView("sign-in");
   const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
@@ -185,8 +186,8 @@ export function RelayShell(props: RelayShellProps) {
     <div className="relay-shell account-centered relay-shell-signin">
       <RelayAddPc onBack={onAddBack} devices={addPcs}
         qr={(qrBack) => <ScanQrStep onCodeStart={() => {
-          // signed in, the code is typed in the front page's own pairing dialog; signed out, on the way past the sign-in,
-          // as from Start without signing in: either takes the screens that follow
+          // signed in, the code is typed in the front page's own pairing dialog; signed out, on the way past the sign-in:
+          // either takes the screens that follow
           if (account?.kind === "signed-in") setAddingPc(true); else setSignedOutView("pair");
           onCodeStart();
         }} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />} />
@@ -248,10 +249,10 @@ export function RelayShell(props: RelayShellProps) {
     );
   }
 
-  // Add a PC stands on the page as the sign-in does, from the top, with its own sheep and Back
+  // Add a PC stands on the page from the top, with its own sheep and Back; so do the connect tabs, which a tab change never moves
   const adding = !addingPc && (account === null ? state.kind === "empty" : view === "pair");
   return (
-    <main className={plain ? "relay-shell-screen relay-shell-plain" : adding ? "relay-shell-screen relay-add-screen" : "relay-shell-screen"} data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
+    <main className={plain ? "relay-shell-screen relay-shell-plain" : adding || signInFirst ? "relay-shell-screen relay-add-screen" : "relay-shell-screen"} data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
       <div className={signInFirst || adding ? "relay-shell account-centered relay-shell-signin" : plain ? "relay-shell relay-shell-signin" : "relay-shell"}>
         {signInFirst || plain
           ? <SheepMascot screen="header" size={80} />

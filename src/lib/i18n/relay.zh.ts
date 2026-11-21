@@ -114,7 +114,7 @@ export const RELAY_ZH: Record<string, string> = {
   "Show a new QR code on {name} and scan it.": "请在 {name} 上显示新的二维码并扫描。",
   "Offline · {when}": "离线 · {when}",
   "First time? Your account is made right away.": "首次使用会立即创建账户",
-  "Start without signing in": "不登录直接开始",
+  "Connect a PC": "连接电脑",
   "Scan a QR code": "扫描二维码",
   "The QR on the PC's screen": "PC 屏幕上的二维码",
   "Enter an address": "输入地址",
