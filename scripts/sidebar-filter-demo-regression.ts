@@ -14,6 +14,8 @@ import { chromium, type Browser, type BrowserContext, type Locator, type Page } 
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
+import { sheetRisen } from "./settings-page.ts";
 
 // No live session is read, and nothing leaves the loopback server below.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-filter-"));
@@ -602,13 +604,14 @@ async function openWorktreeUnderFilter(browser: Browser, scene: Scene): Promise<
     const head = page.getByRole("region", { name: "PC Laptop" }).locator('.workspace-group[data-workspace="w1C"] > .workspace-header').first();
     if (scene.phone) {
       await head.locator(".row-menu-toggle").tap();
-      await page.getByRole("dialog").getByRole("button", { name: "Open worktree…", exact: true }).tap();
+      await sheetRisen(page, ".row-sheet");
+      await page.locator(".row-sheet").getByRole("button", { name: "Open worktree…", exact: true }).tap();
     } else {
       await head.locator(".workspace-select").click({ button: "right" });
       await page.getByRole("menu").getByRole("menuitem", { name: "Open worktree…", exact: true }).click();
     }
     const dialog = page.locator(".worktree-modal");
-    await dialog.waitFor();
+    await sheetRisen(page, ".worktree-modal");
     await dialog.locator(".worktree-row:not([disabled])").first().click();
     await dialog.waitFor({ state: "detached" });
     assert.equal((await storageView(page)).local[foldKey], "1", `${name}: opening a checkout under the filter writes no fold`);
@@ -879,15 +882,7 @@ try {
   writeFileSync(join(app, "sidebar-filter.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-filter.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   url = `http://127.0.0.1:${server.port}/`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

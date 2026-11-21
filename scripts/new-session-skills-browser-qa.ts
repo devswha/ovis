@@ -25,14 +25,13 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openLens } from "./header-lens.ts";
+import { record, type QaWindow } from "./new-session-skills-fixture.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-new-session-skills-"));
 const evidence = join(process.env["UI_EVIDENCE_DIR"] || join(repo, "evidence"), "new-session-skills");
 mkdirSync(evidence, { recursive: true });
-
-interface Recorded { url: string; body: Record<string, unknown> }
-interface QaWindow { qaRequests: Recorded[]; qaHold: boolean; qaRelease: () => void; qaSubmits: string[]; qaDrop: () => void; qaSockets: WebSocket[]; qaOldBridge: boolean; qaSkillsBusy: Record<string, number>; qaSkillsBusyServed: number }
 
 const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 const recorded = (page: Page) => page.evaluate(() => (window as unknown as QaWindow).qaRequests);
@@ -40,9 +39,11 @@ const submits = (page: Page) => page.evaluate(() => (window as unknown as QaWind
 
 async function openChat(page: Page, url: string): Promise<void> {
   await page.goto(url);
-  await page.locator(".conn-live").waitFor({ state: "attached" });
+  const pane = page.locator(`.pane-frame.is-current[data-layout-pane="${panes.api}"]`);
+  await pane.waitFor({ state: "attached" });
+  await page.waitForFunction(() => (window as unknown as QaWindow).qaSockets.some((socket) => socket.readyState === WebSocket.OPEN));
   await openLens(page, "chat");
-  await page.locator(".pane-frame.is-current .terminal-stack.is-chat").waitFor();
+  await pane.locator(".terminal-stack.is-chat").waitFor();
 }
 
 async function openDialog(page: Page) {
@@ -95,66 +96,9 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  const record = `<script>(() => {
-    const demoFetch = window.fetch;
-    window.qaRequests = [];
-    window.qaHold = false;
-    window.qaOldBridge = false;
-    // an agent's skill list answered 503 file_busy this many more times, as a PC still reading slow skill folders would (#2254)
-    window.qaSkillsBusy = {};
-    window.qaSkillsBusyServed = 0;
-    let release = null;
-    window.qaRelease = () => { if (release) release(); release = null; };
-    window.fetch = async (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const busyAgent = url.includes("/agent/commands") ? new URL(url, location.href).searchParams.get("agent") : null;
-      if (busyAgent && (window.qaSkillsBusy[busyAgent] ?? 0) > 0) {
-        window.qaSkillsBusy[busyAgent] -= 1;
-        window.qaSkillsBusyServed += 1;
-        return new Response(JSON.stringify({ error: { code: "file_busy", message: "the skill folders did not answer in time" } }), { status: 503, headers: { "content-type": "application/json", "retry-after": "1" } });
-      }
-      if ((init?.method ?? "GET") === "POST" && (url.includes("/api/tab/create") || url.includes("/api/workspace/create"))) {
-        window.qaRequests.push({ url, body: JSON.parse(String(init?.body ?? "null")) });
-        if (window.qaHold) await new Promise((resolve) => { release = resolve; });
-        // a bridge from before first_message: it starts the agent and answers without the field
-        if (window.qaOldBridge) {
-          const answer = await demoFetch(input, init);
-          const { first_message: _, ...made } = await answer.json();
-          return new Response(JSON.stringify(made), { status: answer.status, headers: { "content-type": "application/json" } });
-        }
-      }
-      return demoFetch(input, init);
-    };
-    const Demo = window.WebSocket;
-    window.qaSubmits = [];
-    window.qaSockets = [];
-    window.qaDrop = () => { for (const socket of window.qaSockets.splice(0)) socket.close(); };
-    const Counted = function (url, protocols) {
-      const socket = new Demo(url, protocols);
-      window.qaSockets.push(socket);
-      const send = socket.send.bind(socket);
-      socket.send = (data) => {
-        if (typeof data === "string") { const frame = JSON.parse(data); if (frame.type === "submit") window.qaSubmits.push(frame.text); }
-        send(data);
-      };
-      return socket;
-    };
-    for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Object.defineProperty(Counted, name, { value: Demo[name] });
-    window.WebSocket = Counted;
-  })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${record}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.api)}`;
   const settings = (theme: string): void => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); };
   const phone = (browser: Browser, theme: "dark" | "light") => browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: theme });
@@ -270,6 +214,7 @@ try {
         assert.match(await dialog.locator("#new-session-prompt-hint").innerText(), /Queued for Claude Code's first turn/);
         await settled(page);
         await page.screenshot({ path: join(evidence, "desktop-dark-claude-pending.png") });
+        await page.evaluate(() => { (window as unknown as QaWindow).qaHoldAgentReady = true; });
         await dialog.getByRole("button", { name: "Start", exact: true }).click();
         await dialog.waitFor({ state: "detached" });
         const sent = await recorded(page);
@@ -277,10 +222,10 @@ try {
         assert.deepEqual(sent.map(({ body: { first_message_connection: _, ...body } }) => body), [{ workspace_id: "w1C", cwd: "/home/demo/checkout-api", label: null, agent: { kind: "claude", args: ["--model", "opus", "--effort", "high", "--settings", "{\"ultracode\":true}"] }, first_message: "Plan the config file" }], "Ultracode is one --settings object after the effort it keeps; the message is the request's first_message, never an argument of Claude Code's");
         const bubble = page.locator(".pane-frame.is-current .pending-message-bubble", { hasText: "Plan the config file" });
         await bubble.waitFor();
-        // shot at once: the demo's agent rests 1.5 s after the start, and the bubble goes with it
         await page.screenshot({ path: join(evidence, "desktop-dark-claude-pending-bubble.png") });
         assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(), "", "nothing is put in the box");
         const turn = page.locator(".pane-frame.is-current .chat-turn", { hasText: "Plan the config file" });
+        await page.evaluate(() => (window as unknown as QaWindow).qaReleaseAgent());
         await turn.first().waitFor({ timeout: 8_000 });
         await bubble.waitFor({ state: "detached" });
         await page.locator(".pane-frame.is-current .composer-status:is([data-status=\"idle\"], [data-status=\"done\"])").waitFor({ timeout: 8_000 });
@@ -323,6 +268,7 @@ try {
         await pickAgent(page, dialog, "Oh My Pi");
         assert.equal(await dialog.getByLabel("Model").count(), 0, "no model field for an agent whose launch takes none");
         await dialog.getByLabel("First message").fill("Reconnect me");
+        await page.evaluate(() => { (window as unknown as QaWindow).qaHoldAgentReady = true; });
         await dialog.getByRole("button", { name: "Start", exact: true }).click();
         await dialog.waitFor({ state: "detached" });
         await page.locator(".pane-frame.is-current .pending-message-bubble", { hasText: "Reconnect me" }).waitFor();
@@ -330,6 +276,7 @@ try {
         await page.waitForFunction(() => (window as unknown as QaWindow).qaSockets.some((socket) => socket.readyState === WebSocket.OPEN));
         await page.locator(".conn-live").waitFor({ state: "attached" });
         const turn = page.locator(".pane-frame.is-current .chat-turn", { hasText: "Reconnect me" });
+        await page.evaluate(() => (window as unknown as QaWindow).qaReleaseAgent());
         await page.locator(".pane-frame.is-current .composer-status:is([data-status=\"idle\"], [data-status=\"done\"])").waitFor({ timeout: 8_000 });
         const held = page.locator(".pane-frame.is-current .pending-message", { hasText: "Reconnect me" });
         await held.locator(".pending-message-note", { hasText: "the page that started this agent left before it was ready" }).waitFor();

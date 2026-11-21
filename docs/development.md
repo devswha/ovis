@@ -301,6 +301,7 @@ bun scripts/pane-input-focus-demo-regression.ts # the input focus shortcut again
 bun scripts/mirror-scroll-demo-regression.ts # fixed mirror wheel/touch, native history, no guessed program input, observe guards
 bun scripts/terminal-images-demo-regression.ts # Settings -> Pictures in the terminal: a picture is drawn, goes while off, and on again the next one is drawn only where it was printed
 bun scripts/core-history-scroll-demo-regression.ts # a herdr-core server's history kept in xterm: wheel and swipe scroll it, a replay erases the last one, nothing typed; herdr's own keeps none (#2663)
+bun scripts/core-kept-grid-demo-regression.ts      # a herdr-core pty kept at another device's size is drawn in its grid, so a redraw leaves no copy of the old frame; back in focus the page sizes it again (herdr's own server: the page keeps its grid)
 bun scripts/codex-drag-demo-regression.ts         # a plain drag in a Codex pane stays Ovis's selection unless Settings' Codex panes is on; then it is Codex's, with a Shift+drag note on herdr (#2384)
 bun scripts/terminal-ghostty-demo-regression.ts # libghostty draws every pane: a herdr-core pane from its first byte, a Kitty picture placed and deleted, typing still through xterm, herdr's own panes too; xterm draws an iTerm2 picture by itself
 bun scripts/mirror-fold-demo-regression.ts # a mirror, or an attached pane a phone watches at a wider grid, folded whole (portrait, landscape), Original width from the pane menu, driving phones and desktops unfolded
@@ -321,7 +322,7 @@ after a herdr restart. It prints the time each step took. `KEEP=1` leaves the co
 
 Tests run against a herdr session of their own, `ovis-test`. The first run starts a headless `herdr --session ovis-test server` and later runs reuse it, so test workspaces never show in the herdr you work in (`scripts/test-herdr.ts`). Stop it with `herdr --session ovis-test server stop`. `HERDR_TEST_SESSION` picks another name, and `HERDR_TEST_LIVE=1` runs against `HERDR_SOCKET` or your default session instead.
 
-Browser checks launch `CHROME_PATH` when it is set, else Google Chrome at `/opt/google/chrome/chrome` where that exists, else the lockfile's Playwright Chromium (`scripts/chrome-path.ts`; install it with `bun node_modules/playwright-core/cli.js install chromium`). After a herdr upgrade, refresh the generated wire types with `bun run generate:types --refresh` (and `--check` to verify). When ci.yml's `herdr-core-live` job pins a new `HC_VERSION`, refresh herdr-core's with `OVIS_HC_BIN=<that hc> bun run generate:types --refresh-hc`: the live job fails while the snapshot differs from what that hc's `hc schema` prints.
+Browser checks launch `CHROME_PATH` when it is set, else Google Chrome at `/opt/google/chrome/chrome` where that exists, else the lockfile's Playwright Chromium (`scripts/chrome-path.ts`; install it with `bun node_modules/playwright-core/cli.js install chromium`). After a herdr upgrade, refresh the generated wire types with `bun run generate:types --refresh` (and `--check` to verify). ci.yml's `herdr-core-live` job runs the live file on every hc in its `HC_RELEASES` list, one `version sha256` line per hc. When a newer hc than the snapshot's is added there, refresh herdr-core's with `OVIS_HC_BIN=<that hc> bun run generate:types --refresh-hc` (inside an isolated environment, as `hc schema` starts a core): the schema case fails on that hc until the snapshot equals what its `hc schema` prints. On an older hc of the list the same case checks only that every method and feature the generated types rely on is there.
 
 `HEADED=1 bun scripts/chat-browser-qa.ts` opens its owned native-transcript fixture in a
 visible Chrome window. Its detected Codex fixture process keeps the rollout open; no
@@ -386,7 +387,7 @@ bun scripts/link-menu-demo-regression.ts       # a long press on a chat link in 
 bun scripts/external-link-tab-regression.ts  # the app's link opener in Chromium on loopback pages: with Reuse tab for external links on, a second link replaces the first one's tab; off, each gets its own tab with no opener; no referrer either way
 ```
 
-`FILE_VIEWER_CASE=landscape-notch` selects a viewer case; `FILE_VIEWER_CSS=/path/to/before.css` compares another stylesheet. These checks use Chromium mobile emulation and synthetic safe-area/keyboard geometry; they cannot verify actual iOS Safari keyboard dismissal or notch insets. The existing `bun scripts/file-viewer-regression.ts` separately checks history with an owned herdr pane. The original `scripts/mobile-viewport-regression.ts` exports `checkMobileViewport` for the real-app `bun run test:ui` suite; it also checks the command palette and xterm focus transitions. The demo runners build the real client into a temporary directory, inject the committed fictional-session transport and serve it only on loopback; they do not use a live herdr session or download website media. Run on its own, each builds the client itself (`scripts/demo-build.ts`); the browser lane builds it once and names the directory in `HERDR_DEMO_BUILD`, and each runner copies that instead. They exercise real-app viewport and alert geometry, but not live herdr connectivity.
+`FILE_VIEWER_CASE=landscape-notch` selects a viewer case; `FILE_VIEWER_CSS=/path/to/before.css` compares another stylesheet. These checks use Chromium mobile emulation and synthetic safe-area/keyboard geometry; they cannot verify actual iOS Safari keyboard dismissal or notch insets. The existing `bun scripts/file-viewer-regression.ts` separately checks history with an owned herdr pane. The original `scripts/mobile-viewport-regression.ts` exports `checkMobileViewport` for the real-app `bun run test:ui` suite; it also checks the command palette and xterm focus transitions. The demo runners build the real client into a temporary directory, inject the committed fictional-session transport and serve it only on loopback with `serveDemo` (`scripts/demo-server.ts`, which `scripts/conventions.test.ts` makes every new runner use); they do not use a live herdr session or download website media. Run on its own, each builds the client itself (`scripts/demo-build.ts`); the browser lane builds it once and names the directory in `HERDR_DEMO_BUILD`, and each runner copies that instead. They exercise real-app viewport and alert geometry, but not live herdr connectivity.
 
 ## Pi session labels
 
@@ -951,7 +952,7 @@ from source instead is [one rule](../INSTALL.md#binary-or-source). Their tests r
 the test, or pass that key as `installServer`'s option, which the launcher never does: the shipped scripts read no
 key from anywhere else. `OVIS_RELEASES_URL` (https://, or a `file://` folder laid out as GitHub's
 `<url>/v<version>/<file>`) points them at another place, checked against the same key. Remote PC bundles and the desktop app carry the same binary with what runs beside it
-(`scripts/server-artifact.ts`), and no server sources. The builds are reproducible with the same Bun: CI pins Bun 1.4.2,
+(`scripts/server-artifact.ts`), and no server sources. The builds are reproducible with the same Bun: CI pins Bun 1.4.4,
 so CI's hashes differ from ones built with another Bun.
 
 ### The server binary's signing key
@@ -1305,11 +1306,17 @@ the job then fails. CI uploads `browser-logs` on success or failure; browser-mai
 every time, browser-other only when it failed or was cancelled (a timeout included) (its ~2,000 screenshots of a green run cost
 about 50 s to upload on the job that ends a run last).
 A script that fails is run a second time (`BROWSER_RETRY=0` turns that off). One that then passes
-does not fail the job, and is not counted as a plain pass either: its first log is kept as
-`<script>.attempt-1.log` and printed, the summary marks it `~` and `summary.json` lists it under
-`flaky`, and on GitHub it gets a warning annotation and a line in the job summary. A flaky script
-is a bug to fix in the script or the app, not noise: the second run only keeps one PR's merge
-from waiting on another change's race. A script that fails twice fails the job.
+is not counted as a plain pass: its first log is kept as `<script>.attempt-1.log` and printed,
+`summary.json` lists it under `flaky`, and on GitHub it gets an annotation and a line in the job
+summary. It fails the job unless `QUARANTINE` in `scripts/ci-browser-quarantine.ts` lists it with
+an issue about it and an end date not yet past (UTC, the date itself included): then
+the summary marks it `~` and the annotation is a warning. Otherwise the summary marks it `!`,
+`summary.json` also lists it under `notQuarantined`, and the error names the two ways out: fix the
+race, or add the entry. A flaky script is a bug to fix in the script or the app, not noise: the
+second run tells a race from a plain failure, and the quarantine keeps a known race from failing
+every PR while it is fixed, never for long (an entry ends at most 30 days ahead, which
+`scripts/ci-browser-parallel.test.ts` checks, along with its script and issue). Remove an entry
+once its script has stopped flaking. A script that fails twice fails the job.
 One run of a script may take `BROWSER_SCRIPT_TIMEOUT_SECONDS` (default 600). A run past it is
 stopped (SIGTERM, then SIGKILL, then SIGKILL again for what the run started meanwhile and still carries its
 mark), says what it saw (`stopped N processes`, `could NOT stop: <pid> (<program name>)` for each one it could not, the name read from its executable and never from its arguments, only a process still running at the last look, at most 20 and then `and N more`,

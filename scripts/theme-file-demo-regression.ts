@@ -8,6 +8,7 @@ import { readThemeFile } from "../src/lib/customThemes.ts";
 import { deriveTheme } from "../src/lib/themeDerive.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const repo = join(import.meta.dir, "..");
@@ -64,17 +65,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let name: string;
-    try { name = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!name || name.endsWith("/")) name += "index.html";
-    if (name.split("/").includes("..") || name.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, name));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   origin = `http://127.0.0.1:${server.port}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -135,12 +126,31 @@ try {
             assert.equal(await inline(page, "--text"), want.text);
             assert.equal(await page.evaluate(() => document.documentElement.style.backgroundColor !== ""), true, `${where}: the page surface is held until the stylesheet arrives`);
             await page.unroute("**/*.js");
+            await page.addInitScript(() => {
+              // The app consumes the carry key at mount. If it has a save to resend, wait for
+              // this document's write of the acknowledged revision, since storage survives reloads.
+              if (sessionStorage.getItem("ovis:preferences-unsent") === null) {
+                performance.mark("preferences-settled");
+                return;
+              }
+              const setItem = Storage.prototype.setItem;
+              Storage.prototype.setItem = function (key: string, value: string): void {
+                setItem.call(this, key, value);
+                if (this !== localStorage || key !== "ovis:sidebar-pins-shared") return;
+                const { revision }: { revision: number } = JSON.parse(value);
+                if (revision > 0) {
+                  Storage.prototype.setItem = setItem;
+                  performance.mark("preferences-settled");
+                }
+              };
+            });
             await page.goto(address());
             await page.locator(".conn-live").waitFor({ state: "attached" });
             await dialog.getByRole("button", { name: "Import", exact: true }).waitFor();
             assert.equal(await palette(page), "custom", `${where}: the app goes on drawing it`);
             assert.equal(await token(page, "--bg"), want.bg);
 
+            await waitDrawn(page, () => performance.getEntriesByName("preferences-settled", "mark").length > 0, undefined, "the resent preferences save");
             await picker.setInputFiles(file("lamplight.json", EXAMPLE.replace(example.theme[scheme]!.base00, "#123456")));
             await waitDrawn(page, () => getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() === "#123456");
             assert.equal(await cards.count(), 1, `${where}: an edited file takes its earlier self's place`);

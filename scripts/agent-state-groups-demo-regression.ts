@@ -8,16 +8,40 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import { chromium, type Browser, type Page, type Route } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 const SERVER = "&demo_finish_epoch=kept";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 86_400_000;
+
+async function openWithClock(page: Page, url: string): Promise<void> {
+  // Install the clock in the committed document. If boot reads the clock at epoch zero,
+  // the app clamps the persisted timestamps to zero before the clock reaches the present.
+  // the hold is on the demo build's transport script (scripts/demo-build.ts); if that file is renamed, it must fail here
+  const { promise, resolve } = Promise.withResolvers<void>();
+  let held = false;
+  const hold = async (route: Route): Promise<void> => { held = true; await promise; await route.continue(); };
+  await page.route("**/demo-transport.js", hold);
+  try {
+    await page.goto(url, { waitUntil: "commit" });
+    await page.clock.install();
+    // install() lets the clock run in real time and pauseAt() is a later round trip, so the target must stay ahead of
+    // the clock through a stall between them (pauseAt rejects a target in the past); 10 s is far below the minute the
+    // "<1m" checks allow
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 10_000));
+  } finally {
+    resolve();
+  }
+  await page.waitForLoadState("load");
+  await page.unroute("**/demo-transport.js", hold);
+  assert.ok(held, "the demo's transport script was held until the clock was installed");
+}
 
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark"): Promise<void> {
   const phone = width === 390;
@@ -175,9 +199,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   }, { settings: JSON.stringify({ language: "en", theme }) });
   const held = await other.newPage();
   held.on("pageerror", (error) => errors.push(error.message));
-  await held.clock.install({ time: new Date() });
-  await held.clock.pauseAt(new Date(Date.now() + 1000));
-  await held.goto(`${origin}?pane=${encodeURIComponent(panes.web)}${SERVER}`);
+  await openWithClock(held, `${origin}?pane=${encodeURIComponent(panes.web)}${SERVER}`);
   await held.clock.runFor(1500);
   await held.locator(".conn-live").waitFor({ state: "attached" });
   if (phone) {
@@ -193,11 +215,11 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await other.close();
 
   await page.evaluate(() => localStorage.setItem("ovis:agent-state-folds", JSON.stringify(["idle"])));
+  // Playwright installs its clock across the context; the old page must stop writing stamps first.
+  await page.close();
   const away = await context.newPage();
   away.on("pageerror", (error) => errors.push(error.message));
-  await away.clock.install({ time: new Date() });
-  await away.clock.pauseAt(new Date(Date.now() + 1000));
-  await away.goto(`${origin}?pane=${encodeURIComponent(panes.web)}${SERVER}`);
+  await openWithClock(away, `${origin}?pane=${encodeURIComponent(panes.web)}${SERVER}`);
   await away.clock.runFor(6000);
   await away.locator(".conn-live").waitFor({ state: "attached" });
   if (phone) {
@@ -262,14 +284,7 @@ async function main(): Promise<void> {
     await buildDemoApp(app);
     const index = join(app, "index.html");
     writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-      let file: string;
-      try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-      if (!file || file.endsWith("/")) file += "index.html";
-      if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-      const body = Bun.file(join(app, file));
-      return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-    } });
+    const server = serveDemo(app, { prefix: "/" });
     try {
       if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
       const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

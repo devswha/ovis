@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
+import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // On the unmodified app over the demo's fixture transport: no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-render-crash-demo-"));
@@ -51,15 +53,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, `<script src="./demo-transport.js"></script>${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   port = server.port ?? 0;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -239,8 +233,11 @@ try {
         assert.equal(await page.locator(".app-crash").count(), 0, "the page is not blanked");
         await page.getByRole("button", { name: "Open workspace list", exact: true }).tap();
         await page.locator("#workspace-drawer.is-open .sidebar-shell").waitFor();
+        await page.waitForFunction((key) => typeof history.state?.[key] === "string", SHEET_HISTORY_KEY, { timeout: 5_000 });
         await page.touchscreen.tap(page.viewportSize()!.width - 8, page.viewportSize()!.height / 2);
         await page.locator("#workspace-drawer.is-open").waitFor({ state: "detached" });
+        // The drawer's Back lands after it closes and can restore the crash flag from the entry underneath.
+        await page.waitForFunction((key) => history.state?.[key] === undefined, SHEET_HISTORY_KEY, { timeout: 5_000 });
         await stopCrashing(page);
         await notice.getByRole("button", { name: "Try again", exact: true }).tap();
         await page.locator(".pane-frame.is-current").waitFor();

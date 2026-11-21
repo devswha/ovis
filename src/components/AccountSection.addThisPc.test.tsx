@@ -1,15 +1,21 @@
-import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
+import { unitHerdrOnly } from "../../scripts/test-herdr.ts";
+import { pairingPc } from "../../server/account/pairing.test-helpers.ts";
+import { handleRelayRequest } from "../../server/relay/routes.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { CLOSE_ANSWER_MS } from "../lib/account/addThisPc.ts";
-import { SignedOutError, type AccountService } from "../lib/account/service.ts";
+import { AccountServiceError, SignedOutError, type AccountService } from "../lib/account/service.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { ADDED_POLL_MS, ADDING_MS, AddThisPc, ANSWER_MS, REOPEN_MS, SIGNED_IN_RETRY_MS, WAITING_MS } from "./AccountSection.tsx";
+
+// the real PC of realRelay reads no herdr: its status reads would put their timeouts on this suite's fake timer queue
+afterAll(unitHerdrOnly());
 
 const at = Date.parse("2026-11-10T03:00:00Z");
 const MARKER = "ovis-add-pc-waiting";
@@ -42,13 +48,18 @@ describe("AddThisPc", () => {
     healthId?: string | null;
   };
   let signedIn: string | null;
+  /** whether the account service admits this PC in one press (a fresh two-step sign-in), and what the PC answers the press with */
+  let onePress: { admits: boolean; pcStatus: number; opensAll: boolean };
+  let admitted: string[];
   let asked: { path: string; localOnly: boolean }[];
   let directory: string[];
   let page: { hidden: boolean; events: EventTarget };
   let tab: Map<string, string>;
   let restore: (() => void)[];
   let puts: string[];
-  let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null };
+  let relayRequest: ((path: string, init?: RequestInit) => Promise<Response>) | null;
+  const loopbackFetch = globalThis.fetch;
+  let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null; press: Promise<void> | null };
   /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
   const service = (bound?: string): AccountService => {
     const mine = (): void => { if (bound !== undefined && signedIn !== bound) throw new SignedOutError(); };
@@ -56,11 +67,12 @@ describe("AddThisPc", () => {
       listPcs: async () => { mine(); await held.listPcs; return []; },
       putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; },
       deletePc: async () => { mine(); directory.push("deletePc"); },
+      admitPc: async () => { mine(); admitted.push(signedIn ?? ""); if (!onePress.admits) throw new AccountServiceError(403, "two_step_required", "Set up two-step sign-in first"); return { account: signedIn, new_until: new Date(at + 86_400_000).toISOString() }; },
       session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn }; },
       forSignIn: (session: { account: string }) => service(session.account),
     } as unknown as AccountService;
   };
-  const hold = (what: "listPcs" | "putPc" | "session" | "link" | "start" | "close"): (() => void) => {
+  const hold = (what: "listPcs" | "putPc" | "session" | "link" | "start" | "close" | "press"): (() => void) => {
     let release!: () => void;
     held[what] = new Promise<void>((done) => { release = done; });
     return () => { held[what] = null; release(); };
@@ -70,10 +82,13 @@ describe("AddThisPc", () => {
     renderers = [];
     pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null, relay: "on", blocked: null, start: "ok", closeMissing: false, gate: "closed", via: "loopback", paired: false, cookieSticks: true, healthDown: false, role: "drive" };
     signedIn = ACCOUNT;
+    onePress = { admits: false, pcStatus: 200, opensAll: true };
+    admitted = [];
     asked = [];
     directory = [];
     puts = [];
-    held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null };
+    relayRequest = null;
+    held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null, press: null };
     tab = new Map();
     page = { hidden: false, events: new EventTarget() };
     for (const name of globals) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -94,13 +109,16 @@ describe("AddThisPc", () => {
     };
     for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: values[name] });
     const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const path = new URL(String(input instanceof Request ? input.url : input), "http://localhost").pathname;
+      const url = new URL(String(input instanceof Request ? input.url : input), "http://localhost");
+      if (url.hostname === "127.0.0.1" && url.port !== "") return loopbackFetch(input, init);
+      const path = url.pathname;
       asked.push({ path, localOnly: new Headers(init?.headers).get("x-ovis-local-only") === "1" });
       if (pc.hang === path) { pc.hang = null; return new Promise<Response>(() => {}); }
       if (path === "/api/account/status" && pc.via === "open") return Response.json({ error: { code: "owner_only", message: "Manage the account from this PC itself, or from a paired device." } }, { status: 403 });
       if (path === "/api/relay/link") await held.link;
       if (path === "/api/relay/start") await held.start;
       if (path === "/api/relay/link/close") await held.close;
+      if (relayRequest !== null && (path === "/api/relay/link" || path === "/api/relay/link/close")) return relayRequest(path, init);
       if (path === "/api/account/status" && pc.statusDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
       if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [], enrolling: pc.enrolling });
       if (path === "/api/relay/start" && pc.start === "broken") return Response.json({ error: { code: "internal", message: "broken" } }, { status: 500 });
@@ -110,6 +128,13 @@ describe("AddThisPc", () => {
         return Response.json({ phase: pc.relay === "on" ? "connecting" : "off", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: pc.blocked, error: null }, { status: pc.blocked === null ? 200 : 409 });
       }
       if (path === "/api/relay/link/close" && !pc.closeMissing) return Response.json({ ok: true });
+      if (path === "/api/account/relay-account" && onePress.admits) return new Response(null, { status: 204 });
+      if (path === "/api/account/one-press") {
+        await held.press;
+        if (onePress.pcStatus !== 200) return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: onePress.pcStatus });
+        pc.account = ACCOUNT;
+        return Response.json({ account: ACCOUNT });
+      }
       if (path === "/api/health" && pc.healthDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
       if (path === "/api/health") {
         const id = pc.healthId === undefined ? decodeOffer(pc.offer)!.server_id : pc.healthId;
@@ -120,7 +145,7 @@ describe("AddThisPc", () => {
       if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: at + 60_000 });
       if (path === "/api/devices/pair") { pc.paired = pc.cookieSticks; if (pc.paired) pc.via = "device"; return Response.json({ ok: true }); }
       if (path === "/api/relay/link" && pc.relay === "off") return Response.json({ error: { code: "relay_off", message: "Start the relay before pairing." } }, { status: 409 });
-      if (path === "/api/relay/link") return pc.linkError === null ? Response.json({ url: pc.offer }) : Response.json({ error: { code: pc.linkError.code, message: "refused" } }, { status: pc.linkError.status });
+      if (path === "/api/relay/link") return pc.linkError === null ? Response.json({ url: pc.offer, window_id: links().toString(16).padStart(32, "0") }) : Response.json({ error: { code: pc.linkError.code, message: "refused" } }, { status: pc.linkError.status });
       return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
     };
     setTransport({ ...nativeTransport, fetch: answer });
@@ -149,7 +174,7 @@ describe("AddThisPc", () => {
     let renderer!: ReactTestRenderer;
     let fresh = signedInAs === null ? null : { account: signedInAs, adds };
     const signedInHere = (): { account: string; adds: boolean } | null => { const taken = fresh; fresh = null; return taken; };
-    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere }) })); });
+    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere, opensAll: () => onePress.opensAll }) })); });
     renderers.push(renderer);
     await settle();
     return renderer;
@@ -172,13 +197,103 @@ describe("AddThisPc", () => {
     return renderer;
   };
 
+  async function realRelay() {
+    // Keep the fixture server's background tasks off the browser's fake timer queue.
+    jest.useRealTimers();
+    const fixture = await pairingPc();
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(at));
+    const { context } = fixture.app;
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    relayRequest = (path, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("origin", base);
+      return handleRelayRequest(new Request(base + path, { ...init, headers }), path, context, null, true, true);
+    };
+    pc.healthId = context.services.relay.currentIdentity()?.server_id ?? null;
+    return {
+      approvals: context.services.relay.approvals,
+      copyLink: () => fixture.local("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1" } }),
+      close: fixture.close,
+    };
+  }
+
   test("after the press it says what to do on any signed-in device, and keeps the wait for a reload", async () => {
     const renderer = await waitingFrom();
-    expect(words(renderer)).toContain("On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on desk. If it shows Join there instead, choose Join, then Type the number. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.");
+    expect(words(renderer)).toContain("On a device signed in to this account (the Ovis app or app.ovis.sh), choose Add on desk. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.");
     expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     expect(directory).toEqual(["putPc"]);
     expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at });
+  });
+
+  test("one press: when the account service admits this PC, the press adds it with no digits and no wait", async () => {
+    onePress.admits = true;
+    const renderer = await waitingFrom();
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
+    expect(words(renderer)).not.toContain("Waiting. The window reopens by itself if Ovis restarts.");
+    expect([directory, admitted]).toEqual([["putPc"], [ACCOUNT]]);
+    expect(asked.map((request) => request.path)).toContain("/api/account/one-press");
+    // the window the listing opened is closed again, and no wait is kept for a reload
+    expect(asked.map((request) => request.path)).toContain("/api/relay/link/close");
+    expect(tab.has(MARKER)).toBe(false);
+    await advance(REOPEN_MS);
+    expect(links()).toBe(1);
+  });
+
+  test("a one press that answers after its attempt was given up clears no wait and closes no window a newer attempt owns", async () => {
+    onePress.admits = true;
+    const release = hold("press");
+    const renderer = await mount(ACCOUNT);
+    await advance(ADDING_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    // a newer press waits with digits: its wait is kept, its window open
+    onePress.admits = false;
+    await press(renderer, "Add this PC to my account");
+    expect(tab.has(MARKER)).toBe(true);
+    const closes = asked.filter((request) => request.path === "/api/relay/link/close").length;
+    onePress.pcStatus = 200;
+    release();
+    await settle();
+    expect(tab.has(MARKER)).toBe(true);
+    expect(asked.filter((request) => request.path === "/api/relay/link/close").length).toBe(closes);
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
+  });
+
+  test("PADD-5: a one-press success tells its owner once, so the account's list is read again", async () => {
+    onePress.admits = true;
+    let renderer!: ReactTestRenderer;
+    let told = 0;
+    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere: () => null, onListed: () => { told++; }, opensAll: () => onePress.opensAll }) })); });
+    renderers.push(renderer);
+    await settle();
+    await press(renderer, "Add this PC to my account");
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
+    expect(told).toBe(1);
+  });
+
+  test("one press refused by the account service (no two-step sign-in, a stale sign-in, the daily cap) keeps today's digit wait, and the PC is never asked", async () => {
+    const renderer = await waitingFrom();
+    expect([directory, admitted]).toEqual([["putPc"], [ACCOUNT]]);
+    expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
+  });
+
+  test("a PC whose step-2 switch is off is never tried in one press: the account service is not asked, and the digit wait comes", async () => {
+    onePress.admits = true;
+    onePress.opensAll = false;
+    const renderer = await waitingFrom();
+    expect(admitted).toEqual([]);
+    expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
+  });
+
+  test("a PC without the one-press route (an older Ovis, or the step-2 switch off) keeps today's digit wait", async () => {
+    onePress.admits = true;
+    onePress.pcStatus = 404;
+    const renderer = await waitingFrom();
+    expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
   });
 
   test("tells its owner once when the press listed the PC, so the account's list is read again", async () => {
@@ -233,15 +348,90 @@ describe("AddThisPc", () => {
     expect(links()).toBe(2);
   });
 
+  test("a periodic relist that sees the PC bind during its directory read ends the wait without writing", async () => {
+    const renderer = await waitingFrom();
+    // The hidden page still relists but neither polls membership nor reopens on its own.
+    show(true);
+    const release = hold("listPcs");
+    await advance(RELIST_MS);
+    expect(links()).toBe(2);
+
+    pc.account = ACCOUNT;
+    release();
+    await settle();
+
+    expect(directory).toEqual(["putPc"]);
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(asked.filter(({ path }) => path === "/api/relay/link" || path === "/api/relay/link/close").map(({ path }) => path))
+      .toEqual(["/api/relay/link", "/api/relay/link", "/api/relay/link/close"]);
+  });
+
+  test("an Add press closes the window it opened if the PC binds during the directory read", async () => {
+    const renderer = await mount();
+    const release = hold("listPcs");
+    await press(renderer, "Add this PC to my account");
+    expect(links()).toBe(1);
+
+    pc.account = ACCOUNT;
+    release();
+    await settle();
+
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(directory).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(asked.filter(({ path }) => path === "/api/relay/link" || path === "/api/relay/link/close").map(({ path }) => path))
+      .toEqual(["/api/relay/link", "/api/relay/link/close"]);
+  });
+
+  test("a retry that finds membership leaves an independently opened codeless window open", async () => {
+    const relay = await realRelay();
+    try {
+      const renderer = await mount();
+      const release = hold("listPcs");
+      await press(renderer, "Add this PC to my account");
+      expect(relay.approvals.windowOpen()).toBe(true);
+
+      pc.account = ACCOUNT;
+      expect((await relay.copyLink()).status).toBe(200);
+      release();
+      await settle();
+
+      expect(words(renderer)).toContain("This PC is in your account.");
+      expect(relay.approvals.windowOpen()).toBe(true);
+    } finally { await relay.close(); }
+  });
+
+  test("a periodic relist finding membership closes its window even when session storage is blocked", async () => {
+    const relay = await realRelay();
+    try {
+      Object.defineProperty(window, "sessionStorage", { configurable: true, get() { throw new Error("blocked"); } });
+      const renderer = await waitingFrom();
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      show(true);
+      const release = hold("listPcs");
+      await advance(RELIST_MS);
+      expect(links()).toBe(2);
+      expect(relay.approvals.windowOpen()).toBe(true);
+
+      pc.account = ACCOUNT;
+      release();
+      await settle();
+
+      expect(words(renderer)).toContain("This PC is in your account.");
+      expect(relay.approvals.windowOpen()).toBe(false);
+    } finally { await relay.close(); }
+  });
+
   test("says by itself that the PC is in the account once a device added it, and then asks nothing more", async () => {
     const renderer = await waitingFrom();
     await advance(ADDED_POLL_MS);
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     pc.account = ACCOUNT;
     await advance(ADDED_POLL_MS);
-    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
-    expect(words(renderer)).toContain("Account acct_0123456…");
-    expect(words(renderer)).not.toContain(ACCOUNT);
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
+    expect(words(renderer)).not.toContain("acct_");
     expect(buttons(renderer)).toEqual([]);
     expect(tab.has(MARKER)).toBe(false);
     const before = asked.length;
@@ -277,7 +467,7 @@ describe("AddThisPc", () => {
     tab.set(MARKER, kept(20 * 60_000));
     pc.account = ACCOUNT;
     const renderer = await mount();
-    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
     expect(tab.has(MARKER)).toBe(false);
     expect(links()).toBe(0);
   });
@@ -379,7 +569,7 @@ describe("AddThisPc", () => {
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     pc.healthId = undefined;
     await advance(ADDED_POLL_MS);
-    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
   });
 
   test("on the hosted app's page for the PC, which names it, a PC that does not say which PC it is still gets its window", async () => {
@@ -466,8 +656,18 @@ describe("AddThisPc", () => {
     expect(renderer.toJSON()).toBeNull();
   });
 
-  test("a PC already in an account, with no wait kept, shows nothing", async () => {
+  test("a PC already in the signed-in account shows Added without opening or listing", async () => {
     pc.account = ACCOUNT;
+    const renderer = await mount();
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+  });
+
+  test.each(["acct_other", null])("a bound PC shows no add status when signed in as %s", async (account) => {
+    pc.account = ACCOUNT;
+    signedIn = account;
     const renderer = await mount();
     expect(renderer.toJSON()).toBeNull();
   });
@@ -477,7 +677,7 @@ describe("AddThisPc", () => {
     await advance(WAITING_MS - 1);
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     await advance(1);
-    expect(words(renderer)).toBe("This PC stopped waiting after 30 minutes.");
+    expect(words(renderer)).toBe("This PC stopped waiting after 30 minutes.\nNo other device? Open app.ovis.sh in a new tab here and sign in the same way. Choose Add there, then come back to this tab to approve.");
     expect(buttons(renderer)).toEqual(["Keep waiting"]);
     expect(tab.has(MARKER)).toBe(false);
     expect(jest.getTimerCount()).toBe(0);
@@ -603,10 +803,11 @@ describe("AddThisPc", () => {
     expect(directory).toEqual(["putPc"]);
   });
 
-  test("a sign-in that just finished on a PC already in an account shows nothing and lists nothing", async () => {
+  test("a sign-in that just finished on a PC already in that account shows Added and lists nothing", async () => {
     pc.account = ACCOUNT;
     const renderer = await mount(ACCOUNT);
-    expect(renderer.toJSON()).toBeNull();
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
     expect(links()).toBe(0);
     expect(directory).toEqual([]);
   });
@@ -679,6 +880,19 @@ describe("AddThisPc", () => {
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
     const paths = asked.map((request) => request.path);
     expect(paths.indexOf("/api/relay/start")).toBeLessThan(paths.lastIndexOf("/api/relay/link"));
+  });
+
+  test("the relay-and-add button leaves the relay off when the PC has since bound", async () => {
+    pc.relay = "off";
+    const renderer = await mount(ACCOUNT, false);
+    pc.account = ACCOUNT;
+
+    await press(renderer, "Turn on the relay and add this PC");
+
+    expect(asked.filter(({ path }) => path === "/api/relay/start")).toEqual([]);
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
   });
 
   test("a copy offering the relay button takes up the wait another copy begins", async () => {
@@ -928,7 +1142,8 @@ describe("AddThisPc", () => {
     pc.statusDown = false;
     pc.account = ACCOUNT;
     await advance(ADDED_POLL_MS);
-    expect(renderer.toJSON()).toBeNull();
+    expect(words(renderer)).toContain("This PC is in your account.");
+    expect(buttons(renderer)).toEqual([]);
     expect(links()).toBe(0);
     expect(directory).toEqual([]);
   });
@@ -987,7 +1202,7 @@ describe("AddThisPc", () => {
     pc.account = ACCOUNT;
     tab.delete(MARKER);
     await advance(ADDED_POLL_MS);
-    for (const copy of [welcome, settings]) expect(words(copy)).toContain("This PC is in your account. Your other devices can open it now.");
+    for (const copy of [welcome, settings]) expect(words(copy)).toContain("This PC is in your account. A new device of your account may need one approval here.");
   });
 
   test("a sign-out or another sign-in in another tab ends the wait with the next reopen, not nine minutes later", async () => {
@@ -1025,7 +1240,7 @@ describe("AddThisPc", () => {
     await advance(ANSWER_MS);
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     await advance(ADDED_POLL_MS);
-    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
   });
 
   test("a listing that never gets an answer is tried again", async () => {
@@ -1047,16 +1262,16 @@ describe("AddThisPc", () => {
     pc.account = ACCOUNT;
     pc.enrolling = true;
     await advance(ADDED_POLL_MS);
-    expect(words(renderer)).toContain("This PC is in your account. The device that added it is still letting your other devices in.");
-    expect(words(renderer)).not.toContain("Your other devices can open it now.");
+    expect(words(renderer)).toContain("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.");
+    expect(words(renderer)).not.toContain("A new device of your account may need one approval here.");
     const opened = links();
     await advance(RELIST_MS);
     expect(links()).toBe(opened);
     expect(directory).toEqual(["putPc"]);
-    expect(words(renderer)).not.toContain("Your other devices can open it now.");
+    expect(words(renderer)).not.toContain("A new device of your account may need one approval here.");
     pc.enrolling = false;
     await advance(ADDED_POLL_MS);
-    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
     expect(jest.getTimerCount()).toBe(0);
   });
 
@@ -1065,10 +1280,10 @@ describe("AddThisPc", () => {
     pc.account = ACCOUNT;
     pc.enrolling = true;
     const renderer = await mount();
-    expect(words(renderer)).toContain("The device that added it is still letting your other devices in.");
+    expect(words(renderer)).toContain("the device that added this PC is still setting it up");
     pc.enrolling = false;
     await advance(ADDED_POLL_MS);
-    expect(words(renderer)).toContain("Your other devices can open it now.");
+    expect(words(renderer)).toContain("A new device of your account may need one approval here.");
   });
 
   test("a PC whose first member left before enrolling it offers the button again", async () => {
@@ -1107,7 +1322,7 @@ describe("AddThisPc", () => {
     const renderer = await mount();
     expect(renderer.toJSON()).toBeNull();
     await advance(2 * ADDED_POLL_MS);
-    expect(words(renderer)).toBe("This PC stopped waiting after 30 minutes.");
+    expect(words(renderer)).toBe("This PC stopped waiting after 30 minutes.\nNo other device? Open app.ovis.sh in a new tab here and sign in the same way. Choose Add there, then come back to this tab to approve.");
     expect(buttons(renderer)).toEqual(["Keep waiting"]);
     expect(tab.has(MARKER)).toBe(false);
     expect(jest.getTimerCount()).toBe(0);
@@ -1120,7 +1335,7 @@ describe("AddThisPc", () => {
     pc.account = ACCOUNT;
     const before = directory.length;
     await press(renderer, "Keep waiting");
-    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(words(renderer)).toContain("This PC is in your account. A new device of your account may need one approval here.");
     expect(directory.length).toBe(before);
 
     // the same after Stop waiting, and under another sign-in it is not called yours
@@ -1217,7 +1432,7 @@ describe("AddThisPc", () => {
     expect(links()).toBe(opened + 1);
     pc.account = ACCOUNT;
     await advance(ADDED_POLL_MS);
-    expect(words(welcome)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(words(welcome)).toContain("This PC is in your account. A new device of your account may need one approval here.");
     expect(tab.has(MARKER)).toBe(false);
   });
 

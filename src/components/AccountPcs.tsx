@@ -1,22 +1,29 @@
 import "./RelayShell.css";
 import "./AccountPcs.css";
 
-import { useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { ChevronRight, Trash2 } from "lucide-react";
 
 import { GLOBAL_APP } from "../../shared/relay-regions.ts";
-import type { MyPc, MyPcState } from "../lib/account/myPcs.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, isNewAccountPc, type MyPc, type MyPcState } from "../lib/account/myPcs.ts";
 import { SignedOutError, type AccountService } from "../lib/account/service.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { ExternalLink } from "../lib/externalLink.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { ConnectionLine } from "./ConnectionLine.tsx";
+import { outOfReachReason, outOfReachWord } from "./relayPcState.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub", google: "Google", apple: "Apple" };
+
+/** The providers a sign-in page offers, as one choice in `locale` ("Google or Apple"). */
+export function providerChoice(locale: string, providers: readonly AccountProvider[]): string {
+  return new Intl.ListFormat(locale, { type: "disjunction" }).format(providers.map((provider) => PROVIDER_NAMES[provider]));
+}
 
 /**
  * The providers' own marks, as their brand rules ask for a sign-in button: GitHub's and Apple's in
@@ -62,6 +69,7 @@ export function AccountSignIn({
   busy = false,
   busyProvider = null,
   failedProvider = null,
+  nameOnly = false,
 }: {
   readonly onSignIn: (provider: AccountProvider) => void;
   readonly error: string | null;
@@ -70,6 +78,8 @@ export function AccountSignIn({
   readonly busy?: boolean;
   readonly busyProvider?: AccountProvider | null;
   readonly failedProvider?: AccountProvider | null;
+  /** each button names only its provider ("GitHub"), for a screen whose title already says what it is for */
+  readonly nameOnly?: boolean;
 }) {
   const t = useT();
   const [lastProvider, setLastProvider] = useState<AccountProvider | null>(null);
@@ -99,7 +109,7 @@ export function AccountSignIn({
               {isBusy
                 ? <span className="boot-spinner account-provider-mark account-provider-spinner" aria-hidden="true" />
                 : <ProviderMark provider={provider} />}
-              {providerLabel(provider, t)}
+              {nameOnly ? PROVIDER_NAMES[provider] : providerLabel(provider, t)}
             </button>
           );
         })}
@@ -123,10 +133,6 @@ export function AccountSignIn({
   );
 }
 
-export function AccountFinePrint() {
-  const t = useT();
-  return <p className="account-fineprint">{t("The account only lists your PCs. Sessions stay end-to-end encrypted.")}</p>;
-}
 
 export function pcStateWord(state: MyPcState, t: ReturnType<typeof useT>): string {
   switch (state) {
@@ -204,12 +210,18 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
   const t = useT();
   const [removing, setRemoving] = useState<MyPc | null>(null);
   const group = useRef<HTMLElement | null>(null);
+  const refresh = useEffectEvent(onRemoved);
+  useEffect(() => {
+    const changed = () => refresh();
+    window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(ACCOUNT_PCS_CHANGED_EVENT, changed);
+  }, []);
   return (
     <>
       {pcs.map((pc) => (
         <li key={pc.server_id} className={pc.state === "paired" || pc.state === "needs-approval" ? "devices-row" : "devices-row is-away"} data-pc-state={pc.state}>
           <div className="devices-name">
-            <span className="settings-label">{pc.name}<span className="devices-kind">PC</span></span>
+            <span className="settings-label">{pc.name}<span className="devices-kind">{isNewAccountPc(pc, now) ? t("New PC") : "PC"}</span></span>
             <span className="settings-description">{listedPcStateText(pc, t)}</span>
           </div>
           {!watching && unusedPc(pc, now) && (
@@ -223,7 +235,7 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
       {pcs.length > 0 && (
         <li className="devices-row account-pcs-open">
           <span className="settings-description">{t("To open a PC of your account in a browser, sign in to this account at app.ovis.sh.")}</span>
-          <a className="btn" href={HOSTED_APP_URL} target="_blank" rel="noreferrer">{t("Open app.ovis.sh")}</a>
+          <ExternalLink kind="ovis" className="btn" href={HOSTED_APP_URL}>{t("Open app.ovis.sh")}</ExternalLink>
         </li>
       )}
       {removing !== null && (
@@ -265,8 +277,8 @@ export function PcStatusLine({ status, lastSeenAt = null }: { readonly status: P
   const t = useT();
   if (status.kind === "answered") return <ConnectionLine state={{ kind: "answered", route: status.route, ...(status.relay === undefined ? {} : { relay: status.relay }), rttMs: status.rttMs }} />;
   if (status.kind === "checking") return <ConnectionLine state={{ kind: "checking" }} />;
-  return <ConnectionLine state={{ kind: "offline", text: lastSeenAt === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(lastSeenAt) }) }}
-    reason={status.reason === "pc" ? t("The PC is off, or Ovis is not running on it.") : t("The relay did not answer. Check this device's network.")} />;
+  const away = status.reason === "pc" ? "offline" : "unreachable";
+  return <ConnectionLine state={{ kind: "offline", text: outOfReachWord(away, t) }} reason={outOfReachReason({ displayState: away, last_seen_at: lastSeenAt, check: status }, t)} />;
 }
 
 export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyMap<string, PcStatus>; readonly onCheck: () => void }) {

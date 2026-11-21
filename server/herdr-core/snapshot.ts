@@ -6,6 +6,8 @@ import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayou
 import { worktreeOfLabels } from "./worktrees.ts";
 import { paneAgent, type ProgramPlatform, reportedAgent, reportedStatus } from "../agent-identity.ts";
 import { catalogPlatform, type CatalogPlatform } from "../../shared/agent-catalog.ts";
+import type { JobProcess } from "../foreground-job.ts";
+import { shownStatusOfWord } from "../../shared/attention.ts";
 
 /**
  * hc has no workspaces, tabs or panes. The Herdr desktop app keeps its own (spaces, tabs and split
@@ -26,11 +28,7 @@ export const TAB_LABEL = "herdr.tab";
 export const WORKSPACE_NAME_LABEL = "ovis.workspace";
 export const TAB_NAME_LABEL = "ovis.tab";
 export const PANE_NAME_LABEL = "ovis.pane";
-/**
- * The last turn a person looked at, shared by every Herdr client (herdr-app docs/labels.md): an
- * agent at rest whose turn is past it is done, one at or below it idle.
- */
-export const SEEN_LABEL = "herdr.seen";
+export { SEEN_LABEL, seenTurnOf } from "../../shared/attention.ts";
 
 /**
  * One OSC 7501 report (hc's `Status`): the program's own words. `kind` (permission, question, auth)
@@ -63,18 +61,10 @@ export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus 
   return reportedStatus(status?.state);
 }
 
-export function seenTurnOf(labels: Readonly<Record<string, string>> | undefined): number | null {
-  const value = labels?.[SEEN_LABEL];
-  if (value === undefined || !/^\d{1,15}$/.test(value)) return null;
-  return Number(value);
-}
-
+/** The status a terminal shows (shared/attention.ts `shownStatusOfWord`), from its program's report. */
 export function shownStatusOf(status: HcStatus | null | undefined, turn: number | undefined, labels: Readonly<Record<string, string>> | undefined, firstTurn?: number): AgentStatus {
   const word = agentStatusOf(status);
-  if (word !== "idle" && word !== "done") return word;
-  const seen = seenTurnOf(labels);
-  if (seen !== null) return (turn ?? 0) > seen ? "done" : "idle";
-  return firstTurn !== undefined && (turn ?? 0) > firstTurn ? "done" : word;
+  return shownStatusOfWord(word, turn, labels, firstTurn);
 }
 
 export function agentOfStatus(status: HcStatus | null | undefined): string | null {
@@ -495,14 +485,31 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
   };
 }
 
-export function processInfoOf(terminal: HcTerminal): PaneProcessInfo {
+/**
+ * A shell running a command string (`sh -c "codex …"`): how hc runs a template's `command:` line. dash
+ * stays in front under its own pid and runs the program as its child, so hc names only the shell (#4052).
+ */
+export function runsCommandString(foreground: HcForeground | null | undefined): foreground is HcForeground {
+  const [program, flags] = foreground?.argv ?? [];
+  return /(?:^|\/)(?:sh|bash|dash|zsh)$/.test(program ?? "") && /^-[a-z]*c[a-z]*$/.test(flags ?? "");
+}
+
+/**
+ * herdr's `pane.process_info` for a terminal: its shell and what runs in front of it. `job`: the
+ * processes below the one in front, in its job (foreground-job.ts), named after it as herdr names
+ * every process of the job; the adapter reads them only for a shell running a command string.
+ */
+export function processInfoOf(terminal: HcTerminal, job: readonly JobProcess[] | null = null): PaneProcessInfo {
   const foreground = terminal.foreground;
   return {
     pane_id: terminal.address,
     shell_pid: terminal.pid ?? null,
     foreground_process_group_id: foreground?.pid ?? null,
     foreground_processes: foreground
-      ? [{ name: foreground.name, pid: foreground.pid, argv: foreground.argv ?? null, argv0: foreground.argv?.[0] ?? null, cmdline: foreground.argv?.join(" ") ?? null, cwd: foreground.cwd ?? null }]
+      ? [
+        { name: foreground.name, pid: foreground.pid, argv: foreground.argv ?? null, argv0: foreground.argv?.[0] ?? null, cmdline: foreground.argv?.join(" ") ?? null, cwd: foreground.cwd ?? null },
+        ...(job ?? []).map(({ pid, name, argv }) => ({ name, pid, argv, argv0: argv[0] ?? null, cmdline: argv.join(" "), cwd: null })),
+      ]
       : [],
   };
 }

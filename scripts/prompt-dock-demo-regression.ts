@@ -9,6 +9,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // A second, tall form (steps, reference text, descriptions, a
 // custom answer) is answered by this script in the transport's place, for the "web" pane, and a
@@ -180,6 +181,7 @@ try {
     window.formAnswers = [];
     window.formNext = null;
     window.formDelay = 0;
+    window.formAnswerGate = null;
     window.formReturned = 0;
     window.formReadFails = false;
     window.formFailedReads = 0;
@@ -208,7 +210,8 @@ try {
           window.formNext = null;
           if (next === null) { if (answer.pane_id === web) window.formPrompt = null; else delete window.panePrompts[answer.pane_id]; }
           // window.formDelay: the answer takes that long to come back, as send_keys and the re-read do
-          return new Promise((done) => setTimeout(done, window.formDelay || 0)).then(() => { if (next !== null) window.formPrompt = next; window.formReturned += 1; return json({ ok: true }); });
+          const gate = window.formAnswerGate ?? new Promise((done) => setTimeout(done, window.formDelay || 0));
+          return gate.then(() => { if (next !== null) window.formPrompt = next; window.formReturned += 1; return json({ ok: true }); });
         }
       }
       return demo(input, init);
@@ -216,17 +219,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${form}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}`;
   if (shots !== null) mkdirSync(shots, { recursive: true });
   try {
@@ -249,6 +242,8 @@ try {
           window.matchMedia = (query) => media(query === "(pointer: coarse)" ? "not all" : query);
         });
         await context.addInitScript(([owner, messages, settings]) => {
+          // The demo's opening turn is in another pane. Its completion droplet can cover this card.
+          Reflect.set(window, "__ovisDemoHoldTurn", true);
           localStorage.setItem("ovis:settings", settings!);
           const enterSends: unknown = JSON.parse(settings!).enterSends;
           if (typeof enterSends === "boolean") localStorage.setItem("ovis:enter-sends", String(enterSends));
@@ -563,13 +558,19 @@ try {
       {
         const { page, errors, close } = await open({ width: 1440, height: 900, prompt: FORM });
         try {
-          await page.evaluate(() => { (window as unknown as { formDelay: number }).formDelay = 600; });
+          await page.evaluate(() => {
+            const formAnswerGate = new Promise<void>((resolve) => {
+              window.addEventListener("qa-release-form-answer", () => resolve(), { once: true });
+            });
+            Object.assign(window, { formAnswerGate });
+          });
           await page.locator(".prompt-card").getByRole("button", { name: /^1\. In memory/ }).click();
           await page.locator(".prompt-card-options[aria-busy=true]").waitFor();
           const elsewhere = page.locator(".app-header button:not([disabled]):visible").first();
           await elsewhere.focus();
           assert.equal(await elsewhere.evaluate((node) => document.activeElement === node), true);
           assert.equal(await page.locator(".prompt-card-options").getAttribute("aria-busy"), "true", "the answer is still on its way");
+          await page.evaluate(() => { window.dispatchEvent(new Event("qa-release-form-answer")); });
           await page.locator(".prompt-card").getByText(FORM.question).waitFor({ state: "detached" });
           assert.equal((await answersOf(page)).length, 1);
           assert.equal(await elsewhere.evaluate((node) => document.activeElement === node), true, "focus stays where the user put it while the answer was on its way");

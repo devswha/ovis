@@ -1,7 +1,8 @@
 /**
- * Its QR code waits for a press, tells the PC what it is for, and
- * is for a PC in no account only: once the PC joins one the PC takes its code back, the QR code leaves, and the tab
- * says to sign in to that account on the device instead. A Portal visitor gets no SSH tab, no switch,
+ * Its QR code is for a PC that an account was named for: before one is, the tab says to add the PC to the account
+ * first and the PC makes no code. It waits for a press, tells the PC what it is for, and is for a PC in no account
+ * only: once the PC joins one the PC takes its code back, the QR code leaves, and the tab says to sign in to that
+ * account on the device instead. A Portal visitor gets no SSH tab, no switch,
  * no sign-in, no reset, no code and no relay group; a serve-only install shows Blocked with no switch and no
  * reset; a failed start says why; on a tailnet the relay's tab keeps its switch and Phones and devices shows
  * the Tailscale address; a device paired through the relay wears the via relay pill. GET /api/access is pinned
@@ -16,7 +17,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser, BrowserContext, Page, Request, Response } from "playwright-core";
+import type { Browser, BrowserContext, Page, Request, Response, WebSocket } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import { createServer } from "../server/index.ts";
 import { RelayService } from "../server/relay/service.ts";
@@ -24,6 +25,7 @@ import { UsageService } from "../server/usage.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import type { PairedDevice, PairingCode, RelayStatus, RemoteAccess } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
+import { routeDrained } from "./drained-route.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
 export interface RelayFixture {
@@ -80,10 +82,16 @@ const TAILNET: RemoteAccess = { port: 0, tailscale: { state: "running", dns_name
 
 const ACCOUNT_SERVICE = "https://account.ovis.sh";
 
-const englishContext = async (browser: Browser, access: RemoteAccess = NO_TAILSCALE, { account = false } = {}): Promise<BrowserContext> => {
+const englishContext = async (browser: Browser, access: RemoteAccess = NO_TAILSCALE, { account = false, ownWindow = true } = {}): Promise<BrowserContext> => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   await context.route("**/api/access", (route) => route.fulfill({ json: access }));
+  // a window the PC does not call its own (a browser reaching it through a forward, say) signs in on the link page
+  if (!ownWindow) await context.route("**/api/health?scope=bridge", async (route) => {
+    const response = await route.fetch();
+    const { own_window: _own, ...body } = await response.json() as Record<string, unknown>;
+    await route.fulfill({ response, json: body });
+  });
   if (account) {
     const service = new FakeAccountService();
     service.offerLinkPage(["github", "google"]);
@@ -131,8 +139,35 @@ const signIn = (page: Page): Promise<void> => page.evaluate((service) => new Pro
 }), ACCOUNT_SERVICE);
 
 export async function openPhoneSettings(page: Page, origin: string): Promise<void> {
-  await page.goto(origin, { waitUntil: "domcontentloaded" });
-  await page.locator(".conn-live").waitFor({ state: "attached" });
+  // #4357: the reopened page once never showed .conn-live; on a timeout, name the stage it stopped at
+  const started = Date.now();
+  const sockets: string[] = [];
+  const noteSocket = (socket: WebSocket): void => {
+    const at = (what: string): void => { sockets.push(`${Date.now() - started}ms ${what} ${new URL(socket.url()).pathname}`); };
+    at("created");
+    socket.on("close", () => at("closed"));
+    socket.on("socketerror", (error) => at(`error ${error}`));
+  };
+  page.on("websocket", noteSocket);
+  try {
+    await page.goto(origin, { waitUntil: "domcontentloaded" });
+    await page.locator(".conn-live").waitFor({ state: "attached" });
+  } catch (error) {
+    // a page that stopped running scripts never answers: the read gives up, so the timeout above is still reported
+    let gaveUp: ReturnType<typeof setTimeout> | undefined;
+    const shown = await Promise.race([
+      page.evaluate(() => ({
+        url: location.href,
+        conn: [...document.querySelectorAll(".conn")].map((chip) => `${chip.className}: ${chip.textContent ?? ""}`),
+        terminals: document.querySelectorAll(".xterm").length,
+        dialogs: [...document.querySelectorAll("[role=dialog], [role=alertdialog]")].map((dialog) => dialog.getAttribute("aria-label") ?? dialog.className),
+      })),
+      new Promise<never>((_, reject) => { gaveUp = setTimeout(() => reject(new Error("the page did not answer within 5 s")), 5_000); }),
+    ]).catch((readError: unknown) => ({ unreadable: String(readError) })).finally(() => clearTimeout(gaveUp));
+    throw new Error(`${error instanceof Error ? error.message.split("\n")[0] : String(error)}; page ${JSON.stringify(shown)}; sockets ${JSON.stringify(sockets)}`, { cause: error });
+  } finally {
+    page.off("websocket", noteSocket);
+  }
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await openSettingsPage(page, "Devices and PCs");
 }
@@ -156,10 +191,15 @@ function relayUi(page: Page) {
       await relayGroup.waitFor();
     },
     sheet,
-    tabs: sheet.locator(".connect-tabs [data-tab]"),
-    async openTab(name: "ssh" | "devices" | "relay"): Promise<void> {
-      await sheet.locator(`.connect-tabs [data-tab="${name}"]`).click();
+    tabs: sheet.locator(".connect-ways [data-tab]"),
+    async openTab(name: "relay" | "tailscale" | "direct" | "devices"): Promise<void> {
+      await sheet.locator(`.connect-ways [data-tab="${name}"]`).click();
       await sheet.locator(`[data-tab-panel="${name}"]`).waitFor();
+    },
+    /** Phones and devices, on its way without signing in: an owner's window with the relay opens it on the relay */
+    async openLocal(): Promise<void> {
+      await sheet.locator('.connect-ways [data-tab="devices"]').click();
+      await devicesTab.locator('.connect-devices-ways [data-way="local"]').click();
     },
     relayTab,
     devicesTab,
@@ -186,7 +226,21 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     const fixture = startRelayFixture();
     fixtures.push(fixture);
     const relayState = async (): Promise<RelayStatus> => (await fetch(`${fixture.origin}/api/relay`)).json() as Promise<RelayStatus>;
-    const context = await englishContext(browser, NO_TAILSCALE, { account: true });
+    // the PC's own window signs in at the provider and back: the relay tab offers the providers, not a code
+    const ownContext = await englishContext(browser, NO_TAILSCALE, { account: true });
+    contexts.push(ownContext);
+    const ownPage = await ownContext.newPage();
+    ownPage.setDefaultTimeout(15_000);
+    ownPage.on("pageerror", (error) => pageErrors.push(error.message));
+    await openPhoneSettings(ownPage, fixture.origin);
+    const own = relayUi(ownPage);
+    await own.connect.click();
+    await own.openTab("relay");
+    await own.relayTab.getByTestId("connect-signin").getByRole("button", { name: "Continue with Google", exact: true }).waitFor();
+    assert.equal(await own.relayTab.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "the PC's own window is offered no code sign-in");
+    await ownContext.close();
+
+    const context = await englishContext(browser, NO_TAILSCALE, { account: true, ownWindow: false });
     contexts.push(context);
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -210,13 +264,18 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await dialog.locator('.settings-fold[data-fold="more"] > summary').click();
 
     await connect.click();
-    await sheet.locator('[data-tab-panel="ssh"]').waitFor();
+    await sheet.locator('[data-tab-panel="relay"]').waitFor();
     assert.equal(await sheet.getByRole("group", { name: "How to connect", exact: true }).count(), 1, "the tabs are one labelled group");
     assert.deepEqual(await tabs.evaluateAll((buttons) => buttons.map((button) => [button.getAttribute("data-tab"), button.textContent, button.getAttribute("aria-pressed")])),
-      [["ssh", "SSH", "true"], ["devices", "Phones and devices", "false"], ["relay", "Ovis relay", "false"]], "an owner's PC window gets SSH, Phones and devices and Ovis relay, opened on SSH");
+      [["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["direct", "Direct", "false"], ["devices", "Phones and devices", "false"]], "an owner's PC window gets Ovis relay, Tailscale and Direct, then Phones and devices apart, opened on the relay");
     assert.equal(await sheet.locator(".connect-other, .connect-way, .connect-way-body, .connect-phone-relay, .tailnet-pcs").count(), 0, "no other ways fold, no ways list, no relay pairing QR code and no tailnet PCs");
     assert.equal(await sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "the sheet offers no relay pairing QR code");
     assert.equal((await relayState()).phase, "off", "opening the sheet turns nothing on");
+    assert.equal(await sheet.locator('.connect-tabs [data-tab="devices"]').count(), 0, "Phones and devices sits beside the tabs, not among them");
+    await ui.openTab("tailscale");
+    assert.equal(await sheet.locator('[data-tab-panel="relay"]').isHidden(), true, "Tailscale takes the relay tab's place");
+    await ui.openTab("direct");
+    await sheet.getByLabel("Address or SSH", { exact: true }).waitFor();
 
     await ui.openTab("relay");
     const signInButton = relayTab.getByTestId("connect-signin").getByRole("button", { name: "Sign in to Ovis", exact: true });
@@ -247,7 +306,8 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await approving.waitForURL(`${ACCOUNT_SERVICE}/link?code=*`);
     await waiting.locator("a").focus();
     await approving.getByRole("button", { name: "Approve", exact: true }).click();
-    await relayTab.getByRole("button", { name: "Open the account", exact: true }).waitFor();
+    // right after the sign-in, the next step is in the same tab: with the relay off, the one press that turns it on and adds the PC
+    await relayTab.getByRole("button", { name: "Turn on the relay and add this PC", exact: true }).waitFor();
     assert.equal(await sheet.evaluate((node) => node.contains(document.activeElement)), true, "approval keeps keyboard focus inside the sheet");
     assert.equal(await toggle.evaluate((node) => node === document.activeElement), true, "approval focuses the signed-in view's first control");
     await approving.close();
@@ -261,7 +321,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await toggle.getAttribute("aria-checked"), "false", "the sheet's switch shows the relay off");
     assert.equal(await sheet.getByRole("button", { name: "Turn on the relay", exact: true }).count(), 0, "one way to turn it on: the switch");
     assert.equal(await sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "signed in, no sign-in");
-    await relayTab.getByRole("button", { name: "Open the account", exact: true }).waitFor();
+    await relayTab.getByRole("button", { name: "Turn on the relay and add this PC", exact: true }).waitFor();
     assert.equal(await sheet.getByTestId("relay-owner-help").count(), 0, "the direct owner needs no relay restriction explanation");
     assert.equal(await gateNote.getAttribute("title"), GATE_NOTE, "with no token and nothing paired, the switch's tooltip says turning the relay on closes the gate");
     assert.equal(await relayTab.getByText(GATE_NOTE, { exact: true }).count(), 0, "and the sheet carries no warning paragraph for it");
@@ -277,6 +337,26 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
 
     const relayQr = sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true });
     const showQr = accountQr.getByRole("button", { name: "Show the QR code", exact: true });
+    await accountQr.getByText("Add this PC to your account first; then it can show its QR code.", { exact: true }).waitFor();
+    assert.equal(await showQr.count(), 0, "a PC that no account was named for offers no QR code");
+    const unnamed = await page.evaluate(async () => {
+      const response = await fetch("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-no-account-only": "1" } });
+      return [response.status, ((await response.json()) as { error: { code: string } }).error.code];
+    });
+    assert.deepEqual(unnamed, [409, "no_account_named"], "and the PC makes no code for it");
+    assert.equal(fixture.pendingCode(), null, "no code is pending on the PC");
+    const named = await fetch(`${fixture.origin}/api/account/relay-account`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-herdr-machine": "1", origin: fixture.origin },
+      body: JSON.stringify({ account: "fixture" }),
+    });
+    assert.equal(named.status, 204, "the account is named for the PC");
+    // the page reads the relay's state as Settings opens
+    await openPhoneSettings(page, fixture.origin);
+    await connect.click();
+    await ui.openTab("relay");
+
+    // the QR code waits for its press, and comes down with its code when another tab opens
     await showQr.waitFor();
     assert.equal(await accountQr.getByRole("switch").count(), 0, "signed in, the QR code's part repeats no switch");
     const offered = answered(page, "/api/relay/offer");
@@ -287,36 +367,21 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await sheet.isVisible(), true, "the sheet stays open under its QR code");
     // the QR code alone: no code to type that could be read off the screen and typed on another device
     assert.equal(await accountQr.getByLabel("Code to type", { exact: true }).count(), 0, "the account QR code shows no code to type");
-    // a device that pairs while the QR code may still put this PC in an account does not close the sheet: it stays
-    // to say which account and by which device, and to ask about a device nobody vouched for
+    // the QR code's code is redeemed through the relay only: sent to this PC's own address it pairs nobody, and the
+    // QR code stays up with its code
     const qrCode = decodeOffer(((await (await offered).json()) as { url: string }).url)?.code;
-    const codeEnded = answered(page, "/api/devices/pair/cancel");
     const scanned = await fetch(`${fixture.origin}/api/devices/pair`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-herdr-machine": "1", origin: fixture.origin },
       body: JSON.stringify({ code: qrCode, label: "Scanner" }),
     });
-    assert.equal(scanned.status, 204, "a device paired with the QR code's code");
-    await dialog.locator('[data-section="devices"]').getByText("Paired: Scanner.", { exact: true }).waitFor();
-    assert.equal(await sheet.isVisible(), true, "the sheet stays open across a pairing while its QR code is up");
-    const asked = accountQr.getByTestId("connect-account-alone");
-    await asked.getByText("Paired with this PC at its own address while its QR code was up, not through the relay: Scanner.", { exact: true }).waitFor();
-    assert.equal((await codeEnded).status(), 200, "the question takes the QR code down and ends its pairing code");
-    assert.equal(await relayQr.count(), 0, "no QR code stays up beside the question");
-    assert.deepEqual(await asked.getByRole("button").allInnerTexts(), ["Not me: remove it", "Keep it"], "Not me comes first");
-    const removedScanner = page.waitForResponse((response) => response.request().method() === "DELETE" && new URL(response.url()).pathname.startsWith("/api/devices/"));
-    await asked.getByRole("button", { name: "Not me: remove it", exact: true }).click();
-    assert.equal((await removedScanner).status(), 204, "Not me revokes that device");
-    await accountQr.getByText("Removed: Scanner.", { exact: true }).waitFor();
-    assert.equal(await sheet.isVisible(), true, "the sheet stays open after the answer");
-    await accountQr.getByRole("button", { name: "Show a new code", exact: true }).waitFor();
-    const offeredAgain = answered(page, "/api/relay/offer");
-    await accountQr.getByRole("button", { name: "Show a new code", exact: true }).click();
-    assert.equal((await offeredAgain).status(), 200, "Show a new code asks for a new offer");
-    await relayQr.waitFor();
-    const codeEndedAgain = answered(page, "/api/devices/pair/cancel");
-    await ui.openTab("ssh");
-    assert.equal((await codeEndedAgain).status(), 200, "another tab ends the QR code's pairing code");
+    assert.equal(scanned.status, 401, "the QR code's code pairs nobody at this PC's own address");
+    assert.equal(fixture.pendingCode(), qrCode, "and it stays the code pending on the PC");
+    assert.equal(await relayQr.count(), 1, "the QR code stays up");
+    assert.equal(await sheet.isVisible(), true, "and the sheet stays open");
+    const codeEnded = answered(page, "/api/devices/pair/cancel");
+    await ui.openTab("direct");
+    assert.equal((await codeEnded).status(), 200, "another tab ends the QR code's pairing code");
     await ui.openTab("relay");
     await accountQr.getByRole("button", { name: "Show a new code", exact: true }).waitFor();
     assert.equal(await relayQr.count(), 0, "the QR code is down until it is asked for again");
@@ -332,18 +397,20 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await fixture.joinAccount("fixture", "Owner's phone");
     assert.equal(fixture.pendingCode(), null, "the PC took the QR code's code back as it joined the account");
     const joined = accountQr.getByTestId("connect-account-joined");
-    await joined.getByText("This PC is in your account (fixture).", { exact: true }).waitFor();
+    await joined.getByText("This PC is in your account.", { exact: true }).waitFor();
     await joined.getByText("Added by Owner's phone.", { exact: true }).waitFor();
     assert.equal(await relayQr.count(), 0, "the QR code left as the PC joined an account");
     assert.equal(await sheet.isVisible(), true, "the sheet stays open to say which account the PC joined");
     assert.deepEqual(await joined.getByRole("button").allInnerTexts(), ["Done", "Not me: revoke every device"], "the account is this browser's own: Done, then Not me");
     await joined.getByRole("button", { name: "Done", exact: true }).click();
-    await accountQr.getByText("This PC is in your Ovis account (fixture).", { exact: true }).waitFor();
-    await accountQr.getByText("To add a device, sign in to this PC's account on it and open this PC there. A device this PC does not know yet is approved once, by picking the matching number on a device that is already a member of this PC.", { exact: true }).waitFor();
-    await accountQr.getByText("This PC shows a QR code only while it is in no account.", { exact: true }).waitFor();
+    // The transient join notice and the settled panel now use the same heading.
+    // Wait for the notice (and its still-live revoke action) to leave before checking the settled view.
+    await joined.waitFor({ state: "detached" });
+    await accountQr.getByText("This PC is in your account.", { exact: true }).waitFor();
+    assert.ok(!(await accountQr.innerText()).includes("(fixture)"), "the tab does not expose an account id");
     assert.equal(await accountQr.getAttribute("data-account"), "mine", "the part says the PC is in this browser's account");
     assert.equal(await accountQr.getByRole("button").count(), 0, "a PC that is in an account offers no QR code");
-    assert.equal(await relayTab.getByRole("button", { name: "Open the account", exact: true }).count(), 0, "and nothing says to add this PC to the account any more");
+    assert.equal(await relayTab.getByRole("button", { name: /^(Open the account|Add this PC to my account|Turn on the relay and add this PC)$/ }).count(), 0, "and nothing says to add this PC to the account any more");
     assert.equal(await accountQr.evaluate((node) => node.contains(document.activeElement)), true, "the answered notice hands the focus to what the part says now");
     // the PC itself makes no such code any more, whatever page asks for it
     const refused = await page.evaluate(async () => {
@@ -358,22 +425,32 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     page.on("request", noteOffer);
     await connect.click();
     await ui.openTab("relay");
-    await accountQr.getByText("This PC is in your Ovis account (fixture).", { exact: true }).waitFor();
+    await accountQr.getByText("This PC is in your account.", { exact: true }).waitFor();
     assert.equal(await accountQr.getByRole("button").count(), 0, "opened again, a PC in an account still offers no QR code");
     assert.equal(await relayQr.count(), 0, "and shows none");
     assert.equal(await relayTab.getByRole("switch").count(), 0, "online and in the account, the tab has nothing to switch");
     page.off("request", noteOffer);
     assert.deepEqual(askedAgain, [], "the tab asked the PC for no code");
 
-    const codeStart = pairStart();
+    // Phones and devices opens on the relay; this loopback page with no Tailscale has no address a phone can open, so
+    // its other way offers the step that makes one, and the code stands alone, said where to type, with no QR box
     await ui.openTab("devices");
+    assert.equal(await devicesTab.locator('.connect-devices-ways [data-way="relay"]').getAttribute("aria-pressed"), "true", "Phones and devices opens on the Ovis relay");
+    assert.equal(await relayTab.isVisible(), true, "and shows the relay's own panel there");
+    const codeStart = pairStart();
+    await devicesTab.locator('.connect-devices-ways [data-way="local"]').click();
     const codeStarted = await startedCode(codeStart);
     await wifiCode.filter({ hasText: exactly(spaced(codeStarted)) }).waitFor();
+    await devicesTab.getByRole("link", { name: "Install Tailscale", exact: true }).waitFor();
+    assert.equal(await devicesTab.getByText("The phone needs the Tailscale app turned on too.", { exact: true }).count(), 1, "it says the phone needs Tailscale too");
+    assert.equal(await devicesTab.locator(".connect-phone-code .compact-pair-qr-empty, .connect-phone-code [role='img']").count(), 0, "no address: no QR code and no empty box beside the code");
+    assert.equal(await devicesTab.getByText("No address a phone can open: type the code instead.").count(), 0, "and no dead end");
     await devicesTab.evaluate((panel) => { (panel as HTMLElement & { kept?: boolean }).kept = true; });
     await ui.openTab("relay");
     assert.equal(await devicesTab.isHidden(), true, "another tab hides Phones and devices");
     await ui.openTab("devices");
     assert.equal(await devicesTab.evaluate((panel) => (panel as HTMLElement & { kept?: boolean }).kept === true), true, "Phones and devices is kept while the sheet is open, not mounted again");
+    assert.equal(await devicesTab.locator('.connect-devices-ways [data-way="local"]').getAttribute("aria-pressed"), "true", "and keeps the way picked");
     assert.equal(await wifiCode.innerText(), spaced(codeStarted), "back on Phones and devices, its code is the same");
     await ui.closeSheet();
 
@@ -396,13 +473,17 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await moreState.filter({ hasText: "Online. No phone connected." }).waitFor();
     await thisPcId.filter({ hasNotText: idBefore }).waitFor();
 
+    // served on the tailnet, the PC has an address a phone opens: the code comes with it, and stays across tabs
+    await page.route("**/api/access", (route) => route.fulfill({ json: TAILNET }));
     await openPhoneSettings(page, fixture.origin);
     await moreState.filter({ hasText: "Online. No phone connected." }).waitFor({ state: "attached" });
     await connect.click();
     const pageStart = pairStart();
-    await ui.openTab("devices");
+    await ui.openLocal();
     const pageCode = await startedCode(pageStart);
     await wifiCode.filter({ hasText: exactly(spaced(pageCode)) }).waitFor();
+    assert.equal(await devicesTab.locator(".connect-phone-code [role='img']").count(), 1, "with the tailnet address, the code comes with its QR code");
+    await page.unroute("**/api/access");
     const phonePaired = await fetch(`${fixture.origin}/api/devices/pair`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-herdr-machine": "1", origin: fixture.origin },
@@ -416,32 +497,45 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     const visitorContext = await englishContext(browser);
     contexts.push(visitorContext);
     const visitor = await visitorContext.newPage();
-    await visitor.route("**/api/health*", async (route) => {
+    const drainVisitorHealth = await routeDrained(visitor, "**/api/health*", async (route) => {
       const response = await route.fetch();
       const body = await response.json() as { auth: Record<string, unknown> };
       await route.fulfill({ response, json: { ...body, auth: { ...body.auth, via: "portal", role: "drive" } } });
     });
-    const visitorMutations: string[] = [];
-    await visitor.route("**/api/relay/**", (route) => {
-      if (route.request().method() !== "POST") return route.continue();
-      visitorMutations.push(new URL(route.request().url()).pathname);
-      return route.fulfill({ status: 403, json: { error: { code: "owner_only", message: "Use the access token or a paired device." } } });
-    });
-    await openPhoneSettings(visitor, fixture.origin);
-    const seen = relayUi(visitor);
-    // the visitor's sheet holds only what it can use: Phones and devices, with no pairing code, no SSH and no relay
-    // tab; More settings has no relay group for it
-    await seen.connect.click();
-    await seen.devicesTab.getByText("Open Ovis on the PC itself to add a connection.", { exact: true }).waitFor();
-    assert.equal(await seen.sheet.locator(".connect-tabs").count(), 0, "a Portal visitor gets one way, so no tabs");
-    assert.equal(await seen.relayTab.count(), 0, "nor the relay's tab");
-    assert.equal(await seen.sheet.locator(".connect-phone-code").count(), 0, "a Portal visitor is offered no pairing code");
-    assert.equal(await seen.sheet.locator(".compact-pair").count(), 0, "nor a code to type");
-    assert.equal(await seen.sheet.getByRole("switch").count(), 0, "a Portal visitor gets no relay switch");
-    assert.equal(await seen.sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "nor the sign-in");
-    assert.equal(await seen.sheet.getByRole("img").count(), 0, "a Portal visitor is shown no pairing offer");
-    assert.equal(await seen.relayGroup.count(), 0, "a Portal visitor's More settings has no relay group");
-    assert.deepEqual(visitorMutations, [], "a Portal visitor never requests an owner-only relay mutation");
+    // a drain that fails too must not hide what the checks found: both errors are reported then
+    let failure: { error: unknown } | undefined;
+    try {
+      const visitorMutations: string[] = [];
+      await visitor.route("**/api/relay/**", (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        visitorMutations.push(new URL(route.request().url()).pathname);
+        return route.fulfill({ status: 403, json: { error: { code: "owner_only", message: "Use the access token or a paired device." } } });
+      });
+      await openPhoneSettings(visitor, fixture.origin);
+      const seen = relayUi(visitor);
+      // the visitor's sheet holds only what it can use: Phones and devices, with no pairing code, no SSH and no relay
+      // tab; More settings has no relay group for it
+      await seen.connect.click();
+      await seen.devicesTab.getByText("Open Ovis on the PC itself to add a connection.", { exact: true }).waitFor();
+      assert.equal(await seen.sheet.locator(".connect-tabs").count(), 0, "a Portal visitor gets one way, so no tabs");
+      assert.equal(await seen.relayTab.count(), 0, "nor the relay's tab");
+      assert.equal(await seen.sheet.locator(".connect-phone-code").count(), 0, "a Portal visitor is offered no pairing code");
+      assert.equal(await seen.sheet.locator(".compact-pair").count(), 0, "nor a code to type");
+      assert.equal(await seen.sheet.getByRole("switch").count(), 0, "a Portal visitor gets no relay switch");
+      assert.equal(await seen.sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "nor the sign-in");
+      assert.equal(await seen.sheet.getByRole("img").count(), 0, "a Portal visitor is shown no pairing offer");
+      assert.equal(await seen.relayGroup.count(), 0, "a Portal visitor's More settings has no relay group");
+      assert.deepEqual(visitorMutations, [], "a Portal visitor never requests an owner-only relay mutation");
+    } catch (error) {
+      failure = { error };
+    }
+    try {
+      await drainVisitorHealth();
+    } catch (drainError) {
+      if (failure === undefined) throw drainError;
+      throw new AggregateError([failure.error, drainError], "the Portal visitor's checks failed, and so did draining its health route");
+    }
+    if (failure !== undefined) throw failure.error;
     await visitorContext.close();
 
     await ui.openMore();
@@ -473,7 +567,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await net.toggle.waitFor();
     assert.equal(await net.toggle.getAttribute("aria-checked"), "false", "the relay's tab keeps its switch, off");
     assert.equal(await net.gateNote.getAttribute("title"), GATE_NOTE, "the switch keeps the gate note as its tooltip");
-    await net.openTab("devices");
+    await net.openLocal();
     await net.devicesTab.getByText("https://pc.tail0000.ts.net").first().waitFor();
     assert.equal((await tailnetRelay()).phase, "off", "opening the sheet turns nothing on");
     await net.openTab("relay");
