@@ -97,6 +97,7 @@ function listing(signedIn: { account: string | null }) {
     const mine = (): void => { if (bound !== undefined && signedIn.account !== bound) throw new Error("another sign-in is stored"); };
     return {
       listPcs: async () => { mine(); for (const read of reads) read(); return [{ server_id: serverId, added_at: new Date(0).toISOString() }]; },
+      refreshPc: async () => { mine(); return "legacy"; },
       putPc: async () => { mine(); calls.push(`putPc as ${signedIn.account}`); },
       deletePc: async () => { mine(); calls.push(`deletePc as ${signedIn.account}`); },
       session: async () => signedIn.account === null ? undefined : { account: signedIn.account },

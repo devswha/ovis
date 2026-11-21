@@ -12,7 +12,7 @@ import { isLoopbackHost } from "../phone.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { pcAccountStatus, within } from "./join.ts";
 import { NEW_PC_MS } from "./myPcs.ts";
-import { sameSignIn, type AccountService } from "./service.ts";
+import { AccountServiceError, sameSignIn, type AccountService } from "./service.ts";
 
 /**
  * Whether this window is this PC's own window, as the server's ownWindow judges it (server/dispatch.ts): its owner
@@ -167,8 +167,8 @@ export interface ListedAs {
 
 /**
  * Lists this PC in the account's directory and opens its approve-here pairing window; the PC as
- * listed. An entry the card would stop showing before the next relist (`RELIST_MS`) is listed anew,
- * which shows the card again and rings the account's devices, so the card lasts as long as this screen waits.
+ * listed. An invitation that would expire before the next relist (`RELIST_MS`) is refreshed in place if
+ * the service supports it, so the card lasts as long as this screen waits. Only an old service needs a relist.
  *
  * Every directory call is made as the sign-in stored when the listing began (`forSignIn`): one made meanwhile
  * (another tab signed out and in) is never written to. Listing again `for` a wait writes nothing, and throws
@@ -201,18 +201,38 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const listed = (await directory.listPcs()).find((pc) => pc.server_id === offer.server_id);
   const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
   const result = { name, serverId: offer.server_id, account: session?.account ?? null };
-  if (!runs()) throw new AddPcWaitOver("ended");
+  const readMembership = async (): Promise<ListedPc["membership"]> => {
+    if (!runs()) throw new AddPcWaitOver("ended");
+    const { account, enrolling } = await thisPcMembership();
+    if (!runs()) throw new AddPcWaitOver("ended");
+    return account === null ? undefined : { account, enrolling };
+  };
   // A first link or one-press bind can finish while the listing is being read. A refresh must not remove it.
-  const { account, enrolling } = await thisPcMembership();
-  if (!runs()) throw new AddPcWaitOver("ended");
-  if (account !== null) return { ...result, membership: { account, enrolling } };
-  if (listed !== undefined && Date.now() - Date.parse(listed.added_at) >= NEW_PC_MS - options.relistMs) {
+  const membership = await readMembership();
+  if (membership !== undefined) return { ...result, membership };
+  let refreshed = false;
+  if (listed !== undefined && Date.now() - Date.parse(listed.invited_at ?? listed.added_at) >= NEW_PC_MS - options.relistMs) {
     running();
-    await directory.deletePc(offer.server_id);
+    const outcome = await directory.refreshPc(offer.server_id, listed.listing_id);
+    // A new service preserves an admission even if the PC binds after the first status read. Read again
+    // both to finish that wait and to keep the local check immediately before any old-service removal.
+    const after = await readMembership();
+    if (after !== undefined) return { ...result, membership: after };
+    switch (outcome) {
+      case "refreshed": refreshed = true; break;
+      case "changed": throw new AccountServiceError(409, "listing_changed", "This add is no longer waiting for that action");
+      case "legacy":
+        running();
+        await directory.deletePc(offer.server_id);
+        break;
+      default: outcome satisfies never;
+    }
   }
-  const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  running();
-  await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
+  if (!refreshed) {
+    const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    running();
+    await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
+  }
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
   // (not for a wait or an attempt that ended while the entry was written: nobody waits for this PC under it)
   if (session && runs()) {

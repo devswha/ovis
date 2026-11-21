@@ -105,7 +105,10 @@ test.each(["bind", "complete"] as const)("refresh races a real one-press %s with
 
 test("refreshing a pending invitation keeps its listing age and renews its dashboard countdown", async () => {
   const f = await fixture("pending");
-  const dashboard = async () => dashboardModel(myPcs(await f.directory.listPcs(), [], { now: f.now }), { label: "Phone", now: f.now }, RELAY);
+  const dashboard = async () => {
+    const rows = myPcs(await f.directory.listPcs(), [], { now: f.now }).map((pc) => ({ ...pc, relay: pc.join?.relay ?? null }));
+    return dashboardModel(rows, { label: "Phone", now: f.now }, RELAY);
+  };
   expect((await dashboard()).attention[0]?.expiresAt).toBeNull();
 
   await listThisPc(f.directory, { relistMs: RELIST_MS });

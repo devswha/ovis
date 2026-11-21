@@ -537,6 +537,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       const { name, serverId, account, membership } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(as === null ? {} : { as: { account: as, running: current, reached } }) });
       if (!current()) return null;
       if (membership !== undefined) {
+        opened = true;
+        closeOpened();
         keepAddPcWaiting(null);
         return await joinedAs(membership.account, membership.enrolling);
       }
