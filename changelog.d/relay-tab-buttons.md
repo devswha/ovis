@@ -7,3 +7,6 @@
   account** and **Sign out**; the ways to sign in, the plan and **Delete account** are in **Manage
   account**. Signed out, the page shows no account card where Add a connection signs in, this PC
   shows no ID line, and the page has no sentence under its title.
+- Settings → Devices and PCs shows strict mode as one row of More settings, **Strict mode (Linux)**
+  with its switch; what it ends is named when you turn it on. The account's PCs there carry no line
+  or link to app.ovis.sh.

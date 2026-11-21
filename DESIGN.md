@@ -5042,7 +5042,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the plan and **Delete account** at its foot. Where Add a connection's relay tab signs in (a page
   of this PC that offers the relay), a signed-out page draws no account card at all: only why a
   sign-in ended, when one did. A page without that tab keeps its sign-in in the card, and Add this
-  PC under it. Devices and other PCs are one list
+  PC under it. Strict mode is one row of More settings → Devices and access, **Strict mode (Linux)**
+  with its switch and at most one line of why it is off; what it ends and what it cannot cover is
+  said in the confirmation that turning it on asks (`ConfirmDialog`), not on the page. The account's
+  PCs under My devices carry no sentence or link to the hosted app. Devices and other PCs are one list
   because to the person they are one thing: something connected to this PC. Rows are as short as
   the page allows; what pairing means is one folded sentence, and what few people change is in
   More settings. Old links to the Phone, Remote PCs and Portal groups land on My devices.

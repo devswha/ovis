@@ -495,13 +495,10 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       assert.equal(await page.locator("[data-section='account'] .relay-shell-pcs").count(), 0, "the Account group does not list the PCs a second time");
       // no row claims to open its PC: this page cannot tell whether the browser is paired with it at app.ovis.sh.
       assert.equal(await list.getByRole("link", { name: "Open in browser" }).count(), 0, `no account PC row has an Open of its own (${width}px, ${theme})`);
-      const open = list.locator(".account-pcs-open");
-      assert.deepEqual(await open.getByRole("link").evaluateAll((links) => links.map((link) => [link.textContent, link.getAttribute("href"), link.getAttribute("target")])),
-        [["Open app.ovis.sh", "https://app.ovis.sh/", "_blank"]], `one link under the account's PCs goes to the hosted app (${width}px, ${theme})`);
-      assert.equal(await open.locator(".settings-description").textContent(), "To open a PC of your account in a browser, sign in to this account at app.ovis.sh.");
+      assert.equal(await list.getByRole("link").count(), 0, `no sentence or link to the hosted app under the account's PCs (${width}px, ${theme})`);
       // Remove only on the PC the account has not heard from for two days: one in use would be listed again
       assert.deepEqual(await accountRows.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))), ["Remove office-mac from the list"], `only the PC not heard from is offered for removal (${width}px, ${theme})`);
-      const fit = await list.locator(".devices-row").filter({ hasText: /home-server|office-mac|app\.ovis\.sh/ }).evaluateAll((rows) => rows.map((row) => {
+      const fit = await list.locator(".devices-row").filter({ hasText: /home-server|office-mac/ }).evaluateAll((rows) => rows.map((row) => {
         const box = row.getBoundingClientRect();
         const inside = [...row.querySelectorAll(".devices-name, .devices-actions > *, .settings-description, .btn")].every((part) => {
           const one = part.getBoundingClientRect();
@@ -509,7 +506,7 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
         });
         return { inside, overflow: row.scrollWidth - row.clientWidth, inView: box.right <= document.documentElement.clientWidth + 0.5 };
       }));
-      assert.deepEqual(fit, Array.from({ length: 3 }, () => ({ inside: true, overflow: 0, inView: true })), `the account's PC rows and the line under them fit the list (${width}px, ${theme})`);
+      assert.deepEqual(fit, Array.from({ length: 2 }, () => ({ inside: true, overflow: 0, inView: true })), `the account's PC rows fit the list (${width}px, ${theme})`);
       const accountTop = (await page.locator("[data-section='account']").boundingBox())!.y;
       assert.ok(accountTop < (await page.locator("[data-section='devices']").boundingBox())!.y, `the Account group sits above the device list (${width}px, ${theme})`);
       if (process.env.UI_EVIDENCE_DIR) {

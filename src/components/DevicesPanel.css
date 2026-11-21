@@ -55,6 +55,12 @@
   overflow-wrap: anywhere;
 }
 
+/* this PC's name stands alone on its row (no ID line): it is as tall as Check now beside it, centred */
+.my-device-self .devices-name {
+  min-height: calc(var(--control-h) - var(--space-2));
+  justify-content: center;
+}
+
 .my-device-check .btn {
   height: calc(var(--control-h) - var(--space-2));
   padding: 0 var(--space-2);
