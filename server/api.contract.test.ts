@@ -4364,9 +4364,9 @@ describe("pairing and identity", () => {
     } finally { rmSync(configDir, { recursive: true, force: true }); }
   });
 
-  it("a configured token gates this PC and its Tailscale login, and a paired device gets past it", async () => {
+  it.each([true, false])("Step 2=%s: token gates this PC and its Tailscale login; paired devices pass", async accountOpensAll => {
     const state = mkdtempSync(join(tmpdir(), "herdr-pairing-token-"));
-    const secured = createServer({ port: 0, stateDir: state, token: "t0k3n", tailscaleOwner: OWNER });
+    const secured = createServer({ port: 0, stateDir: state, token: "t0k3n", tailscaleOwner: OWNER, accountOpensAll });
     const at = (headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${secured.port}/api/health?scope=bridge`, { headers }).then((r) => r.json() as Promise<{ auth: HealthAuth }>).then((b) => b.auth);
     try {
       expect(await at()).toMatchObject({ authenticated: false, reason: "token_required" });
@@ -4375,7 +4375,7 @@ describe("pairing and identity", () => {
       // a token held in the sign-in cookie is one signing out can clear
       const ownerAuth: HealthAuth = {
         required: false, authenticated: true, via: "token", role: "drive",
-        ...(secured.context.services.lockRoutes === undefined ? {} : { own_window: true }),
+        ...(accountOpensAll ? { own_window: true } : {}),
       };
       expect(await at({ cookie: "ovis_token=t0k3n" })).toEqual(ownerAuth);
       expect(await at({ cookie: "ovis_token=t0k3n", authorization: "Bearer wrong" })).toEqual(ownerAuth);

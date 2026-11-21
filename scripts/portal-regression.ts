@@ -119,7 +119,7 @@ try {
     hostname: "127.0.0.1",
     stateDir,
     token,
-    tailscaleOwner: null,
+    tailscaleOwner: null, accountOpensAll: true,
     tailscaleServeOnly: false,
     portal,
     usage: new UsageService(undefined, []),
@@ -148,8 +148,8 @@ try {
   const ownerAuth = await ownerPage.evaluate(async () => (await (await fetch("/api/health?scope=bridge")).json()).auth);
   assert.deepEqual(ownerAuth, {
     required: false, authenticated: true, via: "token", role: "drive",
-    ...(server.context.services.lockRoutes === undefined ? {} : { own_window: true }),
-  }, "the UI token login receives the owner role and the local-window hint when supported");
+    own_window: true,
+  }, "Step 2 token login receives the owner role and the own-window hint");
 
   await openPhoneSettings(ownerPage);
   const ownerSettings = settingsOf(ownerPage);

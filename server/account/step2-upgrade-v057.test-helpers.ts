@@ -28,7 +28,7 @@ export async function v057Fixture(checkout: string, tag: keyof typeof RELEASE = 
   const direct: { DirectCarrier: typeof DirectCarrier } = await import(join(checkout, "server/relay/direct.ts"));
   const relay: { RelaySession: typeof RelaySession } = await import(join(checkout, "server/relay/session.ts"));
   const records: { applyAccountRecords: typeof applyAccountRecords } = await import(join(checkout, "server/account/records.ts"));
-  const start = (stateDir: string, options: Pick<NonNullable<Parameters<typeof createServer>[0]>, "siblingStateDir" | "accountOpensAll" | "accountService"> = {}) => release.createServer({
+  const start = (stateDir: string, options: Pick<NonNullable<Parameters<typeof createServer>[0]>, "siblingStateDir" | "accountOpensAll" | "accountService" | "desktopOwner"> = {}) => release.createServer({
     port: 0, hostname: "127.0.0.1", stateDir, token: "matrix-owner", sidecar: false,
     tailscaleOwner: null, accountOpensAll: false, accountService: { url: "off" }, ...options,
   });
