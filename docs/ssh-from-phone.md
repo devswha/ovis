@@ -1,8 +1,9 @@
-# Open a PC over SSH from the Android app
+# Open a PC over SSH from the phone app
 
 For a computer you already reach with `ssh`: the phone connects straight to it, with no Ovis relay,
-no account and no port open but SSH. Linux and macOS computers; Android for now (the iPhone app:
-[ios-ssh-plan.md](ios-ssh-plan.md)).
+no account and no port open but SSH. Linux and macOS computers, from the Android and iPhone apps. On the iPhone a pasted private key must be
+ed25519 or ECDSA (RSA keys work in the Android app), and the password once needs the computer to take SSH's
+plain password sign-in.
 
 ## Add it
 
@@ -71,6 +72,7 @@ The app's error page says what happened and what to do:
 ## Where your keys are
 
 The phone's own key and any key you paste are kept only in the app, sealed with a key in the
-phone's Android Keystore: they never leave the phone, not even in a backup. Your password is used
+phone's Android Keystore or the iPhone's Keychain (this device only): they never leave the phone, not even
+in a backup. Your password is used
 once and never stored. Nothing goes to the Ovis developers or the Ovis relay: the connection is
 between your phone and your computer.

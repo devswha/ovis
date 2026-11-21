@@ -1,6 +1,7 @@
 import UIKit
 import WebKit
 import Capacitor
+import OvisSshCore
 
 /// The PCs this app knows, kept in UserDefaults. The WebView's cookies (a paired device's
 /// sign-in) live in WebKit's own store, not here.
@@ -41,7 +42,33 @@ enum PCStore {
     /// The PC the app shows: the current one, none while the connect screen is up to choose another way.
     static var shown: String? { choosing ? nil : current }
 
-    static var failure: String?
+    /// Why the PC did not open, for the error page; cleared with its kind and command.
+    static var failure: String? {
+        didSet { if failure == nil { failureKind = nil; failureCommand = nil } }
+    }
+
+    /// An SSH PC's failure kind (`ssh-<kind>`, SshFailure) and the command that fixes it there, for error.html.
+    static var failureKind: String?
+    static var failureCommand: String?
+
+    static func fail(_ reason: String, kind: String?, command: String? = nil) {
+        failure = reason
+        failureKind = kind
+        failureCommand = command
+    }
+
+    /// The SSH login a page asked the connect screen to open with (HerdrShell openSshSetup), taken once. In memory only.
+    static var sshSetup: String?
+
+    /// Opens the SSH PC `origin` the setup screen just added or set up again.
+    static func openSsh(_ origin: String) {
+        current = origin
+        last = origin
+        choosing = false
+        pendingStart = nil
+        failure = nil
+        redirects = 0
+    }
 
     static var redirects = 0
 
@@ -428,6 +455,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(OvisPushPlugin())
         bridge?.registerPluginInstance(OvisAuthPlugin())
         bridge?.registerPluginInstance(OvisDirectPlugin())
+        bridge?.registerPluginInstance(OvisSshPlugin())
         if let handler = (bridge as? CapacitorBridge)?.webViewDelegationHandler { DirectCallGate.install(on: handler) }
     }
 
@@ -626,20 +654,42 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         openingView = nil
     }
 
-    private func showFailure(in webView: WKWebView, reason: String) {
+    /// `reason` nil keeps the reason an SSH PC's tunnel gave (its 503 says less).
+    private func showFailure(in webView: WKWebView, reason: String?) {
         guard let local = bridge?.config.localURL else { return }
         // the timeout stays armed: if WebKit does not get the error page up either, the cover says it
-        PCStore.failure = reason
+        if let reason { PCStore.fail(reason, kind: nil) }
         webView.load(URLRequest(url: local.appendingPathComponent("error.html")))
+    }
+
+    /// An SSH PC's tunnel stopped (its host key changed, its key refused): the error page says so now, as the page
+    /// alone would only keep reconnecting.
+    static func showSshStop() {
+        guard let shown = window?.rootViewController as? HerdrBridgeViewController, let webView = shown.webView,
+              let local = shown.bridge?.config.localURL, webView.url?.scheme != local.scheme else { return }
+        webView.load(URLRequest(url: local.appendingPathComponent("error.html")))
+    }
+
+    private static var window: UIWindow? {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        return (scene?.delegate as? SceneDelegate)?.window
     }
 
     /// Replaces the app's view controller, so the next page (a PC, or the connect screen) is a
     /// first load. The old one goes with its web view and the page in it (the barcode scanner
-    /// plugin, which kept it alive, is patched in app/patches).
+    /// plugin, which kept it alive, is patched in app/patches). An SSH PC first listens on its
+    /// address on this phone with its gate in the cookie store (OvisSsh.prepare); one whose address
+    /// another app holds is not opened, and the connect screen says why.
     static func reopen() {
-        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-        guard let window = (scene?.delegate as? SceneDelegate)?.window else { return }
-        window.rootViewController = HerdrBridgeViewController()
+        guard let window else { return }
+        guard let pc = OvisSsh.pc(PCStore.shown) else {
+            window.rootViewController = HerdrBridgeViewController()
+            return
+        }
+        Task { @MainActor in
+            if !(await OvisSsh.prepare(pc)) { PCStore.current = nil }
+            window.rootViewController = HerdrBridgeViewController()
+        }
     }
 }
 
@@ -655,7 +705,7 @@ private final class WebViewWithoutFormBar: WKWebView {
 /// A load cancelled on purpose (a link handed to Safari, a new navigation) is not a failure.
 final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     private weak var inner: WKNavigationDelegate?
-    private let onFailure: (WKWebView, String) -> Void
+    private let onFailure: (WKWebView, String?) -> Void
     var onAnswer: (() -> Void)?
     var onLoaded: (() -> Void)?
     var onPageFailed: ((WKWebView, String?) -> Void)?
@@ -671,7 +721,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     private var provisional = false
     private var pageShown = false
 
-    init(inner: WKNavigationDelegate?, onFailure: @escaping (WKWebView, String) -> Void) {
+    init(inner: WKNavigationDelegate?, onFailure: @escaping (WKWebView, String?) -> Void) {
         self.inner = inner
         self.onFailure = onFailure
     }
@@ -696,7 +746,10 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
         }
         // the cancelled load ends in WebKit's "frame load interrupted", which is not reported
         decisionHandler(.cancel)
-        onFailure(webView, "HTTP \(response.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: response.statusCode).capitalized)")
+        // an SSH PC's tunnel said why itself (OvisSsh), in more words than its 503; the header alone is not enough,
+        // as the PC's own servers can send it through the tunnel
+        let tunnel = response.value(forHTTPHeaderField: SshTunnel.failureHeader) != nil && PCStore.failureKind?.hasPrefix("ssh-") == true
+        onFailure(webView, tunnel ? nil : "HTTP \(response.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: response.statusCode).capitalized)")
     }
 
     /// WebKit has no public mark for a redirect: it comes as a main-frame action, of the type of the
@@ -706,6 +759,11 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     /// as a link could lead to a page that is not the PC's (another port on its host), which must not
     /// choose the PC.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        // this phone's loopback at a port no SSH PC listens on would get the SSH PCs' gate cookies (SshPcs.otherLoopbackPort)
+        if let url = navigationAction.request.url, SshPcs.otherLoopbackPort(url.absoluteString, sshPorts: OvisSsh.tunnels.ports()) {
+            decisionHandler(.cancel)
+            return
+        }
         if !pageShown, provisional, navigationAction.targetFrame?.isMainFrame == true,
            let current = PCStore.shown, let url = navigationAction.request.url,
            let next = PCStore.origin(of: url), next != PCStore.origin(ofKey: current) {

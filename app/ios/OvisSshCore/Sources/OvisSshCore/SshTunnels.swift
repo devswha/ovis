@@ -1,0 +1,90 @@
+import Foundation
+
+/// The phone's SshTunnels, one per saved SSH PC, and what they share, as Android's SshTunnels.java: the dialer that
+/// signs in with the PC's saved key and host key, and the listener that hands a failure to the app.
+public final class SshTunnels: @unchecked Sendable {
+    public typealias FailureListener = @Sendable (SshPcs.Pc, SshFailure) -> Void
+
+    private let store: SshPcs
+    private let lock = NSLock()
+    private var tunnels: [String: (pc: SshPcs.Pc, tunnel: SshTunnel)] = [:]
+    public var listener: FailureListener?
+
+    public init(store: SshPcs) { self.store = store }
+
+    /// The ports the saved SSH PCs listen on.
+    public func ports() -> Set<Int> { Set(store.list().map(\.localPort)) }
+
+    /// The tunnel for `pc`, listening: kept while the PC's saved way in stays the same. Throws when another app holds
+    /// the address: the PC must not open then, as the page that answers there would be that app's.
+    @discardableResult
+    public func open(_ pc: SshPcs.Pc) async throws -> SshTunnel {
+        guard let gate = store.gate(pc) else { throw SshFailure("key-unreadable", "This phone can no longer open the gate saved for this PC") }
+        let existing: SshTunnel? = lock.locked {
+            guard let entry = tunnels[pc.origin] else { return nil }
+            if Self.same(entry.pc, pc) { return entry.tunnel }
+            tunnels[pc.origin] = nil
+            Task { await entry.tunnel.close() }
+            return nil
+        }
+        if let existing {
+            try await existing.listen()
+            return existing
+        }
+        let store = self.store
+        let tunnel = SshTunnel(gate: gate, port: pc.localPort, dialer: { try await Self.dial(store, pc) },
+                               sshPorts: { [weak self] in self?.ports() ?? [] },
+                               listener: { [weak self] failure in self?.listener?(pc, failure) })
+        try await tunnel.listen()
+        lock.locked { tunnels[pc.origin] = (pc, tunnel) }
+        return tunnel
+    }
+
+    private static func same(_ a: SshPcs.Pc, _ b: SshPcs.Pc) -> Bool {
+        a.hostKey == b.hostKey && a.hostKeyAlgorithm == b.hostKeyAlgorithm && a.auth == b.auth && a.importedKey == b.importedKey
+            && a.host == b.host && a.port == b.port && a.user == b.user && a.gate == b.gate
+    }
+
+    /// Connects to `pc` with what was saved when it was added: its host key, and its key. Never asks anything.
+    public static func dial(_ store: SshPcs, _ pc: SshPcs.Pc) async throws -> SshTunnelLink {
+        guard pc.hasHostKey else { throw SshFailure("host-key-unknown", "The host key is not confirmed") }
+        let key = try store.signInKey(pc)
+        let connection = try await SshConnection.open(host: pc.host, port: pc.port, check: .init(expectedAlgorithm: pc.hostKeyAlgorithm, expectedKey: pc.hostKey), user: pc.user, key: key)
+        do {
+            return SshConnectionLink(connection, port: try await SshLink.ovisPort(connection))
+        } catch {
+            connection.close()
+            throw SshFailure.from(error)
+        }
+    }
+
+    public func closeFor(_ origin: String) {
+        let entry = lock.locked { tunnels.removeValue(forKey: origin) }
+        if let entry { Task { await entry.tunnel.close() } }
+    }
+
+    private func all() -> [SshTunnel] { lock.locked { tunnels.values.map(\.tunnel) } }
+
+    /// The app came back: each tunnel listens again where iOS took its socket, and checks its connection.
+    public func wakeAll() {
+        for tunnel in all() {
+            Task {
+                try? await tunnel.listen()
+                await tunnel.wake()
+            }
+        }
+    }
+
+    /// The phone's network changed: every SSH connection is dropped, and the next request makes a new one.
+    public func dropAll() {
+        for tunnel in all() { Task { await tunnel.drop() } }
+    }
+}
+
+extension NSLock {
+    func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
+    }
+}

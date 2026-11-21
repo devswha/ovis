@@ -91,9 +91,10 @@
       // a PC paired over the Ovis relay is saved by its scope on the app's origin (/s/<server_id>/)
       relay = /^\/s\/[0-9a-f]{32}\/$/.test(url.pathname);
     } catch {}
-    // a PC added over SSH opens on this phone's own 127.0.0.n:47317 (SshTunnel), on purpose
+    // a PC added over SSH opens on this phone's own 127.0.0.n:47317 (Android's SshTunnel) or 127.0.0.1:47320 to 47619
+    // (the iPhone's, SshPcs.firstPort), on purpose
     const sshKind = (state.kind ?? "").startsWith("ssh-") ? state.kind.slice(4) : "";
-    const sshPc = sshKind !== "" || (/^127\.\d+\.\d+\.\d+$/.test(host) && (() => { try { return new URL(pc).port === "47317"; } catch { return false; } })());
+    const sshPc = sshKind !== "" || (/^127\.\d+\.\d+\.\d+$/.test(host) && (() => { try { const port = Number(new URL(pc).port); return port === 47317 || (host === "127.0.0.1" && port >= 47320 && port < 47620); } catch { return false; } })());
     if (sshKind) {
       const known = [...document.querySelectorAll("[data-ssh]")].some((p) => p.dataset.ssh.split(" ").includes(sshKind));
       for (const p of document.querySelectorAll("[data-ssh]")) p.hidden = !p.dataset.ssh.split(" ").includes(known ? sshKind : "other");

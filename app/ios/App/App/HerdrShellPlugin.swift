@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import OvisSshCore
 
 @objc(HerdrShellPlugin)
 public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -12,7 +13,9 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "disconnect", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "chooseAnother", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "backToCurrent", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "retry", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "retry", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openSshSetup", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "takeSshSetup", returnType: CAPPluginReturnPromise)
     ]
 
     @objc func getState(_ call: CAPPluginCall) {
@@ -23,7 +26,9 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
             "last": PCStore.last ?? "",
             "choosing": PCStore.choosing && PCStore.current != nil,
             "name": PCStore.last.flatMap { PCStore.names[$0] } ?? "",
-            "failure": PCStore.failure ?? ""
+            "failure": PCStore.failure ?? "",
+            "kind": PCStore.failureKind ?? "",
+            "command": PCStore.failureCommand ?? ""
         ])
     }
 
@@ -32,6 +37,10 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func open(_ call: CAPPluginCall) {
         guard let text = call.getString("url"), let url = URL(string: text), let origin = PCStore.origin(of: url) else {
             call.reject("That is not an http or https address.")
+            return
+        }
+        if SshPcs.otherLoopbackPort(text, sshPorts: OvisSsh.tunnels.ports()) {
+            call.reject("That address on this phone is kept for PCs added over SSH. Open the PC from Your PCs.")
             return
         }
         var key = origin
@@ -54,8 +63,39 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func forget(_ call: CAPPluginCall) {
+        // an SSH PC forgotten takes its sealed key and host key with it (OvisSshPlugin): only the app's own pages may
+        if let key = call.getString("url"), OvisSsh.pc(key) != nil, bridge?.webView?.url?.scheme != "capacitor" {
+            call.reject("Only the app's own pages manage SSH PCs.")
+            return
+        }
         if let key = call.getString("url") { PCStore.forget(key) }
         call.resolve()
+    }
+
+    /// From any page of the app, a PC's (the hosted app's) included: the app's own connect screen, on Direct with
+    /// `target` (an SSH login, user@host[:port], or empty) in its field. Nothing is added here, and no PC page is given
+    /// OvisSsh: the connect screen, an app page, takes the login to the SSH setup screen, where the person adds the PC.
+    @objc func openSshSetup(_ call: CAPPluginCall) {
+        let target = call.getString("target") ?? ""
+        guard target.count <= 300 else {
+            call.reject("That is not an SSH login.")
+            return
+        }
+        PCStore.sshSetup = target
+        PCStore.current = nil
+        PCStore.choosing = false
+        call.resolve()
+        DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
+    }
+
+    /// The connect screen's alone: the SSH login a page asked it to open with (openSshSetup), taken once.
+    @objc func takeSshSetup(_ call: CAPPluginCall) {
+        var target: String?
+        if bridge?.webView?.url?.scheme == "capacitor", PCStore.shown == nil {
+            target = PCStore.sshSetup
+            PCStore.sshSetup = nil
+        }
+        call.resolve(["asked": target != nil, "target": target ?? ""])
     }
 
     @objc func disconnect(_ call: CAPPluginCall) {

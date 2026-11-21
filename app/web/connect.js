@@ -41,10 +41,10 @@ function stopPending() {
 /** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
 let savedOrigins = [];
 let warned = "";
-/** The PCs added over SSH (Android's OvisSsh plugin), by their loopback origin on this phone. */
+/** The PCs added over SSH (the app's OvisSsh plugin), by their loopback origin on this phone. */
 let sshPcs = {};
 
-/** Calls Android's OvisSsh plugin (app/android/.../OvisSshPlugin.java). */
+/** Calls the app's OvisSsh plugin (app/android/.../OvisSshPlugin.java, app/ios/App/App/OvisSshPlugin.swift). */
 function ssh(method, options = {}) {
   return window.Capacitor.nativePromise("OvisSsh", method, options);
 }
@@ -167,8 +167,8 @@ document.querySelector('[role="tablist"]').addEventListener("keydown", (event) =
 });
 pick(tab);
 
-// a machine reached over SSH from this phone: Android's OvisSsh plugin asks the rest on a screen of its own. An app
-// without it (iOS, or an Android build before it) has no SSH to offer, so the SSH tab's field takes addresses alone
+// a machine reached over SSH from this phone: the app's OvisSsh plugin asks the rest on a screen of its own. An app
+// without it (an Android or iOS build before it) has no SSH to offer, so the SSH tab's field takes addresses alone
 // the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
 const sshOffered = (window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh");
 sshAdd.hidden = !sshOffered;
@@ -187,7 +187,7 @@ async function connectField(text) {
   const target = sshOrAddress(text);
   if (!target.ssh) { await open(target.address); return; }
   if (!sshOffered) {
-    error.textContent = t("SSH works in the Android app. Type the PC's https address instead.", "SSH는 안드로이드 앱에서 돼요. PC의 https 주소를 넣으세요.");
+    error.textContent = t("SSH needs the latest version of this app. Update it, or type the PC's https address instead.", "SSH는 이 앱의 최신 버전에서 돼요. 앱을 업데이트하거나 PC의 https 주소를 넣으세요.");
     input.focus();
     return;
   }
@@ -449,7 +449,7 @@ async function load() {
   const state = await shell("getState");
   savedOrigins = state.saved ?? [];
   sshPcs = {};
-  if (android) {
+  if (sshOffered) {
     try { for (const pc of (await ssh("list")).pcs ?? []) sshPcs[pc.origin] = pc; }
     catch { /* an app without the plugin lists its PCs as before */ }
   }
