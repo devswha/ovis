@@ -654,11 +654,18 @@ the PC in the account's directory and enrolls it ([Enrolling a PC](#enrolling-a-
 typed and nothing is approved on the PC. Because the code admits whoever holds it
 ([Who may admit a device](#who-may-admit-a-device)), the page guards it:
 
-- The QR code is for a PC in no account. On a PC that is in one the tab has no button and no QR
-  code, and asks the PC for no code: it says which account the PC is in (the one this browser is
-  signed in to, another one, or one it cannot tell while signed out) and that a device is added
-  by signing in to that account on it and opening the PC there. A device the PC does not know yet
-  is approved once, by a drive member of the PC picking its digits ([Introductions](#introductions)).
+- The QR code is for a PC in no account. On a PC that is in one the tab has no button, and asks the
+  PC for no code: it says which account the PC is in (the one this browser is signed in to,
+  another one, or one it cannot tell while signed out), and while the relay is online shows a QR
+  code of another kind, the PC's own page in the hosted app (`https://app.ovis.sh/s/<server_id>/`,
+  with `#sign-in=<provider>` when the account is this browser's own, naming how it signed in). It
+  carries no code, key or token, so it admits nobody by itself: the Ovis app (Android opens it as
+  an app link) or the phone's browser signs in to that account, comes back to the PC's page and
+  asks to join the PC as any device of the account does. A device the PC does not know yet is
+  approved once, by a drive member of the PC picking its digits ([Introductions](#introductions)).
+  A browser's sign-in comes back on the front page alone; the PC's ID waits for it in the tab's
+  session storage (`ovis-sign-in-pc`, for the sign-in's ten minutes), and the front page goes on to
+  that PC's page instead of its launch.
   The page reads the PC's account as the tab opens and again at the press, and
   the PC itself refuses the code (`409 in_account`), so a page that read it a moment too early
   shows no QR code either: the refusal makes it look at the PC at once, and the notice below
@@ -686,9 +693,9 @@ typed and nothing is approved on the PC. Because the code admits whoever holds i
 - The QR code is shown alone. No code to type is made for it (`POST /api/relay/code` is not sent):
   a typed code would have the same power, putting the PC in the account of whoever types it at
   app.ovis.sh, and is far easier to read off a screen, a recording or a clipboard than a QR code
-  is to scan. Its six-digit code is its own, never one Phones and devices showed as digits, and
+  is to scan. Its six-digit code is its own, never one the Tailscale or Direct tab showed as digits, and
   **New code** ends it and asks for the offer again (no `POST /api/devices/pair/start`). A device
-  without a camera pairs from Phones and devices → Without signing in, or the PC is added by signing in on it (below).
+  without a camera pairs with the code under the Direct tab's phone QR code, or the PC is added by signing in on it (below).
 - While the QR code is up, and while a notice is, the page reads `GET /api/account/status` and the
   device list every 3 seconds. When the PC goes from no account to one, by a scan or any other
   way (the PC then also takes the code back), the QR code gives way to which account, by its

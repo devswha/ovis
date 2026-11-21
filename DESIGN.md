@@ -5092,19 +5092,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   primary **Done** is only for the browser's own account, and no **Done** or **Keep it** shows
   while a device is unanswered (one still being checked is named in a plain line). Another
   account's notice takes the `--status-blocked` border on `--danger-tint`. On a PC that is in an
-  account the part has no button and no QR code: its label says which account (the browser's own,
-  another one, or one it cannot tell while signed out), one sentence says to sign in to that
-  account on the device, and a hint says the QR code is only for a PC in no account; the
-  relay's switch stays above while the relay is not online. On a PC that no account was named
+  account the part has no button: its label says which account (the browser's own, another one,
+  or one it cannot tell while signed out), and while the relay is online the phone part below shows
+  the QR code of this PC's page in the hosted app (`signInLink`: `/s/<server_id>/`, with
+  `#sign-in=<provider>` when the account is the browser's own), which signs in on the phone and
+  joins the PC there; no code, key or token is in it. The relay's switch stays above while the
+  relay is not online. On a PC that no account was named
   for, nothing stands where the button would be: the sign-in or **Add this PC to my account**
   above names one. Only a relay that asks for a pass keeps its one hint line, to sign in above first.
   Linked-device apps draw the same
   line (WhatsApp shows its linking QR code on the device being added, never on one already
-  linked), and it is deliberate here: a QR code on a PC with members would let in whoever scans
-  it with nobody approving. Relay pairing without the
-  account, a code from another PC and Tailscale PCs added through the relay are gone from it. A phone
-  opens on Phones and devices, a PC's window on SSH; a tab once opened stays mounted, so its code
-  is not minted again. The dialog closes by itself once My devices sees the device a code let in.
+  linked), and it is deliberate here: a pairing QR code on a PC with members would let in whoever
+  scans it with nobody approving, so that PC's QR code only opens its page and the account's own
+  approval decides. Relay pairing without the
+  account, a code from another PC and Tailscale PCs added through the relay are gone from it. Every tab
+  ends in its phone part (`PhoneScan`, `.connect-phone-scan`: a hairline above, a phone icon and
+  one line, **Scan it with the Ovis app on your phone**, then that way's QR code with the code it
+  carries in `CompactPair`, or the one Tailscale step that gives this PC an address); there is no
+  separate Phones and devices tab (owner, 2026-11-22: a phone sees at once which QR code is its
+  own), as Tailscale's and WhatsApp's add-a-device screens put the QR code on the screen of the way
+  it connects. A window with no tab (a phone's page, the hosted shell, a device that only watches)
+  shows what pairs a device without signing in alone. A tab once opened stays mounted, so its code
+  is not minted again; Tailscale and Direct share the PC's one pending code. The dialog closes by itself once My devices sees the device a code let in.
 - The Ovis relay's own group in More settings: its state as the row's sentence with the switch,
   then **Reset relay identity** (confirmed in the shared `ConfirmDialog`; none for a serve-only
   install, which refuses it). Not shown in the hosted shell or to a read-only device.
@@ -5132,7 +5141,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   one `.account-link` under its list (**Relayed connections**: the account's sign-out and device removal live there).
   A launch is asked once a page; an address taken while it waits wins over it, and a page Back restores whole from
   the browser's cache loads again rather than keep the launch's wait.
-- Portal, in Add a connection's Phones and devices tab where the server offers it: while it runs,
+- Portal, under the phone part of Add a connection's Direct tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)
   or a wide Relay row whose text field and Start stack on a phone. Starting and stopping are one

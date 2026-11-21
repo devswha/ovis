@@ -58,11 +58,12 @@ const openPhoneSettings = async (page: Page): Promise<void> => {
   await page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: "Add a connection", exact: true }).click();
   const connect = settingsOf(page);
   await connect.waitFor({ timeout: 10_000 });
-  const devicesTab = connect.locator('.connect-ways [data-tab="devices"]');
-  if (await devicesTab.count() > 0) await devicesTab.click();
-  await connect.locator('[data-tab-panel="devices"]').waitFor({ timeout: 10_000 });
-  const local = connect.locator('.connect-devices-ways [data-way="local"]');
-  if (await local.count() > 0) await local.click();
+  // Portal sits under Direct's phone QR code; a window with no tab (a visitor) shows it alone
+  const direct = connect.locator('.connect-tabs [data-tab="direct"]');
+  if (await direct.count() > 0) {
+    await direct.click();
+    await connect.locator('[data-tab-panel="direct"]').waitFor({ timeout: 10_000 });
+  }
 };
 const settingsOf = (page: Page) => page.getByRole("dialog", { name: "Add a connection", exact: true });
 const reopenPhoneSettings = async (page: Page): Promise<void> => {
@@ -304,8 +305,8 @@ try {
     await reopenPhoneSettings(page);
     await asked;
     const settings = settingsOf(page);
-    await settings.locator('[data-tab-panel="devices"]').locator(".connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
-    assert.equal(await settings.locator('section[aria-label="Portal"]').count(), 0, "an older server offers no Portal on Phones and devices");
+    await settings.locator('[data-tab-panel="direct"] .connect-phone-scan, .connect-phone-body > .connect-section, .connect-phone-body > .settings-description').first().waitFor({ timeout: 10_000 });
+    assert.equal(await settings.locator('section[aria-label="Portal"]').count(), 0, "an older server offers no Portal in Add a connection");
     assert.equal(await settings.locator("#portal-relay").count(), 0, "an older server's page offers no relay");
   }
   assert.deepEqual(portalPosts, [], "the browser sent no Portal start or stop of its own");
@@ -379,7 +380,7 @@ try {
   await blockedPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
   await openPhoneSettings(blockedPage);
   const blockedSettings = settingsOf(blockedPage);
-  await blockedSettings.locator('[data-tab-panel="devices"]').locator(".connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
+  await blockedSettings.locator('[data-tab-panel="direct"] .connect-phone-scan, .connect-phone-body > .connect-section, .connect-phone-body > .settings-description').first().waitFor({ timeout: 10_000 });
   assert.equal(await blockedSettings.locator('section[aria-label="Portal"]').count(), 0, "a Portal that needs a configured token is not offered");
   assert.equal(await blockedSettings.getByRole("button", { name: "Start", exact: true }).count(), 0, "Portal Start is unavailable without a configured token");
   assert.deepEqual(pageErrors, [], "the token-required page has no browser errors");
