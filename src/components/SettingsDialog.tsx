@@ -60,6 +60,8 @@ import { RuntimeMove } from "./RuntimeMove.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
 import { failureText, openOwnOffer, RelayDirectRow, statusText } from "./RelayPanel.tsx";
 import { AccountSection, accountServiceHere, type AccountState } from "./AccountSection.tsx";
+import { HostedAccountGroup } from "./AccountHead.tsx";
+import { useHostedSignIn } from "../lib/account/hostedSignIn.ts";
 import { shellAccountServiceOf } from "../lib/account/service.ts";
 import { AccountPcRows, NoAccountPcHint, removePcFromAccount } from "./AccountPcs.tsx";
 import { DRAWER_QUERY, leavePcList, pcListExit, removablePc, STATE_WORD } from "./MachineSidebar.tsx";
@@ -1242,6 +1244,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const holdPairing = useCallback((held: boolean) => { pairingHeld.current = held; }, []);
   const closeConnectOnPair = useCallback(() => { if (!pairingHeld.current) setConnecting(false); }, []);
   const accountService = accountServiceHere();
+  const hostedSignIn = useHostedSignIn();
   const [identityResets, setIdentityResets] = useState(0);
   const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, provider: null, noPcs: false, reachable: true });
   const tellsQrNotice = accountService !== null && account.reachable && relayOffered(relay) && !relayReadOnly;
@@ -1279,6 +1282,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   return (
     <>
       {/* the account first: the sign-in the relay depends on is not left in More settings */}
+      {/* a PC page the hosted app opened has no PC sign-in of its own: the hosted one, with the overview's Sign out */}
+      {accountService === null && <HostedAccountGroup signIn={hostedSignIn} />}
       <AccountSection onAccount={setAccount} recheck={accountChecks} deleteSlot={accountDelete} {...(opensAll === undefined ? {} : { opensAll })} {...(withdrawn === undefined ? {} : { withdrawn })} />
 
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}

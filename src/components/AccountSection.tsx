@@ -27,6 +27,7 @@ import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountPcList, AccountSignIn, HOSTED_APP_URL, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
+import { AccountHead } from "./AccountHead.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -1362,23 +1363,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, de
       {view.kind === "signed-in" && (
         <>
           {/* which account: the service keeps no login or email, so its id names it, in the tooltip only (G-106) */}
-          {searching
-            ? (
-              <SettingsRow label={t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })} description={plan ?? undefined} keywords={t("Sign out")}>
-                <button type="button" className="btn" onClick={signOut}>{t("Sign out of {provider}", { provider: PROVIDER_NAMES[view.provider] })}</button>
-              </SettingsRow>
-            )
-            : (
-              <div className="settings-row account-head">
-                <span className="account-who" title={view.account}>
-                  <ProviderMark provider={view.provider} />
-                  <span className="settings-label" aria-hidden="true">{PROVIDER_NAMES[view.provider]}</span>
-                  <span className="visually-hidden">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}</span>
-                  {plan !== null && <span className="account-plan">{plan}</span>}
-                </span>
-                <button type="button" className="btn account-head-btn" aria-label={t("Sign out of {provider}", { provider: PROVIDER_NAMES[view.provider] })} onClick={signOut}>{t("Sign out")}</button>
-              </div>
-            )}
+          <AccountHead provider={view.provider} plan={plan} title={view.account} onSignOut={signOut} />
           {/* the question is its own sign-in's: under another account's view it is not drawn */}
           {unsentAsked !== null && unsentAsked.session.account === view.account && (
             <div className="settings-item" role="status">
