@@ -5,7 +5,7 @@ import { decodeControl, decodeCsi, decodeLinuxFunction, decodeSs3, decodeString,
 interface HostModes {
   /** mouse reporting is on */
   mouse: boolean;
-  /** the kitty keyboard flag is pushed */
+  /** the host answered that the kitty keyboard flag is on: its `CSI u` keys are kitty's */
   kitty: boolean;
   /** the tty's erase character is ^H, so 0x08 is Backspace rather than ctrl+h */
   eraseIsCtrlH: boolean;
@@ -255,7 +255,7 @@ export class Framer {
     if (byte === 0x24 && !this.cutShort && /^\d+$/.test(latin1(this.seq.slice(2)))) {
       const body = latin1(this.seq.slice(2));
       this.keep(byte);
-      this.finish(decodeCsi(body, "$", this.replyUntil !== undefined));
+      this.finish(decodeCsi(body, "$", this.replyUntil !== undefined, this.modes.kitty));
       return true;
     }
     if (byte >= 0x20 && byte <= 0x3f) {
@@ -273,7 +273,7 @@ export class Framer {
     else if (body === "" && final === "M") this.trail("x10", X10_REPORT_BYTES);
     else if (body === "" && final === "[") this.trail("linux", 1);
     else if (body === PASTE_START && final === "~") this.beginPaste();
-    else this.finish(decodeCsi(body, final, this.replyUntil !== undefined));
+    else this.finish(decodeCsi(body, final, this.replyUntil !== undefined, this.modes.kitty));
     return true;
   }
 

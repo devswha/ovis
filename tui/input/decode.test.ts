@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { bytes, expectEveryWay, feedReads, raw } from "../testing/input-runs.ts";
+import { bytes, expectEveryWay, feedReads, normalize, raw } from "../testing/input-runs.ts";
 import type { Mods } from "./decode.ts";
 import type { Framer } from "./framer.ts";
 
@@ -15,6 +15,7 @@ const C = { ctrl: true } as const, A = { alt: true } as const, S = { shift: true
 
 type Row = [name: string, input: Uint8Array, events: unknown[], setup?: (framer: Framer) => void];
 const eraseIsCtrlH = (framer: Framer) => framer.setModes({ eraseIsCtrlH: true });
+const kittyOn = (framer: Framer) => framer.setModes({ kitty: true });
 
 const ROWS: Row[] = [
   // legacy: text, C0 bytes and DEL
@@ -36,6 +37,7 @@ const ROWS: Row[] = [
   ["text around Enter", bytes("ab\rcd"), [text("ab"), key("ENTER"), text("cd")]],
   ["Hangul", bytes("한글"), [text("한글")]],
   ["two- and four-byte characters", bytes("é😀"), [text("é😀")]],
+  ["a private-use character", bytes("\uF000"), [text("\uF000")]],
   ["an overlong slash", raw("\xc0\xaf"), [unknown("\xc0"), unknown("\xaf")]],
   ["an overlong NUL in three bytes", raw("\xe0\x80\x80"), [unknown("\xe0"), unknown("\x80"), unknown("\x80")]],
   ["a UTF-16 surrogate", raw("\xed\xa0\x80"), [unknown("\xed"), unknown("\xa0"), unknown("\x80")]],
@@ -51,6 +53,7 @@ const ROWS: Row[] = [
   ["alt+Enter", bytes("\x1b\r"), [key("ENTER", A)]],
   ["alt+Backspace", bytes("\x1b\x7f"), [key("BACKSPACE", A)]],
   ["alt with a Hangul syllable", bytes("\x1b한"), [typed("UNIDENTIFIED", "한", "한", A)]],
+  ["alt with a private-use character", bytes("\x1b\uF000"), [typed("UNIDENTIFIED", "\uF000", "\uF000", A)]],
   ["a lone ESC", bytes("\x1b"), [key("ESCAPE")]],
   ["ESC ESC", bytes("\x1b\x1b"), [key("ESCAPE"), key("ESCAPE")]],
   ["ESC [ alone is alt+[", bytes("\x1b["), [typed("BRACKET_LEFT", "[", "[", A)]],
@@ -171,6 +174,13 @@ const ROWS: Row[] = [
   ["mok ctrl+Enter", bytes("\x1b[27;5;13~"), [key("ENTER", C)]],
   ["mok shift+Enter", bytes("\x1b[27;2;13~"), [key("ENTER", S)]],
   ["mok ctrl+Tab", bytes("\x1b[27;5;9~"), [key("TAB", C)]],
+  ["mok alt with a private-use character types it", bytes("\x1b[27;3;61440~"), [typed("UNIDENTIFIED", "\uF000", "\uF000", A)]],
+  ["mok shift with a private-use character types it", bytes("\x1b[27;2;61440~"), [typed("UNIDENTIFIED", "\uF000", "\uF000")]],
+  ["mok ctrl with a private-use character", bytes("\x1b[27;5;61440~"), [key("UNIDENTIFIED", C, { unshifted: "\uF000" })]],
+  ["mok's number for kitty's left shift is the character typed", bytes("\x1b[27;3;57441~"), [typed("UNIDENTIFIED", "\uE061", "\uE061", A)]],
+  ["mok's number for kitty's keypad 0 is the character typed", bytes("\x1b[27;3;57399~"), [typed("UNIDENTIFIED", "\uE037", "\uE037", A)]],
+  ["mok as CSI u: alt with a private-use character types it", bytes("\x1b[61440;3u"), [typed("UNIDENTIFIED", "\uF000", "\uF000", A)]],
+  ["mok as CSI u: kitty's left-shift number is the character typed", bytes("\x1b[57441;3u"), [typed("UNIDENTIFIED", "\uE061", "\uE061", A)]],
   // kitty
   ["kitty Escape", bytes("\x1b[27u"), [key("ESCAPE")]],
   ["kitty ctrl+a", bytes("\x1b[97;5u"), [key("A", C, { unshifted: "a" })]],
@@ -186,11 +196,14 @@ const ROWS: Row[] = [
   ["kitty keypad 0", bytes("\x1b[57399u"), [key("NUMPAD_0")]],
   ["kitty keypad Enter", bytes("\x1b[57414u"), [key("NUMPAD_ENTER")]],
   ["kitty keypad up", bytes("\x1b[57419u"), [key("NUMPAD_UP")]],
-  ["kitty left shift types nothing", bytes("\x1b[57441u"), [unknown("\x1b[57441u")]],
-  ["kitty Caps Lock types nothing", bytes("\x1b[57358u"), [unknown("\x1b[57358u")]],
-  ["kitty media play types nothing", bytes("\x1b[57428u"), [unknown("\x1b[57428u")]],
-  ["kitty F27 types nothing", bytes("\x1b[57390u"), [unknown("\x1b[57390u")]],
-  ["mok left shift types nothing", bytes("\x1b[27;5;57441~"), [unknown("\x1b[27;5;57441~")]],
+  ["kitty left shift types nothing", bytes("\x1b[57441u"), [unknown("\x1b[57441u")], kittyOn],
+  ["kitty Caps Lock types nothing", bytes("\x1b[57358u"), [unknown("\x1b[57358u")], kittyOn],
+  ["kitty media play types nothing", bytes("\x1b[57428u"), [unknown("\x1b[57428u")], kittyOn],
+  ["kitty F27 types nothing", bytes("\x1b[57390u"), [unknown("\x1b[57390u")], kittyOn],
+  ["kitty alt with an unnamed private-use number types nothing", bytes("\x1b[61440;3u"), [unknown("\x1b[61440;3u")], kittyOn],
+  ["kitty key that reports private-use text types it", bytes("\x1b[61440;;61440u"), [typed("UNIDENTIFIED", "\uF000", "\uF000")], kittyOn],
+  ["kitty shift with a private-use shifted key", bytes("\x1b[97:61440;2u"), [typed("A", "\uF000", "a")], kittyOn],
+  ["kitty text only, a private-use character", bytes("\x1b[0;;61440u"), [text("\uF000")], kittyOn],
   ["kitty F13", bytes("\x1b[57376u"), [key("F13")]],
   ["kitty menu", bytes("\x1b[57363u"), [key("CONTEXT_MENU")]],
   ["kitty print screen", bytes("\x1b[57361;5u"), [key("PRINT_SCREEN", C)]],
@@ -236,6 +249,7 @@ const ROWS: Row[] = [
   ["an APC string", bytes("\x1b_Gi=1;OK\x1b\\"), [unknown("\x1b_Gi=1;OK\x1b\\")]],
   ["a string cut by ESC", bytes("\x1b]11;x\x1b[A"), [unknown("\x1b]11;x"), key("ARROW_UP")]],
   ["a paste", bytes("\x1b[200~hi\x1b[201~"), [{ type: "paste", text: "hi", complete: true }]],
+  ["a paste of private-use characters", bytes("\x1b[200~\uF000\uE061\x1b[201~"), [{ type: "paste", text: "\uF000\uE061", complete: true }]],
   ["an end mark with no paste", bytes("\x1b[201~"), [unknown("\x1b[201~")]],
 ];
 
@@ -250,14 +264,27 @@ describe("decode table", () => {
   }
 });
 
-describe("kitty's functional key numbers", () => {
-  it("never types a number of the private use area as a character, named or not", () => {
-    const typed: number[] = [];
-    for (let code = 0xe000; code <= 0xf8ff; code++) {
-      for (const event of feedReads([bytes(`\x1b[${code}u`)])) {
-        if (event.type === "text" || (event.type === "key" && (event.text !== undefined || event.key === "UNIDENTIFIED"))) typed.push(code);
-      }
-    }
-    expect(typed).toEqual([]);
+describe("numbers in the private use area", () => {
+  const PRIVATE_USE = Array.from({ length: 0xf8ff - 0xe000 + 1 }, (_, i) => 0xe000 + i);
+  const altTyped = (code: number) => [typed("UNIDENTIFIED", String.fromCodePoint(code), String.fromCodePoint(code), A)];
+
+  it("are keys that type nothing in kitty's CSI u while the host speaks kitty, named or not", () => {
+    const typedNumbers = PRIVATE_USE.filter((code) => feedReads([bytes(`\x1b[${code}u`)], kittyOn).some((event) =>
+      event.type === "text" || (event.type === "key" && (event.text !== undefined || event.key === "UNIDENTIFIED"))));
+    expect(typedNumbers).toEqual([]);
+  });
+
+  it("are the characters typed in modifyOtherKeys' CSI 27;m;code~", () => {
+    const wrong = PRIVATE_USE.filter((code) => !Bun.deepEquals(normalize(feedReads([bytes(`\x1b[27;3;${code}~`)])), altTyped(code)));
+    expect(wrong).toEqual([]);
+  });
+
+  it("are the characters typed, or kitty's named keys, in a CSI u from a host that does not speak kitty", () => {
+    const lost = PRIVATE_USE.filter((code) => {
+      const events = normalize(feedReads([bytes(`\x1b[${code};3u`)])) as { type: string; key?: string; text?: string }[];
+      const named = events.length === 1 && events[0]!.type === "key" && events[0]!.key !== "UNIDENTIFIED" && events[0]!.text === undefined;
+      return !named && !Bun.deepEquals(events, altTyped(code));
+    });
+    expect(lost).toEqual([]);
   });
 });

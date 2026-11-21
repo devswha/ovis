@@ -120,9 +120,10 @@ const TILDE_KEYS: Readonly<Record<number, string>> = {
 // rxvt writes the modifiers of a `CSI n ~` key in its final byte instead.
 const RXVT_FINAL_MODS: Readonly<Record<string, Mods>> = { "$": { shift: true }, "^": { ctrl: true }, "@": { shift: true, ctrl: true } };
 
-// Key numbers of `CSI n u` (kitty) and `CSI 27;m;n ~` (modifyOtherKeys) that are not a printable character.
-const NUMBERED_KEYS: Readonly<Record<number, string>> = {
-  9: "TAB", 13: "ENTER", 27: "ESCAPE", 127: "BACKSPACE",
+// The keys that type nothing among modifyOtherKeys' and kitty's numbered keys, by the control code both give them.
+const CONTROL_KEYS: Readonly<Record<number, string>> = { 9: "TAB", 13: "ENTER", 27: "ESCAPE", 127: "BACKSPACE" };
+// kitty's numbers for its other keys that type nothing, all in the private use area.
+const KITTY_KEYS: Readonly<Record<number, string>> = {
   57361: "PRINT_SCREEN", 57362: "PAUSE", 57363: "CONTEXT_MENU",
   ...Object.fromEntries(Array.from({ length: 13 }, (_, i) => [57376 + i, `F${13 + i}`])),
   ...Object.fromEntries(Array.from({ length: 10 }, (_, i) => [57399 + i, `NUMPAD_${i}`])),
@@ -157,19 +158,25 @@ function isPrintable(code: number): boolean {
   return code >= 0x20 && code <= 0x10ffff && !(code >= 0x7f && code <= 0x9f) && !(code >= 0xd800 && code <= 0xdfff);
 }
 
-/** kitty numbers the keys that type nothing (Caps Lock, the modifiers, F26 and up, the media keys) in the private use area */
-const isFunctionalNumber = (code: number): boolean => code >= 0xe000 && code <= 0xf8ff;
+/** the Unicode private use area, where kitty numbers every key that types nothing but the four control keys */
+const isPrivateUse = (code: number): boolean => code >= 0xe000 && code <= 0xf8ff;
 
-function numberedKey(code: number, mods: Mods, action: KeyAction, reported?: string): Key | undefined {
-  const name = NUMBERED_KEYS[code];
+/** A key number that is the character it types, as modifyOtherKeys sends every key, or one of the four control keys. */
+function characterKey(code: number, mods: Mods, action: KeyAction, reported?: string): Key | undefined {
+  const name = CONTROL_KEYS[code];
   if (name) return key(name, mods, action);
-  // a functional key this table does not name is unknown: its number is never a character to type
-  if (isFunctionalNumber(code)) return undefined;
   return isPrintable(code) ? typedKey(String.fromCodePoint(code), mods, action, reported) : undefined;
 }
 
-/** kitty: `CSI code[:shifted[:base]] ; mods[:event] ; text u`. */
-function kittyKey(fields: readonly string[][]): Unstamped | undefined {
+/**
+ * `CSI code[:shifted[:base]] ; mods[:event] ; text u`: kitty's keys, and modifyOtherKeys' from a host that sends them
+ * in this form (xterm's formatOtherKeys, tmux's csi-u format), where the number is always the character typed. While
+ * the host speaks kitty (`kitty`), a number in the private use area is one of kitty's keys that type nothing (Caps
+ * Lock, the modifiers, F26 and up, the media keys): unknown unless named here, never a character, unless it reports
+ * the text it typed. kitty's named keys keep their names either way, so a kitty host whose flags the probe missed
+ * still gets its keypad and F13 to F25.
+ */
+function kittyKey(fields: readonly string[][], kitty: boolean): Unstamped | undefined {
   if (fields.length < 1 || fields.length > 3) return undefined;
   const [codes = [], modField, textField] = fields;
   const code = num(codes[0]);
@@ -184,7 +191,10 @@ function kittyKey(fields: readonly string[][]): Unstamped | undefined {
   if (code === 0) return text && !Object.keys(held.mods).length ? { type: "text", text } : undefined;
   const shifted = num(codes[1]);
   if (text === undefined && held.mods.shift && shifted !== undefined && isPrintable(shifted)) text = String.fromCodePoint(shifted);
-  return numberedKey(code, held.mods, held.action, text);
+  const name = KITTY_KEYS[code];
+  if (name) return key(name, held.mods, held.action);
+  if (kitty && isPrivateUse(code) && text === undefined) return undefined;
+  return characterKey(code, held.mods, held.action, text);
 }
 
 /** `CSI n ; mods ~`, and modifyOtherKeys' `CSI 27 ; mods ; code ~`. */
@@ -193,7 +203,7 @@ function tildeKey(fields: readonly string[][]): Unstamped | undefined {
   if (n === 27 && fields.length === 3) {
     const held = modifiers(fields[1]);
     const code = num(fields[2]?.[0]);
-    return held && code !== undefined ? numberedKey(code, held.mods, held.action) : undefined;
+    return held && code !== undefined ? characterKey(code, held.mods, held.action) : undefined;
   }
   const name = n === undefined ? undefined : TILDE_KEYS[n];
   const held = modifiers(fields[1]);
@@ -253,9 +263,10 @@ function privateReply(params: string, intermediates: string, final: string): Uns
 
 /**
  * A whole CSI sequence: `body` is what lies between `ESC [` and the final byte. Undefined when nothing
- * here knows it; a reply's shape gives a reply only while a query waits (`awaitingReplies`).
+ * here knows it; a reply's shape gives a reply only while a query waits (`awaitingReplies`), and a
+ * `CSI u` key is read as kitty's while the host speaks kitty (`kitty`).
  */
-export function decodeCsi(body: string, final: string, awaitingReplies: boolean): Unstamped | undefined {
+export function decodeCsi(body: string, final: string, awaitingReplies: boolean, kitty: boolean): Unstamped | undefined {
   const parts = /^([<=>?]?)([\d;:]*)([\x20-\x2f]*)$/.exec(body);
   if (!parts) return undefined;
   const [, prefix, params = "", intermediates] = parts;
@@ -264,7 +275,7 @@ export function decodeCsi(body: string, final: string, awaitingReplies: boolean)
   if (prefix === "?") return awaitingReplies ? privateReply(params, intermediates ?? "", final) : undefined;
   if (prefix || intermediates) return undefined;
   switch (final) {
-    case "u": return kittyKey(fields);
+    case "u": return kittyKey(fields, kitty);
     case "~": return tildeKey(fields);
     case "I": case "O": return params === "" ? { type: "focus", focused: final === "I" } : undefined;
     case "Z": return params === "" ? key("TAB", { shift: true }) : undefined;
