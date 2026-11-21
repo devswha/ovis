@@ -28,6 +28,8 @@ interface ServeJson {
   TCP?: Record<string, { HTTPS?: boolean; HTTP?: boolean }>;
   /** "host:port" -> handlers by path */
   Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>;
+  /** "host:port" -> true for a listener Tailscale Funnel opens to the public internet */
+  AllowFunnel?: Record<string, boolean>;
 }
 
 const NONE: TailscaleAccess = { state: "missing", dns_name: null, serving_url: null, serve_command: null, serve_url: null };
@@ -90,6 +92,8 @@ function readServe(output: TailscaleOutput | null, port: number, candidates: rea
     const webPort = Number(hostPort.slice(separator + 1));
     // an HTTP listener is no use to a phone: it can neither install the app nor receive alerts
     if (!serve?.TCP?.[String(webPort)]?.HTTPS) continue;
+    // a Funnel listener is public, not the tailnet-only address asked for: its port stays taken, nothing is reported
+    if (serve.AllowFunnel?.[hostPort] === true) continue;
     if (proxiesTo(site.Handlers?.["/"]?.Proxy, port)) { servingUrl = httpsUrl(host, webPort); break; }
   }
   const free = servingUrl === null ? candidates.find((candidate) => !taken.has(candidate)) ?? null : null;
