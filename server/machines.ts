@@ -46,7 +46,7 @@ import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
 import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
-import { askRecoverySocket } from "./account/recovery.ts";
+import { AccountAddChannel } from "./account-add-channel.ts";
 import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAddressTarget, loadAddressPcToken, openAddressPcForward, pairAddressPc, removeAddressPcToken, saveAddressPcToken, type AddressPcForward } from "./address-pc.ts";
 
 /** a PC keeps the six-digit code in its offer for 10 minutes at most (server/devices.ts) */
@@ -141,9 +141,10 @@ interface JobState {
   /**
    * An account add over SSH (docs/account.md, "Adding a PC over SSH"): the owner's recovery socket of the PC's own Ovis as
    * its registration names it, then that socket forwarded over this job's connection and the PC it answered for. Only
-   * that connection, while its PC keeps the generation it had then, takes the add (accountTake).
+   * that connection, while its PC keeps the generation it had then, takes the add (accountTake). The channel is the
+   * forward's only user, and closes it after the take, on any error, and when the job fails or is cancelled.
    */
-  accountAdd?: { remoteSocket?: string; reached?: { socket: string; ssh: SshConnection; generation: number; serverId: string } };
+  accountAdd?: { remoteSocket?: string; channel?: AccountAddChannel; reached?: { channel: AccountAddChannel; ssh: SshConnection; generation: number; serverId: string } };
 }
 
 /** Why an account add over SSH could not finish (accountTake). */
@@ -1211,6 +1212,7 @@ export class MachineManager {
         this.stage(job, "connected", "Connected");
         this.emit();
       } catch (e) {
+        await job.accountAdd?.channel?.close();
         const ownsRuntime = runtime.generation === generation;
         if (ownsRuntime && !this.stopped && !job.abort.signal.aborted && job.public.phase !== "cancelled") {
           this.remoteDiagnostics.failed(machineId, e instanceof MachineActionRequired ? "action_required" : "connection_lost", { operation: "bridge", machine_id: machineId });
@@ -1256,12 +1258,12 @@ export class MachineManager {
   private async inspectForAccount(job: JobState, ssh: SshConnection, generation: number): Promise<AccountAddTarget> {
     const remote = job.accountAdd?.remoteSocket;
     if (remote === undefined) throw new MachineActionRequired(ACCOUNT_ADD_OLD_OVIS, "setup");
-    const socket = await ssh.forwardSocket(remote);
-    const answer = await askRecoverySocket(socket, { act: "account_add_inspect" }) as Record<string, unknown> | null;
+    const channel = job.accountAdd!.channel = await AccountAddChannel.open(ssh, remote);
+    const answer = await channel.inspect() as Record<string, unknown> | null;
     if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new MachineActionRequired(answer.error, "setup");
     const fields = accountAddTarget(answer);
     if (fields === null) throw new MachineActionRequired("That PC's Ovis answered with something this app cannot use. Update Ovis there, then try again.", "setup");
-    job.accountAdd!.reached = { socket, ssh, generation, serverId: fields.server_id };
+    job.accountAdd!.reached = { channel, ssh, generation, serverId: fields.server_id };
     return fields;
   }
   /**
@@ -1275,8 +1277,12 @@ export class MachineManager {
     if (!job || !reached || job.public.phase !== "connected") throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.");
     if (reached.serverId !== serverId) throw new AccountAddError("identity_changed", "That PC is not the one this add reached. Connect to it again.");
     const runtime = this.machines.get(job.public.machine_id);
-    if (!runtime || runtime.ssh !== reached.ssh || runtime.generation !== reached.generation || !reached.ssh.connected()) throw new AccountAddError("disconnected", "The SSH connection to that PC ended. Connect to it again.");
-    const answer = await askRecoverySocket(reached.socket, { act: "account_add_take", account, server_id: serverId }) as Record<string, unknown> | null;
+    if (!runtime || runtime.ssh !== reached.ssh || runtime.generation !== reached.generation || !reached.channel.open) {
+      await reached.channel.close();
+      throw new AccountAddError("disconnected", "The SSH connection to that PC ended. Connect to it again.");
+    }
+    // one take per inspect: the channel closes the forward once it answers, whatever it answers
+    const answer = await reached.channel.take(account, serverId) as Record<string, unknown> | null;
     if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
     if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
     return { account };
@@ -1339,6 +1345,7 @@ export class MachineManager {
     if (timedOut) job.public.error = "Connection timed out";
     job.public.action_required = null; job.headlessStart = false;
     job.abort.abort(); job.pending?.reject(new Error("Setup cancelled")); job.pending = undefined;
+    void job.accountAdd?.channel?.close();
     clearTimeout(job.timer);
     if (ownCancel) { job.closing = true; job.cancelling = ownCancel().then((words) => { job.public.error = words; this.emit(); }).finally(() => { job.ssh?.close(); job.closing = false; }); }
     else job.ssh?.close();

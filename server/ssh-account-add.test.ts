@@ -96,6 +96,11 @@ test.skipIf(!available)("a confirmed host key connects, and the PC's owner socke
   const local = await ssh.forwardSocket(socket.path);
   expect(local.startsWith(join("/tmp", "herdr-ssh-"))).toBe(true);
   expect(await askRecoverySocket(local, { act: "account_add_inspect" })).toEqual({ heard: { act: "account_add_inspect" } });
+  // closed, the forward is gone from the master: nothing reaches the PC's socket through it any more
+  await ssh.closeSocketForward(local);
+  expect(existsSync(local)).toBe(false);
+  await expect(askRecoverySocket(local, { act: "account_add_inspect" })).rejects.toThrow();
+  expect(ssh.connected()).toBe(true);
   ssh.close();
   // the same address now shows another key: refused by ssh, never asked about again
   keygen(join(root, "changed-host"));
