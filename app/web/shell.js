@@ -189,6 +189,34 @@ export function parseAddress(text) {
   return url;
 }
 
+const SSH_TARGET = /^(?:ssh:\/\/)?([^\s@/:]+)@([^\s@/:[\]]+|\[[0-9a-f:.]+\])(?::(\d{1,5}))?\/?$/i;
+
+/**
+ * What Direct's one field holds: an SSH login, `user@host` or `user@host:port` (or `ssh://` with them), as
+ * `{ ssh: { user, host, port } }`, and anything else as an address (`{ address }`, for open). A `user@host` with a
+ * scheme other than ssh is an address with its credentials, never SSH.
+ */
+export function directTarget(text) {
+  const value = String(text).trim();
+  const ssh = SSH_TARGET.exec(value);
+  if (ssh === null) return { address: value };
+  const port = ssh[3] === undefined ? 22 : Number(ssh[3]);
+  if (port < 1 || port > 65535) return { address: value };
+  return { ssh: { user: ssh[1], host: ssh[2].replace(/^\[|\]$/g, ""), port } };
+}
+
+/**
+ * The PCs this phone opened at a Tailscale address, which the Tailscale tab offers again: a phone has no list of its
+ * tailnet's machines, only the ones opened here. `saved` and `names` as HerdrShell's getState gives them.
+ */
+export function tailnetPcs(saved, names) {
+  return saved.flatMap((origin) => {
+    let url;
+    try { url = new URL(origin); } catch { return []; }
+    return tailnetHost(url.hostname) ? [{ origin, label: names[origin] || url.hostname.split(".")[0] }] : [];
+  });
+}
+
 const OFFER = "#offer=";
 const SCOPE = /^\/s\/([0-9a-f]{32})\/?$/;
 

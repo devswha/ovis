@@ -176,11 +176,15 @@ To repeat it:
 
 What is there:
 
-- `app/web`: the app's own pages. `index.html` opens on the account's sign-in (the buttons the
-  account service names at `/v1/providers`; a press opens the hosted app on that sign-in,
-  `#sign-in=<provider>`), with Start without signing in below it. That and a build with
-  `OVIS_APP_ACCOUNT=0` lead to Add a PC: Scan a QR code, Enter an address (Tailscale or Wi-Fi),
-  SSH (only in an app that announces the `OvisSsh` plugin), and the PCs opened before. The address `demo` opens the bundled demo, which has no button
+- `app/web`: the app's own pages. `index.html` is Connect a PC, with the desktop's Add a connection
+  tabs in its order, picked without a history entry (the phone's Back leaves the app): Ovis relay
+  (the default; the sign-ins the account service names at `/v1/providers`, a press opens the hosted
+  app on that sign-in, `#sign-in=<provider>`), Tailscale (the PCs this phone opened at a Tailscale
+  address, with Connect, a Tailscale address and Scan a QR code; on Android, while no interface holds
+  a Tailscale address, one line and Open Tailscale alone) and Direct (one field for an address or
+  SSH's `user@host`, which opens the SSH setup filled in, only in an app that announces the `OvisSsh`
+  plugin, and Scan a QR code). The PCs opened before are listed below. A build with
+  `OVIS_APP_ACCOUNT=0` has no relay tab and opens on Tailscale. The address `demo` opens the bundled demo, which has no button
   of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
   reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
   reason, Try again and Change PC. Both are in English and Korean: an element's

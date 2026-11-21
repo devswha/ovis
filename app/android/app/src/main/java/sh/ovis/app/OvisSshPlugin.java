@@ -78,10 +78,16 @@ public class OvisSshPlugin extends Plugin {
         SshTunnels.wakeAll();
     }
 
+    /** `user`, `host`, `port`: what Direct's field held (user@host), filled in on the setup screen; each may be left out. */
     @PluginMethod
     public void add(PluginCall call) {
         if (!fromAppPage(call)) return;
-        startActivityForResult(call, new Intent(getContext(), SshSetupActivity.class), "added");
+        Intent setup = new Intent(getContext(), SshSetupActivity.class)
+            .putExtra(SshSetupActivity.EXTRA_USER, call.getString("user"))
+            .putExtra(SshSetupActivity.EXTRA_HOST, call.getString("host"));
+        Integer port = call.getInt("port");
+        if (port != null) setup.putExtra(SshSetupActivity.EXTRA_PORT, port);
+        startActivityForResult(call, setup, "added");
     }
 
     /** Sets the PC `origin` up again on the setup screen, its address kept. */

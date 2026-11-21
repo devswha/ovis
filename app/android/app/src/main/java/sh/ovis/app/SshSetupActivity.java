@@ -45,6 +45,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class SshSetupActivity extends Activity {
     static final String EXTRA_ORIGIN = "origin";
+    /** A new PC's login as Direct's field held it (user@host:port), filled in to check and change. */
+    static final String EXTRA_USER = "user";
+    static final String EXTRA_HOST = "host";
+    static final String EXTRA_PORT = "port";
 
     /** What the screen is doing, for SshSetupFlowTest: "connecting", "confirm-host", "signing-in", "looking", "confirm-install", "installing", "done", "failed:<kind>". */
     interface Steps {
@@ -113,6 +117,11 @@ public class SshSetupActivity extends Activity {
             user.setText(editing.user);
             // the PC keeps its address on this phone (its origin, and the page's drafts and storage there)
             for (EditText fixed : new EditText[] { host, port, user }) fixed.setEnabled(false);
+        } else {
+            Intent asked = getIntent();
+            if (asked.getStringExtra(EXTRA_HOST) != null) host.setText(asked.getStringExtra(EXTRA_HOST));
+            if (asked.getStringExtra(EXTRA_USER) != null) user.setText(asked.getStringExtra(EXTRA_USER));
+            if (asked.hasExtra(EXTRA_PORT)) port.setText(String.valueOf(asked.getIntExtra(EXTRA_PORT, 22)));
         }
 
         form.addView(label(getString(R.string.ssh_method_label)));

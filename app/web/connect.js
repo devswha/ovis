@@ -1,12 +1,11 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t } from "./shell.js";
+import { ACCOUNT_SERVICE, ACCOUNT_SIGN_IN, APP_ORIGIN, barsForScreen, directTarget, followScheme, listedProviders, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t, tailnetPcs } from "./shell.js";
 
 localize();
 followScheme();
 
-const feedback = document.getElementById("feedback");
 const form = document.getElementById("connect");
 const input = document.getElementById("address");
 const error = document.getElementById("error");
@@ -76,7 +75,7 @@ async function open(text) {
     catch (err) { error.textContent = String(err?.message ?? err); }
     return;
   }
-  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); if (!addressScreen.hidden) input.focus(); return; }
+  if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); focusField(); return; }
   // the hosted app itself, saved once it loaded (a sign-in opens it): picked from this list, it opens on its front page
   // (#pcs, which the hosted app takes as the app's own way there: Add a PC, or its sign-in), not straight into the PC it
   // opened last as a launch does (src/lib/relay/shell.tsx, launchOrder): a new web view starts a new session, so a bare
@@ -89,7 +88,7 @@ async function open(text) {
   }
   // a PC paired over the Ovis relay opens at its scope on the app's origin, saved under that scope
   const relay = relayLink(url);
-  if (relay?.error) { error.textContent = relayErrors[relay.error](); if (!addressScreen.hidden) input.focus(); return; }
+  if (relay?.error) { error.textContent = relayErrors[relay.error](); focusField(); return; }
   if (relay) {
     error.textContent = "";
     try { await shell("open", { url: relay.url, scope: relay.scope, ...(relay.name ? { name: relay.name } : {}) }); }
@@ -114,57 +113,105 @@ async function open(text) {
   finally { if (mine === attempt) showStatus(""); }
 }
 
-const screens = { "sign-in": document.getElementById("sign-in"), add: document.getElementById("add"), address: document.getElementById("address-screen") };
-const addressScreen = screens.address;
-// a build without the account (OVIS_APP_ACCOUNT=0, build-web.ts) starts on Add a PC, with nothing to go back to
-const first = ACCOUNT_SIGN_IN ? "sign-in" : "add";
+const tabs = [...document.querySelectorAll('[role="tab"]')];
+const tailnetInput = document.getElementById("tailnet-address");
+// a build without the account (OVIS_APP_ACCOUNT=0, build-web.ts) has no relay tab and opens on Tailscale
+if (!ACCOUNT_SIGN_IN) document.getElementById("tab-relay").hidden = true;
+let tab = ACCOUNT_SIGN_IN ? "relay" : "tailscale";
 
-/**
- * One screen at a time; what an open says goes with the screen that is up, above the PCs opened before so a long list
- * never pushes it out of sight. `focus`: what gets the focus on it, none for false.
- */
-function show(name, focus) {
-  stopPending();
-  error.textContent = "";
-  for (const [key, screen] of Object.entries(screens)) screen.hidden = key !== name;
-  screens[name].insertBefore(feedback, screens[name].querySelector("#saved-section"));
-  if (focus !== false) (focus ?? screens[name].querySelector("button:not([hidden])"))?.focus();
+/** The field of the tab that is up, for an open that did not go: none on the relay's tab. */
+function focusField() {
+  if (tab === "direct") input.focus();
+  else if (tab === "tailscale" && !tailnetInput.closest("[hidden]")) tailnetInput.focus();
 }
 
 /**
- * A step forward is an entry of the page's history, so the phone's own Back steps back as the round Back does (Android
- * gives Back to a page with history of the app's own, MainActivity.syncBack).
+ * One tab at a time, picked rather than stepped to: no entry of the page's history, so the phone's Back leaves the app
+ * from any tab (MainActivity.syncBack gives Back to the page only when it has history), as it does on the desktop's
+ * Add a connection. What an open said goes with the tab it was said on.
  */
-function go(name, focus) {
-  history.pushState({ screen: name }, "", `#${name}`);
-  show(name, focus);
+function pick(name, focus = false) {
+  if (name !== tab) {
+    stopPending();
+    error.textContent = "";
+  }
+  tab = name;
+  for (const each of tabs) {
+    const on = each.dataset.tab === name;
+    each.setAttribute("aria-selected", String(on));
+    each.tabIndex = on ? 0 : -1;
+    document.getElementById(each.getAttribute("aria-controls")).hidden = !on;
+  }
+  if (focus) tabs.find((each) => each.dataset.tab === name)?.focus();
+  if (name === "tailscale") void checkTailscale();
 }
 
-history.replaceState({ screen: first }, "", location.pathname);
-addEventListener("popstate", (event) => { show(screens[event.state?.screen] ? event.state.screen : first); });
-for (const screen of [screens.add, screens.address]) screen.querySelector("[data-back]").addEventListener("click", () => history.back());
-document.getElementById("no-account").addEventListener("click", () => go("add"));
-document.getElementById("address-way").addEventListener("click", () => go("address", input));
+for (const each of tabs) each.addEventListener("click", () => pick(each.dataset.tab));
+// a tab list's own keys: the arrows move between the tabs that are drawn, Home and End to the ends
+document.querySelector('[role="tablist"]').addEventListener("keydown", (event) => {
+  const shown = tabs.filter((each) => !each.hidden);
+  const at = shown.findIndex((each) => each.dataset.tab === tab);
+  const to = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: shown.length - 1 }[event.key];
+  if (to === undefined) return;
+  event.preventDefault();
+  pick(shown[(to + shown.length) % shown.length].dataset.tab, true);
+});
+pick(tab);
 
 // a machine reached over SSH from this phone: Android's OvisSsh plugin asks the rest on a screen of its own. An app
-// without it (iOS, or an Android build before it) has no SSH to offer, so the way is left out rather than drawn dead
-const sshWay = document.getElementById("ssh-way");
+// without it (iOS, or an Android build before it) has no SSH to offer, so Direct's field takes addresses alone
 // the plugins the app announces to the page before its first script runs (src/lib/nativeApp.ts, hasNativePlugin)
-if ((window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh")) sshWay.addEventListener("click", async () => {
+const sshOffered = (window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "OvisSsh");
+if (!sshOffered) {
+  input.placeholder = "192.168.0.10:7317";
+  document.getElementById("address-label").textContent = t("Address", "주소");
+  document.getElementById("address-hint").textContent = t("A same Wi-Fi address or an https address", "같은 Wi-Fi 주소 또는 https 주소");
+}
+
+/** Direct's one field: SSH's user@host goes to the SSH setup screen with it filled in, anything else opens as an address. */
+async function connectDirect(text) {
+  const target = directTarget(text);
+  if (!target.ssh) { await open(target.address); return; }
+  if (!sshOffered) {
+    error.textContent = t("SSH works in the Android app. Type the PC's Ovis address instead.", "SSH는 안드로이드 앱에서 돼요. PC의 Ovis 주소를 넣으세요.");
+    input.focus();
+    return;
+  }
   // an open still being checked must not take over while the setup screen is up
   stopPending();
   error.textContent = "";
-  try { await ssh("add"); }
+  try { await ssh("add", target.ssh); }
   catch (err) { error.textContent = String(err?.message ?? err); }
-});
-else sshWay.hidden = true;
+}
 
 cancel.addEventListener("click", () => {
   stopPending();
-  if (!addressScreen.hidden) input.focus();
+  focusField();
 });
 
-form.addEventListener("submit", (event) => { event.preventDefault(); void open(input.value); });
+form.addEventListener("submit", (event) => { event.preventDefault(); void connectDirect(input.value); });
+document.getElementById("tailnet-connect").addEventListener("submit", (event) => { event.preventDefault(); void open(tailnetInput.value); });
+
+/**
+ * Whether Tailscale is on on this phone, as Android tells (HerdrShell tailscale): off, the tab says so and offers its
+ * app alone, since no Tailscale address opens meanwhile; it asks again when the app comes back (from Tailscale). An app
+ * that cannot tell (iOS, an older Android build) draws the tab as on.
+ */
+async function checkTailscale() {
+  if (!android) return;
+  let on = true;
+  try { on = (await shell("tailscale")).on !== false; }
+  catch { /* an Android build without the check: as on */ }
+  document.getElementById("tailscale-off").hidden = on;
+  document.getElementById("tailscale-on").hidden = !on;
+}
+
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && tab === "tailscale") void checkTailscale(); });
+document.getElementById("open-tailscale").addEventListener("click", async () => {
+  error.textContent = "";
+  try { await shell("openTailscale"); }
+  catch (err) { error.textContent = String(err?.message ?? err); }
+});
 
 const account = document.getElementById("account");
 /** Draws a button for each sign-in named, in the build's order. */
@@ -172,12 +219,7 @@ function showProviders(providers) {
   for (const button of account.querySelectorAll("[data-provider]")) button.hidden = !providers.includes(button.dataset.provider);
 }
 
-if (!ACCOUNT_SIGN_IN) {
-  screens.add.querySelector("[data-back]").hidden = true;
-  show("add", false);
-}
-else {
-  show("sign-in", false);
+if (ACCOUNT_SIGN_IN) {
   // the service names its sign-ins (GET /v1/providers), as the hosted app reads them; until it answers, GitHub alone
   // (the markup's), the hosted app's own fallback, so no button opens a sign-in the hosted app would not start
   fetch(new URL("/v1/providers", ACCOUNT_SERVICE)).then((response) => response.ok ? response.json() : null).then((body) => {
@@ -199,7 +241,7 @@ else {
   });
 }
 
-document.getElementById("scan").addEventListener("click", async () => {
+for (const scan of document.querySelectorAll("[data-scan]")) scan.addEventListener("click", async () => {
   error.textContent = "";
   try {
     // the plugin's own JS fills these defaults; this page calls the bridge without it
@@ -209,6 +251,29 @@ document.getElementById("scan").addEventListener("click", async () => {
     error.textContent = String(err?.message ?? err);
   }
 });
+
+/** The Tailscale tab's PCs: those this phone opened at a Tailscale address, each with Connect. */
+function renderTailnet(saved, names) {
+  const pcs = tailnetPcs(saved, names);
+  document.getElementById("tailnet").replaceChildren(...pcs.map(({ origin, label }) => {
+    const item = document.createElement("li");
+    const text = document.createElement("span");
+    text.className = "way-text";
+    const title = document.createElement("span");
+    title.className = "way-title";
+    title.textContent = label;
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = new URL(origin).host;
+    text.append(title, sub);
+    const connect = button(t("Connect", "연결"), () => void open(origin), "primary");
+    connect.setAttribute("aria-label", t(`Connect to ${label}`, `${label}에 연결`));
+    item.append(text, connect);
+    return item;
+  }));
+  document.getElementById("tailnet-section").hidden = pcs.length === 0;
+  document.getElementById("tailnet-none").hidden = pcs.length > 0;
+}
 
 function button(text, onClick, className = "") {
   const element = document.createElement("button");
@@ -348,6 +413,7 @@ async function load() {
     catch { /* an app without the plugin lists its PCs as before */ }
   }
   renderSaved(savedOrigins, state.last ?? "", state.names ?? {});
+  renderTailnet(savedOrigins, state.names ?? {});
   // an SSH PC whose address on this phone another app took first is not opened (OvisSshPlugin.listen)
   if (state.kind === "ssh-port") {
     error.textContent = t(
@@ -365,7 +431,7 @@ async function openAppLink() {
   if (window.Capacitor?.getPlatform?.() !== "android") return;
   const { url } = await shell("takeLink");
   if (!url) return;
-  go("address", false);
+  pick("direct");
   input.value = url;
   await open(url);
 }
