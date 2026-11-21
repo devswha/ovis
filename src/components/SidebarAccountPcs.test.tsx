@@ -223,6 +223,28 @@ describe("the account's PCs in the sidebar", () => {
     expect(starts()).toBe(2);
   });
 
+  it("remembers nothing when nobody answered in time: the PC gets its one more try and is asked again on the next load", async () => {
+    await mount();
+    await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_unanswered", message: "Nobody approved that PC in time. Nothing was added." } })); pairLines!.close(); });
+    await settle();
+    await comeBack();
+    expect(starts()).toBe(2);
+    await act(async () => { renderer!.unmount(); });
+    await mount();
+    expect(starts()).toBe(3);
+  });
+
+  it("keeps a Deny to the PC that asked: another PC of the account still adds that PC", async () => {
+    await mount();
+    await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
+    await settle();
+    await act(async () => { renderer!.unmount(); });
+    // the same browser on another PC's page (the hosted app and the phone app share one origin)
+    const other = { ...local, server_id: "c".repeat(32) } as unknown as Machine;
+    await mount(() => {}, [other, lab]);
+    expect(starts()).toBe(2);
+  });
+
   it("does not ask a declined PC again after one failed read of the account's list", async () => {
     await mount();
     await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });

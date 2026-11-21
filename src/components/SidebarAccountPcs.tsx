@@ -78,14 +78,16 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
   }, [account, reads]);
   const accountPcs = useAccountPcs({ machines, source, enabled: joined, expect: account, refresh: reads, onAdded });
   const waiting = accountPcs.pcs?.filter((pc) => accountPcs.added(pc.server_id) === undefined) ?? [];
-  // each PC is added on its own once. A member's Deny is kept in this browser per account and PC, across page loads, until
+  // each PC is added on its own once. A member's Deny is kept in this browser per account, asking PC and PC, across page loads, until
   // the account lists that PC anew; one that failed for a passing reason gets one more try when the window comes back;
   // any other is asked again once the account lists something new. A read of the list that failed changes nothing.
   const [tried, setTried] = useState<ReadonlySet<string>>(new Set());
   const [, noteDecline] = useState(0);
   const passing = useRef(new Set<string>());
   const retried = useRef(new Set<string>());
-  const declineKey = (serverId: string): string => `ovis:declined-pc:${account}:${serverId}`;
+  // a Deny is to the PC that asked: the hosted app and the phone app keep one storage for every PC's page
+  const asking = machines.find((machine) => machine.kind === "local")?.server_id ?? "";
+  const declineKey = (serverId: string): string => `ovis:declined-pc:${account}:${asking}:${serverId}`;
   const declined = (pc: AccountPcEntry & { readonly new_until?: string | null }): boolean => {
     try { return localStorage.getItem(declineKey(pc.server_id)) === (pc.new_until ?? ""); } catch { return false; }
   };
