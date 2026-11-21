@@ -143,7 +143,7 @@ jobs:
           fi
           # Only a pull request may skip the Browser regression jobs, and only when none of its paths can
           # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name).
-          bash scripts/ci-browser-reach.sh <<< "$CHANGED" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$CHANGED" | bash scripts/ci-browser-reach.sh >> "$GITHUB_OUTPUT"
   windows-install:
     name: Native Windows install
     needs: changes

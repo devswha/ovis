@@ -844,8 +844,8 @@ describe("ci.yml", () => {
         return readFileSync(output, "utf8");
       };
       for (const event of ["push", "workflow_dispatch"]) expect(await decided({ EVENT_NAME: event, PR_DRAFT: "", BASE_SHA: "" })).toBe("draft=false\ncode=true\nbrowser=true\n");
-      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: base })).toBe("draft=false\ncode=false\nbrowser=false\n");
-      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "true", BASE_SHA: base })).toBe("draft=true\ncode=false\nbrowser=false\n");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: base })).toBe("draft=false\ncode=false\nbrowser=true\n");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "true", BASE_SHA: base })).toBe("draft=true\ncode=false\nbrowser=true\n");
 
       const docsCommit = git("rev-parse", "HEAD");
       mkdirSync(join(dir, "server/fixtures"), { recursive: true });

@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # Reads a pull request's changed paths, one a line, and prints browser=false when none of them can reach the
 # Browser regression jobs, browser=true otherwise. Those jobs build the client and start the server, the relay
-# shell, the demo and the desktop harness, so only what none of that loads is left out: documentation, unit
-# tests (Fast checks and Integration tests run them), the terminal client, the two workers, the phone and
-# native apps' own folders, the installers, the runner launcher, and every workflow but ci.yml. A path this
-# list does not name keeps the jobs: a new folder runs them until it is added here.
+# shell, the demo and the desktop harness, and their scripts read files all over the repository (a docs page's
+# example, the notices the build bundles, a worker's folder they copy), so only these are left out: unit tests
+# (Fast checks and Integration tests run them), the terminal client, the push worker, the site, the phone and
+# native apps' own folders, the installers, the runner launcher, changelog fragments, and every workflow but
+# ci.yml. Any other path keeps the jobs, and so does a path this script cannot read: a new folder runs them
+# until it is added here, and scripts/ci-browser-reach.test.ts fails when a browser script names a path left out.
 set -euo pipefail
 
-docs='^docs/|\.(md|txt)$|^LICENSE$'
-apart='^(tui|crates/ovis-tui|push-relay|telemetry|ovis-site|app/(android|ios|mac|windows|store|assets)|evidence|\.claude|scripts/self-hosted-runner)/|^(\.coderabbit\.yaml|\.gitattributes|\.gitignore|install\.sh|install\.ps1)$'
-tests='^(server|src|shared|scripts|app|relay)/.*\.test\.tsx?$'
-workflows='^\.github/'
+apart='^(tui|crates/ovis-tui|push-relay|ovis-site|app/(android|ios|mac|windows|store|assets)|scripts/self-hosted-runner|changelog\.d)/.'
+files='^(\.coderabbit\.yaml|install\.sh|install\.ps1)$'
+tests='\.test\.tsx?$'
 ci='^\.github/(workflows/ci\.yml$|actions/)'
 
-paths=$(grep -v '^$' || true)
-if [ -z "$paths" ]; then echo "browser=true"; exit 0; fi
-if grep -q '^server/fixtures/' <<<"$paths"; then echo "browser=true"; exit 0; fi
-reaching=$(grep -vE "$docs" <<<"$paths" | grep -vE "$apart" | grep -vE "$tests" | { grep -vE "$workflows" || true; } || true)
-ci_changes=$(grep -E "$ci" <<<"$paths" || true)
-if [ -n "$reaching" ] || [ -n "$ci_changes" ]; then echo "browser=true"; else echo "browser=false"; fi
+seen=0
+while IFS= read -r path || [ -n "$path" ]; do
+  [ -n "$path" ] || continue
+  seen=1
+  if [[ $path == server/fixtures/* ]]; then echo "browser=true"; exit 0; fi
+  if [[ $path =~ $ci ]]; then echo "browser=true"; exit 0; fi
+  if [[ $path == .github/* ]] || [[ $path =~ $apart ]] || [[ $path =~ $files ]] || [[ $path =~ $tests ]]; then continue; fi
+  echo "browser=true"; exit 0
+done
+if [ "$seen" = 1 ]; then echo "browser=false"; else echo "browser=true"; fi
