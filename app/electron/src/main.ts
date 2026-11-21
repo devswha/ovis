@@ -19,6 +19,7 @@ import { debuggingSwitch, ownAddresses, readBrowserState } from "./browserState.
 import { homedir, networkInterfaces } from "node:os";
 import { commandState, installCommand, READ_TERMINAL_PATH, SHELL_PATH_SCRIPT, shellPath, writeLauncher, type CommandHost } from "./terminalCommand.ts";
 import { BrowserBroker, brokerPath } from "./browserBroker.ts";
+import { readStagingProfile } from "./stagingProfile.ts";
 import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
 
 type StepState = "pending" | "ok" | "failed";
@@ -36,6 +37,17 @@ export interface UpdateLine {
 }
 
 const resources = app.isPackaged ? join(process.resourcesPath, "ovis") : process.env["OVIS_DESKTOP_STAGE"] || join(app.getAppPath(), "stage");
+if (app.isPackaged && process.platform === "darwin") {
+  const staging = readStagingProfile({ resources, env: process.env });
+  if (staging) {
+    Object.assign(process.env, staging.env);
+    if (!app.commandLine.hasSwitch("user-data-dir")) {
+      mkdirSync(staging.userData, { recursive: true, mode: 0o700 });
+      app.setPath("userData", staging.userData);
+      app.setPath("sessionData", staging.userData);
+    }
+  }
+}
 const programs = layout(resources);
 const versions = (() => {
   try { return JSON.parse(readFileSync(join(resources, "versions.json"), "utf8")) as { hc: string; bun: string }; } catch { return null; }

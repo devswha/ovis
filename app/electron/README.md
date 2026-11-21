@@ -231,6 +231,13 @@ by `package.json` was built from this checkout's PTY host sources, as on a relea
 the server uses Node for the few things that need a PTY host of its own, where the PC has Node. `bun run start` then runs the app from `stage/`
 without packaging it. Nothing downloaded is committed.
 
+On macOS, run `OVIS_BUILD_STAGING=1 bun run dist` for a staging preview. If you stage and package
+separately, set `OVIS_BUILD_STAGING=1` on the `package` step. The packaged app opens the staging
+account service and relay without a launcher script. Its default home is `~/.ost` and its profile
+is `~/.ost/app`. If the core socket path would be too long, both move under `/tmp/ost-<uid>`.
+Environment overrides and `--user-data-dir` still take precedence. The login `HOME` by itself
+is not a home override. Packaging without the switch leaves out the staging marker.
+
 To try it without touching your own hc core or Ovis state, give it a fresh user data folder and hc
 session:
 
