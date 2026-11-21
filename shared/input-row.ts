@@ -198,10 +198,12 @@ const piStockInputRow: InputRowRecognizer = (screen, typed) => {
 
 /** pi-powerline-footer's editor border: a rule indented one column, `↑` or `↓` at its start where the editor scrolls. */
 const POWERLINE_RULE = /^ [↑↓─]─{9,}$/;
+/** its upper border while pi works: the turn's spinner and label in it (`── ⠸ Working ───`) */
+const POWERLINE_WORKING_RULE = /^ ── [^─]+ ─{9,}$/;
 
 /**
  * pi with the pi-powerline-footer extension (0.22.0): its status bar sits above the editor, whose two borders
- * are the screen's last rows. Its first row starts ` > ` (` $ ` in bash mode), the others `   `; nothing in it but
+ * are the screen's last rows; while pi works the upper one carries its spinner. Its first row starts ` > ` (` $ ` in bash mode), the others `   `; nothing in it but
  * the prompt is an empty box. Under the lower border only the extension's last-prompt row (` ↳ `, drawn once a
  * prompt was sent) is taken; anything else there (an autocomplete list, another widget) fails safe.
  * The editor has no placeholder; its cursor draws the character under it inverse, which is still typed text.
@@ -212,7 +214,7 @@ const piPowerlineInputRow: InputRowRecognizer = (screen, typed) => {
   const last = rows.at(-1);
   const lower = last !== undefined && /^ ↳ /.test(text(last)) ? rows.at(-2) : last;
   if (lower === undefined || !POWERLINE_RULE.test(text(lower))) return "gone";
-  const upper = rows.filter((index) => index < lower && POWERLINE_RULE.test(text(index))).at(-1);
+  const upper = rows.filter((index) => index < lower && (POWERLINE_RULE.test(text(index)) || POWERLINE_WORKING_RULE.test(text(index)))).at(-1);
   if (upper === undefined || lower - upper < 2) return "gone";
   const inner = Array.from({ length: lower - upper - 1 }, (_, offset) => upper + 1 + offset);
   if (!/^ [>$](?: |$)/.test(text(inner[0]!)) || inner.slice(1).some((index) => !/^ {3}|^$/.test(text(index)))) return "gone";
