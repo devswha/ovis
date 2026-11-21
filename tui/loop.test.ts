@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
+import { REATTACH_DEADLINE } from "./core/pane.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
 import { FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
@@ -67,6 +68,14 @@ const sentTo = (run: Run, terminal: string): string => Buffer.concat(run.core.lo
 async function settled(run: Run): Promise<void> {
   await run.advance(200);
   await run.settle();
+  // and every shown pane has its picture, with no attach again still due (a pane a zoom uncovered at another rectangle
+  // attaches again at it REATTACH_SETTLE_MS later, unless typing took the terminal first), within a bound
+  const drawn = () => !run.loop.panes.deadlines().has(REATTACH_DEADLINE) &&
+    run.loop.panes.views().every((view) => view.state.kind !== "Opening" && view.state.kind !== "Painting");
+  for (let waited = 0; !drawn() && waited < 2_000; waited += FRAME_PASS_MS) {
+    await run.advance(FRAME_PASS_MS);
+    await run.settle();
+  }
   await run.advance(FRAME_PASS_MS);
   await run.settle();
   await run.advance(1);
@@ -365,12 +374,15 @@ describe("the loop", () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    const outcome = async (prefix: string, reads: Uint8Array[]) => {
-      const run = await Run.start({ fixture: demo });
+    const outcome = async (prefix: string, reads: Uint8Array[], zoomed = false) => {
+      const run = await Run.start(zoomed ? { core: oneTab(3, true) } : { fixture: demo });
       try {
         await run.live();
         if (prefix !== "\x02") run.loop.dispatch({ type: "keys", keys: { prefix }, at: run.clock.current });
         await run.advance(1);
+        // the terminals there before the keys: text after a choice that focuses a pane made by these keys, in the same
+        // read, is refused as read before that pane's picture (the input gate's rule), so new terminals are not compared
+        const before = run.loop.model().world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort();
         let ended = false;
         void run.loop.done.then(() => { ended = true; });
         for (const [at, read] of reads.entries()) {
@@ -384,10 +396,11 @@ describe("the loop", () => {
           else await settled(run);
         }
         const model = run.loop.model();
+        const layout = run.core.docs.get(OVIS_LAYOUT_DOC)?.value as { workspaces: { tabs: { zoomed: string | null }[] }[] } | undefined;
         return {
-          ended, focus: model.focus, mode: model.mode.name,
+          ended, focus: model.focus, mode: model.mode.name, zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
-          received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)),
+          received: Object.fromEntries(before.map((terminal) => [terminal, sentTo(run, terminal)])),
         };
       } finally {
         await run.close();
@@ -397,17 +410,32 @@ describe("the loop", () => {
     // or may not have landed: for a run that detached, only that it left and what each program was sent are compared.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
     const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
-    for (const prefix of ["\x02", "-"]) {
-      const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
+    // the third variant: a zoomed tab, where the workspace picker's moves and directional focus move the shared zoom
+    // to the pane the focus goes to (zoom_follow) and the last move wins
+    const variants: [prefix: string, zoomed: boolean, tokens: string[]][] = [
+      ["\x02", false, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
+      ["-", false, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
+      ["\x02", true, ["\x02w", "\x02l", "\x02h", "\x02z", "l", "h", "a", "\r"]],
+    ];
+    for (const [prefix, zoomed, tokens] of variants) {
       for (let n = 0; n < 10; n++) {
         const text = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
         const bytes = new TextEncoder().encode(text);
-        const joined = compared(await outcome(prefix, [bytes]));
-        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)))) }).toEqual({ text, outcome: joined });
+        const joined = compared(await outcome(prefix, [bytes], zoomed));
+        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), zoomed)) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
-          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ text, cut, outcome: joined });
+          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], zoomed)) }).toEqual({ text, cut, outcome: joined });
         }
       }
+    }
+    // the gate's cases: zoomed, the picker and two moves then Enter, or two moves, in one read settle (focus and shared
+    // zoom) where the same bytes split do, and a marker typed after them reaches the same program; and two moves with text
+    // after each, the zoom following the focus: the text reaches the pane the zoom shows
+    for (const pinned of ["\x02wll\rZ", "\x02l\x02lZ", "\x02ll\x02lh", "\x02lab\x02hcd"]) {
+      const gate = new TextEncoder().encode(pinned);
+      const whole = compared(await outcome("\x02", [gate], true));
+      expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), true)) }).toEqual({ pinned, outcome: whole });
+      for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], true)) }).toEqual({ pinned, cut, outcome: whole });
     }
   }, SOAK_MS);
 

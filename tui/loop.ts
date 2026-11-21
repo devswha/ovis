@@ -302,6 +302,7 @@ export function startLoop(options: LoopOptions): Loop {
       else holds.delete(notice.terminal);
     }
     if (notice.type === "gone") grids.delete(notice.terminal);
+    if (notice.type === "state" || notice.type === "gone") zoomFollows.check();
     if (notice.type === "effect" && !closing) {
       const bytes = effectBytes(notice.effect, notice.terminal === paneFocus);
       if (bytes && !host.write(bytes)) painter?.invalidate();
@@ -325,7 +326,11 @@ export function startLoop(options: LoopOptions): Loop {
   function userInput(event: ModelEvent): void {
     // nothing after a detach goes anywhere, from the same read either: the screen is leaving
     if (closing) return;
-    if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse")) {
+    const typed = event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse";
+    // while a zoom that follows the focus is being written, what would reach a pane waits for it, so it meets the pane
+    // the zoom shows as a later read would; moves and other keys go on, so successive moves still coalesce
+    if (typed && behindWrite === null && zoomFollows.active() && reachesPane(event)) holdUntil(zoomFollows.settled(), true);
+    if (behindWrite === null || !typed) {
       dispatch(event);
       return;
     }
@@ -346,14 +351,83 @@ export function startLoop(options: LoopOptions): Loop {
     behindWrite.events.push(event);
   }
 
-  /** Holds the user's input until `writing` is done; then what waited goes through in order (and may hold again). */
-  function holdUntil(writing: Promise<void>): void {
+  /**
+   * The zoom-follow writes under way, and a promise told once none is and the focused pane has its picture (past
+   * opening and painting): what was typed after a move meets the pane the zoom shows, however the reads fall.
+   * Active from a zoom-follow write until then.
+   */
+  const zoomFollows = {
+    pending: 0,
+    waiters: [] as (() => void)[],
+    /** when the focused pane was found with its picture: what waited goes through at a later instant than it */
+    readyAt: null as number | null,
+    following: false,
+    active(): boolean {
+      return this.pending > 0 || this.following;
+    },
+    settled(): Promise<void> {
+      return new Promise<void>((done) => {
+        this.waiters.push(done);
+        this.check();
+      });
+    },
+    started(writing: Promise<void>): void {
+      this.pending++;
+      this.following = true;
+      void writing.finally(() => {
+        this.pending--;
+        guard(() => this.check());
+        arm();
+      });
+    },
+    check(): void {
+      const pane = focused(state.world, state.focus).pane?.id ?? null;
+      const view = pane === null ? undefined : panes.view(pane);
+      const kind = view?.state.kind ?? null;
+      if (!this.following && this.waiters.length === 0) return;
+      // a pane the zoom still covers has not been shown yet: its picture comes once the layout uncovers it. A Live pane
+      // the zoom gave a larger rectangle takes it with the first input sent (the take resizes it), so it need not wait
+      if (this.pending > 0 || kind === "Idle" || kind === "Opening" || kind === "Painting" || view?.covered === true) {
+        this.readyAt = null;
+        return;
+      }
+      // a pane refuses what was read at the instant it went live or before: the held input goes one tick later
+      if (this.readyAt === null) this.readyAt = clock.now() + 1;
+      if (clock.now() < this.readyAt) return;
+      this.readyAt = null;
+      this.following = false;
+      for (const done of this.waiters.splice(0)) done();
+    },
+  };
+
+  /** Whether `event`, read now, would send anything to a pane: through the pure state core, with each rest it hands back. */
+  function reachesPane(event: ModelEvent): boolean {
+    let probe = state;
+    const ahead = [event];
+    for (let next = ahead.shift(); next !== undefined; next = ahead.shift()) {
+      const step = reduce(probe, next);
+      probe = step.state;
+      for (const effect of step.effects) {
+        if (effect.type === "pane" || (effect.type === "mouse" && effect.over === "screen")) return true;
+        if (effect.type === "input") ahead.push(effect.event);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Holds the user's input until `writing` is done; then what waited goes through in order (and may hold again).
+   * `readNow`: it was held for the picture of the pane it goes to, so it counts as read when it goes through, not as
+   * read before that picture (which a pane refuses as early).
+   */
+  function holdUntil(writing: Promise<void>, readNow = false): void {
     behindWrite ??= { events: [], ahead: state };
     void writing.then(() => {
       guard(() => {
         const waited = behindWrite?.events ?? [];
         behindWrite = null;
-        for (const event of waited) userInput(event);
+        const at = clock.now();
+        for (const event of waited) userInput(readNow && "at" in event ? { ...event, at } : event);
       });
       arm();
     });
@@ -384,6 +458,7 @@ export function startLoop(options: LoopOptions): Loop {
       reshow();
       look();
       owePass();
+      zoomFollows.check();
     }
   }
 
@@ -397,9 +472,10 @@ export function startLoop(options: LoopOptions): Loop {
         act(`run:${effect.action}`);
         const writing = layout.run(effect);
         if (writing !== null) {
-          // a zoom that follows the focus moves nothing input is routed by (the focus moved already): the next move
-          // goes on at once, and the layout writes only the latest of such zooms
-          if (effect.action !== "zoom_follow") holdUntil(writing);
+          // a zoom that follows the focus holds only what would reach a pane (userInput): the next move goes on at once,
+          // and the layout writes only the latest of such zooms
+          if (effect.action === "zoom_follow") zoomFollows.started(writing);
+          else holdUntil(writing);
           return;
         }
         // an action no module performs yet: one notice per press, never silence
@@ -569,6 +645,7 @@ export function startLoop(options: LoopOptions): Loop {
       return;
     }
     for (const event of framer.tick(now)) userInput(event);
+    zoomFollows.check();
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
       framer.reset();
@@ -691,6 +768,7 @@ export function startLoop(options: LoopOptions): Loop {
     for (const [name, at] of state.deadlines) all.set(`model:${name}`, at);
     for (const since of holds.values()) all.set("hold", Math.min(all.get("hold") ?? Infinity, since + HOLD_RELEASE_MS));
     if (passOwed && painter) all.set("pass", Math.max(lastPass + FRAME_PASS_MS, clock.now()));
+    if (zoomFollows.readyAt !== null) all.set("zoom_release", zoomFollows.readyAt);
     return all;
   }
 

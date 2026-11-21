@@ -189,6 +189,7 @@ describe("navigate mode on screen", () => {
     const run = await start(twoWorkspaces());
     await run.keys("ctrl+b,w");
     run.forget();
+    const sizes = SHOWN.map((terminal) => run.core.size(terminal));
     const passed: string[] = [];
     const watch = () => passed.push(run.loop.model().focus.panes["t"] ?? "?");
     for (const step of ["l", "l", "l", "l", "h", "h", "h", "h"]) {
@@ -205,7 +206,7 @@ describe("navigate mode on screen", () => {
       sizes: SHOWN.map((terminal) => run.core.size(terminal)),
     });
     const moving = quiet();
-    expect(moving).toEqual({ attaches: 0, sent: [], viewersOfOthers: 0, sizes: moving.sizes });
+    expect(moving).toEqual({ attaches: 0, sent: [], viewersOfOthers: 0, sizes });
     // and nothing leaves once the focus rests either
     await run.advance(1_000);
     expect(quiet()).toEqual(moving);
