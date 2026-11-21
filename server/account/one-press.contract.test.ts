@@ -301,15 +301,18 @@ test("first-PC exemption: an account never used, signed in with Google whose two
   expect(f.devices.account()).toBe("acct_new");
 });
 
-test("first-PC exemption: an account that ever had a device key (revoked included) needs two-step for one press", async () => {
+// account#62: device keys count only once the account had a confirmed or admitted PC, since a person may sign in on the
+// phone first; the fake's own tests hold that they count from then on (shared/account-service-fake.test.ts)
+test("first-PC exemption: an account whose only device key (revoked included) came before any PC adds its first PC in one press", async () => {
   const f = await pc();
-  await setUpFor(f, "acct_used");
+  await setUpFor(f, "acct_phone_first");
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
   const key = await exportAccountKey(keys.publicKey);
-  f.account.registerDevice("acct_used", key, "Old phone");
-  f.account.removeDevice("acct_used", key);
-  await expect(admitAt(f, "acct_used", null)).rejects.toThrow("two_step_required");
-  expect([(await press(f, "acct_used")).status, f.devices.account()]).toEqual([404, null]);
+  f.account.registerDevice("acct_phone_first", key, "Old phone");
+  f.account.removeDevice("acct_phone_first", key);
+  await admitAt(f, "acct_phone_first", null);
+  expect((await press(f, "acct_phone_first")).status).toBe(200);
+  expect(f.devices.account()).toBe("acct_phone_first");
 });
 
 test("a LAN window holding the access token, or any window that is not this PC's own, cannot press", async () => {
