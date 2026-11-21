@@ -20,8 +20,10 @@ export const NEW_PC_MS = 10 * 60_000;
 export const ACCOUNT_PCS_CHANGED_EVENT = "ovis:account-pcs-changed";
 
 /** A one-press admission has its own lifetime, independent of the pairing-window freshness. */
-export function isNewAccountPc(pc: { readonly new_until?: string | null | undefined }, now: number): boolean {
-  return pc.new_until != null && Date.parse(pc.new_until) > now;
+export function isNewAccountPc(pc: { readonly new_until?: string | null | undefined; readonly new_until_unreadable?: true }, now: number): boolean {
+  // a window that does not parse may still be open: every caller fails closed (security-triage condition 3)
+  if (pc.new_until_unreadable === true) return true;
+  return pc.new_until != null && !(Date.parse(pc.new_until) <= now);
 }
 
 export function invitationEndsAt(pc: Pick<MyPc, "invited_at" | "added_at">): number | null {
@@ -85,7 +87,7 @@ export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayD
     listed.delete(device.server_id);
     const lastSeen = entry?.last_seen_at ?? null;
     const enrollment = enrollmentOf(device, options.account);
-    rows.push({ server_id: device.server_id, name: device.name ?? device.server_id.slice(0, 8), state: stateOf(device.server_id, true, lastSeen), last_seen_at: lastSeen, added_at: entry?.added_at ?? null, ...(entry === undefined ? {} : { new_until: entry.new_until }), listed: entry !== undefined, paired: true, linked: enrollment !== "pending" && enrollment !== "failed" && entry !== undefined && device.public_spki === options.accountKey && device.account !== undefined && device.account === (options.account ?? device.account), ...(enrollment ? { enrollment } : {}) });
+    rows.push({ server_id: device.server_id, name: device.name ?? device.server_id.slice(0, 8), state: stateOf(device.server_id, true, lastSeen), last_seen_at: lastSeen, added_at: entry?.added_at ?? null, ...(entry === undefined ? {} : { new_until: entry.new_until, ...(entry.new_until_unreadable ? { new_until_unreadable: true as const } : {}) }), listed: entry !== undefined, paired: true, linked: enrollment !== "pending" && enrollment !== "failed" && entry !== undefined && device.public_spki === options.accountKey && device.account !== undefined && device.account === (options.account ?? device.account), ...(enrollment ? { enrollment } : {}) });
   }
   for (const pc of listed.values()) {
     const join = joinRoute(pc);

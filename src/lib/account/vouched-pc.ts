@@ -22,7 +22,7 @@ export async function vouchedPcName(service: AccountService, request: { readonly
   const saved = mine.find(device => device.server_id === id && device.introduced_at === undefined && enrollmentOf(device, member.account) === "complete");
   const listings = directory.filter(pc => pc.server_id === id);
   const pc = listings[0];
-  if (!saved || listings.length !== 1 || !pc || pc.last_seen_at === null || !Number.isFinite(Date.parse(pc.last_seen_at)) || pc.new_until_unreadable === true || isNewAccountPc(pc, Date.now())) return null;
+  if (!saved || listings.length !== 1 || !pc || pc.last_seen_at === null || !Number.isFinite(Date.parse(pc.last_seen_at)) || isNewAccountPc(pc, Date.now())) return null;
   const key = importPublicKey(saved.server_public_key);
   return deriveServerId(key) === id && bytesToHex(key) === pc.public_key ? accountLabel(pc.label) || null : null;
 }

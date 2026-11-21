@@ -99,11 +99,15 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   return { accountStore, serverId, requests, registrationKeys, navigations, navigated: navigated.promise, appOpened: appOpened.promise, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`), follow: (path: string) => mountAt(`${APP}${path}`) };
 }
 
-it("A3: a newly added account PC is marked New and its page waits for the Join press", async () => {
+it.each([
+  ["a newly added account PC", () => new Date(Date.now() + 23 * 60 * 60_000).toISOString()],
+  // a window that does not parse may still be open: condition 3 fails closed (security-triage)
+  ["an account PC whose new window does not parse", () => "garbage"],
+])("A3: %s is marked New and its page waits for the Join press", async (_case, newUntil) => {
   const attempts: boolean[] = [];
   const pressed = Promise.withResolvers<void>();
   const run = await accountPc({
-    newUntil: new Date(Date.now() + 23 * 60 * 60_000).toISOString(),
+    newUntil: newUntil(),
     open: async (_offer, options) => {
       attempts.push(options?.accountOpensAll === true);
       pressed.resolve();

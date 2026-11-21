@@ -29,7 +29,7 @@ export function accountOpenablePcs(pcs: readonly MyPc[], here: { readonly accoun
     && !newPcNoticeClosed(newPcNoticeKey(here.account, { server_id: pc.server_id, admitted_at: pc.admitted_at ?? null, new_until: pc.new_until ?? null }));
   return pcs.flatMap((pc) => !pc.paired && pc.join !== undefined && pc.accountOpen === true
     && pc.last_seen_at !== null
-    && !isNewAccountPc(pc, here.now) && pc.new_until_unreadable !== true
+    && !isNewAccountPc(pc, here.now)
     && !saved.has(pc.server_id)
     && !noticeOpen(pc)
     // checked by the key and relay its row carries, which myPcs kept only when the key is the one its id names
