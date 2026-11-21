@@ -37,31 +37,33 @@ export function offlinePc(pc: { readonly last_seen_at: string | null; readonly a
  * Manage account's lists, for when a phone is lost or a PC is gone: the account's other devices on the PC this page
  * is on, each disconnected from every PC of the account, and the account's PCs, an offline one removed from it. One
  * line a row: a dot says how it is, a press asks once. `onLeave`: this device leaves the account (the hosted app); a
- * throw keeps its confirm up with the error.
+ * throw keeps its confirm up with the error. `pcHere` false: no PC is open on this page (the hosted app's start screen),
+ * so no other device is read or offered, only this one's own row.
  */
-export function AccountManageLists({ account, watching, onLeave }: { readonly account: string; readonly watching: boolean; readonly onLeave?: () => Promise<void> }) {
+export function AccountManageLists({ account, watching, pcHere = true, onLeave }: { readonly account: string; readonly watching: boolean; readonly pcHere?: boolean; readonly onLeave?: () => Promise<void> }) {
   return (
     <>
-      <AccountDevices account={account} {...(onLeave ? { onLeave } : {})} />
+      <AccountDevices account={account} pcHere={pcHere} {...(onLeave ? { onLeave } : {})} />
       <AccountPcs account={account} watching={watching} />
     </>
   );
 }
 
-function AccountDevices({ account, onLeave }: { readonly account: string; readonly onLeave?: () => Promise<void> }) {
+function AccountDevices({ account, pcHere, onLeave }: { readonly account: string; readonly pcHere: boolean; readonly onLeave?: () => Promise<void> }) {
   const t = useT();
   // "failed": the PC did not answer, which says nothing of the account's devices
-  const [devices, setDevices] = useState<PairedDevice[] | "failed" | null>(null);
+  const [devices, setDevices] = useState<PairedDevice[] | "failed" | null>(pcHere ? null : []);
   const [key, setKey] = useState<string | null>(null);
   const [asked, setAsked] = useState<PairedDevice | "self" | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const read = useCallback(() => fetchDevices().then(setDevices, () => setDevices("failed")), []);
   useEffect(() => {
+    if (!pcHere) return;
     void read();
     let live = true;
     indexedAccountStore.key().then((own) => { if (live) setKey(own.public_spki); }, () => undefined);
     return () => { live = false; };
-  }, [read]);
+  }, [read, pcHere]);
   const others = devices === null || devices === "failed" ? devices : devices.filter((device) => offersAccountRemove(devices, device, account, key));
 
   /** A device of the account, gone from every PC of it: at once on this PC, from the mailbox on the others. */

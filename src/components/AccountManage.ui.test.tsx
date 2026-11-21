@@ -20,12 +20,14 @@ let pcs: Service.DirectoryPc[] = [];
 const calls: string[] = [];
 let deleteFails = false;
 let readsFail = false;
+let deviceReads = 0;
+const SESSION = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: NOW + 3_600_000 };
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-await mock.module("../lib/api.ts", () => ({ ...Api, fetchDevices: async () => { if (readsFail) throw new Error("503 from the PC"); return devices; } }));
+await mock.module("../lib/api.ts", () => ({ ...Api, fetchDevices: async () => { deviceReads++; if (readsFail) throw new Error("503 from the PC"); return devices; } }));
 await mock.module("../lib/account/leave.ts", () => ({ ...Leave, removeFromAccount: async (options: { key: string }) => { calls.push(`disconnect ${options.key}`); return { remove: {}, unconfirmed: [], queued: [] }; } }));
-await mock.module("../lib/account/store.ts", () => ({ ...Store, indexedAccountStore: { ...Store.indexedAccountStore, key: async () => ({ public_spki: MY_KEY }) } }));
+await mock.module("../lib/account/store.ts", () => ({ ...Store, indexedAccountStore: { ...Store.indexedAccountStore, key: async () => ({ public_spki: MY_KEY }), get: async (name: string) => name === "session" ? SESSION : undefined } }));
 class FakeService {
   async listPcs() { if (readsFail) throw new Error("503 from the service"); return pcs; }
   async session() { return { account: "acct" }; }
@@ -34,6 +36,8 @@ class FakeService {
 await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountService: FakeService }));
 const { AccountManageLists } = await import("./AccountManage.tsx");
 const { HostedAccountGroup } = await import("./AccountHead.tsx");
+const { RelayShell } = await import("./RelayShell.tsx");
+const { keepShellAccount } = await import("../lib/account/hostedSignIn.ts");
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 
@@ -48,6 +52,7 @@ describe("Manage account's devices and PCs", () => {
     calls.length = 0;
     deleteFails = false;
     readsFail = false;
+    deviceReads = 0;
     devices = [
       device("me", { current: true, account: "acct", account_key: MY_KEY, connection: { route: "relay", rtt_ms: 9 } as PairedDevice["connection"] }),
       device("Lost phone", { account: "acct", account_key: "phone-key" }),
@@ -185,6 +190,32 @@ describe("Manage account's devices and PCs", () => {
     expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
     expect(sheets(root)).toHaveLength(1);
     expect(textOf(sheets(root)[0]!.find((node) => node.props.role === "alert"))).toBe("These PCs still have it, so revoke it on them: Desk");
+  });
+
+  it("opens Manage account from the signed-in start screen with no PC open, and removes an offline PC through the account service", async () => {
+    const none = () => {};
+    keepShellAccount({ signOut: none, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null });
+    try {
+      await act(async () => {
+        renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, {
+          state: { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [] } },
+          scoped: false, iosTab: false, onSignIn: none, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none,
+        }) }), {
+          createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
+        });
+      });
+      const root = renderer!.root;
+      await act(async () => { action(root, "manage-account").props.onClick(); });
+      // no PC answers here: the sheet asks none for its devices, and offers this device's own row
+      expect(deviceReads).toBe(0);
+      expect(rows(root, "account-devices")).toEqual(["This deviceDisconnect"]);
+      expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove"]);
+      await act(async () => { action(root, "remove-pc").props.onClick(); });
+      await act(async () => { await press(root, "Remove"); });
+      expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
+    } finally {
+      keepShellAccount(null);
+    }
   });
 
   it("closes the sheet once this device left everywhere", async () => {

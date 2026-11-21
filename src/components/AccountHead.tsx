@@ -1,8 +1,8 @@
-import { useContext, useEffect, useId, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useId, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { LogOut, UserRound, X } from "lucide-react";
 
-import type { HostedSignIn } from "../lib/account/hostedSignIn.ts";
+import { useHostedSignIn, type HostedSignIn } from "../lib/account/hostedSignIn.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
@@ -75,47 +75,72 @@ export function ManageAccountSheet({ onClose, children }: { onClose: () => void;
 }
 
 /**
- * Settings → Devices and PCs on a PC page the hosted app opened: the hosted sign-in, while there is one, and its
- * Manage account (the account's devices and PCs, then Delete account, asked twice).
+ * Manage account for the hosted sign-in: the account's devices and PCs, then Delete account, asked twice. `pcHere`:
+ * a PC is open on this page to read the devices from (the start screen has none, so only this device's own row shows).
+ * A leave that left PCs keeping this device names them here, after the sign-in it left is gone; with neither, it closes.
  */
-export function HostedAccountGroup({ signIn, watching = false }: { signIn: HostedSignIn | null; watching?: boolean }) {
+function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: HostedSignIn | null; watching: boolean; pcHere: boolean; onClose: () => void }) {
   const t = useT();
-  const [managing, setManaging] = useState(false);
   const [deleting, setDeleting] = useState<"asked" | "out" | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  // what this device's leave said of the PCs that kept it: the sheet keeps it after the sign-in it left is gone
   const [leaveNote, setLeaveNote] = useState<string | null>(null);
-  if (signIn === null && leaveNote === null) return null;
-  const close = (): void => { setManaging(false); setDeleting(null); setDeleteError(null); setLeaveNote(null); };
+  const gone = signIn === null && leaveNote === null;
+  useEffect(() => { if (gone) onClose(); }, [gone, onClose]);
+  if (gone) return null;
   const leave = async (from: HostedSignIn): Promise<void> => {
     const { left, message } = await from.leave();
     if (!left && message !== null) throw new Error(message);
-    if (message === null) close(); else setLeaveNote(message);
+    if (message === null) onClose(); else setLeaveNote(message);
   };
-  const remove = (): void => {
+  const remove = (from: HostedSignIn): void => {
     if (deleting !== "asked") { setDeleting("asked"); setDeleteError(null); return; }
     setDeleting("out");
-    void signIn?.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
+    void from.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
   };
+  return (
+    <ManageAccountSheet onClose={onClose}>
+      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={() => leave(signIn)} />}
+      {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
+      {signIn !== null && <div className="settings-item account-delete">
+        {deleting === "asked" && <p className="settings-description" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
+        <div className="account-delete-actions">
+          <button type="button" className={deleting === "asked" ? "btn btn-danger" : "account-delete-link"} data-action="delete-account" data-confirm={deleting === "asked" ? "delete-account" : undefined}
+            disabled={deleting === "out"} aria-busy={deleting === "out" ? "true" : undefined} onClick={() => remove(signIn)}>{deleting === "asked" ? t("Delete account for good?") : t("Delete account")}</button>
+          {deleting === "asked" && <button type="button" className="btn btn-ghost" onClick={() => setDeleting(null)}>{t("Cancel")}</button>}
+        </div>
+        {deleteError !== null && <p className="settings-condition" role="alert">{deleteError}</p>}
+      </div>}
+    </ManageAccountSheet>
+  );
+}
+
+/** Settings → Devices and PCs on a PC page the hosted app opened: the hosted sign-in, while there is one, and its Manage account. */
+export function HostedAccountGroup({ signIn, watching = false }: { signIn: HostedSignIn | null; watching?: boolean }) {
+  const [managing, setManaging] = useState(false);
+  const close = useCallback(() => setManaging(false), []);
+  if (signIn === null && !managing) return null;
   return (
     <SettingsGroup section="account">
       {signIn !== null && <AccountHead provider={signIn.provider} onSignOut={signIn.signOut} onManage={() => setManaging(true)} />}
-      {managing && (
-        <ManageAccountSheet onClose={close}>
-          {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} onLeave={() => leave(signIn)} />}
-          {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
-          {signIn !== null && <div className="settings-item account-delete">
-            {deleting === "asked" && <p className="settings-description" role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</p>}
-            <div className="account-delete-actions">
-              <button type="button" className={deleting === "asked" ? "btn btn-danger" : "account-delete-link"} data-action="delete-account" data-confirm={deleting === "asked" ? "delete-account" : undefined}
-                disabled={deleting === "out"} aria-busy={deleting === "out" ? "true" : undefined} onClick={remove}>{deleting === "asked" ? t("Delete account for good?") : t("Delete account")}</button>
-              {deleting === "asked" && <button type="button" className="btn btn-ghost" onClick={() => setDeleting(null)}>{t("Cancel")}</button>}
-            </div>
-            {deleteError !== null && <p className="settings-condition" role="alert">{deleteError}</p>}
-          </div>}
-        </ManageAccountSheet>
-      )}
+      {managing && <HostedManageSheet signIn={signIn} watching={watching} pcHere onClose={close} />}
     </SettingsGroup>
+  );
+}
+
+/**
+ * The hosted app's start screen, signed in: Manage account, for an account whose PCs are all off (remove a dead one,
+ * leave, delete the account), acting on the account service with this browser's own sign-in.
+ */
+export function StartScreenManage() {
+  const t = useT();
+  const signIn = useHostedSignIn();
+  const [managing, setManaging] = useState(false);
+  const close = useCallback(() => setManaging(false), []);
+  return (
+    <>
+      {signIn !== null && <p className="relay-add-manage"><button type="button" className="account-link" data-action="manage-account" onClick={() => setManaging(true)}>{t("Manage account")}</button></p>}
+      {managing && <HostedManageSheet signIn={signIn} watching={false} pcHere={false} onClose={close} />}
+    </>
   );
 }
 

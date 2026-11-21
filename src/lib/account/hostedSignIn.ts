@@ -41,8 +41,8 @@ export function shellAccountActions(): ShellAccount | null {
 }
 
 /**
- * The hosted app's sign-in on a PC page it opened (app.ovis.sh/pc/…), read again on every write to the stored sign-in,
- * on a sign-out and on focus (another tab's): null on any other page and while signed out. Its Sign out ends the hosted
+ * The hosted app's sign-in, on its start screen and on a PC page it opened (app.ovis.sh/pc/…), read again on every write
+ * to the stored sign-in, on a sign-out and on focus (another tab's): null off the hosted app and while signed out. Its Sign out ends the hosted
  * sign-in alone, never the PC's account or this device's pairing, and keeps every unsent block (AccountService.signOut).
  */
 export function useHostedSignIn(): HostedSignIn | null {

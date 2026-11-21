@@ -13,6 +13,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { StartScreenManage } from "./AccountHead.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
@@ -210,7 +211,7 @@ export function RelayShell(props: RelayShellProps) {
     return (
       <main className="relay-shell-screen relay-add-screen" data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
-        <div inert={addingPc || undefined}>{noneOnline}{addPc()}</div>
+        <div inert={addingPc || undefined}>{noneOnline}{addPc()}<StartScreenManage /></div>
         {addingPc && (
           <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {
             setAddingPc(false);
