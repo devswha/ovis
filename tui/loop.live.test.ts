@@ -25,7 +25,7 @@ const WAIT_MS = 30_000;
 const TEST_MS = 300_000;
 const DETACH = "\x02q";
 /** what the host writes when it gives the terminal back (tui/host/guard.ts LEAVE): exactly once per run */
-const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
 /** what a terminal answers to the queries the screen's start probe ends with */
 const ANSWERS: [query: string, answer: string][] = [["\x1b[c", "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
 
@@ -230,7 +230,53 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     return gridText(run.output(), 100, 30);
   };
 
-  it("shows a program named like an agent coming to the front as that agent, in its pane's title and the Agents list, with no reconnect", async () => {
+  it("the pointer chooses in a right-click menu from the host's own motion reports (any-motion mode 1003), and the modes are restored on exit", async () => {
+    const { core: isolated, hc, root } = await core();
+    await hc.call("terminal.run", { argv: ["sh", "-c", "echo HOVER-MARK; exec sh"], labels: { ...labels, "ovis.pane": "hover" }, cwd: root });
+    const run = screen(isolated, root);
+    await run.until(/HOVER-MARK[\s\S]*\x1b\[\?25h/, "the live pane");
+    // the screen asked the host for motion with no button held, as herdr does
+    expect(run.output()).toContain("\x1b[?1003h");
+    const grid = async () => (await gridText(run.output(), 100, 30)).split("\n");
+    const mark = (await grid()).findIndex((line) => line.includes("HOVER-MARK"));
+    const col = (await grid())[mark]!.indexOf("HOVER-MARK");
+    run.type(`\x1b[<2;${col + 4};${mark + 1}M\x1b[<2;${col + 4};${mark + 1}m`);
+    let rows = await grid();
+    while (!rows.some((line) => line.includes("Split down"))) rows = (await nextGrid(run)).split("\n");
+    const y = rows.findIndex((line) => line.includes("Split down"));
+    const x = rows[y]!.indexOf("Split down");
+    // a host in 1003 mode reports the pointer moving onto the entry: code 35, no button
+    run.type(`\x1b[<35;${x + 3};${y + 1}M`);
+    await nextGrid(run);
+    run.type("\r");
+    for (let tries = 0; tries < 100 && (await hc.call("terminal.list", {})).terminals.length < 2; tries++) await nextGrid(run);
+    expect((await hc.call("terminal.list", {})).terminals.length).toBe(2);
+    run.type(DETACH);
+    expect((await run.ended).code).toBe(0);
+    expect(run.output().endsWith(LEAVE) || run.output().includes(LEAVE)).toBe(true);
+  }, TEST_MS);
+
+  it("a stop from outside gives the terminal back (no mouse reports while stopped) and a continue enters again and repaints", async () => {
+    const { core: isolated, hc, root } = await core();
+    await hc.call("terminal.run", { argv: ["sh", "-c", "echo STOP-MARK; exec sh"], labels: { ...labels, "ovis.pane": "stop" }, cwd: root });
+    const run = screen(isolated, root);
+    await run.until(/STOP-MARK[\s\S]*\x1b\[\?25h/, "the live pane");
+    // more output after `from` until it holds `needle`
+    const waitFor = async (from: number, needle: string, what: string) => {
+      while (run.output().indexOf(needle, from) < 0) await run.until(new RegExp(`^[\\s\\S]{${run.output().length + 1}}`), what);
+      return run.output().indexOf(needle, from);
+    };
+    const before = run.output().length;
+    run.signal("SIGTSTP");
+    const stoppedAt = await waitFor(before, LEAVE, "the terminal given back at the stop");
+    run.signal("SIGCONT");
+    const back = await waitFor(stoppedAt + LEAVE.length, "\x1b[?1003h", "the modes entered again");
+    await waitFor(back, "STOP-MARK", "the screen repainted");
+    run.type(DETACH);
+    expect((await run.ended).code).toBe(0);
+  }, TEST_MS);
+
+  it("shows a program named like an agent coming to the front as that agent in the sidebar's agents, with no reconnect", async () => {
     const { core: isolated, hc, root } = await core();
     mkdirSync(join(root, "bin"));
     // a shell every runner image has, under the agent's name; it stays in front until its read ends
@@ -238,39 +284,36 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     await hc.call("terminal.run", { argv: ["sh", "-c", "echo FRONT-MARK; exec sh"], labels: { ...labels, "ovis.pane": "front-pane" }, cwd: root });
     const run = screen(isolated, root);
     await run.until(/FRONT-MARK[\s\S]*\x1b\[\?25h/, "the live pane");
+    // herdr's two rows an agent in the sidebar: its workspace, then the agent three columns in
+    const agentRows = (grid: string) => grid.split("\n").filter((line) => line.slice(0, 25).trimEnd() === "   claude").length;
     const before = await gridText(run.output(), 100, 30);
-    expect([before.includes("[claude]"), before.includes("No agents")]).toEqual([false, true]);
+    expect(agentRows(before)).toBe(0);
     run.type(`exec ${join(root, "bin", "claude")} -c 'read line'\r`);
-    await run.until("[claude]", "the agent in the pane's title");
-    let grid = await gridText(run.output(), 100, 30);
-    while (grid.includes("No agents")) grid = await nextGrid(run);
-    expect(grid.split("\n").filter((line) => line.startsWith(" · front-pane /")).length).toBe(1);
-    expect(grid.split("\n")[1]).toContain("front-pane");
-    expect(grid.split("\n")[1]).toContain("[claude]");
+    let grid = await nextGrid(run);
+    while (agentRows(grid) === 0) grid = await nextGrid(run);
+    // the pane has a row among the agents only once it runs an agent; a tab's only pane has no border to carry a title
+    expect(agentRows(grid)).toBe(1);
     expect(run.output()).not.toContain("herdr-core is not answering");
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
   }, TEST_MS);
 
-  it("keeps a pane whose program exited in its place with ended (code), until the core removes its terminal", async () => {
+  it("closes a pane whose program exited at once, as herdr does: the pane beside it takes the room", async () => {
     const { core: isolated, hc, root } = await core();
     await hc.call("terminal.run", { argv: ["sh", "-c", "echo STAY-MARK; exec sh"], labels: { ...labels, "ovis.pane": "stays" }, cwd: root });
     const { address } = await hc.call("terminal.run", { argv: ["sh", "-c", "echo END-MARK; read line; exit 3"], labels: { ...labels, "ovis.pane": "ends" }, cwd: root });
     const run = screen(isolated, root);
     await run.until(/(?=[\s\S]*STAY-MARK)(?=[\s\S]*END-MARK)[\s\S]*\x1b\[\?25h/, "both panes live");
+    let grid = await gridText(run.output(), 100, 30);
+    expect([grid.includes("┌ stays "), grid.includes("┌ ends ")]).toEqual([true, true]);
     await hc.call("terminal.send", { terminal: address, text: "go\r" });
-    await run.until("ended (3)", "the ended pane's banner");
-    // the banner can arrive in one read and the rest of its frame in the next
-    const shown = (grid: string) => [grid.includes("+- stays "), grid.includes("+- ends "), grid.includes("+- ended (3) ")];
-    let ended = await gridText(run.output(), 100, 30);
-    while (shown(ended).includes(false)) ended = await nextGrid(run);
-    expect(shown(ended)).toEqual([true, true, true]);
+    // the pane may be gone already: read what arrived meanwhile before waiting for more
+    grid = await gridText(run.output(), 100, 30);
+    while (grid.includes("┌ ends ")) grid = await nextGrid(run);
+    // the core keeps the finished record: the screen does not show it, as the browser does not
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("finished");
-    await hc.call("terminal.rm", { terminal: address });
-    let grid = ended;
-    // the frame that drops the pane can arrive in two reads too: wait until its banner is gone as well
-    while (grid.includes("+- ends ") || grid.includes("ended (3)")) grid = await nextGrid(run);
-    expect([grid.includes("+- stays "), grid.includes("ended (3)")]).toEqual([true, false]);
+    // the pane that stays is its tab's only pane now: drawn without a border, its program's output in view
+    expect([grid.includes("STAY-MARK"), grid.includes("ended (3)")]).toEqual([true, false]);
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
   }, TEST_MS);
@@ -284,12 +327,12 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     });
     const run = screen(isolated, root);
     await run.until(/CHROME-LIVE-MARK[\s\S]*\x1b\[\?25h/, "the live pane and its chrome");
-    expect(run.output()).toContain("Workspaces");
-    expect(run.output()).toContain("Agents");
+    expect(run.output()).toContain(" spaces");
+    expect(run.output()).toContain(" agents");
     expect(run.output()).toContain("live-ws");
-    expect(run.output()).toContain("1:live-tab");
-    expect(run.output()).toContain("live-pane");
-    expect(run.output()).toContain("TERMINAL");
+    expect(run.output()).toContain("live-tab");
+    // terminal mode draws no mode line
+    expect(run.output()).not.toContain("TERMINAL");
 
     // Armed prefix -> mode bar shows PREFIX, then '?' opens Keyboard Shortcuts help overlay, Enter closes it
     run.type("\x02");
