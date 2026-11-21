@@ -44,3 +44,13 @@ test("leaves a typed tab unshown when the person went back to the panel before m
   await render([tab(5)]);
   expect(state!.selected).toBeNull();
 });
+
+test("leaves a typed tab unshown when the person went back to the panel before main answered", async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  await render([]);
+  await act(async () => { state!.select("new"); });
+  await act(async () => { state!.select(null); });
+  await act(async () => { state!.opened(5); });
+  await render([tab(5)]);
+  expect(state!.selected).toBeNull();
+});

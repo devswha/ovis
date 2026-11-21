@@ -1,5 +1,5 @@
 // Run by browserTabs.test.ts as an Electron main process: drives BrowserTabs against the test's server and prints what happened.
-import { app, BrowserWindow, session, type WebContents } from "electron";
+import { app, BrowserWindow, session, type WebContents, screen } from "electron";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,6 +89,13 @@ void app.whenReady().then(async () => {
   const cover = await tab(`${A}/blank`, "mine");
   result["hiddenThumbnail"] = (await tabs.thumbnail(waitingTab.id))?.startsWith("data:image/png") ?? false;
   tabs.close(cover.id);
+  // a window manager that puts the stage on a screen: the stage is given up (after its move), the app lives on
+  const stage = BrowserWindow.getAllWindows().find((found) => !found.isFocusable());
+  const display = screen.getPrimaryDisplay().bounds;
+  stage?.setPosition(display.x, display.y);
+  stage?.emit("move");
+  await new Promise((done) => setTimeout(done, 100));
+  result["stageGivenUp"] = { had: stage !== undefined, hidden: stage?.isVisible() === false, picture: await tabs.thumbnail(waitingTab.id) };
   result["results"] = tabs.results().map(({ kind, name, done, tab: from, profile }) => ({ kind, name, done, fromTab: from === waitingTab.id, profile }));
   result["resultPath"] = tabs.results().every(({ id, done }) => (tabs.resultPath(id) !== null) === done);
   // a site blocked while a request's name resolves: the request is decided again by the policy as it is then

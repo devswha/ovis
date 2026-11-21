@@ -12,6 +12,8 @@ describe("an address typed into the built-in browser", () => {
     ["127.0.0.1:8080", "http://127.0.0.1:8080/"],
     ["example.com:8443", "https://example.com:8443/"],
     ["https://localhost:5173", "https://localhost:5173/"],
+    ["localhost:443/path", "https://localhost/path"],
+    ["localhost:80", "http://localhost/"],
   ])("opens %j as %j", (text, address) => {
     expect(typedAddress(text)).toBe(address);
   });

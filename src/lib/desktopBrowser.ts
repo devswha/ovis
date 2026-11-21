@@ -189,7 +189,7 @@ export function holdBrowserTab(id: number, held: boolean): void {
 
 /**
  * What a person types in the address field: a web address. Without a scheme it takes https://, and
- * http:// for this PC's own pages (a dev server on localhost), which seldom have a certificate.
+ * http:// for this PC's own pages (a dev server on localhost), which seldom have a certificate, unless port 443 is typed.
  */
 export function typedAddress(text: string): string | null {
   const trimmed = text.trim();
@@ -197,7 +197,8 @@ export function typedAddress(text: string): string | null {
   const schemed = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[^/:]+:\d+(?:[/?#]|$)/.test(trimmed);
   try {
     const url = new URL(schemed ? trimmed : `https://${trimmed}`);
-    if (!schemed && /^(?:localhost|.+\.localhost|127(?:\.\d+){3}|\[::1\])$/i.test(url.hostname)) url.protocol = "http:";
+    const typedPort = schemed ? null : /^[^/?#]*:(\d+)(?:[/?#]|$)/.exec(trimmed)?.[1] ?? null;
+    if (!schemed && typedPort !== "443" && /^(?:localhost|.+\.localhost|127(?:\.\d+){3}|\[::1\])$/i.test(url.hostname)) url.protocol = "http:";
     return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
   } catch {
     return null;
@@ -212,12 +213,13 @@ export function typedAddress(text: string): string | null {
 export function useShownBrowserTab(tabs: DesktopBrowserTab[] | null) {
   const [selected, setSelected] = useState<number | "new" | null>(null);
   const [opening, setOpening] = useState<number | null>(null);
-  // a choice made while a typed tab is still on its way to the list wins over it
+  // a choice made while a typed tab is still on its way wins over it, whether main has answered yet or not
   const select = useCallback((next: number | "new" | null) => { setOpening(null); setSelected(next); }, []);
   const shown = tabs === null || selected === null || selected === "new" ? null : tabs.find((tab) => tab.id === selected) ?? null;
   useEffect(() => {
     if (tabs === null || (typeof selected === "number" && shown === null)) setSelected(null);
-    if (opening !== null && tabs?.some((tab) => tab.id === opening)) {
+    if (opening !== null && selected !== "new") setOpening(null);
+    else if (opening !== null && tabs?.some((tab) => tab.id === opening)) {
       setSelected(opening);
       setOpening(null);
     }

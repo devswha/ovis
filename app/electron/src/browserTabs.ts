@@ -213,44 +213,50 @@ export class BrowserTabs {
   /** a picture of the tab as PNG data, or null while it is not drawn (not shown, and no stage to draw it on) */
   async thumbnail(id: number): Promise<string | null> {
     const tab = this.tabs.get(id);
-    if (!tab || tab.allowed === null) return null;
+    // a tab neither shown nor on a stage paints nothing (and a picture of it may never come back)
+    if (!tab || tab.allowed === null || (this.shown !== id && !this.onStage(tab))) return null;
     // On the stage the tabs lie on one another: the one asked for goes on top. A view that has not been resized
     // since it was put there has no surface to draw on yet, so it is resized by a pixel and back once, then taken
     // as soon as its compositor has a frame of it (a few frames at most).
-    const stage = this.stage;
-    const staged = stage !== null && !stage.isDestroyed() && stage.contentView.children.includes(tab.view);
-    if (staged) stage.contentView.addChildView(tab.view);
+    const staged = this.onStage(tab);
+    if (staged) this.stage?.contentView.addChildView(tab.view);
     for (let attempt = 0; attempt < (staged ? STAGE_FRAMES : 1); attempt++) {
       if (tab.view.webContents.isDestroyed()) return null;
       const image = await tab.view.webContents.capturePage(undefined, { stayHidden: true }).catch(() => null);
       if (image !== null && !image.isEmpty()) return image.resize({ width: 320 }).toDataURL();
-      const bounds = tab.view.getBounds();
-      if (attempt === 0 && staged) tab.view.setBounds({ ...bounds, height: bounds.height - 1 });
+      // a tab shown meanwhile is placed by show() and never resized here; on the stage it always gets the stage's
+      // whole size back, whatever another picture of it did in between
+      if (attempt === 0 && this.onStage(tab)) this.fitStage(tab, -1);
       await new Promise((next) => setTimeout(next, STAGE_FRAME_MS));
-      // shown in the meantime, show() has placed it: only a view still on the stage gets its size back
-      if (attempt === 0 && staged && this.onStage(tab)) tab.view.setBounds(bounds);
+      if (attempt === 0 && this.onStage(tab)) this.fitStage(tab);
       if (!this.onStage(tab) && this.shown !== id) return null;
     }
     return null;
   }
 
-  /** puts a tab nobody looks at on the stage, at the size it was last drawn */
+  /** puts a tab nobody looks at on the stage, laid out at the stage's (a desktop window's) size */
   private backstage(tab: Tab): void {
     const stage = this.stageWindow();
     if (stage === null || stage.contentView.children.includes(tab.view)) return;
-    const { width, height } = tab.view.getBounds();
-    tab.view.setBounds({ x: 0, y: 0, width: Math.max(width, 320), height: Math.max(height, 240) });
     stage.contentView.addChildView(tab.view);
+    this.fitStage(tab);
+  }
+
+  /** sizes a staged tab to the whole stage, `less` pixels shorter */
+  private fitStage(tab: Tab, less = 0): void {
+    const [width = 1280, height = 800] = this.stage?.getContentSize() ?? [];
+    tab.view.setBounds({ x: 0, y: 0, width, height: height + less });
   }
 
   private onStage(tab: Tab): boolean {
     const stage = this.stage;
-    return stage !== null && !stage.isDestroyed() && stage.contentView.children.includes(tab.view);
+    return !this.noStage && stage !== null && !stage.isDestroyed() && stage.contentView.children.includes(tab.view);
   }
 
   private stageWindow(): BrowserWindow | null {
+    if (this.noStage) return null;
     if (this.stage && !this.stage.isDestroyed()) return this.stage;
-    if (this.noStage || (process.platform === "linux" && (process.env["XDG_SESSION_TYPE"] === "wayland" || process.env["WAYLAND_DISPLAY"]))) return null;
+    if ( (process.platform === "linux" && (process.env["XDG_SESSION_TYPE"] === "wayland" || process.env["WAYLAND_DISPLAY"]))) return null;
     const stage = new BrowserWindow({ show: false, x: -20000, y: -20000, width: 1280, height: 800, frame: false, focusable: false, skipTaskbar: true, opacity: 0, hasShadow: false, title: "Ovis browser stage" });
     // nor in macOS's Window menu
     stage.excludedFromShownWindowsMenu = true;
@@ -259,21 +265,22 @@ export class BrowserTabs {
     stage.setPosition(-20000, -20000);
     stage.on("closed", () => { if (this.stage === stage) this.stage = null; });
     // a window manager that keeps windows on the screen would show it: then no stage, as on Wayland
-    const check = () => { if (!stage.isDestroyed() && onScreen(stage.getBounds())) this.dropStage(); };
+    // dropped after the window manager's move is done: destroying a window inside its own move crashes Electron
+    const check = () => { if (!stage.isDestroyed() && onScreen(stage.getBounds())) setImmediate(() => { if (this.stage === stage) this.dropStage(); }); };
     stage.on("move", check);
     this.stage = stage;
     check();
     return this.stage;
   }
 
-  /** gives up the stage for good: its tabs paint only while shown, and have no picture otherwise */
+  /**
+   * Gives up the stage for good: its tabs paint only while shown, and have no picture otherwise. The window is hidden,
+   * not destroyed, with its tabs left in it until each is shown or closed (a view whose window went away under it takes
+   * the app down when asked for a picture); closeAll destroys it.
+   */
   private dropStage(): void {
-    const stage = this.stage;
     this.noStage = true;
-    this.stage = null;
-    if (!stage || stage.isDestroyed()) return;
-    for (const view of [...stage.contentView.children]) stage.contentView.removeChildView(view);
-    stage.destroy();
+    if (this.stage && !this.stage.isDestroyed()) this.stage.hide();
   }
 
   navigate(id: number, url: string): boolean {
