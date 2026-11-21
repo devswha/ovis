@@ -1,6 +1,6 @@
 import { useContext, useEffect, useId, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { LogOut, X } from "lucide-react";
+import { LogOut, UserRound, X } from "lucide-react";
 
 import type { HostedSignIn } from "../lib/account/hostedSignIn.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
@@ -83,7 +83,14 @@ export function HostedAccountGroup({ signIn }: { signIn: HostedSignIn | null }) 
   );
 }
 
-/** More's Sign out on a phone, for the hosted sign-in: none while signed out or off the hosted app. */
-export function hostedSignOutItems(signIn: HostedSignIn | null, t: Translate): RowMenuItem[] {
-  return signIn === null ? [] : [{ id: "sign-out", label: t("Sign out"), icon: LogOut, divider: true, run: signIn.signOut }];
+/**
+ * More's account on a phone, for the hosted sign-in: who is signed in (it opens the account in Settings, `onAccount`)
+ * and Sign out. None while signed out or off the hosted app.
+ */
+export function hostedAccountItems(signIn: HostedSignIn | null, t: Translate, onAccount: () => void): RowMenuItem[] {
+  if (signIn === null) return [];
+  return [
+    { id: "account", label: t("Signed in with {provider}", { provider: PROVIDER_NAMES[signIn.provider] }), icon: UserRound, divider: true, run: onAccount },
+    { id: "sign-out", label: t("Sign out"), icon: LogOut, run: signIn.signOut },
+  ];
 }

@@ -87,7 +87,7 @@ import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
 import { NewPcNotices } from "./components/NewPcNotices.tsx";
-import { hostedSignOutItems } from "./components/AccountHead.tsx";
+import { hostedAccountItems } from "./components/AccountHead.tsx";
 import { useHostedSignIn } from "./lib/account/hostedSignIn.ts";
 import { ownWindowHere } from "./lib/account/addThisPc.ts";
 import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
@@ -823,8 +823,9 @@ export function App() {
       .map((item, index) => index === 0 ? { ...item, divider: true } : item),
     ...(foldPane && more ? [{ id: "pane-group", label: t("Pane and tab…"), icon: PanelsTopLeft, divider: true, run: () => openMoreGroup("pane", more.anchor) }] : []),
     ...(modeOffered && !markEnters ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: () => { actions.counted?.("inbox", "menu"); enterInbox(); } }] : []),
-    // a phone's Sign out of the hosted app, last, as the overview's foot had it: a desktop has it in Settings → Devices and PCs
-    ...(isSheetWidth ? hostedSignOutItems(hostedSignIn, t) : []),
+    // a phone's account and Sign out of the hosted app, last, as the overview's foot had it: a desktop has them in
+    // Settings → Devices and PCs, which the account line opens
+    ...(isSheetWidth ? hostedAccountItems(hostedSignIn, t, () => { setSettingsLinkPage("devices"); setSettingsLinkSection("account"); setSettingsOpen(true); }) : []),
   ];
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
   const moreOnList = inbox.shown;
