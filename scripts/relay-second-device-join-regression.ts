@@ -104,7 +104,7 @@ try {
         await page.goto(`${APP}/`);
         await page.locator(".account-provider").first().click();
         // a sign-in lands on Add a PC, or on the join card of an account PC its launch picked
-        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add, [data-add-pc-mode]').first().waitFor({ timeout: 45_000 });
+        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode]').first().waitFor({ timeout: 45_000 });
 
         // the tab's launch is past: the front page stays Add a PC, listing both PCs as not in on this device yet
         const front = async (): Promise<void> => {
@@ -127,7 +127,7 @@ try {
           if (await sheet.locator("[data-sheet-primary]").count() !== 1) fail(`${name}: ${label}'s sheet has no one press to ask`);
           await shot(`sheet-${mode}`);
           await page.keyboard.press("Escape");
-          await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add').waitFor();
+          await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs').waitFor();
           if (await page.locator("[data-add-pc-phase]").count() !== 0) fail(`${name}: Escape left ${label}'s sheet up`);
         };
         await joinFrom("m1-box", "join");

@@ -71,7 +71,7 @@ try {
         await page.goto(APP);
         await page.locator(".account-provider").first().click();
         // a sign-in lands on Add a PC, or on the join card of an account PC its launch picked
-        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add, [data-add-pc-mode]').first().waitFor({ timeout: 45_000 });
+        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs, [data-add-pc-mode]').first().waitFor({ timeout: 45_000 });
         // the tab's launch is past: the front page stays Add a PC
         await page.goto(`${APP}/`);
         const pc = mode === "new" ? "New mini PC" : "Old MacBook";
@@ -104,7 +104,7 @@ try {
         report.push({ name, ...geometry });
         console.log(`PASS ${name}: one confirmation reaches connecting; focus and footer contained`);
         await page.keyboard.press("Escape");
-        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add').waitFor();
+        await page.locator('main.relay-add-screen[data-account-state="signed-in"] .connect-start-tabs').waitFor();
         if (await page.locator("[data-add-pc-phase]").count() !== 0) throw new TypeError(`${name}: Cancel retained the sheet`);
       } finally {
         await closeMarked(context);
