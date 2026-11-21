@@ -11,6 +11,7 @@ import { apiFetch } from "../lib/api-request-id.ts";
 import { fetchRelay } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
+import { serverScopePath } from "../lib/shellMode.ts";
 import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
 
 /**
@@ -22,7 +23,7 @@ import { signedInAccount, useAccountPcs, type AccountPcs, type AccountPcsSource 
  * answer, or that its Ovis needs an update. The approval itself is asked on the account's devices, never here. A PC once
  * added is the sidebar's own group above. A page that is not signed in asks this PC nothing for it.
  */
-export function SidebarAccountPcs({ machines, onAdded, onListed, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; /** the relay IDs of the PCs being added, empty when none are (the hosted app's own list leaves those out) */ onListed?: (serverIds: readonly string[]) => void; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
+export function SidebarAccountPcs({ machines, onAdded, onListed, openable, source, hidden = false }: { machines: readonly Machine[]; onAdded: (machine: Machine) => void; /** the relay IDs of the PCs being added, empty when none are (the hosted app's own list leaves those out) */ onListed?: (serverIds: readonly string[]) => void; /** the PCs this device keeps its own link to (the hosted app's list): a row of one opens it as that link would */ openable?: ReadonlySet<string>; source?: AccountPcsSource; /** the sidebar filter is on: the rows step aside, a pairing under way stays */ hidden?: boolean }) {
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
   const [mine, setMine] = useState<string | null>(null);
@@ -55,14 +56,14 @@ export function SidebarAccountPcs({ machines, onAdded, onListed, source, hidden 
   }, [reads]);
   if (mine === null) return null;
   // another account is another list from scratch: nothing read for the one before carries over
-  return <JoinedAccountPcs key={mine} account={mine} reads={reads} machines={machines} onAdded={onAdded} onListed={onListed} source={account.current} hidden={hidden} />;
+  return <JoinedAccountPcs key={mine} account={mine} reads={reads} machines={machines} onAdded={onAdded} onListed={onListed} openable={openable} source={account.current} hidden={hidden} />;
 }
 
 /**
  * Signed in to `account`: its PCs once this PC is in that same account with its relay online. Both are read once, and
  * again when the window comes back, never polled: a sidebar adds no request of its own while the window just sits there.
  */
-function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source, hidden }: { account: string; reads: number; machines: readonly Machine[]; onAdded: (machine: Machine) => void; onListed?: (serverIds: readonly string[]) => void; source: AccountPcsSource; hidden: boolean }) {
+function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openable, source, hidden }: { account: string; reads: number; machines: readonly Machine[]; onAdded: (machine: Machine) => void; onListed?: (serverIds: readonly string[]) => void; openable: ReadonlySet<string> | undefined; source: AccountPcsSource; hidden: boolean }) {
   const [joined, setJoined] = useState(false);
   useEffect(() => {
     let live = true;
@@ -142,11 +143,14 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, source,
     void accountPcs.add(next);
   }, [next?.server_id]);
   if (waiting.length === 0) return null;
-  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} declined={declined(pc)} hidden={hidden} />)}</>;
+  return <>{waiting.map((pc) => <AccountPcRow key={pc.server_id} pc={pc} pcs={accountPcs} declined={declined(pc)} hidden={hidden} opens={openable?.has(pc.server_id) === true} />)}</>;
 }
 
-/** One PC of the account not in this app yet, as a PC group's header with where it is under it, and nothing to press. */
-function AccountPcRow({ pc, hidden, declined, pcs: { stateOf, pairing, failure } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; /** a member declined it, in this browser, for this listing */ declined: boolean; pcs: AccountPcs }) {
+/**
+ * One PC of the account not in this app yet, as a PC group's header with where it is under it. `opens`: this device keeps
+ * its own link to it, which the row stands in for while the PC is added, so its name opens it as that link would.
+ */
+function AccountPcRow({ pc, hidden, declined, opens, pcs: { stateOf, pairing, failure } }: { pc: AccountPcEntry & { readonly new_until?: string | null }; hidden: boolean; /** a member declined it, in this browser, for this listing */ declined: boolean; opens: boolean; pcs: AccountPcs }) {
   const t = useT();
   const [expiredAt, setExpiredAt] = useState<string>();
   const newUntil = pc.new_until;
@@ -169,7 +173,8 @@ function AccountPcRow({ pc, hidden, declined, pcs: { stateOf, pairing, failure }
       <header className="machine-header">
         <div className="machine-title">
           <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
-          <span className="machine-name" title={pc.name}>{pc.name}</span>
+          {opens ? <a className="machine-name" title={pc.name} href={serverScopePath(pc.server_id)}>{pc.name}</a>
+            : <span className="machine-name" title={pc.name}>{pc.name}</span>}
           {newUntil !== expiredAt && isNewAccountPc(pc, Date.now()) && <span className="machine-state-word">{t("New PC")}</span>}
           <span className={`machine-dot is-${away ? "disconnected" : "connecting"}`} title={words} aria-hidden="true" />
         </div>

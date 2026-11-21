@@ -12,3 +12,7 @@
 .account-pc-line:empty {
   display: none;
 }
+
+/* a row standing in for this device's own link while its PC is added opens it: it reads as the name, not as a link */
+.account-pc-group a.machine-name { color: inherit; text-decoration: none; }
+.account-pc-group a.machine-name:hover { text-decoration: underline; }

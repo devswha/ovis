@@ -354,6 +354,14 @@ describe("the account's PCs in the sidebar", () => {
     expect(told.at(-1)).toEqual([]);
   });
 
+  it("opens a PC being added by its row, where this device keeps its own link to it, so the add never hides the way to it", async () => {
+    await act(async () => { renderer = create(<SettingsProvider><SidebarAccountPcs machines={[local, lab]} onAdded={() => {}} openable={new Set([DESK.server_id])} source={source} /></SettingsProvider>); });
+    await settle();
+    expect(text(row("Desk"))).toContain("Connecting…");
+    expect(row("Desk").findAll((node) => node.type === "a").map((link) => link.props.href)).toEqual([`/s/${DESK.server_id}/`]);
+    expect(row("Away").findAll((node) => node.type === "a")).toHaveLength(0);
+  });
+
   it("steps aside for the sidebar filter without ending a pairing under way", async () => {
     await mount();
     await act(async () => { renderer!.update(tree(() => {}, [local, lab], true)); });

@@ -116,6 +116,8 @@ export function MachineSidebar(props: Props) {
   const listedPcs = props.allMachines ?? props.machines;
   const [accountRows, setAccountRows] = useState<readonly string[]>([]);
   const shellPcs = useMemo(() => ({ ...pagePcs, pcs: unlistedShellPcs(pagePcs.pcs, listedPcs, accountRows) }), [pagePcs, listedPcs, accountRows]);
+  // the account's rows stand in for this device's own links while those PCs are added: they open them as the links do
+  const ownLinks = useMemo(() => new Set(pagePcs.pcs.map((pc) => pc.server_id)), [pagePcs.pcs]);
   // the lone host goes unnamed only while it is drawn without its header: beside other PCs its name is shown, and found
   const headerless = loneHost !== null && shellPcs.pcs.length === 0;
   const unnamed = useMemo(() => new Set(headerless ? [loneHost] : []), [headerless, loneHost]);
@@ -264,7 +266,7 @@ export function MachineSidebar(props: Props) {
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
         {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} watching={props.watching || machine.view_only === true} machine={machine} headerless={headerless && machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
         {/* a driving window on any PC, the phone app and the hosted shell too: the account's PCs this PC does not list yet, added to it one by one */}
-        {!props.watching && <SidebarAccountPcs machines={roster} hidden={filter.active} onAdded={props.actions.connectPc} onListed={setAccountRows} />}
+        {!props.watching && <SidebarAccountPcs machines={roster} hidden={filter.active} onAdded={props.actions.connectPc} onListed={setAccountRows} openable={ownLinks} />}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
         {/* the hosted app on a PC's page: the other PCs this device opens, a tap away (ShellPcs.tsx) */}
         {exitToPcs === "shell" && <ShellPcs {...shellPcs} />}
