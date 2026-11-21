@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandState, installCommand, launcherText, PROFILE_LINE, shellPath, writeLauncher, type CommandHost, type LauncherPlaces } from "./terminalCommand.ts";
 
+// these run the launcher with sh and make POSIX links in a real folder: a Windows host has neither, and runs the Windows cases
+const WINDOWS_HOST = process.platform === "win32";
+
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
@@ -36,7 +39,7 @@ async function runLauncher(file: string, args: string[], env: Record<string, str
   return { code, out, err };
 }
 
-describe("the launcher on a Mac or Linux", () => {
+describe.skipIf(WINDOWS_HOST)("the launcher on a Mac or Linux", () => {
   it("runs the app's server as the command line, on the port desktop.json names and the app's own state", async () => {
     const dir = folder();
     const at = places(dir, "https://account-staging.example");
@@ -134,7 +137,7 @@ function posixHost(platform: "linux" | "darwin", dir: string, path: (home: strin
   };
 }
 
-describe("adding the command on Linux", () => {
+describe.skipIf(WINDOWS_HOST)("adding the command on Linux", () => {
   it("links ~/.local/bin/ovis to the launcher, and is then installed with nothing to say", async () => {
     const dir = folder();
     const host = posixHost("linux", dir, (home) => `${home}/.local/bin:/usr/bin`);
@@ -169,7 +172,7 @@ describe("adding the command on Linux", () => {
   });
 });
 
-describe("adding the command on a Mac", () => {
+describe.skipIf(WINDOWS_HOST)("adding the command on a Mac", () => {
   it("links ~/.local/bin/ovis with no administrator step, and puts ~/.local/bin on zsh's PATH in ~/.zprofile once", async () => {
     const dir = folder();
     const host = posixHost("darwin", dir, () => "/usr/bin:/bin");
