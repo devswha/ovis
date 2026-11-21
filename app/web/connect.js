@@ -109,7 +109,7 @@ async function open(text) {
     warned = url.href;
     error.textContent = t(
       `${url.host} is not on a tailnet or a home network, so plain http would send the pairing code and everything you type across the internet unencrypted. Use its https address, or open it again to go ahead.`,
-      `${url.host}은(는) tailnet이나 집 네트워크의 주소가 아니어서, 일반 http로는 페어링 코드와 입력하는 모든 내용이 암호화되지 않은 채 인터넷으로 오갑니다. https 주소를 쓰거나, 그래도 열려면 한 번 더 여세요.`,
+      `이 주소(${url.host})는 tailnet이나 집 네트워크의 주소가 아니어서, 일반 http로는 페어링 코드와 입력하는 모든 내용이 암호화되지 않은 채 인터넷으로 오갑니다. https 주소를 쓰거나, 그래도 열려면 한 번 더 여세요.`,
     );
     return;
   }
@@ -351,7 +351,7 @@ async function showKnown(state) {
   catch { return; }
   const logins = knownLogins(known, from, Object.values(sshPcs));
   const label = savedPcLabel(from.origin, state.names ?? {}, sshPcs);
-  document.getElementById("known-title").textContent = t(`PCs ${label} knows`, `${label}이(가) 아는 PC`);
+  document.getElementById("known-title").textContent = t(`PCs found on ${label}`, `${label}에서 찾은 PC`);
   document.getElementById("known-pcs").replaceChildren(...logins.map((login) => {
     const item = document.createElement("li");
     const text = document.createElement("span");
@@ -468,10 +468,10 @@ function managePanel(origin, label) {
       try {
         const { remote, reason } = await ssh("remove", { origin, cleanRemote: box.checked });
         await load();
-        if (remote === "failed") error.textContent = t(`${label} was removed from this phone, but its key could not be taken out of the PC (${reason}). Remove the line whose comment starts with ovis-phone: from ~/.ssh/authorized_keys there yourself.`, `${label}을(를) 이 휴대폰에서 지웠지만 PC에서 키를 빼지 못했습니다(${reason}). 그쪽 ~/.ssh/authorized_keys에서 주석이 ovis-phone:으로 시작하는 줄을 직접 지우세요.`);
+        if (remote === "failed") error.textContent = t(`${label} was removed from this phone, but its key could not be taken out of the PC (${reason}). Remove the line whose comment starts with ovis-phone: from ~/.ssh/authorized_keys there yourself.`, `이 PC(${label})를 이 휴대폰에서 지웠지만 PC에서 키를 빼지 못했습니다(${reason}). 그쪽 ~/.ssh/authorized_keys에서 주석이 ovis-phone:으로 시작하는 줄을 직접 지우세요.`);
       } catch (err) { fail(err); }
     }, "primary");
-    extra.replaceChildren(paragraph(t(`Remove ${label} from this phone? Its host key and the key saved for it go too.`, `이 휴대폰에서 ${label}을(를) 지울까요? 호스트 키와 이 PC용으로 저장한 키도 함께 지워집니다.`)), boxLabel, yes);
+    extra.replaceChildren(paragraph(t(`Remove ${label} from this phone? Its host key and the key saved for it go too.`, `이 휴대폰에서 이 PC(${label})를 지울까요? 호스트 키와 이 PC용으로 저장한 키도 함께 지워집니다.`)), boxLabel, yes);
   });
   actions.append(rename, phoneKey, setUp, ...(details.confirmed ? [forgetKey] : []), remove);
   panel.append(paragraph(details.address), paragraph(details.how), paragraph(details.hostKey, "key"), actions, extra, said);

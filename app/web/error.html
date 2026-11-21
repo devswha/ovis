@@ -80,7 +80,7 @@
       ? await new Promise((resolve) => { android.onmessage = (event) => resolve(JSON.parse(event.data)); android.postMessage("state"); })
       : capacitor ? await capacitor.nativePromise("HerdrShell", "getState", {}) : {};
     document.getElementById("what").textContent = state.last
-      ? (korean ? `앱이 ${state.last}을(를) 열지 못했습니다.` : `The app could not open ${state.last}.`)
+      ? (korean ? `앱이 이 PC(${state.last})를 열지 못했습니다.` : `The app could not open ${state.last}.`)
       : (korean ? "앱이 PC를 열지 못했습니다." : "The app could not open it.");
     document.getElementById("reason").textContent = state.failure ?? "";
     // a MagicDNS name or a Tailscale IP that sent no answer (an HTTP error came through Tailscale) (100.64.0.0/10, fd7a:115c:a1e0::/48) opens only while Tailscale is connected on the phone
@@ -132,7 +132,7 @@
       document.getElementById("ssh").hidden = false;
     }
     if ((relay || sshPc) && state.name) {
-      document.getElementById("what").textContent = korean ? `앱이 ${state.name}을(를) 열지 못했습니다.` : `The app could not open ${state.name}.`;
+      document.getElementById("what").textContent = korean ? `앱이 이 PC(${state.name})를 열지 못했습니다.` : `The app could not open ${state.name}.`;
     }
     // why it failed, when the app or WebView says: not Ovis, nothing listening, or no answer
     const failure = state.failure ?? "";

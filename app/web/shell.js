@@ -146,20 +146,20 @@ export function openFailure(url, code, message) {
       const answer = /^HTTP \d{3}$/.test(message ?? "") ? ` (${message})` : "";
       return t(
         `${host} answered${answer}, but it is not Ovis: another web server, or herdr itself, which the app cannot open. ${where}`,
-        `${host}이(가) 응답했지만${answer} Ovis가 아닙니다. 다른 웹 서버이거나, 앱이 열 수 없는 herdr 자체입니다. ${where}`,
+        `이 주소(${host})가 응답했지만${answer} Ovis가 아닙니다. 다른 웹 서버이거나, 앱이 열 수 없는 herdr 자체입니다. ${where}`,
       );
     }
     case "refused": return refusedHelp(url, host);
     case "timeout": return (homeHost(url.hostname) ? t(
       `${host} did not answer within ${ANSWER_SECONDS} seconds. The PC may be off, or out of this phone's reach: a home network address does not open over mobile data or another Wi-Fi, and a firewall on the PC can block the port.`,
-      `${host}이(가) ${ANSWER_SECONDS}초 안에 응답하지 않았습니다. PC가 꺼져 있거나 이 휴대폰에서 닿지 않을 수 있습니다. 집 네트워크 주소는 모바일 데이터나 다른 Wi-Fi에서 열리지 않고, PC의 방화벽이 포트를 막을 수도 있습니다.`,
+      `이 주소(${host})가 ${ANSWER_SECONDS}초 안에 응답하지 않았습니다. PC가 꺼져 있거나 이 휴대폰에서 닿지 않을 수 있습니다. 집 네트워크 주소는 모바일 데이터나 다른 Wi-Fi에서 열리지 않고, PC의 방화벽이 포트를 막을 수도 있습니다.`,
     ) : t(
       `Nothing came back from ${host} within ${ANSWER_SECONDS} seconds. The server may be down, or this phone's connection (or a VPN on it) may not reach it.`,
       `${ANSWER_SECONDS}초 동안 ${host}에서 아무 응답도 오지 않았습니다. 서버가 꺼져 있거나, 이 휴대폰의 연결(또는 VPN)이 서버에 닿지 않을 수 있습니다.`,
     )) + tailscale;
     case "unknown-host": return t(
       `${url.hostname} was not found. Check the name, or open the address Ovis shows under Settings → Phone & devices on the PC.`,
-      `${url.hostname}을(를) 찾지 못했습니다. 이름을 확인하거나, PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.`,
+      `이 이름(${url.hostname})을 찾지 못했습니다. 이름을 확인하거나, PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.`,
     ) + tailscale;
     default: return t(`${host} could not be reached: ${message}`, `${host}에 연결할 수 없습니다: ${message}`) + tailscale;
   }
@@ -168,7 +168,7 @@ export function openFailure(url, code, message) {
 function refusedHelp(url, host) {
   const text = t(
     `${host} refused the connection: nothing listens there. Ovis has to run on the PC (herdr alone is not enough), and by default it listens only on the PC itself (127.0.0.1). Open the address Ovis shows under Settings → Phone & devices on the PC.`,
-    `${host}이(가) 연결을 거부했습니다. 그 주소에서 기다리는 것이 없습니다. PC에서 Ovis가 실행 중이어야 하고(herdr만으로는 안 됩니다), Ovis는 기본으로 PC 자신(127.0.0.1)에서만 기다립니다. PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.`,
+    `이 주소(${host})가 연결을 거부했습니다. 그 주소에서 기다리는 것이 없습니다. PC에서 Ovis가 실행 중이어야 하고(herdr만으로는 안 됩니다), Ovis는 기본으로 PC 자신(127.0.0.1)에서만 기다립니다. PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.`,
   );
   return loopbackHost(url.hostname) ? text + " " + t(
     "On a phone, localhost and 127.0.0.1 are the phone itself, not your PC.",

@@ -203,6 +203,13 @@ describe("dictionary parts", () => {
     expect(templated).toEqual([]);
   });
 
+  it("writes the phone app's own Korean (app/web, its text inline) with no dual-particle template either", () => {
+    const web = join(root, "..", "app", "web");
+    const templated = [...new Bun.Glob("*.{js,html}").scanSync({ cwd: web })].sort()
+      .flatMap((file) => [...readFileSync(join(web, file), "utf8").matchAll(/\S{0,30}\((?:를|을|가|이|와|과|은|는)\)/g)].map(([match]) => `${file}: ${match}`));
+    expect(templated).toEqual([]);
+  });
+
   it("keeps each part file at 400 lines or fewer", () => {
     const long = [...new Bun.Glob("lib/i18n/*.ts").scanSync({ cwd: root })].filter((file) => readFileSync(join(root, file), "utf8").split("\n").length > 400);
     expect(long).toEqual([]);
