@@ -1456,8 +1456,9 @@ whole read; one bound in one press asks about the listing it was admitted in). A
 only after its link is answered, so for ten minutes after a link bound it, or until its listing is
 named, a missing listing is no removal (`listing_due` in the binding). A link-bound PC lets more of
 the account in only when the mailbox call of that same pull, or of that same read, named the listing
-it keeps: with no mailbox answer or none named, the read still denies what its pages deny and widens
-nothing. Leaving ends the
+it keeps: with no mailbox answer or none named, the read still denies what its pages deny, drops the
+listed devices its snapshot names as removed, and widens nothing. An answer counts only for the
+binding and account it was asked for. Leaving ends the
 account's rows and keeps the pairings made at the PC ([Adding a PC](#adding-a-pc)). From then on the PC says so
 (`pc_add_required` in `GET /api/account/status`) and takes a first link only under a code it issued
 itself (its own window, `ovis add`), or from a device whose digits its own screen approved since it

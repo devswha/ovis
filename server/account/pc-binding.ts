@@ -308,9 +308,11 @@ export class PcAccountState {
     if (this.doc.binding !== null || last?.reason !== "unlisted") return null;
     if (last.admits !== undefined) return last.admits;
     // a clear from before admissions were kept with it: what this PC admitted before it first reads the clear is from before
-    if (this.problem !== null) return this.doc.next_admit;
+    if (this.problem !== null) return Number.MAX_SAFE_INTEGER;
     const admits = this.doc.next_admit;
-    this.write({ ...this.doc, clears: [...this.doc.clears.slice(0, -1), { ...last, admits }] });
+    // a folder that takes no write dates nothing: no approval counts until it does, and the PC starts all the same
+    try { this.write({ ...this.doc, clears: [...this.doc.clears.slice(0, -1), { ...last, admits }] }); }
+    catch { return Number.MAX_SAFE_INTEGER; }
     return admits;
   }
 

@@ -155,6 +155,9 @@ export const LISTING_CONFIRMED_MS = 60_000;
  */
 export type ListingVerdict = "confirmed" | "unreachable" | "readd" | "refused";
 
+/** A mailbox answer's word on this PC's listing, with the binding and account it was asked for. */
+interface NamedListing { readonly binding: string; readonly account: string; readonly listing: string | null | undefined }
+
 /** The listing a mailbox answer names for this PC: null for none the account confirms, undefined when it does not say. */
 function namedListing(mailbox: Record<string, unknown> | null): string | null | undefined {
   const listing = mailbox?.listing_id;
@@ -223,8 +226,8 @@ export class AccountMailbox {
   private completion: CompletionScope | null;
 
   private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number; readonly seq: number } | null = null;
-  /** What the pull under way read from its mailbox of this PC's listing in its account; undefined when it said nothing, or failed. */
-  private drainedListing: string | null | undefined;
+  /** What the pull under way read from its mailbox of this PC's listing in its account; undefined when it failed, or no link bound the PC. */
+  private drainedListing: NamedListing | undefined;
   /** The newest check that brought no yes: a yes asked for before it is not kept. */
   private listingFailed: { readonly key: string; readonly seq: number } | null = null;
   private listingChecks = 0;
@@ -312,13 +315,15 @@ export class AccountMailbox {
    * For a read with no pull beside it, on a PC a device's link bound: the listing the account names for it now, asked
    * with a mailbox call that reads, applies and acknowledges nothing. Undefined for any other PC, or with no answer.
    */
-  private async askListingNamed(): Promise<string | null | undefined> {
+  private async askListingNamed(): Promise<NamedListing | undefined> {
     const account = this.options.devices.account();
-    if (account === null || this.options.devices.linkBinding() === null || this.options.service instanceof Error || this.stopped) return undefined;
+    const binding = this.options.devices.linkBinding();
+    if (account === null || binding === null || this.options.service instanceof Error || this.stopped) return undefined;
     try {
       const identity = this.options.identity();
       if (!identity) return undefined;
-      return namedListing(await this.proved(identity, "/v1/pc/mailbox", { account, ack: null, with_listing_id: true }));
+      // read as a pull reads it: an answer a pull would reject names nothing
+      return { binding, account, listing: (await this.page(identity, account, null)).listing };
     } catch { return undefined; }
   }
 
@@ -442,8 +447,8 @@ export class AccountMailbox {
     return kept === "changed" ? "unpinnable" : kept;
   }
 
-  /** `named`: the listing this read's own mailbox call named for the PC (a pull's drain, or askListingNamed). */
-  private async readSnapshotNow(readmission?: Readmission, named?: string | null): Promise<{ outcome: ReadOutcome | null; adds: number }> {
+  /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */
+  private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number }> {
     const empty = { outcome: null, adds: 0 };
     const snapshot = this.options.snapshot;
     if (!snapshot || this.stopped) return empty;
@@ -457,6 +462,8 @@ export class AccountMailbox {
     // A PC a device's link bound lets the account's rows in under the listing the account named at their first read.
     // Another listing since is another add of this PC, made with no word of it: it leaves, as when it is not listed
     const linked = this.options.devices.linkBinding();
+    // an answer is for the binding and account it was asked for: one that came back to another names nothing
+    const named = answer !== undefined && answer.binding === linked && answer.account === account ? answer.listing : undefined;
     const pinned = linked === null ? undefined : this.options.devices.serviceListing();
     if (pinned !== undefined && typeof named === "string" && named !== pinned) {
       logAccess({ event: "account.listing.replaced" });
@@ -483,6 +490,7 @@ export class AccountMailbox {
         // the snapshot is whole and checked, so the service answered this PC: the listing's answer is the newest thing the commit rests on
         // one a link bound lets more in only under the listing its rows were let in under, named by this read's own mailbox
         widen: async () => binding !== null ? await this.checkListing(binding, true) === "confirmed" && this.listingFresh(binding) : pinned === undefined || named === pinned,
+        narrow: (snapshot) => this.options.devices.dropListedRemoved(snapshot.removed.map((row) => row.key)),
         commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         const committedLifts = ports.commit(stage);
@@ -854,6 +862,7 @@ export class AccountMailbox {
       return 0;
     }
     if (account === null || !identity) return 0;
+    const linked = this.options.devices.linkBinding();
     if (this.options.service instanceof Error) { this.error = this.options.service.message; return 0; }
     // a removal refused for a local reason would be acknowledged and lost: collect nothing until it is fixed
     if (this.options.devices.accountError !== null) { this.error = this.options.devices.accountError; return 0; }
@@ -875,7 +884,7 @@ export class AccountMailbox {
       await retry();
       for (let page = 0; ; page++) {
         const { entries, waiting, listing } = await this.page(identity, account, ack);
-        if (page === 0) this.drainedListing = listing;
+        if (page === 0 && linked !== null) this.drainedListing = { binding: linked, account, listing };
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
         if (page === MAX_PAGES) break;

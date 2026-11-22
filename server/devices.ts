@@ -1498,9 +1498,17 @@ export class DeviceStore {
 
   private waitsOnStaleRead(device: StoredDevice, credential: boolean): boolean {
     if (this.catchUp?.readStale() !== true || (device.account === undefined && device.member_approved_in === undefined)) return false;
-    if (!keepsPairingOnUnlist(device)) return true;
+    // admitted here by `ovis recover`, with a key its link kept: the credential is this PC's own, as a first-link key is
+    const recovered = device.origin?.from === "recover" && pairedHere(device) && device.account_add === undefined && !device.imported && !device.invalid_origin;
+    if (!keepsPairingOnUnlist(device) && !recovered) return true;
     // the credential is this PC's own and stays; the membership its link gave it is the account's and waits
-    return keptFirstLinkKey(device) && !credential;
+    return (keptFirstLinkKey(device) || recovered) && !credential;
+  }
+
+  /** The account's listed rows whose keys a whole snapshot names as removed go, their sessions closed: what a read that widens nothing still does. */
+  dropListedRemoved(keys: readonly string[]): void {
+    const ids = keys.flatMap(key => this.joinedRows?.rowsByKey(key) ?? []).map(row => row.id);
+    if (ids.length) this.joinedRows?.removeRows(ids, "remove", id => this.closeAccountSessions(id));
   }
 
   /** Whether the row `id` only waits for a whole read: its sign-in is put off, never refused as a removed device's. */
