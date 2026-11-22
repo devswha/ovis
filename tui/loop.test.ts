@@ -307,8 +307,8 @@ describe("the loop", () => {
       host.failWrites("EIO");
       const clock = new ManualClock();
       const loop = startLoop({ host, clock, socket, keys: undefined });
-      let end: LoopEnd | null = null;
-      void loop.done.then((how) => { end = how; });
+      const ended: { how: LoopEnd | null } = { how: null };
+      void loop.done.then((how) => { ended.how = how; });
       /** turns of the event loop (the socket's own) until `done` holds, at most SETTLE_TURNS */
       const turns = async (done: () => boolean) => {
         for (let turn = 0; turn < SETTLE_TURNS && !done(); turn++) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -318,9 +318,11 @@ describe("the loop", () => {
       // the closing is bounded on the loop's clock
       clock.current = QUIT_BOUND_MS;
       clock.fireDue();
-      await turns(() => end !== null);
-      expect(end).toEqual({ kind: "gone", why: "write-failed" });
-      const said = ending(end!, { path: socket, session: "test" });
+      await turns(() => ended.how !== null);
+      const how = ended.how;
+      expect(how).toEqual({ kind: "gone", why: "write-failed" });
+      if (how?.kind !== "gone") return;
+      const said = ending(how, { path: socket, session: "test" });
       expect([said.leave, said.exit]).toEqual([true, EXIT_FAILED]);
       host.leave();
       expect([host.log(), host.writeAttempts(), loop.report().passes, clock.armed()]).toEqual([["raw on", "raw off"], 1, 0, 0]);
