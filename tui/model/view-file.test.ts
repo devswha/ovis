@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, sy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
+import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
 import { ViewStore } from "../view-store.ts";
@@ -274,6 +275,57 @@ describe("a rerun of the screen on the same core", () => {
     await run.advance(1);
     expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
     expect(run.loop.model().notices.map((notice) => [notice.code, notice.data])).toEqual([["view_unread", { reason: "unreadable" }], ["view_unsaved", { reason: "EEXIST" }]]);
+  }, TEST_MS);
+
+  it("a line back to another core on the same socket never writes that core's world into the first core's file", async () => {
+    const folder = scratch();
+    const one = new FakeHcCore({ core: { id: "coreone", name: "one" } });
+    demo.build(one);
+    const run = await first(one, folder);
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    const kept = readFileSync(join(folder, "view-coreone.json"), "utf8");
+    expect(JSON.parse(kept).focus.tabs["w-ovis"]).toBe("t-logs");
+    await run.cutLine();
+    await run.advance(1_000);
+    const other = new FakeHcCore({ core: { id: "coretwo", name: "two" } });
+    agents.build(other);
+    const listener = await other.listen(run.socket);
+    try {
+      await run.advance(10_000);
+      expect(run.loop.link.state).toMatchObject({ kind: "Online", epoch: 2 });
+      expect(run.loop.model().focus.workspace).not.toBe("w-ovis");
+      expect(readFileSync(join(folder, "view-coreone.json"), "utf8")).toBe(kept);
+      // the second core's world went to its own file once its hello said whose it is
+      expect(JSON.parse(readFileSync(join(folder, "view-coretwo.json"), "utf8")).focus.workspace).toBe(run.loop.model().focus.workspace);
+    } finally {
+      await close(run);
+      await listener.close();
+    }
+  }, TEST_MS);
+
+  it("a line back to the same core keeps writing its file, the change made while the line was down included", async () => {
+    const folder = scratch();
+    const core = new FakeHcCore();
+    demo.build(core);
+    const run = await first(core, folder);
+    const file = () => JSON.parse(readFileSync(join(folder, "view-fake0000.json"), "utf8")).focus;
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    expect(file().tabs["w-ovis"]).toBe("t-logs");
+    await run.cutLine();
+    await run.advance(1_000);
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+    await run.listen();
+    await run.advance(10_000);
+    expect(run.loop.link.state).toMatchObject({ kind: "Online", epoch: 2 });
+    expect(file().tabs["w-ovis"]).toBe("t-main");
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    expect(file().tabs["w-ovis"]).toBe("t-logs");
+    expect(run.loop.model().notices.map((notice) => notice.code)).toEqual([]);
   }, TEST_MS);
 
   it("the saved pane gone on the core: the screen opens on the next one and says so", async () => {

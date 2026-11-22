@@ -237,13 +237,22 @@ export function startLoop(options: LoopOptions): Loop {
         told(notice.state);
       }
       shown = shownLink(shown, notice.state);
+      // the next snapshot may be another core's, told before its hello says whose: no view file is written until then
+      options.views?.suspend();
       if (notice.state.kind === "Online") {
         const epoch = notice.state.epoch;
         void link.hello().then((info) => {
           if (link.state.kind === "Online" && link.state.epoch === epoch) {
             hello = info;
             world.setVersion(info.version);
-            if (options.views) guard(() => dispatch({ type: "restore", ...options.views!.open(info.core.id), at: clock.now() }));
+            if (options.views) {
+              const views = options.views;
+              guard(() => {
+                dispatch({ type: "restore", ...views.open(info.core.id), at: clock.now() });
+                // what changed while the line was unknown is kept now, not at the next change
+                keepView();
+              });
+            }
             arm();
           }
         }, () => {});
@@ -343,11 +352,16 @@ export function startLoop(options: LoopOptions): Loop {
     state = step.state;
     for (const effect of step.effects) perform(effect);
     if (state !== before) {
-      const unsaved = options.views?.keep(state) ?? null;
-      if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
+      keepView();
       reshow();
       owePass();
     }
+  }
+
+  /** The view written to this core's file when it changed; a failed write said once. */
+  function keepView(): void {
+    const unsaved = options.views?.keep(state) ?? null;
+    if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
   }
 
   function perform(effect: Effect): void {

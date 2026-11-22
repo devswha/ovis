@@ -21,11 +21,25 @@ export class ViewStore {
   private path: string | null = null;
   private last: string | null = null;
   private failed = false;
+  /** the line changed and the core it reaches is not known yet: nothing is written until `open` names it */
+  private suspended = false;
 
   constructor(private readonly folder: string) {}
 
-  /** The view kept for core `core`, or why its file could not be used; from now on `keep` writes that core's file. */
+  /**
+   * The line to the core changed: the world shown next may be another core's, so `keep` writes nothing until `open`
+   * names the core that world belongs to.
+   */
+  suspend(): void {
+    this.suspended = true;
+  }
+
+  /**
+   * The view kept for core `core`, or why its file could not be used; from now on `keep` writes that core's file. The
+   * core already open (a line back to the same core) reads nothing again.
+   */
   open(core: string): { view: SavedView | null; problem: ViewProblem | null } {
+    this.suspended = false;
     const path = join(this.folder, viewFileName(core));
     if (path === this.path) return { view: null, problem: null };
     this.path = path;
@@ -53,11 +67,11 @@ export class ViewStore {
   }
 
   /**
-   * Writes the view of `state` when it differs from what the file holds; not before `open`, not while a kept view
-   * waits to be applied. Answers the error's code the first time a write fails (later failures say nothing), else null.
+   * Writes the view of `state` when it differs from what the file holds; not before `open`, not while suspended, not
+   * while a kept view waits to be applied. Answers the error's code the first time a write fails (later failures say nothing), else null.
    */
   keep(state: ModelState): string | null {
-    if (this.path === null || state.restoring !== null) return null;
+    if (this.path === null || this.suspended || state.restoring !== null) return null;
     const text = viewText(state.world, state.focus);
     if (text === null || text === this.last) return null;
     this.last = text;
