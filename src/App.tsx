@@ -86,6 +86,10 @@ import { PushHealthNotice } from "./components/PushHealthNotice.tsx";
 import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
+import { NewPcNotices } from "./components/NewPcNotices.tsx";
+import { hostedSignOutItems } from "./components/AccountHead.tsx";
+import { useHostedSignIn } from "./lib/account/hostedSignIn.ts";
+import { ownWindowHere } from "./lib/account/addThisPc.ts";
 import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
 import { PendingKeys } from "./components/PendingKeys.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
@@ -95,6 +99,10 @@ import { FilesDialog } from "./components/FilesDialog.tsx";
 import { folderQueryFor } from "./lib/paletteFolders.ts";
 import { FileViewer } from "./components/FileViewer.tsx";
 import { WebPanel } from "./components/WebPanel.tsx";
+import { BrowserSidePanel } from "./components/BrowserSidePanel.tsx";
+import { useDesktopBrowser, useShownBrowserTab } from "./lib/desktopBrowser.ts";
+import { BrowserPanel } from "./components/BrowserPanel.tsx";
+import { BrowserTabsGroup } from "./components/BrowserTabsGroup.tsx";
 import { WebPanelContext } from "./lib/webPanel.ts";
 import { RepoDiffViewer } from "./components/RepoDiffViewer.tsx";
 import { noteBlock, noteBlockWord } from "./lib/diffLineNotes.ts";
@@ -272,6 +280,7 @@ export function App() {
   const { renameRequest, requestRename, clearRenameRequest } = useRenameRequest(selectedMachineId, selectedPaneId);
   const { renameRequest: closeTabRequest, requestRename: requestCloseTab, clearRenameRequest: clearCloseTabRequest } = useRenameRequest(selectedMachineId, selectedPaneId);
   const moreMenu = useMoreMenu();
+  const hostedSignIn = useHostedSignIn();
   // where Add a PC leads on a phone: a PC reached through the hosted app (in a browser or in the phone app, which opens
   // it there) goes to the hosted app's Add a PC, one the phone app opened by its address to the app's own screens
   const addPcTo = addPcExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname });
@@ -472,6 +481,7 @@ export function App() {
   const selectedTitle = selectedPane ? displayPaneTitle(selectedPane) : null;
   const tabPanelLabel = paneTabPanelLabel(snapshot, selectedPane, t);
   const selectedAgent = selectedPane?.agent ?? null;
+  const desktopBrowser = useDesktopBrowser();
   // a herdr not heard from yet (or a server that predates the flag) counts as attach-capable; a failed
   // health read keeps this PC's last answer (lib/healthPresentation.ts)
   const terminalAttach = targetHerdr?.terminal_attach !== false || targetHerdr?.terminal_mirror === true;
@@ -482,6 +492,16 @@ export function App() {
 
   const contentKey = paneContentKey(selectedMachine, selectedPane, view);
   const { dialogCover, webDialogCover, contentReady } = usePaneCoverage({ contentKey });
+  // the desktop app's built-in browser (BrowserPanel.tsx): its tabs while it is on, and the one shown in the file panel's place
+  const browserTabs = desktopBrowser?.tabs ?? null;
+  const { selected: browserTab, select: setBrowserTab, shown: shownBrowserTab, opened: setOpeningTab } = useShownBrowserTab(browserTabs);
+  // a tab opens in the file panel's place: a web page or a docked file there gives way to it
+  const openBrowserTab = (tab: number | "new") => {
+    if (webPage !== null) closeWebPage(true);
+    if (viewing !== null && fileDocked) closeFile();
+    setBrowserTab(tab);
+  };
+  const browserShown = browserTabs !== null && filePanelAvailable && !inMode && (browserTab === "new" || shownBrowserTab !== null) && webPage === null && !(viewing !== null && fileDocked);
   const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen
     && !(filesOpen && !filesDocked) && !machineDialog && !paletteOpen && !diffViewing && !(viewing && !fileDocked)
@@ -800,6 +820,8 @@ export function App() {
       .map((item, index) => index === 0 ? { ...item, divider: true } : item),
     ...(foldPane && more ? [{ id: "pane-group", label: t("Pane and tab…"), icon: PanelsTopLeft, divider: true, run: () => openMoreGroup("pane", more.anchor) }] : []),
     ...(modeOffered && !markEnters ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: () => { actions.counted?.("inbox", "menu"); enterInbox(); } }] : []),
+    // a phone's Sign out of the hosted app, last, as the overview's foot had it: a desktop has it in Settings → Devices and PCs
+    ...(isSheetWidth ? hostedSignOutItems(hostedSignIn, t) : []),
   ];
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
   const moreOnList = inbox.shown;
@@ -818,6 +840,7 @@ export function App() {
   const modeEndItems: RowMenuItem[] = [
     ...fromMore("alerts").map((item) => ({ ...item, divider: false })),
     { id: "settings", label: t("Settings"), icon: SettingsGlyph, divider: true, run: () => { actions.counted?.("settings", "menu"); actions.openSettings(); } },
+    ...fromMore("sign-out"),
   ];
   const modeAppItems: RowMenuItem[] = [...modeLeadItems, ...modeEndItems];
   const paletteOnly = inboxWide && (inbox.shown || selectedPane === null);
@@ -867,7 +890,7 @@ export function App() {
       </div>
     );
   }
-  if (locked) return <AccessGate reason={lockReason} initialCode={pairCode} consumePairCode={consumePairCode} pairingUnconfirmed={pairingUnconfirmed} onPaired={onPaired} onUnlocked={unlock} />;
+  if (locked) return <AccessGate reason={lockReason} ownWindow={auth?.own_window === true} initialCode={pairCode} consumePairCode={consumePairCode} pairingUnconfirmed={pairingUnconfirmed} onPaired={onPaired} onUnlocked={unlock} />;
 
   const listNote = herdrPrefixWaiting ? t("herdr prefix: press a key") : note;
   const openThread = (machineId: string, paneId: string): void => { activateSlotOf({ machineId, paneId }); selectTarget(machineId, paneId, "chat"); };
@@ -1111,6 +1134,7 @@ export function App() {
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
             <CrashProbe region="sidebar" />
             <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn}
+              afterPcs={browserTabs !== null && filePanelAvailable ? <BrowserTabsGroup tabs={browserTabs} selected={browserTab} onSelect={openBrowserTab} /> : undefined}
               footerStart={<>{setupRow}{modeOffered && wideScreen && !markEnters && <InboxFootEntry onOpen={() => { actions.counted?.("inbox", "button"); enterInbox(); }} />}</>} /></ReorderContext.Provider>
           </RenderBoundary>
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
@@ -1136,6 +1160,7 @@ export function App() {
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
+        {health !== null && <NewPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} ownWindowOf={ownWindowHere(health.auth) ? health.web_ui?.server_id : undefined} signIn={accountSignedIn ?? undefined} />}
         {/* The PC's pending-redemptions stream owns the list; a decline response can arrive after a newer event. */}
         <PendingKeys pending={pendingKeys} onDecline={(id) => { void declinePendingKey(id).catch((error: unknown) => console.warn("Ovis: the device was not declined", error instanceof Error ? error.name : error)); }} />
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
@@ -1322,6 +1347,14 @@ export function App() {
         {filesOpen && filesDocked && filesDialog(true)}
         {webPage !== null && !(viewing !== null && fileDocked) &&
           <WebPanel key={webPage} url={webPage} docked={filePanelAvailable} covered={webDialogCover} onClose={closeWebPage} panelStart={filePanelAvailable ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined} />}
+        {/* a tab open beside the pane takes the right panel's place: both would squeeze the conversation */}
+        {desktopBrowser !== null && filePanelAvailable && !inMode && !browserShown && <MachineContext.Provider value={selectedMachineId}>
+          <BrowserSidePanel browser={desktopBrowser} pane={selectedPane ? { id: selectedPane.pane_id, agent: selectedAgent, status: selectedPane.agent_status } : null}
+            agentOf={(paneId) => machines.find((machine) => machine.id === "local")?.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent ?? null}
+            onOpen={openBrowserTab} />
+        </MachineContext.Provider>}
+        {browserShown && <BrowserPanel tab={shownBrowserTab} covered={dialogCover || webDialogCover} onOpened={setOpeningTab} onClose={() => setBrowserTab(null)}
+          panelStart={<FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} />} />}
       </div>
       </PanePressContext.Provider>
 
@@ -1375,7 +1408,7 @@ export function App() {
         setFilesOpen(false);
         selectTargetRef.current(machineId, paneId);
       }} />
-      <SettingsDialog machines={machines} auth={auth} picturesByDefault={picturesByDefault} herdrVersion={shownHealth?.herdr?.version ?? null} herdrRuntime={shownHealth?.herdr ? shownHealth.herdr.runtime ?? "herdr" : null} herdrCore={shownHealth?.herdr_core ?? null} herdrRuntimeFacts={shownHealth?.herdr_runtime ?? null} bootId={shownHealth?.web_ui?.boot_id ?? null} onServerRestarted={() => { void readLocalHealth(); void readBridgeHealth(); void load(); }} security={security} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} onUsageLogin={(paneId) => { closeSettings(); selectTarget("local", paneId, "terminal"); void load(); }} onOpenPane={(machineId, paneId) => { closeSettings(); selectTarget(machineId, paneId, "terminal"); void load(); }} actions={actions} updates={updates} onEnableNotifications={enableNotifications} saveError={settingsSaveError} savePaused={settingsSavePaused} saveRetrying={settingsSaveRetrying} onRetrySave={retrySettingsSave} overPreview={(viewing !== null && !fileDocked) || diffViewing !== null || (webPage !== null && !filePanelAvailable)} />
+      <SettingsDialog opensAll={() => ownWindowHere(health?.auth) && machineSessions.peek("local")?.socket?.accountOpensAll() === true} withdrawn={() => machineSessions.peek("local")?.socket?.accountReleaseWithdrawn() === true} machines={machines} auth={auth} picturesByDefault={picturesByDefault} herdrVersion={shownHealth?.herdr?.version ?? null} herdrRuntime={shownHealth?.herdr ? shownHealth.herdr.runtime ?? "herdr" : null} herdrCore={shownHealth?.herdr_core ?? null} herdrRuntimeFacts={shownHealth?.herdr_runtime ?? null} bootId={shownHealth?.web_ui?.boot_id ?? null} onServerRestarted={() => { void readLocalHealth(); void readBridgeHealth(); void load(); }} security={security} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} onUsageLogin={(paneId) => { closeSettings(); selectTarget("local", paneId, "terminal"); void load(); }} onOpenPane={(machineId, paneId) => { closeSettings(); selectTarget(machineId, paneId, "terminal"); void load(); }} actions={actions} updates={updates} onEnableNotifications={enableNotifications} saveError={settingsSaveError} savePaused={settingsSavePaused} saveRetrying={settingsSaveRetrying} onRetrySave={retrySettingsSave} overPreview={(viewing !== null && !fileDocked) || diffViewing !== null || (webPage !== null && !filePanelAvailable)} />
       {filesOpen && !filesDocked && filesDialog(false)}
       {diffViewing !== null && <MachineContext.Provider value={diffViewing.machineId}>
         <RepoDiffViewer key={`${diffViewing.scope}:${diffViewing.path}`} target={diffViewing} onClose={closeDiff} onOpenFile={async (path) => {

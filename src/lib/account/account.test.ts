@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { BlockRecord } from "../../../shared/account-records.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEVICE_CODE_TTL_S, FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
@@ -225,6 +226,24 @@ describe("a sign-in shared by tabs", () => {
     await inner.set("session", old);
     const full: typeof inner = { ...inner, update: (async () => { throw new DOMException("full", "QuotaExceededError"); }) as typeof inner.update };
     expect(await new AccountService({ store: full, fetch: service.fetch, lock: memoryLock() }).session()).toEqual(old);
+  });
+
+  it("S32-1: signing out keeps every unsent block, also one stored while the sign-out was on its way", async () => {
+    const service = serviceWithSignIn();
+    const { store, session } = await signIn(service, memoryAccountStore());
+    const record = { id: "r1" } as unknown as BlockRecord;
+    const late = { id: "r2" } as unknown as BlockRecord;
+    await store.set("unsent_blocks", { r1: { account: session.account, sign_in_id: session.sign_in_id, records: [record] } });
+    const answered = Promise.withResolvers<void>();
+    const signOut = new AccountService({ store, fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(input instanceof Request ? input.url : String(input)).pathname === "/v1/signout") await answered.promise;
+      return service.fetch(input, init);
+    }) as typeof fetch }).signOut();
+    await store.update("unsent_blocks", (current) => ({ ...current, r2: { account: session.account, sign_in_id: session.sign_in_id, records: [late] } }));
+    answered.resolve();
+    await signOut;
+    expect(await store.get("session")).toBeUndefined();
+    expect(Object.keys(await store.get("unsent_blocks") ?? {}).sort()).toEqual(["r1", "r2"]);
   });
 
   it("ends the sign-in on the service even when its access token has run out", async () => {
@@ -579,14 +598,14 @@ describe("My PCs", () => {
   const stale = new Date(now - OFFLINE_AFTER_MS - 1).toISOString();
 
   it("marks a listed PC this device is not paired with as needing approval, and keeps a paired PC the account does not list", () => {
-    const rows = myPcs([{ server_id: PC_B, label: "nuc", added_at: recent, last_seen_at: recent, public_key: null, relay: null }], [paired(PC_A, "p620")], { now });
+    const rows = myPcs([{ server_id: PC_B, label: "nuc", added_at: recent, last_seen_at: recent, new_until: null, admitted_at: null, admitted_before_you: false, public_key: null, relay: null }], [paired(PC_A, "p620")], { now });
     expect(rows.map(({ name, state, listed }) => [name, state, listed])).toEqual([["p620", "paired", false], ["nuc", "needs-approval", true]]);
   });
 
   it("calls a PC offline once it stops coming by the service, and never one it has not seen", () => {
     const rows = myPcs([
-      { server_id: PC_A, label: "p620", added_at: recent, last_seen_at: stale, public_key: null, relay: null },
-      { server_id: PC_B, label: "nuc", added_at: recent, last_seen_at: null, public_key: null, relay: null },
+      { server_id: PC_A, label: "p620", added_at: recent, last_seen_at: stale, new_until: null, admitted_at: null, admitted_before_you: false, public_key: null, relay: null },
+      { server_id: PC_B, label: "nuc", added_at: recent, last_seen_at: null, new_until: null, admitted_at: null, admitted_before_you: false, public_key: null, relay: null },
     ], [paired(PC_A, "p620"), paired(PC_B, "nuc")], { now });
     expect(rows.map(({ name, state }) => [name, state])).toEqual([["nuc", "paired"], ["p620", "offline"]]);
   });
@@ -598,7 +617,7 @@ describe("My PCs", () => {
     const real = generateKeyPair().publicKey;
     const other = generateKeyPair().publicKey;
     const id = deriveServerId(real);
-    const listed = (key: Uint8Array) => myPcs([{ server_id: id, label: "nuc", added_at: recent, last_seen_at: recent, public_key: hex(key), relay: "wss://relay.example" }], [], { now })[0];
+    const listed = (key: Uint8Array) => myPcs([{ server_id: id, label: "nuc", added_at: recent, last_seen_at: recent, new_until: null, admitted_at: null, admitted_before_you: false, public_key: hex(key), relay: "wss://relay.example" }], [], { now })[0];
     expect(listed(real)?.join?.relay).toBe("wss://relay.example");
     // a directory that hands out another key for this id gets no way in
     expect(listed(other)?.join).toBeUndefined();
@@ -610,9 +629,9 @@ describe("My PCs", () => {
   });
 
   it("names a paired PC by its own name, never the directory's label, even when it has none", () => {
-    const rows = myPcs([{ server_id: PC_A, label: "renamed by anyone", added_at: recent, last_seen_at: recent, public_key: null, relay: null }], [paired(PC_A, "p620")], { now });
+    const rows = myPcs([{ server_id: PC_A, label: "renamed by anyone", added_at: recent, last_seen_at: recent, new_until: null, admitted_at: null, admitted_before_you: false, public_key: null, relay: null }], [paired(PC_A, "p620")], { now });
     expect(rows[0]?.name).toBe("p620");
     const { name: _unnamed, ...nameless } = paired(PC_A, "p620");
-    expect(myPcs([{ server_id: PC_A, label: "renamed by anyone", added_at: recent, last_seen_at: recent, public_key: null, relay: null }], [nameless], { now })[0]?.name).toBe(PC_A.slice(0, 8));
+    expect(myPcs([{ server_id: PC_A, label: "renamed by anyone", added_at: recent, last_seen_at: recent, new_until: null, admitted_at: null, admitted_before_you: false, public_key: null, relay: null }], [nameless], { now })[0]?.name).toBe(PC_A.slice(0, 8));
   });
 });

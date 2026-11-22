@@ -184,7 +184,7 @@ describe("the Add-a-PC sheet", () => {
     await mount(props("new", pcOf(), { kind: "ready", name: "desk2", server_id: SERVER_ID, enrollment }));
     expect(all()).toContain("desk2 is ready to open on this device.");
     expect(all().includes("In your account")).toBe(enrollment === "complete");
-    expect(all().includes("Adding it to your account…")).toBe(enrollment === "pending");
+    expect(all().includes("Adding it to your account. Keep this open until it is done.")).toBe(enrollment === "pending");
     expect(all().includes("Account setup is incomplete.")).toBe(enrollment === "failed");
     if (enrollment === "failed") { await click("Try again"); expect(calls.retries).toBe(1); }
     await click("Open PC");
@@ -206,7 +206,7 @@ describe("the Add-a-PC sheet", () => {
     const sub = () => text(renderer!.root.findByProps({ className: "add-pc-sub" }));
     // the start says what must be open before the press: only a device with the PC open hears the request
     expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Get approved on a device you already use"));
-    expect(sub()).toBe(translate("en", "Open {name} in Ovis on a device you already use. When the notice shows there, check the number and approve.", { name: "desk2" }));
+    expect(sub()).toBe(translate("en", "Open {name} in Ovis on a device you already use and approve there, or on {name} itself: Settings → Devices and PCs, then type the number this device shows.", { name: "desk2" }));
     expect(all()).not.toContain("Add window closed");
     expect(all()).toContain("Check the number on a device connected to desk2");
     expect(all()).not.toContain("Work MacBook");
@@ -216,7 +216,7 @@ describe("the Add-a-PC sheet", () => {
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
     // the approvers it names are a device connected to desk2 and desk2 itself, never the unrelated paired PC
     expect(text(renderer!.root.findByProps({ className: "modal-title" }))).toBe(translate("en", "Add this device to {name}", { name: "desk2" }));
-    expect(sub()).toBe(translate("en", "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.", { name: "desk2" }));
+    expect(sub()).toBe(translate("en", "Approve this device on a device of your account connected to {name}, or on {name} itself: Settings → Devices and PCs, then type the number this device shows.", { name: "desk2" }));
     expect(sub()).not.toContain("Work MacBook");
     expect(all()).toContain("Check that this number matches where you approve, then approve.");
     const digits = renderer!.root.findByProps({ className: "relay-shell-digits" });
@@ -249,7 +249,7 @@ describe("the Add-a-PC sheet", () => {
     const expired = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
     await mount(props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(problem()).toBe("desk2 is no longer waiting to be added");
-    expect(all()).toContain("On desk2, open Settings → Devices and PCs → Account and keep that screen open (choose Keep waiting or Add this PC to my account if it shows one), then try again here. If it still refuses, wait a few minutes: it pauses after too many tries.");
+    expect(all()).toContain("On desk2, open Settings → Devices and PCs → Add a connection → Ovis relay and keep that screen open (choose Keep waiting or Add this PC to my account if it shows one), then try again here. If it still refuses, wait a few minutes: it pauses after too many tries.");
     expect(all()).not.toContain("Copy a new link");
     expect(buttons()).toEqual(["Close", "Try again"]);
     await click("Try again");
@@ -388,7 +388,7 @@ describe("the Add-a-PC sheet", () => {
   it("with no PC, says how one is added in one concise sentence and leads to the QR and code screen", async () => {
     await mount(props("add", null, LIST));
     expect(all()).toContain("Add a PC");
-    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here.");
+    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay, sign in, then choose Add this PC to my account. It then shows here.");
     expect(steps()).toEqual([]);
     expect(renderer!.root.findAll((instance) => instance.props.className === "add-pc-bars")).toHaveLength(0);
     await click("Pair with a QR or code");
