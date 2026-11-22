@@ -344,10 +344,10 @@ describe("the loop", () => {
         await run.close();
       }
     };
-    // the prefix and Enter open the menu; 5 is a place in the shown tab; z and Enter go to the focused pane after it
-    const bytes = "\x02\r5z\r";
+    // the prefix and Enter open the menu; 6 is the shown tab's second pane (t2, not the focused t1); z and Enter go to it
+    const bytes = "\x02\r6z\r";
     const joined = await outcome([bytes]);
-    expect(joined.received[0]).toBe(Buffer.from("z\r").toString("hex"));
+    expect(joined.received).toEqual(["", Buffer.from("z\r").toString("hex"), "", ""]);
     expect({ outcome: await outcome([...bytes]) }).toEqual({ outcome: joined });
     for (let cut = 1; cut < bytes.length; cut++) expect({ cut, outcome: await outcome([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ cut, outcome: joined });
   }, TEST_MS);
