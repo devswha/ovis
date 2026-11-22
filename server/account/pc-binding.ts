@@ -15,13 +15,23 @@ import { writePrivateState } from "../private-state.ts";
 import { ADMISSION_FILE, type OriginFrom, type OriginHow, type RowOrigin } from "./admission-order.ts";
 import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
 
-export type ClearReason = "revoke_all" | "identity_reset" | "left_on_pc";
-export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason; readonly by: string }
+/** `unlisted`: a PC bound on the account service's word that the account stopped listing (one press, docs/account.md) */
+export type ClearReason = "revoke_all" | "identity_reset" | "unlisted";
+// A receipt written by an older version still invalidates its bind_id; new clears cannot emit that reason.
+export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string }
 export interface AccountBinding {
   readonly account: string;
   readonly bind_id: string;
   /** a first link's binding, on disk before its row: it stands only once the row is (T13) */
   readonly pending?: true;
+  /** bound in one press, on the account service's word for the account this PC's owner named; no row made it */
+  readonly service?: true;
+}
+
+interface ServiceStep2 {
+  readonly bind_id: string;
+  readonly revision: number;
+  readonly off: boolean;
 }
 
 interface PcDoc {
@@ -37,9 +47,11 @@ interface PcDoc {
   gen: number;
   /** the removal evidence was on disk once: its file missing since is damage, never a fresh start (S19) */
   evidence_written?: true;
+  /** A listed PC's explicit service opt-out cannot be undone by a named recovery release. */
+  service_step2?: ServiceStep2;
 }
 
-const REASONS: ReadonlySet<string> = new Set(["revoke_all", "identity_reset", "left_on_pc"]);
+const REASONS: ReadonlySet<string> = new Set(["revoke_all", "identity_reset", "left_on_pc", "unlisted"]);
 const ID = /^[0-9a-f]{32}$/;
 const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -53,16 +65,23 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
     return { v: 1, next_admit: doc.next_admit!, binding: null, clears: [], first: null, others_ever: false, gen: 0, counterOnly: true };
   }
   const binding = doc.binding;
-  if (binding !== null && !(typeof binding === "object" && binding !== undefined && typeof binding.account === "string" && ACCOUNT.test(binding.account) && typeof binding.bind_id === "string" && ID.test(binding.bind_id) && (binding.pending === undefined || binding.pending === true))) return "invalid binding";
+  if (binding !== null && !(typeof binding === "object" && binding !== undefined && typeof binding.account === "string" && ACCOUNT.test(binding.account) && typeof binding.bind_id === "string" && ID.test(binding.bind_id) && (binding.pending === undefined || binding.pending === true) && (binding.service === undefined || (binding.service === true && binding.pending === undefined)))) return "invalid binding";
   if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string")) return "invalid clears";
   if (binding !== null && doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "a cleared binding stands";
   const first = doc.first;
   if (first !== null && !(typeof first === "object" && first !== undefined && typeof first.key === "string" && (first.list_key === null || typeof first.list_key === "string"))) return "invalid first";
   if (typeof doc.others_ever !== "boolean") return "invalid others_ever";
   if (doc.evidence_written !== undefined && doc.evidence_written !== true) return "invalid evidence_written";
+  const step2 = doc.service_step2;
+  if (step2 !== undefined && (step2 === null || typeof step2 !== "object" || typeof step2.bind_id !== "string"
+    || !ID.test(step2.bind_id) || !Number.isSafeInteger(step2.revision) || step2.revision < 0 || typeof step2.off !== "boolean")) return "invalid service_step2";
   if (doc.gen === undefined) return { ...doc, gen: 0 } as PcDoc;
   if (!Number.isSafeInteger(doc.gen) || doc.gen < 0) return "invalid gen";
   return doc as PcDoc;
+}
+
+function serviceStep2(doc: PcDoc, binding: AccountBinding | null): ServiceStep2 | undefined {
+  return binding !== null && doc.service_step2?.bind_id === binding.bind_id ? doc.service_step2 : undefined;
 }
 
 /** A folder by what it is on disk, so a link to it and its real path are one folder (P21). */
@@ -74,6 +93,12 @@ function realFolder(stateDir: string): string {
 const HANDLES = new Map<string, PcAccountState>();
 
 export class PcAccountState {
+  private readonly bindingListeners = new Set<() => void>();
+
+  onBindingChange(listener: () => void): () => void {
+    this.bindingListeners.add(listener);
+    return () => { this.bindingListeners.delete(listener); };
+  }
   private doc: PcDoc = { v: 1, next_admit: 1, binding: null, clears: [], first: null, others_ever: false, gen: 0 };
   private problem: string | null = null;
   /** no file and no journal: this folder's rows predate the release, and are migrated once (T50) */
@@ -198,12 +223,24 @@ export class PcAccountState {
     if (own !== null && theirs !== null && own.account !== theirs.account) { this.problem = `${this.path} and ${path} bind this PC to two accounts`; return; }
     this.siblingBinding = theirs;
     const doc = { ...this.doc, binding: own, clears, others_ever: this.doc.others_ever || parsed.others_ever };
-    // the clears are one set in both folders: the sibling learns every clear too, so starting it alone never brings a
-    // cleared account back (P12, T48)
-    if (parsed.clears.length !== clears.length) {
+    const sharedStep2 = (binding: AccountBinding | null) => {
+      const mine = serviceStep2(this.doc, binding);
+      const other = serviceStep2(parsed, binding);
+      // A reconciliation supersedes the off decision it observed. An independent concurrent off wins a tie.
+      if (mine === undefined || (other !== undefined && (other.revision > mine.revision
+        || (other.revision === mine.revision && other.off)))) return other;
+      return mine;
+    };
+    const activeBinding = own ?? theirs;
+    const activeStep2 = sharedStep2(activeBinding);
+    if (activeStep2) doc.service_step2 = activeStep2;
+    // Both folders keep the clears and the service opt-out for the binding they hold.
+    const siblingStep2 = sharedStep2(theirs);
+    if (parsed.clears.length !== clears.length || (siblingStep2 && JSON.stringify(siblingStep2) !== JSON.stringify(parsed.service_step2))) {
       const siblingDoc: PcDoc = { ...parsed, clears, binding: standing(parsed.binding) ?? (parsed.binding?.pending === true && !clears.some((clear) => clear.bind_id === parsed.binding!.bind_id) ? parsed.binding : null) };
+      if (siblingStep2) siblingDoc.service_step2 = siblingStep2;
       try { writePrivateState(path, siblingDoc); } catch (error) {
-        this.problem = `${path} cannot learn this PC's cleared account (${error instanceof Error ? error.message : String(error)})`;
+        this.problem = `${path} cannot learn this PC's account denials (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
     }
@@ -242,6 +279,9 @@ export class PcAccountState {
 
   gen(): number { return this.doc.gen; }
 
+  /** All admissions already numbered here are strictly below this boundary, even with the PC clock set back. */
+  nextAdmission(): number { return this.doc.next_admit; }
+
   /** A denial or a policy change reached the disk (P14): a decision that noted the old gen does not commit. */
   /** Whether this PC's removal evidence was on disk once (S19). */
   evidenceWritten(): boolean { return this.doc.evidence_written === true; }
@@ -279,7 +319,16 @@ export class PcAccountState {
   }
 
 
-  /** The PC leaves its account: only for one of the three named reasons. The clear is kept, and the file stays. */
+  /**
+   * One press binds a PC in no account on the account service's word for `account`, the one its owner named here: no row
+   * is written with it, so it stands at once, and no device is its first (T67).
+   */
+  bindByService(account: string): void {
+    if (this.doc.binding !== null) throw new Error("This PC is already in an account");
+    this.write({ ...this.doc, binding: { account, bind_id: randomBytes(16).toString("hex"), service: true }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0 });
+  }
+
+  /** The PC leaves its account: only for one of the named reasons. The clear is kept, and the file stays. */
   clear(reason: ClearReason, by: string): boolean {
     const binding = this.doc.binding;
     // a PC already strict writes nothing: what it was told to clear waits for its repair, and it serves nobody meanwhile
@@ -297,9 +346,32 @@ export class PcAccountState {
     return { from, how, by, admit_no: admitNo, at: new Date(now).toISOString() };
   }
 
+  serviceStep2Off(): boolean {
+    return serviceStep2(this.doc, this.binding())?.off === true;
+  }
+
+  setServiceStep2Off(off: boolean): boolean {
+    const binding = this.binding();
+    if (binding === null) return false;
+    const prior = serviceStep2(this.doc, binding);
+    if ((prior?.off ?? false) === off) return false;
+    const revision = (prior?.revision ?? 0) + 1;
+    if (!Number.isSafeInteger(revision)) throw new Error("The service's Step 2 revision is exhausted");
+    try { this.write({ ...this.doc, service_step2: { bind_id: binding.bind_id, revision, off } }); }
+    catch (error) {
+      this.unwritten(error, "The service's Step 2 status could not be saved");
+      throw error;
+    }
+    return true;
+  }
+
   private write(doc: PcDoc): void {
     if (this.problem !== null) throw new Error(this.strict!);
+    // The provisional first-link write and its rollback both represent no committed binding.
+    const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
+    const before = committedId(this.doc.binding);
     writePrivateState(this.path, doc);
     this.doc = doc;
+    if (before !== committedId(doc.binding)) for (const listener of this.bindingListeners) listener();
   }
 }

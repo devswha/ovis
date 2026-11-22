@@ -10,12 +10,16 @@ import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
  * accountOpensAll, by the PC's server and the account service; an app follows what a PC advertises
  * (ACCOUNT_OPENS_ALL_CAPABILITY) and has no switch of its own.
  */
+/** How long this PC's screen keeps an asked act open (server/account/local-confirm.ts); the app shows its deadline. */
+export const CONFIRM_MS = 2 * 60_000;
+
 export const OVIS_ACCOUNT_OPENS_ALL = "OVIS_ACCOUNT_OPENS_ALL";
-/** The capability a PC advertises once the flag is on; an app shows nothing of step 2 to a PC without it. */
+/** The capability a PC advertises while Step 2 is on; an app shows nothing of Step 2 for a PC without it. */
 export const ACCOUNT_OPENS_ALL_CAPABILITY = "account-opens-all/1";
 
 export function accountOpensAll(value = process.env[OVIS_ACCOUNT_OPENS_ALL]): boolean {
-  return value === "1";
+  // Require an explicit opt-out: a padded or otherwise mistyped value must not disable Step 2.
+  return value !== "0";
 }
 
 export class AccountDevicesApiError extends Error {
@@ -29,12 +33,12 @@ function fail(message: string): never {
 /** Device table P15: the journal kinds a notice can carry; `release` and `admit` are the recovery's own (R11). */
 export type NoticeKind = "admit" | "drop" | "remove" | "block" | "lift" | "promote" | "confirm" | "lock" | "unlock" | "account" | "method" | "merge" | "release";
 
-/** Device table P18, T34, T58: the account sign-in a device was admitted by; null when no sign-in admitted it (screen, terminal, digits). */
+/** Device table P18, T34, T58: the registering sign-in provider for a list admission, if the snapshot still names it. */
 export type NoticeSignInMethod = "github" | "google" | "apple" | null;
 /**
  * Device table T34, T58, section 5b: two-step sign-in as the account record states it, never inferred by the app.
- * GitHub and Apple are `set` (set on the account, not proof this sign-in used it); Google is `verified` only when
- * the `amr` claim shows it, else `unknown`; null with no sign-in method.
+ * List admissions report `set` (not proof this sign-in used two-step) or `unknown`, even without a provider.
+ * Non-list admissions report null. `verified` remains a wire value but is not emitted for list admissions.
  */
 export type NoticeTwoStep = "verified" | "set" | "unknown" | null;
 
@@ -116,6 +120,18 @@ export type HoldState =
   | { readonly reason: "join_hold"; readonly until: string | null }
   | { readonly reason: "catching_up" }
   | { readonly reason: "frozen"; readonly block: string };
+
+const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Device table S22, S25, T53, T56: a hold state as an app reads it from a `held` refusal; throws AccountDevicesApiError. */
+export function parseHoldState(value: unknown): HoldState {
+  const hold = shape(value, ["reason", "until", "block"]);
+  if (hold.reason === "join_hold" && "until" in hold && !("block" in hold)
+    && (hold.until === null || (typeof hold.until === "string" && ISO_MS.test(hold.until) && new Date(hold.until).toISOString() === hold.until))) return hold as unknown as HoldState;
+  if (hold.reason === "catching_up" && Object.keys(hold).length === 1) return hold as unknown as HoldState;
+  if (hold.reason === "frozen" && !("until" in hold) && typeof hold.block === "string" && HEX64.test(hold.block)) return hold as unknown as HoldState;
+  fail("Invalid hold state");
+}
 
 /**
  * Device table R11: the acts of `ovis recover`, over the recovery socket only (and, one confirm each, on

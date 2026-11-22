@@ -7,11 +7,12 @@ import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "..
 import type { AccountLimits } from "../../../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { newRecordId, type AccountRecord } from "../../../shared/account-records.ts";
+import { newRecordId, registerSigningBytes, type AccountRecord, type DeviceSafetyRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
+import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
 import type { AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
-import { ACCOUNT_PROVIDERS, accountLock } from "./store.ts";
+import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
 
 /**
  * The account service this page signs in with, from `<meta name="ovis-account-service">`: an https
@@ -119,6 +120,17 @@ export class AccountServiceError extends Error {
 }
 
 /**
+ * The access token's refresh failed before the request it was for went out: the service has not answered that
+ * request, so its error is no refusal of it (a refused refresh that ends the sign-in is a SignedOutError instead).
+ */
+export class AccountRefreshError extends AccountServiceError {
+  constructor(from: AccountServiceError) {
+    super(from.status, from.code, from.message, from.retryAfterMs);
+    this.name = "AccountRefreshError";
+  }
+}
+
+/**
  * A request to the account service got no answer at all: the connection dropped under it, or the network was down or
  * changed. Any HTTP answer is an AccountServiceError (or a sign-out) instead. Still a TypeError, as fetch's own failure is.
  */
@@ -157,10 +169,22 @@ export interface DirectoryPc {
   readonly server_id: string;
   readonly label: string;
   readonly added_at: string;
+  /** absent from an old service, which has no refresh route; null when the service sent one that is unusable */
+  readonly listing_id?: string | null;
+  readonly invited_at?: string;
   readonly last_seen_at: string | null;
   /** the PC's relay key (X25519, 64 hex) and relay, to compare digits with it; null from an entry without them */
   readonly public_key: string | null;
   readonly relay: string | null;
+  /**
+   * Until when a PC added in one press is new to the account (docs/account.md, "One press"): this device opens it only by
+   * hand meanwhile. Null for any other PC, and once that time has passed.
+   */
+  readonly new_until: string | null;
+  /** when the PC was added in one press (kept after its 24 hours), or null */
+  readonly admitted_at: string | null;
+  /** the PC was added in one press under the first-PC exemption before this device joined: nobody was told of it */
+  readonly admitted_before_you: boolean;
 }
 
 type Fetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
@@ -219,7 +243,12 @@ function parsePc(value: unknown): DirectoryPc | null {
   if (value.last_seen_at !== null && typeof value.last_seen_at !== "string") return null;
   const public_key = typeof value.public_key === "string" && /^[0-9a-f]{64}$/.test(value.public_key) ? value.public_key : null;
   const relay = typeof value.relay === "string" && isWssOrigin(value.relay) ? value.relay : null;
-  return { server_id: value.server_id, label: value.label, added_at: value.added_at, last_seen_at: value.last_seen_at, public_key, relay };
+  const new_until = typeof value.new_until === "string" && !Number.isNaN(Date.parse(value.new_until)) ? value.new_until : null;
+  const admitted_at = typeof value.admitted_at === "string" && !Number.isNaN(Date.parse(value.admitted_at)) ? value.admitted_at : null;
+  const listing_id = "listing_id" in value ? (typeof value.listing_id === "string" && SERVER_ID.test(value.listing_id) ? value.listing_id : null) : undefined;
+  const invited_at = typeof value.invited_at === "string" && !Number.isNaN(Date.parse(value.invited_at)) ? value.invited_at : undefined;
+  return { server_id: value.server_id, label: value.label, added_at: value.added_at, last_seen_at: value.last_seen_at, public_key, relay, new_until, admitted_at, admitted_before_you: admitted_at !== null && value.admitted_before_you === true,
+    ...(listing_id === undefined ? {} : { listing_id }), ...(invited_at === undefined ? {} : { invited_at }) };
 }
 
 export function sessionOf(body: unknown, service: string, now: number): AccountSession {
@@ -246,6 +275,8 @@ export function sameSignIn(a: AccountSession, b: AccountSession): boolean {
 export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string } = {}): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   const response = await (options.fetch ?? fetch)(new URL("/v1/token", service), {
+    // a redirect target's answer is never this grant's (see AccountService's fetch)
+    redirect: "error",
     method: "POST", headers: { "content-type": "application/json", ...(options.bearer === undefined ? {} : { authorization: `Bearer ${options.bearer}` }) }, body: JSON.stringify(grant),
   });
   if (!response.ok) throw await failure(response);
@@ -276,8 +307,9 @@ export class AccountService {
 
   constructor(private readonly options: AccountServiceOptions) {
     const send: Fetch = options.fetch ?? ((input, init) => fetch(input, init));
-    // fetch fails with a TypeError only when no answer came (an abort is a DOMException, and passes as it is)
-    this.fetch = (input, init) => send(input, init).catch((error: unknown) => {
+    // fetch fails with a TypeError only when no answer came (an abort is a DOMException, and passes as it is); a redirect
+    // is never followed, so a redirect target's answer never stands in for this endpoint's own: it fails, as no answer
+    this.fetch = (input, init) => send(input, { ...init, redirect: "error" }).catch((error: unknown) => {
       throw error instanceof TypeError ? new AccountServiceUnreachableError({ cause: error }) : error;
     });
     this.now = options.now ?? Date.now;
@@ -333,6 +365,33 @@ export class AccountService {
     await this.call("DELETE", `/v1/pcs/${serverId}`);
   }
 
+  /** Renews an invitation in place. Without a listing ID, the empty body probes for the old service's missing route. */
+  async refreshPc(serverId: string, listingId: string | undefined): Promise<"refreshed" | "changed" | "legacy"> {
+    try {
+      const body = await this.call("POST", `/v1/pcs/${serverId}/refresh`, listingId === undefined ? {} : { listing_id: listingId });
+      if (!isRecord(body) || typeof body.invited_at !== "string" || Number.isNaN(Date.parse(body.invited_at))) {
+        throw new AccountServiceError(502, "invalid_answer", "The account service sent no invitation time");
+      }
+      return "refreshed";
+    } catch (error) {
+      if (error instanceof AccountServiceError) {
+        if (error.status === 409 && error.code === "listing_changed") return "changed";
+        if (listingId === undefined && error.status === 404 && error.code === "not_found") return "legacy";
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Admits a PC this account lists in one press, from a fresh sign-in with two-step sign-in set: the service refuses
+   * anything else (`session_not_fresh`, `two_step_required`, `pc_add_cap`, or 404 where it has no such route).
+   */
+  async admitPc(serverId: string, signal?: AbortSignal): Promise<{ readonly account: string; readonly new_until: string }> {
+    const body = await this.call("POST", `/v1/pcs/${serverId}/admit`, {}, signal);
+    if (!isRecord(body) || typeof body.account !== "string" || typeof body.new_until !== "string") throw new AccountServiceError(502, "invalid_answer", "The account service sent no admission");
+    return { account: body.account, new_until: body.new_until };
+  }
+
   /**
    * Says this signed-in device waits at that PC with its account key: the account's other devices
    * hear of it, and the PC takes a comparison that asks to join the account for 10 minutes.
@@ -362,6 +421,28 @@ export class AccountService {
         : { country: null, city: null };
       return [{ key: entry.key, label, server_id: entry.server_id, at: entry.at, os: accountOsOf(entry.os), ...place }];
     });
+  }
+
+  /**
+   * Registers `key` for this sign-in (device table T34, P18) by signing the service's single-use challenge, and
+   * answers its place in the account's order. Null when the service has no such route (release off, or older):
+   * the QR or digits path stays (G5). A sign-in registers one key; another key for it is refused (T40).
+   */
+  async registerDeviceKey(key: { readonly private_key: CryptoKey; readonly public_spki: string }): Promise<{ no: number; key: string } | null> {
+    let issued: unknown;
+    try { issued = await this.call("POST", "/v1/devices/challenge", {}); }
+    catch (error) {
+      if (error instanceof AccountServiceError && error.status === 404) return null;
+      throw error;
+    }
+    const session = await this.session();
+    if (session === undefined) return this.signedOut();
+    if (!isRecord(issued) || typeof issued.challenge_id !== "string" || typeof issued.challenge !== "string") throw new AccountServiceError(502, "invalid_answer", "The account service sent no challenge");
+    const bytes = registerSigningBytes(session.account, key.public_spki, issued.challenge_id, issued.challenge);
+    const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.private_key, bytes)));
+    const body = await this.call("POST", "/v1/devices", { challenge_id: issued.challenge_id, key: key.public_spki, signature });
+    if (!isRecord(body) || !Number.isSafeInteger(body.no) || body.key !== key.public_spki) throw new AccountServiceError(502, "invalid_answer", "The account service answered for another key");
+    return { no: body.no as number, key: key.public_spki };
   }
 
   async limits(): Promise<AccountLimits | null> {
@@ -441,13 +522,24 @@ export class AccountService {
    * sign-in made meanwhile is never the one deleted.
    */
   async deleteAccount(): Promise<void> {
-    await this.call("DELETE", "/v1/account");
+    // only the documented 204 is a completed deletion: a 202 pending, say, leaves the account (and what this device keeps) alone
+    await this.call("DELETE", "/v1/account", undefined, undefined, undefined, 204);
   }
 
   async postRecord(serverIds: readonly string[], record: AccountRecord): Promise<number> {
     if (serverIds.length === 0) return 0;
     const body = await this.call("POST", "/v1/records", { server_ids: serverIds, record });
     return isRecord(body) && typeof body.queued === "number" ? body.queued : 0;
+  }
+
+  /**
+   * Confirmed only by the committed receipt, a 200 naming the record's id: any other success (a 202 pending, say) is no
+   * confirmation and throws. `ready` runs right before each send, after any token refresh, and stops it by throwing.
+   */
+  async postSafetyRecord(record: DeviceSafetyRecord, ready?: () => void): Promise<void> {
+    const again: SendAgain | undefined = ready === undefined ? undefined : { sends: 2, before: async () => ready(), wait: async () => false };
+    const body = await this.call("POST", "/v1/safety-records", { record }, AbortSignal.timeout(5_000), again, 200);
+    if (!isRecord(body) || body.id !== record.id) throw new AccountServiceError(502, "invalid_answer", "The account service did not confirm this record");
   }
 
   /**
@@ -472,7 +564,11 @@ export class AccountService {
       } catch (error) {
         if (!(error instanceof SignedOutError)) throw error;
       } finally {
-        if (!replaced) await this.options.store.update("session", (current) => current?.refresh_token === session.refresh_token || current?.refresh_token === live.refresh_token ? undefined : current);
+        if (!replaced) {
+          await this.options.store.update("session", (current) => current?.refresh_token === session.refresh_token || current?.refresh_token === live.refresh_token ? undefined : current);
+          // its unsent blocks stay: only the service's answer takes one away, and a later sign-in to this account sends them (S32-1)
+          if (this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+        }
       }
     });
   }
@@ -490,8 +586,10 @@ export class AccountService {
       next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now });
     } catch (error) {
       if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(from);
-      throw error;
+      throw error instanceof AccountServiceError ? new AccountRefreshError(error) : error;
     }
+    // a refresh answers for the sign-in it was asked for: tokens naming another account are no answer, and are not kept
+    if (next.account !== from.account) throw new AccountRefreshError(new AccountServiceError(502, "account_changed", "The account service answered a refresh for another account"));
     const carried: AccountSession = from.sign_in_id === undefined ? next : { ...next, sign_in_id: from.sign_in_id };
     let kept = false;
     await this.options.store.update("session", (current) => {
@@ -542,7 +640,7 @@ export class AccountService {
    * request, and only it, is sent again after no answer or a 429 (a token refresh under it never is), within
    * `again.sends` HTTP sends in all, a send after a 401 included. Without it a 401 is sent again once, as always.
    */
-  private async call(method: string, path: string, body?: unknown, signal?: AbortSignal, again?: SendAgain): Promise<unknown> {
+  private async call(method: string, path: string, body?: unknown, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<unknown> {
     let stale: string | undefined;
     let refreshed = false;
     const sends = again?.sends ?? 2;
@@ -569,13 +667,21 @@ export class AccountService {
         stale = session.access_token;
         continue;
       }
+      // a strict call (`only`) refused again with tokens a refresh just gave: that request's refusal, not a revoked sign-in
+      if (response.status === 401 && only !== undefined) throw await failure(response);
       if (response.status === 401) return this.signedOut(session);
       if (!response.ok) {
         const refusal = await failure(response);
         if (again !== undefined && refusal.status === 429 && sent < sends && await again.wait(refusal, sent)) continue;
         throw refusal;
       }
+      // `only`: the one success status that counts; another is no answer to rely on
+      if (only !== undefined && response.status !== only) throw new AccountServiceError(response.status, "unconfirmed", `The account service answered ${response.status}, not ${only}`);
       return response.status === 204 ? null : response.json();
     }
   }
 }
+
+/** The browser's account client, shared by the sign-in surfaces and actions under that sign-in. */
+export const indexedAccountService = new AccountService({ store: indexedAccountStore });
+export const ACCOUNT_SIGN_OUT_EVENT = "ovis:account-sign-out";

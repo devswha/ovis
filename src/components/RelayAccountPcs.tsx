@@ -6,15 +6,17 @@ import "./RelayAccountPcs.css";
 import type { Machine } from "../../shared/machines.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
-import { myPcs } from "../lib/account/myPcs.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, isNewAccountPc, myPcs } from "../lib/account/myPcs.ts";
 import { ApiError, checkAccountPcs, pairAccountPc, startAccountPc, type AccountPcEntry, type AccountPcState } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { deviceOs } from "../lib/phone.ts";
 
+type AccountPcRow = AccountPcEntry & { readonly new_until?: string | null };
+
 /** The account as this list uses it: its PCs that a device can pair with (key and relay from the directory), and the admission that vouches for this PC. */
 export interface AccountPcsSource {
   /** the account's PCs with a key and relay to pair with, and the account they were read under; null when this page is not signed in */
-  list(): Promise<{ account: string; pcs: readonly AccountPcEntry[] } | null>;
+  list(): Promise<{ account: string; pcs: readonly AccountPcRow[] } | null>;
   /** the account this page is signed in to; null when it is not */
   account(): Promise<string | null>;
   /** says, under the sign-in the list was read with, that this PC's server waits at `serverId` with `key` */
@@ -33,7 +35,9 @@ export function signedInAccount(): AccountPcsSource {
       const session = await service.session();
       if (session === undefined) return null;
       bound = service.forSignIn(session);
-      const pcs = myPcs(await bound.listPcs(), [], { now: Date.now() }).flatMap((pc) => pc.join === undefined ? [] : [{ server_id: pc.server_id, name: pc.name, ...pc.join }]);
+      const pcs = myPcs(await bound.listPcs(), [], { now: Date.now() }).flatMap((pc) => pc.join === undefined ? [] : [
+        { server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }) },
+      ]);
       return { account: session.account, pcs };
     },
     async admit(serverId, label, key) {
@@ -53,7 +57,7 @@ export const spaced = (digits: string): string => `${digits.slice(0, 3)} ${digit
 /** The account's other PCs as both lists use them: which would pair, and Add, which pairs one once a member approves it. */
 export interface AccountPcs {
   /** the account's PCs but this one; null until read, when not signed in, or when this PC will not check them */
-  pcs: readonly AccountPcEntry[] | null;
+  pcs: readonly AccountPcRow[] | null;
   /** the PC of this app's roster an account PC already is */
   added(serverId: string): Machine | undefined;
   /** what the PC answered when asked whether it would pair; undefined while it is asked */
@@ -78,7 +82,13 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   const t = useT();
   const account = useRef<AccountPcsSource | null>(null);
   account.current ??= source ?? signedInAccount();
-  const [pcs, setPcs] = useState<readonly AccountPcEntry[] | null>(null);
+  const [pcs, setPcs] = useState<readonly AccountPcRow[] | null>(null);
+  const [changes, setChanges] = useState(0);
+  useEffect(() => {
+    const changed = () => setChanges((count) => count + 1);
+    window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(ACCOUNT_PCS_CHANGED_EVENT, changed);
+  }, []);
   const [states, setStates] = useState<ReadonlyMap<string, AccountPcState>>(new Map());
   const [pairing, setPairing] = useState<Pairing | null>(null);
   const [failure, setFailure] = useState<{ server_id: string; message: string } | null>(null);
@@ -119,7 +129,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       if (live) setPcs(null);
     });
     return () => { live = false; };
-  }, [own, enabled, expect, refresh]);
+  }, [own, enabled, expect, refresh, changes]);
   // the newest ask of each PC, its first check and every Check again alike: an older one answering late changes nothing
   const asks = useRef(new Map<string, number>());
   const nextAsk = (serverId: string): number => {
@@ -211,19 +221,27 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
 }
 
 /**
- * One already in this app reads Connect; one that would pair reads Add (useAccountPcs); an older or offline one says so
+ * One already in this app reads Open; one that would pair reads Add (useAccountPcs); an older or offline one says so
  * and gets no button.
  */
-export function RelayAccountPcs({ machines, onConnectMachine, source }: { machines: readonly Machine[]; onConnectMachine: (machine: Machine) => void; source?: AccountPcsSource }) {
+export function RelayAccountPcs({ machines, onConnectMachine, source, self = null }: { machines: readonly Machine[]; onConnectMachine: (machine: Machine) => void; source?: AccountPcsSource; /** this PC's name, listed first as one of the account's PCs */ self?: string | null }) {
   const t = useT();
   const { pcs, added, stateOf, pairing, failure, add, cancel } = useAccountPcs({ machines, source, onAdded: onConnectMachine });
 
-  if (pcs === null || pcs.length === 0) return null;
+  if (self === null && (pcs === null || pcs.length === 0)) return null;
   return (
     <div className="connect-found relay-account-pcs">
       <p className="settings-label">{t("Your account's PCs")}</p>
       <ul className="connect-found-list">
-        {pcs.map((pc) => {
+        {self !== null && (
+          <li className="relay-account-pc" data-pc-state="self" data-testid="relay-account-self">
+            <div className="connect-found-row">
+              <span className="connect-found-name">{self}<span className="connect-found-source">{t("This PC")}</span></span>
+              <span className="connect-found-detail">{t("Online")}</span>
+            </div>
+          </li>
+        )}
+        {(pcs ?? []).map((pc) => {
           const machine = added(pc.server_id);
           const state = stateOf(pc.server_id);
           const waiting = pairing?.server_id === pc.server_id;
@@ -233,9 +251,9 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
             <li key={pc.server_id} className="relay-account-pc" data-pc-state={machine !== undefined ? "added" : state ?? "checking"}>
               <div className="connect-found-row">
                 <span className="connect-found-name">{pc.name}</span>
-                <span className="connect-found-detail">{detail}</span>
+                <span className="connect-found-detail">{isNewAccountPc(pc, Date.now()) ? `${t("New PC")} · ` : ""}{detail}</span>
                 {machine !== undefined
-                  ? <button type="button" className="btn" onClick={() => onConnectMachine(machine)}>{t("Connect")}</button>
+                  ? <button type="button" className="btn" onClick={() => onConnectMachine(machine)}>{t("Open")}</button>
                   : state === "ready" && (waiting
                     ? <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
                     : <button type="button" className="btn" disabled={pairing !== null} aria-label={t("Add {name}", { name: pc.name })} onClick={() => void add(pc)}>{t("Add")}</button>)}

@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import { MAX_PENDING } from "../relay/core.ts";
-import { liveSessionsRefused } from "../server/herdr/client.ts";
+import { liveSessionsRefused } from "../server/herdr/test-session.ts";
 import { createServer } from "../server/index.ts";
 import { RelayService } from "../server/relay/service.ts";
 import { bounded } from "../server/relay/test-helpers.ts";
@@ -322,6 +322,9 @@ async function walkOne(browser: Browser, site: PagesSite, run: Run, arriveHere: 
   doing = "precondition: sign in";
   await page.goto(`${APP}/`);
   await page.locator(".account-provider").first().click({ timeout: LOAD_MS });
+  // a sign-in lands on Add a PC, never the dashboard: that opens only by its own address
+  await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add, [data-add-pc-mode]').first().waitFor({ timeout: LOAD_MS });
+  await page.goto(`${APP}/#overview`);
   await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor({ timeout: LOAD_MS });
   await seed(page);
   await step("precondition: both rows", toPcs);

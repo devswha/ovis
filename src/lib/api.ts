@@ -11,7 +11,7 @@ import type { SystemReport } from "../../shared/system.ts";
 import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllRequest, MoveStopRequest } from "../../shared/runtime-move.ts";
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
-import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { machinePath, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
   HerdrPane,
@@ -350,13 +350,23 @@ export function cancelRelayCode(keepalive = false): Promise<{ readonly ok: true 
  * POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC.
  * `localOnly`: this PC's screen waits to be added to an account, so what comes is approved on this PC only.
  */
-export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise<{ readonly url: string }> {
-  return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
+export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise<{ readonly url: string; readonly window_id?: string }> {
+  return getJson<{ readonly url: string; readonly window_id?: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
 }
 
-/** POST /api/relay/link/close: the owner stopped waiting, so this PC takes no more comparisons from its link. An older server has no such route (404). */
-export function closeRelayLink(): Promise<{ readonly ok: true }> {
-  return getJson<{ readonly ok: true }>("/api/relay/link/close", { method: "POST", headers: { "x-herdr-update": "1" } });
+/** POST /api/relay/link/close: end the current pairing window, or only the named generation when supplied. */
+export function closeRelayLink(windowId?: string): Promise<{ readonly ok: true }> {
+  return getJson<{ readonly ok: true }>("/api/relay/link/close", { method: "POST", headers: { "x-herdr-update": "1", ...(windowId === undefined ? {} : { "x-ovis-window": windowId }) } });
+}
+
+/** GET /api/relay/joins: account joins waiting for this PC's own window, without their digits (403 `own_window_required` elsewhere). */
+export async function fetchOwnJoins(): Promise<OwnJoinRequest[]> {
+  return (await getJson<{ readonly joins: OwnJoinRequest[] }>("/api/relay/joins")).joins;
+}
+
+/** POST /api/relay/join: the digits the new device shows, typed on this PC's own window; 409 `wrong_digits` ends that join. */
+export async function approveOwnJoin(id: string, digits: string): Promise<void> {
+  await getJson<{ readonly ok: true }>("/api/relay/join", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, digits }) });
 }
 
 /** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
@@ -365,6 +375,14 @@ export async function decideRelayPairing(id: string, decision: "approve" | "decl
   // an account member approving through the relay names the digits it picked (docs/account.md, "Who may admit a device")
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(digits === undefined ? {} : { digits }) }) });
   if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** Declines one device waiting for this PC's screen (S2-34, T72); the PC answers the list that is left. Approving stays on the screen. */
+export async function declinePendingKey(id: string): Promise<readonly PendingKey[]> {
+  const url = "/api/devices/pending/decline";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ id }) });
+  if (!response.ok) throw await errorFrom(url, response);
+  return ((await response.json()) as { pending: PendingKey[] }).pending;
 }
 
 export async function fetchPreferences(): Promise<SharedPreferences | null> {
@@ -437,7 +455,10 @@ export class ApiError extends Error {
 
 export const routeMissing = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "not_found";
 
-const UNUSABLE_ANSWER: Readonly<Record<string, () => string>> = {
+const LOCALIZED_ERRORS: Readonly<Record<string, () => string>> = {
+  pc_add_source_bound: () => t("This PC is in an account. Add PCs from your account."),
+  pc_add_target_bound: () => t("That PC is in an account. Add it from that account."),
+  pc_add_account_unavailable: () => t("Can't add a PC right now. Try again in a moment."),
   remote_response_too_large: () => t("The other PC's answer was larger than this app accepts"),
   remote_response_invalid: () => t("The other PC's answer could not be read"),
 };
@@ -451,7 +472,7 @@ export async function errorFrom(url: string, response: Response): Promise<ApiErr
     if (body.error?.code) code = body.error.code;
   } catch {
   }
-  if (code !== null && Object.hasOwn(UNUSABLE_ANSWER, code)) detail = UNUSABLE_ANSWER[code]!();
+  if (code !== null && Object.hasOwn(LOCALIZED_ERRORS, code)) detail = LOCALIZED_ERRORS[code]!();
   const retryAfter = response.headers.get("retry-after");
   const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
   return new ApiError(url, response.status, detail, code, seconds === null ? null : seconds * 1000);
@@ -465,7 +486,7 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function fetchSystem(machineId = "local", signal?: AbortSignal): Promise<SystemReport> {
   const report = parseSystemReport(await getJson<unknown>(machinePath(machineId, "system"), { cache: "no-store", ...(signal ? { signal } : {}) }));
-  if (report === null) throw new ApiError(machinePath(machineId, "system"), 502, UNUSABLE_ANSWER["remote_response_invalid"]!(), "remote_response_invalid");
+  if (report === null) throw new ApiError(machinePath(machineId, "system"), 502, LOCALIZED_ERRORS["remote_response_invalid"]!(), "remote_response_invalid");
   return report;
 }
 
