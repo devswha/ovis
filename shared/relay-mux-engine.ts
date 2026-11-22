@@ -249,7 +249,12 @@ export class HttpStream extends MuxStream {
         const result = await reader.read();
         if (!this.live || uploadStopped()) return;
         if (result.done) { this.end(); return; }
-        if (result.value.length) await this.write(result.value);
+        // A browser Request.body for a string/JSON upload (such as a base64 attachment) can yield
+        // the whole body as one chunk larger than QUEUE.nonterminal; slice to one HTTP_DATA frame
+        // at a time so stream flow control paces the producer instead of tripping resource_exhausted.
+        for (let offset = 0; offset < result.value.length && this.live && !uploadStopped(); offset += WS_CONTINUATION_CAPACITY) {
+          await this.write(result.value.subarray(offset, offset + WS_CONTINUATION_CAPACITY));
+        }
       }
     } catch (error) {
       if (this.live && !uploadStopped()) this.reset("internal_error");

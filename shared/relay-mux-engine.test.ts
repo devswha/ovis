@@ -586,6 +586,57 @@ describe("request ceiling", () => {
   }, 120_000);
 });
 
+describe("upload body chunk size", () => {
+  for (const [length, chunk] of [[3 * MiB, 3 * MiB], [3 * MiB + 1, 3 * MiB + 1], [6 * MiB, 6 * MiB], [6 * MiB, 64 * KiB]] as const) {
+    it(`streams ${length} bytes in ${chunk}-byte chunks without tripping the 3 MiB nonterminal queue (#4476)`, async () => {
+      const p = pair({ trace: false });
+      const local = p.client.openHttp({ method: "POST", target: "/api/pane/image", headers: [["content-type", "application/json"]], body: "stream" });
+      const generated = source(length, chunk);
+      const sending = outcome(local.sendBody(generated.body));
+      await p.flush();
+      const remote = required(p.http[0]);
+      remote.accept();
+      const consumed = await digest(remote.body);
+      expect(consumed).toEqual({ bytes: length, digest: generated.digest() });
+      remote.headers(200);
+      remote.end();
+      await sending;
+      expect((await digest(local.body)).bytes).toBe(0);
+      await p.flush();
+      expect(local.response?.status).toBe(200);
+      expect(p.peaks.queued).toBeLessThanOrEqual(WS_CONTINUATION_CAPACITY);
+      expect(p.errors).toEqual([]);
+      expect(p.client.stats.streams).toBe(0);
+      expect(p.server.stats.streams).toBe(0);
+    }, 60_000);
+  }
+
+  it("stops mid-chunk cleanly when the server rejects a large single-chunk upload early (#4476)", async () => {
+    const p = pair({ trace: false });
+    const local = p.client.openHttp({ method: "POST", target: "/api/pane/image", headers: [["content-type", "application/json"]], body: "stream" });
+    const generated = source(6 * MiB, 6 * MiB);
+    const sending = outcome(local.sendBody(generated.body));
+    const response = digest(local.body);
+    await p.flush();
+    const remote = required(p.http[0]);
+    remote.accept();
+    const reader = remote.body.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    remote.stopRequest();
+    remote.headers(413);
+    remote.end();
+    await sending;
+    expect((await response).bytes).toBe(0);
+    await p.flush();
+    expect(local.response?.status).toBe(413);
+    expect(local.cancelled).toBe(false);
+    expect(p.errors).toEqual([]);
+    expect(p.client.stats.streams).toBe(0);
+    expect(p.server.stats.streams).toBe(0);
+  });
+});
+
 describe("WebSockets", () => {
   for (const length of [0, 1, 16372, 16373, 65536, 65537, MiB]) {
     it(`reassembles ${length} bytes with whole-message credit`, async () => {
