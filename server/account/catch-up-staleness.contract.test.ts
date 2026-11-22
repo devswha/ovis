@@ -340,16 +340,48 @@ test.each([
   expect((await pc.open(pc.device)).answer).toBe("admitted");
 });
 
-test("a PC a device's link bound a moment ago, which its account does not list yet, stays in the account", async () => {
+test("update: a PC bound by a link that its account no longer lists leaves it at its first read, and a pairing made here stays", async () => {
   const pc = await linkBoundPc();
-  const url = `https://account.test/v1/pcs/${pc.serverId}`;
-  // the device that linked it lists it only after its link was answered: a read in between finds no listing
-  expect((await pc.service.fetch(new Request(url, { method: "DELETE", headers: { authorization: `Bearer ${pc.service.issueToken(ACCOUNT)}` } }))).status).toBe(204);
+  expect((await pc.service.fetch(new Request(`https://account.test/v1/pcs/${pc.serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${pc.service.issueToken(ACCOUNT)}` } }))).status).toBe(204);
   await pc.accountMailbox.pull();
+  expect(pc.devices.account()).toBeNull();
+  expect(pc.devices.addAtPcRequired()).toBe(true);
+  expect((await pc.open(pc.member)).answer).toBe("admitted");
+  expect((await pc.open(pc.device)).answer).toBe("auth_failed");
+});
+
+test.each([
+  ["its mailbox does not answer", async (request: Request) => pathOf(request) === "/v1/pc/mailbox" ? new Response(null, { status: 503 }) : undefined],
+  ["its mailbox names no listing", async (request: Request, service: FakeAccountService) =>
+    pathOf(request) === "/v1/pc/mailbox" ? Response.json({ ...await (await service.fetch(request)).json() as object, listing_id: null }) : undefined],
+] as const)("a PC bound by a link lets no new device of the account in while %s, and keeps its account", async (_case, failing) => {
+  let fails = false;
+  const pc = await linkBoundPc(async (request, service) => fails ? failing(request, service) : undefined);
+  await pc.accountMailbox.pull();
+  expect(pc.binding()?.listing_id).toBe(await pc.listed());
+  const late = await phone();
+  pc.service.registerDevice(ACCOUNT, late.spki, "Late");
+  const lateId = accountDeviceId(pc.serverId, late.spki);
+  fails = true;
+  await pc.accountMailbox.pull();
+  expect(await pc.accountMailbox.readSnapshot()).toMatchObject({ committed: false });
+  expect(pc.devices.has(lateId)).toBe(false);
   expect(pc.devices.account()).toBe(ACCOUNT);
-  expect(pc.devices.addAtPcRequired()).toBe(false);
-  await registerSnapshotPc(pc.service, pc.fixture, pc.fixture.app.context.services.relay.currentIdentity()!);
+  fails = false;
   await pc.accountMailbox.pull();
-  expect(pc.binding()).toMatchObject({ account: ACCOUNT, listing_id: await pc.listed() });
-  expect((await pc.open(pc.device)).answer).toBe("admitted");
+  expect(pc.devices.has(lateId)).toBe(true);
+});
+
+test("a read of its own asks which listing the account names now: one named at an earlier pull lets nobody in", async () => {
+  const pc = await linkBoundPc();
+  await pc.accountMailbox.pull();
+  const headers = { authorization: `Bearer ${pc.service.issueToken(ACCOUNT)}` };
+  const url = `https://account.test/v1/pcs/${pc.serverId}`;
+  expect((await pc.service.fetch(new Request(url, { method: "DELETE", headers }))).status).toBe(204);
+  await registerSnapshotPc(pc.service, pc.fixture, pc.fixture.app.context.services.relay.currentIdentity()!);
+  const late = await phone();
+  pc.service.registerDevice(ACCOUNT, late.spki, "Late");
+  await pc.accountMailbox.readSnapshot();
+  expect(pc.devices.has(accountDeviceId(pc.serverId, late.spki))).toBe(false);
+  expect(pc.devices.account()).toBeNull();
 });

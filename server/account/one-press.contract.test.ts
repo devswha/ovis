@@ -303,7 +303,7 @@ const bindingOf = (stateDir: string) => JSON.parse(readFileSync(join(stateDir, "
  * The PC stopped, and started again from a copy of its state folder. `legacy`: its binding names no listing, as every
  * binding made before 0.5.10. `receipt`: the completion receipt of its bind was never taken.
  */
-async function restartedFrom(f: Pc, options: { legacy?: boolean; receipt?: boolean; fetch?: (request: Request) => Promise<Response> } = {}) {
+async function restartedFrom(f: Pc, options: { legacy?: boolean; receipt?: boolean; fetch?: (request: Request) => Promise<Response>; edit?: (state: { clears: Record<string, unknown>[] }) => void } = {}) {
   await f.app.stop();
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-upgrade-listing-"));
   cpSync(f.stateDir, stateDir, { recursive: true });
@@ -311,6 +311,7 @@ async function restartedFrom(f: Pc, options: { legacy?: boolean; receipt?: boole
   const state = JSON.parse(readFileSync(path, "utf8"));
   const { listing_id: listing, ...binding } = state.binding ?? {};
   if (options.legacy) writeFileSync(path, JSON.stringify({ ...state, binding }));
+  if (options.edit) { options.edit(state); writeFileSync(path, JSON.stringify(state)); }
   if (options.receipt) writeFileSync(join(stateDir, "account-completion.json"), JSON.stringify({ account: binding.account, listing_id: listing }));
   const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false,
     accountOpensAll: true, accountService: { url: "https://account.test", fetch: options.fetch ?? f.account.fetch } });
@@ -800,6 +801,134 @@ test("removed PC: a device whose digits the owner approves on the PC after it le
   await session.auth({ id: approved.id, keys: key.keys, publicKey: key.spki });
   expect((await sendLink(session, await linkOf(serverId, approved.id, "acct_1", key))).status).toBe(200);
   expect(f.devices.account()).toBe("acct_1");
+});
+
+/**
+ * A PC in no account whose own first-link code a signed-in phone paired with, and which that phone's link (same key)
+ * brought into the account: the row is the phone's own pairing and an account member at once.
+ */
+async function pcWithFirstLinkPhone() {
+  const f = await pc();
+  await setUpFor(f, "acct_1");
+  const key = await phone();
+  const paired = await signedInWith(f, await f.tabCode(), key);
+  await vouchFor(f, "acct_1", key);
+  expect((await sendLink(paired.session, await linkRecord(paired.id, "acct_1", key))).status).toBe(200);
+  expect(f.stored().find(row => row.id === paired.id)).toMatchObject({ account: "acct_1", link_moved_key: false, origin: { from: "remote", how: "link", by: null } });
+  const mine = { id: paired.id, keys: key.keys, publicKey: key.spki };
+  const opens = async (from: Parameters<typeof relayConnection>[0] = f) => {
+    const link = await relayConnection(from);
+    return link.auth(mine).then(() => "admitted", () => bounded(link.serverError));
+  };
+  return { f, key, mine, opens };
+}
+
+test("removed PC: a phone that paired with the PC's own first-link code and kept its key keeps its own access when the account removes the PC", async () => {
+  const { f, mine, opens } = await pcWithFirstLinkPhone();
+  await firstPairingRead(f);
+  await f.app.context.services.accountMailbox.pull();
+  const serverId = f.app.context.services.relay.currentIdentity()!.server_id;
+  // "I didn't add this" on another device of the account
+  expect((await f.account.fetch(new Request(`https://account.test/v1/pcs/${serverId}`, { method: "DELETE", headers: { authorization: `Bearer ${f.account.issueToken("acct_1")}` } }))).status).toBe(204);
+  await f.app.context.services.accountMailbox.pull();
+  expect(f.devices.account()).toBeNull();
+  expect(f.stored().find(row => row.id === mine.id)).toMatchObject({ role: "drive" });
+  expect(f.stored().find(row => row.id === mine.id)?.account).toBeUndefined();
+  expect(await opens()).toBe("admitted");
+  const now = await restartedFrom(f);
+  expect(await opens(now)).toBe("admitted");
+});
+
+test("upgrade: the clear of a binding without a listing ID keeps a phone that paired with the PC's own first-link code and kept its key", async () => {
+  const { f, key, mine, opens } = await pcWithFirstLinkPhone();
+  // the account removes the PC, its owner adds it again in one press, and the phone it kept links again
+  expect(f.devices.clearAccountBinding("unlisted", "account")).toBe(true);
+  expect(await opens()).toBe("admitted");
+  await admitAt(f, "acct_1");
+  expect((await press(f, "acct_1")).status).toBe(200);
+  const session = await relayConnection(f);
+  await session.auth(mine);
+  expect((await sendLink(session, await linkRecord(mine.id, "acct_1", key))).status).toBe(200);
+  expect(f.stored().find(row => row.id === mine.id)).toMatchObject({ account: "acct_1", origin: { from: "remote", how: "link" } });
+  // the update: its one-press binding names no listing, and nothing it kept confirms one
+  const now = await updated(f);
+  expect(bindingOf(now.stateDir)).toBeNull();
+  expect(await opens(now)).toBe("admitted");
+  const again = await restartedFrom({ ...f, stateDir: now.stateDir, app: now.app } as Pc);
+  expect(await opens(again)).toBe("admitted");
+});
+
+/** A PC in no account that a paired phone's link brings into the one named for it; the phone's app lists it only afterwards. */
+async function pcJustLinked() {
+  const f = await pc();
+  await setUpFor(f, "acct_1");
+  const serverId = f.app.context.services.relay.currentIdentity()!.server_id;
+  const key = await phone();
+  const paired = f.devices.pairRelay(f.devices.startPairing().code, "Phone", key.spki)!.device;
+  const session = await relayConnection(f, { serverId });
+  await session.auth({ id: paired.id, keys: key.keys, publicKey: key.spki });
+  expect((await sendLink(session, await linkOf(serverId, paired.id, "acct_1", key))).status).toBe(200);
+  expect(bindingOf(f.stateDir)).toMatchObject({ account: "acct_1" });
+  const list = () => admitlessListing(f, serverId);
+  return { f, serverId, session, list };
+}
+async function admitlessListing(f: Pc, serverId: string): Promise<void> {
+  const identity = f.app.context.services.relay.currentIdentity()!;
+  const listed = await f.account.fetch(new Request(`https://account.test/v1/pcs/${serverId}`, { method: "PUT", headers: { authorization: `Bearer ${f.account.issueToken("acct_1")}` },
+    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.test" }) }));
+  expect(listed.status).toBe(200);
+}
+
+test("a PC a device's link just brought into the account stays in it while reads find no listing yet, then names its listing", async () => {
+  const { f, session, list } = await pcJustLinked();
+  // the app asks the PC to read its mailbox before it lists it: that read, and the PC's own poll, find no listing
+  expect((await ask(session, "/api/account/status?fresh=1")).body).toMatchObject({ account: "acct_1" });
+  await f.app.context.services.accountMailbox.pull();
+  expect(f.devices.account()).toBe("acct_1");
+  expect(f.devices.addAtPcRequired()).toBe(false);
+  await list();
+  await f.app.context.services.accountMailbox.pull();
+  expect(bindingOf(f.stateDir)).toMatchObject({ account: "acct_1", listing_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+  expect(bindingOf(f.stateDir).listing_due).toBeUndefined();
+});
+
+test("a PC a device's link brought into the account that is still not listed ten minutes later leaves it", async () => {
+  const { f } = await pcJustLinked();
+  const linked = Date.now();
+  const time = spyOn(Date, "now").mockImplementation(() => linked + 10 * 60_000 - 1);
+  f.closes.push(() => time.mockRestore());
+  await f.app.context.services.accountMailbox.pull();
+  expect(f.devices.account()).toBe("acct_1");
+  time.mockImplementation(() => linked + 10 * 60_000 + 1_000);
+  await f.app.context.services.accountMailbox.pull();
+  expect(f.devices.account()).toBeNull();
+  expect(f.devices.addAtPcRequired()).toBe(true);
+});
+
+test("update: an account's removal from before the add-at-the-PC rule counts no approval from before this version first read it", async () => {
+  const { f, serverId, remove } = await pcWithLocalPhone();
+  // digits this PC approved while it was in the account: a pairing of its own, which the removal keeps
+  const old = await phone();
+  const kept = f.devices.pairRelayApproved("Old", old.spki, { path: "code" })?.device;
+  if (!kept) throw new Error("The PC approved no device");
+  expect(f.devices.originOf(kept.id)).toMatchObject({ how: "digits", by: null });
+  await remove();
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(f.devices.account()).toBeNull();
+  // as an older version wrote the clear: with no word of what was admitted before it
+  const now = await restartedFrom(f, { edit: state => { delete state.clears.at(-1)!["admits"]; } });
+  const linkAs = async (id: string, key: Phone) => {
+    const session = await relayConnection(now, { serverId });
+    await session.auth({ id, keys: key.keys, publicKey: key.spki });
+    return (await sendLink(session, await linkOf(serverId, id, "acct_1", key))).status;
+  };
+  expect(await linkAs(kept.id, old)).toBe(409);
+  expect(now.devices.account()).toBeNull();
+  const fresh = await phone();
+  const approved = now.devices.pairRelayApproved("New", fresh.spki, { path: "code" })?.device;
+  if (!approved) throw new Error("The PC approved no device");
+  expect(await linkAs(approved.id, fresh)).toBe(200);
+  expect(now.devices.account()).toBe("acct_1");
 });
 
 test("removed PC: restarting after a bare relist cannot release the old phone row", async () => {
