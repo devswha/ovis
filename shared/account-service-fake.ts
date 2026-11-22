@@ -169,9 +169,10 @@ export class FakeAccountService {
   reportsStep2Off = false;
   /**
    * account#57: each listing has its own ID; a PC's admission may name it (`with_listing_id`), and the PC, once bound,
-   * records its add complete with a proof scoped to that account and listing (POST /v1/pc/complete). Off: an older service.
+   * records its add complete with a proof scoped to that account and listing (POST /v1/pc/complete). Off: an older service,
+   * which a PC no longer binds to in one press.
    */
-  completions = false;
+  completions = true;
   private seq = 0;
   readonly requests: string[] = [];
 

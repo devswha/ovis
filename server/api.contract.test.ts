@@ -8,7 +8,7 @@ import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
-import { ACCOUNT, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
+import { pressInto, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
 import { createServer } from "./index.ts";
 import { AgentDetector, catalogLocator } from "./agent-catalog-detect.ts";
 import * as appModule from "./index.ts";
@@ -4306,8 +4306,8 @@ describe("pairing and identity", () => {
       const phone = await pair("Phone");
       const tablet = await pair("Tablet");
       if (bound) {
-        server.context.services.devices.bindByService(ACCOUNT);
-        expect(await server.context.services.accountMailbox.readSnapshot(server.context.services.devices.serviceBinding())).toMatchObject({ committed: true });
+        await pressInto(service, server.context.services);
+        expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
       }
       const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
       expect([asDevice.status, ((await asDevice.json()) as ApiError).error.code]).toEqual([400, "method_not_allowed"]);

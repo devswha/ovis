@@ -12,7 +12,7 @@ import { MachineManager } from "./machines.ts";
 import { startFakePushService } from "./push.fake.ts";
 import { createServer } from "./index.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
-import { ACCOUNT, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
+import { pressInto, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
 import { workspaceCreate, workspaceClose } from "./herdr/client.ts";
 import type { DevicePairedEvent, DevicesRevokedAll, MachineEvent, ServerMessage } from "../shared/protocol.ts";
 
@@ -484,8 +484,8 @@ it.each([false, true])("revoking every device closes each paired client's stream
     // Only a bound Step 2 PC reserves global removal to the PC.
     const driver = { ...guard, ...stranger, cookie: cookieD };
     if (accountOpensAll) {
-      server.context.services.devices.bindByService(ACCOUNT);
-      expect(await server.context.services.accountMailbox.readSnapshot(server.context.services.devices.serviceBinding())).toMatchObject({ committed: true });
+      await pressInto(service, server.context.services);
+      expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
       const refused = await revokeAll(driver);
       expect(refused.status).toBe(403);
       expect(await refused.json()).toMatchObject({ error: { code: "local_required" } });
