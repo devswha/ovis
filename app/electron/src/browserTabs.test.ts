@@ -110,6 +110,7 @@ describe.skipIf(!linux)("the built-in browser in Electron", () => {
     expect(result.pictureResizes).toBe(0);
     expect(result.pictureColours).toEqual(["rgb(0, 200, 0)", "rgb(0, 0, 200)"]);
     expect(result.afterShown).toEqual({ picture: true, staged: false });
+    expect(result.freeze).toEqual({ picture: true, drawn: false });
     expect(result.stageGivenUp).toEqual({ had: true, hidden: true, picture: null });
     // the kept download is listed for the page's right panel, the cancelled one is not
     expect(result.results).toEqual([{ kind: "download", name: "small.bin", done: true, fromTab: true, profile: "mine" }]);

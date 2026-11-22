@@ -64,6 +64,13 @@ function standInBridge(): void {
       const view = document.getElementById("stand-in-view");
       if (view) view.style.display = "none";
     },
+    // steps the tab aside with its picture as it was (a 1 px PNG stands in)
+    freeze: async () => {
+      state.calls.push(["hide"]);
+      const view = document.getElementById("stand-in-view");
+      if (view) view.style.display = "none";
+      return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    },
     close: (id: number) => { state.calls.push(["close", id]); state.tabs = state.tabs.filter((entry) => entry.id !== id); emit(); },
     navigate: async (id: number, url: string) => { state.calls.push(["navigate", id, url]); return true; },
     go: (id: number, step: string) => state.calls.push(["go", id, step]),
@@ -139,10 +146,13 @@ async function wide(browser: Browser, origin: string, theme: "light" | "dark"): 
   await unfloat();
   await float(body.x + 40);
   await page.waitForFunction(() => (window as unknown as { __browser: { calls: Call[] } }).__browser.calls.some(([name]) => name === "hide"));
+  await page.locator(".browser-panel-still").waitFor();
+  assert.ok(await page.locator(".browser-panel-still").isVisible(), `${tag}: the tab's place shows it as it was, not a blank`);
   await calls(page);
   await unfloat();
   await page.waitForFunction(() => (window as unknown as { __browser: { calls: Call[] } }).__browser.calls.some(([name]) => name === "show"));
   assert.equal((await calls(page)).filter(([name]) => name === "show").at(-1)?.[1], 1, `${tag}: the tab comes back once the menu is gone`);
+  assert.equal(await page.locator(".browser-panel-still").count(), 0, `${tag}: and its picture goes with the menu`);
 
   await holder.getByRole("button", { name: "제어 가져오기", exact: true }).click();
   await holder.getByText("내가 제어 중 · 에이전트는 멈춤", { exact: true }).waitFor();

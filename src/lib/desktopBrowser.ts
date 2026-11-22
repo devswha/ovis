@@ -56,6 +56,7 @@ interface Bridge {
   open?(url: string): Promise<number | null>;
   show?(id: number, bounds: BrowserBounds): void;
   hide?(): void;
+  freeze?(): Promise<unknown>;
   navigate?(id: number, url: string): Promise<boolean>;
   go?(id: number, step: "back" | "forward" | "reload" | "stop"): void;
   hold?(id: number, held: boolean): void;
@@ -181,6 +182,17 @@ export function showBrowserTab(id: number, bounds: BrowserBounds): void {
 
 export function hideBrowserTab(): void {
   bridge()?.hide?.();
+}
+
+/** Steps the shown tab aside, with a picture of it as it was (a PNG data URL), or null when the app has none. */
+export async function freezeBrowserTab(): Promise<string | null> {
+  const found = bridge();
+  if (typeof found?.freeze !== "function") {
+    found?.hide?.();
+    return null;
+  }
+  const picture = await found.freeze().catch(() => null);
+  return typeof picture === "string" && picture.startsWith("data:image/png;base64,") ? picture : null;
 }
 
 /** loads another address in a tab of the person's own, or in an agent's tab they hold */

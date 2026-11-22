@@ -55,6 +55,7 @@ if (isConnectionScreen) {
     open: (url: string): Promise<number | null> => ipcRenderer.invoke("ovis:tabs-open", url),
     show: (id: number, bounds: { x: number; y: number; width: number; height: number }): void => ipcRenderer.send("ovis:tabs-show", id, bounds),
     hide: (): void => ipcRenderer.send("ovis:tabs-hide"),
+    freeze: (): Promise<string | null> => ipcRenderer.invoke("ovis:tabs-freeze"),
     thumbnail: (id: number): Promise<string | null> => ipcRenderer.invoke("ovis:tabs-thumbnail", id),
     reveal: (id: string): void => ipcRenderer.send("ovis:tabs-reveal", id),
     close: (id: number): void => ipcRenderer.send("ovis:tabs-close", id),

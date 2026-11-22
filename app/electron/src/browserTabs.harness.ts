@@ -103,7 +103,14 @@ void app.whenReady().then(async () => {
     colours.push(pixels === null ? "none" : `rgb(${pixels[2]}, ${pixels[1]}, ${pixels[0]})`);
   }
   result["pictureColours"] = colours;
-  // shown, hidden again, then pictured: it is on the stage only while its picture is taken
+  // stepped aside for the page's own menu: no longer drawn over the page (its picture is checked in the real app: a
+  // headless window paints a shown view only now and then)
+  const drawnBefore = window.contentView.children.length;
+  tabs.show(cover.id, { x: 0, y: 0, width: 400, height: 300 });
+  await new Promise((done) => setTimeout(done, 300));
+  const frozen = await tabs.freeze();
+  result["freeze"] = { picture: frozen === null || frozen.startsWith("data:image/png"), drawn: window.contentView.children.length > drawnBefore };
+    // shown, hidden again, then pictured: it is on the stage only while its picture is taken
   tabs.show(cover.id, { x: 0, y: 0, width: 400, height: 300 });
   tabs.hide();
   result["afterShown"] = {

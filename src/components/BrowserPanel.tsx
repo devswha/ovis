@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, Globe, RotateCw, X } from "lucide-react";
 import { useT } from "../lib/i18n.ts";
-import { goBrowserTab, hideBrowserTab, holdBrowserTab, navigateBrowserTab, openBrowserTab, showBrowserTab, typedAddress, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
+import { freezeBrowserTab, goBrowserTab, hideBrowserTab, holdBrowserTab, navigateBrowserTab, openBrowserTab, showBrowserTab, typedAddress, type DesktopBrowserTab } from "../lib/desktopBrowser.ts";
 import { useFloatingOver } from "../lib/floatingOver.ts";
 import "./FileViewer.css";
 import "./BrowserPanel.css";
@@ -31,12 +31,20 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
   const floated = useFloatingOver(body, id !== null && !covered);
   const aside = covered || floated;
 
+  // while the tab steps aside, the page shows it as it was, not a blank
+  const [still, setStill] = useState<{ id: number; picture: string } | null>(null);
   useLayoutEffect(() => {
     const place = body.current;
-    if (id === null || aside || place === null) {
+    if (id !== null && aside && place !== null) {
+      let current = true;
+      void freezeBrowserTab().then((picture) => { if (current && picture !== null) setStill({ id, picture }); });
+      return () => { current = false; };
+    }
+    if (id === null || place === null) {
       hideBrowserTab();
       return;
     }
+    setStill(null);
     const show = () => {
       const { x, y, width, height } = place.getBoundingClientRect();
       showBrowserTab(id, { x, y, width, height });
@@ -105,6 +113,7 @@ export function BrowserPanel({ tab, onOpened, onClose, panelStart, covered = fal
         </div>}
         {refused && <p className="browser-panel-refused" role="alert">{t("This address can't be opened in the built-in browser.")}</p>}
         <div ref={body} className="file-viewer-body browser-panel-body">
+          {aside && still !== null && still.id === id && <img className="browser-panel-still" src={still.picture} alt="" draggable={false} />}
           {tab === null && <p className="browser-panel-hint">{t("Type an address to open it in a tab of your own. Its cookies stay apart from the agents' tabs.")}</p>}
         </div>
       </section>

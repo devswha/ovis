@@ -734,6 +734,7 @@ if (!app.requestSingleInstanceLock()) {
     if (tabs && tab !== null && numbers) tabs.show(tab, box as BrowserBounds);
   });
   ipcMain.on("ovis:tabs-hide", (event) => browserFor(event)?.hide());
+  ipcMain.handle("ovis:tabs-freeze", (event) => browserFor(event)?.freeze() ?? null);
   ipcMain.handle("ovis:tabs-thumbnail", (event, id: unknown) => {
     const tab = tabId(id);
     return tab === null ? null : browserFor(event)?.thumbnail(tab) ?? null;

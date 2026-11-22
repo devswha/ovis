@@ -121,6 +121,8 @@ export class BrowserTabs {
   private tabs = new Map<number, Tab>();
   private nextId = 1;
   private shown: number | null = null;
+  /** counts each show and hide asked for: a freeze hides only if none came while it took its picture */
+  private placed = 0;
   /**
    * Where an agent's tab nobody looks at is drawn while its picture is taken (thumbnail): a window of its own, off the
    * screen and closed to the pointer (Linux ignores a window's opacity, so off the screen is what hides it). None on a
@@ -223,6 +225,7 @@ export class BrowserTabs {
 
   /** Draws the tab in `bounds` of the window (in the page's CSS pixels), over the place the page keeps for it. */
   show(id: number, bounds: BrowserBounds): void {
+    this.placed += 1;
     const tab = this.tabs.get(id);
     const window = this.window();
     if (!tab || tab.allowed === null || !window) return;
@@ -237,7 +240,25 @@ export class BrowserTabs {
     this.shown = id;
   }
 
+  /**
+   * Steps the shown tab aside for something of the page over its place (a dialog, a menu), with a picture of it as it was
+   * for the page to show meanwhile: taken first, so the page's menu is under the tab only for that moment. A show or hide
+   * asked for while the picture is taken wins.
+   */
+  async freeze(): Promise<string | null> {
+    const tab = this.shown === null ? undefined : this.tabs.get(this.shown);
+    if (!tab) {
+      this.hide();
+      return null;
+    }
+    const placed = ++this.placed;
+    const picture = await capture(tab.view.webContents, null);
+    if (this.placed === placed) this.hide();
+    return picture;
+  }
+
   hide(): void {
+    this.placed += 1;
     const tab = this.shown === null ? undefined : this.tabs.get(this.shown);
     this.shown = null;
     const window = this.window();
