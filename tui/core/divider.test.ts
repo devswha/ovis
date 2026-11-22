@@ -60,7 +60,7 @@ const ratioWritten = (change: (layout: OvisLayout) => Edited): number | null => 
 describe("a divider drag's writes", () => {
   it("one write in flight, the newest ratio kept for the next, nothing more once it landed", async () => {
     const { asked, edit } = heldEdits();
-    const writes = new DividerWrites({ edit, refused: () => {} });
+    const writes = new DividerWrites({ edit, tree: () => undefined, refused: () => {} });
     writes.move(1, "t", NAME, 0.3, false);
     writes.move(1, "t", NAME, 0.4, false);
     writes.move(1, "t", NAME, 0.6, false);
@@ -76,7 +76,7 @@ describe("a divider drag's writes", () => {
 
   it("a second divider dragged while the first one's write is held waits for it, and both end at their released ratios", async () => {
     const { asked, edit } = heldEdits();
-    const writes = new DividerWrites({ edit, refused: () => {} });
+    const writes = new DividerWrites({ edit, tree: () => undefined, refused: () => {} });
     const A = { first: "a", second: "b", direction: "right" } as const;
     const B = { first: "b", second: "c", direction: "down" } as const;
     let root = TREE;
@@ -104,7 +104,7 @@ describe("a divider drag's writes", () => {
 
   it("draws the newest ratio while it lasts, and after the release until the shown tree changes", async () => {
     const { asked, edit } = heldEdits();
-    const writes = new DividerWrites({ edit, refused: () => {} });
+    const writes = new DividerWrites({ edit, tree: () => undefined, refused: () => {} });
     const shown = { root: right(leaf("a"), leaf("b")), zoomed: null };
     writes.move(1, "t", NAME, 0.3, false);
     expect(writes.shape("t", shown)?.root).toEqual(right(leaf("a"), leaf("b"), 0.3));
@@ -121,7 +121,7 @@ describe("a divider drag's writes", () => {
 
   it("a release whose write is held keeps the tree drawn at the release: a rival's ratio seen first after the answer is drawn at once", async () => {
     const { asked, edit } = heldEdits();
-    const writes = new DividerWrites({ edit, refused: () => {} });
+    const writes = new DividerWrites({ edit, tree: () => undefined, refused: () => {} });
     const shown = { root: right(leaf("a"), leaf("b")), zoomed: null };
     writes.move(1, "t", NAME, 0.3, false);
     writes.move(1, "t", NAME, 0.3, true);
@@ -134,10 +134,25 @@ describe("a divider drag's writes", () => {
     expect(writes.shape("t", rival)).toBe(rival);
   });
 
+  it("a divider released while its tab is not drawn keeps the core's tree at the release: a rival's ratio there is drawn on the way back", async () => {
+    const { asked, edit } = heldEdits();
+    let core = right(leaf("a"), leaf("b"));
+    const writes = new DividerWrites({ edit, tree: (tab) => (tab === "t" ? core : undefined), refused: () => {} });
+    // the tab was switched away before the first move: it is not drawn from the first move to the release
+    writes.move(1, "t", NAME, 0.3, false);
+    writes.move(1, "t", NAME, 0.3, true);
+    asked[0]!.answer(null);
+    await turn();
+    core = right(leaf("a"), leaf("b"), 0.3);
+    // another writer changed the tab before it is shown again: the first draw of it holds that writer's ratio
+    const rival = { root: right(leaf("a"), leaf("b"), 0.75), zoomed: null };
+    expect(writes.shape("t", rival)).toBe(rival);
+  });
+
   it("a divider gone from the fresh document: stale, the local ratio dropped, and the same grab writes nothing more", async () => {
     const { asked, edit } = heldEdits();
     const refusals: DividerRefusal[] = [];
-    const writes = new DividerWrites({ edit, refused: (refusal) => refusals.push(refusal) });
+    const writes = new DividerWrites({ edit, tree: () => undefined, refused: (refusal) => refusals.push(refusal) });
     const shown = { root: right(leaf("a"), leaf("b")), zoomed: null };
     writes.move(1, "t", NAME, 0.3, false);
     // the change itself answers stale on a document where a and b lie one over the other
@@ -157,7 +172,7 @@ describe("a divider drag's writes", () => {
   it("a refused write ends only the grab that issued it: a newer grab of the same divider released meanwhile still writes its ratio", async () => {
     const { asked, edit } = heldEdits();
     const refusals: DividerRefusal[] = [];
-    const writes = new DividerWrites({ edit, refused: (refusal) => refusals.push(refusal) });
+    const writes = new DividerWrites({ edit, tree: () => undefined, refused: (refusal) => refusals.push(refusal) });
     writes.move(1, "t", NAME, 0.3, false);
     writes.move(1, "t", NAME, 0.3, true);
     // grabbed again and released before the first write is answered, at the same ratio and then another
@@ -176,7 +191,7 @@ describe("a divider drag's writes", () => {
   it("a refused write: the error's code, the local ratio dropped", async () => {
     const { asked, edit } = heldEdits();
     const refusals: DividerRefusal[] = [];
-    const writes = new DividerWrites({ edit, refused: (refusal) => refusals.push(refusal) });
+    const writes = new DividerWrites({ edit, tree: () => undefined, refused: (refusal) => refusals.push(refusal) });
     writes.move(1, "t", NAME, 0.3, false);
     asked[0]!.fail(Object.assign(new Error("the Herdr app arranges this core"), { code: "unsupported" }));
     await turn();

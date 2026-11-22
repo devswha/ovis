@@ -64,6 +64,8 @@ export interface DividerWritesOptions {
   edit: (change: (layout: OvisLayout) => Edited) => Promise<{ changed: boolean; reason: string | null }>;
   /** a write did not land; the drag's local ratio is dropped */
   refused: (refusal: DividerRefusal) => void;
+  /** the core's own tree of tab `tab` as it stands now, with no local ratio in it; undefined where it shows no such tab */
+  tree: (tab: string) => LayoutNode | undefined;
 }
 
 interface Drag {
@@ -77,8 +79,9 @@ interface Drag {
   /** the button was released */
   done: boolean;
   /**
-   * The core's tree it was last drawn over before its newest ratio was answered (at the release at the latest): once
-   * released and answered, the local ratio is drawn until the core's tree differs from it
+   * The core's tree as last seen before its newest ratio was answered, at a move (the release included) or a draw
+   * of its tab: once released and answered, the local ratio is drawn until the core's tree differs from it, also
+   * when its tab was not drawn between the release and that change
    */
   over: LayoutNode | null;
 }
@@ -115,7 +118,7 @@ export class DividerWrites {
     drag.grab = grab;
     drag.ratio = ratio;
     drag.done = done;
-    drag.over = null;
+    drag.over = this.options.tree(tab) ?? drag.over;
     this.write();
   }
 

@@ -782,6 +782,27 @@ describe("mouse on the whole screen", () => {
     expect((await hostScreen(run)).text(10, 94, 97)).toBe(" || ");
   }, TEST_MS);
 
+  it("a divider released on another tab draws the core's ratio once another writer changed it while its tab was not shown", async () => {
+    const run = await demo120();
+    await run.keys("press@71:10,drag@60:10");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(10, 59, 62)).toBe(" || ");
+    await run.keys("ctrl+b,n");
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
+    await run.live();
+    await run.keys("release@60:10");
+    await run.advance(20);
+    await rivalWrites(run.core, (value) => ({ ...value, workspaces: value.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.map((tab) => tab.id === "t-main" ? { ...tab, root: { ...(tab.root as object), ratio: 0.75 } } : tab) })) }));
+    await run.advance(20);
+    // back by a click on "1:main" in the tab bar
+    expect((await hostScreen(run)).text(0, 25, 30)).toBe("1:main");
+    await run.keys("click@26:0");
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+    await run.live();
+    // the core's 72 of 96 columns: t1's box ends at x 95, t2's starts at x 96
+    expect((await hostScreen(run)).text(10, 94, 97)).toBe(" || ");
+  }, TEST_MS);
+
   it("divider drag is stale after a foreign edit", async () => {
     const run = await demo120();
     await run.keys("press@71:10");

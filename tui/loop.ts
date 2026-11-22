@@ -201,6 +201,7 @@ export function startLoop(options: LoopOptions): Loop {
 
   const dividers = new DividerWrites({
     edit: (change) => editLayout(link, change),
+    tree: (tab) => world.view().tabs.get(tab)?.root,
     refused: (refusal) => {
       guard(() => {
         dispatch({ type: "notice", code: refusal.code, data: refusal.reason === null ? {} : { reason: refusal.reason }, at: clock.now() });
