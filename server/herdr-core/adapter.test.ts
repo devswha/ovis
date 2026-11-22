@@ -219,6 +219,37 @@ describe("herdr-core adapter", () => {
     ]);
   });
 
+  it("tells agy's plan review at rest in its status events as in the snapshot, done on the turn that counts it, and its question blocked", async () => {
+    let channel = 0;
+    const working = { app: "antigravity", state: "working" };
+    const { socket, cores } = await setup([terminal("t1"), terminal("t2")], {
+      "events.subscribe": () => {
+        channel = cores.at(-1)!.channel();
+        return { channel, seq: 1, terminals: [terminal("t1", { status: working, turn: 1, labels: { "herdr.seen": "1" } }), terminal("t2", { status: working, turn: 1, labels: { "herdr.seen": "1" } })] };
+      },
+    });
+    const frames: EventFrame[] = [];
+    const started = Promise.withResolvers<void>();
+    const told = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "pane.agent_status_changed", pane_id: "t1" }, { type: "pane.agent_status_changed", pane_id: "t2" }], {
+      // the reply that starts the next turn is the last event: what came before it is all told by then
+      onEvent: (frame) => { frames.push(frame); if (frame.data?.["pane_id"] === "t1" && frame.data["agent_status"] === "working") told.resolve(); },
+      onStarted: () => started.resolve(),
+    }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    const core = cores[0]!;
+    const blocked = (kind: string, msg: string) => ({ status: { app: "antigravity", state: "blocked", kind, msg } });
+    core.notify(channel, "event", { seq: 2, type: "status", terminal: "t1", data: blocked("permission", "Approve plan") });
+    core.notify(channel, "event", { seq: 3, type: "turn", terminal: "t1", data: { turn: 2, state: "blocked" } });
+    core.notify(channel, "event", { seq: 4, type: "labels", terminal: "t1", data: { labels: { "herdr.seen": "2" } } });
+    core.notify(channel, "event", { seq: 5, type: "status", terminal: "t2", data: blocked("question", "Approve plan") });
+    core.notify(channel, "event", { seq: 6, type: "status", terminal: "t1", data: { status: working } });
+    await told.promise;
+    const shown = (pane: string, status: string) => ({ event: "pane.agent_status_changed", data: { pane_id: pane, agent_status: status, agent: "agy" } });
+    expect(frames).toEqual([shown("t1", "done"), shown("t1", "idle"), shown("t2", "blocked"), shown("t1", "working")]);
+  });
+
   it("types send_text into an attach at the terminal's own grid, and answers once hc took the attach's close", async () => {
     const { socket, cores } = await setup([terminal("t1", { cols: 90, rows: 20 })]);
     await paneSendText("t1", "héllo 한글", socket);

@@ -1415,11 +1415,14 @@ function paneDirection(value: unknown): PaneDirection {
 /** `machine`: the other machine an event is about (a `doc` there names no terminal); none for this core's own */
 interface HcEvent { type: string; terminal?: string; machine?: string; data?: Record<string, unknown> }
 
-/** A status report as hc sends it in a record or a `status` event; null when it is none. */
+/**
+ * A status report as hc sends it in a record or a `status` event; null when it is none. Its kind and
+ * message stay, so an event reads agy's plan review as the snapshot does (snapshot.ts `agyPlanReview`).
+ */
 function statusOf(reported: unknown): HcStatus | null {
-  return isRecord(reported) && typeof reported["state"] === "string"
-    ? { state: reported["state"], ...(typeof reported["app"] === "string" ? { app: reported["app"] } : {}) }
-    : null;
+  if (!isRecord(reported) || typeof reported["state"] !== "string") return null;
+  const { app, kind, msg } = reported;
+  return { state: reported["state"], ...(typeof app === "string" ? { app } : {}), ...(typeof kind === "string" ? { kind } : {}), ...(typeof msg === "string" ? { msg } : {}) };
 }
 
 /** A terminal's labels as hc sends them, its string values only. */
