@@ -211,17 +211,14 @@ it.each([
 });
 
 it.each([
-  ["account_unreachable", "auth", "account-unreachable"],
-  ["account_readd_required", "auth", "account-readd"],
-  // a PC that left its account selects no account open: it says why in place of the missing feature
-  ["account_readd_required", "hello", "account-readd"],
-] as const)("listing confirmation wire: %s in answer to %s reaches a client that offered the feature", async (code, at, failure) => {
+  ["account_unreachable", "account-unreachable"],
+  ["account_readd_required", "account-readd"],
+] as const)("listing confirmation wire: %s in answer to AUTH reaches a client that offered the feature", async (code, failure) => {
   const offered: boolean[] = [];
-  const refusal = () => accountOpenRefusalFrame(code, code);
   const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
     ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true,
-      hello: (frame) => { offered.push(frame.payload.features.includes("account-listing-errors-1")); return at === "hello" ? refusal() : undefined; },
-      auth: refusal }),
+      hello: (frame) => { offered.push(frame.payload.features.includes("account-listing-errors-1")); },
+      auth: () => accountOpenRefusalFrame(code, code) }),
   }) });
   await run.openPage();
   const state = run.current().state;

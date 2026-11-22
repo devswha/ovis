@@ -24,7 +24,7 @@ export function accountOpenPeer(identity: ReturnType<typeof generateKeyPair>, pe
   readonly features: readonly string[];
   readonly provisional?: boolean;
   readonly auth: (frame: Extract<MuxFrame, { type: typeof FrameType.AUTH }>) => Uint8Array;
-  readonly hello?: (frame: Extract<MuxFrame, { type: typeof FrameType.HELLO }>) => Uint8Array | void;
+  readonly hello?: (frame: Extract<MuxFrame, { type: typeof FrameType.HELLO }>) => void;
   readonly pair?: (frame: Extract<MuxFrame, { type: typeof FrameType.PAIR | typeof FrameType.KEY_PROVE }>) => Uint8Array | Promise<Uint8Array>;
 }): RelaySocket {
   const nonce = Buffer.alloc(32, 7).toString("base64url");
@@ -62,8 +62,7 @@ export function accountOpenPeer(identity: ReturnType<typeof generateKeyPair>, pe
       let reply: Uint8Array | Promise<Uint8Array> | undefined;
       switch (frame.type) {
         case FrameType.HELLO:
-          reply = peer.hello?.(frame) ?? undefined;
-          if (reply !== undefined) break;
+          peer.hello?.(frame);
           if (frame.payload.required_features.some((feature) => !peer.features.includes(feature))) {
             reply = encodeFrame({ type: FrameType.SESSION_ERROR, stream_id: 0, flags: 0, payload: { code: "unsupported_extension", message: "" } });
           } else {

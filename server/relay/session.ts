@@ -153,6 +153,10 @@ export class RelaySession {
   private tailnet = false;
   /** the phone offered ACCOUNT_LISTING_ERRORS: one that did not gets the older code that forgets no key over an outage */
   private listingErrors = false;
+  /** this PC left its account and waits to be added again: a device that proves a key it knew is told so */
+  private readdAsk = false;
+  /** the service binding whose listing answer let this session's device in: its AUTH_OK commits only while that answer stands */
+  private listedFor: string | undefined;
   /** the phone offered SERVER_TIME_HEADER: one that did not refuses the header */
   private serverTime = false;
   private unwatch: (() => void) | undefined;
@@ -374,13 +378,11 @@ export class RelaySession {
         if (this.proofNegotiated) selected.push(PAIR_PC_PROOF);
         if (this.pcCodeAdd && this.options.services.devices.accountPolicyActive()) selected.push(PC_CODE_ACCOUNT_ONLY);
         this.authReceipts = this.options.services.devices.accountPolicyActive() && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE);
-        if (this.authReceipts) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
+        // out of its account for a binding that named no listing: the account sign-in is taken so a known key can be proved and told why
+        this.readdAsk = !this.authReceipts && this.listingErrors && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE) && this.options.services.devices.readdRequired();
+        if (this.authReceipts || this.readdAsk) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
         this.accountCodes = this.authReceipts;
-        if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) {
-          const readd = this.listingErrors && frame.payload.required_features.includes(ACCOUNT_OPENS_ALL_FEATURE) && this.options.services.devices.readdRequired();
-          this.close(readd ? "account_readd_required" : "unsupported_extension");
-          return;
-        }
+        if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
         if (this.sasBinding && intents[0] === PAIR_INTENT_VOUCHED) this.intent = "vouched";
@@ -422,6 +424,11 @@ export class RelaySession {
             return;
           }
           if (joined !== null) { await this.enterProved(joined.match); return; }
+        }
+        if (!device && this.readdAsk && frame.type === FrameType.AUTH
+          && await devices.provedFormerAccountKey(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId })) {
+          if (this.mux.active) this.refuseListing("readd");
+          return;
         }
         if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
           const receipts = await devices.refusedRelayReceipts(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId });
@@ -643,18 +650,20 @@ export class RelaySession {
         if (this.mux.active) this.refuseListing(verdict);
         return;
       }
+      this.listedFor = binding;
     }
     this.enter(device);
   }
 
   /**
    * Before an account device is told to wait for this PC's first read: with the account service not answering, or the
-   * PC out of its account, that read is not coming, and the device hears which. An older client keeps its wait.
+   * PC out of its account, that read is not coming, and the device hears which.
    */
   private async readComing(id: string): Promise<boolean> {
     const { devices } = this.options.services;
     const binding = devices.serviceBinding();
-    if (!this.listingErrors || binding === null || !devices.accountOnly(id)) return true;
+    // a device that knows the hold but not the two codes keeps its wait; one that knows neither would read the refusal as its removal
+    if ((!this.listingErrors && this.accountCodes) || binding === null || !devices.accountOnly(id)) return true;
     const verdict = await this.listingVerdict(binding);
     if (verdict === "confirmed") return true;
     if (this.mux.active) this.refuseListing(verdict);
@@ -713,6 +722,8 @@ export class RelaySession {
       payload: { session_id: this.sessionId, device_id: device.id, role: device.role, ...this.hints(row.provisional) },
     }, undefined, () => {
       if (!devices.sessionRow(device.id)) { this.close("auth_revoked"); return; }
+      // the frame waited in the queue past the listing's answer: the device asks again rather than enter on an old one
+      if (this.listedFor !== undefined && !this.options.services.accountMailbox.listingFresh(this.listedFor)) { this.close("timeout"); return; }
       this.mux.authenticate(device.id);
       this.state = "ready";
       logAccess({ event: "relay.session.accepted", origin: devices.accountOnly(device.id) ? "account" : "local-pairing",
