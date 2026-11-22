@@ -150,14 +150,16 @@ export function useAddressOpen() {
   const failed = (cause: unknown): void => { setError(cause instanceof Error ? cause.message : String(cause)); };
   /**
    * What a scanned or typed address does: a pairing link of this app opens at its PC's page, where the pairing asks
-   * first; one of another origin is refused; a PC's own address opens (a public http one only after a warning); anything
+   * first, and so does an account PC's standing QR (its page, with the sign-in fragment or none: signInLink); a pairing
+   * link of another origin is refused; a PC's own address opens (a public http one only after a warning); anything
    * else says so.
    */
   const take = (url: URL | null): void => {
     if (url === null) { setError(t("That is not an http or https address.")); return; }
     const offer = url.hash.startsWith("#offer=");
     if (url.origin === window.location.origin) {
-      if (offer && serverIdOfPath(url.pathname) !== null) window.location.assign(url.href);
+      const page = offer || url.hash === "" || url.hash.startsWith("#sign-in=");
+      if (page && serverIdOfPath(url.pathname) !== null) window.location.assign(url.href);
       else setError(t("That is not an http or https address."));
       return;
     }
