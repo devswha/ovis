@@ -125,10 +125,16 @@ export class Run {
     const socket = join(folder, "hc.sock");
     const host = new HeadlessHost({ cols: options.cols ?? 120, rows: options.rows ?? 40, colorTerm: options.colorTerm ?? "truecolor", answer: PROBE_ANSWER });
     const run = new Run(core, host, new ManualClock(), folder, socket);
-    await run.listen();
-    await run.settle();
-    if (run.loop.link.state.kind === "Online") fixture?.online?.(core);
-    await run.settle();
+    try {
+      await run.listen();
+      await run.settle();
+      if (run.loop.link.state.kind === "Online") fixture?.online?.(core);
+      await run.settle();
+    } catch (error) {
+      // the caller never gets this run: it lets go of the listener and the folder itself, and the startup error is the one thrown
+      await run.close().catch(() => {});
+      throw error;
+    }
     return run;
   }
 
@@ -282,13 +288,26 @@ export class Run {
   async close(): Promise<LoopEnd> {
     let end: LoopEnd | null = null;
     void this.loop.done.then((how) => { end = how; });
-    await this.settle();
-    if (!end) {
-      this.loop.dispatch({ type: "action", action: "detach", at: this.clock.current });
-      for (let waited = 0; !end && waited < 3_000; waited += 100) await this.advance(100);
+    let failed = false;
+    try {
+      await this.settle();
+      if (!end) {
+        this.loop.dispatch({ type: "action", action: "detach", at: this.clock.current });
+        for (let waited = 0; !end && waited < 3_000; waited += 100) await this.advance(100);
+      }
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      // the listener and the folder go whatever the detach met; an error of their own is thrown only when none came before
+      try {
+        await this.cutLine();
+      } catch (error) {
+        if (!failed) throw error;
+      } finally {
+        rmSync(this.folder, { recursive: true, force: true });
+      }
     }
-    await this.cutLine();
-    rmSync(this.folder, { recursive: true, force: true });
     return end ?? { kind: "crashed", error: new Error("the screen did not end") };
   }
 }
