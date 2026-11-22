@@ -1000,7 +1000,7 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
       version_args: ["--version"],
       install_dirs: { macos: ["~/.kimi-code/bin"], linux: ["~/.kimi-code/bin"], windows: ["%USERPROFILE%/.kimi-code/bin"] },
     },
-    sign_in: { provider: null, command: null, in_agent: "/login", api_keys: [], required: true },
+    sign_in: { provider: "kimi", command: ["kimi", "login"], in_agent: "/login", api_keys: [], required: true },
     after_install: ["On Windows, install Git for Windows before starting Kimi Code so it can use Git Bash."],
     min_version: null,
   },
