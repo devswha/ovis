@@ -130,7 +130,7 @@ export const ENGINE_ENUMS = {
   GhosttyResult: ["OUT_OF_SPACE", "NO_VALUE"],
   GhosttyTerminalOption: ["USERDATA", "WRITE_PTY", "BELL", "SIZE", "COLOR_FOREGROUND", "COLOR_BACKGROUND", "COLOR_CURSOR", "COLOR_PALETTE",
     "KITTY_IMAGE_STORAGE_LIMIT", "CLIPBOARD_WRITE", "SCROLLBACK_MAX_BYTES", "SCROLLBACK_MAX_LINES", "MODE_DEFAULT", "MODE", "RENDER_HOLD"],
-  GhosttyTerminalData: ["COLS", "ROWS", "ACTIVE_SCREEN", "KITTY_KEYBOARD_FLAGS", "SCROLLBAR", "SCROLLBACK_ROWS", "KITTY_GRAPHICS", "MODE"],
+  GhosttyTerminalData: ["COLS", "ROWS", "ACTIVE_SCREEN", "SCREEN_GENERATION", "KITTY_KEYBOARD_FLAGS", "SCROLLBAR", "SCROLLBACK_ROWS", "KITTY_GRAPHICS", "MODE"],
   GhosttyTerminalScreen: ["ALTERNATE"],
   GhosttyTerminalScrollViewportTag: ["BOTTOM", "DELTA"],
   GhosttyRenderStateData: ["DIRTY", "ROW_ITERATOR", "CURSOR_VISUAL_STYLE", "CURSOR_VISIBLE", "CURSOR_VIEWPORT_HAS_VALUE",
@@ -255,10 +255,8 @@ export interface EngineModes {
   /** win32-input-mode (DEC 9001): the module does not keep it, so a screen's engine watches the written bytes for it; false on the browser's */
   win32Input: boolean;
   /**
-   * How many times the active screen changed, or the terminal was fully reset (ESC c or `reset()`), as a screen's
-   * engine saw its written bytes take effect: a set, reset or restored 47, 1047 or 1049 counts only when it moved
-   * the screen, and a write that leaves the alternate screen and enters it again counts twice, which `altScreen`
-   * alone cannot show. The browser's, which does not watch its bytes, counts only its resets.
+   * Native screen switches and full resets, including a 1049 re-entry that clears the current alternate.
+   * Compare for equality to bind a selection to its screen. The browser counts only its own reset() calls.
    */
   screens: number;
 }
@@ -357,8 +355,6 @@ const MODE = {
 const WIN32_INPUT_MODE = 9001;
 /** DECCOLM: a program switches the grid to 80 or 132 columns with it */
 const DECCOLM = 3;
-/** the modes that switch between the main and the alternate screen */
-const SCREEN_SWITCHES: readonly number[] = [47, 1047, 1049];
 
 const MOUSE_BUTTONS = { left: "LEFT", middle: "MIDDLE", right: "RIGHT", wheelUp: "FOUR", wheelDown: "FIVE", wheelLeft: "SIX", wheelRight: "SEVEN" } as const;
 const KEY_ACTIONS = { press: "PRESS", repeat: "REPEAT", release: "RELEASE" } as const;
@@ -572,15 +568,12 @@ export class GhosttyEngine {
   /** since the last resize the program switched its columns (DECCOLM), or the terminal was reset: the grid may not be the size the engine was given */
   private gridTouched = false;
   private win32Input = false;
-  private screens = 0;
+  private browserResets = 0;
   /** where the written bytes stand in a `CSI ? Pm h|l` that may name 9001, carried from one write to the next */
   private scan: "ground" | "esc" | "csi" | "private" = "ground";
   private scanParam = 0;
   private scanNames9001 = false;
   private scanNamesColumns = false;
-  private scanNamesScreen = false;
-  /** where in the bytes being written a full reset or a sequence that may switch screens ends (see followWrittenModes) */
-  private readonly cuts: { end: number; reset: boolean }[] = [];
   /** an error a callback of the caller threw while the module ran: kept out of the wasm frames and thrown after them */
   private callbackError: unknown = null;
   private keyEncoder = 0;
@@ -750,25 +743,7 @@ export class GhosttyEngine {
     if (bytes.length === 0) return;
     // the browser's loader writes in many small pieces: its engines feed the module directly, as they always did
     if (!this.events) return this.feed(bytes);
-    this.guard(() => {
-      this.reserveInput(bytes.length);
-      // fed up to the end of each sequence that may switch screens, with the active screen read around each piece:
-      // a switch counts where it took effect (a restored mode too), two in one write count twice, a redundant one
-      // not at all
-      this.followWrittenModes(bytes);
-      let from = 0;
-      for (const cut of this.cuts) {
-        this.feedCountingSwitch(bytes.subarray(from, cut.end), cut.reset);
-        from = cut.end;
-      }
-      if (from < bytes.length) this.feedCountingSwitch(bytes.subarray(from), false);
-    });
-  }
-
-  private feedCountingSwitch(bytes: Uint8Array, reset: boolean): void {
-    const before = this.onAlternate();
-    this.feed(bytes);
-    if (reset || this.onAlternate() !== before) this.screens++;
+    this.guard(() => this.feed(bytes));
   }
 
   private onAlternate(): boolean {
@@ -796,6 +771,7 @@ export class GhosttyEngine {
 
   private feed(bytes: Uint8Array): void {
     this.reserveInput(bytes.length);
+    if (this.events) this.followWrittenModes(bytes);
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
     this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
   }
@@ -804,11 +780,9 @@ export class GhosttyEngine {
    * Follows `CSI ? Pm h` and `CSI ? Pm l` naming 9001 (win32-input-mode), which the module parses but does not
    * keep, or 3 (DECCOLM, which changes the grid's columns), and a full reset (ESC c), across writes. Only the byte after an ESC and the inside of a `CSI ?`
    * are looked at: any other sequence is skipped to the next ESC, so plain and styled output costs one
-   * indexOf per escape sequence. Leaves in `cuts` where each full reset and each `CSI ? Pm h|l|r` naming a screen
-   * switch ends in `bytes`, for `write` to read the active screen there.
+   * indexOf per escape sequence. Screen lifetime is reported by the module, not inferred here.
    */
   private followWrittenModes(bytes: Uint8Array): void {
-    this.cuts.length = 0;
     for (let at = 0; at < bytes.length; at++) {
       const byte = bytes[at]!;
       if (this.scan === "ground") {
@@ -825,7 +799,6 @@ export class GhosttyEngine {
           if (byte === 0x63) {
             this.win32Input = false;
             this.gridTouched = true;
-            this.cuts.push({ end: at + 1, reset: true });
           }
           this.scan = byte === 0x5b ? "csi" : "ground";
           continue;
@@ -834,20 +807,16 @@ export class GhosttyEngine {
           this.scanParam = 0;
           this.scanNames9001 = false;
           this.scanNamesColumns = false;
-          this.scanNamesScreen = false;
           continue;
         case "private":
           if (byte >= 0x30 && byte <= 0x39) this.scanParam = Math.min(this.scanParam * 10 + byte - 0x30, 1e6);
           else if (byte === 0x3b) {
             if (this.scanParam === WIN32_INPUT_MODE) this.scanNames9001 = true;
             if (this.scanParam === DECCOLM) this.scanNamesColumns = true;
-            if (SCREEN_SWITCHES.includes(this.scanParam)) this.scanNamesScreen = true;
             this.scanParam = 0;
           } else if (byte >= 0x40 && byte <= 0x7e) {
             if ((byte === 0x68 || byte === 0x6c) && (this.scanNames9001 || this.scanParam === WIN32_INPUT_MODE)) this.win32Input = byte === 0x68;
             if ((byte === 0x68 || byte === 0x6c) && (this.scanNamesColumns || this.scanParam === DECCOLM)) this.gridTouched = true;
-            // set, reset, or restored (XTRESTORE, which the module applies as a set or a reset)
-            if ((byte === 0x68 || byte === 0x6c || byte === 0x72) && (this.scanNamesScreen || SCREEN_SWITCHES.includes(this.scanParam))) this.cuts.push({ end: at + 1, reset: false });
             this.scan = "ground";
           }
       }
@@ -909,6 +878,11 @@ export class GhosttyEngine {
       this.view().setUint8(this.scratch, 0);
       this.check(this.x.ghostty_terminal_get(this.terminal, data.KITTY_KEYBOARD_FLAGS, this.scratch), "kitty keyboard flags");
       const kittyFlags = this.view().getUint8(this.scratch);
+      let screens = this.browserResets;
+      if (this.events) {
+        this.check(this.x.ghostty_terminal_get(this.terminal, data.SCREEN_GENERATION, this.scratch), "screen generation");
+        screens = Number(this.view().getBigUint64(this.scratch, true));
+      }
       // with several on, the most capable wins: a program that sets one after another means the last, and the last is the most capable
       const mouse = on(MODE.anyMouse) ? "any" : on(MODE.buttonMouse) ? "button" : on(MODE.normalMouse) ? "normal" : on(MODE.x10Mouse) ? "x10" : "none";
       const mouseFormat = on(MODE.sgrPixelsMouse) ? "sgrPixels" : on(MODE.sgrMouse) ? "sgr" : on(MODE.urxvtMouse) ? "urxvt" : on(MODE.utf8Mouse) ? "utf8" : "x10";
@@ -916,7 +890,7 @@ export class GhosttyEngine {
         altScreen: this.onAlternate(),
         mouse, mouseFormat, bracketedPaste: on(MODE.bracketedPaste), kittyFlags, focusReports: on(MODE.focus),
         syncOutput: on(MODE.syncOutput), appCursor: on(MODE.appCursor), appKeypad: on(MODE.appKeypad), altScroll: on(MODE.altScroll),
-        win32Input: this.win32Input, screens: this.screens,
+        win32Input: this.win32Input, screens,
       };
     });
   }
@@ -960,7 +934,7 @@ export class GhosttyEngine {
       this.x.ghostty_terminal_reset(this.terminal);
       this.placementsGeneration = -1;
       this.win32Input = false;
-      this.screens++;
+      if (!this.events) this.browserResets++;
     });
   }
 

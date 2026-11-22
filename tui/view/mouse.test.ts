@@ -197,6 +197,19 @@ describe("the pointer", () => {
     ]);
   });
 
+  it("returning focus before a paint cannot revive a selection from an earlier screen", () => {
+    const pointer = new Pointer();
+    const look = lookA(false);
+    const scene = sceneOf("a", look);
+    pointer.mouse("screen", ev(["press", "left", 1, 1]), scene);
+    pointer.mouse("screen", ev(["motion", "left", 3, 2]), scene);
+    pointer.focusChanged("b");
+    pointer.focusChanged("a");
+    const replacement = { ...look, screen: look.screen + 2 };
+    expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), sceneOf("a", replacement))).toEqual([{ kind: "redraw" }]);
+    expect(pointer.shown("a", "a", replacement)).toBeNull();
+  });
+
   it("changing pane focus does not end a divider drag in the same tab", () => {
     const pointer = new Pointer();
     const look = lookA(false);
@@ -612,17 +625,21 @@ describe("mouse on the whole screen", () => {
     expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
   }, TEST_MS);
 
-  it("a drag on the alternate screen whose program leaves it and enters a new one in one output copies nothing at the release", async () => {
+  for (const [ordering, transition] of [
+    ["two mode changes", "\x1b[?1049l\x1b[?1049h"],
+    ["a compound restore", "\x1b[?47;1049r"],
+    ["a NUL in CSI entry", "\x1b[\x00?47l\x1b[?1049h"],
+  ]) it(`an alternate screen replaced by ${ordering} in one output copies nothing at release`, async () => {
     const run = await demo120();
     const program = run.core.program("t1");
-    program.output("\x1b[?1049h\x1b[H\x1b[2JALT-ONE-TEXT");
+    program.output("\x1b[?47s\x1b[?1049h\x1b[?1049s\x1b[H\x1b[2JALT-ONE-TEXT");
     await run.advance(20);
     const from = run.host.output().length;
     await run.keys("press@27:2,drag@30:2");
     await run.advance(20);
     expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("T-ON");
     // one write: the main screen is never drawn, and the pane is on its alternate screen before and after it
-    program.output("\x1b[?1049l\x1b[?1049h\x1b[H\x1b[2JALT-TWO-TEXT");
+    program.output(`${transition}\x1b[H\x1b[2JALT-TWO-TEXT`);
     await run.advance(20);
     expect((await hostScreen(run)).text(2, 25, 36)).toBe("ALT-TWO-TEXT");
     await run.keys("release@30:2");

@@ -376,6 +376,10 @@ describe("shared/ghostty engine", () => {
     tight.engine.write(bytesOf(" ok\x1b[6n"));
     expect(rowText(screenRows(tight.engine).get(0)!)).toBe("hello ok");
     expect(tight.replies).toEqual(["\x1b[1;9R"]);
+    tight.engine.write(bytesOf("\x1b[?90"));
+    expect(message(() => tight.engine.write(bytesOf(big)))).toBe(`ghostty-vt: no memory for a write (${2 << 20} bytes)`);
+    tight.engine.write(bytesOf("01h"));
+    expect(tight.engine.modes().win32Input).toBe(true);
     tight.engine.dispose();
 
     // every other buffer a screen's engine takes is refused the same way
@@ -619,6 +623,52 @@ describe("shared/ghostty engine", () => {
     }
   });
 
+  it("counts both switches in one compound restore at every write boundary", () => {
+    const restore = bytesOf("\x1b[?47;1049r");
+    for (let cut = 0; cut <= restore.length; cut++) {
+      const { engine } = screenEngine(20, 4);
+      try {
+        engine.write(bytesOf("\x1b[?47s\x1b[?1049h\x1b[?1049sOLD"));
+        engine.write(restore.subarray(0, cut));
+        engine.write(restore.subarray(cut));
+        expect(engine.modes()).toMatchObject({ altScreen: true, screens: 3 });
+        expect(rowText(screenRows(engine).get(0)!)).toBe("");
+      } finally {
+        engine.dispose();
+      }
+    }
+  });
+
+  it("counts CSI screen changes across embedded controls, not canceled commands", () => {
+    // Raw bytes, not UTF-8 encodings of C1 code points. NUL preserves CSI entry, C1 CSI
+    // starts a new entry, and CAN, SUB and C1 ST abandon the first command.
+    for (const [control, changes] of [[0, 2], [0x9b, 2], [0x18, 0], [0x1a, 0], [0x9c, 0]] as const) {
+      const { engine } = screenEngine(20, 4);
+      try {
+        engine.write(bytesOf("\x1b[?1049h"));
+        engine.write(Uint8Array.of(0x1b, 0x5b, control, ...bytesOf("?47l\x1b[?47h")));
+        expect({ control, screens: engine.modes().screens }).toEqual({ control, screens: 1 + changes });
+        expect(engine.modes().altScreen).toBe(true);
+      } finally {
+        engine.dispose();
+      }
+    }
+  });
+
+  it("distinguishes a redundant set from re-entering a cleared alternate", () => {
+    const { engine } = screenEngine(20, 4);
+    try {
+      engine.write(bytesOf("\x1b[?1049hOLD\x1b[?47h"));
+      expect(engine.modes().screens).toBe(1);
+      expect(rowText(screenRows(engine).get(0)!)).toBe("OLD");
+      engine.write(bytesOf("\x1b[?1049h"));
+      expect(rowText(screenRows(engine).get(0)!)).toBe("");
+      expect(engine.modes()).toMatchObject({ altScreen: true, screens: 2 });
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it("engine 9001", () => {
     const { engine } = screenEngine(20, 4);
     try {
@@ -645,8 +695,10 @@ describe("shared/ghostty engine", () => {
     }
     const browsers = new GhosttyEngine(shared, 20, 4, { widths: "xterm", images: false });
     try {
-      browsers.write(bytesOf("\x1b[?9001h"));
-      expect(browsers.modes().win32Input).toBe(false);
+      browsers.write(bytesOf("\x1b[?9001h\x1b[?1049h"));
+      expect(browsers.modes()).toMatchObject({ win32Input: false, altScreen: true, screens: 0 });
+      browsers.reset();
+      expect(browsers.modes()).toMatchObject({ altScreen: false, screens: 1 });
     } finally {
       browsers.dispose();
     }
