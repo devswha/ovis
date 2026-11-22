@@ -133,7 +133,7 @@ export class FakeAccountService {
   /** what a sign-in made through the sign-in routes says of two-step sign-in; tests set it */
   signInTwoStep: boolean | null = null;
   /** one-press admissions by account and PC (`box`), and each account's admit times, for the daily cap */
-  private readonly pcAdmissions = new Map<string, { at: number; taken: boolean; family: string }>();
+  private readonly pcAdmissions = new Map<string, { at: number; taken: boolean; family: string; listing?: string }>();
   private readonly admitTimes = new Map<string, number[]>();
   /** accounts that admitted or removed a PC: never empty again for the first-PC exemption */
   private readonly usedAccounts = new Set<string>();
@@ -173,6 +173,11 @@ export class FakeAccountService {
    * which a PC no longer binds to in one press.
    */
   completions = true;
+  /**
+   * The mailbox says beside `listing_id` whether that listing stands on a one-press admission this PC took
+   * (`listing_admitted`). Off: a service from before the field, which omits it.
+   */
+  saysListingAdmitted = true;
   private seq = 0;
   readonly requests: string[] = [];
 
@@ -636,7 +641,7 @@ export class FakeAccountService {
       this.admitTimes.set(account, [...times, this.now()]);
       // one instant for the admission, its directory entry and this answer: a retry answers the same
       const at = this.now();
-      this.pcAdmissions.set(box(admitted, account), { at, taken: false, family: session.family });
+      this.pcAdmissions.set(box(admitted, account), { at, taken: false, family: session.family, ...(entry.listing_id === undefined ? {} : { listing: entry.listing_id }) });
       this.usedAccounts.add(account);
       entry.new_until = new Date(this.now() + PC_NEW_MS).toISOString();
       entry.admitted_at = new Date(at).toISOString();
@@ -865,8 +870,10 @@ export class FakeAccountService {
         .filter((a) => a.server_id === challenge.server_id && a.account === body.account && this.now() - Date.parse(a.at) < ADMISSION_TTL_MS)
         .map(({ key, label, at }) => ({ key, label, at }));
       // as the service: the listing it holds this PC under, when it confirms one (never one a device code listed under Step 2)
+      const named = entry !== undefined && !(this.opensAll && entry.listed_by_device === true) ? entry.listing_id ?? null : null;
+      const taken = this.pcAdmissions.get(key);
       const listing = this.completions && body.with_listing_id === true
-        ? { listing_id: entry !== undefined && !(this.opensAll && entry.listed_by_device === true) ? entry.listing_id ?? null : null } : {};
+        ? { listing_id: named, ...(this.saysListingAdmitted ? { listing_admitted: named !== null && entry?.admitted_at != null && taken?.taken === true && taken.listing === named } : {}) } : {};
       return json({ ...listing, records: rest.slice(0, MAILBOX_PAGE).map(({ seq, record }) => ({ seq, record })), more: rest.length > MAILBOX_PAGE, admissions, quiet_admissions: quiet });
     }
     return problem(404, "not_found", "Unknown request");
