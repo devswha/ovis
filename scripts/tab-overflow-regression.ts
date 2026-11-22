@@ -10,6 +10,7 @@ const TAB_LABELS = ["api", "web", "docs", "deploy", "review", "tests", "release-
   "search", "mobile", "analytics", "onboarding", "payments", "metrics", "support", "staging", "backups", "last-tab"];
 const HEADER = ".header-tabs .tab-strip";
 const HALF = '.pane-slot[data-side="left"] .tab-strip';
+const STRIP = ".pane-slot .tab-strip";
 const TAB_MIN = 120;
 
 async function browserRow(page: Page, selector: string): Promise<{ tabs: { name: string; width: number; selected: boolean; closeShown: boolean; shellIcon: boolean }[]; more: string | null; overflow: number }> {
@@ -75,6 +76,21 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
         assert.ok(row.tabs.every((tab) => tab.shellIcon), `${when}: every shell tab shows its shell glyph`);
         return row;
       };
+      // a row's tabs, + and More are parted by the strip's gap: through a whole tab's width of room, step by step,
+      // the tabs it keeps and More still fit without scrolling
+      const fitsAcross = async (when: string, selector: string, widths: number[]): Promise<void> => {
+        for (const width of widths) {
+          await page.setViewportSize({ width, height: 900 });
+          await page.waitForFunction((sel) => {
+            const node = document.querySelector(sel);
+            return !!node && node.scrollWidth - node.clientWidth <= 1;
+          }, selector, { timeout: 3_000 }).catch(async () => {
+            const past = await page.locator(selector).evaluate((node) => node.scrollWidth - node.clientWidth);
+            throw new Error(`${when} at ${width}px: the row scrolls ${past}px past its end though More holds the tabs that do not fit`);
+          });
+        }
+      };
+      const widths = (from: number, span: number): number[] => Array.from({ length: Math.floor(span / 4) + 1 }, (_, step) => from + step * 4);
 
       await page.goto(`${origin}/?pane=${encodeURIComponent(last)}`);
       const row = await rowSettled("20 tabs, the last open", "last-tab");
@@ -103,6 +119,7 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
 
       await page.setViewportSize({ width: 1024, height: 900 });
       await rowSettled("at 1024px", "metrics");
+      await fitsAcross("the header's row", HEADER, widths(1024, TAB_MIN + 8));
       await page.setViewportSize({ width: 1280, height: 900 });
       console.log("PASS the header's row keeps every tab at least 120px wide and its close only on a full-size tab; the tabs that do not fit are listed behind More, and one picked there opens in the row");
 
@@ -118,6 +135,9 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
       await page.locator(`${HALF} .tab-strip-more`).click();
       await page.getByRole("menu").getByRole("menuitem").filter({ has: page.locator(".menu-item-main", { hasText: /^last-tab$/ }) }).click();
       await rowSettled("last-tab picked from split half More", "last-tab", HALF);
+      await fitsAcross("a split half's row", HALF, widths(1280, 2 * (TAB_MIN + 8)));
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await rowSettled("a split half back at 1280px", "last-tab", HALF);
 
       const fewStrip = '.pane-slot[data-side="right"] .tab-strip';
       const rightRow = await browserRow(page, fewStrip);
@@ -129,8 +149,68 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
       await page.locator('.pane-slot[data-side="right"]').getByRole("button", { name: "Close this half", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length <= 1, null, { timeout: 15_000 });
       await rowSettled("after a split closed", "last-tab");
+      console.log("PASS each split half draws the same browser-style tab row with shell glyphs, open-tab close, and More overflow, and a row never scrolls beside More");
+
+      // below 769px the pane keeps its own strip, which scrolls sideways instead of listing tabs behind More
+      await page.setViewportSize({ width: 700, height: 900 });
+      await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
+      const strip = page.locator(STRIP);
+      await page.locator(`${STRIP} [role="tab"]`, { has: page.locator(".tab-strip-label", { hasText: /^last-tab$/ }) }).waitFor({ state: "attached", timeout: 15_000 });
+      await page.waitForFunction((selector) => {
+        const node = document.querySelector(selector);
+        return !!node && node.scrollWidth - node.clientWidth > 100;
+      }, STRIP, { timeout: 5_000 });
+      const spacing = await page.locator(`${STRIP} .tab-strip-item:not(.is-active) .tab-strip-tab`).first().evaluate((tab) => {
+        const style = getComputedStyle(tab);
+        const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        return { padding: [style.paddingLeft, style.paddingRight], gap: style.columnGap, want: { padding: [token("--space-2"), token("--space-2")], gap: token("--space-1") } };
+      });
+      assert.deepEqual({ padding: spacing.padding, gap: spacing.gap }, spacing.want, "below 769px a resting tab of the pane's own strip keeps its compact spacing");
+      const scrollLeft = (): Promise<number> => strip.evaluate((node) => node.scrollLeft);
+      await strip.evaluate((node) => { node.scrollLeft = 0; });
+      const box = await strip.boundingBox();
+      assert.ok(box, "the pane's strip is drawn");
+      await page.mouse.move(box.x + 60, box.y + box.height / 2);
+      await page.mouse.wheel(0, 400);
+      await page.waitForFunction((selector) => (document.querySelector(selector)?.scrollLeft ?? 0) > 0, STRIP, { timeout: 5_000 })
+        .catch(() => { throw new Error("a vertical wheel over the overflowing strip left it unscrolled"); });
+      const down = await scrollLeft();
+      await page.mouse.wheel(0, -400);
+      await page.waitForFunction(([selector, was]) => (document.querySelector(selector as string)?.scrollLeft ?? was) < (was as number), [STRIP, down] as const, { timeout: 5_000 })
+        .catch(() => { throw new Error("a wheel turned up did not scroll the strip back"); });
+      await page.mouse.wheel(0, 10_000);
+      await page.waitForFunction((selector) => {
+        const node = document.querySelector(selector);
+        const end = [...(node?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])].find((tab) => tab.querySelector(".tab-strip-label")?.textContent === "last-tab");
+        const add = node?.querySelector(".tab-strip-add");
+        if (!node || !end || !add) return false;
+        const view = node.getBoundingClientRect();
+        const item = end.getBoundingClientRect();
+        return item.left >= view.left && item.right <= add.getBoundingClientRect().left + 1;
+      }, STRIP, { timeout: 5_000 })
+        .catch(() => { throw new Error("wheeling down to the strip's end left the last tab out of view"); });
+      // a wheel that counts in lines (Firefox's) or pages moves the strip as far as one in pixels would
+      for (const [mode, delta, least] of [[1, 3, 30], [2, 1, 200]] as const) {
+        const moved = await strip.evaluate((node, [deltaMode, deltaY]) => {
+          node.scrollLeft = 0;
+          node.dispatchEvent(new WheelEvent("wheel", { deltaY, deltaMode, bubbles: true, cancelable: true }));
+          return { moved: node.scrollLeft, room: node.scrollWidth - node.clientWidth };
+        }, [mode, delta] as const);
+        assert.ok(moved.moved >= Math.min(least, moved.room - 1), `a wheel in ${mode === 1 ? "lines" : "pages"} scrolls the strip (${moved.moved}px of ${moved.room})`);
+      }
+      const leftAlone = (init: WheelEventInit): Promise<boolean> => strip.evaluate((node, wheel) =>
+        node.dispatchEvent(new WheelEvent("wheel", { ...wheel, bubbles: true, cancelable: true })), init);
+      assert.equal(await leftAlone({ deltaX: 120, deltaY: 10 }), true, "a sideways wheel or trackpad swipe is the browser's");
+      // mostly down, a little sideways either way: turned into sideways scroll from deltaY alone, the
+      // strip would move against the swipe's own sideways part (#2103)
+      for (const deltaX of [20, -20]) assert.equal(await leftAlone({ deltaX, deltaY: 40 }), true, `a diagonal trackpad swipe (deltaX ${deltaX}) is the browser's`);
+      assert.equal(await leftAlone({ deltaY: 120, ctrlKey: true }), true, "a pinch is the browser's");
+      await page.goto(`${origin}/?pane=${encodeURIComponent(few.root_pane.pane_id)}`);
+      await page.locator(`${STRIP} [role="tab"][aria-selected="true"]`).waitFor({ timeout: 15_000 });
+      assert.equal(await strip.evaluate((node) => node.scrollWidth <= node.clientWidth), true, "the one tab fits");
+      assert.equal(await leftAlone({ deltaY: 120 }), true, "a strip whose tabs fit leaves the wheel alone");
     } finally { await context.close(); }
-    console.log("PASS each split half draws the same browser-style tab row with shell glyphs, open-tab close, and More overflow");
+    console.log("PASS below 769px the pane's own strip keeps its compact spacing; a vertical mouse wheel scrolls it sideways to its last tab (pixels, lines, pages), and leaves a sideways wheel, a diagonal swipe, a pinch and a strip that fits to the browser");
   } finally {
     if (workspaceId) await workspaceClose(workspaceId).catch(() => {});
     if (fewId) await workspaceClose(fewId).catch(() => {});
