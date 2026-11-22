@@ -11,7 +11,14 @@
   it until it can, also those another device of the account approved. Devices paired with the PC
   itself keep working.
 
+- A PC removed from an account is no longer put back by a device that still has it paired: opening
+  it adds nothing to the account, and the PC joins an account again only when it is added at the PC
+  itself.
+
 ### Changed
+- **Remove** in Manage account now takes the PC out of the account for good, also a PC that was
+  added by pairing a device: once it is online again, the account's devices no longer open it, and
+  devices paired with the PC itself still do.
 - A PC that was added to an account in one press before this release is added again once after the
   update: the account's devices show **Add this PC to your account again** for it. Devices paired
   with the PC itself keep working.

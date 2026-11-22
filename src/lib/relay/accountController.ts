@@ -621,6 +621,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         return response;
       };
       const status = await pcAccountStatus(fetch);
+      // The account stopped listing this PC, and it waits for an add made at the PC itself. The pairing this device
+      // kept still opens it, as a device of its own: no link goes out and nothing is listed. A new pairing sends its
+      // link as ever, since only the PC knows whether a code it issued itself was used
+      if (!fresh && status.account === null && status.pcAddRequired === true) {
+        await enrollmentStore.update(serverId, (current) => {
+          const { account: _left, account_enrollment: _steps, ...own } = assertPairing(current) as SavedDevice;
+          return own;
+        });
+        return "local";
+      }
       const linking = needsLink(status, device, session.account);
       // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),
       // gets this client's enrollment: the account's removals first, read from its other PCs
@@ -697,11 +707,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       assertPairing(await store.get(serverId));
       // the directory of the sign-in this enrollment began with: one stored meanwhile (another tab) is another account's.
       // A send the connection dropped under goes again once it is back, while this enrollment still owns the pairing
-      const listing = { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay };
-      const again = sendAgainWhenBack({ before: sending, signal });
-      await account.forSignIn(session).putPc(serverId, listing, signal, again);
-      // listed first, so a removal this client signs from now on reaches it by mailbox too
+      // Only the enrollment that brings a PC into the account lists it. Opening a PC that is in the account writes
+      // nothing to the directory: the account may have removed it a moment ago, and this would put it back
       if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
+        const listing = { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay };
+        const again = sendAgainWhenBack({ before: sending, signal });
+        // listed first, so a removal this client signs from now on reaches it by mailbox too
+        await account.forSignIn(session).putPc(serverId, listing, signal, again);
         // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
         let signedIn = opened;
         // the account's other PCs this device is in, read first for what they keep out (docs/account.md, "Enrolling a PC")
