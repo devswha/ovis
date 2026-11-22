@@ -160,6 +160,22 @@ describe("Claude Code's Code Mode in the chat", () => {
     ]);
   });
 
+  it("shows a script still running when its turn ended by its receipt, not as running, until its output comes", () => {
+    const lines = [
+      prompt("go"),
+      call("toolu_repl14", "REPL", { code: "go()", description: "Go" }),
+      result("toolu_repl14", "(dispatched #14)"),
+      answer("Started."),
+      prompt("meanwhile"),
+      pollEvents([event("Rc14", 'eval="14"', "<result>done</result>")]),
+      answer("Done."),
+    ];
+    // a page of settled turns ends before the prompt after them: the output that came after it is not on it
+    expect(tools(parseClaudeTranscript(lines.slice(0, 4).join(""))).map((tool) => [tool.output, tool.state])).toEqual([["(dispatched #14)", "ok"]]);
+    expect(tools(parseClaudeTranscript(lines.slice(0, 5).join(""))).map((tool) => [tool.output, tool.state])).toEqual([["(dispatched #14)", "ok"]]);
+    expect(tools(parseClaudeTranscript(lines.join(""))).map((tool) => [tool.output, tool.state])).toEqual([["done", "ok"]]);
+  });
+
   it("adds a script's late output to a REPL row that held its own output", () => {
     const turns = parseClaudeTranscript([
       prompt("go"),

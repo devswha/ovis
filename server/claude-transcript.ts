@@ -540,7 +540,13 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
 
   /** the last human prompt and the entry it hangs from: a send Claude Code cancelled before
    *  any reply is re-sent as a sibling of it, and its own screen shows only the re-send */
+  /** A script still running when its turn ended reads as its receipt, as before Code Mode was read, not as running:
+   *  its output may come only after the next prompt, on a page read apart from this one. Output that comes replaces it. */
+  const turnEnded = (): void => {
+    for (const [n, { part }] of scripts) if (part.state === "pending") { trimOutput(part, `(dispatched #${n})`, part.call_id ?? ""); part.state = "ok"; }
+  };
   const pushPrompt = (turn: ConversationTurn, entry: TranscriptEntry): void => {
+    turnEnded();
     const { lastPrompt } = state;
     if (lastPrompt !== null && !lastPrompt.answered && typeof entry.parentUuid === "string" && entry.parentUuid === lastPrompt.parent) {
       const index = turns.indexOf(lastPrompt.turn);
@@ -768,6 +774,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       if (entry.isVirtual !== true) {
         state.completed = stop === "end_turn";
         state.atWork = stop === "tool_use" || (stop == null && content.some((block: unknown) => typeof block === "object" && block !== null && "type" in block && block.type === "tool_use"));
+        if (state.completed) turnEnded();
       } else state.completed = false;
       if (entry.timestamp) turn.end_ts = entry.timestamp;
       for (const block of content) {
