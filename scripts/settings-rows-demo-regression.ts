@@ -521,7 +521,10 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       const removeOffice = sheetPcs.locator("li").filter({ hasText: "office-mac" }).getByRole("button", { name: "Remove", exact: true });
       await removeOffice.click();
       const confirm = page.getByRole("alertdialog", { name: "Remove office-mac from your account?" });
-      await confirm.getByText("It revokes nothing on office-mac", { exact: false }).waitFor();
+      await confirm.getByText("Once office-mac is online again it leaves your account too", { exact: false }).waitFor();
+      const asked = await confirm.innerText();
+      assert.ok(asked.includes("add it on office-mac"), `the removal's confirm says where the PC is added again (${width}px, ${theme})`);
+      assert.ok(!asked.includes("revokes nothing"), `the removal's confirm no longer says it revokes nothing on the PC (${width}px, ${theme})`);
       if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pc-remove-${width}-${theme}.png`), animations: "disabled" });
       await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
       await confirm.waitFor({ state: "detached" });
