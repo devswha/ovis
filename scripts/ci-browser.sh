@@ -93,6 +93,7 @@ run_script scripts/terminal-bundled-mono-regression.ts
 run_script scripts/terminal-served-font-regression.ts
 run_script scripts/application-paging-regression.ts
 run_script scripts/pane-paging-demo-regression.ts
+run_script scripts/chat-reading-position-demo-regression.ts
 run_script scripts/link-menu-demo-regression.ts
 run_script scripts/external-link-tab-regression.ts
 run_script scripts/key-bar-customization-demo-regression.ts
@@ -274,6 +275,7 @@ run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
 run_script scripts/relay-e2e-regression.ts
 run_script scripts/offline-typing-relay-regression.ts
+run_script scripts/add-pc-more-relay-regression.ts
 run_script scripts/relay-shell-browser-qa.ts
 run_script scripts/relay-offline-reasons-regression.ts
 run_script scripts/relay-media-browser-qa.ts
