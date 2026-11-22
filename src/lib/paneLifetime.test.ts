@@ -93,13 +93,13 @@ describe("pane state per herdr lifetime", () => {
     expect(store.dismissCopy("w1:p1", copy.id)).toBe(true);
     const reloaded = page(storage); reloaded.observe([pc("local", "dismiss-herdr-a")], title);
     const restored = new PendingMessageStore(() => reloaded.paneStorage, reloaded);
-    restored.publish("w1:p1", [copy], [], "new-scope");
+    restored.accept("w1:p1", copy, null);
     expect(restored.read("w1:p1")).toEqual([]);
     expect(reloaded.paneStorage.getItem(DRAFT)).toBe("keep this draft");
     lifetimes.observe([pc("local", "dismiss-herdr-b")], title);
     expect(lifetimes.unsent().map(item => item.text)).toEqual(["keep this draft"]);
     // The recycled pane ID in another herdr does not inherit display tombstones.
-    store.accept("w1:p1", copy, "new-herdr");
+    store.accept("w1:p1", copy, null);
     expect(store.read("w1:p1")).toMatchObject([{ id: copy.id }]);
   });
   it("keeps a pane's state across server restarts on one herdr, and leaves a replaced herdr's text to recovery", () => {

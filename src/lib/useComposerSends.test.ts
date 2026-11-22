@@ -60,11 +60,13 @@ it("an offline uncertain display dismissal sends no pending action, submit or dr
     const actions = sends(pane, { ok: true }, shown, { agent: "pi", socketRef: { current: socket }, submitComposerMessage: (...args) => { wire.push(args); return Promise.resolve({ ok: true }); } });
     await actions.actOnPending(pending.id, "dismiss");
     await actions.actOnPending(pending.id, "steer");
-    pendingMessages.publish(owner, [pending], [], "next-scope");
     expect(wire).toEqual([]); expect(shown).toEqual([]);
     expect(composerDrafts.read(key).text).toBe("keep my existing draft");
     expect(pendingMessages.read(owner)).toEqual([]);
     expect(new PendingMessageStore(() => saved.storage).read(owner)).toEqual([]);
+    // a connection that lists the ID again holds the bridge's record: only the bridge can settle it
+    pendingMessages.publish(owner, [pending], [], "next-scope");
+    expect(pendingMessages.read(owner)).toMatchObject([{ id: pending.id, serverOwned: true }]);
   } finally { composerDrafts.set(key, ""); saved.restore(); }
 });
 
@@ -89,7 +91,7 @@ it("a live owner's uncertain dismissal asks the bridge to dismiss it, never as a
   } finally { composerDrafts.set(key, ""); saved.restore(); }
 });
 
-it.each(["pending_uncertain", "pending_not_found"])("a live owner's dismissal the bridge refuses with %s hides only this page's copy", async (code) => {
+it.each(["pending_uncertain", "pending_not_found"])("a live owner's dismissal the bridge refuses with %s hides the copy until the bridge lists that record again", async (code) => {
   const saved = savedStorage(), pane = `dismiss-refused-${code}`, owner = paneStorageId("local", pane), wire: unknown[] = [];
   const pending = { id: `refused-${code}`, request_id: 10, text: "question", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
   pendingMessages.accept(owner, pending, "scope");
@@ -98,8 +100,9 @@ it.each(["pending_uncertain", "pending_not_found"])("a live owner's dismissal th
     await sends(pane, { ok: true }, [], { socketRef: { current: socket } }).actOnPending(pending.id, "dismiss");
     expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]);
     expect(pendingMessages.read(owner)).toEqual([]);
+    expect(new PendingMessageStore(() => saved.storage).read(owner)).toEqual([]);
     pendingMessages.publish(owner, [pending], [], "scope");
-    expect(pendingMessages.read(owner)).toEqual([]);
+    expect(pendingMessages.read(owner)).toMatchObject([{ id: pending.id, serverOwned: true }]);
   } finally { saved.restore(); }
 });
 
@@ -116,9 +119,30 @@ it.each(["disconnected", "not_transmitted"])("a live owner's dismissal whose con
     await sends(pane, { ok: true }, [], { socketRef: { current: socket } }).actOnPending(pending.id, "dismiss");
     expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]);
     expect(pendingMessages.read(owner)).toEqual([]);
-    pendingMessages.publish(owner, [pending], [], "next-scope");
-    expect(pendingMessages.read(owner)).toEqual([]);
+    expect(new PendingMessageStore(() => saved.storage).read(owner)).toEqual([]);
   } finally { saved.restore(); }
+});
+
+it("another tab's dismissal of its uncertain copy leaves this tab's live row with Edit, Send now and Discard, and its updates", async () => {
+  const saved = savedStorage(), pane = "dismiss-other-tab", owner = paneStorageId("local", pane), wire: unknown[] = [];
+  const live = { id: "live-queued", request_id: 12, text: "run the tests", state: "queued" as const, created_at: "2026-11-17T00:00:00Z" };
+  pendingMessages.publish(owner, [live], [], "scope");
+  const otherTab = new PendingMessageStore(() => paneLifetimes.paneStorage);
+  expect(otherTab.read(owner).map((row) => row.state)).toEqual(["uncertain"]);
+  expect(otherTab.dismissCopy(owner, live.id)).toBe(true);
+  expect(otherTab.read(owner)).toEqual([]);
+  pendingMessages.refresh(owner);
+  const socket = { connected: true, on: () => () => {}, pendingAction: (...args: unknown[]) => { wire.push(args); return Promise.resolve({ ok: true }); } } as unknown as HerdrSocket;
+  try {
+    expect(pendingMessages.read(owner)).toMatchObject([{ id: live.id, state: "queued", serverOwned: true }]);
+    const actions = sends(pane, { ok: true }, [], { socketRef: { current: socket } });
+    for (const action of ["edit", "steer", "discard"] as const) await actions.actOnPending(live.id, action);
+    expect(wire).toEqual([[pane, live.id, "discard", 0, true], [pane, live.id, "steer", 0, false], [pane, live.id, "discard", 0, false]]);
+    pendingMessages.publish(owner, [{ ...live, state: "held", error: { code: "agent_blocked", message: "waits for Send now" } }], [], "scope");
+    expect(pendingMessages.read(owner)).toMatchObject([{ id: live.id, state: "held", serverOwned: true }]);
+    otherTab.refresh(owner);
+    expect(otherTab.read(owner)).toEqual([]);
+  } finally { pendingMessages.publish(owner, [], [{ id: live.id, outcome: "discarded" }], "scope"); saved.restore(); }
 });
 
 it("display-only intent never turns into a queue discard after an uncertain row changes", async () => {

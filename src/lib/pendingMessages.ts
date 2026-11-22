@@ -71,8 +71,14 @@ export class PendingMessageStore {
   /** ids this page discarded: a later resumed held ID never offers them for an explicit send again */
   private discarded = new Map<string, Set<string>>();
   private receiptOrder: Array<{ owner: string; id: string; scope: string }> = [];
-  /** Display-only tombstones in the pane lifetime record; never delivery or withdrawal proof. */
+  /**
+   * Display-only tombstones in the pane lifetime record; never delivery or withdrawal proof. They hide saved copies
+   * only: a row a live connection here holds (another tab's dismissal included) stays until the bridge settles it.
+   */
   private dismissed = new Map<string, Set<string>>();
+  private hidden(owner: string, message: PendingMessageView): boolean {
+    return !message.serverOwned && this.dismissed.get(owner)?.has(message.id) === true;
+  }
   private saved = new Map<string, string | null>();
   private unsaved = new Set<string>();
   private busy = new Set<string>();
@@ -184,7 +190,7 @@ export class PendingMessageStore {
     let raw: string | null = null;
     try { raw = this.storage().getItem(PREFIX + owner); } catch {}
     this.rememberDismissed(owner, raw);
-    const restored = this.restored(raw).filter(message => !this.dismissed.get(owner)?.has(message.id));
+    const restored = this.restored(raw).filter((message) => !this.hidden(owner, message));
     const messages = restored.map((message) => this.applyHeldResumed(owner, message));
     this.saved.set(owner, raw);
     this.rows.set(owner, messages);
@@ -196,7 +202,7 @@ export class PendingMessageStore {
       const raw = this.storage().getItem(PREFIX + owner);
       if (this.saved.get(owner) === raw) return;
       this.rememberDismissed(owner, raw);
-      const loaded = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id) && !this.dismissed.get(owner)?.has(message.id))
+      const loaded = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id) && !this.hidden(owner, message))
         .map((message) => message.state === "held" && this.discarded.get(owner)?.has(message.id) ? { ...message, state: "uncertain" as const } : message);
       const savedStates = new Map<string, unknown>();
       try {
@@ -222,7 +228,7 @@ export class PendingMessageStore {
       });
       const heldAgain = next.some((message, at) => message !== loaded[at]);
       // Another tab cannot alter or discard a live connection's authoritative rows.
-      for (const own of this.read(owner).filter((message) => !this.dismissed.get(owner)?.has(message.id) && (this.unsaved.has(owner) || message.serverOwned || this.isBusy(owner, message.id)))) {
+      for (const own of this.read(owner).filter((message) => !this.hidden(owner, message) && (this.unsaved.has(owner) || message.serverOwned || this.isBusy(owner, message.id)))) {
         const at = next.findIndex((message) => message.id === own.id);
         if (at < 0) next.push(own);
         else if ((next[at]!.resendGeneration ?? 0) > (own.resendGeneration ?? 0)) {
@@ -241,7 +247,7 @@ export class PendingMessageStore {
   }
   private write(owner: string, messages: PendingMessageView[]): boolean {
     let saved = false;
-    messages = messages.filter((message) => !this.dismissed.get(owner)?.has(message.id));
+    messages = messages.filter((message) => !this.hidden(owner, message));
     this.rows.set(owner, messages);
     try {
       const dismissed = [...(this.dismissed.get(owner) ?? [])];
@@ -277,7 +283,8 @@ export class PendingMessageStore {
   accept(owner: string, message: PendingMessage, scope: string | null): void {
     this.refresh(owner);
     this.read(owner);
-    if (this.dismissed.get(owner)?.has(message.id)) return;
+    // a dismissed ID comes back only from a connection that holds it now: that row is the bridge's to settle
+    if (scope === null && this.dismissed.get(owner)?.has(message.id)) return;
     if (this.movedAway.get(owner)?.has(message.id)) return;
     const seen = this.removed.get(owner)?.get(message.id);
     if (this.settledResumed.get(owner)?.has(message.id) || (scope === null ? (seen?.size ?? 0) > 0 : seen?.has(scope))) return;

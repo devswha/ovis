@@ -138,7 +138,7 @@ describe("pending message ownership", () => {
     expect(new PendingMessageStore(() => old).read("p").map(({ id, state, heldByRequest }) => [id, state, heldByRequest ?? false]))
       .toEqual([["asked", "held", true], ["faulted", "uncertain", false], ["queued", "uncertain", false]]);
   });
-  it("dismisses only the exact uncertain display ID, persists across reload and rejects republished retries", () => {
+  it("dismisses only the exact uncertain display ID, keeps its saved copy hidden after a reload, and shows it again to a connection that holds it", () => {
     const port = storage(), store = new PendingMessageStore(() => port);
     const first = message("command", "uncertain", "/thinking high");
     const second = message("question", "uncertain", "How do I play piano?");
@@ -152,18 +152,23 @@ describe("pending message ownership", () => {
     expect(first.state).toBe("uncertain"); expect(second.state).toBe("uncertain");
     expect(store.begin("p", first.id)).toBe(false);
     const reloaded = new PendingMessageStore(() => port);
-    reloaded.publish("p", [first, { ...second, state: "held" }, duplicateText], [], "new");
     expect(reloaded.read("p").map(row => row.id)).toEqual(["another-question"]);
+    reloaded.accept("p", first, null);
+    expect(reloaded.read("p").map(row => row.id)).toEqual(["another-question"]);
+    // a connection that lists the ID holds the bridge's record: its row stays until the bridge settles it
+    reloaded.publish("p", [first, { ...second, state: "held" }, duplicateText], [], "new");
+    expect(reloaded.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned]))
+      .toEqual([["another-question", "uncertain", true], ["command", "uncertain", true], ["question", "held", true]]);
     reloaded.publish("other", [second], [], "other-scope");
     expect(reloaded.read("other")[0]!.id).toBe(second.id);
   });
-  it("merges another tab's exact display tombstones without hiding other IDs or arming delivery", () => {
+  it("merges another tab's exact display tombstones without hiding other IDs, arming delivery or taking a live row from its tab", () => {
     const port = storage(), a = new PendingMessageStore(() => port), b = new PendingMessageStore(() => port);
     a.publish("p", [message("a", "uncertain", "same"), message("b", "uncertain", "same")], [], "scope");
     b.read("p");
     expect(b.dismissCopy("p", "a")).toBe(true);
     a.refresh("p");
-    expect(a.read("p").map(row => row.id)).toEqual(["b"]);
+    expect(a.read("p").map(({ id, serverOwned }) => [id, serverOwned])).toEqual([["b", true], ["a", true]]);
     a.publish("p", [message("a", "uncertain", "same"), message("c", "held", "other")], [], "scope");
     expect(new PendingMessageStore(() => port).read("p").map(row => row.id)).toEqual(["b", "c"]);
     expect(JSON.parse(port.getItem("ovis:pending:p")!).dismissed).toEqual(["a"]);
@@ -180,13 +185,13 @@ describe("pending message ownership", () => {
     expect(store.read("to").map((row) => row.id)).toEqual(["kept"]);
     expect(store.isOwned("to", "kept", "scope")).toBe(true);
   });
-  it("carries an exact dismissed ID with its moved pane and keeps late old-pane publications hidden", () => {
+  it("carries an exact dismissed ID with its moved pane: saved copies of it stay hidden under both IDs", () => {
     const port = storage(), store = new PendingMessageStore(() => port);
     store.accept("from", message("a", "uncertain"), "scope");
     store.dismissCopy("from", "a"); store.move("from", "to");
-    store.publish("from", [message("a", "uncertain")], [], "scope");
+    store.accept("from", message("a", "uncertain"), null);
     const reloaded = new PendingMessageStore(() => port);
-    reloaded.publish("to", [message("a", "uncertain"), message("b", "uncertain")], [], "scope");
+    for (const id of ["a", "b"]) reloaded.accept("to", message(id, "uncertain"), null);
     expect(store.read("from")).toEqual([]);
     expect(reloaded.read("to").map(row => row.id)).toEqual(["b"]);
   });
@@ -198,7 +203,7 @@ describe("pending message ownership", () => {
     expect(store.isUnsaved("p")).toBe(true);
     expect(store.read("p").map(row => row.id)).toEqual(["new"]);
     expect(JSON.parse(port.getItem("ovis:pending:p")!).dismissed).toEqual(ids);
-    store.publish("p", [message(ids[0]!, "uncertain")], [], "scope");
+    store.accept("p", message(ids[0]!, "uncertain"), null);
     expect(store.read("p").map(row => row.id)).toEqual(["new"]);
   });
   it("rejects malformed oversized dismissal journals and keeps known tombstones without dropping the display row", () => {
