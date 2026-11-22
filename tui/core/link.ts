@@ -34,10 +34,11 @@ import { type Deadlines, LINE_SILENCE_MS, LINE_STABLE_MS, NO_DEADLINES, RECONNEC
 
 /**
  * The calls the screen makes, which a core's hello must name: the event stream, documents, attach,
- * and reading, labelling, starting and closing terminals. `doc.set` is not among them: a core that
- * writes no documents still shows the screen, without layout edits (layout-ops.ts `layoutCalls`).
+ * and listing, reading, labelling, starting and closing terminals (the layout's reads list them:
+ * layout-ops.ts). `doc.set` is not among them: a core that writes no documents still shows the
+ * screen, without layout edits (layout-ops.ts `layoutCalls`).
  */
-export const SCREEN_METHODS = ["events.subscribe", "doc.get", "terminal.attach", "terminal.get", "terminal.label", "terminal.run", "terminal.kill", "terminal.rm"] as const satisfies readonly HcMethod[];
+export const SCREEN_METHODS = ["events.subscribe", "doc.get", "terminal.attach", "terminal.list", "terminal.get", "terminal.label", "terminal.run", "terminal.kill", "terminal.rm"] as const satisfies readonly HcMethod[];
 
 /** The documents read on every new line and after every `missed`: the Herdr app's layout, then Ovis's own. */
 export const LINK_DOCS = [LAYOUT_DOC, OVIS_LAYOUT_DOC] as const;
@@ -66,7 +67,8 @@ export type NoCoreCode = "no_core" | "refused" | "unreachable";
  * - a call the link needs failed while the line stayed: `timeout` (unanswered, while other lines
  *   kept coming), `call_failed` (the core refused it: `events.subscribe`, either `doc.get`, a re-read);
  * - the line stayed but its event stream cannot be read on: `bad_line` (hc closed the stream, or sent
- *   a line that is not JSON or too long, a `missed` without its snapshot, a subscribe answer without one);
+ *   a line that is not JSON or too long, a `missed` without its snapshot, a subscribe answer without one
+ *   or without its channel);
  * - the link's own: `silent` (LINE_SILENCE_MS without a whole line on the event stream, reached by
  *   `fire` before any call's own timeout ended the line), `notify_failed` (the owner's `notify`
  *   threw), `link_closed` (closed by its owner, never retried).
@@ -403,8 +405,13 @@ class Link implements CoreLink {
       return;
     }
     if (line.over) return;
+    const { channel, seq, terminals } = subscribed.result as { channel: unknown; seq: unknown; terminals: unknown };
+    // the connection takes hc's channel as given and routes frames only to a numeric one; channel 0 is JSON-RPC's
+    if (!Number.isInteger(channel) || (channel as number) < 1) {
+      this.lineEnded(line, "bad_line", "herdr-core answered events.subscribe without an event channel");
+      return;
+    }
     line.events = subscribed.channel;
-    const { seq, terminals } = subscribed.result as { seq: unknown; terminals: unknown };
     if (typeof seq !== "number" || !Array.isArray(terminals)) {
       this.lineEnded(line, "bad_line", "herdr-core answered events.subscribe without a snapshot");
       return;
