@@ -74,6 +74,11 @@ export class LayoutWrites {
     });
   }
 
+  /** Whether `effect` is a layout action: one `run` performs. */
+  writes(effect: RunEffect): boolean {
+    return this.work(effect) !== null;
+  }
+
   /**
    * Performs `effect` when it is a layout action and answers when it is done (it never rejects: a failure is a notice);
    * null for any other action.

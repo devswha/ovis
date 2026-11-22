@@ -323,6 +323,19 @@ describe("the loop", () => {
     expect(await run.loop.done).toEqual({ kind: "quit" });
   }, TEST_MS);
 
+  it("a second layout action read while one is under way is refused as busy: a close pressed twice ends only the pane it was pressed on", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    // two reads before the first close's write could be answered: the second meets the layout the user saw too
+    run.type("\x02x");
+    run.type("\x02x");
+    await settled(run);
+    expect(run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"])).toEqual(["t1"]);
+    expect(run.core.terminal("t2").state).toBe("live");
+    expect(run.loop.model().notices.map(({ code, data }) => [code, data["action"]])).toEqual([["layout_busy", "close_pane"]]);
+  }, TEST_MS);
+
   it("random key sequences route alike read whole, split at every byte, and a byte at a time", async () => {
     // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, rename, a new tab's name, detach), text
     // with combining marks, a ZWJ emoji, CJK and wide characters, and Enter; with the default prefix (a key of its own)
@@ -356,7 +369,7 @@ describe("the loop", () => {
         }
         const model = run.loop.model();
         return {
-          ended, focus: model.focus, mode: model.mode.name,
+          ended, busy: model.notices.some((notice) => notice.code === "layout_busy"), focus: model.focus, mode: model.mode.name,
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
           received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)),
         };
@@ -368,12 +381,16 @@ describe("the loop", () => {
     // or may not have landed: for a run that detached, only that it left and what each program was sent are compared.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
     const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
+    // A layout action read while another's write is under way is refused as busy, so a read that holds two of them
+    // differs by design from reads that split them, where both act: such a sequence is left out here (the busy case is
+    // pinned on its own above).
     for (const prefix of ["\x02", "-"]) {
       const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
       for (let n = 0; n < 10; n++) {
         const text = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
         const bytes = new TextEncoder().encode(text);
         const joined = compared(await outcome(prefix, [bytes]));
+        if ("busy" in joined && joined.busy) continue;
         expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)))) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
           expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ text, cut, outcome: joined });

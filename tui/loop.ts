@@ -286,13 +286,17 @@ export function startLoop(options: LoopOptions): Loop {
    * What the user typed, pasted or clicked while a layout write that one of their actions started is under way: it
    * waits behind that write, in order, and goes through once the write is done, so it meets the layout the write
    * leaves (the pane a close focuses, the pane a split follows), as a later read would. null when no write holds it.
-   * `ahead` is the state core as if what waits had gone through: only to see a detach in it, which never waits.
+   * `ahead` is the state core as if what waits had gone through: to see a detach in it, which never waits, and a layout
+   * action, which is refused as busy when it is read, against the layout the user saw.
    */
   let behindWrite: { readonly events: ModelEvent[]; ahead: ModelState } | null = null;
+  /** what waited behind a write is going through: a layout action in it was refused when it was read */
+  let replaying = false;
 
   /**
    * A user's input event: through the state core now, or behind the layout write under way. A detach among what would
-   * wait leaves at once: a user leaving never waits for a write (what waited, typed before it, goes nowhere).
+   * wait leaves at once: a user leaving never waits for a write (what waited, typed before it, goes nowhere). A layout
+   * action among it is refused now: once the write is done it would meet another layout and act on another target.
    */
   function userInput(event: ModelEvent): void {
     // nothing after a detach goes anywhere, from the same read either: the screen is leaving
@@ -313,19 +317,30 @@ export function startLoop(options: LoopOptions): Loop {
           return;
         }
         if (effect.type === "input") ahead.push(effect.event);
+        if (effect.type === "run" && layout.writes(effect)) busy(effect.action);
       }
     }
     behindWrite.events.push(event);
   }
 
-  /** Holds the user's input until `writing` is done; then what waited goes through in order (and may hold again). */
+  /** A layout action chosen while a write, or what waits behind it, is under way: one notice, nothing written. */
+  function busy(action: string): void {
+    dispatch({ type: "notice", code: "layout_busy", data: { action }, at: clock.now() });
+  }
+
+  /** Holds the user's input until `writing` is done; then what waited goes through in order. */
   function holdUntil(writing: Promise<void>): void {
     behindWrite ??= { events: [], ahead: state };
     void writing.then(() => {
       guard(() => {
         const waited = behindWrite?.events ?? [];
         behindWrite = null;
-        for (const event of waited) userInput(event);
+        replaying = true;
+        try {
+          for (const event of waited) userInput(event);
+        } finally {
+          replaying = false;
+        }
       });
       arm();
     });
@@ -357,6 +372,10 @@ export function startLoop(options: LoopOptions): Loop {
           const shapeOf = tab ? world.view().tabs.get(tab.id) : undefined;
           const toward = shapeOf ? paneToward(shapeOf, effect.target.id, direction) : null;
           if (toward !== null) dispatch({ type: "select", target: { kind: "pane", id: toward }, at: clock.now() });
+          return;
+        }
+        if ((behindWrite !== null || replaying) && layout.writes(effect)) {
+          busy(effect.action);
           return;
         }
         const writing = layout.run(effect);
