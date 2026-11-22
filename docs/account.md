@@ -937,11 +937,15 @@ the service takes it or answers 409 `listing_changed`. An admission is no such e
 device of the account can list the PC again and admit it with no press at the PC; nor is the
 account's current listing, which the PC's own mailbox pull would let it complete. When the service
 refuses the receipt, or the PC holds none and a snapshot read reached its last page (the service
-answers, so an outage clears nothing), the PC leaves the account as for an unlisting. Until it joins
-one again, a device that proves a key the PC numbered for that account is refused with
-`account_readd_required` (when it offered the feature): **Add this PC to your account again**.
-Nobody else is told why. So a PC added in one press on 0.5.9 is added again
-once after the update. Before recording the
+answers, so an outage clears nothing), the PC leaves the account as for an unlisting. So a PC added
+in one press on 0.5.9 is added again once after the update. While a PC that left this way, or that
+its account stopped listing, is owed its add at the PC (`pc_add_required`), a device that proves a
+key the PC knew as that account's is refused with `account_readd_required` (when it offered the
+feature) and keeps its key: **Add this PC to your account again**. That key is one a whole read
+numbered, for the row the account's list made of it, or the key of a `devices.json` row that left
+with the account (the journal's last entry of that row, `remove` with `unlisted`), and never one
+removed here or by the account. It is read when the sign-in is answered, so the device whose own
+sign-in made the PC ask and leave hears it too. Nobody else is told why. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
 after an offline restart from either state folder. A pairing by code or digits counts as local

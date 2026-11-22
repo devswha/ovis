@@ -154,7 +154,6 @@ export class RelaySession {
   /** the phone offered ACCOUNT_LISTING_ERRORS: one that did not gets the older code that forgets no key over an outage */
   private listingErrors = false;
   /** this PC left its account and waits to be added again: a device that proves a key it knew is told so */
-  private readdAsk = false;
   /** the service binding whose listing answer let this session's device in: its AUTH_OK commits only while that answer stands */
   private listedFor: string | undefined;
   /** the phone offered SERVER_TIME_HEADER: one that did not refuses the header */
@@ -378,9 +377,8 @@ export class RelaySession {
         if (this.proofNegotiated) selected.push(PAIR_PC_PROOF);
         if (this.pcCodeAdd && this.options.services.devices.accountPolicyActive()) selected.push(PC_CODE_ACCOUNT_ONLY);
         this.authReceipts = this.options.services.devices.accountPolicyActive() && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE);
-        // out of its account for a binding that named no listing: the account sign-in is taken so a known key can be proved and told why
-        this.readdAsk = !this.authReceipts && this.listingErrors && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE) && this.options.services.devices.readdRequired();
-        if (this.authReceipts || this.readdAsk) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
+        // out of the account that stopped listing it: the account sign-in is taken, so the key it names can be proved and told why
+        if (this.authReceipts || (this.listingErrors && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE) && this.options.services.devices.readdRequired())) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
         this.accountCodes = this.authReceipts;
         if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
@@ -424,7 +422,8 @@ export class RelaySession {
           }
           if (joined !== null) { await this.enterProved(joined.match); return; }
         }
-        if (!device && this.readdAsk && frame.type === FrameType.AUTH
+        // read now, not at HELLO: the sign-in itself may have been what made this PC ask and leave
+        if (!device && this.listingErrors && frame.type === FrameType.AUTH && devices.readdRequired()
           && await devices.provedFormerAccountKey(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId })) {
           if (this.mux.active) this.refuseListing("readd");
           return;
@@ -704,7 +703,8 @@ export class RelaySession {
   /** An outage refuses without a word against the device's key; only a client that knows the two account codes is sent them. */
   private refuseListing(verdict: ListingVerdict): void {
     if (verdict === "unreachable") this.close(this.listingErrors ? "account_unreachable" : "internal_error", undefined, "account_unreachable");
-    else if (verdict === "readd") this.close(this.listingErrors ? "account_readd_required" : "auth_failed", undefined, "account_readd_required");
+    // the answer that made this PC leave came in this very sign-in: the device that proved its key hears what its next one would
+    else if (verdict === "readd" || (verdict === "refused" && this.keyProven && this.options.services.devices.readdRequired())) this.close(this.listingErrors ? "account_readd_required" : "auth_failed", undefined, "account_readd_required");
     else this.close("auth_failed");
   }
 

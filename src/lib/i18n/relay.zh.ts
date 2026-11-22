@@ -152,5 +152,5 @@ export const RELAY_ZH: Record<string, string> = {
   "{name} could not reach your Ovis account": "{name} 无法连接你的 Ovis 账号",
   "{name} lets your account's devices in only after the account service confirms it is still in your account, and the service did not answer. Try again in a moment. A device paired with {name} itself still connects.": "只有在账户服务确认 {name} 仍在你的账号中之后，它才会让账号里的设备进入，而这次账户服务没有回应。请稍后重试。直接与 {name} 配对的设备仍可连接。",
   "Add {name} to your account again": "请把 {name} 重新添加到你的账号",
-  "{name} was added before Ovis began confirming each PC with the account service, so it left your account. On {name}, open Settings → Devices and PCs → Add a connection → Ovis relay and add it to your account again, then try again here.": "{name} 是在 Ovis 开始向账户服务逐台确认电脑之前添加的，所以它已离开你的账号。请在 {name} 上打开“设置 → 设备和电脑 → 添加连接 → Ovis 中继”，把它重新添加到你的账号，然后在这里重试。",
+  "{name} is no longer in your Ovis account. On {name}, open Settings → Devices and PCs → Add a connection → Ovis relay and add it to your account again, then try again here.": "{name} 已不在你的 Ovis 账号中。请在 {name} 上打开“设置 → 设备和电脑 → 添加连接 → Ovis 中继”，把它重新添加到你的账号，然后在这里重试。",
 };

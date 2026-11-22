@@ -272,7 +272,7 @@ test.each(["unbind", "listing_changed", "identity_reset"] as const)("listing con
     await f.app.context.services.accountMailbox.readSnapshot();
   }
   expect(f.devices.serviceBinding()).toBeNull();
-  expect(await signIn(f, serverId, device)).toBe("auth_failed");
+  expect(await signIn(f, serverId, device)).toBe(why === "identity_reset" ? "auth_failed" : "account_readd_required");
 });
 
 test("listing confirmation: a removal the PC has not read ends the account's sessions at the first sign-in after the 60 seconds", async () => {
@@ -287,11 +287,11 @@ test("listing confirmation: a removal the PC has not read ends the account's ses
   const within = await relayConnection(f, { serverId });
   expect(await within.auth(device, listingFeatures)).toMatchObject({ role: "drive" });
   clock.advance(1);
-  expect(await signIn(f, serverId, device)).toBe("auth_failed");
+  expect(await signIn(f, serverId, device)).toBe("account_readd_required");
   expect(f.devices.serviceBinding()).toBeNull();
   expect(lastClear(f.stateDir)).toMatchObject({ reason: "unlisted", by: "account" });
-  // removed by the account: nothing says to add it again
-  expect(await accountOpen(f, serverId, device)).toBe("unsupported_extension");
+  // removed by the account: its device keeps its key and is told to add the PC again, as the account's sign-in is
+  expect(await accountOpen(f, serverId, device)).toBe("account_readd_required");
   expect(await bounded(open.serverError, 2000)).toBe("auth_revoked");
   await bounded(Promise.all([open.closed, within.closed]), 2000);
 });
@@ -367,7 +367,7 @@ test.each([
   // A listing some device wrote since is never completed on this PC's own word.
   expect(completionChecks(f) - completions).toBe(receipt ? 1 : 0);
   expect(now.devices.sessionRow(device.id)).toBeNull();
-  expect(await signIn(now, serverId, device)).toBe("auth_failed");
+  expect(await signIn(now, serverId, device)).toBe("account_readd_required");
   expect(await signIn(now, serverId, { id: paired.id, keys: local.keys, publicKey: local.spki }, [])).toBe("admitted");
   expect(await accountOpen(now, serverId, device)).toBe("account_readd_required");
   expect(await accountOpen(now, serverId, device, [])).toBe("unsupported_extension");
@@ -426,7 +426,7 @@ test("upgrade: an admission another device made for a replacement listing pins n
   const now = await updated(f);
   expect(bindingOf(now.stateDir)).toBeNull();
   expect(now.devices.sessionRow(device.id)).toBeNull();
-  expect(await signIn(now, serverId, device)).toBe("auth_failed");
+  expect(await signIn(now, serverId, device)).toBe("account_readd_required");
 });
 
 test.each([
@@ -614,7 +614,7 @@ test("removed PC: a signed-in phone paired at the PC that reopens its saved conn
   await relist();
   expect(await f.app.context.services.accountMailbox.pull()).toBe(0);
   expect(f.devices.account()).toBeNull();
-  expect(await signIn(f, serverId, device)).toBe("auth_failed");
+  expect(await signIn(f, serverId, device)).toBe("account_readd_required");
 
   const now = await restartedFrom(f);
   expect(bindingOf(now.stateDir)).toBeNull();
@@ -622,7 +622,7 @@ test("removed PC: a signed-in phone paired at the PC that reopens its saved conn
   expect((await ask(reopened, "/api/account/status")).body).toMatchObject({ account: null, pc_add_required: true });
   expect((await sendLink(reopened, await link())).status).toBe(409);
   expect(bindingOf(now.stateDir)).toBeNull();
-  expect(await signIn(now, serverId, device)).toBe("auth_failed");
+  expect(await signIn(now, serverId, device)).toBe("account_readd_required");
 });
 
 test.each([

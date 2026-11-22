@@ -14,7 +14,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
-import { type ClearReason, PcAccountState, UNPINNED_CLEAR } from "./account/pc-binding.ts";
+import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import { rowDrop } from "./account/row-drop-evidence.ts";
@@ -1476,17 +1476,27 @@ export class DeviceStore {
   /** Whether the code `pinned` (pinnedCode) was started at this PC itself, by its own window or command, and is still the code pending. */
   issuedAtPc(pinned: object): boolean { return this.pending === pinned && this.pending.atPc === true; }
 
-  /** This PC left its account over a binding that named no listing (AccountMailbox.confirmsListing) and is in none since. */
-  readdRequired(): boolean {
-    const last = this.pc?.clears().at(-1);
-    return this.pc?.binding() === null && last?.reason === "unlisted" && last.by === UNPINNED_CLEAR;
-  }
+  /** Whether a device of the account this PC left is told to add it again (relay/session.ts): while the add at the PC is owed. */
+  readdRequired(): boolean { return this.addAtPcRequired(); }
 
-  /** Whether `proof` is by a key this PC numbered for an account it was in: the one peer told why it left (relay/session.ts). */
+  /** Whether `proof` is by a key this PC knew as the account's when it left: the one peer told why it left (relay/session.ts). */
   async provedFormerAccountKey(deviceId: string, proof: { nonce: Uint8Array; signature: string; serverId: string }): Promise<boolean> {
     if (proof.nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(proof.signature)) return false;
-    const key = this.accountOrder?.relayKey(proof.serverId, deviceId);
-    return key !== undefined && this.accountOrder?.no(key) != null && await verifyRelayProof(key, proof);
+    const key = this.formerAccountKey(proof.serverId, deviceId);
+    return key !== undefined && await verifyRelayProof(key, proof);
+  }
+
+  /**
+   * The key the row `deviceId` held for the account this PC left: a key a whole read numbered, for the row the
+   * account's list would have made of it, or the key of a devices.json row that left with the account (its journal
+   * entry, the last of that row). Never a key removed here or by the account.
+   */
+  private formerAccountKey(serverId: string, deviceId: string): string | undefined {
+    const listed = this.accountOrder?.relayKey(serverId, deviceId);
+    const last = this.journal?.strict === null ? this.journal.entries().filter(entry => entry.row === deviceId).at(-1) : undefined;
+    const key = listed !== undefined && this.accountOrder?.no(listed) != null ? listed
+      : last?.kind === "remove" && last.how === "unlisted" ? last.key ?? undefined : undefined;
+    return key !== undefined && !this.isTombstoned(key) && !this.removedByAccount(key) ? key : undefined;
   }
 
   /**

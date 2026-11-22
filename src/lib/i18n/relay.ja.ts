@@ -152,5 +152,5 @@ export const RELAY_JA: Record<string, string> = {
   "{name} could not reach your Ovis account": "{name} から Ovis アカウントに接続できませんでした",
   "{name} lets your account's devices in only after the account service confirms it is still in your account, and the service did not answer. Try again in a moment. A device paired with {name} itself still connects.": "{name} は、アカウントサービスがこの PC がまだあなたのアカウントにあることを確認してからでないと、アカウントのデバイスを受け入れません。今回はアカウントサービスが応答しませんでした。少ししてからもう一度お試しください。{name} と直接ペアリングしたデバイスはそのまま接続できます。",
   "Add {name} to your account again": "{name} をアカウントにもう一度追加してください",
-  "{name} was added before Ovis began confirming each PC with the account service, so it left your account. On {name}, open Settings → Devices and PCs → Add a connection → Ovis relay and add it to your account again, then try again here.": "{name} は、Ovis がアカウントサービスで PC を 1 台ずつ確認するようになる前に追加されたため、あなたのアカウントから外れました。{name} で「設定 → デバイスと PC → 接続を追加 → Ovis リレー」を開いてアカウントにもう一度追加し、そのあとここでもう一度お試しください。",
+  "{name} is no longer in your Ovis account. On {name}, open Settings → Devices and PCs → Add a connection → Ovis relay and add it to your account again, then try again here.": "{name} は、あなたの Ovis アカウントに入っていません。{name} で「設定 → デバイスと PC → 接続を追加 → Ovis リレー」を開いてアカウントにもう一度追加し、そのあとここでもう一度お試しください。",
 };

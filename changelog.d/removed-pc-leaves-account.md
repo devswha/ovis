@@ -23,6 +23,8 @@
   Approve.
 - A phone that is already paired with a PC can put that PC back in its account by scanning the PC's
   QR code. The scan used to end with the phone told it was removed, and without the pairing it had.
+- A device of the account that opens a PC which left the account is told to add the PC to the
+  account again, and keeps its key. It used to be told that it was removed from the PC.
 - Adding this PC with a sign-in that has no two-step sign-in now says so and what works instead; it
   no longer offers **Sign in again**, which could not help, and a second refused press says why.
 
