@@ -703,10 +703,14 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       }));
       assert.equal(put.status, 200, `Mac mini listed itself: ${await put.text()}`);
       assert.equal((await pc2.local("/api/relay/link", { headers: { "x-ovis-local-only": "1" } })).status, 200);
-      // #16: the signed-in front page lists this device's own PCs only; Add a PC lists the account's too
+      // #27 (the owner's word): the signed-in relay tab's list of the PCs this phone is on also lists the account's PCs it
+      // can open (Mac mini listed its key and relay, so its own page joins it), once each, as Add a PC does
       await a.goto(`${APP}/`);
       await pcLink(a, "Desk PC").waitFor();
-      assert.equal(await pcLink(a, "Mac mini").count(), 0, "the front page lists no account PC this device is not in");
+      // the account's read landing draws its row: waited for, not timed
+      await pcLink(a, "Mac mini").waitFor();
+      assert.equal(await pcLink(a, "Mac mini").count(), 1, "the front page lists an account PC this device can open, once");
+      assert.equal(await pcLink(a, "Mac mini").locator(".phone-pc-tag").textContent(), "Relay", "tagged as a relay PC");
       await a.goto(`${APP}/#add`);
       // from the front page that is a same-document hash change: the load draws Add a PC
       await a.reload();
