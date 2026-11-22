@@ -471,7 +471,7 @@ describe.skipIf(process.platform === "win32" || standInRun === undefined)("the c
   });
 
   it("code bad_line: a framed subscribe answer without a positive whole channel never comes Online", async () => {
-    const channels: [string, Record<string, unknown>][] = [["none", {}], ["null", { channel: null }], ["0", { channel: 0 }], ["1.5", { channel: 1.5 }], ["a string", { channel: "1" }]];
+    const channels: [string, Record<string, unknown>][] = [["none", {}], ["null", { channel: null }], ["0", { channel: 0 }], ["1.5", { channel: 1.5 }], ["a string", { channel: "1" }], ["2^32, past a frame's 32 bits", { channel: 0x1_0000_0000 }]];
     for (const [given, channel] of channels) {
       const { cores, path } = await scripted((method) => (method === "events.subscribe" ? { ...channel, seq: 1, terminals: [] } : { value: null, version: 0 }));
       timeline = [];
