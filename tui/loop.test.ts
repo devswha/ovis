@@ -334,6 +334,24 @@ describe("the loop", () => {
     }
   }, TEST_MS);
 
+  it("another pane's first paint delays nothing typed: a key read while that pane drains reaches the focused live pane at once, and stays there", async () => {
+    const core = oneTab(2);
+    const run = await start({ core });
+    await run.live();
+    await run.advance(1);
+    // a third pane joins the shown tab: once its first paint is drawn, the loop reads stdin before that pane goes live
+    place(core, { space: "w", spaceName: "w", tab: "t", tabName: "t" }, "pane 2\r\n");
+    for (let waited = 0; run.host.timers() === 0 && waited < 1_000; waited++) await run.advance(1);
+    expect(run.host.timers()).toBe(1);
+    run.type("k");
+    await run.settle();
+    expect(run.core.program("t1").receivedHex()).toBe("6b");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+    await run.advance(100);
+    await run.live();
+    expect(["t1", "t2", "t3"].map((terminal) => run.core.program(terminal).receivedHex())).toEqual(["6b", "", ""]);
+  }, TEST_MS);
+
   it("flood does not delay input: a key typed into one pane leaves in its read's turn while another pane floods", async () => {
     const run = await start({ fixture: demo });
     await run.live();

@@ -332,7 +332,7 @@ export function startLoop(options: LoopOptions): Loop {
     passOwed = true;
   }
 
-  /** Bytes read from the host (or drained): events, each through the state core at once. */
+  /** Bytes read from the host: events, each through the state core at once. */
   function read(bytes: Uint8Array): void {
     const events: InputEvent[] = framer.feed(bytes, clock.now());
     // only a refused paste whose end mark has not come yet is waited for: a paste begun after its end is framed as any paste
@@ -444,12 +444,14 @@ export function startLoop(options: LoopOptions): Loop {
     if (ready.length > 0 && !draining) drainThenLive(ready);
   }
 
-  /** What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. */
+  /**
+   * What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. It is read as any
+   * input, at once and through the focus it meets: a pane already Live takes it without waiting for this one.
+   */
   function drainThenLive(ready: string[]): void {
     draining = true;
-    host.drain().then((bytes) => guard(() => {
+    host.drain().then(() => guard(() => {
       draining = false;
-      if (bytes.length > 0) read(bytes);
       for (const pane of ready) if (panes.view(pane)?.ready) panes.live(pane);
       owePass();
       arm();

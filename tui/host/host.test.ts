@@ -662,40 +662,43 @@ describe("colour depth", () => {
 });
 
 describe("drain", () => {
-  it("takes what waits instead of handing it to onInput, until nothing arrives for DRAIN_WAIT_MS", async () => {
+  it("reads what waits and hands it to onInput as it comes, then settles once nothing arrives for DRAIN_WAIT_MS", async () => {
     const host = new HeadlessHost({ answer: ANSWER });
     const seen = inputs(host);
     host.enter();
     await host.probe();
     host.queue("typed ahead");
-    let drained = null as string | null;
-    void host.drain().then((bytes) => { drained = text(bytes); });
+    let drained = false;
+    void host.drain().then(() => { drained = true; });
+    expect(seen).toEqual(["typed ahead"]);
     host.advance(30);
     host.feed(" more");
+    expect(seen).toEqual(["typed ahead", " more"]);
     host.advance(49);
     await host.settled();
-    expect(drained).toBeNull();
+    expect(drained).toBe(false);
     host.advance(1);
     await host.settled();
-    expect(drained).toBe("typed ahead more");
-    expect(seen).toEqual([]);
+    expect([drained, host.timers()]).toEqual([true, 0]);
     host.feed("live");
-    expect(seen).toEqual(["live"]);
+    expect(seen).toEqual(["typed ahead", " more", "live"]);
   });
 
-  it("keeps probe replies out of what it returns", async () => {
+  it("keeps probe replies out of onInput while it runs", async () => {
     const host = new HeadlessHost();
+    const seen = inputs(host);
     host.enter();
     void host.probe();
     const drained = host.drain();
     host.feed(`${ESC}[?1u`);
     host.advance(50);
-    expect(text(await drained)).toBe("");
+    await drained;
+    expect(seen).toEqual([]);
   });
 
-  it("returns nothing when not entered", async () => {
+  it("settles at once when not entered", async () => {
     const host = new HeadlessHost();
-    expect((await host.drain()).length).toBe(0);
+    await host.drain();
     expect(host.timers()).toBe(0);
   });
 });
