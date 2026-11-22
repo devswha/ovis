@@ -85,6 +85,8 @@ export interface LoopReport {
   actions: string[];
   hc: { version: string; features: string[] } | null;
   size: { cols: number; rows: number };
+  /** the pane grids the frame keeps, each at its size */
+  grids: { pane: string; cols: number; rows: number }[];
   mode: { name: string; locked: boolean; armed: boolean; overlays: string[] };
   /** the stable code of the error giving the terminal back at quit failed with, or null */
   leaveError: string | null;
@@ -407,19 +409,22 @@ export function startLoop(options: LoopOptions): Loop {
   function reshow(): void {
     const size = host.size();
     const view = world.view();
-    const tab = focused(state.world, state.focus).tab;
+    const { tab, pane } = focused(state.world, state.focus);
+    // the focus moves before the layout: a pane that a zoom is about to cover still tells its program the focus left (a
+    // covered pane is silent), and one the zoom uncovers hears it come once it shows
+    if ((pane?.id ?? null) !== paneFocus) {
+      paneFocus = pane?.id ?? null;
+      pointer.focusChanged(paneFocus);
+      panes.focus(paneFocus);
+    }
     shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
+    // a pane that left the shown tab keeps no grid: shown again, it is drawn anew from its new attach
+    for (const pane of grids.keys()) if (!shape.spots.some((spot) => spot.pane === pane)) grids.delete(pane);
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
     const key = JSON.stringify(shown);
     if (painter && key !== shownKey) {
       shownKey = key;
       panes.show(shown);
-    }
-    const pane = focused(state.world, state.focus).pane?.id ?? null;
-    if (pane !== paneFocus) {
-      paneFocus = pane;
-      pointer.focusChanged(pane);
-      panes.focus(pane);
     }
   }
 
@@ -427,11 +432,11 @@ export function startLoop(options: LoopOptions): Loop {
     passOwed = true;
   }
 
-  /** Bytes read from the host (or drained): events, each through the state core at once. */
+  /** Bytes read from the host: events, each through the state core at once. */
   function read(bytes: Uint8Array): void {
     const events: InputEvent[] = framer.feed(bytes, clock.now());
-    if (events.some((event) => event.type === "paste" && !event.complete)) pasteAt = clock.now() + PASTE_ABANDON_MS;
-    else if (pasteAt !== null) pasteAt = events.length > 0 ? null : clock.now() + PASTE_ABANDON_MS;
+    // only a refused paste whose end mark has not come yet is waited for: a paste begun after its end is framed as any paste
+    pasteAt = framer.discarding() ? clock.now() + PASTE_ABANDON_MS : null;
     for (const event of events) {
       act(`read:${event.type}`);
       if (event.type === "reply") {
@@ -485,7 +490,8 @@ export function startLoop(options: LoopOptions): Loop {
     for (const spot of shape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
-      const actual = view?.actual ?? { cols: spot.cells.cols, rows: spot.cells.rows };
+      // the grid of the picture drawn, never a size a newer attach was told before its first paint: with none, the visible cells
+      const actual = view?.grid ?? { cols: spot.cells.cols, rows: spot.cells.rows };
       let held = grids.get(spot.pane);
       const emulator = view?.emulator ?? null;
       if (!held || held.emulator !== emulator) {
@@ -544,12 +550,14 @@ export function startLoop(options: LoopOptions): Loop {
     if (ready.length > 0 && !draining) drainThenLive(ready);
   }
 
-  /** What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. */
+  /**
+   * What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. It is read as any
+   * input, at once and through the focus it meets: a pane already Live takes it without waiting for this one.
+   */
   function drainThenLive(ready: string[]): void {
     draining = true;
-    host.drain().then((bytes) => guard(() => {
+    host.drain().then(() => guard(() => {
       draining = false;
-      if (bytes.length > 0) read(bytes);
       for (const pane of ready) if (panes.view(pane)?.ready) panes.live(pane);
       owePass();
       arm();
@@ -651,12 +659,15 @@ export function startLoop(options: LoopOptions): Loop {
       end(first.kind === "NoCore" ? { kind: "no_core", code: first.code } : { kind: "incompatible", code: first.code, reason: first.reason });
       return;
     }
+    // heard before the entry: the entry's own write can find the terminal gone, and a signal held during it is told at its end
+    host.onEnd((how) => onHostEnd(how));
     if (!host.enter()) {
       void link.close().catch(() => {});
       end({ kind: "not_a_terminal" });
       return;
     }
     entered = true;
+    if (closing) return;
     framer.setModes({ mouse: true });
     host.onInput((bytes) => {
       guard(() => read(bytes));
@@ -672,14 +683,13 @@ export function startLoop(options: LoopOptions): Loop {
       });
       arm();
     });
-    host.onEnd((how) => onHostEnd(how));
     const size = host.size();
     guard(() => {
       dispatch({ type: "resize", cols: size.cols, rows: size.rows, at: clock.now() });
       reshow();
     });
     const probe = await host.probe();
-    if (ended) return;
+    if (ended || closing) return;
     guard(() => {
       framer.setModes({ kitty: (probe.kittyFlags ?? 0) > 0 });
       sync = probe.syncOutput === true;
@@ -716,6 +726,7 @@ export function startLoop(options: LoopOptions): Loop {
         leaveError,
         hc: hello ? { version: hello.version, features: [...hello.features] } : null,
         size: entered ? host.size() : { cols: 0, rows: 0 },
+        grids: [...grids].map(([pane, { grid }]) => ({ pane, cols: grid.grid.cols, rows: grid.grid.rows })),
         mode: { name: state.mode.name, locked: state.locked, armed: state.armed, overlays: state.overlays.map((overlay) => overlay.kind) },
         link: { kind: link.state.kind, code: "code" in link.state ? link.state.code : null },
       };

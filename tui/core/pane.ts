@@ -47,7 +47,7 @@ import type { Emulator, EmulatorOptions, EmulatorResult, EngineEvents } from "..
 import type { InputEvent } from "../input/decode.ts";
 import { type Deadlines, NO_DEADLINES, PAINT_QUIET_MS, PANE_REOPEN_LIMIT, setDeadline } from "../model/deadlines.ts";
 import type { CoreLink, LinkNotice } from "./link.ts";
-import { attachSent, attachSize, detached, newPaneSize, overtaken, type PaneSize, reattachDue, reattaching, rectangleChanged, replied, sameSize, type Size, sizedBy, sizeHeard, sizeTold, took } from "./size.ts";
+import { attachSent, attachSize, detached, newPaneSize, overtaken, type PaneSize, reattachDue, reattaching, rectangleChanged, refused, replied, sameSize, type Size, sizedBy, sizeHeard, sizeTold, took } from "./size.ts";
 import type { ProbeResult } from "../host/index.ts";
 import { displayAfter, displayFacts, type Reply } from "../host/probe.ts";
 
@@ -116,6 +116,8 @@ export interface PaneView {
   sizedBy: Size | null;
   /** the picture to draw: the newest attach's once its first paint is complete, until then the one before */
   emulator: Emulator | null;
+  /** the grid `emulator` has, which a frame lays its picture out at (an attach whose first paint is not complete may have another); null with no picture */
+  grid: Size | null;
   /** the first paint is complete: after the frame pass that draws it (and the read of what stdin still holds) the loop calls `live` */
   ready: boolean;
   covered: boolean;
@@ -249,6 +251,8 @@ class Pane {
   covered = false;
   /** the picture to draw */
   shown: Emulator | null = null;
+  /** the grid `shown` has: set with it, and as it is resized (the attach on its way may have another one) */
+  private shownGrid: Size | null = null;
   dropped = false;
   // What follows remembers something across steps. Each describes one thing and is cleared when that thing is over: a memory that
   // outlives what it describes is counted again later (the waits of `size` follow the same rule, in size.ts).
@@ -276,7 +280,7 @@ class Pane {
     const attempt = this.attempt;
     return {
       terminal: this.terminal, state: this.state, gen: this.gen, wanted: this.size.wanted, actual: this.size.actual, advertised: this.size.advertised,
-      sizedBy: sizedBy(this.size), emulator: this.shown, ready: this.state.kind === "Painting" && attempt?.painted === true, covered: this.covered, owed: attempt?.owed ?? 0,
+      sizedBy: sizedBy(this.size), emulator: this.shown, grid: this.shown ? this.shownGrid : null, ready: this.state.kind === "Painting" && attempt?.painted === true, covered: this.covered, owed: attempt?.owed ?? 0,
     };
   }
 
@@ -463,13 +467,16 @@ class Pane {
     const resized = attempt.emulator!.resize(actual.cols, actual.rows, cell[0], cell[1]);
     if (resized.ok) {
       attempt.grid = actual;
+      if (attempt.emulator === this.shown) this.shownGrid = actual;
       return true;
     }
     const { kind, message } = resized.error;
     if (kind === "trapped") this.rebuild(attempt, message);
     else if (kind === "size" || kind === "failed") {
-      // a grid no emulator takes, or one it refused: this terminal cannot be drawn until it has another size
+      // a grid no emulator takes, or one it refused: this terminal cannot be drawn until it has another size. A picture still
+      // shown keeps its own grid, which may be an earlier attach's
       this.abandon();
+      this.size = refused(this.size, this.shown ? this.shownGrid : null);
       this.fail("size", message);
     }
     // busy or disposed: nothing was done, and the next pump asks again
@@ -505,6 +512,7 @@ class Pane {
       this.shown?.dispose();
       this.shown = attempt.emulator;
     }
+    this.shownGrid = attempt.grid;
     this.set.tell({ type: "state", terminal: this.terminal });
   }
 

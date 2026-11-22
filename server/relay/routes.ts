@@ -3,8 +3,9 @@ import { MachineCodeForAccountError } from "../machine-profile.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { RELAY_CONTROLS } from "../dispatch-routes.ts";
+import { accountLabel } from "../../shared/account-asker.ts";
 import { updateRequestAllowed } from "../update-api.ts";
-import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError } from "./service.ts";
+import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetRegistryUnavailableError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -38,11 +39,15 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (!remoteApprover) return fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
     const body = await readJsonObject(request);
     if (body instanceof Response) return body;
+    const pc = typeof body.proven_server_id === "string" && /^[0-9a-f]{32}$/.test(body.proven_server_id)
+      && typeof body.pc_label === "string" && body.pc_label && body.pc_label === accountLabel(body.pc_label)
+      ? { id: body.proven_server_id, label: body.pc_label } : undefined;
     if (typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "decline")
-      || (body.decision === "approve" && (typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)))) {
+      || (body.decision === "approve" && !(typeof body.digits === "string" && /^[0-9]{6}$/.test(body.digits) || body.digits === undefined && pc !== undefined))) {
       return fail("invalid_relay_pairing", "Send the pairing's id, a decision of approve or decline, and the digits the new device shows.", 400);
     }
-    const outcome = service.approvals.decideRemote(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", remoteApprover);
+    if (!context.services.devices.isAccountApproverSession(peer.device.id, peer.key)) return fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
+    const outcome = service.approvals.decideRemote(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", remoteApprover, pc);
     if (outcome.outcome !== "decided") {
       return outcome.outcome === "gone"
         ? fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404)
@@ -104,6 +109,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       }
       case RELAY_CONTROLS.code: {
         setRequestRoute("/api/relay/code");
+        if (request.headers.get("x-ovis-pc-add") === "1" && context.services.devices.accountPolicyActive()) {
+          return fail("pc_add_target_bound", "That PC is in an account. Add it from that account.", 409);
+        }
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
         if (account !== null && !ACCOUNT_ID.test(account)) return invalidAccount();
@@ -124,8 +132,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         return reply(service.pairingLink({ localOnly: request.headers.get("x-ovis-local-only") === "1" }));
       case RELAY_CONTROLS.close:
         setRequestRoute("/api/relay/link/close");
-        // the owner stopped waiting: nothing more is taken, whatever the relay's state
-        if (!service.approvals.closeWindow()) return fail("internal_error", "The pairing window is closed, but its saved state could not be cleared.", 500);
+        // Automatic cleanup may name its own window. A stale close has no effect.
+        if (!service.approvals.closeWindow(request.headers.get("x-ovis-window") ?? undefined)) return fail("internal_error", "The pairing window is closed, but its saved state could not be cleared.", 500);
         return reply({ ok: true });
       case RELAY_CONTROLS.pairing: {
         setRequestRoute("/api/relay/pairing");
@@ -144,8 +152,15 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (!own) return fail("own_window_required", "Approve an account join in this PC's own window.", 403);
         const body = await readJsonObject(request);
         if (body instanceof Response) return body;
+        // a first join (no member could approve it) is allowed or declined by a tap, its digits compared on this screen
+        if (typeof body.id === "string" && (body.decision === "approve" || body.decision === "decline")) {
+          const tapped = service.approvals.decideOwn(body.id, body.decision === "approve");
+          if (tapped === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
+          if (tapped === "typed_only") return fail("digits_required", "Type the six digits the new device shows.", 409);
+          return reply({ ok: true });
+        }
         if (typeof body.id !== "string" || typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) {
-          return fail("invalid_relay_join", "Send the join's id and the six digits the new device shows.", 400);
+          return fail("invalid_relay_join", "Send the join's id and the six digits the new device shows, or a decision of approve or decline for a first join.", 400);
         }
         const outcome = service.approvals.decideTyped(body.id, body.digits);
         if (outcome === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
@@ -162,8 +177,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       }
       case RELAY_CONTROLS.reset: {
         setRequestRoute("/api/relay/reset-identity");
-        // it ends every relay row whatever its age: with the release flag on, only this PC itself may ask (T20, rule B)
-        if (context.services.devices.opensAll() && !local) return fail("local_required", "Resetting the relay identity is done at that PC", 403);
+        // Reset ends every relay row: a PC under account policy requires the same local authority as Revoke all.
+        if (context.services.devices.accountPolicyActive() && !local) return fail("local_required", "Resetting the relay identity is done at that PC", 403);
         const status = await service.resetIdentity();
         return reply(status, status.blocked ? 409 : 200);
       }
@@ -182,6 +197,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof PairingFinishingError) return jsonResponse({ error: { code: error.code, message: error.message } }, 409, { "cache-control": "no-store", "retry-after": String(error.retryAfter) });
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
+    if (error instanceof ResetRegistryUnavailableError) return fail(error.code, error.message, 503);
     // such a code lets a device in only on its account's word, which a PC with no account service cannot ask for
     if (error instanceof AccountServiceOffError) return fail(error.code, error.message, 409);
     // a machine makes a code for an account only: its command line says how a device is added there

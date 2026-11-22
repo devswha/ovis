@@ -103,6 +103,11 @@ export class Framer {
     this.pending = undefined;
   }
 
+  /** Whether a refused paste is still being swallowed: its end mark has not come yet. */
+  discarding(): boolean {
+    return this.state === "paste" && this.paste.refused;
+  }
+
   /** The start probe was sent at `now`: replies are read until its DA1 reply comes or REPLY_WAIT_MS pass. */
   expectReplies(now: number): void {
     this.replyUntil = now + REPLY_WAIT_MS;

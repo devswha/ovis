@@ -44,7 +44,7 @@ describe.skipIf(!bin || process.platform === "win32")("the core link against a r
     waiters.add(waiter);
     return promise;
   };
-  /** processes whose environment names this test's core folder: a core, a holder, or anything they started */
+  /** processes whose environment names this test's core folder: a core, a holder, or anything they started (Linux only: it reads /proc) */
   const runningIn = (root: string) => readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).filter((pid) => {
     try { return readFileSync(`/proc/${pid}/environ`, "latin1").includes(root); } catch { return false; }
   });
@@ -95,7 +95,8 @@ describe.skipIf(!bin || process.platform === "win32")("the core link against a r
     }
     expect(link.state).toMatchObject({ kind: "Offline", code: "no_core" });
     expect(existsSync(first.socket)).toBe(false);
-    expect(runningIn(folder.root)).toEqual([]);
+    // only Linux has /proc; elsewhere the stop report and the socket above stand for it
+    if (process.platform === "linux") expect(runningIn(folder.root)).toEqual([]);
 
     // a new core at the same socket: the next attempt brings the link up again, in a new epoch
     for (const sub of ["home", "state", "config", "run"]) mkdirSync(join(folder.root, sub), { recursive: true, mode: 0o700 });

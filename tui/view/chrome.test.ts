@@ -52,7 +52,7 @@ function worldOf(terminals: unknown[], docs: Record<string, unknown> = {}): Core
 }
 
 const pane = (terminal: string, state: PaneState = { kind: "Live" }, sizedBy: { cols: number; rows: number } | null = null): PaneView => ({
-  terminal, state, gen: 1, wanted: { cols: 46, rows: 36 }, actual: { cols: 46, rows: 36 }, advertised: null, sizedBy, emulator: null, ready: false, covered: false, owed: 0,
+  terminal, state, gen: 1, wanted: { cols: 46, rows: 36 }, actual: { cols: 46, rows: 36 }, advertised: null, sizedBy, emulator: null, grid: null, ready: false, covered: false, owed: 0,
 });
 
 interface Setup {
