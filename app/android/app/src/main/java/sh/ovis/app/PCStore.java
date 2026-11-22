@@ -381,6 +381,18 @@ final class PCStore {
     }
 
     /**
+     * pageTakesBack for the entry `reported` as the WebView reports it (doUpdateVisitedHistory, onPageCommitVisible),
+     * read against its history list (`entries`, `at` the current index): a new document is reported as it commits,
+     * before the list holds it, and then the list's current entry is the one behind it; once the list caught up, the one
+     * before it is.
+     */
+    static boolean pageTakesBackAt(String reported, String[] entries, int at, String place) {
+        if (reported == null || at < 0 || at >= entries.length) return false;
+        String before = reported.equals(entries[at]) ? (at > 0 ? entries[at - 1] : null) : entries[at];
+        return pageTakesBack(reported, before, place);
+    }
+
+    /**
      * Whether `url` is the hosted app's Add a PC (its front page at `#add`) on a relay PC's own origin: a relay PC's
      * More opens it over the PC's page (MachineSidebar openAddPc), so Back there returns to the PC as the page's own Back
      * does, rather than leaving the app.
