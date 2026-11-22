@@ -807,3 +807,14 @@ it("T72: a second challenge in the same pairing is never signed, and the attempt
   expect(error).toMatchObject({ code: "protocol_error" });
   expect(f.keyProof.proofs).toBe(1);
 });
+
+it("stops waiting for the device store once the attempt is aborted, before any socket opens", async () => {
+  const controller = new AbortController();
+  const store: RelayDeviceStore = { get: () => new Promise<never>(() => {}), update: async (_id, change) => change(undefined), list: async () => [], remove: async () => {} };
+  let sockets = 0;
+  const opening = openRelayChannel({ v: 1, server_id: "a".repeat(32), server_public_key: "key", code: "123456", relay: "wss://relay.example" },
+    { store, signal: controller.signal, socket: () => { sockets++; throw new Error("No socket before the device is read"); } });
+  controller.abort();
+  expect(await bounded(opening.then(() => null, (error: unknown) => error), 2_000)).toMatchObject({ name: "AbortError" });
+  expect(sockets).toBe(0);
+});

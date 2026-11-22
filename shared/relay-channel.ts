@@ -192,6 +192,20 @@ export interface RelayServerInfo {
   readonly features?: readonly string[];
 }
 
+/**
+ * Waits for what must be read before the socket opens (the device, from a store that may never answer): an abort ends
+ * the wait as it ends the socket, and it lasts no longer than the relay has to assign the socket.
+ */
+function beforeSocket<T>(read: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const aborted = (): void => { done(); reject(new DOMException("Relay connection aborted", "AbortError")); };
+    const timer = setTimeout(() => { done(); reject(new RelayUnreachableError(null, true)); }, ASSIGNMENT_MS);
+    const done = (): void => { clearTimeout(timer); signal?.removeEventListener("abort", aborted); };
+    signal?.addEventListener("abort", aborted, { once: true });
+    read.then((value) => { done(); resolve(value); }, (error: unknown) => { done(); reject(error); });
+  });
+}
+
 /** Resolves only after protected Noise, WELCOME and device admission all succeeded. Never retries. */
 export async function openRelayChannel(offer: RelayOffer, options: RelayChannelOptions): Promise<RelayChannel> {
   if (typeof offer.relay !== "string" || !isWssOrigin(offer.relay)) throw new UnsafeRelayDestinationError("relay");
@@ -208,7 +222,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
   url.searchParams.set("v", "1");
   options.signal?.throwIfAborted();
   const store = options.store;
-  const device = await getDevice(offer, store, options.label, options.accountKey);
+  const device = await beforeSocket(getDevice(offer, store, options.label, options.accountKey), options.signal);
   if (direct !== undefined && device.device_id === null) throw new DirectCarrierUnusableError();
   options.signal?.throwIfAborted();
   const socket = (options.socket ?? ((address) => new WebSocket(address)))(url.href);

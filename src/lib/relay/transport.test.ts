@@ -10,8 +10,9 @@ import { useResourceUrlState } from "../useResourceUrl.ts";
 import type { ResourceUrlState } from "../useResourceUrl.ts";
 import { RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../../shared/relay-regions.ts";
-import type { RelayChannelOptions } from "./channel.ts";
-import { isFatalRelayError, openRelayTransport, RECONNECT_PC_ANSWER_MS, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
+import type { RelayChannelOptions, RelaySocket } from "./channel.ts";
+import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+import { DIRECT_BUDGET_MS, isFatalRelayError, openRelayTransport, RECONNECT_PC_ANSWER_MS, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
 import { LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { RelayResourceTooLargeError } from "./resources.ts";
 import { writeFileSync } from "node:fs";
@@ -741,6 +742,87 @@ it("does not fall back to the other relay when an attempt that began before the 
   await f.transport.connect();
   expect((await f.transport.fetch("/api/health")).status).toBe(200);
   expect([f.clock.tasks.size, f.fatal]).toEqual([0, []]);
+});
+
+it("carries the pairing code into the attempt that replaces a hidden first pairing, whose outcome the first callers wait for", async () => {
+  const shown = page("visible");
+  const offered: (string | undefined)[] = [];
+  const refusal = new MuxProtocolError("auth_failed", "Pairing refused");
+  const pairing = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", code: "123456", relay: "wss://relay.example" }, {
+    openChannel: (channelOffer, config = {}) => {
+      offered.push(channelOffer.code);
+      if (offered.length > 1) return Promise.reject(refusal);
+      // the first socket is still connecting when the app goes to the background
+      return new Promise<never>((_, reject) => config.signal?.addEventListener("abort", () => reject(new DOMException("Relay connection aborted", "AbortError")), { once: true }));
+    },
+  });
+  shown.hide();
+  shown.show();
+  await expect(pairing).rejects.toBe(refusal);
+  expect(offered).toEqual(["123456", "123456"]);
+});
+
+/** First pairing through the real channel, each read of the device store held until the test answers it, and sockets that stay connecting. */
+function heldPairing(signal?: AbortSignal) {
+  const reads: ReturnType<typeof deferred<RelayDevice | undefined>>[] = [];
+  const sockets: { closed: number }[] = [];
+  const socketOpened = deferred<void>();
+  const store: RelayDeviceStore = {
+    get: () => { const read = deferred<RelayDevice | undefined>(); reads.push(read); return read.promise; },
+    update: async (_id, change) => change(undefined), list: async () => [], remove: async () => {},
+  };
+  const socket = (): RelaySocket => {
+    const state = { closed: 0 };
+    sockets.push(state);
+    socketOpened.resolve();
+    return { binaryType: "arraybuffer", readyState: 0, send: () => {}, close: () => { state.closed++; }, onmessage: null, onclose: null, onerror: null };
+  };
+  const pairing = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", code: "123456", relay: "wss://relay.example" }, { store, socket, ...(signal ? { signal } : {}) });
+  return { pairing, reads, sockets, socketOpened: socketOpened.promise };
+}
+
+it("hands the callers of a dropped first pairing to its replacement at once, so its failure is theirs while the old read still hangs", async () => {
+  const shown = page("visible");
+  const { pairing, reads } = heldPairing();
+  shown.hide();
+  shown.show();
+  expect(reads).toHaveLength(2);
+  const refusal = new Error("Storage refused");
+  reads[1]!.reject(refusal);
+  expect(await bounded(pairing.then(() => null, (error: unknown) => error), 2_000)).toBe(refusal);
+  reads[0]!.resolve(undefined);
+});
+
+it("settles a first pairing cancelled while its replacement still reads the device store", async () => {
+  const shown = page("visible");
+  const controller = new AbortController();
+  const { pairing, reads, sockets, socketOpened } = heldPairing(controller.signal);
+  reads[0]!.resolve(undefined);
+  await bounded(socketOpened, 2_000);
+  shown.hide();
+  shown.show();
+  expect(reads).toHaveLength(2);
+  controller.abort();
+  await bounded(pairing.then(() => undefined, () => undefined), 2_000);
+  expect(sockets.map((socket) => socket.closed)).toEqual([1]);
+  reads[1]!.resolve(undefined);
+});
+
+it("settles a native connection with the relay's failure while the saved direct route is still being read", async () => {
+  const shown = page("visible");
+  let reads = 0;
+  const store: RelayDeviceStore = {
+    get: () => { reads++; return new Promise<never>(() => {}); },
+    update: async (_id, change) => change(undefined), list: async () => [], remove: async () => {},
+  };
+  const unreachable = new RelayUnreachableError(null, true);
+  const connecting = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", relay: "wss://relay.example" }, {
+    store, directSocket: () => { throw new Error("No direct route was read"); }, openChannel: () => Promise.reject(unreachable),
+  });
+  shown.hide();
+  shown.show();
+  expect(reads).toBe(2);
+  expect(await bounded(connecting.then(() => null, (error: unknown) => error), DIRECT_BUDGET_MS + 1_000)).toBe(unreachable);
 });
 
 function referenceSse(text: string) {
