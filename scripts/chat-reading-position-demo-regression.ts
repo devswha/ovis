@@ -80,7 +80,9 @@ try {
   const index = join(app, "index.html");
   const fixture = `<script>(() => {
     const demo = window.fetch;
-    const panels = ${JSON.stringify([panes.api, panes.hermes])};
+    const panels = ${JSON.stringify([panes.api, panes.hermes, panes.web])};
+    const short = ${JSON.stringify(panes.web)};
+    window.olderReads = 0;
     const turns = Array.from({ length: 108 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "assistant",
       ts: new Date(Date.UTC(2026, 9, 12, 0, i)).toISOString(),
@@ -91,8 +93,16 @@ try {
     window.fetch = (input, init) => {
       const url = new URL(typeof input === "string" ? input : input.url, location.href);
       const pane = url.searchParams.get("pane_id");
+      if (url.pathname === "/api/pane/prompt" && pane === panels[0] && sessionStorage.getItem("fixture:outcome") !== null) {
+        // the prompt state, and with it the outcome rows, answers well after the transcript
+        const at = new Date(Date.UTC(2026, 9, 12, 0, 85, 30)).toISOString();
+        const outcome = { id: "fixture-outcome", pane_id: pane, text: "/fixture-outcome", state: "accepted", evidence: [], created_at: at, updated_at: at };
+        return new Promise((resolve) => setTimeout(() => resolve(Response.json({ prompt: null, outcomes: [outcome] })), 1500));
+      }
       if (url.pathname !== "/api/pane/conversation" || !panels.includes(pane)) return demo(input, init);
       const before = url.searchParams.get("before");
+      if (before !== null) window.olderReads += 1;
+      if (pane === short) return Promise.resolve(Response.json({ source: "codex-transcript", history_id: pane, turns: turns.slice(0, 6), cursor: null }));
       if (before !== null && sessionStorage.getItem("fixture:fail-older-read") !== null) {
         sessionStorage.removeItem("fixture:fail-older-read");
         return Promise.resolve(Response.json({ error: { code: "internal", message: "Could not read earlier messages" } }, { status: 500 }));
@@ -111,7 +121,7 @@ try {
       await context.addInitScript(() => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat", alertsOn: false }));
       });
-      const scenarios = ["tab", "workspace", "older", "following"] as const;
+      const scenarios = ["tab", "workspace", "older", "following", "vanished", "outcome", "fits"] as const;
       const failures: unknown[] = [];
       for (const scenario of scenarios) {
         const page = await context.newPage();
@@ -119,12 +129,66 @@ try {
         const errors: string[] = [];
         page.on("pageerror", (error) => errors.push(error.message));
         try {
+          if (scenario === "vanished" || scenario === "outcome") {
+            // a place kept from an earlier visit, as chatScrollMemory.ts stores it: a turn row that is no longer
+            // there although its time is inside the newest page, or an outcome row the prompt state draws late
+            const turn = scenario === "outcome" ? "outcome|fixture-outcome"
+              : `user|${new Date(Date.UTC(2026, 9, 12, 0, 90)).toISOString()}|text|Reading row 90, as it read before it was rewritten`;
+            await page.addInitScript(({ pane, turn, outcome }) => {
+              if (sessionStorage.getItem("fixture:placed") !== null) return;
+              sessionStorage.setItem("fixture:placed", "1");
+              if (outcome) sessionStorage.setItem("fixture:outcome", "1");
+              sessionStorage.setItem("ovis:chat-positions", JSON.stringify([[pane, { historyId: pane, turn, offset: 0, atEnd: false }]]));
+            }, { pane: panes.api, turn, outcome: scenario === "outcome" });
+          }
           await page.goto(`http://127.0.0.1:${server.port}${DEMO_PREFIX}?pane=${encodeURIComponent(panes.api)}&view=chat`);
           await page.locator(".conn-live").waitFor();
           await appFaces(page);
           const chat = transcript(page);
+          if (scenario === "outcome") {
+            await page.waitForFunction((selector) => {
+              const node = document.querySelector(selector);
+              const row = node?.querySelector<HTMLElement>(`[data-chat-row="outcome:fixture-outcome"]`);
+              if (!node || !row) return false;
+              return Math.abs(row.getBoundingClientRect().top - node.getBoundingClientRect().top) <= 2;
+            }, scrollerSelector);
+            assert.equal(await page.evaluate(() => (window as Window & { olderReads?: number }).olderReads), 0, "no earlier page is read while the outcome rows are still on their way");
+            assert.deepEqual(errors, []);
+            console.log(`PASS chat reading position: ${scenario}`);
+            continue;
+          }
           await atEnd(chat);
-          if (scenario === "older") {
+          if (scenario === "vanished") {
+            assert.equal(await page.evaluate(() => (window as Window & { olderReads?: number }).olderReads), 0, "a kept row that is gone from the loaded range reads no earlier page");
+          } else if (scenario === "fits") {
+            const fits = async () => chat.evaluate((node) => new Promise<void>((resolve, reject) => {
+              const deadline = performance.now() + 5000;
+              const check = () => {
+                if (node.scrollHeight > node.clientHeight && node.scrollHeight - node.clientHeight - node.scrollTop <= 1) resolve();
+                else if (performance.now() > deadline) reject(new Error(`Chat is not at its end: ${node.scrollTop} / ${node.scrollHeight - node.clientHeight}`));
+                else requestAnimationFrame(check);
+              };
+              requestAnimationFrame(check);
+            }));
+            await workspace(page, panes.web).click();
+            await activePane(page, panes.web).waitFor();
+            await page.waitForFunction((selector) => { const node = document.querySelector(selector); return node !== null && node.scrollHeight > node.clientHeight + 100; }, scrollerSelector);
+            await fits();
+            await chat.hover();
+            await page.mouse.wheel(0, -5000);
+            await page.waitForFunction((selector) => (document.querySelector(selector)?.scrollTop ?? 1) === 0, scrollerSelector);
+            await chat.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 400)));
+            // the whole transcript fits a taller window: the chat is at its end without a scroll
+            await page.setViewportSize({ width: 1280, height: 1600 });
+            await page.waitForFunction((selector) => { const node = document.querySelector(selector); return node !== null && node.scrollHeight <= node.clientHeight; }, scrollerSelector);
+            await chat.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+            await workspace(page, panes.api).click();
+            await activePane(page, panes.api).waitFor();
+            await page.setViewportSize({ width: 1280, height: 800 });
+            await workspace(page, panes.web).click();
+            await activePane(page, panes.web).waitFor();
+            await fits();
+          } else if (scenario === "older") {
             const earlier = chat.getByRole("button", { name: "Earlier messages", exact: true });
             const height = await chat.evaluate((node) => node.scrollHeight);
             await earlier.click();
