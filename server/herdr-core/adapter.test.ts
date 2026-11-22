@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, jest, setSystemTime } from "bun:test";
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveBeside, paneMoveToNewTab, tabClose, tabCreate, tabMove, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveBeside, paneMoveToNewTab, tabClose, tabCreate, tabMove, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentPrompt, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
 import { type AdapterOptions, paintedScreen, type SeenObserver, sessionLabeler, startHerdrCoreAdapter } from "./adapter.ts";
 import { SeenMarker } from "./seen-label.ts";
@@ -188,6 +188,71 @@ describe("herdr-core adapter", () => {
     expect(snapshot.panes.map((p) => [p.pane_id, p.agent, p.agent_status])).toEqual([["t1", "claude", "blocked"], ["t2", null, "unknown"]]);
   });
 
+  it("shows agy's plan review at rest, whose input box takes the reply, and its question and approvals blocked", async () => {
+    const agy = (msg: string, kind: string) => ({ app: "antigravity", state: "blocked", kind, msg });
+    const { socket } = await setup([
+      terminal("t1", { status: agy("Approve plan", "permission") }),
+      terminal("t2", { status: agy("Which name would you like?", "question") }),
+      terminal("t3", { status: agy("Run: rm -rf build", "permission") }),
+      // a question asked in those very words is still a question
+      terminal("t4", { status: agy("Approve plan", "question") }),
+    ]);
+    const snapshot = await sessionSnapshot(socket);
+    expect(snapshot.panes.map((p) => [p.pane_id, p.agent_status, p.agent_kind ?? null, p.agent_message ?? null])).toEqual([
+      ["t1", "done", null, null],
+      ["t2", "blocked", "question", "Which name would you like?"],
+      ["t3", "blocked", "permission", "Run: rm -rf build"],
+      ["t4", "blocked", "question", "Approve plan"],
+    ]);
+  });
+
+  it("sends a prompt into agy's plan review with force, and into any other blocked program without", async () => {
+    const blocked = (app: string, msg: string, kind = "permission") => ({ status: { app, state: "blocked", kind, msg } });
+    const { socket, cores } = await setup([terminal("t1", blocked("antigravity", "Approve plan")), terminal("t2", blocked("antigravity", "Run: make")),
+      terminal("t3", blocked("codex", "Approve plan")), terminal("t4", blocked("antigravity", "Approve plan", "question"))], { "terminal.send": () => ({ turn: 1 }) });
+    for (const target of ["t1", "t2", "t3", "t4"]) await agentPrompt(target, "use option 2", socket);
+    expect(cores.flatMap((core) => core.calls).filter((call) => call.method === "terminal.send").map((call) => call.params)).toEqual([
+      { terminal: "t1", text: "use option 2", force: true },
+      { terminal: "t2", text: "use option 2" },
+      { terminal: "t3", text: "use option 2" },
+      { terminal: "t4", text: "use option 2" },
+    ]);
+  });
+
+  it("tells agy's plan review at rest in its status events as in the snapshot, done on the turn that counts it with nothing new to draw, and its question blocked", async () => {
+    let channel = 0;
+    const working = { app: "antigravity", state: "working" };
+    const { socket, cores } = await setup([terminal("t1"), terminal("t2")], {
+      "events.subscribe": () => {
+        channel = cores.at(-1)!.channel();
+        return { channel, seq: 1, terminals: [terminal("t1", { status: working, turn: 1, labels: { "herdr.seen": "1" } }), terminal("t2", { status: working, turn: 1, labels: { "herdr.seen": "1" } })] };
+      },
+    });
+    const frames: EventFrame[] = [];
+    const started = Promise.withResolvers<void>();
+    const told = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "pane.updated" }, { type: "pane.agent_status_changed", pane_id: "t1" }, { type: "pane.agent_status_changed", pane_id: "t2" }], {
+      // the reply that starts the next turn is the last event: what came before it is all told by then
+      onEvent: (frame) => { frames.push(frame); if (frame.data?.["pane_id"] === "t1" && frame.data["agent_status"] === "working") told.resolve(); },
+      onStarted: () => started.resolve(),
+    }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    const core = cores[0]!;
+    const blocked = (kind: string, msg: string) => ({ status: { app: "antigravity", state: "blocked", kind, msg } });
+    core.notify(channel, "event", { seq: 2, type: "status", terminal: "t1", data: blocked("permission", "Approve plan") });
+    core.notify(channel, "event", { seq: 3, type: "turn", terminal: "t1", data: { turn: 2, state: "blocked" } });
+    core.notify(channel, "event", { seq: 4, type: "labels", terminal: "t1", data: { labels: { "herdr.seen": "2" } } });
+    core.notify(channel, "event", { seq: 5, type: "status", terminal: "t2", data: blocked("question", "Approve plan") });
+    core.notify(channel, "event", { seq: 6, type: "status", terminal: "t1", data: { status: working } });
+    await told.promise;
+    const shown = (pane: string, status: string) => ({ event: "pane.agent_status_changed", data: { pane_id: pane, agent_status: status, agent: "agy" } });
+    // the plan review's kind and message are not drawn, so neither it nor the reply after it asks for a fresh snapshot
+    const updated = (pane: string) => ({ event: "pane.updated", data: { type: "pane_updated", pane_id: pane } });
+    const layout = { event: "layout.updated", data: { type: "layout_updated" } };
+    expect(frames).toEqual([shown("t1", "done"), shown("t1", "idle"), layout, updated("t2"), shown("t2", "blocked"), shown("t1", "working")]);
+  });
+
   it("types send_text into an attach at the terminal's own grid, and answers once hc took the attach's close", async () => {
     const { socket, cores } = await setup([terminal("t1", { cols: 90, rows: 20 })]);
     await paneSendText("t1", "héllo 한글", socket);
@@ -227,12 +292,54 @@ describe("herdr-core adapter", () => {
     expect(claudeInputDraft(live, colors)).toBe(false);
   });
 
+  it("reads the colors of a Claude Code a shell started on the alternate screen from that screen alone, never the shell's lines", async () => {
+    const rule = "\u2500".repeat(20);
+    // as hc 0.1.21 paints it: its reset, the main screen (the shell's modes, tab stops, the line that
+    // typed `claude`, its cursor and title), the switch to the alternate screen, its own modes and tab
+    // stops, then that screen: a blank row over Claude's box, its suggestion dim under its own inverse
+    // cursor, the cursor row blank
+    const paint = "\u0018\u001b[!p\u001b[?2026l\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J\u001b[?2004h\u001b[3g\u001b[9G\u001bH\u001b[H"
+      + "\u001b[0m~/code \u276f claude\u001b[2;1H\u001b]2;claude\u001b\\\u001b[?1049h\u001b[!p\u001b[?1006h\u001b[?2004h\u001b[3g\u001b[9G\u001bH\u001b[H"
+      + `\u001b[0m\r\n\u001b[38;2;136;136;136m${rule}\u001b[0m\r\n\u276f\u00a0\u001b[0m\u001b[7md\u001b[0m\u001b[2mo it\u001b[0m\r\n${rule}  \r\n`
+      + "\u001b[5;1H\u001b[0m\u001b]2;claude\u001b\\\u001b[?9001l\u001b]7501;state=idle:app=claude-code\u001b\\";
+    // hc's text read of the alternate screen: the blank row at the bottom dropped, nothing taken in at the top
+    const text = `\n${rule}\n\u276f\u00a0do it\n${rule}`;
+    const { socket, cores } = await setup([terminal("t1", { rows: 5 })], {
+      "terminal.read": () => ({ text, complete: true, how: "screen" }),
+      "terminal.attach": () => {
+        const core = cores.at(-1)!;
+        const channel = core.channel();
+        core.replyTail = encodeFrame(channel, FRAME_DATA, paint);
+        return { channel, terminal: terminal("t1", { rows: 5 }) };
+      },
+    });
+    const live = (await paneRead({ paneId: "t1", source: "detection", format: "text" }, socket)).text;
+    const colors = (await paneRead({ paneId: "t1", source: "visible", format: "ansi" }, socket)).text;
+    expect(colors).toBe(`\u001b[0m\n\u001b[38;2;136;136;136m${rule}\u001b[0m\n\u276f\u00a0\u001b[0m\u001b[7md\u001b[0m\u001b[2mo it\u001b[0m\n${rule}`);
+    expect(viewportShowsLive(null, null, colors, live, live)).toBe(true);
+    expect(claudeInputDraft(live, colors)).toBe(false);
+  });
+
+  it("leaves out the main screen's history as well, which hc 0.1.21 paints before a full-screen program's screen when the attach asks for history", () => {
+    // measured on hc 0.1.21, as a 3-row terminal: its reset, the shell's history pushed up, a second clear,
+    // the shell's screen (the line that started the program), its title, the switch, then the alternate screen
+    const paint = "\u0018\u001b[!p\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J\u001b[0mline1\r\nline2\u001b[0m\r\n\n\n\n\u001b[H\u001b[2J"
+      + "\u001b[3g\u001b[9G\u001bH\u001b[H\u001b[0mline3\r\n$ claude\u001b[3;1H\u001b[0m\u001b]2;shell\u001b\\\u001b[?1049h\u001b[!p\u001b[3g\u001b[9G\u001bH\u001b[H"
+      + "\r\n\u001b[0m\u276f\u00a0\u001b[2mdo it\u001b[0m\u001b[3;1H\u001b[0m\u001b]2;claude\u001b\\\u001b[?9001l";
+    expect(paintedScreen(paint, 3)).toBe("\n\u001b[0m\u276f\u00a0\u001b[2mdo it\u001b[0m\u001b[0m");
+  });
+
   it("reads no history of a terminal on the alternate screen, which hc would scroll and repaint for every viewer (#3128)", async () => {
     const preamble = "\u0018\u001b[!p\u001b[?2026l\u001b[?1004l\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J";
-    for (const shown of ["alternate", "main", "refused"] as const) {
+    // a program a shell started: hc 0.1.21 paints the shell's modes, tab stops and lines first, then switches
+    const shell = "\u001b[?2004h\u001b[3g\u001b[9G\u001bH\u001b[H\u001b[0m$ codex\u001b[2;1H";
+    // the terminal's own program: hc 0.1.21 paints the main screen it never wrote to first, then switches
+    const own = "\u001b[3g\u001b[H\u001b[1;1H\u001b[0m";
+    const before = { alternate: "\u001b[?1049h", "after a shell": `${shell}\u001b[?1049h\u001b[!p`, "on its own": `${own}\u001b[?1049h\u001b[!p`, main: "", refused: "" };
+    for (const shown of ["alternate", "after a shell", "on its own", "main", "refused"] as const) {
       const full = shown !== "main";
       // as hc 0.1.14 paints with no history: its reset, the alternate screen if the program is on it, the screen
-      const paint = `${preamble}${shown === "alternate" ? "\u001b[?1049h" : ""}\u001b[H\u001b[0m\u203a Ask Codex\r\n\u001b[?9001l`;
+      const paint = `${preamble}${before[shown]}\u001b[H\u001b[0m\u203a Ask Codex\r\n\u001b[?9001l`;
       const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
         "terminal.read": (params) => ({ text: params["lines"] ? "older\n\u203a Ask Codex" : "\u203a Ask Codex", complete: true, how: params["lines"] ? "history" : "screen" }),
         "terminal.attach": () => {
@@ -251,6 +358,28 @@ describe("herdr-core adapter", () => {
       expect(read.text).toBe(full ? "\u203a Ask Codex" : "older\n\u203a Ask Codex");
       expect(read.truncated).toBe(full);
     }
+  });
+
+  it("reads only the paint hc sends again once another machine's line is back, never the one the drop cut short", async () => {
+    const reset = "\u0018\u001b[!p\u001b[?2026l\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J";
+    // the line drops in the middle of a full-screen program's paint; hc says so, then attaches again on the same
+    // channel and paints afresh (remote/viewers.rs `reattach`), the program back on the main screen meanwhile
+    const cut = `${reset}\u001b[3g\u001b[H\u001b[0m$ vim\u001b[2;1H\u001b[?1049h\u001b[!p\u001b[H\u001b[0mSTALE\r\n`;
+    const lost = "\u0018\r\n[line to lab lost; reconnecting...]\r\n";
+    const again = `${reset}\u001b[H\u001b[0m$ vim\r\n$ \u001b[32mback\u001b[0m\u001b[2;8H\u001b[?9001l`;
+    const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
+      "terminal.read": (params) => ({ text: params["lines"] ? "older\n$ vim\n$ back" : "$ vim\n$ back", complete: true, how: params["lines"] ? "history" : "screen" }),
+      "terminal.attach": () => {
+        const core = cores.at(-1)!;
+        const channel = core.channel();
+        core.replyTail = Buffer.concat([encodeFrame(channel, FRAME_DATA, cut), encodeFrame(channel, FRAME_DATA, lost + again)]);
+        return { channel, terminal: terminal("t1", { rows: 4 }) };
+      },
+    });
+    expect((await paneRead({ paneId: "t1", source: "visible", format: "ansi" }, socket)).text).toBe("\u001b[0m$ vim\n$ \u001b[32mback\u001b[0m");
+    const read = await paneRead({ paneId: "t1", source: "recent", lines: 400, stripAnsi: true }, socket);
+    expect(cores[0]!.calls.filter((call) => call.method === "terminal.read").map((call) => call.params["lines"])).toEqual([400]);
+    expect(read.text).toBe("older\n$ vim\n$ back");
   });
 
   it("answers a colored read with hc's plain text when the watch-only attach brings no screen", async () => {
@@ -2132,6 +2261,81 @@ describe("another machine of the core, as its own PC (#2497)", () => {
     expect(snapshot.workspaces.map((w) => w.label)).toEqual(["lab work"]);
     expect(snapshot.panes.map((p) => [p.pane_id, p.cwd, p.parent_pane_id ?? null])).toEqual([["t1", "/there", null], ["t2", "/home/u", "t1"]]);
     expect(cores[0]!.calls.filter((call) => call.method === "doc.get").map((call) => call.params["on"])).toEqual(["lab-id", "lab-id"]);
+  });
+
+  it("nests a linked worktree's workspace under its repository by git run on that machine, not on this disk", async () => {
+    const asked: string[][] = [];
+    const answer = (stdout: string) => ({ code: 0, timed_out: false, stdout: Buffer.from(stdout).toString("base64"), stderr: "" });
+    const { socket, cores } = await setup([terminal("lab/t1", { cwd: "/srv/lab/wt" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => {
+        const argv = params["argv"] as string[];
+        asked.push(argv);
+        if (argv.includes("rev-parse")) return answer("/srv/lab/wt\n/srv/lab/.git\n/srv/lab/.git/worktrees/wt\n");
+        return answer("worktree /srv/lab\0HEAD abc\0branch refs/heads/main\0\0worktree /srv/lab/wt\0HEAD def\0branch refs/heads/fix\0\0");
+      },
+    }, undefined, "lab");
+    const snapshot = await sessionSnapshot(socket);
+    expect(snapshot.workspaces[0]!.worktree).toEqual({ repo_key: "/srv/lab/.git", repo_name: "lab", repo_root: "/srv/lab", checkout_path: "/srv/lab/wt", is_linked_worktree: true });
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((argv) => argv.slice(argv.indexOf("/usr/bin/git"), argv.indexOf("/usr/bin/git") + 3).join(" ") === "/usr/bin/git -C /srv/lab/wt")).toBe(true);
+    // aimed at that machine: without `on` the core would run git on this PC, where the folder is not
+    const execs = cores[0]!.calls.filter((call) => call.method === "machine.exec");
+    expect(execs.length).toBeGreaterThan(0);
+    expect(execs.every((call) => call.params["on"] === "lab-id")).toBe(true);
+    // in git's own words, as this PC's git runs: an older git's refused -z is told by its English message
+    expect(execs.every((call) => (call.params["env"] as Record<string, string> | undefined)?.["LC_ALL"] === "C")).toBe(true);
+  });
+
+  // only this PC's core reads its terminals' environment (runtime.ts gives another machine's adapter no terminalEnv);
+  // a program run without a terminal through this connection, whoever runs it, runs on that machine
+  it("runs a program without a terminal on that machine, not on this PC's core", async () => {
+    const { hc, cores } = await setup(listed(), { "machine.exec": () => ({ code: 0, timed_out: false, truncated: false, ms: 1, stdout: "", stderr: "" }) }, undefined, "lab");
+    await hc.call("machine.exec", { argv: ["/usr/bin/env", "-0"], timeout: 5 });
+    expect(cores.flatMap((core) => core.calls.filter((call) => call.method === "machine.exec").map((call) => call.params["on"]))).toEqual(["lab-id"]);
+  });
+
+  it("asks that machine's git about the folder itself, not a repository its core was started in", async () => {
+    const answer = (stdout: string) => ({ code: 0, timed_out: false, truncated: false, stdout: Buffer.from(stdout).toString("base64"), stderr: "" });
+    const inherited = { GIT_DIR: "/home/u/.dotfiles", GIT_WORK_TREE: "/home/u" };
+    const { socket } = await setup([terminal("lab/t1", { cwd: "/srv/plain" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => {
+        const argv = params["argv"] as string[];
+        // as that machine runs it: on top of its core's environment, less what env -u takes away
+        const unset = argv[0] === "/usr/bin/env" ? argv.filter((_, at) => argv[at - 1] === "-u") : [];
+        if (Object.keys(inherited).some((name) => !unset.includes(name))) {
+          return answer(argv.includes("rev-parse") ? "/srv/plain\n/home/u/.dotfiles\n/home/u/.dotfiles\n" : "worktree /home/u\0HEAD abc\0branch refs/heads/main\0\0");
+        }
+        return { code: 128, timed_out: false, truncated: false, stdout: "", stderr: Buffer.from("fatal: not a git repository").toString("base64") };
+      },
+    }, undefined, "lab");
+    expect((await sessionSnapshot(socket)).workspaces[0]!.worktree ?? null).toBeNull();
+  });
+
+  it("draws nothing from a listing that machine's core cut short", async () => {
+    const answer = (stdout: string, truncated = false) => ({ code: 0, timed_out: false, truncated, stdout: Buffer.from(stdout).toString("base64"), stderr: "" });
+    const { socket } = await setup([terminal("lab/t1", { cwd: "/srv/lab/wt" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => (params["argv"] as string[]).includes("rev-parse") ? answer("/srv/lab/wt\n/srv/lab/.git\n/srv/lab/.git/worktrees/wt\n") : answer("worktree /srv/la", true),
+    }, undefined, "lab");
+    expect((await sessionSnapshot(socket)).workspaces[0]!.worktree ?? null).toBeNull();
+  });
+
+  it("lists that machine's checkouts by line when its git is older than 2.36, whatever its language", async () => {
+    const answer = (stdout: string, code = 0, stderr = "") => ({ code, timed_out: false, stdout: Buffer.from(stdout).toString("base64"), stderr: Buffer.from(stderr).toString("base64") });
+    const { socket } = await setup([terminal("lab/t1", { cwd: "/srv/lab/wt" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => {
+        const argv = params["argv"] as string[];
+        const english = (params["env"] as Record<string, string> | undefined)?.["LC_ALL"] === "C";
+        if (argv.includes("rev-parse")) return answer("/srv/lab/wt\n/srv/lab/.git\n/srv/lab/.git/worktrees/wt\n");
+        // git 2.34 (Ubuntu 22.04) in that machine's language unless told otherwise
+        if (argv.includes("-z")) return answer("", 129, english ? "error: unknown switch \x60z'\n" : "Fehler: Unbekannter Schalter \x60z'\n");
+        return answer("worktree /srv/lab\nHEAD abc\nbranch refs/heads/main\n\nworktree /srv/lab/wt\nHEAD def\nbranch refs/heads/fix\n\n");
+      },
+    }, undefined, "lab");
+    expect((await sessionSnapshot(socket)).workspaces[0]!.worktree).toEqual({ repo_key: "/srv/lab/.git", repo_name: "lab", repo_root: "/srv/lab", checkout_path: "/srv/lab/wt", is_linked_worktree: true });
   });
 
   it("reaches each terminal by its address on the core, and starts a new one there", async () => {
