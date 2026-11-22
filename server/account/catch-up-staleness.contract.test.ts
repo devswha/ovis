@@ -65,6 +65,41 @@ test("T56: a failed service past one hour closes account-only sessions and refus
   expect((await ask(recovered, "/api/account/status")).status).toBe(200);
 });
 
+test("T56: a failed service past one hour also ends an account member kept in devices.json, and the PC keeps its account", async () => {
+  const clock = new TestClock();
+  const pc = await createListedPc(close => closes.push(close), clock);
+  const { devices, accountMailbox } = pc.fixture.app.context.services;
+  // a member's remote approval makes the listed device a devices.json member: no snapshot row bounds it any more
+  expect(devices.pairRelayApproved("Laptop", pc.device.publicKey, { path: "account", addedBy: pc.member.id, id: pc.device.id })?.device.id).toBe(pc.device.id);
+  expect(devices.accountOnly(pc.device.id)).toBe(true);
+  const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
+  closes.push(() => wall.mockRestore());
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const session = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  await session.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]);
+  expect((await ask(session, "/api/health")).status).toBe(200);
+  pc.service.opensAll = false;
+  await accountMailbox.pull();
+  clock.advance(STALE_READ_MS - 1);
+  expect((await ask(session, "/api/health")).status).toBe(200);
+  clock.advance(1);
+  expect(await bounded(session.serverError)).toBe("auth_changed");
+  expect(devices.sessionRow(pc.device.id)).toBeNull();
+  expect(devices.account()).toBe(ACCOUNT);
+  const refused = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  void refused.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]).catch(() => undefined);
+  expect(await bounded(refused.serverError)).toBe("held");
+  // a pairing made at this PC is no account access: it stays
+  const local = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  await local.auth(pc.member);
+
+  pc.service.opensAll = true;
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const recovered = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  await recovered.auth(pc.device, [ACCOUNT_OPENS_ALL_FEATURE]);
+  expect((await ask(recovered, "/api/health")).status).toBe(200);
+});
+
 test("T56: a request at the monotonic hour is refused before timer delivery", async () => {
   const clock = new TestClock();
   const pc = await createListedPc(close => closes.push(close));

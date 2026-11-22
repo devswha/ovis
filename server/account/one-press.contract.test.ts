@@ -298,17 +298,17 @@ const noAdmission = () => Response.json({ error: { code: "no_admission", message
 const bindingOf = (stateDir: string) => JSON.parse(readFileSync(join(stateDir, "account-pc.json"), "utf8")).binding;
 
 /**
- * The PC as an update finds it: stopped, and started again from a copy of its state folder whose binding names no
- * listing, as every binding made before 0.5.10. `receipt`: the completion receipt of its bind was never taken.
+ * The PC stopped, and started again from a copy of its state folder. `legacy`: its binding names no listing, as every
+ * binding made before 0.5.10. `receipt`: the completion receipt of its bind was never taken.
  */
-async function updated(f: Pc, options: { receipt?: boolean; fetch?: (request: Request) => Promise<Response> } = {}) {
+async function restartedFrom(f: Pc, options: { legacy?: boolean; receipt?: boolean; fetch?: (request: Request) => Promise<Response> } = {}) {
   await f.app.stop();
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-upgrade-listing-"));
   cpSync(f.stateDir, stateDir, { recursive: true });
   const path = join(stateDir, "account-pc.json");
   const state = JSON.parse(readFileSync(path, "utf8"));
   const { listing_id: listing, ...binding } = state.binding;
-  writeFileSync(path, JSON.stringify({ ...state, binding }));
+  if (options.legacy) writeFileSync(path, JSON.stringify({ ...state, binding }));
   if (options.receipt) writeFileSync(join(stateDir, "account-completion.json"), JSON.stringify({ account: binding.account, listing_id: listing }));
   const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false,
     accountOpensAll: true, accountService: { url: "https://account.test", fetch: options.fetch ?? f.account.fetch } });
@@ -317,6 +317,9 @@ async function updated(f: Pc, options: { receipt?: boolean; fetch?: (request: Re
   await app.context.services.accountMailbox.pull();
   return { stateDir, app, closes, close() {}, devices: app.context.services.devices, listing: listing as string, bindId: binding.bind_id as string };
 }
+/** The PC as an update finds it. */
+const updated = (f: Pc, options: Omit<NonNullable<Parameters<typeof restartedFrom>[1]>, "legacy"> = {}) => restartedFrom(f, { ...options, legacy: true });
+const pathOf = (request: Request) => new URL(request.url).pathname;
 
 test("upgrade: a binding without a listing ID pins the listing of an admission still current", async () => {
   const f = await pc();
@@ -373,6 +376,10 @@ test.each([
   expect(await signIn(now, serverId, { id: paired.id, keys: local.keys, publicKey: local.spki }, [])).toBe("admitted");
   expect(await accountOpen(now, serverId, device)).toBe("account_readd_required");
   expect(await accountOpen(now, serverId, device, [])).toBe("unsupported_extension");
+  // why this PC left its account is said only to a key it knew, once proved
+  const stranger = await phone();
+  expect(await accountOpen(now, serverId, { id: accountDeviceId(serverId, stranger.spki), keys: stranger.keys, publicKey: stranger.spki })).toBe("auth_failed");
+  expect(await accountOpen(now, serverId, { ...device, keys: stranger.keys })).toBe("auth_failed");
   lapsed = false;
   await admitAt(f, "acct_1");
   expect(await pressOnce(now.app.context.services, "acct_1")).toEqual({ account: "acct_1" });
@@ -421,6 +428,165 @@ test.each([
   expect(await bounded(open.serverError, 2000)).toBe("auth_revoked");
   expect(await signIn(f, serverId, device)).toBe("auth_failed");
   expect(await accountOpen(f, serverId, device)).toBe("account_readd_required");
+});
+
+test("upgrade: an admission another device made for a replacement listing pins nothing to a binding without a listing ID", async () => {
+  const f = await pc();
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
+  await remove();
+  await relist();
+  // a device of the account, freshly signed in with two-step, admits the relisted PC: nobody pressed at the PC
+  await admitAt(f, "acct_1");
+  const now = await updated(f);
+  expect(bindingOf(now.stateDir)).toBeNull();
+  expect(now.devices.sessionRow(device.id)).toBeNull();
+  expect(await signIn(now, serverId, device)).toBe("auth_failed");
+});
+
+test.each([
+  ["an empty completed_at", { completed_at: "" }],
+  ["a completed_at that is no time", { completed_at: "soon" }],
+  ["no completed_at", {}],
+  ["a null body", null],
+] as const)("listing confirmation: a completion answered 200 with %s confirms nothing", async (_case, body) => {
+  let garbled = false;
+  const f = await pc({ accountFetch: async (req, svc) => {
+    const answer = await svc.fetch(req);
+    return garbled && pathOf(req) === "/v1/pc/complete" && answer.ok ? Response.json(body) : answer;
+  } });
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  const binding = f.devices.serviceBinding();
+  clock.advance(LISTING_CONFIRMED_MS);
+  garbled = true;
+  expect(await signIn(f, serverId, device)).toBe("account_unreachable");
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false });
+  expect(f.devices.serviceBinding()).toBe(binding);
+});
+
+test("the completion receipt is kept until the service takes it or says its listing changed", async () => {
+  let answer: (() => Response) | null = () => Response.json(null);
+  const f = await pc({ accountFetch: async (req, svc) => {
+    if (answer !== null && pathOf(req) === "/v1/pc/complete") return answer();
+    return svc.fetch(req);
+  } });
+  f.account.completions = true;
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1", null);
+  expect((await press(f, "acct_1")).status).toBe(200);
+  const kept = () => JSON.parse(readFileSync(join(f.stateDir, "account-completion.json"), "utf8"));
+  const receipt = { account: "acct_1", listing_id: f.devices.serviceListing() };
+  expect(kept()).toEqual(receipt);
+  for (const next of [() => Response.json({ completed_at: "" }), () => Response.json({ error: { code: "try_again" } }, { status: 409 }), () => new Response(null, { status: 503 })]) {
+    answer = next;
+    await f.app.context.services.accountMailbox.pull();
+    expect(kept()).toEqual(receipt);
+  }
+  answer = null;
+  await f.app.context.services.accountMailbox.pull();
+  expect(kept()).toBeNull();
+});
+
+test.each([
+  ["no listing ID", (body: Record<string, unknown>) => { const { listing_id: _listing, ...rest } = body; return rest; }],
+  ["a null listing ID", (body: Record<string, unknown>) => ({ ...body, listing_id: null })],
+  ["a malformed listing ID", (body: Record<string, unknown>) => ({ ...body, listing_id: "L1" })],
+] as const)("a press whose admission names %s binds nothing", async (_case, change) => {
+  const f = await pc({ accountFetch: async (req, svc) => {
+    const answer = await svc.fetch(req);
+    return pathOf(req) === "/v1/pc/admission" && answer.ok ? Response.json(change(await answer.json())) : answer;
+  } });
+  f.account.completions = true;
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1", null);
+  const pressed = await press(f, "acct_1");
+  expect([pressed.status, pressed.body.error?.code]).toEqual([502, "listing_unnamed"]);
+  expect(f.devices.account()).toBeNull();
+});
+
+test("listing confirmation: after a restart with the account service down, a device from before the account codes keeps its key", async () => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  const now = await restartedFrom(f, { fetch: async () => new Response(null, { status: 503 }) });
+  // auth_failed would make that app forget its pairing; the row only waits for a read that cannot come
+  expect(await signIn(now, serverId, device, [])).toBe("internal_error");
+  expect(await signIn(now, serverId, device, [ACCOUNT_OPENS_ALL_FEATURE])).toBe("held");
+  expect(await signIn(now, serverId, device)).toBe("account_unreachable");
+  expect(bindingOf(now.stateDir)).toMatchObject({ bind_id: now.bindId, listing_id: now.listing });
+});
+
+test("one press: a listing replaced between the admission and the first read releases no account row", async () => {
+  let replace: (() => Promise<void>) | null = null;
+  const f = await pc({ accountFetch: async (req, svc) => {
+    if (pathOf(req) === "/v1/pc/complete") return new Response(null, { status: 503 });
+    const answer = await svc.fetch(req);
+    if (pathOf(req) === "/v1/pc/admission" && replace !== null) { const run = replace; replace = null; await run(); }
+    return answer;
+  } });
+  f.account.completions = true;
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1");
+  const token = f.account.issueToken("acct_1");
+  const key = await phone();
+  f.account.registerSessionKey(token, key.spki, "Phone");
+  const identity = f.app.context.services.relay.currentIdentity()!;
+  const url = `https://account.test/v1/pcs/${identity.server_id}`;
+  const headers = { authorization: `Bearer ${token}` };
+  replace = async () => {
+    expect((await f.account.fetch(new Request(url, { method: "DELETE", headers }))).status).toBe(204);
+    expect((await f.account.fetch(new Request(url, { method: "PUT", headers, body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.test" }) }))).status).toBe(200);
+  };
+  await press(f, "acct_1");
+  expect(replace).toBeNull();
+  expect(f.devices.has(accountDeviceId(identity.server_id, key.spki))).toBe(false);
+});
+
+test("a snapshot read whose listing is replaced before its last page releases nothing", async () => {
+  let replace: (() => Promise<void>) | null = null;
+  const f = await pc({ accountFetch: async (req, svc) => {
+    if (replace !== null && pathOf(req) === "/v1/pc/snapshot" && (await req.clone().json()).page === 1) { const run = replace; replace = null; await run(); }
+    return svc.fetch(req);
+  } });
+  const { serverId, remove, relist } = await firstPcWithPhone(f);
+  const late = await phone();
+  f.account.registerDevice("acct_1", late.spki, "Late");
+  for (let index = 0; index < 100; index++) f.account.registerDevice("acct_1", (await phone()).spki, `Device ${index}`);
+  replace = async () => { await remove(); await relist(); };
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false });
+  expect(replace).toBeNull();
+  expect(f.devices.has(accountDeviceId(serverId, late.spki))).toBe(false);
+});
+
+test("listing confirmation: an AUTH_OK that leaves the queue after the 60 seconds admits nobody", async () => {
+  const f = await pc();
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
+  const link = await relayConnection(f, { serverId });
+  const mux = link.session.mux;
+  const enqueue = mux.enqueueControl.bind(mux);
+  const queued = Promise.withResolvers<() => void>();
+  // the carrier holds the frame back: its commit runs only when it is sent
+  mux.enqueueControl = (frame, ...rest) => {
+    if (frame.type !== FrameType.AUTH_OK) return enqueue(frame, ...rest);
+    queued.resolve(() => enqueue(frame, ...rest));
+  };
+  const verdict = link.auth(device, listingFeatures).then(() => "admitted", () => bounded(link.serverError));
+  const send = await bounded(queued.promise);
+  clock.advance(LISTING_CONFIRMED_MS);
+  send();
+  expect(await verdict).toBe("timeout");
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+});
+
+test("listing confirmation: a later check that fails ends a warm answer", async () => {
+  let offline = false;
+  const f = await pc({ accountFetch: async (req, svc) => offline ? new Response(null, { status: 503 }) : svc.fetch(req) });
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  offline = true;
+  clock.advance(1_000);
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false });
+  expect(await signIn(f, serverId, device)).toBe("account_unreachable");
 });
 
 test.each([true, false])("removed PC: restarting after a bare relist cannot release the old phone row (listing ID: %p)", async completions => {
