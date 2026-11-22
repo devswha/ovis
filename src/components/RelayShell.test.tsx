@@ -495,7 +495,15 @@ describe("the hosted front page", () => {
         expect(await scan(`https://other.example/s/${ids.mini}/#offer=abc`)).toBe("This pairing link is not this app's. Scan the QR code your PC shows.");
         expect(await scan("https://app.ovis.sh/#sign-in=github")).toBe("That is not an http or https address.");
         expect(await scan(`https://app.ovis.sh/s/${ids.mini}/#pcs`)).toBe("That is not an http or https address.");
+        // only the PC's own page: none of the files under its scope, no deeper path, no query, no other fragment
+        for (const other of [`/s/${ids.mini}/sw.js`, `/s/${ids.mini}/manifest.webmanifest#sign-in=github`, `/s/${ids.mini}/x/`, `/s/${ids.mini}//`, `/s/${ids.mini}/%2F`, `/s/${ids.mini}`,
+          `/s/${ids.mini}/?pcs`, `/s/${ids.mini}/?next=1#sign-in=github`, `/s/${ids.mini}/#sign-in=`, `/s/${ids.mini}/#sign-in=unknown`, `/s/${ids.mini}/#sign-in=github&pcs`]) {
+          expect(await scan(`https://app.ovis.sh${other}`)).toBe("That is not an http or https address.");
+        }
         expect(assigned).toHaveLength(2);
+        // what opens is the PC's page built from its scope, not the address as scanned
+        expect(await scan(`https://someone@app.ovis.sh/s/${ids.mini}/#sign-in=google`)).toBe("");
+        expect(assigned.at(-1)).toBe(`https://app.ovis.sh/s/${ids.mini}/#sign-in=google`);
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
         else Reflect.deleteProperty(globalThis, "Capacitor");
