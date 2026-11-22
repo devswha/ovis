@@ -12,8 +12,8 @@ import { jobProcessesBelow } from "../foreground-job.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, leaves, neighbour, OVIS_LAYOUT_DOC, type OvisLayout, type PaneDirection, resizeLeaf, setRatio, splitLeaf, swapLeaves, type TabLayout } from "./layout-doc.ts";
 import { paneSession, titleStatus } from "../agent-identity.ts";
-import { agentInfoOf, agentOf, agentOfStatus, type CoreHost, coreHost, agentStatusOf, foregroundOf, type HcForeground, buildSnapshot, type FirstTurn, keptLayout, opencodeRecords, type SessionOf, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, runsCommandString, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
-import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
+import { agentInfoOf, agentOf, agentOfStatus, agyPlanReview, type CoreHost, coreHost, agentStatusOf, foregroundOf, type HcForeground, buildSnapshot, type FirstTurn, keptLayout, opencodeRecords, type SessionOf, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, runsCommandString, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
+import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, type RepositoryReads, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
 import type { AgentStatus, SessionSnapshot, WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
 import type { WorktreeInfo } from "../herdr/worktree-info.ts";
 
@@ -30,7 +30,8 @@ import type { WorktreeInfo } from "../herdr/worktree-info.ts";
  *   resizes nothing);
  * - `pane.send_keys` as those keys' bytes in the same way, or hc's `terminal.keys` for a key that
  *   only hc can encode for the program's keyboard mode;
- * - `agent.prompt` as hc's `terminal.send` (paste and Enter, refused while the program is blocked);
+ * - `agent.prompt` as hc's `terminal.send` (paste and Enter, refused while the program is blocked, but for
+ *   agy's plan review, whose input box takes the reply: snapshot.ts `agyPlanReview`);
  * - `events.subscribe` from hc's own event stream: status changes per pane, and terminal and layout
  *   changes as herdr's lifecycle events.
  *
@@ -63,12 +64,14 @@ const STATUS_EVENT = "pane.agent_status_changed";
 const NOT_STRUCTURE = new Set([STATUS_EVENT, "pane.focused", "pane.output_matched"]);
 /**
  * What of a status the rows draw beyond its state, as `coreModel` compares reports: the kind and
- * message of a blocked agent, and its progress, which the rows print as its exact percent.
+ * message of a blocked agent, and its progress, which the rows print as its exact percent. Read with
+ * its app, as the snapshot reads them: agy's plan review draws none (snapshot.ts `agyPlanReview`).
  */
 function shownFacts(report: unknown): string {
   if (!isRecord(report) || typeof report["state"] !== "string") return NO_FACTS;
   const facts = reportedFacts({
     state: report["state"],
+    ...(typeof report["app"] === "string" ? { app: report["app"] } : {}),
     ...(typeof report["kind"] === "string" ? { kind: report["kind"] } : {}),
     ...(typeof report["msg"] === "string" ? { msg: report["msg"] } : {}),
     ...(typeof report["progress"] === "number" ? { progress: report["progress"] } : {}),
@@ -362,11 +365,31 @@ const AGENT_START_MS = 10_000;
 
 /** What hc sends right after the screen in a first paint: the win32-input-mode state (herdr-core viewers.rs `first_paint`). */
 const PAINT_END = "\u001b[?9001";
+/** How a first paint begins: hc's CAN, then the soft reset of ghostty-vt `paint`. */
+const PAINT_START = "\u0018\u001b[!p";
 /** How long a watch-only attach may take to bring its first paint: within the 1.5s a prompt poll gives its colored read. */
 const PAINT_MS = 1_000;
 /** Any escape sequence: CSI, OSC, a DCS/SOS/PM/APC string, or a short escape (HTS, a charset designation). */
 const ESCAPE_RE = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[PX^_][^\u001b]*\u001b\\|[ -/]*[0-~])/g;
 const SGR_RE = /^\u001b\[[0-9;:]*m$/;
+/** The clear a first paint starts with, after hc's reset, and the one between its history and its screen. */
+const PAINT_CLEAR = "\u001b[H\u001b[2J";
+/** hc's switch to the alternate screen in a first paint, right before it paints that screen. */
+const ALTERNATE_SCREEN = "\u001b[?1049h";
+
+/**
+ * Where the alternate screen's paint begins in a first paint, right after hc switches to it, or -1
+ * when the program is on the main screen. hc paints the main screen first, then switches and paints
+ * the alternate one (measured on hc 0.1.21), so the switch may come well after the first clear: a
+ * program a shell started there (Claude Code typed at a prompt) has the shell's modes, tab stops and
+ * lines painted before it.
+ */
+function alternateScreenAt(paint: string): number {
+  const end = paint.indexOf(PAINT_END);
+  const cleared = paint.indexOf(PAINT_CLEAR);
+  const at = end === -1 || cleared === -1 ? -1 : paint.indexOf(ALTERNATE_SCREEN, cleared);
+  return at === -1 || at > end ? -1 : at + ALTERNATE_SCREEN.length;
+}
 
 /**
  * What hc's text read of the screen (`terminal.read`, no history) shows, with its colors, from the
@@ -377,21 +400,29 @@ const SGR_RE = /^\u001b\[[0-9;:]*m$/;
  * that one tells input from padding (OpenCode's Tab space), and a text compare trims it anyway. hc paints after a
  * clear (`CSI H CSI 2J`): the history, pushed up by an SGR reset, a line break and one more per
  * screen row, then a second clear and the screen, which ends where the win32-input-mode state
- * follows (herdr-core ghostty-vt `paint`, viewers.rs `first_paint`). null for a paint not shaped
- * so. A row the terminal soft-wrapped stays a line of its own, as on the screen, where hc's text
- * read joins it with the next.
+ * follows (herdr-core ghostty-vt `paint`, viewers.rs `first_paint`). A program on the alternate
+ * screen has no history there, and hc's read takes none in: its screen is what hc paints after the
+ * switch to it (alternateScreenAt), never the main screen's lines before it. null for a paint not
+ * shaped so. A row the terminal soft-wrapped stays a line of its own, as on the screen, where hc's
+ * text read joins it with the next.
  */
 export function paintedScreen(paint: string, rows: number): string | null {
   const end = paint.indexOf(PAINT_END);
-  const parts = paint.slice(0, Math.max(end, 0)).split("\u001b[H\u001b[2J");
-  if (end === -1 || parts.length < 2 || parts.length > 3) return null;
+  const parts = paint.slice(0, Math.max(end, 0)).split(PAINT_CLEAR);
+  if (end === -1 || parts.length < 2) return null;
   const text = (part: string): string => part.replace(ESCAPE_RE, (sequence) => (SGR_RE.test(sequence) ? sequence : ""))
     .replace(/\r\n/g, "\n").replace(/\r/g, "");
-  const pushed = "\n".repeat(rows + 1);
-  const history = parts.length === 3 ? text(parts[1]!) : "";
-  if (history !== "" && !history.endsWith(pushed)) return null;
-  const lines = [...(history === "" ? [] : history.slice(0, -pushed.length).split("\n")), ...text(parts.at(-1)!).split("\n")]
-    .map(withoutPlainTrailingSpaces);
+  const alternate = alternateScreenAt(paint);
+  let painted: string[];
+  if (alternate !== -1) painted = text(paint.slice(alternate, end)).split("\n");
+  else {
+    if (parts.length > 3) return null;
+    const pushed = "\n".repeat(rows + 1);
+    const history = parts.length === 3 ? text(parts[1]!) : "";
+    if (history !== "" && !history.endsWith(pushed)) return null;
+    painted = [...(history === "" ? [] : history.slice(0, -pushed.length).split("\n")), ...text(parts.at(-1)!).split("\n")];
+  }
+  const lines = painted.map(withoutPlainTrailingSpaces);
   while (lines.length > 0 && lines.at(-1)!.replace(/\u001b\[[0-9;:]*m/g, "") === "") lines.pop();
   return lines.slice(-rows).join("\n");
 }
@@ -471,6 +502,19 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   };
 
   /**
+   * git run on the machine whose terminals these are, by the core (`hc exec --on`): read-only lookups of its checkouts,
+   * in English as this PC's git (worktrees.ts gitEnvironment): an older git's refused -z is told by its message.
+   * A repository its core was started inside is not the one asked about, and an answer cut short is none.
+   */
+  const gitOnMachine: typeof git = async (cwd, args) => {
+    const unset = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"].flatMap((name) => ["-u", name]);
+    const ran = await hc.call("machine.exec", { argv: ["/usr/bin/env", ...unset, "/usr/bin/git", "-C", cwd, ...args], env: { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }, timeout: 8 });
+    const text = (base64: string) => Buffer.from(base64, "base64").toString("utf8");
+    return { ok: ran.code === 0 && !ran.timed_out && !ran.truncated, stdout: text(ran.stdout), stderr: text(ran.stderr).trim() };
+  };
+  /** another machine's folders and git folders are not on this disk: git runs there, and no path is resolved or stat'ed here */
+  const gitReads: RepositoryReads = options.otherMachine ? { run: gitOnMachine, real: (path) => path } : {};
+  /**
    * git's answer per folder: the checkout's facts and its git folder's identity (as a label keeps it),
    * or null outside git. Kept a few seconds; past that the last answer still serves while git is asked
    * again, so a snapshot waits on git only for a folder it never answered for, once and at most a
@@ -482,7 +526,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   type GitEntry = { until: number; answer: GitAnswer; asking: Promise<GitAnswer> | null; first: Promise<GitAnswer> | null; waitedOut: boolean; used: number };
   const checkoutFacts = new Map<string, GitEntry>();
   const askGit = (folder: string, entry: GitEntry): Promise<GitAnswer> => {
-    entry.asking = repositoryOf(folder).then((repository) => ({ facts: factsOf(repository, repository.checkout), gitId: gitDirIdentity(repository.git_dir) }), () => null).then((answer) => {
+    entry.asking = repositoryOf(folder, gitReads).then((repository) => ({ facts: factsOf(repository, repository.checkout), gitId: options.otherMachine ? null : gitDirIdentity(repository.git_dir) }), () => null).then((answer) => {
       const changed = entry.waitedOut ? answer !== null : entry.until !== 0 && JSON.stringify(answer) !== JSON.stringify(entry.answer);
       Object.assign(entry, { until: Date.now() + CHECKOUT_FACTS_MS, answer, asking: null, waitedOut: false });
       if (changed) layoutChanged();
@@ -537,35 +581,34 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     // terminal started in: as herdr's stays with a workspace, a shell there going elsewhere (a `cd`, an
     // agent changing folder) does not move the row, before or after a restart of Ovis. Clients draw and
     // act on these as on herdr's: removing a checkout asks git again first. No label is written.
-    // Another machine's folders are not on this disk.
-    if (!options.otherMachine) {
-      const asked = new Map<SessionSnapshot["workspaces"][number], string>();
-      for (const workspace of shown.workspaces) {
-        if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
-        const folders = shown.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => started.get(pane.pane_id));
-        const kept = pinned.get(workspace.workspace_id)?.folder;
-        const folder = kept !== undefined && folders.includes(kept) ? kept : folders[0];
-        if (!folder) continue;
-        asked.set(workspace, folder);
-        homes.set(workspace.workspace_id, folder);
-      }
-      // an older read finishing late does not forget what a newer one asked
-      const folders = new Set(asked.values());
-      for (const [folder, entry] of checkoutFacts) if (!folders.has(folder) && !entry.asking && entry.used < began) checkoutFacts.delete(folder);
-      const ids = new Set(shown.workspaces.map((workspace) => workspace.workspace_id));
-      for (const [id, pin] of pinned) if (!ids.has(id) && pin.at < began) pinned.delete(id);
-      await Promise.all([...asked].map(async ([workspace, folder]) => {
-        const answer = await answerFor(folder);
-        if (!answer) return;
-        workspace.worktree = { ...answer.facts };
-        let pin = pinned.get(workspace.workspace_id);
-        // the folder drawn is kept from the first draw; a pin a newer read took stands over this older one
-        if (!pin || (pin.folder !== folder && pin.at < began)) pinned.set(workspace.workspace_id, pin = { folder, gitId: null, at: Date.now() });
-        // its identity only from an answer git gave since: a cached one may be of a checkout no longer there
-        if (pin.folder === folder && pin.gitId === null && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) pin.gitId = answer.gitId;
-        gitIds.set(workspace.workspace_id, pin.folder === folder ? pin.gitId ?? answer.gitId : answer.gitId);
-      }));
+    // Another machine's folders are not on this disk: git runs there for them (gitOnMachine), and only draws:
+    // its worktree.* calls are refused here.
+    const asked = new Map<SessionSnapshot["workspaces"][number], string>();
+    for (const workspace of shown.workspaces) {
+      if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
+      const folders = shown.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => started.get(pane.pane_id));
+      const kept = pinned.get(workspace.workspace_id)?.folder;
+      const folder = kept !== undefined && folders.includes(kept) ? kept : folders[0];
+      if (!folder) continue;
+      asked.set(workspace, folder);
+      homes.set(workspace.workspace_id, folder);
     }
+    // an older read finishing late does not forget what a newer one asked
+    const folders = new Set(asked.values());
+    for (const [folder, entry] of checkoutFacts) if (!folders.has(folder) && !entry.asking && entry.used < began) checkoutFacts.delete(folder);
+    const ids = new Set(shown.workspaces.map((workspace) => workspace.workspace_id));
+    for (const [id, pin] of pinned) if (!ids.has(id) && pin.at < began) pinned.delete(id);
+    await Promise.all([...asked].map(async ([workspace, folder]) => {
+      const answer = await answerFor(folder);
+      if (!answer) return;
+      workspace.worktree = { ...answer.facts };
+      let pin = pinned.get(workspace.workspace_id);
+      // the folder drawn is kept from the first draw; a pin a newer read took stands over this older one
+      if (!pin || (pin.folder !== folder && pin.at < began)) pinned.set(workspace.workspace_id, pin = { folder, gitId: null, at: Date.now() });
+      // its identity only from an answer git gave since: a cached one may be of a checkout no longer there
+      if (pin.folder === folder && pin.gitId === null && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) pin.gitId = answer.gitId;
+      gitIds.set(workspace.workspace_id, pin.folder === folder ? pin.gitId ?? answer.gitId : answer.gitId);
+    }));
     return { shown, own: ownsLayout(doc.value), gitIds, started };
   };
   const snapshot = async (): Promise<SessionSnapshot> => (await read()).shown;
@@ -672,7 +715,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   /**
    * The first paint (with `history` lines, else a screen's worth) of an attach that only watches, which never types or
    * resizes, closed once the screen is in, and the rows it was painted at. null: no paint within
-   * PAINT_MS of hc answering the attach, or a stream that ended first.
+   * PAINT_MS of hc answering the attach, or a stream that ended first. Another machine's line may drop
+   * in the middle of a paint: hc then attaches again on the same channel and paints afresh
+   * (remote/viewers.rs `reattach`), so only the last paint that began before the screen's end counts.
    */
   const watchedPaint = async (paneId: string, history?: number): Promise<{ paint: string | null; rows: number }> => {
     const record = await terminal(paneId);
@@ -682,7 +727,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     const { result, channel } = await hc.open("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows, history: history ?? record.rows, observe: true }, {
       onData: (payload) => {
         paint += decoder.decode(payload, { stream: true });
-        if (paint.includes(PAINT_END)) resolve(paint);
+        const end = paint.indexOf(PAINT_END);
+        if (end !== -1) resolve(paint.slice(Math.max(paint.lastIndexOf(PAINT_START, end), 0)));
       },
       onClose: () => resolve(null),
     });
@@ -710,18 +756,17 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
 
   /**
    * Whether the terminal's program is on the alternate screen, which hc's record does not say: hc
-   * paints its reset, which ends in a clear, then the alternate screen first if the program is on it
-   * (herdr-core ghostty-vt `paint`). No paint, or an attach hc refused (a kept terminal whose
-   * program is lost, whose stored screen hc still reads), counts as the alternate screen.
+   * paints its reset, which ends in a clear, then the main screen, then switches to the alternate
+   * screen and paints it if the program is on it (herdr-core ghostty-vt `paint`, alternateScreenAt).
+   * No paint, a paint without that clear, or an attach hc refused (a kept terminal whose program is
+   * lost, whose stored screen hc still reads), counts as the alternate screen.
    */
   const onAlternateScreen = async (paneId: string): Promise<boolean> => {
     const { paint } = await watchedPaint(paneId, 0).catch((error: unknown) => {
       if (error instanceof HcError) return { paint: null };
       throw error;
     });
-    if (paint === null) return true;
-    const cleared = paint.indexOf("\u001b[H\u001b[2J");
-    return cleared === -1 || paint.startsWith("\u001b[?1049h", cleared + "\u001b[H\u001b[2J".length);
+    return paint === null || !paint.includes(PAINT_CLEAR) || alternateScreenAt(paint) !== -1;
   };
 
   /** Input to one pane in the order it was asked for: each attach and its bytes finish before the next. */
@@ -1022,7 +1067,10 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const text = params["text"];
       if (typeof text !== "string") throw new AdapterError("invalid_params", "text is required");
       if (!(await paneOf(paneId, "agent_not_found")).agent) throw new AdapterError("agent_not_found", `no agent in pane ${paneId}`);
-      await inTurn(paneId, () => hc.call("terminal.send", { terminal: paneId, text }, 30_000));
+      await inTurn(paneId, async () => {
+        const force = agyPlanReview((await terminal(paneId)).status);
+        await hc.call("terminal.send", { terminal: paneId, text, ...(force ? { force } : {}) }, 30_000);
+      });
       return { type: "ok" };
     },
     // A new workspace or tab is a shell hc starts, labeled with its space and tab as the Herdr app
@@ -1411,11 +1459,14 @@ function paneDirection(value: unknown): PaneDirection {
 /** `machine`: the other machine an event is about (a `doc` there names no terminal); none for this core's own */
 interface HcEvent { type: string; terminal?: string; machine?: string; data?: Record<string, unknown> }
 
-/** A status report as hc sends it in a record or a `status` event; null when it is none. */
+/**
+ * A status report as hc sends it in a record or a `status` event; null when it is none. Its kind and
+ * message stay, so an event reads agy's plan review as the snapshot does (snapshot.ts `agyPlanReview`).
+ */
 function statusOf(reported: unknown): HcStatus | null {
-  return isRecord(reported) && typeof reported["state"] === "string"
-    ? { state: reported["state"], ...(typeof reported["app"] === "string" ? { app: reported["app"] } : {}) }
-    : null;
+  if (!isRecord(reported) || typeof reported["state"] !== "string") return null;
+  const { app, kind, msg } = reported;
+  return { state: reported["state"], ...(typeof app === "string" ? { app } : {}), ...(typeof kind === "string" ? { kind } : {}), ...(typeof msg === "string" ? { msg } : {}) };
 }
 
 /** A terminal's labels as hc sends them, its string values only. */
