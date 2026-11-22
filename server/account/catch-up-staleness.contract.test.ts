@@ -387,3 +387,60 @@ test("a read of its own asks which listing the account names now: one named at a
   expect(pc.devices.has(accountDeviceId(pc.serverId, late.spki))).toBe(false);
   expect(pc.devices.account()).toBeNull();
 });
+
+test("a read that may not widen still drops the listed devices its snapshot says the account removed", async () => {
+  let fails = false;
+  const pc = await linkBoundPc(async (request) => fails && pathOf(request) === "/v1/pc/mailbox" ? new Response(null, { status: 503 }) : undefined);
+  await pc.accountMailbox.pull();
+  const open = await pc.open(pc.device);
+  expect(open.answer).toBe("admitted");
+  pc.service.removeDevice(ACCOUNT, pc.device.publicKey);
+  fails = true;
+  await pc.accountMailbox.pull();
+  expect(pc.devices.has(pc.device.id)).toBe(false);
+  expect(await bounded(open.link.serverError)).toBe("auth_revoked");
+  expect((await pc.open(pc.device)).answer).toBe("auth_failed");
+  expect(pc.devices.account()).toBe(ACCOUNT);
+});
+
+test("a read of its own takes no listing from a mailbox answer the pull would reject", async () => {
+  let garbled = false;
+  const pc = await linkBoundPc(async (request) => garbled && pathOf(request) === "/v1/pc/mailbox" ? Response.json({ listing_id: "e".repeat(32), records: "invalid" }) : undefined);
+  await pc.accountMailbox.pull();
+  const listing = await pc.listed();
+  garbled = true;
+  await pc.accountMailbox.readSnapshot();
+  expect(pc.binding()).toMatchObject({ account: ACCOUNT, listing_id: listing });
+  expect(PcAccountState.open(pc.fixture.stateDir).clears()).toEqual([]);
+});
+
+test("a mailbox answer asked for one binding names no listing for the binding that replaced it meanwhile", async () => {
+  const asked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let hold = false;
+  const pc = await linkBoundPc(async (request, service) => {
+    if (!hold || pathOf(request) !== "/v1/pc/mailbox") return undefined;
+    hold = false;
+    const answer = await (await service.fetch(request)).json() as object;
+    asked.resolve();
+    await release.promise;
+    // what the account named for the old binding
+    return Response.json({ ...answer, listing_id: "a".repeat(32) });
+  });
+  hold = true;
+  const pull = pc.accountMailbox.pull();
+  await bounded(asked.promise);
+  const before = pc.binding()?.bind_id;
+  expect(pc.devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+  const fresh = await phone();
+  const paired = pc.devices.pairRelay(pc.devices.startPairing().code, "Phone", fresh.spki)!.device;
+  expect(pc.devices.linkAccountKey(paired.id, fresh.spki, fresh.spki, ACCOUNT)).not.toBeNull();
+  expect(pc.binding()?.bind_id).not.toBe(before);
+  release.resolve();
+  await pull;
+  expect(pc.binding()).toMatchObject({ account: ACCOUNT });
+  expect(pc.binding()?.listing_id).not.toBe("a".repeat(32));
+  await pc.accountMailbox.pull();
+  expect(pc.devices.account()).toBe(ACCOUNT);
+  expect(pc.binding()?.listing_id).toBe(await pc.listed());
+});

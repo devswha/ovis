@@ -18,6 +18,7 @@ import { ask, firstPairingRead, linkRecord, memberRow, pairingPc, phone, proving
 import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
 import { ACCOUNT_OPENS_ALL_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
+import { privateStateFs } from "../private-state.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { pressOnce } from "./one-press.ts";
 
@@ -692,6 +693,53 @@ test("T56: the hour without a whole read keeps a phone that paired with this PC'
   f.account.opensAll = true;
   expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   expect(f.devices.isAccountApprover(paired.id)).toBe(true);
+});
+
+test("T56: the hour without a whole read keeps a phone that `ovis recover` admitted and that linked with the same key, and suspends what it may do for the account", async () => {
+  const f = await pc();
+  const clock = new TestClock();
+  f.devices.useClock(clock);
+  const key = await phone();
+  const { code } = f.devices.startAccountPairing("acct_1");
+  const redeemed = f.devices.redeemCode(code, "qr", key.spki);
+  if (!redeemed.ok) throw new Error("The recovered key did not reserve the code");
+  const waiting = f.devices.admitConfirmed({ codeId: redeemed.codeId, key: key.spki, label: "Phone", source: "recover", by: "alice" });
+  if (waiting === null) throw new Error("Recovery made no waiting row");
+  expect(f.devices.linkAccountKey(waiting.id, key.spki, key.spki, "acct_1", "", true)).toMatchObject({ id: waiting.id });
+  expect(f.devices.originOf(waiting.id)).toMatchObject({ from: "recover" });
+  await firstPairingRead(f);
+  const mine = { id: waiting.id, keys: key.keys, publicKey: key.spki };
+  const open = await relayConnection(f);
+  await open.auth(mine);
+  expect(f.devices.isAccountApprover(waiting.id)).toBe(true);
+  f.account.opensAll = false;
+  clock.advance(STALE_READ_MS);
+  expect(f.devices.isAccountApprover(waiting.id)).toBe(false);
+  expect((await ask(open, "/api/health")).status).toBe(200);
+  const again = await relayConnection(f);
+  expect(await again.auth(mine)).toMatchObject({ role: "drive" });
+});
+
+test("update: a removal from before the add-at-the-PC rule whose state folder takes no write does not keep the PC from starting, and counts no approval", async () => {
+  const { f, serverId, remove } = await pcWithLocalPhone();
+  const old = await phone();
+  const kept = f.devices.pairRelayApproved("Old", old.spki, { path: "code" })?.device;
+  if (!kept) throw new Error("The PC approved no device");
+  await remove();
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(f.devices.account()).toBeNull();
+  const rename = privateStateFs.renameSync;
+  const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+    if (String(to).endsWith("/account-pc.json")) throw new Error("the folder takes no write");
+    rename(from, to);
+  });
+  try {
+    const now = await restartedFrom(f, { edit: state => { delete state.clears.at(-1)!["admits"]; } });
+    expect(now.devices.addAtPcRequired()).toBe(true);
+    expect(now.devices.approvedAtPcSinceClear(kept.id)).toBe(false);
+    const session = await relayConnection(now, { serverId });
+    expect(await session.auth({ id: kept.id, keys: old.keys, publicKey: old.spki })).toMatchObject({ role: "drive" });
+  } finally { fault.mockRestore(); }
 });
 
 test("listing confirmation: a join a member approves from afar makes no device while the listing cannot be confirmed", async () => {
