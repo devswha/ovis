@@ -798,6 +798,37 @@ describe("providers", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it.each([
+    { scenario: "another named account takes its place", before: "first@example.com", after: "second@example.com", sameToken: false, keep: false },
+    { scenario: "the same account rotates its token", before: "first@example.com", after: "first@example.com", sameToken: false, keep: true },
+    { scenario: "the same token gains an email", before: null, after: "first@example.com", sameToken: true, keep: true },
+    { scenario: "a named account replaces an unnamed one", before: null, after: "second@example.com", sameToken: false, keep: false },
+  ])("keeps the right hidden Antigravity reading when $scenario", async ({ before, after, sameToken, keep }) => {
+    const path = join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+    const signIn = (email: string | null, access: string) => write(path, {
+      token: { access_token: access, expiry: new Date(NOW + HOUR).toISOString() },
+      ...(email === null ? {} : { id_token_email: email }),
+    });
+    signIn(before, "first-token");
+    const url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+    replies.set(url, { body: { groups: [{ buckets: [{ id: "gemini-weekly", remaining_fraction: 0.5 }] }] } });
+    const service = new UsageService(context(), only("antigravity"));
+    const [first] = (await service.report()).providers;
+    expect(first?.account).toBe(before);
+    expect(first?.windows).toHaveLength(1);
+    expect(first?.checked_at).toBe(new Date(NOW).toISOString());
+
+    service.skipAccounts(() => new Set([first!.key]));
+    expect((await service.report()).providers).toEqual([first!]);
+    signIn(after, sameToken ? "first-token" : "replacement-token");
+    service.invalidate("antigravity");
+
+    const report = await service.report();
+    if (keep) expect(report.providers).toEqual([first!]);
+    else expect(report.providers).toMatchObject([{ key: first!.key, account: after, windows: [], checked_at: null }]);
+    expect(requests).toHaveLength(1);
+  });
+
   it.each(["no windows", "run failure"])("keeps Antigravity expired after HTTP 403 and CLI %s", async (outcome) => {
     write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
       token: { access_token: "fake-antigravity-token", expiry: new Date(NOW + HOUR).toISOString() },

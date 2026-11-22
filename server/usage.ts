@@ -1254,9 +1254,15 @@ export class UsageService {
         const holder = holderOf(signIn);
         return [...this.entries].find(([source, entry]) => ours(source) && entry.holder === holder && entry.usage !== null && this.lastSkipped.has(entry.usage.key))?.[1];
       }
-      const key = accountKey(provider.id, signIn.account, signIn.source);
+      const account = signIn.account;
+      const key = accountKey(provider.id, account, signIn.source);
       if (!this.lastSkipped.has(key)) return undefined;
-      return [...this.entries].find(([source, entry]) => ours(source) && entry.usage?.key === key)?.[1];
+      // a place key can outlive its account: match its email, or the same token when it first learns its email
+      const tokenHolder = account.sourceKey && !("locked" in signIn)
+        ? `token:${createHash("sha256").update(signIn.token).digest("hex")}` : null;
+      return [...this.entries].find(([source, entry]) => ours(source) && entry.usage?.key === key && (
+        !account.sourceKey || entry.usage.account === account.label || (entry.usage.account === null && entry.holder === tokenHolder)
+      ))?.[1];
     };
     // which hidden account a sign-in is, from the hidden list alone, never from whether a reading of it is kept: the key
     // it names, or, for one that names none, the holder of a hidden reading evicted before (dropped)
