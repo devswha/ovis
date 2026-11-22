@@ -40,11 +40,14 @@ const DIRECT_IDLE_CHECKS = 12;
 const SOCKET_QUIET_MS = 3_000;
 
 
-function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void; readonly reject: (error: unknown) => void } {
   let resolve = (): void => {};
-  const promise = new Promise<void>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject = (_error: unknown): void => {};
+  const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
+
+type Opening = ReturnType<typeof deferred>;
 
 function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
   let listener: RelaySocket["onclose"] = null;
@@ -159,14 +162,14 @@ export class RelayTransport implements Transport {
   private known: RelayServerInfo | undefined;
   private generation = 0;
   private relay: string;
-  private opening: Promise<void> | undefined;
+  /** What the callers of connect() wait for: the outcome of the attempt running for them now (`attempt`). */
+  private opening: Opening | undefined;
   /**
    * The attempt `opening` runs: its own abort, and whether the page was hidden at any time since it began. Such an
    * attempt may have been frozen with its socket still connecting: showing the page drops it (wake), and its failure
-   * says nothing of the relay, so it never falls back to the other one. `next`: the attempt that replaced it, whose
-   * outcome its callers wait for.
+   * says nothing of the relay, so it never falls back to the other one.
    */
-  private attempt: { readonly abort: AbortController; hidden: boolean; next?: Promise<void> } | undefined;
+  private attempt: { readonly abort: AbortController; hidden: boolean } | undefined;
   private stopped = false;
   private delay = 1000;
   private cancelRetry: (() => void) | undefined;
@@ -196,15 +199,12 @@ export class RelayTransport implements Transport {
     if (!this.stopped && this.channel && this.channel.direct === undefined) { this.probedAt = -Infinity; this.reprobe = this.upgrading; this.upgrade(this.channel); }
     // its socket may still be connecting from before a freeze, and would fail only seconds from now: start again at once
     if (!this.stopped && this.opening && this.attempt?.hidden) {
-      const replaced = this.attempt;
       ++this.generation;
-      replaced.abort.abort();
-      this.attempt = undefined;
-      this.opening = undefined;
+      this.attempt.abort.abort();
       this.cancelRetry?.();
       this.cancelRetry = undefined;
-      // whoever waits for the dropped attempt waits for this one instead, and takes its failure
-      replaced.next = this.connect();
+      // whoever waits for the dropped attempt waits for this one from now on, whatever the dropped one still does
+      this.begin(this.opening);
       return;
     }
     if (this.stopped || this.channel || this.opening) return;
@@ -224,20 +224,28 @@ export class RelayTransport implements Transport {
   }
 
   connect(): Promise<void> {
-    if (this.opening) return this.opening;
+    if (this.opening) return this.opening.promise;
     if (this.stopped || this.channel) return Promise.resolve();
-    const attempt = { abort: new AbortController(), hidden: globalThis.document?.visibilityState === "hidden" };
-    this.attempt = attempt;
-    const opening = this.establish(attempt).finally(() => {
-      if (this.opening !== opening) return;
-      this.opening = undefined;
-      this.attempt = undefined;
-    });
+    const opening = deferred();
     this.opening = opening;
-    return opening;
+    this.begin(opening);
+    return opening.promise;
   }
 
-  private async establish(attempt: { readonly abort: AbortController; readonly hidden: boolean; readonly next?: Promise<void> }): Promise<void> {
+  /** Runs an attempt for the callers waiting on `opening`: only the attempt running when it ends settles them. */
+  private begin(opening: Opening): void {
+    const attempt = { abort: new AbortController(), hidden: globalThis.document?.visibilityState === "hidden" };
+    this.attempt = attempt;
+    const settle = (error?: { readonly cause: unknown }): void => {
+      if (this.attempt !== attempt) return;
+      this.attempt = undefined;
+      this.opening = undefined;
+      if (error === undefined) opening.resolve(); else opening.reject(error.cause);
+    };
+    this.establish(attempt).then(() => settle(), (cause: unknown) => settle({ cause }));
+  }
+
+  private async establish(attempt: { readonly abort: AbortController; readonly hidden: boolean }): Promise<void> {
     const generation = ++this.generation;
     // A one-use pairing code must never be reused after admission; until a channel opened, an attempt that replaces
     // the first one (wake) is still the first pairing.
@@ -267,13 +275,13 @@ export class RelayTransport implements Transport {
     let opened: { channel: RelayChannel; relay: string };
     try { opened = await this.race(offer, options, () => !attempt.hidden); }
     catch (error) {
-      // dropped for a newer attempt (wake), whose outcome is its callers', or by close: its failure is no one's
-      if (generation !== this.generation) return attempt.next;
+      // dropped for a newer attempt (wake) or by close: its failure is no one's
+      if (generation !== this.generation) return;
       throw error;
     }
     const { channel, relay } = opened;
     this.relay = relay;
-    if (generation !== this.generation || this.stopped) { channel.close(); return attempt.next; }
+    if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;
     this.routeChanged();
@@ -670,6 +678,11 @@ export class RelayTransport implements Transport {
   close(): void {
     if (this.stopped) return;
     this.stopped = true;
+    // whoever waits for an attempt is done now, not once its pending reads or socket give up
+    const opening = this.opening;
+    this.opening = undefined;
+    this.attempt = undefined;
+    opening?.resolve();
     this.failWaitingHttp(new TypeError("Relay transport is closed"));
     this.renewing.clear();
     this.stopResources();
