@@ -128,8 +128,10 @@ describe("the pointer", () => {
     const forward = new Pointer();
     const program = sceneOf("a", lookA(true));
     expect(forward.mouse("screen", ev(["press", "left", 3, 2]), program)).toEqual([{ kind: "forward", pane: "a", event: ev(["press", "left", 3, 3]) }]);
-    // the help opens from the keyboard while the button is held
+    // the help opens from the keyboard while the button is held; a wheel notch over it neither reaches the program
+    // nor ends the gesture: the program gets exactly its press and its release
     expect(forward.mouse("overlay", ev(["motion", "left", 4, 2]), program)).toEqual([]);
+    expect(forward.mouse("overlay", ev(["press", "wheelUp", 4, 2]), program)).toEqual([]);
     expect(forward.mouse("overlay", ev(["release", "left", 4, 2]), program)).toEqual([{ kind: "forward", pane: "a", event: ev(["release", "left", 4, 3]) }]);
     // the help closed again: a drag with no new press goes nowhere
     expect(forward.mouse("screen", ev(["motion", "left", 5, 2]), program)).toEqual([]);

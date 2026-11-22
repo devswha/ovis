@@ -93,7 +93,8 @@ export class Pointer {
       // an open overlay owns the mouse: nothing reaches the chrome or a pane under it; its close control closes it.
       // A gesture that began before it opened ends at its release: a program that got the press gets that release,
       // a divider drag ends at the last ratio it moved to, and a selection is dropped, so nothing of it goes on once
-      // the overlay closes.
+      // the overlay closes. A wheel notch over it (a press report) does nothing and leaves the held grab alone.
+      if (isWheel(event)) return [];
       if (event.action === "release") {
         const grab = this.grab;
         this.grab = NONE;
