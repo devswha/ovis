@@ -4,7 +4,7 @@
  * Conditions of security-triage: only the PC's owner here names the account, the PC's named account and the service's
  * answer must both be it, and nothing is bound otherwise.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import { createServer } from "../index.ts";
 import { ask, linkRecord, memberRow, pairingPc, phone, provingDevice, sendLink, setUpFor, vouchFor, type Pc } from "./pairing.test-helpers.ts";
 import { bounded, relayConnection } from "../relay/test-helpers.ts";
 import { FrameType } from "../../shared/relay-mux.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -41,6 +42,117 @@ async function admitAt(f: Pc, account: string, twoStep: boolean | null = true): 
 }
 
 const press = (f: Pc, account: string) => f.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account } });
+
+async function firstPcWithPhone(f: Pc) {
+  f.account.completions = true;
+  await setUpFor(f, "acct_1");
+  await admitAt(f, "acct_1", null);
+  expect((await press(f, "acct_1")).status).toBe(200);
+  const token = f.account.issueToken("acct_1");
+  const key = await phone();
+  f.account.registerSessionKey(token, key.spki, "Phone");
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const identity = f.app.context.services.relay.currentIdentity()!;
+  const serverId = identity.server_id;
+  const id = accountDeviceId(serverId, key.spki);
+  const future = Date.now() + JOIN_HOLD_MS + 1;
+  const time = spyOn(Date, "now").mockImplementation(() => future);
+  f.closes.push(() => time.mockRestore());
+  const device = { id, keys: key.keys, publicKey: key.spki };
+  expect(f.devices.sessionRow(id)?.role).toBe("drive");
+  expect(f.stored().some(row => row.relay_public_key === key.spki)).toBe(false);
+  const url = `https://account.test/v1/pcs/${serverId}`;
+  const headers = { authorization: `Bearer ${token}` };
+  return { device, serverId,
+    remove: async () => { expect((await f.account.fetch(new Request(url, { method: "DELETE", headers }))).status).toBe(204); },
+    relist: async () => {
+      const answer = await f.account.fetch(new Request(url, { method: "PUT", headers, body: JSON.stringify({
+        label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.test",
+      }) }));
+      expect(await answer.json()).toMatchObject({ pc: { completed_at: null } });
+    },
+  };
+}
+
+test("removed PC: not_listed closes the open account session and keeps the local pairing", async () => {
+    let refusal: unknown;
+    const f = await pc({ accountFetch: async (request, service) => {
+      const response = await service.fetch(request);
+      if (new URL(request.url).pathname === "/v1/pc/snapshot" && response.status === 403) refusal = await response.clone().json();
+      return response;
+    } });
+    const { device, serverId, remove } = await firstPcWithPhone(f);
+    const local = await phone();
+    const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
+    const link = await relayConnection(f, { serverId });
+    expect(await link.auth(device)).toMatchObject({ role: "drive" });
+    await remove();
+    await f.app.context.services.accountMailbox.readSnapshot();
+    expect(refusal).toMatchObject({ error: { code: "not_listed" } });
+    expect(await bounded(link.serverError, 2000)).toBe("auth_revoked");
+    await bounded(link.closed, 2000);
+    expect(f.devices.serviceBinding()).toBeNull();
+    expect(f.devices.sessionRow(device.id)).toBeNull();
+    const next = await relayConnection(f, { serverId });
+    await expect(next.auth(device)).rejects.toThrow("Relay closed before admission");
+    expect(await next.serverError).toBe("auth_failed");
+    const own = await relayConnection(f, { serverId });
+    expect(await own.auth({ id: paired.id, keys: local.keys, publicKey: local.spki })).toMatchObject({ role: paired.role });
+});
+
+test("removed PC: an idle PC learns of removal at the five-minute poll", async () => {
+  jest.useFakeTimers();
+  try {
+    const f = await pc();
+    const { remove } = await firstPcWithPhone(f);
+    await remove();
+    jest.advanceTimersByTime(5 * 60_000);
+    jest.useRealTimers();
+    // Join the serialized mailbox turn, without asking for another snapshot.
+    await f.app.context.services.accountMailbox.settle();
+    expect(f.devices.account()).toBeNull();
+  } finally { jest.useRealTimers(); }
+});
+
+test("removed PC: new account-only grants wait for the service, not the next periodic poll", async () => {
+  let validating = false;
+  const asked = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const f = await pc({ accountFetch: async (request, service) => {
+    if (validating) { asked.resolve(); await resume.promise; }
+    return service.fetch(request);
+  } });
+  const { device, serverId, remove } = await firstPcWithPhone(f);
+  const next = await relayConnection(f, { serverId });
+  validating = true;
+  const verdict = next.auth(device).then(() => "admitted", () => next.serverError);
+  try {
+    expect(await bounded(Promise.race([asked.promise.then(() => "checking"), verdict]))).toBe("checking");
+    await remove();
+  } finally { resume.resolve(); }
+  expect(await bounded(verdict)).toBe("auth_failed");
+});
+
+test("removed PC: restarting after a bare relist cannot release the old phone row", async () => {
+  const f = await pc();
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
+  await f.app.stop();
+  await remove();
+  await relist();
+  // A distinct folder forces all path-keyed state handles to reopen the files from disk.
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relisted-"));
+  cpSync(f.stateDir, stateDir, { recursive: true });
+  const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null,
+    registerBridge: false, sidecar: false, accountOpensAll: true, accountService: { url: "https://account.test", fetch: f.account.fetch } });
+  const closes: (() => void)[] = [];
+  try {
+    await app.context.services.accountMailbox.pull();
+    expect(app.context.services.devices.sessionRow(device.id)).toBeNull();
+    const next = await relayConnection({ stateDir, app, closes, close() {} }, { serverId });
+    await expect(next.auth(device)).rejects.toThrow("Relay closed before admission");
+    expect(await next.serverError).toBe("auth_failed");
+  } finally { for (const close of closes) close(); await app.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
 
 test("the owner's press binds a PC in no account to the account it is signed in to, and the account's devices are let in by its snapshot", async () => {
   const f = await pc();
