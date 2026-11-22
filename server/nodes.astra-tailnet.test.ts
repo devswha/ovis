@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore, type StoredDevice } from "./devices.ts";
 import { mergeRegistries } from "./state-merge.ts";
-import { TAILNET_NODES_FILE, TailnetNodes, tailnetNodeGate } from "./tailnet-nodes.ts";
+import { TAILNET_NODES_FILE, TAILNET_NODES_MAX, TailnetNodes, tailnetNodeGate } from "./tailnet-nodes.ts";
 
 const phone = { id: "nPhone1CNTRL", hostname: "phone", login: "owner@example.com" };
 const dirs: string[] = [];
@@ -51,4 +51,27 @@ it("a pending first node association does not authorize a removed row", async ()
   expect(context.rows.revoke(row.id)).toBe(true);
   lookup.resolve(phone);
   expect((await pending).access.level).toBe("none");
+});
+
+it("allowing an unidentified connection still gives it a revocation lifetime", async () => {
+  const context = fixture();
+  context.nodes.seen(phone);
+  const result = await tailnetNodeGate({ level: "full", via: "tailscale", role: "drive", login: phone.login }, { ...context, whois: async () => null });
+  let closed = result.access.level !== "full";
+  if (result.node !== null) context.nodes.onBlocked(result.node, () => { closed = true; });
+  context.nodes.block([phone]);
+  expect(closed).toBe(true);
+});
+
+it("a durable Allow survives the sightings cap and older removal evidence", () => {
+  let now = Date.now();
+  const { nodes, dir } = fixture(() => now);
+  nodes.block([phone, ...Array.from({ length: TAILNET_NODES_MAX }, (_, index) => ({ id: `nTest${index}` }))]);
+  const denial = { id: phone.id, at: new Date(now).toISOString() };
+  now += 1000;
+  nodes.allow(phone.id);
+  nodes.seen({ ...phone, id: "nNew" });
+  const restarted = new TailnetNodes(dir);
+  restarted.takeDenials([denial]);
+  expect(restarted.isBlocked(phone.id)).toBe(false);
 });

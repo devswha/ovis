@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isFile } from "./children.ts";
@@ -30,4 +30,12 @@ it.skipIf(process.platform === "win32")("preserves the login profile bash was ac
   expect(login()).toBe("original-profile");
   await installCommand({ ...host, shell: "/bin/bash" });
   expect(login()).toBe("original-profile");
+});
+
+it("leaves an unrelated file linked at the staging name intact", () => {
+  const { cli, home, places } = fixture();
+  const notes = join(home, "my-notes");
+  writeFileSync(notes, "personal notes"); linkSync(notes, join(cli, "ovis.tmp"));
+  try { writeLauncher(cli, "darwin", places); } catch {}
+  expect(readFileSync(notes, "utf8").startsWith("#!"), "launcher replaced the notes").toBe(false);
 });

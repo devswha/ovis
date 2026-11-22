@@ -35,3 +35,13 @@ it.skipIf(!runs)("writes a usable Windows shim under a non-ASCII user path", () 
   const shim = readFileSync(join(dir, "cmd", "ovis.cmd"), "utf8");
   expect(shim.includes("??"), "encoded 東京 as ?? in the executable path").toBe(false);
 });
+
+it.skipIf(process.platform === "win32")("preserves another install that finishes while the launcher is being staged", () => {
+  const installer = readFileSync(join(import.meta.dir, "..", "install.sh"), "utf8");
+  const install = installer.slice(installer.indexOf("find_other_ovis() {"), installer.indexOf("\nquoted() {"));
+  const concurrent = `launcher_text() { printf '%s\\n' 'other installer' > "$BIN_DIR/ovis"; printf '%s\\n' 'Ovis launcher'; }`;
+  execFileSync("/bin/sh", ["-ec", [install, concurrent, "say() { :; }", "write_launcher"].join("\n")], {
+    env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir(), BIN_DIR: home, original_path: home, LAUNCHER_MARK: "# Ovis launcher (install.sh)" },
+  });
+  expect(readFileSync(join(home, "ovis"), "utf8").trim()).toBe("other installer");
+});
