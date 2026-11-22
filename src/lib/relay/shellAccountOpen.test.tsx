@@ -196,6 +196,38 @@ it("P18: an account service without the release only receives the challenge prob
 const refused = (code: string, hold?: HoldState) =>
   Object.assign(new MuxProtocolError("protocol_error", "PC refused"), { code, ...(hold === undefined ? {} : { hold }) });
 
+it.each([
+  ["account_unreachable", "account-unreachable", "Desk could not reach your Ovis account"],
+  ["account_readd_required", "account-readd", "Add Desk to your account again"],
+] as const)("listing confirmation: %s says why on the PC's page, with Try again, and starts no pairing", async (code, failure, title) => {
+  let attempts = 0;
+  const run = await accountPc({ open: async () => { attempts++; throw refused(code); } });
+  await run.openPage();
+  expect(run.current().state).toMatchObject({ kind: "failed", failure });
+  const screen = renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayShell, run.current())));
+  expect(screen).toContain(title);
+  expect(screen).toContain("Try again");
+  expect({ attempts, navigations: run.navigations, key: (await run.accountStore.get("signin_key"))?.no }).toEqual({ attempts: 1, navigations: [], key: 7 });
+});
+
+it.each([
+  ["account_unreachable", "auth", "account-unreachable"],
+  ["account_readd_required", "auth", "account-readd"],
+  // a PC that left its account selects no account open: it says why in place of the missing feature
+  ["account_readd_required", "hello", "account-readd"],
+] as const)("listing confirmation wire: %s in answer to %s reaches a client that offered the feature", async (code, at, failure) => {
+  const offered: boolean[] = [];
+  const refusal = () => accountOpenRefusalFrame(code, code);
+  const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
+    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true,
+      hello: (frame) => { offered.push(frame.payload.features.includes("account-listing-errors-1")); return at === "hello" ? refusal() : undefined; },
+      auth: refusal }),
+  }) });
+  await run.openPage();
+  const state = run.current().state;
+  expect<object>({ offered, screen: state.kind === "failed" ? state.failure : state.kind, navigations: run.navigations }).toEqual({ offered: [true], screen: failure, navigations: [] });
+});
+
 it("P18, T34: reloading after a lost registration reply opens the PC with the same sign-in key", async () => {
   const run = await accountPc({ loseRegistrationReply: true, open: async (offer) => new class extends RelayTransport {
     override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }

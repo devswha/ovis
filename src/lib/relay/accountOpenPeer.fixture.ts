@@ -3,7 +3,7 @@ import type { HoldState } from "../../../shared/account-devices-api.ts";
 import { generateKeyPair, openDaemonSecureChannel, type Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError, RELAY_PROTOCOL, type MuxFrame } from "../../../shared/relay-mux.ts";
 
-export function accountOpenRefusalFrame(code: "held" | "not_listed" | "admission" | "auth_revoked", message: string, hold?: HoldState): Uint8Array {
+export function accountOpenRefusalFrame(code: "held" | "not_listed" | "admission" | "auth_revoked" | "account_unreachable" | "account_readd_required", message: string, hold?: HoldState): Uint8Array {
   const payload = { code, message, ...(hold === undefined ? {} : { hold }) };
   const frame = { type: FrameType.SESSION_ERROR, stream_id: 0, flags: 0, payload: { code: "auth_revoked" as const, message } } as const;
   try {
@@ -24,7 +24,7 @@ export function accountOpenPeer(identity: ReturnType<typeof generateKeyPair>, pe
   readonly features: readonly string[];
   readonly provisional?: boolean;
   readonly auth: (frame: Extract<MuxFrame, { type: typeof FrameType.AUTH }>) => Uint8Array;
-  readonly hello?: (frame: Extract<MuxFrame, { type: typeof FrameType.HELLO }>) => void;
+  readonly hello?: (frame: Extract<MuxFrame, { type: typeof FrameType.HELLO }>) => Uint8Array | void;
   readonly pair?: (frame: Extract<MuxFrame, { type: typeof FrameType.PAIR | typeof FrameType.KEY_PROVE }>) => Uint8Array | Promise<Uint8Array>;
 }): RelaySocket {
   const nonce = Buffer.alloc(32, 7).toString("base64url");
@@ -62,7 +62,8 @@ export function accountOpenPeer(identity: ReturnType<typeof generateKeyPair>, pe
       let reply: Uint8Array | Promise<Uint8Array> | undefined;
       switch (frame.type) {
         case FrameType.HELLO:
-          peer.hello?.(frame);
+          reply = peer.hello?.(frame) ?? undefined;
+          if (reply !== undefined) break;
           if (frame.payload.required_features.some((feature) => !peer.features.includes(feature))) {
             reply = encodeFrame({ type: FrameType.SESSION_ERROR, stream_id: 0, flags: 0, payload: { code: "unsupported_extension", message: "" } });
           } else {

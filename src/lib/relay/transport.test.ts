@@ -601,6 +601,10 @@ it("tells a refusal that cannot change from a carrier that may come back", () =>
   for (const code of ["auth_revoked", "auth_failed", "unsupported_version", "unsupported_extension", "unsupported_transport"] as const) {
     expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(true);
   }
+  // the PC answered and refused: asking again by itself would only ask the account service again
+  for (const code of ["account_unreachable", "account_readd_required"]) {
+    expect(isFatalRelayError(Object.assign(new MuxProtocolError("protocol_error", code), { code }))).toBe(true);
+  }
   for (const code of ["auth_changed", "timeout", "internal_error", "protocol_error", "resource_exhausted", "flow_control_error"] as const) {
     expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(false);
   }

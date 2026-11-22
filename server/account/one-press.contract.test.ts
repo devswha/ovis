@@ -14,9 +14,10 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { handleRequest, type ServerContext } from "../dispatch.ts";
 import { createServer } from "../index.ts";
 import { ask, linkRecord, memberRow, pairingPc, phone, provingDevice, sendLink, setUpFor, vouchFor, type Pc } from "./pairing.test-helpers.ts";
-import { bounded, relayConnection } from "../relay/test-helpers.ts";
-import { FrameType } from "../../shared/relay-mux.ts";
+import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
+import { pressOnce } from "./one-press.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -45,6 +46,8 @@ const press = (f: Pc, account: string) => f.local("/api/account/one-press", { me
 
 async function firstPcWithPhone(f: Pc, completions = true) {
   f.account.completions = completions;
+  const clock = new TestClock();
+  f.devices.useClock(clock);
   await setUpFor(f, "acct_1");
   await admitAt(f, "acct_1", null);
   expect((await press(f, "acct_1")).status).toBe(200);
@@ -63,7 +66,7 @@ async function firstPcWithPhone(f: Pc, completions = true) {
   expect(f.stored().some(row => row.relay_public_key === key.spki)).toBe(false);
   const url = `https://account.test/v1/pcs/${serverId}`;
   const headers = { authorization: `Bearer ${token}` };
-  return { device, serverId,
+  return { device, serverId, clock,
     remove: async () => { expect((await f.account.fetch(new Request(url, { method: "DELETE", headers }))).status).toBe(204); },
     relist: async () => {
       const answer = await f.account.fetch(new Request(url, { method: "PUT", headers, body: JSON.stringify({
@@ -130,7 +133,7 @@ test("removed PC: an idle PC learns of removal at the five-minute poll", async (
   } finally { jest.useRealTimers(); }
 });
 
-test("removed PC: new account-only grants wait for the service, not the next periodic poll", async () => {
+test("removed PC: a grant after the last answer lapsed waits for the service, not the next periodic poll", async () => {
   let validating = false;
   const asked = Promise.withResolvers<void>();
   const resume = Promise.withResolvers<void>();
@@ -138,7 +141,8 @@ test("removed PC: new account-only grants wait for the service, not the next per
     if (validating) { asked.resolve(); await resume.promise; }
     return service.fetch(request);
   } });
-  const { device, serverId, remove } = await firstPcWithPhone(f);
+  const { device, serverId, remove, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
   const next = await relayConnection(f, { serverId });
   validating = true;
   const verdict = next.auth(device).then(() => "admitted", () => next.serverError);
@@ -147,6 +151,276 @@ test("removed PC: new account-only grants wait for the service, not the next per
     await remove();
   } finally { resume.resolve(); }
   expect(await bounded(verdict)).toBe("auth_failed");
+});
+
+const ACCOUNT_LISTING_ERRORS = "account-listing-errors-1";
+const LISTING_CONFIRMED_MS = 60_000;
+const listingFeatures = [ACCOUNT_LISTING_ERRORS];
+const completionChecks = (f: Pc) => f.account.requests.filter(path => path === "POST /v1/pc/complete").length;
+/** One sign-in of an account device on a connection of its own: "admitted", or the code the PC ended it with. */
+async function signIn(f: Parameters<typeof relayConnection>[0], serverId: string, device: Parameters<Awaited<ReturnType<typeof relayConnection>>["auth"]>[0],
+  features: readonly string[] = listingFeatures, required: readonly string[] = []): Promise<string> {
+  const link = await relayConnection(f, { serverId });
+  return link.auth(device, features, required).then(() => "admitted", () => bounded(link.serverError));
+}
+/** The same as a signed-in app opens a PC of its account: the PC must take account sign-ins at all. */
+const accountOpen = (f: Parameters<typeof relayConnection>[0], serverId: string, device: Parameters<typeof signIn>[2], features: readonly string[] = listingFeatures) =>
+  signIn(f, serverId, device, [ACCOUNT_OPENS_ALL_FEATURE, ...features], [ACCOUNT_OPENS_ALL_FEATURE]);
+const lastClear = (stateDir: string) => JSON.parse(readFileSync(join(stateDir, "account-pc.json"), "utf8")).clears.at(-1);
+
+test("listing confirmation: an outage says so, clears nothing and cannot interrupt a local pairing", async () => {
+  let offline = false;
+  const f = await pc({ accountFetch: async (req, svc) => offline ? new Response(null, { status: 503 }) : svc.fetch(req) });
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  const local = await phone();
+  const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
+  const binding = f.devices.serviceBinding();
+  clock.advance(LISTING_CONFIRMED_MS);
+  offline = true;
+  using audit = spyOn(console, "info").mockImplementation(() => {});
+  expect(await signIn(f, serverId, { id: paired.id, keys: local.keys, publicKey: local.spki }, [])).toBe("admitted");
+  // An app from before the two codes would forget its key over auth_failed: an outage is no word against the key.
+  expect(await signIn(f, serverId, device, [])).toBe("internal_error");
+  expect(await signIn(f, serverId, device)).toBe("account_unreachable");
+  expect(audit.mock.calls.map(([line]) => JSON.parse(line)).filter(line => line.event === "relay.session.closed").map(line => line.reason))
+    .toEqual(["account_unreachable", "account_unreachable"]);
+  expect(f.devices.serviceBinding()).toBe(binding);
+  expect(f.devices.sessionRow(device.id)?.role).toBe("drive");
+  offline = false;
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+});
+
+test("listing confirmation: an account service that does not answer is an outage before the device's own 10 seconds run out", async () => {
+  const asked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let hung = false;
+  const f = await pc({ accountFetch: async (req, svc) => {
+    if (hung) { asked.resolve(); await release.promise; }
+    return svc.fetch(req);
+  } });
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
+  hung = true;
+  const session = new TestClock();
+  const link = await relayConnection(f, { serverId, clock: session });
+  const verdict = link.auth(device, listingFeatures).then(() => "admitted", () => bounded(link.serverError));
+  try {
+    await bounded(asked.promise);
+    session.advance(3_999);
+    expect(await Promise.race([verdict, Promise.resolve("waiting")])).toBe("waiting");
+    session.advance(1);
+    expect(await verdict).toBe("account_unreachable");
+  } finally { hung = false; release.resolve(); }
+  expect(f.devices.serviceBinding()).not.toBeNull();
+});
+
+test("listing confirmation: a reconnect burst shares one check until exactly 60 monotonic seconds", async () => {
+  const f = await pc();
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
+  const start = completionChecks(f);
+  await Promise.all([signIn(f, serverId, device), signIn(f, serverId, device), signIn(f, serverId, device)]);
+  expect(completionChecks(f) - start).toBe(1);
+  clock.advance(LISTING_CONFIRMED_MS - 1);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  expect(completionChecks(f) - start).toBe(1);
+  clock.advance(1);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  expect(completionChecks(f) - start).toBe(2);
+});
+
+test("listing confirmation: neither an outage, a failed check nor a clock set back stretches a positive answer", async () => {
+  let offline = false;
+  const f = await pc({ accountFetch: async (req, svc) => offline ? new Response(null, { status: 503 }) : svc.fetch(req) });
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  offline = true;
+  clock.advance(LISTING_CONFIRMED_MS - 1);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  clock.advance(1);
+  expect(await signIn(f, serverId, device)).toBe("account_unreachable");
+  expect(await signIn(f, serverId, device)).toBe("account_unreachable");
+  offline = false;
+  const start = completionChecks(f);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  expect(completionChecks(f) - start).toBe(1);
+  const wall = Date.now();
+  const time = spyOn(Date, "now");
+  time.mockImplementation(() => wall - 1);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  expect(completionChecks(f) - start).toBe(2);
+  // a sleep the monotonic clock did not count: only the wall clock moved
+  time.mockImplementation(() => wall + LISTING_CONFIRMED_MS);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  expect(completionChecks(f) - start).toBe(3);
+});
+
+test.each(["unbind", "listing_changed", "identity_reset"] as const)("listing confirmation: %s supersedes a warm grant", async why => {
+  const f = await pc();
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
+  expect(await signIn(f, serverId, device)).toBe("admitted");
+  if (why === "unbind") f.devices.clearAccountBinding("unlisted", "account");
+  else if (why === "identity_reset") await f.app.context.services.relay.resetIdentity();
+  else {
+    await remove();
+    await relist();
+    await f.app.context.services.accountMailbox.readSnapshot();
+  }
+  expect(f.devices.serviceBinding()).toBeNull();
+  expect(await signIn(f, serverId, device)).toBe("auth_failed");
+});
+
+test("listing confirmation: a removal the PC has not read ends the account's sessions at the first sign-in after the 60 seconds", async () => {
+  const f = await pc();
+  const { device, serverId, remove, relist, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
+  const open = await relayConnection(f, { serverId });
+  expect(await open.auth(device, listingFeatures)).toMatchObject({ role: "drive" });
+  await remove();
+  await relist();
+  clock.advance(LISTING_CONFIRMED_MS - 1);
+  const within = await relayConnection(f, { serverId });
+  expect(await within.auth(device, listingFeatures)).toMatchObject({ role: "drive" });
+  clock.advance(1);
+  expect(await signIn(f, serverId, device)).toBe("auth_failed");
+  expect(f.devices.serviceBinding()).toBeNull();
+  expect(lastClear(f.stateDir)).toMatchObject({ reason: "unlisted", by: "account" });
+  // removed by the account: nothing says to add it again
+  expect(await accountOpen(f, serverId, device)).toBe("unsupported_extension");
+  expect(await bounded(open.serverError, 2000)).toBe("auth_revoked");
+  await bounded(Promise.all([open.closed, within.closed]), 2000);
+});
+
+const restarted: (() => Promise<void>)[] = [];
+afterEach(async () => { for (const end of restarted.splice(0)) await end(); });
+const noAdmission = () => Response.json({ error: { code: "no_admission", message: "No one-press add of this PC is waiting for that account" } }, { status: 404 });
+const bindingOf = (stateDir: string) => JSON.parse(readFileSync(join(stateDir, "account-pc.json"), "utf8")).binding;
+
+/**
+ * The PC as an update finds it: stopped, and started again from a copy of its state folder whose binding names no
+ * listing, as every binding made before 0.5.10. `receipt`: the completion receipt of its bind was never taken.
+ */
+async function updated(f: Pc, options: { receipt?: boolean; fetch?: (request: Request) => Promise<Response> } = {}) {
+  await f.app.stop();
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-upgrade-listing-"));
+  cpSync(f.stateDir, stateDir, { recursive: true });
+  const path = join(stateDir, "account-pc.json");
+  const state = JSON.parse(readFileSync(path, "utf8"));
+  const { listing_id: listing, ...binding } = state.binding;
+  writeFileSync(path, JSON.stringify({ ...state, binding }));
+  if (options.receipt) writeFileSync(join(stateDir, "account-completion.json"), JSON.stringify({ account: binding.account, listing_id: listing }));
+  const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false,
+    accountOpensAll: true, accountService: { url: "https://account.test", fetch: options.fetch ?? f.account.fetch } });
+  const closes: (() => void)[] = [];
+  restarted.push(async () => { for (const end of closes) end(); await app.stop(); rmSync(stateDir, { recursive: true, force: true }); });
+  await app.context.services.accountMailbox.pull();
+  return { stateDir, app, closes, close() {}, devices: app.context.services.devices, listing: listing as string, bindId: binding.bind_id as string };
+}
+
+test("upgrade: a binding without a listing ID pins the listing of an admission still current", async () => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  const now = await updated(f);
+  expect(bindingOf(now.stateDir)).toMatchObject({ bind_id: now.bindId, listing_id: now.listing });
+  expect(await signIn(now, serverId, device)).toBe("admitted");
+});
+
+test("upgrade: a binding without a listing ID pins the listing of its kept completion receipt", async () => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  const now = await updated(f, { receipt: true, fetch: async req => new URL(req.url).pathname === "/v1/pc/admission" ? noAdmission() : f.account.fetch(req) });
+  expect(bindingOf(now.stateDir)).toMatchObject({ bind_id: now.bindId, listing_id: now.listing });
+  expect(await signIn(now, serverId, device)).toBe("admitted");
+});
+
+test("upgrade: a kept completion receipt is not spent by a pull whose read failed, and pins at the next", async () => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  let down = true;
+  const now = await updated(f, { receipt: true, fetch: async req => {
+    const path = new URL(req.url).pathname;
+    if (path === "/v1/pc/admission") return noAdmission();
+    return down && path === "/v1/pc/snapshot" ? new Response(null, { status: 503 }) : f.account.fetch(req);
+  } });
+  expect(bindingOf(now.stateDir)).toEqual({ account: "acct_1", bind_id: now.bindId, service: true });
+  down = false;
+  await now.app.context.services.accountMailbox.pull();
+  expect(bindingOf(now.stateDir)).toMatchObject({ bind_id: now.bindId, listing_id: now.listing });
+  expect(await signIn(now, serverId, device)).toBe("admitted");
+});
+
+test.each([
+  ["completed", false],
+  ["relisted", false],
+  // the receipt names the listing the account removed: the relisting is another
+  ["relisted", true],
+] as const)("upgrade: with no admission left and a %s listing (receipt kept: %p) the PC leaves the account and says to add it again", async (listing, receipt) => {
+  const f = await pc();
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
+  const local = await phone();
+  const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
+  if (listing === "relisted") { await remove(); await relist(); }
+  const completions = completionChecks(f);
+  let lapsed = true;
+  const now = await updated(f, { receipt, fetch: async req => lapsed && new URL(req.url).pathname === "/v1/pc/admission" ? noAdmission() : f.account.fetch(req) });
+  expect(bindingOf(now.stateDir)).toBeNull();
+  expect(now.devices.account()).toBeNull();
+  // A listing some device wrote since is never completed on this PC's own word.
+  expect(completionChecks(f) - completions).toBe(receipt ? 1 : 0);
+  expect(now.devices.sessionRow(device.id)).toBeNull();
+  expect(await signIn(now, serverId, device)).toBe("auth_failed");
+  expect(await signIn(now, serverId, { id: paired.id, keys: local.keys, publicKey: local.spki }, [])).toBe("admitted");
+  expect(await accountOpen(now, serverId, device)).toBe("account_readd_required");
+  expect(await accountOpen(now, serverId, device, [])).toBe("unsupported_extension");
+  lapsed = false;
+  await admitAt(f, "acct_1");
+  expect(await pressOnce(now.app.context.services, "acct_1")).toEqual({ account: "acct_1" });
+  expect(bindingOf(now.stateDir)).toMatchObject({ account: "acct_1", service: true, listing_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+  expect(bindingOf(now.stateDir).listing_id === now.listing).toBe(listing === "completed");
+  expect(await accountOpen(now, serverId, device)).toBe("held");
+  const held = Date.now();
+  spyOn(Date, "now").mockImplementation(() => held + JOIN_HOLD_MS + 1);
+  expect(await accountOpen(now, serverId, device)).toBe("admitted");
+});
+
+test.each([
+  ["an outage", () => new Response(null, { status: 503 })],
+  // Step 2 off for the account hides the route: that is no word on the admission
+  ["a hidden 404", () => Response.json({ error: { code: "not_found", message: "Unknown request" } }, { status: 404 })],
+] as const)("upgrade: %s clears no binding, and the admission pins once the service answers", async (_case, answer) => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  let failing = true;
+  const now = await updated(f, { fetch: async req => failing && new URL(req.url).pathname === "/v1/pc/admission" ? answer() : f.account.fetch(req) });
+  expect(await signIn(now, serverId, device)).toBe("account_unreachable");
+  expect(bindingOf(now.stateDir)).toEqual({ account: "acct_1", bind_id: now.bindId, service: true });
+  failing = false;
+  await now.app.context.services.accountMailbox.pull();
+  expect(bindingOf(now.stateDir)).toMatchObject({ bind_id: now.bindId, listing_id: now.listing });
+  expect(await signIn(now, serverId, device)).toBe("admitted");
+});
+
+test.each([
+  [listingFeatures, "account_readd_required"],
+  [[], "auth_failed"],
+] as const)("upgrade: a sign-in that finds no admission left for a binding without a listing ID is answered %p %p, and the PC leaves the account", async (features, code) => {
+  let lapsed = false;
+  const f = await pc({ accountFetch: async (req, svc) => lapsed && new URL(req.url).pathname === "/v1/pc/admission" ? noAdmission() : svc.fetch(req) });
+  // an account service from before listings had IDs: its admission names none
+  const made = await firstPcWithPhone(f, false);
+  const { device, serverId } = made;
+  expect(f.devices.serviceListing()).toBeUndefined();
+  const { clock } = made;
+  const open = await relayConnection(f, { serverId });
+  expect(await open.auth(device, listingFeatures)).toMatchObject({ role: "drive" });
+  clock.advance(LISTING_CONFIRMED_MS);
+  lapsed = true;
+  expect(await signIn(f, serverId, device, features)).toBe(code);
+  expect(f.devices.account()).toBeNull();
+  expect(await bounded(open.serverError, 2000)).toBe("auth_revoked");
+  expect(await signIn(f, serverId, device)).toBe("auth_failed");
+  expect(await accountOpen(f, serverId, device)).toBe("account_readd_required");
 });
 
 test.each([true, false])("removed PC: restarting after a bare relist cannot release the old phone row (listing ID: %p)", async completions => {

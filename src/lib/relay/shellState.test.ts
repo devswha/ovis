@@ -103,6 +103,15 @@ describe("the screen a failure lands on", () => {
     expect(forgetsDevice(failureOf(mux("auth_changed"), paired))).toBe(false);
   });
 
+  it("keeps the saved key when the PC could not check its account, or must be added to it again", () => {
+    for (const [code, failure] of [["account_unreachable", "account-unreachable"], ["account_readd_required", "account-readd"]]) {
+      const refusal = Object.assign(new MuxProtocolError("protocol_error", "PC refused"), { code });
+      expect<string>(failureOf(refusal, paired)).toBe(failure!);
+      expect(forgetsDevice(failureOf(refusal, paired))).toBe(false);
+      expect(pairsAgainWithoutKey(refusal, { code: false, paired: true, codeless: true })).toBe(false);
+    }
+  });
+
   it("asks for an update on a protocol the two sides do not share, and calls an unsafe offer damaged", () => {
     expect(failureOf(mux("unsupported_version"), paired)).toBe("needs-update");
     expect(failureOf(mux("unsupported_extension"), pairing)).toBe("needs-update");
