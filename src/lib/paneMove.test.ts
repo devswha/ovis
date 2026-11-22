@@ -250,3 +250,32 @@ it("takes the view of a pane moved elsewhere to its new ID in any slot, and noth
   expect(movedView({ machineId: "other", paneId: "w1:p1" }, null, "pc", "w1:p1", "w2:p1")).toEqual({ selection: null, split: null });
   expect(movedView({ machineId: "pc", paneId: "w3:p1" }, null, "pc", "w1:p1", "w2:p1")).toEqual({ selection: null, split: null });
 });
+
+it("carries unsent card text across pane moves with write-first and keep-on-conflict (#3458)", () => {
+  const { data, drafts, storage } = fixture();
+  const payload = (paneId: string, text: string) => JSON.stringify({ machineId: "local", paneId, session: "s1", promptId: "q1", text });
+  data.set("ovis:card-text:w1:p1", payload("w1:p1", "draft answer"));
+  carryPaneState("local", "w1:p1", "w2:p4", drafts, storage);
+  expect(data.get("ovis:card-text:w1:p1")).toBeUndefined();
+  expect(JSON.parse(data.get("ovis:card-text:w2:p4")!)).toEqual({ machineId: "local", paneId: "w2:p4", session: "s1", promptId: "q1", text: "draft answer" });
+
+  // keep-on-conflict: if destination already holds card text, preserve both
+  data.set("ovis:card-text:w3:p1", payload("w3:p1", "source"));
+  data.set("ovis:card-text:w4:p2", payload("w4:p2", "existing dest"));
+  carryPaneState("local", "w3:p1", "w4:p2", drafts, storage);
+  expect(JSON.parse(data.get("ovis:card-text:w3:p1")!).text).toBe("source");
+  expect(JSON.parse(data.get("ovis:card-text:w4:p2")!).text).toBe("existing dest");
+
+  // write-first: if writing destination fails, keep source intact
+  data.set("ovis:card-text:w5:p1", payload("w5:p1", "keep me"));
+  const failingStorage = () => ({
+    ...storage(),
+    setItem(key: string, value: string) {
+      if (key === "ovis:card-text:w6:p2") throw new DOMException("Quota exceeded", "QuotaExceededError");
+      storage().setItem(key, value);
+    },
+  });
+  carryPaneState("local", "w5:p1", "w6:p2", new ComposerDraftStore(failingStorage), failingStorage);
+  expect(JSON.parse(data.get("ovis:card-text:w5:p1")!).text).toBe("keep me");
+  expect(data.get("ovis:card-text:w6:p2")).toBeUndefined();
+});

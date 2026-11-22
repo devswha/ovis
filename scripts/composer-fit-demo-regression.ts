@@ -139,13 +139,19 @@ try {
         const rest = await measure(page);
         assert.ok(rest.stop && !rest.send && !rest.sendOptions && !rest.queue, JSON.stringify(rest));
         assert.equal(await page.locator(".composer-context").evaluate((node) =>
-          node.tagName === "SPAN" && node.getAttribute("title")?.includes("%") === true && !node.hasAttribute("aria-expanded") && !node.hasAttribute("tabindex")), true, "the context ring is display-only");
+          node.tagName === "SPAN" && node.getAttribute("title")?.includes("%") === true && !node.hasAttribute("aria-expanded") && node.tabIndex === 0), true, "the context ring is keyboard-focusable without expanding inline");
         await draft(page);
         const row = await measure(page);
         await drawn(page, row.draw as Draw, `${agent} ${width}px, a written follow-up`);
         assert.ok(row.send && !row.stop && !row.sendOptions && !row.queue && row.ring, JSON.stringify(row));
         assert.equal(row.card.height, rest.card.height, "Send replaces Stop on the same row");
         if (width >= 800) {
+          await page.locator(".composer-context").focus();
+          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("composer-context") === true), true, `${agent} ${width}px: desktop context ring is reachable by keyboard`);
+          const focused = await measure(page);
+          assert.equal(focused.draw, row.draw, `${agent} ${width}px: focusing the ring leaves the row as drawn`);
+          assert.equal(focused.card.height, row.card.height);
+          await page.locator(".composer-context").evaluate((node) => (node as HTMLElement).blur());
           await page.locator(".composer-context").click();
           const pressed = await measure(page);
           assert.equal(pressed.draw, row.draw, `${agent} ${width}px: a press on the ring leaves the row as drawn`);
