@@ -278,8 +278,11 @@ it, only when all of these hold:
    signed in to the same account;
 3. the PC has at least one drive account member to approve it.
 
-Such a comparison is shown only to the account's members through the relay (`remote-pairings`,
-digits picked out of three, as always), never to the PC's own windows, and never approved by itself.
+Such a comparison is shown to the account's members through the relay (`remote-pairings`, digits
+picked out of three, as always) and, so a one-PC owner is never stuck, to this PC's own window only
+(`GET /api/relay/joins`, its screen, loopback and not forwarded): listed there without its digits and
+without a pop-up, and approved only by the owner typing the six digits the new device shows
+(`POST /api/relay/join`); one wrong entry ends that join. It is never approved by itself.
 Anything else is refused before any prompt and not counted as a failed pairing. A PC takes at most 5
 such joins a minute; refused requests do not count toward them. A request whose admission the PC has
 not seen yet makes it pull its mailbox, at most once every 10 seconds, so a device that asks right
@@ -644,7 +647,7 @@ Tailnet Lock follow the same idea: an existing device approves once, and the ser
 messages):
 
 **By QR code.** On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay →
-**Show the QR code**, with the relay on and an account named for the PC: signing in on the PC's
+**Phone QR code**, with the relay on and an account named for the PC: signing in on the PC's
 own page and adding it there names one, and so does `ovis add`. A device that is signed in to that
 account scans it: it is paired with its account key, links itself as the PC's first member, lists
 the PC in the account's directory and enrolls it ([Enrolling a PC](#enrolling-a-pc)). Nothing is
@@ -685,7 +688,7 @@ typed and nothing is approved on the PC. Because the code admits whoever holds i
   app.ovis.sh, and is far easier to read off a screen, a recording or a clipboard than a QR code
   is to scan. Its six-digit code is its own, never one Phones and devices showed as digits, and
   **New code** ends it and asks for the offer again (no `POST /api/devices/pair/start`). A device
-  without a camera pairs from Phones and devices, or the PC is added by signing in on it (below).
+  without a camera pairs from Phones and devices → Without signing in, or the PC is added by signing in on it (below).
 - While the QR code is up, and while a notice is, the page reads `GET /api/account/status` and the
   device list every 3 seconds. When the PC goes from no account to one, by a scan or any other
   way (the PC then also takes the code back), the QR code gives way to which account, by its
@@ -738,8 +741,9 @@ until someone signs in on it; the steps below are then the way.
 
 **By signing in on the PC:**
 
-1. On the new PC, Settings → Devices and PCs → Account (or the first-run welcome): press
-   **Sign in and add this PC**. A PC in no account is added by that sign-in, in the same step: the
+1. On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay: sign in, then press
+   **Add this PC to my account** (a page without that tab keeps **Sign in and add this PC** in its
+   Account card, which does both in one press). A PC in no account is then added: the
    PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens a
    pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. The PC is
    added only by a press of a button that says so. The link page's one button reads
@@ -755,14 +759,15 @@ until someone signs in on it; the steps below are then the way.
    reads the stored one (another tab signed out and in), and the screen then shows the button. A
    listing that gets no answer within a minute is given up the same way, and so is one whose
    screen is closed meanwhile: nothing more is written for it, the PC is not told the account, and
-   the window it opened is closed (`POST /api/relay/link/close`) unless a wait is kept or the
-   person pressed the button since. An entry already sent to the directory when the screen gave
-   up cannot be taken back: the screen then says the PC may not have been listed, and the button
+   the window it opened is closed by its ID (`POST /api/relay/link/close`) unless a wait is kept or the
+   person pressed the button since. Automatic cleanup never closes a newer window; on an older PC
+   that does not return a window ID, it lets the window expire. An entry already sent to the directory
+   when the screen gave up cannot be taken back: the screen then says the PC may not have been listed, and the button
    lists it again. A sign-in that was already there when the screen opened lists nothing by itself
    and gets the offer; so does a sign-in again for the same account, one that ended before the PC
    answered, and one whose PC answered only after the minute. The sign-in never turns the relay
-   on: with the relay off it lists nothing and offers **Turn on the relay and add this PC**, one
-   press for both, which lists under that sign-in only. A device that only watches this PC
+   on: with the relay off it lists nothing and offers **Add this PC to my account**, which then turns
+   the relay on too, one press for both, which lists under that sign-in only. A device that only watches this PC
    (`role: watch`) can list nothing: its sign-in adds nothing and it is shown no button; while
    what this browser may do cannot be read, nothing is listed without a press. A browser the PC
    refuses its account (`owner_only`: in only through an open device gate, or a Portal visitor) is
@@ -774,7 +779,9 @@ until someone signs in on it; the steps below are then the way.
    every nine minutes, for 30 minutes a press or sign-in, then offers **Keep waiting**; **Stop waiting**
    ends it sooner and closes the window on the PC at once (`POST /api/relay/link/close`; an Ovis from
    before that route lets it run out), and once more when a reopen or listing that was on its way
-   opens it again after that. A wait that ran out by itself does not close the window
+   opens it again after that, provided the reopened window is still current. A relist that finds
+   the PC already added also closes only the window it opened, even if the tab could not store a resume marker.
+   A wait that ran out by itself does not close the window
    already open: it closes by itself, up to ten minutes later. A reloaded tab
    goes on waiting only for the same PC under the same sign-in. Once a device added the PC the screen says
    so, and that the account's other devices can open it only when the PC's status no longer says `enrolling`.
@@ -803,11 +810,80 @@ until someone signs in on it; the steps below are then the way.
 3. The device is then the PC's first member: it links, and enrolls the PC
    ([Enrolling a PC](#enrolling-a-pc)), so the account's other devices are let in and introduced.
 
+**In one press.** Step 2 is on by default on the PC ([how to turn it off](#turning-step-2-off)).
+The account service's Step 2 switch must also be on. **Add this PC to my account** then adds the PC
+with no other device and no digits, when the account service admits it: the browser on the PC's own page lists the PC
+(`PUT /v1/pcs`, as above), then asks `POST /v1/pcs/{server_id}/admit`. The service admits only a
+sign-in made in an app itself within the last 10 minutes with two-step sign-in set (unknown, as
+for a Google sign-in that does not say, is not enough), within a daily cap of PC adds per account,
+and writes who added it in the account's safety log. The one exception is an account's first PC:
+an account never used (no PC listed, added or removed before, and no device key ever registered,
+removed ones included, apart from one the admitting sign-in registered itself) admits its first PC in one press under any sign-in, since no other device
+exists to protect or tell. The PC's own page registers no device key, so a new user's first press
+meets it. The page then names the account it is signed
+in to for the PC (`POST /api/account/relay-account`) and presses `POST /api/account/one-press`
+`{ "account" }`. The PC takes it only from its owner here (a device through the relay gets
+`owner_only`, as does a Portal visitor or an open LAN window, and a watching one `read_only`), only for
+the account named for it (`409 account_mismatch` otherwise) and only while it is in no account
+(`409 in_account`). It asks the account service itself, with its relay key's proof
+(`POST /v1/pc/admission`, naming that account): an admission by any other account is never shown to
+it, and an answer for another account binds nothing (`502 account_mismatch`). Then it binds
+`account-pc.json` to the account (`service: true` on the binding) and reads the account's snapshot
+at once, so the account's devices are let in as on any PC of the account. `404 no_admission` and
+`503 account_unavailable` bind nothing. Any refusal, at the service or at the PC (an Ovis from
+before this has no route), leaves the page on the wait above, unchanged. In this release the PC's
+own Settings signs in with a code typed on another device, which the service does not count as an
+app's own sign-in, so a press there still ends in that wait; it adds the PC in one press once the PC
+page signs in on its own window.
+
+**Sign in again from the wait.** When the service refuses the press for the sign-in itself
+(`two_step_required`, `session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
+(the desktop app, the PC's own window), the wait offers **Sign in again** once. It signs in afresh
+with the stored provider; the new sign-in is kept only for the same account and only while the wait
+still runs (Stop waiting in any window of the PC ends it). The press is then made again inside that
+wait: for the PC the wait listed (the PC's address must still answer for it, and nothing is listed
+again), with exactly the sign-in just made, never one another tab stored meanwhile. A second refusal
+leaves the plain wait, with no offer: the wait offers it once.
+
+The account's other devices are told: the service sends them its usual push, and at the top of the
+opened Ovis a notice names the new PC, with **I didn't add this**, which removes it from the
+account's list at once (`DELETE /v1/pcs/{server_id}`); its close button only hides it. The overview
+page shows neither: it lists the PC as any other, with no quick **Open** while it is new unless this
+device paired with it by hand (then **Open** is the person's own tap). A PC added under the first-PC
+exception is told, once, to the first devices that join the account after it (`admitted_before_you`
+on its directory entry), however much later. For 24 hours (`new_until` on its directory entry) the
+PC is marked new on them: it is never selected or opened by itself and no device signs in to it on
+its own, while a press on it opens it as usual. The account service admits the PC before the PC is
+asked, so a press the PC then refuses (it restarted, was put in another account meanwhile, or was
+not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
+not in that account (in none, or in another one it joined meanwhile), and the page waits for the
+digits as before, and its notice says what to do if nobody added it. A PC bound this way leaves the
+account as soon as a snapshot read finds the account no longer lists it. Before recording the
+`unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
+recorded origin proves they paired here. Those pairings keep their keys and roles, including
+after an offline restart from either state folder. A pairing by code or digits counts as local
+only when this PC approved the current key; one an account member device started or approved
+does not qualify.
+The sibling's old membership or signed add does not restore the cleared binding. An imported or
+invalid origin does not qualify. Unlisting does not
+lift a lock, block, freeze, Revoke or tombstone.
+
 A wrong number ends that comparison; the person starts again from **Add** on the dashboard. A device without an account
 pairs with a QR code or pairing code behind **Start without signing in** on the sign-in screen, which
 leads to **Add a PC**.
 
 ### Adding a PC of your account
+
+If this PC cannot read its account state, it refuses a PC add rather than assuming it is
+outside an account. Try again in a moment. If the refusal persists, run `ovis recover` in a
+terminal on this PC to inspect its local state. Do not delete its account files to retry:
+they also record which devices must stay out.
+
+The target-bound refusal is part of the **PC-add protocol**, not proof that every
+client with a pairing code is a PC. On a bound non-Linux target, older clients and
+clients that do not identify a PC add can still use legacy code pairing. Full
+PC-to-PC key proof remains a follow-up. This limitation does not change the source
+PC's refusal or the Tailscale tab's SSH connection.
 
 **Add a connection → Ovis relay** on a PC (A) whose page is signed in, with A in that account, lists
 the account's other PCs: **Connect** for one already in A's machine list,
@@ -880,6 +956,9 @@ entry for the same PC replaces it, at most 32 PCs and 256 devices). Answers 204.
 `GET /api/account/introduction`: over the new device's own signed-in session, watch access included
 (the one account route that needs no drive access, since it reads only the caller's own
 introduction); answers `{ "pcs" }` for its own key, or 404 `introduction_none`.
+
+A PC saved only by an introduction is one this device never chose: the app never opens it by itself
+(at a launch, or as the PC opened last) until the person opens it once, which marks it chosen.
 
 Known risk (T10 in the design): a compromised X can show the new device other PCs' keys than the
 member sent. It already holds X's sessions; what it gains is the new device trying those keys. Each
@@ -969,11 +1048,33 @@ is what authenticates the PC.
   what the row says, which for an account's first member on a PC is that device's own claim
   ([What this does not protect against](#what-this-does-not-protect-against)).
 
+### Turning Step 2 off
+
+Phones paired before Step 2 keep their existing connection across upgrades and offline restarts,
+subject to the PC's local denials. The old credential does not confer Step 2 authority before a
+whole snapshot. If the account service disables Step 2, a listed PC gets `step2_off` on its snapshot
+read. Account-joined phones wait until a whole snapshot succeeds again; a named recovery release
+cannot override that wait.
+
+A PC that was offline cannot know about a new account block until it contacts the service.
+It reads its mailbox before reconciling the account list. If a **Not me** targets a legacy
+device whose local pairing time cannot be trusted, the PC keeps the request until a reconciled
+read can establish the order of both keys. On that PC, **Settings → Devices and PCs** shows
+the pending request beside the device. Choose **Revoke** there to stop its access immediately.
+
+Step 2 is on by default. Only the exact value `0` turns it off. An unset or empty value, `1`,
+`false`, and all other values leave it on.
+
+- **herdr plugin:** Set `OVIS_ACCOUNT_OPENS_ALL=0` in
+  `~/.config/herdr/plugins/config/devswha.ovis/.env`, then restart only the Ovis plugin.
+- **Desktop app:** There is no in-app switch yet. If you launch Ovis yourself, set
+  `OVIS_ACCOUNT_OPENS_ALL=0` in the launch environment and restart Ovis from that environment.
+
 ### Confirmed on this PC
 
-Off unless `OVIS_ACCOUNT_OPENS_ALL=1`; nothing below exists without it. Some acts are taken only
-when they are confirmed on this PC's own screen (`server/account/local-confirm.ts`). The server
-puts the act on the screen; it is answered there, once, within 2 minutes, and the approval is
+With Step 2 on, some acts are taken only when they are confirmed on this PC's own screen
+(`server/account/local-confirm.ts`). The server puts the act on the screen; it is answered
+there, once, within 2 minutes, and the approval is
 used up by that one act and no other (an approval of one key approves no other key). Nothing
 answers one but these two:
 
@@ -987,13 +1088,41 @@ answers one but these two:
   `local-confirm.json` in the state folder (readable by your user only). It is opened only on
   Linux, where the kernel names the user behind a connection, and answers only that user, with no
   proxy header, a Host of exactly its address and, for an answer, its own Origin and the one-time
-  value its page was given. On Windows neither path exists yet.
+  value its page was given. On Windows neither path exists yet. Run `ovis confirm` on the PC to
+  open it: as the user Ovis runs as, the command reads the port from that file (refusing a file
+  or folder another account owns, or one it cannot make yours alone), prints `http://127.0.0.1:<port>/` and opens it in a browser
+  where there is a desktop. It never opens an address the file names, only the one it builds.
+  Strict mode in Settings → Devices points there after you ask to turn it on or off: nothing changes
+  until the act is approved on that page, within its 2 minutes.
 
 Every route of the server refuses these answers (`local_required`), through the relay, the access
 token, a paired device, a loopback window or the bridge credential alike. A restart ends every
 open confirm. What this does not prove: that a person sat there. A program that runs as your user
 on this PC, a terminal that a driving device opened included, or anyone who logs in to this PC,
 reaches the same screen as you do.
+
+### Limits of this release
+
+These limits apply while Step 2 is on, which is the default.
+
+- **Lifting a block needs a two-step sign-in.** Only a device that is older than the block, and
+  whose own sign-in has two-step sign-in set on the account, can lift a block from the app. A
+  Google sign-in whose two-step state the account cannot see ("Two-step sign-in not confirmed")
+  can block a device but cannot lift a block. If every device you still have is like that, lift
+  the block on the PC itself: run `ovis recover` to list what stands there, then
+  `ovis recover --lift <block id>` for the one to lift. `ovis recover` asks you to confirm in
+  that terminal.
+- **Strict mode and key confirmations are Linux only for now.** Turning strict mode on or off,
+  and approving a new key on the PC's screen, need the PC's own screen, which this release has
+  only on Linux. On macOS and Windows neither is available yet; pairing works as before.
+- **A legacy pairing made with a clock more than a day ahead keeps its existing connection but
+  cannot authorize Step 2 actions.** Correcting the clock does not give that old timestamp
+  authority. Other phones and account reconciliation are unaffected. A clock fault in new Step 2
+  state still makes the PC refuse account access until that state can be read safely.
+- **A locked PC is driven only from the PC itself.** While strict mode is on, the PC takes its
+  orders only from the desktop app that started it (its owner channel) or from the confirm page
+  on its own screen. No other device, browser window, access token or relay connection can change
+  what it lets in until strict mode is turned off there.
 
 ## Account service API
 
@@ -1061,6 +1190,11 @@ OAuth's authorization code flow with PKCE, `S256` only:
    click so no popup blocker takes it (the desktop app hands it to the system browser), shows the code
    beside it, or the page's link and code alone when the tab was blocked, and stops polling when the
    sheet closes. Where the link page cannot start a sign-in it falls back to GitHub's device page.
+   This PC's own window in a browser on the PC (`own_window` in `GET /api/health?scope=bridge`, and the
+   page on exactly `http://127.0.0.1:` that port) signs in as an app instead, through step 1 with the
+   loopback redirect `http://127.0.0.1:<port>/callback`: the PC serves that path as the app's page,
+   which hands the return to the tab that started the sign-in over a `BroadcastChannel` of its origin,
+   and that tab redeems it with the verifier it kept. Every other window keeps the device flow.
 6. `POST /v1/signout` (Bearer) answers 204 and ends that sign-in's family.
 
 `GET /v1/providers` (no sign-in) answers `{ "providers": ["github", "google"], "device": ["github",
@@ -1129,7 +1263,7 @@ one stored meanwhile, then forgets that sign-in and its account key; a pairing k
 of the key. A delete that finds the sign-in already gone (another tab signed out, or the answer to an
 earlier delete was lost and the service now refuses the sign-in) shows the signed-out page and keeps
 the key: nothing here proves the account went, and a key kept too long costs nothing. It is offered behind a second press on the same button that says what goes and what
-stays, wherever the sign-in is one the service lets delete: **Settings → Devices and PCs → Account**
+stays, wherever the sign-in is one the service lets delete: **Settings → Devices and PCs → Manage account**
 in the desktop app, and **Devices → Account** in the hosted shell and the phone apps. A PC's own page
 in a browser signs in with a device code or the link page, so its Account section offers no delete
 and names those places instead. On `reauth_required` the desktop app signs in again and repeats the

@@ -1,5 +1,5 @@
 import type { HerdrKeys } from "./herdr-keys.ts";
-import type { ACCOUNT_OPENS_ALL_CAPABILITY, DeviceNotice, NoticeAnswer, NoticeReplay, NoticeSeen } from "./account-devices-api.ts";
+import type { ACCOUNT_OPENS_ALL_CAPABILITY, BlockReceipt, DeviceNotice, NoticeAnswer, NoticeReplay, NoticeSeen } from "./account-devices-api.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
@@ -102,7 +102,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, PendingKey, PendingRedemptionsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -191,10 +191,10 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         `admission: 1`, and a link while it lives needs the account's admission (docs/account.md, "The account's word")
  *  POST   /api/relay/offer/keep          -> AccountPairingState; JSON { id }: such a code read by its pairing.id;
  *         400 invalid_body without one
- *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
+ *  POST   /api/relay/link                -> { url, window_id }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
- *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
- *         comparisons this PC was shown under it; from this PC only (403 local_required through the relay)
+ *  POST   /api/relay/link/close          -> { ok: true }; ends the current window and declines its comparisons.
+ *         With `x-ovis-window: <window_id>`, a stale close does nothing. From this PC only (403 through the relay).
  *         500 internal_error when the saved window could not be cleared (closed until a restart)
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
@@ -1483,6 +1483,11 @@ export type ServerMessage =
   /** device table T57 (feature "account-opens-all/1"): the unseen notices. Sent right after the `features` frame and before
    * any other frame (the snapshot included), never first, so the client already knows account-opens-all/1 when it arrives */
   | { type: "device-notice-replay"; replay: NoticeReplay }
+  /**
+   * account-opens-all/1: the answer to a `notice-answer` "Not me", one receipt per block it carried, in its order
+   * (device table T51, T60). Only `applied` and `already_applied` are done
+   */
+  | { type: "notice-answer-result"; id: string; receipts: readonly BlockReceipt[] }
   /** `pane_id` names the pane an error is about, when it is about one (`attach_held`) */
   | { type: "error"; code: string; message: string; pane_id?: string };
 

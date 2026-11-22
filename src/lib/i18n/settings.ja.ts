@@ -1,7 +1,7 @@
 /**
  * Japanese for the keys only the settings files use:
  * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
- * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
+ * components/SettingsControls.tsx, components/TelemetryControls.tsx, components/LinkBrowserRow.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_JA: Record<string, string> = {
@@ -133,7 +133,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Auto ({language})": "自動（{language}）",
   "No OpenAI key: the browser's speech recognition is used": "OpenAI キーがないため、ブラウザーの音声認識を使用します",
   "Speech recognition": "音声認識",
-  "Browser": "ブラウザー",
   "API key": "API キー",
   "Save an API key to use the mic": "マイクを使うには API キーを保存してください",
   "No OpenAI key saved": "OpenAI キーが保存されていません",
@@ -182,6 +181,10 @@ export const SETTINGS_JA: Record<string, string> = {
   "Beside the pane": "ペインの横",
   "In a new tab": "新しいタブ",
   "Reuse tab for external links": "外部リンク用のタブを再利用",
+  "Browser for links": "リンクを開くブラウザ",
+  "The browser a web link you click in Ovis opens in, on this computer. Sign-in pages always open in the system's default browser.": "このコンピュータで Ovis の Web リンクを押したときに開くブラウザです。サインインのページは常にシステムの既定のブラウザで開きます。",
+  "System default": "システムの既定",
+  "System default ({name})": "システムの既定 ({name})",
   "theme themes palette dark light mode colors density language sidebar logos": "テーマ パレット palette ダーク ライト モード 色 密度 言語 サイドバー ロゴ",
   "chat message width composer enter send thinking code": "チャット メッセージ 幅 入力欄 エンター 送信 思考 コード",
   "terminal key bar keyboard clipboard": "ターミナル キーバー キーボード クリップボード",
@@ -287,4 +290,10 @@ export const SETTINGS_JA: Record<string, string> = {
   "Remove PC {name}": "PC {name} を削除",
 
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "この PC の外部通知の設定を読み取れませんでした（{error}）。設定を閉じてもう一度開いてください。",
+  "Opens the page of every PC this device reaches through the relay, to check, join or forget them.": "このデバイスがリレーでつなぐすべてのPCのページを開き、確認・参加・削除ができます。",
+  "Manage|relayed connections": "管理",
+  "Built-in browser": "内蔵ブラウザー",
+  "Blocked sites": "ブロックするサイト",
+  "Opens web pages in tabs inside this app: they are listed under Browser in the sidebar and open beside the pane. Its tabs are signed in to nothing you use elsewhere, and an agent's tabs keep cookies of their own.": "ウェブページをこのアプリ内のタブで開きます。タブはサイドバーの「ブラウザー」に並び、ペインの横に開きます。これらのタブは他でのログインを使わず、エージェントのタブは別の Cookie を使います。",
+  "The built-in browser never loads these sites or their subdomains, in your tabs or an agent's. One site per line.": "内蔵ブラウザーは、自分のタブでもエージェントのタブでも、これらのサイトとそのサブドメインを読み込みません。1 行に 1 サイトずつ入力します。",
 };
