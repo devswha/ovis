@@ -360,6 +360,28 @@ describe("herdr-core adapter", () => {
     }
   });
 
+  it("reads only the paint hc sends again once another machine's line is back, never the one the drop cut short", async () => {
+    const reset = "\u0018\u001b[!p\u001b[?2026l\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J";
+    // the line drops in the middle of a full-screen program's paint; hc says so, then attaches again on the same
+    // channel and paints afresh (remote/viewers.rs `reattach`), the program back on the main screen meanwhile
+    const cut = `${reset}\u001b[3g\u001b[H\u001b[0m$ vim\u001b[2;1H\u001b[?1049h\u001b[!p\u001b[H\u001b[0mSTALE\r\n`;
+    const lost = "\u0018\r\n[line to lab lost; reconnecting...]\r\n";
+    const again = `${reset}\u001b[H\u001b[0m$ vim\r\n$ \u001b[32mback\u001b[0m\u001b[2;8H\u001b[?9001l`;
+    const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
+      "terminal.read": (params) => ({ text: params["lines"] ? "older\n$ vim\n$ back" : "$ vim\n$ back", complete: true, how: params["lines"] ? "history" : "screen" }),
+      "terminal.attach": () => {
+        const core = cores.at(-1)!;
+        const channel = core.channel();
+        core.replyTail = Buffer.concat([encodeFrame(channel, FRAME_DATA, cut), encodeFrame(channel, FRAME_DATA, lost + again)]);
+        return { channel, terminal: terminal("t1", { rows: 4 }) };
+      },
+    });
+    expect((await paneRead({ paneId: "t1", source: "visible", format: "ansi" }, socket)).text).toBe("\u001b[0m$ vim\n$ \u001b[32mback\u001b[0m");
+    const read = await paneRead({ paneId: "t1", source: "recent", lines: 400, stripAnsi: true }, socket);
+    expect(cores[0]!.calls.filter((call) => call.method === "terminal.read").map((call) => call.params["lines"])).toEqual([400]);
+    expect(read.text).toBe("older\n$ vim\n$ back");
+  });
+
   it("answers a colored read with hc's plain text when the watch-only attach brings no screen", async () => {
     for (const ends of [true, false]) {
       const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {

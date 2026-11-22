@@ -365,6 +365,8 @@ const AGENT_START_MS = 10_000;
 
 /** What hc sends right after the screen in a first paint: the win32-input-mode state (herdr-core viewers.rs `first_paint`). */
 const PAINT_END = "\u001b[?9001";
+/** How a first paint begins: hc's CAN, then the soft reset of ghostty-vt `paint`. */
+const PAINT_START = "\u0018\u001b[!p";
 /** How long a watch-only attach may take to bring its first paint: within the 1.5s a prompt poll gives its colored read. */
 const PAINT_MS = 1_000;
 /** Any escape sequence: CSI, OSC, a DCS/SOS/PM/APC string, or a short escape (HTS, a charset designation). */
@@ -713,7 +715,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   /**
    * The first paint (with `history` lines, else a screen's worth) of an attach that only watches, which never types or
    * resizes, closed once the screen is in, and the rows it was painted at. null: no paint within
-   * PAINT_MS of hc answering the attach, or a stream that ended first.
+   * PAINT_MS of hc answering the attach, or a stream that ended first. Another machine's line may drop
+   * in the middle of a paint: hc then attaches again on the same channel and paints afresh
+   * (remote/viewers.rs `reattach`), so only the last paint that began before the screen's end counts.
    */
   const watchedPaint = async (paneId: string, history?: number): Promise<{ paint: string | null; rows: number }> => {
     const record = await terminal(paneId);
@@ -723,7 +727,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     const { result, channel } = await hc.open("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows, history: history ?? record.rows, observe: true }, {
       onData: (payload) => {
         paint += decoder.decode(payload, { stream: true });
-        if (paint.includes(PAINT_END)) resolve(paint);
+        const end = paint.indexOf(PAINT_END);
+        if (end !== -1) resolve(paint.slice(Math.max(paint.lastIndexOf(PAINT_START, end), 0)));
       },
       onClose: () => resolve(null),
     });
