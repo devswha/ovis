@@ -1,3 +1,3 @@
 ### Fixed
-- Dragging a workspace row on a touch screen now measures the list once per animation frame instead
-  of once per pointer event, which reduces drag stutter on a fast drag across many workspaces.
+- Dragging a workspace row on a touch screen measures the list once per animation frame; while the
+  list scrolled at its top or bottom edge, it was measured twice in each frame.
