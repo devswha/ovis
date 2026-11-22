@@ -11,7 +11,8 @@ import type { SystemReport } from "../../shared/system.ts";
 import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllRequest, MoveStopRequest } from "../../shared/runtime-move.ts";
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
-import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { TAILNET_NODE_ROUTES, type TailnetNodesAnswer } from "../../shared/tailnet-nodes.ts";
+import { machinePath, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
   HerdrPane,
@@ -151,6 +152,21 @@ export function startUsageLogin(request: UsageLoginRequest, signal?: AbortSignal
 
 export function fetchRemoteAccess(): Promise<RemoteAccess> {
   return getJson<RemoteAccess>("/api/access");
+}
+
+export type TailscaleServed = { ok: true; access: RemoteAccess } | { ok: false; code: string | null; operator: boolean };
+
+/** Has this PC's server run `tailscale serve` for itself (this PC's own window only): the access it then has, or its refusal. */
+export async function serveOnTailscale(): Promise<TailscaleServed> {
+  const response = await apiFetch("/api/access/tailscale/serve", { method: "POST", headers: { "x-herdr-machine": "1" } });
+  if (response.ok) return { ok: true, access: await response.json() as RemoteAccess };
+  const body = await response.json().catch(() => null) as { error?: { code?: string; operator?: boolean } } | null;
+  return { ok: false, code: body?.error?.code ?? null, operator: body?.error?.operator === true };
+}
+
+/** Opens the Tailscale app on this PC (this PC's own window only); false where it has none or it did not open. */
+export async function openTailscaleApp(): Promise<boolean> {
+  return (await apiFetch("/api/access/tailscale/open", { method: "POST", headers: { "x-herdr-machine": "1" } })).ok;
 }
 
 export function fetchUsage(refresh = false): Promise<UsageReport> {
@@ -293,16 +309,27 @@ export interface RelayOffer {
  * The relay actions answer with the state they left the relay in, a refusal too: a start that
  * serve-only blocks is a 409 whose body is still the RelayStatus, so it is the answer, not an error.
  * Only a body without a phase (the origin gate, a watching device, an older server) is one.
+ * A start gives up after 20 s (the server starts the relay at once and answers), so one that never answers does not
+ * hold Turn on, or the setup guide's other ways. A stop or a reset may take the server longer, and is waited for.
  */
 export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
   const url = `/api/relay/${action}`;
-  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
-  if (!response.ok) {
-    const body: unknown = await response.clone().json().catch(() => null);
-    if (body !== null && typeof body === "object" && "phase" in body) return body as RelayStatus;
-    throw await errorFrom(url, response);
-  }
-  return (await response.json()) as RelayStatus;
+  const bounded = new AbortController();
+  // kept here too: Safari before 15.4 has no signal.reason
+  let gaveUp: DOMException | null = null;
+  const timer = action === "start" ? setTimeout(() => { gaveUp = new DOMException(t("No answer"), "TimeoutError"); bounded.abort(gaveUp); }, 20_000) : undefined;
+  try {
+    const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" }, signal: bounded.signal });
+    if (!response.ok) {
+      const body: unknown = await response.clone().json().catch(() => null);
+      if (body !== null && typeof body === "object" && "phase" in body) return body as RelayStatus;
+      throw await errorFrom(url, response);
+    }
+    return (await response.json()) as RelayStatus;
+  } catch (error) {
+    // a browser may answer the abort with its own words (Safari 14): the deadline's are ours
+    throw gaveUp ?? error;
+  } finally { clearTimeout(timer); }
 }
 
 /** POST /api/relay/direct: whether paired phones may connect straight to this PC on its networks while the relay is on. */
@@ -339,21 +366,53 @@ export function cancelRelayCode(keepalive = false): Promise<{ readonly ok: true 
  * POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC.
  * `localOnly`: this PC's screen waits to be added to an account, so what comes is approved on this PC only.
  */
-export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise<{ readonly url: string }> {
-  return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
+export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise<{ readonly url: string; readonly window_id?: string }> {
+  return getJson<{ readonly url: string; readonly window_id?: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
 }
 
-/** POST /api/relay/link/close: the owner stopped waiting, so this PC takes no more comparisons from its link. An older server has no such route (404). */
-export function closeRelayLink(): Promise<{ readonly ok: true }> {
-  return getJson<{ readonly ok: true }>("/api/relay/link/close", { method: "POST", headers: { "x-herdr-update": "1" } });
+/** POST /api/relay/link/close: end the current pairing window, or only the named generation when supplied. */
+export function closeRelayLink(windowId?: string): Promise<{ readonly ok: true }> {
+  return getJson<{ readonly ok: true }>("/api/relay/link/close", { method: "POST", headers: { "x-herdr-update": "1", ...(windowId === undefined ? {} : { "x-ovis-window": windowId }) } });
+}
+
+/** GET /api/relay/joins: account joins waiting for this PC's own window, without their digits but a first join's (403 `own_window_required` elsewhere). */
+export async function fetchOwnJoins(): Promise<OwnJoinRequest[]> {
+  return (await getJson<{ readonly joins: OwnJoinRequest[] }>("/api/relay/joins")).joins;
+}
+
+/** POST /api/relay/join: the digits the new device shows, typed on this PC's own window; 409 `wrong_digits` ends that join. */
+export async function approveOwnJoin(id: string, digits: string): Promise<void> {
+  await getJson<{ readonly ok: true }>("/api/relay/join", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, digits }) });
+}
+
+/** POST /api/relay/join: Allow or Decline of a first join on this PC's own window, its digits compared there. */
+export async function decideOwnJoin(id: string, decision: "approve" | "decline"): Promise<void> {
+  const url = "/api/relay/join";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision }) });
+  if (!response.ok) throw await errorFrom(url, response);
 }
 
 /** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
-export async function decideRelayPairing(id: string, decision: "approve" | "decline", digits?: string): Promise<void> {
+export async function decideRelayPairing(id: string, decision: "approve" | "decline", answer?: string | { proven_server_id: string; pc_label: string }): Promise<void> {
   const url = "/api/relay/pairing";
   // an account member approving through the relay names the digits it picked (docs/account.md, "Who may admit a device")
-  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(digits === undefined ? {} : { digits }) }) });
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(typeof answer === "string" ? { digits: answer } : answer) }) });
   if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** POST /api/account/confirm-page: opens this PC's confirm page on its own desktop (own window only; 409 when it cannot). */
+export async function openConfirmPage(): Promise<void> {
+  const url = "/api/account/confirm-page";
+  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-machine": "1" } });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** Declines one device waiting for this PC's screen (S2-34, T72); the PC answers the list that is left. Approving stays on the screen. */
+export async function declinePendingKey(id: string): Promise<readonly PendingKey[]> {
+  const url = "/api/devices/pending/decline";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ id }) });
+  if (!response.ok) throw await errorFrom(url, response);
+  return ((await response.json()) as { pending: PendingKey[] }).pending;
 }
 
 export async function fetchPreferences(): Promise<SharedPreferences | null> {
@@ -426,7 +485,10 @@ export class ApiError extends Error {
 
 export const routeMissing = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "not_found";
 
-const UNUSABLE_ANSWER: Readonly<Record<string, () => string>> = {
+const LOCALIZED_ERRORS: Readonly<Record<string, () => string>> = {
+  pc_add_source_bound: () => t("This PC is in an account. Add PCs from your account."),
+  pc_add_target_bound: () => t("That PC is in an account. Add it from that account."),
+  pc_add_account_unavailable: () => t("Can't add a PC right now. Try again in a moment."),
   remote_response_too_large: () => t("The other PC's answer was larger than this app accepts"),
   remote_response_invalid: () => t("The other PC's answer could not be read"),
 };
@@ -440,7 +502,7 @@ export async function errorFrom(url: string, response: Response): Promise<ApiErr
     if (body.error?.code) code = body.error.code;
   } catch {
   }
-  if (code !== null && Object.hasOwn(UNUSABLE_ANSWER, code)) detail = UNUSABLE_ANSWER[code]!();
+  if (code !== null && Object.hasOwn(LOCALIZED_ERRORS, code)) detail = LOCALIZED_ERRORS[code]!();
   const retryAfter = response.headers.get("retry-after");
   const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
   return new ApiError(url, response.status, detail, code, seconds === null ? null : seconds * 1000);
@@ -454,7 +516,7 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function fetchSystem(machineId = "local", signal?: AbortSignal): Promise<SystemReport> {
   const report = parseSystemReport(await getJson<unknown>(machinePath(machineId, "system"), { cache: "no-store", ...(signal ? { signal } : {}) }));
-  if (report === null) throw new ApiError(machinePath(machineId, "system"), 502, UNUSABLE_ANSWER["remote_response_invalid"]!(), "remote_response_invalid");
+  if (report === null) throw new ApiError(machinePath(machineId, "system"), 502, LOCALIZED_ERRORS["remote_response_invalid"]!(), "remote_response_invalid");
   return report;
 }
 
@@ -847,6 +909,26 @@ export async function endPairing(code: string, keepalive = false): Promise<{ rea
 
 export async function renameDevice(id: string, label: string): Promise<PairedDevice> {
   return (await sendJson(`/api/devices/${encodeURIComponent(id)}`, "PATCH", { label })).json();
+}
+
+/** POST /api/devices/joins/seen: a join this window showed is seen, for every window of the PC (`device-paired-seen`). */
+export async function markJoinSeen(eventId: string): Promise<void> {
+  await sendJson("/api/devices/joins/seen", "POST", { event_id: eventId });
+}
+
+/** GET /api/devices/tailnet-nodes: the tailnet nodes of the owner's login this PC has seen, and the one waiting on the card (this PC's own window only). */
+export function fetchTailnetNodes(): Promise<TailnetNodesAnswer> {
+  return getJson<TailnetNodesAnswer>(TAILNET_NODE_ROUTES.list);
+}
+
+/** POST /api/devices/tailnet-nodes/block: these nodes get nothing by the owner's Tailscale login until Allow. */
+export async function blockTailnetNodes(ids: readonly string[]): Promise<TailnetNodesAnswer> {
+  return (await sendJson(TAILNET_NODE_ROUTES.block, "POST", { ids })).json();
+}
+
+/** POST /api/devices/tailnet-nodes/answer: Allow or Decline of the blocked node on the card; refused while the PC is locked. */
+export async function answerTailnetNode(id: string, decision: "allow" | "decline"): Promise<void> {
+  await sendJson(TAILNET_NODE_ROUTES.answer, "POST", { id, decision });
 }
 
 export async function revokeDevice(id: string): Promise<void> {
@@ -1423,6 +1505,17 @@ export async function machineRequest<T>(path: string, method = "GET", body?: unk
   if (!response.ok) throw await errorFrom("/api/machines", response);
   return response.json();
 }
+/**
+ * Asks the server to try a PC it is waiting to reconnect now: any read of a PC it has no connection to does
+ * (machine-api.ts `retryNow`), and only then; it leaves a connected PC and one a setup holds alone. The answer is
+ * that PC's roster or `machine_offline`, both expected; what the try finds arrives as the PC's next state.
+ */
+export async function askMachineRetry(id: string): Promise<void> {
+  const url = `/api/machines/${encodeURIComponent(id)}/session`;
+  const response = await apiFetch(url);
+  if (!response.ok && response.status !== 503) throw await errorFrom(url, response);
+  await response.body?.cancel();
+}
 export interface SshCandidate {
   readonly name: string; readonly destination: string; readonly detail: string | null; readonly source: "ssh_config" | "tailscale";
   readonly tailnet?: string;
@@ -1431,6 +1524,8 @@ export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("
 /** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older than 0.5. */
 export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
 export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
+/** POST /api/machines/address: pairs with another PC's Ovis at that https address by the six-digit code it shows, and adds it. */
+export const addAddressPc = (address: string, code: string) => machineRequest<{ machine: Machine }>("/address", "POST", { address, code });
 /** Another PC of the account as the page read it from the account's directory: its key checked against its id here too. */
 export interface AccountPcEntry { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }
 export type AccountPcState = "ready" | "outdated" | "offline";
@@ -1438,11 +1533,11 @@ export const checkAccountPcs = (pcs: readonly AccountPcEntry[]) => machineReques
 /** POST /api/machines/relay/account/start: the key this PC would hold for that PC, for the admission to name; ApiError `account_pc_outdated` for an older one. */
 export const startAccountPc = (pc: AccountPcEntry) => machineRequest<{ ticket: string; key: string; label: string }>("/relay/account/start", "POST", { pc });
 /**
- * POST /api/machines/relay/account/pair: compares digits with that PC through the relay, `onDigits` told them once that
- * PC took the request, and resolves with the PC once a member of the account approved it there. Aborting `signal`
- * cancels it on this PC's server too. ApiError `account_pc_<failure>` otherwise.
+ * POST /api/machines/relay/account/pair: asks that PC through the relay, `onWaiting` told once that PC took the request
+ * and waits for a member of the account to approve it on another device, and resolves with the PC once one did. Aborting
+ * `signal` cancels it on this PC's server too. ApiError `account_pc_<failure>` otherwise.
  */
-export async function pairAccountPc(ticket: string, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
+export async function pairAccountPc(ticket: string, onWaiting: () => void, signal: AbortSignal): Promise<Machine> {
   const url = "/api/machines/relay/account/pair";
   const response = await apiFetch(url, { method: "POST", signal, headers: { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1" }, body: JSON.stringify({ ticket }) });
   if (!response.ok || response.body === null) throw await errorFrom(url, response);
@@ -1453,9 +1548,9 @@ export async function pairAccountPc(ticket: string, onDigits: (digits: string) =
     if (chunk.done) throw new ApiError(url, 502, "The answer ended early", null);
     buffer += chunk.value;
     for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-      const line = JSON.parse(buffer.slice(0, end)) as { digits?: string; machine?: Machine; error?: { code: string; message: string } };
+      const line = JSON.parse(buffer.slice(0, end)) as { waiting?: true; machine?: Machine; error?: { code: string; message: string } };
       buffer = buffer.slice(end + 1);
-      if (typeof line.digits === "string") onDigits(line.digits);
+      if (line.waiting === true) onWaiting();
       if (line.machine) { void reader.cancel(); return line.machine; }
       if (line.error) { void reader.cancel(); throw new ApiError(url, 409, line.error.message, line.error.code); }
     }
@@ -1464,6 +1559,9 @@ export async function pairAccountPc(ticket: string, onDigits: (digits: string) =
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);
+/** Ovis installed on a PC over SSH with the official installer, pinned to this app's release (PcInstallJob) */
+export const startPcInstall = (request: PcInstallRequest) => machineRequest<PcInstallJob>("/install", "POST", request);
+export const fetchPcInstall = (id: string) => machineRequest<PcInstallJob>(`/install/${encodeURIComponent(id)}`);
 
 /** GET /api/voice: whether the server holds a key; the key itself never comes back. */
 export async function fetchVoiceStatus(): Promise<VoiceStatus> {

@@ -18,6 +18,7 @@ import "./Composer.css";
 
 import type { AgentStatus, ClientRole, ConversationMetadata, PlanSummary, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
+import { labelledAgent } from "../../shared/supported-agents.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composerDraft.ts";
 import { tally, usageCounters, useShownCount } from "../lib/usageCounters.ts";
@@ -148,7 +149,8 @@ function readSlashUsage(): Record<string, number> {
   }
 }
 
-function ContextRing({ context }: { context: NonNullable<ConversationMetadata["context"]> }) {
+/** `focusable`: on desktop a keyboard reaches the ring and its focus shows the number; a phone keeps it inert */
+function ContextRing({ context, focusable }: { context: NonNullable<ConversationMetadata["context"]>; focusable: boolean }) {
   const t = useT();
   const left = contextLeftPercent(context);
   if (left === null || context.window === null) return null;
@@ -156,7 +158,7 @@ function ContextRing({ context }: { context: NonNullable<ConversationMetadata["c
   const detail = t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) });
   const radius = 6;
   const circumference = 2 * Math.PI * radius;
-  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} title={`${label} · ${detail}`}>
+  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} tabIndex={focusable ? 0 : undefined} data-tooltip={`${label} · ${detail}`} title={`${label} · ${detail}`}>
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <circle className="composer-context-track" cx="8" cy="8" r={radius} />
       <circle className="composer-context-used" cx="8" cy="8" r={radius}
@@ -217,9 +219,11 @@ export function Composer({
   const mobile = useMediaQuery("(max-width: 640px), (pointer: coarse)");
   const viewOnly = role === "observe";
   const enterSends = enterSendsOn(settings, useMediaQuery("(pointer: coarse)"));
-  const usageEnabled = settings.showUsage && !mobile && machineId === "local" && planForPane(agent, metadata?.provider) !== null;
+  // the agent the pane runs, for every decision of its kind; herdr's label is the one shown
+  const kind = labelledAgent(agent);
+  const usageEnabled = settings.showUsage && !mobile && machineId === "local" && planForPane(kind, metadata?.provider) !== null;
   const { report: usageReport } = useUsage(usageEnabled);
-  const usage = usageEnabled && usageReport !== null ? composerUsage(usageReport.providers, agent, settings.usageOrder, settings.usageHidden, metadata?.provider) : undefined;
+  const usage = usageEnabled && usageReport !== null ? composerUsage(usageReport.providers, kind, settings.usageOrder, settings.usageHidden, metadata?.provider) : undefined;
   const usageWindows = usage === undefined ? [] : statusWindows(usage);
   const usageLimit = usageWindows[0];
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -278,7 +282,7 @@ export function Composer({
   attachmentsRef.current = attachments;
   textRef.current = text;
   caretRef.current = caret;
-  const syntax = skillSyntax(agent);
+  const syntax = skillSyntax(kind);
   /** the pane's `@` skills (OpenCode v2), listed with the files; a pane without them keeps the file menu alone */
   const atSkills = useMemo(() => atSkillCommands(commands), [commands]);
   const trigger = useMemo(() => activeTrigger(text, caret, { skills: syntax.skillTriggers.includes("$"), namespaced: syntax.namespaced, atSkills: atSkills.length > 0 }), [atSkills, syntax, caret, text]);
@@ -445,7 +449,7 @@ export function Composer({
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, []);
 
-  const triggerCommands = useMemo(() => (trigger?.kind === "slash" ? commandsForTrigger(commands, agent, trigger) : []), [agent, commands, trigger]);
+  const triggerCommands = useMemo(() => (trigger?.kind === "slash" ? commandsForTrigger(commands, kind, trigger) : []), [kind, commands, trigger]);
   const filteredCommands = useMemo(
     () => (trigger?.kind === "slash"
       ? rankSlashCommands(triggerCommands, trigger.query, slashUsage, trigger.start > 0 && text[trigger.start - 1] !== "\n")
@@ -465,7 +469,7 @@ export function Composer({
   const menuOpen = !menuDismissed && trigger !== null && choices.length > 0;
   const filesFailedShown = !menuDismissed && trigger?.kind === "file" && filesFailed && files.length === 0 && !menuOpen;
   const slashUnmatched = !menuDismissed && trigger?.kind === "slash" && trigger.query !== "" && choices.length === 0 && triggerCommands.length > 0
-    && !namesHiddenCommand(commands, trigger.query);
+    && !namesHiddenCommand(commands, trigger.query, trigger.prefix ?? "/");
   // clamped as the list is drawn, not by an effect after it: a Tab or Enter typed before that
   // effect's render found no row at the old index and did nothing
   const choiceIds = choices.map((choice) => typeof choice === "string" ? `file:${choice}` : `${choice.source}:${choice.name}`);
@@ -510,6 +514,17 @@ export function Composer({
   });
 
   const pasteCutNote = useRef<string | null>(null);
+
+  const syncTextarea = (element: HTMLTextAreaElement): void => {
+    const { value, selectionStart } = element;
+    // a textarea reports CRLF and CR as LF: a draft that holds them (a pasted clipboard) is not edited by that
+    if (viewOnly || value === composerDrafts.read(draftKey).text.replace(/\r\n?/g, "\n")) return;
+    barePick.current = null;
+    setText(value);
+    setCaret(selectionStart);
+    setMenuDismissed(false);
+    setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
+  };
 
   // the box clamps at its cap without a word: the cap is said once, as it is reached, through the
   // polite region (the status line shows it; a line that appears with its words is not announced)
@@ -616,9 +631,9 @@ export function Composer({
   const selectCompletion = useCallback(
     (choice: SlashCommand | string, currentTrigger: ActiveTrigger) => {
       const replacement = typeof choice === "string" ? `@${choice} `
-        : currentTrigger.kind === "slash" ? slashCommandReplacement(choice, agent, currentTrigger) : atSkillReplacement(choice);
+        : currentTrigger.kind === "slash" ? slashCommandReplacement(choice, kind, currentTrigger) : atSkillReplacement(choice);
       const completed = applyCompletion(text, currentTrigger, replacement);
-      barePick.current = typeof choice !== "string" && currentTrigger.kind === "slash" && sendsBarePick(choice, agent) ? completed.text : null;
+      barePick.current = typeof choice !== "string" && currentTrigger.kind === "slash" && sendsBarePick(choice, kind) ? completed.text : null;
       setTextAndCaret(completed.text, completed.caret);
       setMenuDismissed(true);
       if (typeof choice !== "string") {
@@ -635,7 +650,7 @@ export function Composer({
         });
       }
     },
-    [agent, machineId, onOpenHistory, setTextAndCaret, text],
+    [kind, machineId, onOpenHistory, setTextAndCaret, text],
   );
 
   const pumpUploads = useCallback(() => {
@@ -1323,20 +1338,22 @@ export function Composer({
 
         <textarea
           ref={textareaRef}
-        onCompositionStart={() => { composingRef.current = true; }}
-        onCompositionEnd={() => {
-          composingRef.current = false;
-          const waiting = commitWait.current;
-          if (waiting !== null) {
-            if (waiting.timer !== null) clearTimeout(waiting.timer);
-            waiting.timer = null;
-            // WebKit updates the value with an input event after compositionend: send the committed word
-            setTimeout(sendCommitted);
-          }
-          // after the input that commits the candidate, which WebKit sends after compositionend, and
-          // in a frame, after the caret of dictation held through the composition has landed
-          setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
-        }}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false;
+            // Some commits change the DOM value without delivering an input event.
+            syncTextarea(event.currentTarget);
+            const waiting = commitWait.current;
+            if (waiting !== null) {
+              if (waiting.timer !== null) clearTimeout(waiting.timer);
+              waiting.timer = null;
+              // WebKit updates the value with an input event after compositionend: send the committed word
+              setTimeout(sendCommitted);
+            }
+            // after the input that commits the candidate, which WebKit sends after compositionend, and
+            // in a frame, after the caret of dictation held through the composition has landed
+            setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
+          }}
           className="composer-text"
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
@@ -1360,13 +1377,9 @@ export function Composer({
             setMenuDismissed(false);
           }}
           onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
-          onChange={(event) => {
-            barePick.current = null;
-            setText(event.target.value);
-            setCaret(event.target.selectionStart);
-            setMenuDismissed(false);
-            setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
-          }}
+          // React's onChange can omit an input whose value its tracker already saw.
+          onInput={(event) => syncTextarea(event.currentTarget)}
+          onChange={(event) => syncTextarea(event.currentTarget)}
         />
         <textarea
           ref={measurementRef}
@@ -1417,7 +1430,7 @@ export function Composer({
             </button>
           )}
           {dictation.shown && <MicButton dictation={dictation} disabled={viewOnly} />}
-          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={agent === "omo"} subagents={agent === "claude" || agent === "opencode"} plan={plan} />
+          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={kind === "omo"} subagents={kind === "claude" || kind === "opencode"} plan={plan} />
           {agent === "claude" && <Artifacts paneId={paneId} status={agentStatus} />}
           {agent === "omp" && <OmpBtw paneId={paneId} />}
         </div>
@@ -1451,7 +1464,7 @@ export function Composer({
                   </>}
                 </span>
               </span>}
-              {metadata?.context && <ContextRing context={metadata.context} />}
+              {metadata?.context && <ContextRing context={metadata.context} focusable={!mobile} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
                 className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
                 title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}

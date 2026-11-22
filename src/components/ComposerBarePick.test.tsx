@@ -19,6 +19,7 @@ const COMMANDS: SlashCommand[] = [
   { name: "hello", description: "a project command", source: "project" },
   // a server command OpenCode's catalog marks builtin, which its own menu only types
   { name: "review", description: "a server command", source: "builtin" },
+  { name: "skill:shared", description: "a namespaced skill", source: "user" },
 ];
 let renderer: ReactTestRenderer | undefined;
 
@@ -60,7 +61,7 @@ afterEach(() => {
 
 const box = () => renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
 async function type(value: string): Promise<void> {
-  await act(async () => { box().props.onChange({ target: { value, selectionStart: value.length } }); });
+  await act(async () => { box().props.onChange({ currentTarget: { value, selectionStart: value.length } }); });
 }
 async function enter(): Promise<void> {
   await act(async () => {
@@ -91,6 +92,17 @@ it.each([
   ["another agent's built-in", "claude", "/ne", "/new "],
 ])("keeps the space of %s", async (_name, agent, typed, expected) => {
   expect(await pickAndSend(agent, typed)).toEqual([expected]);
+});
+
+it.each([
+  ["pi", 1],
+  // gentle-shell runs pi under its own name (#4198): pi's skill syntax, whatever herdr labels the pane
+  ["gentle-shell", 1],
+  ["opencode", 0],
+])("keeps the slash menu open past `/skill:` as %s's syntax does", async (agent, rows) => {
+  await act(async () => { renderer = create(<Composer paneId={pane} agent={agent} agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={async () => ""} />); });
+  await type("/skill:");
+  expect(renderer!.root.findAll((node) => node.type === "button" && node.props.role === "option").length).toBe(rows);
 });
 
 it("sends a pick the user changed afterwards as typed, trailing space and all", async () => {

@@ -5,12 +5,15 @@ import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedPcs } from "./introductions.ts";
 import { ACCOUNT_HELD_MAX } from "./holds.ts";
+import { AccountAddError } from "../machines.ts";
+import { pressOnce } from "./one-press.ts";
 import { applyAccountRecords, applyEnrollment, applyLink, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
   record_invalid: 400, signature_invalid: 400, account_mismatch: 409, signer_not_member: 403,
   tombstoned: 409, link_not_owner: 403, key_in_use: 409, account_unavailable: 503, enrolling: 409, removal_pending: 409,
-  link_required: 403, unverified_device: 403, pairing_ended: 409,
+  link_required: 403, unverified_device: 403, pairing_ended: 409, older_device: 403, closed: 409, read_pending: 409,
+  replacement_needs_app: 409,
 };
 
 /**
@@ -47,7 +50,10 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     const fresh = new URL(request.url).searchParams.get("fresh") === "1" ? await mailbox.freshen() : undefined;
     const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
     return reply({
-      account: devices.account(), ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
+      account: devices.account(), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
+      // a PC its account stopped listing: a device sends it no link, and an add at the PC brings it back (docs/account.md)
+      ...(devices.addAtPcRequired() ? { pc_add_required: true } : {}),
+      ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
       enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
     });
   }
@@ -67,6 +73,45 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (peer.kind === "relay" && !(devices.isAccountApproverSession(peer.device.id, peer.key) && devices.account() === account)) return fail("account_required", "Name this PC's account from a device linked to it", 403);
       if (!context.services.relay.setRelayAccount(account)) return fail("invalid_account", "Name the account", 400);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+    }
+    case "/api/account/pc-proof": {
+      setRequestRoute(pathname);
+      // this PC's own window or CLI alone (dispatch.ts ownWindow): the proof lists the PC again after its leave
+      try { return reply(await context.services.accountMailbox.listingProof()); }
+      catch (error) { return fail("account_unavailable", error instanceof Error ? error.message : String(error), 503); }
+    }
+    case "/api/account/one-press": {
+      if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);
+      setRequestRoute(pathname);
+      // only the PC's owner here names the account it joins: never a device through the relay (security-triage, t13r)
+      if (peer.kind === "relay") return fail("owner_only", "Add this PC to your account on this PC itself.", 403);
+      const account = body.account;
+      if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
+      const pressed = await pressOnce(context.services, account);
+      return "refused" in pressed ? fail(pressed.refused.code, pressed.refused.message, pressed.refused.status) : reply(pressed);
+    }
+    case "/api/account/ssh-add": {
+      if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);
+      setRequestRoute(pathname);
+      // only this PC's owner here vouches for another PC with this PC's account (dispatch.ts ownWindow refuses the rest)
+      if (peer.kind === "relay") return fail("owner_only", "Add another PC to your account from this PC itself.", 403);
+      // the account comes from this PC's own binding, never from the request
+      const account = devices.account();
+      if (account === null || devices.accountError !== null) return fail("not_in_account", "Add another PC to your account from a PC that is in it.", 409);
+      const { job_id: jobId, server_id: target } = body;
+      if (typeof jobId !== "string" || typeof target !== "string") return fail("invalid_body", "Name the setup job and the PC it reached", 400);
+      if (target === context.services.relay.currentIdentity()?.server_id) return fail("self", "That is this PC.", 409);
+      const machines = context.services.core.machines;
+      if (!machines) return fail("not_found", "This PC adds no other PCs", 404);
+      let taken: { account: string };
+      try { taken = await machines.accountTake(jobId, target, account); }
+      catch (error) {
+        if (!(error instanceof AccountAddError)) throw error;
+        return fail(error.code, error.message, error.code === "job_not_found" ? 404 : 409);
+      }
+      // this PC left or changed its account while that PC took it: that PC is in the account named then, and says so
+      if (devices.account() !== taken.account) return fail("account_changed", "This PC's account changed while the other PC was being added.", 409);
+      return reply({ account: taken.account, server_id: target });
     }
     case "/api/account/introduce": {
       setRequestRoute(pathname);
@@ -116,10 +161,24 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const records = body.records;
       if (!Array.isArray(records) || records.length > ACCOUNT_RECORDS_MAX) return fail("record_invalid", `Send at most ${ACCOUNT_RECORDS_MAX} records`, 400);
       const mailbox = context.services.accountMailbox;
-      // a removal whose signer is not a member here yet waits for it, as one from the mailbox does; only
-      // a member's session (a client relaying the account's removals) may leave one waiting
+      // with the release flag on a block applies at once, each with its own receipt (T51, T60); an app that sends none
+      // gets today's answer
+      const blocks = context.services.safetyLog === null ? [] : records.filter((record) => (record as { kind?: unknown } | null)?.kind === "block");
+      const wasMember = blocks.length > 0 && peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
+      const receipts = [];
+      for (const block of blocks) receipts.push(await devices.applyBlock(block, "handed"));
+      const gates = { ...mailbox.gates(), safetyLog: context.services.safetyLog, deferAdd: devices.opensAll() ? (record: unknown) => mailbox.wait(record) : undefined,
+        requestRead: devices.opensAll() ? () => { void mailbox.readSnapshot(); } : undefined };
+      const remaining = records.filter((record) => !blocks.includes(record));
+      // Only a current member's session may leave a removal waiting. A session blocked in this batch may do neither that nor apply any other record.
       const member = peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
-      return reply({ results: await applyAccountRecords(devices, records, serverId, Date.now(), mailbox.gates(), member ? (record) => mailbox.wait(record) : undefined) });
+      const results = wasMember && !member
+        ? remaining.map((record: unknown) => ({
+          id: typeof record === "object" && record !== null && "id" in record && typeof record.id === "string" ? record.id : null,
+          outcome: "refused", code: "account_required",
+        }))
+        : await applyAccountRecords(devices, remaining, serverId, Date.now(), gates, member ? (record) => mailbox.wait(record) : undefined);
+      return reply({ results, ...(blocks.length > 0 ? { receipts } : {}) });
     }
     case "/api/account/enroll": {
       setRequestRoute(pathname);
@@ -147,6 +206,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // only the member that linked this PC ends its wait, with the last part of its enrollment, once every remove was decided
       const undecided = results.some((result) => result.outcome === "refused" && result.code === "account_unavailable");
       if (last !== false && !undecided && linker) {
+        // the hand-over is journalled before the barrier ends: a journal that cannot be written keeps it (T14)
+        devices.journalEvent({ kind: "account", how: "enrolled", key: peer.key, no: null, row: peer.device.id, label: peer.device.label, by: null, account: body.account });
         holds.endEnrolling();
         await mailbox.settle();
       }

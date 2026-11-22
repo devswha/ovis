@@ -388,6 +388,12 @@ public class PCStoreTest {
         String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
         assertEquals("/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", PCStore.startPath(scope + "#offer=eyJ2IjoxfQ", scope));
         assertEquals("/s/0123456789abcdef0123456789abcdef/", PCStore.startPath(null, scope));
+        // a link with the default port written out keeps its offer: the app saved its PC under the scope without the port
+        String explicit = "https://app.ovis.sh:443/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ";
+        assertEquals(scope, PCStore.appScope(explicit));
+        assertEquals("/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", PCStore.startPath(explicit, PCStore.appScope(explicit)));
+        assertEquals("/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", PCStore.startPath("https://APP.ovis.sh/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", scope));
+        assertEquals("/s/0123456789abcdef0123456789abcdef/", PCStore.startPath("https://app.ovis.sh:8443/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ", scope));
         assertEquals("/", PCStore.startPath(null, "https://pc.tail1234.ts.net"));
         assertEquals("/?pair=123456", PCStore.startPath("https://pc.tail1234.ts.net/?pair=123456", "https://pc.tail1234.ts.net"));
         assertEquals("/", PCStore.startPath("https://other.example/?pair=123456", "https://pc.tail1234.ts.net"));
@@ -531,6 +537,9 @@ public class PCStoreTest {
         String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
         assertTrue(PCStore.pairingLink(scope));
         assertTrue(PCStore.pairingLink(scope + "#offer=eyJ2IjoxfQ"));
+        assertTrue(PCStore.pairingLink(scope + "#sign-in=github"));
+        assertFalse(PCStore.pairingLink(scope + "#sign-in=github&read=a.md"));
+        assertFalse(PCStore.pairingLink(scope + "#sign-in="));
         assertFalse(PCStore.pairingLink(scope + "#read=%2Fhome%2Fa.md&machine=local"));
         assertFalse(PCStore.pairingLink(scope + "#machine=local&pane=w1%3Ap1"));
         assertFalse(PCStore.pairingLink(scope + "?pane=w1%3Ap1"));
@@ -538,19 +547,36 @@ public class PCStoreTest {
     }
 
     @Test
-    public void backIsThePagesOnlyOverAnotherPageOfTheSamePlace() {
-        String pc = "https://pc.tail1234.ts.net";
-        assertTrue(PCStore.pageTakesBack(pc + "/?pane=w1%3Ap2", pc + "/?pane=w1%3Ap1", pc));
-        assertFalse(PCStore.pageTakesBack(pc + "/", null, pc));
-        assertFalse(PCStore.pageTakesBack(pc + "/", "https://login.example.com/authorize", pc));
-        assertFalse(PCStore.pageTakesBack("https://login.example.com/step2", "https://login.example.com/authorize", pc));
-        assertFalse(PCStore.pageTakesBack("https://localhost/error.html", pc + "/", pc));
-        assertFalse(PCStore.pageTakesBack(pc + "/", "https://pc.tail1234.ts.net:8443/", pc));
-        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
-        assertTrue(PCStore.pageTakesBack(scope + "?pane=a", scope, scope));
-        assertFalse(PCStore.pageTakesBack(scope, "https://app.ovis.sh/", scope));
-        assertTrue(PCStore.pageTakesBack("https://localhost/demo/index.html", "https://localhost/", "https://localhost"));
-        assertFalse(PCStore.pageTakesBack("https://localhost/", null, "https://localhost"));
+    public void opensAPairingLinkInPlaceOnlyOverTheHostedShell() {
+        assertTrue(PCStore.showsHostedShell("https://app.ovis.sh"));
+        assertTrue(PCStore.showsHostedShell("https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/"));
+        assertFalse(PCStore.showsHostedShell(null));
+        assertFalse(PCStore.showsHostedShell("http://desktop.lan:7317"));
+        assertFalse(PCStore.showsHostedShell("https://app.ovis.sh.evil.example"));
+        assertFalse(PCStore.showsHostedShell("http://app.ovis.sh"));
+        assertTrue(PCStore.showsHostedShell("https://app.ovis.sh:443"));
+        assertTrue(PCStore.showsHostedShell("https://APP.ovis.sh:443/s/0123456789abcdef0123456789abcdef/"));
+        assertFalse(PCStore.showsHostedShell("https://app.ovis.sh:8443"));
+        assertFalse(PCStore.showsHostedShell("http://app.ovis.sh:443"));
+    }
+
+    @Test
+    public void aPageThatFinishesLoadingKeepsTheStartOfAnotherPcThatCameMeanwhile() {
+        String a = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        String b = "https://app.ovis.sh/s/fedcba9876543210fedcba9876543210/";
+        String before = PCStore.pendingStart;
+        try {
+            PCStore.pendingStart = b + "#offer=eyJ2IjoxfQ";
+            PCStore.startLoaded(a);
+            assertEquals(b + "#offer=eyJ2IjoxfQ", PCStore.pendingStart);
+            PCStore.startLoaded(b);
+            assertNull(PCStore.pendingStart);
+            PCStore.pendingStart = a + "#offer=eyJ2IjoxfQ";
+            PCStore.startLoaded(a);
+            assertNull(PCStore.pendingStart);
+        } finally {
+            PCStore.pendingStart = before;
+        }
     }
 
     @Test

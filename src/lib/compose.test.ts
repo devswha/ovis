@@ -407,6 +407,12 @@ describe("composer presentation helpers", () => {
     expect(composerDelivery(null, "working")).toBe("immediate");
   });
 
+  it("queues a message for a pane shown blocked only where the server shows a card's wait so", () => {
+    expect(composerDelivery("codex", "blocked", true)).toBe("queue");
+    for (const state of ["idle", "done", "unknown"] as const) expect(composerDelivery("codex", state, true)).toBe("immediate");
+    expect(composerDelivery(null, "blocked", true)).toBe("immediate");
+  });
+
   it("says the reconnecting sentence in the status content only once there is a draft", () => {
     expect(composerStatusHint({ uploading: false, connected: false, text: "" })).toBe(null);
     expect(composerStatusHint({ uploading: false, connected: false, text: " " })).toBe("offline");
@@ -670,10 +676,13 @@ describe("claudeMainAtRest", () => {
 it("takes a word naming a command the menu hides for a command, never for one no command matches", () => {
   const commands: SlashCommand[] = [
     { name: "heapdump", description: "Write a heap snapshot", source: "builtin", visibility: "agent-hidden" },
+    { name: "apps", description: "Apps", source: "builtin", visibility: "agent-hidden" },
     { name: "help", description: "Show help", source: "builtin" },
   ];
   expect(namesHiddenCommand(commands, "heapdump")).toBe(true);
   expect(namesHiddenCommand(commands, "Heap")).toBe(true);
+  expect(namesHiddenCommand(commands, "apps", "/")).toBe(true);
+  expect(namesHiddenCommand(commands, "apps", "$")).toBe(false);
   expect(namesHiddenCommand(commands, "help")).toBe(false);
   expect(namesHiddenCommand(commands, "deploy")).toBe(false);
   expect(namesHiddenCommand(commands, "")).toBe(false);

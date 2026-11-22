@@ -1,8 +1,14 @@
 import { createScanner, ScanError, SyntaxKind } from "jsonc-parser";
+import { AccountDevicesApiError, parseBlockReceipt, parseHoldState, type BlockReceipt, type HoldState } from "./account-devices-api.ts";
 
 /** The relay wire generation: the envelope's first byte and WELCOME's `relay_protocol`. A PC on another one is refused outright. */
 export const RELAY_PROTOCOL = 1;
 export const RELAY_HINTS = "relay-hints";
+export const ACCOUNT_OPENS_ALL_FEATURE = "account-opens-all-1";
+/** A client that offers it reads `account_unreachable` and `account_readd_required`; one without it takes either as a protocol error. */
+export const ACCOUNT_LISTING_ERRORS = "account-listing-errors-1";
+/** Eight numbered receipts fit the existing 1 KiB session error, even with safe-integer log numbers. */
+export const AUTH_RECEIPTS_MAX = 8;
 /** The address is a hint: Noise against the pinned PC key proves the PC. */
 export const DIRECT_CARRIER = "direct-carrier";
 /**
@@ -31,9 +37,15 @@ export const FrameType = {
   HTTP_DATA: 0x13, HTTP_END: 0x14, HTTP_STOP_REQUEST: 0x15,
   WS_OPEN: 0x20, WS_ACCEPT: 0x21, WS_DATA: 0x22, WS_CLOSE: 0x23,
   CREDIT: 0x30, RESET: 0x31,
+  // session frames again, past the stream ranges: 0x01-0x0f is full
+  KEY_CHALLENGE: 0x40, KEY_PROVE: 0x41, KEY_PENDING: 0x42,
 } as const;
 export type FrameType = typeof FrameType[keyof typeof FrameType];
 export const PAIR_SAS_FEATURE = "pair-sas";
+/** A device that offers it proves the key it pairs with over a challenge the PC makes after the key was named. */
+export const KEY_PROOF_FEATURE = "key-proof-1";
+/** A code-adding PC asks before sending PAIR; only an account-bound Step 2 target selects it. */
+export const PC_CODE_ACCOUNT_ONLY = "pc-code-account-only-1";
 export const ACCOUNT_FEATURE = "account";
 export const PAIR_INTENT_PC = "pair-intent-pc";
 export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
@@ -43,6 +55,14 @@ export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
  * account's members as "pair this PC", and it makes a plain row there, never an account member.
  */
 export const PAIR_INTENT_VOUCHED = "pair-intent-pc-vouched";
+export const PAIR_PC_PROOF = "pair-pc-proof";
+/**
+ * Which PC a comparison waits on when the PC itself approves it on its own screen (an account join on a PC with no
+ * member, docs/account.md design 5.3), named by its system so the phone can say where to press. A value a phone does
+ * not know reads as "pc", so a later PC can name another.
+ */
+export const PAIR_APPROVERS = ["mac", "windows", "linux", "pc"] as const;
+export type PairApprover = typeof PAIR_APPROVERS[number];
 export const LARGE_WS_MESSAGES = "large-ws-messages";
 /**
  * A phone without it refuses a
@@ -61,6 +81,10 @@ export const SESSION_ERRORS = [
   "unsupported_version", "unsupported_extension", "unsupported_transport",
   "protocol_error", "auth_failed", "auth_revoked", "auth_changed",
   "flow_control_error", "resource_exhausted", "timeout", "internal_error",
+  // Step 2, sent only by a PC with Step 2 on to an account-joined sign-in; `held` carries its HoldState
+  "held", "not_listed", "admission",
+  // sent only to a client that offered ACCOUNT_LISTING_ERRORS
+  "account_unreachable", "account_readd_required",
 ] as const;
 export type SessionError = typeof SESSION_ERRORS[number];
 export const STREAM_ERRORS = [
@@ -70,7 +94,8 @@ export const STREAM_ERRORS = [
 export type StreamError = typeof STREAM_ERRORS[number];
 
 export class MuxProtocolError extends Error {
-  constructor(readonly code: SessionError, message: string) {
+  /** `hold`: the hold state a `held` refusal carries (Step 2, S25); no other code has one. */
+  constructor(readonly code: SessionError, message: string, readonly receipts?: readonly BlockReceipt[], readonly hold?: HoldState) {
     super(message);
     this.name = "MuxProtocolError";
   }
@@ -125,15 +150,15 @@ type Payloads = {
   readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
   readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[] };
-  readonly 0x05: { readonly code: SessionError; readonly message: string };
+  readonly 0x05: { readonly code: SessionError; readonly message: string; readonly hold?: HoldState; readonly receipts?: readonly BlockReceipt[] };
   readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
   readonly 0x07: bigint;
   readonly 0x08: bigint;
   readonly 0x09: bigint;
   readonly 0x0a: { readonly code: string; readonly label: string; readonly public_key: string };
-  readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string };
-  readonly 0x0c: { readonly nonce: string };
-  readonly 0x0d: { readonly nonce: string };
+  readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string; readonly server_key?: string };
+  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string };
+  readonly 0x0d: { readonly nonce: string; readonly server_proof?: string };
   readonly 0x0e: { readonly confirmed: true };
   readonly 0x10: { readonly device_id: string; readonly method: Method; readonly target: string; readonly headers: HeaderList; readonly body: "none" | "stream" };
   readonly 0x11: null;
@@ -141,6 +166,9 @@ type Payloads = {
   readonly 0x13: Uint8Array;
   readonly 0x14: { readonly trailers: HeaderList };
   readonly 0x15: null;
+  readonly 0x40: { readonly challenge: string };
+  readonly 0x41: { readonly signature: string };
+  readonly 0x42: Readonly<Record<string, never>>;
   readonly 0x20: { readonly device_id: string; readonly target: string; readonly headers: HeaderList; readonly protocols: readonly string[] };
   readonly 0x21: { readonly protocol: string | null; readonly headers: HeaderList };
   readonly 0x22: { readonly data: Uint8Array; readonly total_message_bytes?: number };
@@ -186,6 +214,24 @@ function integer(value: unknown, min: number, max: number): number {
   requireProtocol(typeof value === "number" && Number.isInteger(value) && value >= min && value <= max, "Invalid integer");
   return value;
 }
+/** A SESSION_ERROR's payload: a `held` refusal names its hold state, and no other code carries one. */
+function sessionError(v: Record<string, unknown>): Payloads[0x05] {
+  const code = choice(v.code, SESSION_ERRORS);
+  const message = text(v.message, 256);
+  requireProtocol((code === "held") === ("hold" in v), "Only a held refusal carries a hold state");
+  requireProtocol(v.receipts === undefined || code === "auth_failed", "Only refused sign-ins carry receipts");
+  try {
+    return {
+      code, message,
+      ...(code === "held" ? { hold: parseHoldState(v.hold) } : {}),
+      ...(v.receipts === undefined ? {} : { receipts: list(v.receipts, AUTH_RECEIPTS_MAX, parseBlockReceipt) }),
+    };
+  } catch (error) {
+    if (error instanceof AccountDevicesApiError) throw new MuxProtocolError("protocol_error", "Invalid hold state or block receipt");
+    throw error;
+  }
+}
+
 function choice<const T extends readonly (string | number)[]>(value: unknown, choices: T): T[number] {
   for (const candidate of choices) if (value === candidate) return candidate;
   throw new MuxProtocolError("protocol_error", "Invalid value");
@@ -354,7 +400,7 @@ function envelope(type: unknown, flags: unknown, id: unknown, size: number): Fra
   const f = integer(flags, 0, 0xffff);
   const mask = t === FrameType.HTTP_END ? 1 : t === FrameType.WS_DATA ? 7 : 0;
   requireProtocol((f & ~mask) === 0 && (t !== FrameType.WS_DATA || !(f & 4) || !!(f & 1)), "Reserved flags");
-  if (t < FrameType.HTTP_OPEN) requireProtocol(id === 0, "Session frame needs stream zero");
+  if (t < FrameType.HTTP_OPEN || t >= FrameType.KEY_CHALLENGE) requireProtocol(id === 0, "Session frame needs stream zero");
   else streamId(id, false);
   return t;
 }
@@ -386,9 +432,19 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { code, label: pairLabel(v.label), public_key: p256Spki(v.public_key) } };
     }
     case FrameType.PAIR_REQUEST:
-      return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32) } };
-    case FrameType.PAIR_CHALLENGE: case FrameType.PAIR_REVEAL:
-      return { ...common, type, payload: { nonce: base64url(v.nonce, 32) } };
+      return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32), ...(v.server_key === undefined ? {} : { server_key: hex(v.server_key, 64) }) } };
+    case FrameType.PAIR_CHALLENGE:
+      return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_challenge === undefined ? {} : { server_challenge: text(v.server_challenge, 512) }),
+        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }) } };
+    case FrameType.PAIR_REVEAL:
+      return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_proof === undefined ? {} : { server_proof: text(v.server_proof, 256) }) } };
+    case FrameType.KEY_CHALLENGE:
+      return { ...common, type, payload: { challenge: base64url(v.challenge, 32) } };
+    case FrameType.KEY_PROVE:
+      return { ...common, type, payload: { signature: base64url(v.signature, 64) } };
+    // the wait names nothing: a fingerprint the PC or the relay sent could be shown for another key
+    case FrameType.KEY_PENDING:
+      return { ...common, type, payload: {} };
     case FrameType.PAIR_CONFIRM:
       requireProtocol(v.confirmed === true && Object.keys(v).length === 1, "Invalid pairing confirmation");
       return { ...common, type, payload: { confirmed: true } };
@@ -397,7 +453,7 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
         ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }),
         ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }) } };
     case FrameType.SESSION_ERROR:
-      return { ...common, type, payload: { code: choice(v.code, SESSION_ERRORS), message: text(v.message, 256) } };
+      return { ...common, type, payload: sessionError(v) };
     case FrameType.GOAWAY:
       return { ...common, type, payload: { code: choice(v.code, ["shutdown", "id_exhausted"]), last_open_id: streamId(v.last_open_id, true), drain_ms: integer(v.drain_ms, 0, 5000) } };
     case FrameType.HTTP_OPEN: {

@@ -4,12 +4,16 @@ import { sheetStep } from "./historyKeys.ts";
 let originalWindow: PropertyDescriptor | undefined;
 
 function fakeWindow() {
-  const entries: Array<{ state: unknown; href: string }> = [{ state: null, href: "/?pane=a" }];
+  let keys = 0;
+  const entries: Array<{ state: unknown; href: string; key: string }> = [{ state: null, href: "/?pane=a", key: "k0" }];
   let index = 0;
   const listeners: Array<(event: { state: unknown }) => void> = [];
   /** a browser runs a traversal later, toward the entry it named when called: a test turns this on to open something meanwhile */
   let deferred = false;
   let pending = false;
+  /** or holds every traversal until the test releases them, in order */
+  let holding = false;
+  const held: Array<() => void> = [];
   const traverse = (by: number): void => {
     const next = Math.max(0, Math.min(entries.length - 1, index + by));
     if (next === index) return;
@@ -19,24 +23,35 @@ function fakeWindow() {
       index = Math.min(next, entries.length - 1);
       dispatch();
     };
+    if (holding) { pending = true; held.push(() => { pending = false; land(); }); return; }
     if (!deferred) { index = next; queueMicrotask(dispatch); return; }
     pending = true;
     setTimeout(() => { pending = false; land(); }, 1);
   };
   const history = {
     get state() { return entries[index]!.state; },
-    pushState(state: unknown, _title: string, url?: string | null) { entries.splice(index + 1); entries.push({ state, href: url ?? entries[index]!.href }); index += 1; },
-    replaceState(state: unknown, _title: string, url?: string | null) { entries[index] = { state, href: url ?? entries[index]!.href }; },
+    pushState(state: unknown, _title: string, url?: string | null) { entries.splice(index + 1); keys += 1; entries.push({ state, href: url ?? entries[index]!.href, key: `k${keys}` }); index += 1; },
+    replaceState(state: unknown, _title: string, url?: string | null) { entries[index] = { state, href: url ?? entries[index]!.href, key: entries[index]!.key }; },
     back() { traverse(-1); },
     forward() { traverse(1); },
     go(by: number) { traverse(by); },
   };
+  /** the pages the window was sent to (location.assign or location.replace): from which entry, and whether a traversal was still on its way */
+  const loads: Array<{ url: string; how: "assign" | "replace"; at: number; pending: boolean }> = [];
   const window = {
     history,
-    get location() { return { href: entries[index]!.href }; },
+    get location() {
+      return { href: entries[index]!.href, assign: (url: string) => { loads.push({ url, how: "assign", at: index, pending }); }, replace: (url: string) => { loads.push({ url, how: "replace", at: index, pending }); } };
+    },
     addEventListener(type: string, listener: (event: { state: unknown }) => void) { if (type === "popstate") listeners.push(listener); },
   };
-  return { window, entries, at: () => index, defer: (on: boolean) => { deferred = on; }, pending: () => pending, marks: () => entries.map((entry) => typeof (entry.state as Record<string, unknown> | null)?.["ovis:sheet"] === "string") };
+  /** the browser's key for each entry, as the Navigation API tells it: a test hands it to the window */
+  const navigation = {
+    get currentEntry() { return { key: entries[index]!.key, index }; },
+    entries() { return entries.map((entry, at) => ({ key: entry.key, index: at })); },
+  };
+  return { window, entries, navigation, loads, at: () => index, defer: (on: boolean) => { deferred = on; },
+    hold: () => { holding = true; }, release: () => { holding = false; for (const go of held.splice(0)) go(); }, pending: () => pending, marks: () => entries.map((entry) => typeof (entry.state as Record<string, unknown> | null)?.["ovis:sheet"] === "string") };
 }
 const fake = fakeWindow();
 const settled = async () => {
@@ -100,6 +115,58 @@ describe("a phone's sheet in the history", () => {
     expect(fake.window.location.href).toBe("/?pane=a");
     h.forward(); await settled();
     expect(fake.window.location.href).toBe("/?pane=b");
+  });
+
+  it("sends the page an item leaves for only once its closing sheet's step off its entry has landed, from the entry under it", async () => {
+    const start = fake.at();
+    const leave = hooks.enter(() => {});
+    expect(fake.at()).toBe(start + 1);
+    // RowMenu closes the sheet, then runs the item; the sheet goes with the commit after
+    sheetHistory.leavePageFromSheet("/#add");
+    fake.defer(true);
+    leave();
+    expect(fake.loads).toEqual([]);
+    jest.advanceTimersByTime(0);
+    expect(fake.pending()).toBe(true);
+    expect(fake.loads).toEqual([]);
+    await settled();
+    fake.defer(false);
+    expect(fake.loads.splice(0)).toEqual([{ url: "/#add", how: "assign", at: start, pending: false }]);
+    expect(fake.marks()[start]).toBe(false);
+  });
+
+  it("sends it at once with no sheet's entry here, and as the sheet goes when the sheet takes no step", async () => {
+    const start = fake.at();
+    sheetHistory.leavePageFromSheet("/#add");
+    expect(fake.loads.splice(0)).toEqual([{ url: "/#add", how: "assign", at: start, pending: false }]);
+    const leave = hooks.enter(() => {});
+    sheetHistory.leavePageFromSheet("/#add");
+    h.replaceState(h.state, "", "/?pane=b&new=tab");
+    leave();
+    expect(fake.loads).toEqual([]);
+    jest.advanceTimersByTime(0);
+    expect(fake.loads.splice(0)).toEqual([{ url: "/#add", how: "assign", at: start + 1, pending: false }]);
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("sends it in place of the entry of a sheet that stays up under the closing one (a terminal peek), so no entry of that sheet is left under the new page", async () => {
+    const start = fake.at();
+    const leavePeek = hooks.enter(() => {}, true);
+    try {
+      expect(fake.at()).toBe(start + 1);
+      const leaveMore = hooks.enter(() => {});
+      expect(fake.at()).toBe(start + 1);
+      sheetHistory.leavePageFromSheet("/#add");
+      leaveMore();
+      jest.advanceTimersByTime(0);
+      await settled();
+      expect(fake.loads.splice(0)).toEqual([{ url: "/#add", how: "replace", at: start + 1, pending: false }]);
+    } finally {
+      fake.loads.length = 0;
+      leavePeek(); await settled();
+    }
+    expect(fake.at()).toBe(start);
   });
 
   it("keeps its entry for an item that changed the address on it, instead of stepping back", async () => {

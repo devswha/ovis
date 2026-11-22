@@ -41,8 +41,18 @@ final class PCStore {
     /** The address to open instead of the bare origin until a PC page loads: a pairing link keeps its code through Try again. In memory only, as it can hold that code. */
     static String pendingStart;
 
+    /**
+     * The connect screen is up to pick another way or PC, the current PC kept (HerdrShell chooseAnother, a PC page's
+     * Connect a PC): Back or its button reopens that PC, and opening another replaces it. In memory only, so an app
+     * started again opens the current PC.
+     */
+    static volatile boolean choosing;
+
     /** A PC's page on the hosted shell the app was opened with (appLink), until the connect screen takes it. In memory only, as it can hold a pairing offer's code. */
     static volatile String link;
+
+    /** The SSH login a page asked the connect screen to open on its SSH tab with (HerdrShellPlugin.openSshSetup), until it takes it. In memory only. */
+    static volatile String sshSetup;
 
     private static final Pattern PC_SCOPE = Pattern.compile("/s/([0-9a-f]{32})/?");
 
@@ -55,6 +65,20 @@ final class PCStore {
     static String appLink(String action, String data) {
         if (!"android.intent.action.VIEW".equals(action) || data == null) return null;
         return appScope(data) == null ? null : data;
+    }
+
+    /** Whether the page the app shows (`current`, a saved key) is the hosted shell's: its own list, or one of its PCs. */
+    static boolean showsHostedShell(String current) {
+        return sameOrigin(current, "https://app.ovis.sh");
+    }
+
+    /**
+     * The page of `pc` has loaded: the start address it was opened with is used up, unless it is
+     * another PC's (a link that came while this page loaded, which the next start opens).
+     */
+    static void startLoaded(String pc) {
+        String start = pendingStart;
+        if (start != null && belongs(start, pc)) pendingStart = null;
     }
 
     static String appScope(String link) {
@@ -176,23 +200,34 @@ final class PCStore {
     }
 
     /**
-     * Whether an app link is one to pair from: the PC's scope alone or with its pairing offer, which
-     * the connect screen checks as it does a scanned QR code (app/web/shell.js relayLink). Any other
+     * Whether an app link is one to pair from: the PC's scope alone, with its pairing offer, or with a
+     * provider's sign-in (the QR code a PC in an account shows: sign in, then join it), which the
+     * connect screen checks as it does a scanned QR code (app/web/shell.js relayLink). Any other
      * fragment or query is a view of the PC (a file, a pane), which opens only a PC already saved.
      */
     static boolean pairingLink(String link) {
         URI uri = URI.create(link);
         String fragment = uri.getRawFragment();
-        return uri.getRawQuery() == null && (fragment == null || fragment.isEmpty() || fragment.startsWith("offer="));
+        return uri.getRawQuery() == null && (fragment == null || fragment.isEmpty() || fragment.startsWith("offer=") || SIGN_IN.matcher(fragment).matches());
     }
+
+    private static final Pattern SIGN_IN = Pattern.compile("sign-in=[a-z]{1,32}");
 
     static volatile String failure;
 
     static volatile String failureKind;
 
+    /** A command to run on the PC that fixes the failure, which the error page shows to copy (an SSH PC's: SshFailure.command); else null. */
+    static volatile String failureCommand;
+
     static void fail(String reason, String kind) {
+        fail(reason, kind, null);
+    }
+
+    static void fail(String reason, String kind, String command) {
         failure = reason;
         failureKind = kind;
+        failureCommand = command;
     }
 
     static final int ANSWER_SECONDS = 20;
@@ -269,6 +304,7 @@ final class PCStore {
     }
 
     static void setCurrent(Context context, String origin) {
+        choosing = false;
         prefs(context).edit().putString("current", origin).apply();
     }
 
@@ -277,6 +313,7 @@ final class PCStore {
     }
 
     static void open(Context context, String key, String start) {
+        choosing = false;
         prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }
@@ -338,10 +375,6 @@ final class PCStore {
         return !scope.isEmpty() && !scope.equals("/");
     }
 
-    static boolean pageTakesBack(String here, String before, String place) {
-        return here != null && before != null && belongs(here, place) && belongs(before, place);
-    }
-
     /**
      * `path` (percent-encoded, as a URL carries it) when a browser loads it as written, else null: no
      * `.` or `..` segment, plain or percent-encoded (once or twice), no encoded `/` and no `\`, which a
@@ -388,8 +421,9 @@ final class PCStore {
     }
 
     static String startPath(String start, String key) {
-        String origin = origin(key);
-        if (start == null || origin == null || !origin.equals(origin(start))) {
+        // the default port written out (https://app.ovis.sh:443/...) is the same origin as the key saved without it
+        String origin = normalizedOrigin(key);
+        if (start == null || origin == null || !origin.equals(normalizedOrigin(start))) {
             String scope = rawPath(key);
             return scope.isEmpty() ? "/" : scope;
         }

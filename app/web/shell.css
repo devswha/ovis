@@ -1,21 +1,25 @@
 :root { color-scheme: dark; --bg: #12100e; --panel: #181613; --input: #1c1916; --border: #2d2924; --text: #d8d0c3; --dim: #9b9183; --strong: #f2ebdf; --primary: #f0a830; --primary-text: #1b1407; --danger: #ff7b70; }
+/* the app's own screens (index.html) follow the phone's light mode; error.html stays dark */
+:root.screens { color-scheme: light dark; }
+@media (prefers-color-scheme: light) {
+  :root.screens { --bg: #eeeae2; --panel: #faf8f3; --input: #fffdf9; --border: #dcd4c6; --text: #2a251f; --dim: #685e52; --strong: #16120d; --primary: #8c5000; --primary-text: #fffdf9; --danger: #8f1d1d; }
+}
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 -apple-system, system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
 main { max-width: 32rem; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 2.5rem) 1.25rem calc(env(safe-area-inset-bottom) + 2rem); }
 h1 { color: var(--strong); font-size: 1.75rem; margin: 0 0 .25rem; }
-h1 .logo { display: block; height: 54px; width: auto; margin-bottom: .75rem; }
 h2 { color: var(--dim); font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin: 2rem 0 .5rem; }
 p { margin: 0 0 1rem; color: var(--dim); }
-label { display: block; color: var(--strong); font-weight: 600; margin-bottom: .4rem; }
 input { width: 100%; font: inherit; color: var(--strong); background: var(--input); border: 1px solid var(--border); border-radius: .6rem; padding: .75rem .85rem; }
 input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 button { font: inherit; border-radius: .6rem; padding: .75rem 1rem; border: 1px solid var(--border); background: var(--panel); color: var(--strong); cursor: pointer; }
 button.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary); font-weight: 600; }
+/* Add by address on the SSH tab: a text link, its field behind it */
+button.text-link { align-self: flex-start; min-height: 2.75rem; padding: 0; border: 0; background: none; color: var(--dim); font-size: .9rem; text-decoration: underline; text-underline-offset: .15em; }
 .row { display: flex; gap: .6rem; margin-top: .75rem; }
 .row > button { flex: 1; }
-.hint { font-size: .85rem; margin: .5rem 0 0; }
-code { font: .85em ui-monospace, monospace; color: var(--text); }
-.error { color: var(--danger); min-height: 1.45em; margin: .5rem 0 0; }
+.error { color: var(--danger); margin: .5rem 0 0; }
+.error:empty { display: none; }
 .status { display: flex; align-items: center; gap: .6rem; color: var(--text); }
 .status:has(#status-text:not(:empty)) { margin-top: .5rem; }
 .status [hidden] { display: none; }
@@ -23,8 +27,79 @@ code { font: .85em ui-monospace, monospace; color: var(--text); }
 .status button { flex: none; padding: .5rem .85rem; }
 .spinner { flex: none; width: 1.1rem; height: 1.1rem; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 ul { list-style: none; margin: 0; padding: 0; }
 li { display: flex; gap: .5rem; align-items: center; margin-bottom: .5rem; }
 li .open { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 li .forget { flex: none; color: var(--dim); }
+li.manage-row { display: block; }
+.manage { background: var(--panel); border: 1px solid var(--border); border-radius: .6rem; padding: .75rem; }
+.manage p { margin: 0 0 .4rem; color: var(--text); overflow-wrap: anywhere; }
+.manage p.key { font: .8em ui-monospace, monospace; color: var(--dim); }
+.manage .actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0; }
+.manage button { padding: .5rem .75rem; font-size: .9rem; }
+.manage input { margin-bottom: .5rem; }
+.manage .check { display: flex; gap: .5rem; align-items: flex-start; font-weight: 400; color: var(--text); }
+.manage .check input { width: auto; margin: .3rem 0 0; }
+.manage .said:empty { margin: 0; padding: 0; } /* stays in the page: a live region that appears with its text is not announced */
+code.key, pre.command { display: block; white-space: pre-wrap; word-break: break-all; background: var(--input); border: 1px solid var(--border); border-radius: .4rem; padding: .5rem .6rem; margin: 0 0 .5rem; user-select: all; -webkit-user-select: all; }
+pre.command { font: .85em ui-monospace, monospace; color: var(--strong); }
+pre.command[hidden] { display: none; }
 a { color: var(--primary); }
+
+/* the app's own screen (index.html): Connect a PC, its tabs one at a time (connect.js pick) */
+.bar-back { margin-left: auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: .4rem .75rem; font-size: .9rem; font-weight: 600; }
+.bar { display: flex; align-items: center; gap: .6rem; max-width: 32rem; margin: 0 auto; padding: calc(env(safe-area-inset-top) + .75rem) 1.25rem .75rem; color: var(--strong); font-size: 1.15rem; font-weight: 700; border-bottom: 1px solid var(--border); }
+main.first { display: flex; flex-direction: column; padding-top: 1.5rem; }
+main.first h1.step { margin: 0 0 1rem; font-size: 1.4rem; }
+[hidden] { display: none !important; }
+.tabs { display: flex; gap: .25rem; padding: .25rem; margin-bottom: 1.25rem; border-radius: .75rem; background: var(--input); border: 1px solid var(--border); }
+.tabs [role="tab"] { flex: 1; min-height: 2.75rem; padding: .5rem .25rem; border: 0; border-radius: .55rem; background: none; color: var(--dim); font-size: .95rem; white-space: nowrap; }
+.tabs [role="tab"][aria-selected="true"] { background: var(--panel); color: var(--strong); font-weight: 700; box-shadow: 0 1px 3px rgb(0 0 0 / .15); }
+.panel { display: flex; flex-direction: column; gap: .8rem; }
+.panel > .note { margin: 0; font-size: .9rem; text-align: center; }
+.panel h2 { margin: 0 0 .5rem; color: var(--text); font-size: .95rem; font-weight: 700; text-transform: none; letter-spacing: 0; }
+#tailscale-on { display: flex; flex-direction: column; gap: .8rem; }
+#tailscale-on > .note { margin: 0; font-size: .9rem; }
+.panel .way { width: 100%; }
+.sub { color: var(--dim); font-size: .9rem; }
+.card { display: flex; flex-direction: column; gap: .75rem; padding: 1rem; border: 1px solid var(--border); border-radius: .9rem; background: var(--panel); }
+.card-title { margin: 0; color: var(--strong); font-weight: 700; text-align: center; }
+.card .note { margin: 0; font-size: .9rem; text-align: center; }
+.card.off { align-items: center; padding: 1.75rem 1rem; }
+.card.off .primary { align-self: stretch; }
+.card.list { gap: .5rem; padding: .5rem; }
+.card.list li { gap: .75rem; margin: 0; padding: .6rem .5rem .6rem .75rem; border-radius: .6rem; background: var(--input); }
+.card.list li .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.list li .primary { flex: none; }
+.card.list li .forget { padding: .5rem .6rem; font-size: .9rem; }
+.card.list li .primary { padding: .6rem .85rem; }
+/* a saved PC's row: its name, the way it connects and Connected for the PC this screen was opened from (connect.js renderPcs) */
+/* a PC row of a tab's list: the whole row opens it (connect.js renderPcs) */
+.card.list li .pc-open { display: flex; flex-direction: column; flex: 1; min-width: 0; padding: 0; border: 0; background: none; text-align: left; color: inherit; }
+.pc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.list li .pc-sub { display: flex; align-items: center; gap: .35rem; margin-top: .15rem; }
+.pc-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-tag, .pc-on { flex: none; padding: .05rem .4rem; border-radius: .35rem; font-size: .72rem; font-weight: 600; line-height: 1.4; }
+.pc-tag { border: 1px solid var(--border); color: var(--dim); }
+.pc-on { background: var(--primary); color: var(--primary-text); }
+.label { color: var(--strong); font-weight: 700; }
+.field { display: flex; gap: .5rem; align-items: center; padding: .3rem .3rem .3rem 0; border: 1px solid var(--border); border-radius: .75rem; background: var(--input); }
+.field:focus-within { outline: 2px solid var(--primary); outline-offset: 1px; }
+.field input { flex: 1; min-width: 0; border: 0; background: none; }
+.field input:focus { outline: none; }
+.field .primary { flex: none; padding: .6rem 1rem; }
+.panel .hint { margin: -.3rem 0 .4rem; text-align: left; font-size: .85rem; }
+.providers { display: flex; flex-direction: column; gap: .75rem; }
+.provider { position: relative; display: flex; align-items: center; justify-content: center; min-height: 3rem; border-radius: .75rem; background: var(--input); font-size: 1.05rem; font-weight: 600; }
+.provider[data-provider="github"] { background: var(--strong); border-color: var(--strong); color: var(--bg); }
+.provider svg { position: absolute; left: 1rem; width: 1.25rem; height: 1.25rem; }
+button:focus:not(:focus-visible) { outline: none; }
+.way { display: flex; align-items: center; gap: 1rem; min-height: 4.9rem; padding: 1rem; border-radius: .75rem; text-align: left; }
+.way-icon { display: grid; place-items: center; flex: none; width: 2.5rem; height: 2.5rem; border-radius: .6rem; background: var(--bg); }
+.way-icon svg { width: 1.25rem; height: 1.25rem; }
+.way-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.way-title { font-weight: 700; }
+.way .sub { color: var(--dim); font-size: .9rem; }
+.way .chevron { flex: none; width: 1.1rem; height: 1.1rem; color: var(--dim); }
+#feedback { margin-top: 1rem; }

@@ -4,18 +4,22 @@
  * a drive member of this PC's account, and never lets a removed key back in.
  */
 import { accountDeviceId, AccountRecordError, ACCOUNT_RECORDS_MAX, parseAccountRecord, verifyAccountRecord, type AccountRecord, type LinkRecord } from "../../shared/account-records.ts";
-import type { DeviceStore, LinkArrival } from "../devices.ts";
+import { AdmissionRefusedError, ReplacementNeedsAppError, type DeviceStore, type LinkArrival } from "../devices.ts";
 import type { PairedDevice } from "../../shared/protocol.ts";
 import type { Vouch } from "./mailbox.ts";
 
-export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending";
+import type { SafetyLog } from "./safety-log.ts";
+
+export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending" | "closed" | "read_pending" | "older_device";
 
 /** What holds an `add` back on this PC (mailbox.ts `gates`, docs/account.md "Enrolling a PC"). */
 export interface AddGates {
+  /** A flag-on mailbox keeps signed adds pending until its whole snapshot commits. */
+  readonly deferAdd?: (record: AccountRecord) => boolean;
   /** the PC waits for the member that linked it first to hand it the account's devices */
   enrolling(): boolean;
-  /** a waiting remove or a held key names `key`, or what waits cannot be trusted to be complete */
-  held(key: string): boolean;
+  /** T36: a self-leave is not held by a queued remove for its own key. */
+  held(key: string, includeWaiting?: boolean): boolean;
   /** a remove waiting here names `key` (an add it signed waits until that settles) */
   removing?(key: string): boolean;
 }
@@ -38,14 +42,21 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (store.accountError !== null) return refused("account_unavailable");
   const account = store.account();
   if (account !== null && account !== record.account) return refused("account_mismatch");
+  // A lock can hide the signer as well. It is a final refusal, not a missing signer to retry.
+  const closed = record.kind === "add" && !store.admits(record.key);
   // a member of any role may sign the remove of its own key: that is how a device leaves (docs/account.md)
   const leaving = record.kind === "remove" && record.signer === record.key;
   const signer = store.accountSigner(record.signer, record.account, leaving);
-  if (!signer) return refused("signer_not_member");
+  if (!signer) return refused(closed ? "closed" : "signer_not_member");
+  if (record.kind === "remove" && store.opensAll()) {
+    if (gates?.held(record.signer, !leaving)) return refused("removal_pending");
+    if (!store.removeAuthority(record.signer, record.key, record.account)) return refused("older_device");
+  }
   if (record.kind === "remove") return { id: record.id, outcome: store.removeAccountKey(record.key, record.account, { id: record.id, issuedAt: record.issued_at, by: { device_id: signer.id, label: signer.label }, signed: record }, now) ? "applied" : "unchanged" };
   // the signature covers the signer only: a key off the curve would leave a devices.json no store can read
   if (!store.acceptsRelayKey(record.key)) return refused("record_invalid");
   if (store.isTombstoned(record.key)) return refused("tombstoned");
+  if (closed) return refused("closed");
   if (store.hasKey(record.key)) {
     store.keepAccountAdd(record, signer.id);
     return { id: record.id, outcome: "unchanged" };
@@ -55,8 +66,12 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (gates?.held(record.key) || gates?.removing?.(record.signer)) return refused("removal_pending");
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
-  if (store.has(id)) return refused("record_invalid");
-  store.addAccountDevice({ id, key: record.key, label: record.label, role: record.role, account: record.account, addedBy: signer.id, record }, now);
+  if (!store.canAddAt(id, record.key)) return refused("record_invalid");
+  try { store.addAccountDevice({ id, key: record.key, label: record.label, role: record.role, account: record.account, addedBy: signer.id, record }, now); }
+  catch (error) {
+    if (error instanceof AdmissionRefusedError) return refused("removal_pending");
+    throw error;
+  }
   return { id: record.id, outcome: "applied" };
 }
 
@@ -75,18 +90,33 @@ function waited(outcome: RecordOutcome, record: AccountRecord, value: unknown, w
 
 /** `gates` with the keys of this batch's removes that could not be kept: an add for one is held back too. */
 function withUndecided(gates: AddGates | undefined, undecided: ReadonlySet<string>): AddGates {
-  return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
+  return { enrolling: () => gates?.enrolling() ?? false, held: (key, includeWaiting = true) => (includeWaiting && undecided.has(key)) || (gates?.held(key, includeWaiting) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
 }
 
-export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {
+function deferAdd(record: AccountRecord, keep?: (record: AccountRecord) => boolean): RecordOutcome {
+  return { id: record.id, outcome: "refused", code: keep?.(record) === false ? "account_unavailable" : "removal_pending" };
+}
+
+export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates & { safetyLog?: SafetyLog | null; requestRead?(): void }, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {
   if (values.length > ACCOUNT_RECORDS_MAX) throw new RangeError(`At most ${ACCOUNT_RECORDS_MAX} records at once`);
   const outcomes: RecordOutcome[] = [];
   const undecided = new Set<string>();
   const batchGates = withUndecided(gates, undecided);
   for (const value of values) {
+    // a denial while this record is verified means its add no longer stands on what was checked (P14)
+    if (gates?.safetyLog && typeof value === "object" && value !== null && "kind" in value && value.kind === "lift") {
+      outcomes.push(await store.handedLifts.receive(value, store, gates.safetyLog));
+      continue;
+    }
+    const noted = store.gen();
     const record = await read(value);
+    if (!("refused" in record) && record.kind === "add" && (gates?.deferAdd || store.gen() !== noted)) {
+      outcomes.push(deferAdd(record, gates?.deferAdd));
+      continue;
+    }
     outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : waited(apply(store, record, serverId, now, batchGates), record, value, wait, undecided));
   }
+  if (outcomes.some((result) => result.outcome === "refused" && result.code === "read_pending")) gates?.requestRead?.();
   return outcomes;
 }
 
@@ -104,7 +134,10 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
   const undecided = new Set<string>();
   const gates = withUndecided(options.gates, undecided);
   const outcomes: (RecordOutcome | undefined)[] = values.map(() => undefined);
+  const noted = store.gen();
   const records = await Promise.all(values.map(read));
+  // a denial while the batch was verified: its removes still apply, and none of its adds (P14)
+  const moved = store.gen() !== noted;
   const removes: number[] = [];
   let adds: number[] = [];
   records.forEach((record, index) => {
@@ -118,6 +151,7 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
     return value;
   };
   const signed = (index: number) => record(index).issued_at;
+  // issued_at met ISO_MS at parse: a four-digit year, so string order is time order
   for (const index of removes.sort((a, b) => signed(a) < signed(b) ? -1 : signed(a) > signed(b) ? 1 : 0)) {
     outcomes[index] = waited(apply(store, record(index), serverId, now, gates), record(index), values[index], options.wait, undecided);
   }
@@ -125,7 +159,10 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
     progress = false;
     const next: number[] = [];
     for (const index of adds) {
-      const outcome = apply(store, record(index), serverId, now, gates);
+      const verified = record(index);
+      const heldBack = moved || (store.opensAll() && verified.kind === "add" && (undecided.has(verified.signer) || undecided.has(verified.key)));
+      const outcome = heldBack ? deferAdd(verified) : verified.kind === "add" && store.opensAll()
+        ? deferAdd(verified, options.wait) : apply(store, verified, serverId, now, gates);
       outcomes[index] = outcome;
       if (outcome.outcome === "refused" && outcome.code === "signer_not_member") next.push(index);
       else if (outcome.outcome === "applied") progress = true;
@@ -139,7 +176,20 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
   });
 }
 
-export type LinkRefusal = RecordRefusal | "key_in_use" | "link_required" | "unverified_device" | "pairing_ended";
+/** Verify mailbox signatures before the whole read; local authority is checked only by the returned commit. */
+export async function stageMailboxAdds(values: readonly unknown[]) {
+  const staged = [];
+  for (const value of values) {
+    if (typeof value !== "object" || value === null || !("kind" in value) || value.kind !== "add") continue;
+    const record = await read(value);
+    if (!("refused" in record) && record.kind === "add") staged.push({ value, key: record.key,
+      commit: (store: DeviceStore, serverId: string, gates: AddGates) => apply(store, record, serverId, Date.now(), gates),
+    });
+  }
+  return staged;
+}
+
+export type LinkRefusal = RecordRefusal | "key_in_use" | "link_required" | "unverified_device" | "pairing_ended" | "replacement_needs_app";
 
 /** What a link is held to on this PC besides its devices (server/account/routes.ts). */
 export interface LinkRules {
@@ -183,6 +233,7 @@ const SET_UP_FOR_ANOTHER_ACCOUNT_WAITING = "This PC was set up for another Ovis 
 const CODE_FOR_ANOTHER_ACCOUNT = "This PC's pairing code was made for another Ovis account than the one this device is signed in to. Sign in to that account on this device, then pair again.";
 
 /** What a device that waited to link reads when no account was named for this PC: the way on is on the PC too. */
+const ADD_AT_PC = "This PC left its Ovis account. Add it again on the PC itself: sign in there and add it to your account, or run `ovis add` there.";
 const SET_UP_FOR_NO_ACCOUNT = "This PC is not set up for an Ovis account yet. Sign in on the PC and add it to your account, or run `ovis add` there; then scan its QR code again.";
 
 /** What a device reads when its account's service has no word from that account about this device. */
@@ -211,6 +262,13 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   if (arrival.provisional && !waits) return { refused: "link_required" };
   const account = store.account();
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
+  // A PC its account stopped listing joins one again only by an add made at the PC: its own press, a code it issued
+  // itself, or digits its own screen approved since. A device it kept paired, or a code such a device asked for,
+  // brings it into none
+  if (account === null && store.addAtPcRequired() && !(arrival.pinned !== null && store.issuedAtPc(arrival.pinned)) && !store.approvedAtPcSinceClear(deviceId)) {
+    if (waits) store.turnAway(deviceId, "account_mismatch", link.account);
+    return { refused: "account_mismatch", message: ADD_AT_PC };
+  }
   // A device that already drives this PC is held to the code made for a PC in no account that lived when its link
   // came, and to none that came since: if that is no longer the code alive (it ended, another replaced it, the PC
   // joined an account meanwhile), nothing changes for it
@@ -292,11 +350,16 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (store.isTombstoned(link.key) && !(waits && link.key === link.old_key && !store.removedByAccount(link.key))) return { refused: "tombstoned" };
   // a row moving to a key this PC holds back would let that key in without anyone approving it here
   if (link.key !== link.old_key && rules.gates?.held(link.key)) return { refused: "removal_pending" };
-  if (store.keyHeldByOther(link.key, deviceId)) return { refused: "key_in_use" };
+  // a row that waits with the key of a pairing this PC already has is that device, pairing again: its link renews it
+  const renews = waits && link.key === link.old_key && store.pairingsRenewedBy(link.key) !== null;
+  if (store.keyHeldByOther(link.key, deviceId) && !renews) return { refused: "key_in_use" };
   const takeBack = waits ? rules.barrier?.() : undefined;
   let device: PairedDevice | null = null;
   try { device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId, vouched); }
-  finally {
+  catch (error) {
+    if (error instanceof ReplacementNeedsAppError) return { refused: "replacement_needs_app" };
+    throw error;
+  } finally {
     // the row was not written: what went to disk for it goes too. Whatever kept the row from being written is the
     // failure to report, so a barrier that could not be taken back either is said beside it
     if (device === null) {

@@ -2,13 +2,126 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, homeHost, loopbackHost, openFailure, parseAddress, relayLink, tailnetHost } from "../app/web/shell.js";
+import { APP_ORIGIN, homeHost, knownLogins, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, sshOrAddress, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const offer = { v: 1 as const, server_id: SERVER_ID, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.ovis.sh", code: "123456", name: "Studio PC" };
 const link = (text: string, appOrigin?: string) => relayLink(parseAddress(text), appOrigin);
+
+describe("the sign-in buttons", () => {
+  it("draws the sign-ins the account service names, in the app's order, and none it does not know", () => {
+    expect(listedProviders({ providers: ["apple", "github"], device: ["github"] })).toEqual(["github", "apple"]);
+    expect(listedProviders({ providers: ["google", "gitlab"], device: [] })).toEqual(["google"]);
+    expect(listedProviders({ providers: [], device: [] })).toEqual([]);
+  });
+
+  it("reads nothing from an answer with no list, so the build's buttons stay", () => {
+    for (const body of [null, "github", {}, { providers: "github" }, { providers: ["google"] }]) expect(listedProviders(body)).toBeNull();
+  });
+});
+
+describe("the connect tabs", () => {
+  const page = readFileSync(join(import.meta.dir, "../app/web/index.html"), "utf8");
+  /** a tab's panel in the markup: from its own id to the next panel, or to what an open says under every tab */
+  const panel = (name: string) => {
+    const start = page.indexOf(`id="panel-${name}"`);
+    const ends = [page.indexOf('id="panel-', start + 1), page.indexOf('<div id="feedback">', start)].filter((end) => end > start);
+    return page.slice(start, Math.min(...ends));
+  };
+
+  it("are the Ovis relay, Tailscale and SSH, with no Direct tab", () => {
+    expect([...page.matchAll(/role="tab" id="tab-(\w+)" data-tab="(\w+)"/g)].map(([, id, tab]) => [id, tab])).toEqual([["relay", "relay"], ["tailscale", "tailscale"], ["ssh", "ssh"]]);
+    expect(page).not.toContain("panel-direct");
+  });
+
+  it("keep a scan of the PC's QR on the relay tab, outside what Tailscale turned off hides", () => {
+    const relay = panel("relay");
+    expect(relay).toMatch(/<button type="button" class="way" data-scan>[\s\S]*?data-ko="PC 화면의 QR 찍기">Scan the QR on the PC's screen</);
+    // only #tailscale-on goes hidden with Tailscale off (connect.js checkTailscale): a scan stays outside it
+    const tailscaleOn = page.slice(page.indexOf('<div id="tailscale-on">'), page.indexOf('id="panel-ssh"'));
+    const scans = [...page.matchAll(/data-scan>/g)].map((match) => match.index!);
+    expect(scans.some((at) => at < page.indexOf('<div id="tailscale-on">') || at > page.indexOf('<div id="tailscale-on">') + tailscaleOn.length)).toBe(true);
+  });
+
+  it("put on SSH user@host first, Add by address as a text link to an https address's field, then the PCs this phone is on", () => {
+    const ssh = panel("ssh");
+    const at = (needle: string) => ssh.indexOf(needle);
+    // the PCs an SSH PC knows are suggestions to add, so with the controls, before the PCs this phone is on
+    const order = ['id="address"', 'id="by-address"', 'id="web-address"', 'id="known-pcs"', 'id="ssh-pcs"'];
+    for (const needle of order) expect(at(needle)).toBeGreaterThan(-1);
+    expect(order.map(at)).toEqual([...order.map(at)].sort((a: number, b: number) => a - b));
+    expect(ssh).toMatch(/<button type="button" class="text-link" id="by-address"[^>]*data-ko="주소로 추가">Add by address</);
+    expect(ssh).toMatch(/<form id="address-connect"[^>]*hidden>/);
+  });
+
+  it("ends each tab in exactly one list of the PCs this phone is on, under the tab's controls", () => {
+    const heading = 'data-ko="이 폰이 연결한 PC">PCs this phone is on</h2>';
+    for (const [tab, list, last] of [["relay", 'id="relay-pcs"', "data-scan"], ["tailscale", 'id="tailnet"', "data-scan"], ["ssh", 'id="ssh-pcs"', 'id="web-address"']] as const) {
+      const shown = panel(tab);
+      expect(shown.split(heading).length - 1).toBe(1);
+      expect(shown.indexOf(list)).toBeGreaterThan(shown.lastIndexOf(last));
+      // the last list of the tab
+      expect(shown.lastIndexOf('class="card list"')).toBe(shown.indexOf(`${list} class="card list"`) + list.length + 1);
+    }
+  });
+});
+
+describe("the SSH tab's one field", () => {
+  it("takes user@host, with a port or ssh://, as SSH", () => {
+    expect(sshOrAddress(" me@my-server.example.com ")).toEqual({ ssh: { user: "me", host: "my-server.example.com", port: 22 } });
+    expect(sshOrAddress("pi@192.168.0.20:2222")).toEqual({ ssh: { user: "pi", host: "192.168.0.20", port: 2222 } });
+    expect(sshOrAddress("ssh://dev@nas.tail1e211e.ts.net/")).toEqual({ ssh: { user: "dev", host: "nas.tail1e211e.ts.net", port: 22 } });
+    expect(sshOrAddress("me@[fd7a:115c:a1e0::1]:22")).toEqual({ ssh: { user: "me", host: "fd7a:115c:a1e0::1", port: 22 } });
+  });
+
+  it("leaves every other text an address to open, an https PC's among them", () => {
+    for (const text of ["https://my-pc.example.com", "https://my-pc.tailnet.ts.net", "http://me@my-pc:7317", "my-pc.local", "me@host:70000", "me@host/path", "demo"]) {
+      expect(sshOrAddress(text)).toEqual({ address: text });
+    }
+  });
+});
+
+describe("each connect tab's saved PCs", () => {
+  const relayPc = `https://app.ovis.sh/s/${SERVER_ID}/`;
+  const saved = ["http://100.101.12.7:7317", "https://nas.tail1e211e.ts.net", "http://192.168.0.10:7317", relayPc, "https://app.ovis.sh", "http://127.0.0.1:41234", "not an address"];
+  const names = { "http://100.101.12.7:7317": "home-server", "http://192.168.0.10:7317": "desk", [relayPc]: "Studio PC" };
+  const ssh = { "http://127.0.0.1:41234": { label: "pi@nas" } };
+
+  it("lists the PCs paired over the relay on the relay tab, under its sign-in, and not the app's own front page", () => {
+    expect(tabPcs(saved, "relay", names, ssh)).toEqual([{ origin: relayPc, label: "Studio PC", way: "relay" }]);
+  });
+
+  it("names a PC by its saved name, else what its address says: a relay PC by its id, never the app's host", () => {
+    expect(savedPcLabel(relayPc, {}, {})).toBe("0123456789ab");
+    expect(savedPcLabel("https://nas.tail1e211e.ts.net", {}, {})).toBe("nas");
+    expect(savedPcLabel("http://192.168.0.10:7317", {}, {})).toBe("192.168.0.10:7317");
+    expect(savedPcLabel("http://127.0.0.1:41234", {}, ssh)).toBe("pi@nas");
+    expect(savedPcLabel(relayPc, names, {})).toBe("Studio PC");
+  });
+
+  it("lists the PCs opened at a Tailscale address on the Tailscale tab, by their saved name or their host's first word", () => {
+    expect(tabPcs(saved, "tailscale", names, ssh)).toEqual([
+      { origin: "http://100.101.12.7:7317", label: "home-server", way: "tailscale" },
+      { origin: "https://nas.tail1e211e.ts.net", label: "nas", way: "tailscale" },
+    ]);
+  });
+
+  it("lists on the SSH tab, as one list, the PCs added over SSH and those opened at any other address, and one saved unreadable to forget", () => {
+    expect(tabPcs(saved, "ssh", names, ssh)).toEqual([
+      { origin: "http://192.168.0.10:7317", label: "desk", way: "address" },
+      { origin: "http://127.0.0.1:41234", label: "pi@nas", way: "ssh" },
+      { origin: "not an address", label: "not an address", way: "broken" },
+    ]);
+  });
+
+  it("lists each PC in one list at most, and every saved one but the app's own front page in some list", () => {
+    const listed = ["relay", "tailscale", "ssh"].flatMap((tab) => tabPcs(saved, tab, names, ssh).map((pc: { origin: string }) => pc.origin));
+    expect(new Set(listed).size).toBe(listed.length);
+    expect(new Set(listed)).toEqual(new Set(saved.filter((origin) => origin !== "https://app.ovis.sh")));
+  });
+});
 
 describe("relay pairing links", () => {
   it("opens an offer on the app's origin at its scope, the fragment kept, labelled from the offer", () => {
@@ -30,6 +143,14 @@ describe("relay pairing links", () => {
   it("reopens a saved relay PC by its scope", () => {
     const scope = `https://app.ovis.sh/s/${SERVER_ID}/`;
     expect(link(scope)).toEqual({ url: scope, scope, name: undefined });
+  });
+
+  it("opens a PC's page that asks for a provider's sign-in first, with that fragment kept, and no other fragment", () => {
+    const scope = `https://app.ovis.sh/s/${SERVER_ID}/`;
+    expect(link(`${scope}#sign-in=github`)).toEqual({ url: `${scope}#sign-in=github`, scope, name: undefined });
+    for (const text of [`${scope}#sign-in=`, `${scope}#sign-in=github&pane=w1`, `${scope}#sign-in=GitHub`]) {
+      expect([text, link(text)]).toEqual([text, { error: "not-a-pc" }]);
+    }
   });
 
   it("refuses an offer on any other origin", () => {
@@ -127,5 +248,61 @@ describe("why an address did not open", () => {
     for (const code of ["not-ovis", "refused", "timeout", "unknown-host", "no-answer", undefined]) {
       expect([code, openFailure(url, code, "x").length > 0]).toEqual([code, true]);
     }
+  });
+});
+
+describe("the PCs an SSH PC knows", () => {
+  const from = { origin: "http://127.0.0.1:47320", user: "me", host: "desk.tail1e211e.ts.net", port: 22 };
+  const known = {
+    candidates: { pcs: [
+      { name: "desk", destination: "desk.tail1e211e.ts.net", detail: "desk.tail1e211e.ts.net", source: "tailscale" },
+      { name: "nas", destination: "nas.tail1e211e.ts.net", detail: "nas.tail1e211e.ts.net", source: "tailscale" },
+      { name: "lab", destination: "lab", detail: "root@lab.example", source: "ssh_config" },
+      { name: "bare", destination: "bare", detail: "bare.example", source: "ssh_config" },
+      { name: "alias", destination: "alias", detail: null, source: "ssh_config" },
+    ] },
+    machines: { machines: [
+      { kind: "ssh", name: "vps", target: { destination: "can@10.0.0.7", port: 2222 } },
+      { kind: "ssh", name: "aliased", target: { destination: "vps" } },
+      { kind: "relay", name: "far" },
+      { kind: "ssh", name: "again", target: { destination: "root@lab.example" } },
+    ] },
+  };
+
+  it("offers each as a login the phone can reach: a Tailscale PC as the same user, an ssh config host by its user@hostname, a PC it added by its target", () => {
+    expect(knownLogins(known, from)).toEqual([
+      { user: "me", host: "nas.tail1e211e.ts.net", port: 22, name: "nas", source: "tailscale" },
+      { user: "root", host: "lab.example", port: 22, name: "lab", source: "ssh_config" },
+      { user: "can", host: "10.0.0.7", port: 2222, name: "vps", source: "pc" },
+    ]);
+  });
+
+  it("leaves out the PCs already on this phone, and reads nothing from an answer that is not one", () => {
+    expect(knownLogins(known, from, [{ user: "root", host: "LAB.example", port: 22 }]).map((login: { name: string }) => login.name)).toEqual(["nas", "vps"]);
+    expect(knownLogins({ candidates: null, machines: { error: "x" } }, from)).toEqual([]);
+    expect(knownLogins(undefined, from)).toEqual([]);
+  });
+});
+
+describe("an SSH PC under Manage", () => {
+  const pc = { origin: "http://127.0.0.2:47317", host: "studio.lan", port: 22, user: "me", auth: "phone-key", keyType: "", hostKeyAlgorithm: "ssh-ed25519", fingerprint: "SHA256:abc" };
+
+  it("names its address, the pasted key's type, and its confirmed host key", () => {
+    const details = sshDetails(pc);
+    expect(details.address).toBe("me@studio.lan");
+    expect(details.confirmed).toBe(true);
+    expect(details.hostKey).toContain("ssh-ed25519 SHA256:abc");
+    const pasted = sshDetails({ ...pc, port: 2222, auth: "imported", keyType: "rsa 3072" });
+    expect(pasted.address).toBe("me@studio.lan:2222");
+    expect(pasted.how).toContain("rsa 3072");
+    expect(pasted.how).not.toBe(details.how);
+    const tailscale = sshDetails({ ...pc, auth: "tailscale" });
+    expect([details.how, pasted.how]).not.toContain(tailscale.how);
+  });
+
+  it("is not confirmed once its host key was forgotten", () => {
+    const forgotten = sshDetails({ ...pc, hostKeyAlgorithm: "", fingerprint: "" });
+    expect(forgotten.confirmed).toBe(false);
+    expect(forgotten.hostKey).not.toContain("SHA256:");
   });
 });

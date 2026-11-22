@@ -5,7 +5,7 @@ import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join, posix } from "node:path";
 import { version } from "../package.json";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type SetupStepCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -19,7 +19,7 @@ import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
 import { type HerdrMachineProfile, samePort, sameSshSession } from "./herdr-profiles.ts";
 import { appBuild } from "./app-revision.ts";
 import { shellQuote, validateTarget } from "./machine-security.ts";
-import { parseFoundHerdrSessions, validHerdrSocket } from "./herdr-discovery.ts";
+import { parseFoundHerdrSessions, throwawayPath, validHerdrSocket } from "./herdr-discovery.ts";
 import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
@@ -38,12 +38,16 @@ import { appRelease, INSTALLER, installPlanFor, PcInstaller, registeredIn, sameP
 import { warmSshAddresses } from "./ssh-address.ts";
 import { readMoveOffer } from "./remote-move.ts";
 
-import type { RelaySocket } from "../shared/relay-channel.ts";
+import { TargetAccountPcError, type RelaySocket } from "../shared/relay-channel.ts";
+import { savedIdentityReader } from "./relay/identity.ts";
+import { MuxProtocolError } from "../shared/relay-mux.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey, RelayPcOutdated, RelayPcRefused, relayPcLabel, removeRelayPcKey, vouchedSupport, type RelayPcTunnel, type RouteProbes, type VouchedSupport } from "./relay-pc.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
 import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
+import { AccountAddChannel } from "./account-add-channel.ts";
+import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAddressTarget, loadAddressPcToken, openAddressPcForward, pairAddressPc, removeAddressPcToken, saveAddressPcToken, type AddressPcForward } from "./address-pc.ts";
 
 /** a PC keeps the six-digit code in its offer for 10 minutes at most (server/devices.ts) */
 const RELAY_FOUND_MS = 10 * 60_000;
@@ -51,7 +55,7 @@ const RELAY_FOUND_MS = 10 * 60_000;
 const ACCOUNT_PC_MS = 10 * 60_000;
 const ACCOUNT_PC_ANSWER_MS = 10_000;
 
-export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "cancelled";
+export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
 /** A key this PC made for another PC of the account (startAccountPc), in memory only, and its comparison while one runs. */
 type HeldAccountPc = { offer: RelayOffer; key: RelayPcKey; id: string; name: string; at: number; running?: { comparison: AbortController; done: Promise<void> } };
@@ -63,11 +67,12 @@ export class AccountPcError extends Error {
 }
 
 type StoredMachine = { id: string; name: string; enabled: boolean; snapshot?: SessionSnapshot | null }
-  & ({ kind?: "ssh"; target: SshTarget; server_id?: string } | { kind: "relay"; relay: NonNullable<Machine["relay"]> });
+  & ({ kind?: "ssh"; target: SshTarget; server_id?: string } | { kind: "relay"; relay: NonNullable<Machine["relay"]> } | { kind: "address"; address: string });
 interface Runtime {
   machine: Machine;
   ssh?: SshConnection;
   tunnel?: RelayPcTunnel;
+  forward?: AddressPcForward;
   routeProbes?: RouteProbes;
   hc?: { id: string; name: string; bridge?: MachineBridge };
   endpoint?: { url: string; token: string };
@@ -133,7 +138,38 @@ interface JobState {
   offeredRevision?: string;
   stageStartedAt: number;
   finished: Promise<void>;
+  /**
+   * An account add over SSH (docs/account.md, "Adding a PC over SSH"): the owner's recovery socket of the PC's own Ovis as
+   * its registration names it, then that socket forwarded over this job's connection and the PC it answered for. Only
+   * that connection, while its PC keeps the generation it had then, takes the add (accountTake). The channel is the
+   * forward's only user, and closes it after the take, on any error, and when the job fails or is cancelled.
+   */
+  accountAdd?: { remoteSocket?: string; channel?: AccountAddChannel; reached?: { channel: AccountAddChannel; ssh: SshConnection; generation: number; serverId: string } };
 }
+
+/** Why an account add over SSH could not finish (accountTake). */
+export class AccountAddError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "AccountAddError";
+  }
+}
+
+/** A PC's own word on itself for an account add, kept only when its ID is its key's and its relay is a wss origin. */
+export function accountAddTarget(value: unknown): AccountAddTarget | null {
+  if (value === null || typeof value !== "object") return null;
+  const { server_id, public_key, relay, label, account } = value as Record<string, unknown>;
+  if (typeof server_id !== "string" || !SERVER_ID_PATTERN.test(server_id) || typeof public_key !== "string" || typeof relay !== "string" || !isWssOrigin(relay)) return null;
+  if (typeof label !== "string" || label.length > 48 || (account !== null && (typeof account !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(account)))) return null;
+  let key: Uint8Array;
+  try { key = importPublicKey(public_key); } catch { return null; }
+  return deriveServerId(key) === server_id ? { server_id, public_key, relay, label, account } : null;
+}
+
+export const ACCOUNT_ADD_BRIDGE_ONLY = "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.";
+export const ACCOUNT_ADD_NO_OVIS = "Ovis is not running on that PC. Install it there, then add it to your account.";
+export const ACCOUNT_ADD_WINDOWS = "Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.";
+const ACCOUNT_ADD_OLD_OVIS = "That PC's Ovis is too old to be added over SSH. Update it there, then try again.";
 const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
 /** an update asked for one release while the PC offers another by now: nothing of it is installed */
 const CHANGED_OFFER = "That PC offers another release now than the one shown. Look at it again, then update.";
@@ -141,6 +177,10 @@ const INSTALL_FROM_CARD = "This PC needs Ovis installed again over SSH, which ch
 export const OWN_UPDATES_AT_ONCE = 4;
 const TERMINAL = new Set<SetupJob["phase"]>(["connected", "failed", "cancelled"]);
 const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis, which updates itself: use Update on its card.";
+const ADDRESS_PC_UPDATES = "A PC added by its address runs its own Ovis, which updates itself: use Update on its card.";
+function savedOrigin(value: unknown): value is string {
+  try { return addressOrigin(value) === value; } catch { return false; }
+}
 const JOBS_FULL = "Finish or cancel the current connection jobs first";
 const SETUP_JOBS_AT_ONCE = 4;
 const DEFAULT_SESSION_ONLY = "Installing from here sets Ovis up for herdr's default session only, and this PC is added with a named session. Install it on that PC, or add it without a session.";
@@ -186,8 +226,34 @@ export function olderOrderRead(cached: SessionSnapshot | null | undefined, incom
     && Number.isSafeInteger(cached.read_seq) && Number.isSafeInteger(incoming.read_seq) && incoming.read_seq! < cached.read_seq!;
 }
 
-export function actionStep(action: "approve" | "answer"): string {
-  return action === "approve" ? "Installing on this PC…" : "Connecting with SSH keys and ssh-agent…";
+export function actionStep(action: "approve" | "answer"): SetupStepCode {
+  return { code: action === "approve" ? "installing" : "connecting" };
+}
+
+/** A setup step's English, from its code: what SetupJob.step says for logs and older apps */
+export function setupStepWords(step: SetupStepCode): string {
+  const to = (target: string | null) => target ? ` to v${target}` : "";
+  switch (step.code) {
+    case "connecting": return "Connecting with SSH keys and ssh-agent…";
+    case "fingerprint": return "Verify the server fingerprint";
+    case "authentication": return "SSH authentication required";
+    case "checking": return "Checking the remote environment…";
+    case "review": return "Review the changes on this PC";
+    case "installing": return "Installing on this PC…";
+    case "install_bundle": return `Installing verified ${step.platform} bundle…`;
+    case "install_herdr": return "Installing herdr with its own installer…";
+    case "register_key": return "Registering the app SSH key…";
+    case "restart_bridge": return "Restarting the verified remote bridge…";
+    case "start_bridge": return "Starting the remote bridge…";
+    case "own_update_ask": return `Asking this PC's own Ovis to update itself${to(step.target)}…`;
+    case "own_update_running": return `This PC's own Ovis is updating itself${to(step.target)}: ${OWN_UPDATE_STEPS[step.stage] ?? step.stage}…`;
+    case "own_update_connect": return "Connecting to this PC's updated Ovis…";
+    case "headless": return "Starting without Windows sign-in…";
+    case "connected": return "Connected";
+    case "failed": return "Connection failed";
+    case "timed_out": return "Connection timed out";
+    case "cancelled": return "Cancelled";
+  }
 }
 
 /**
@@ -267,7 +333,7 @@ const ownUpdateOffered = (offer: RemoteOvis): string => `${OWN_UPDATE_OFFER}${of
 const ownUpdateRefused = (offer: RemoteOvis): string => `${independentBridge(REMOTE_BUNDLE_VERSION)} It cannot be updated from here: ${offer.reason}`;
 
 export class MachineActionRequired extends Error {
-  constructor(message: string, readonly action: MachineAction, readonly newerServer = false, readonly foundHerdrSessions?: FoundHerdrSession[], readonly foundOvis?: FoundOvis[]) { super(message); }
+  constructor(message: string, readonly action: MachineAction, readonly newerServer = false, readonly foundHerdrSessions?: FoundHerdrSession[], readonly foundOvis?: FoundOvis[], readonly code?: SetupErrorCode) { super(message); }
 }
 
 
@@ -315,7 +381,8 @@ export class MachineManager {
   private statePath: string;
   private written: string | undefined;
   private relayStatePath: string;
-  private relayWritten: string | undefined;
+  private addressStatePath: string;
+  private apartWritten: { relay?: string; address?: string } = {};
   private setAside: string[] = [];
   private sshDir: string;
   private local: Machine = { id: LOCAL_MACHINE, name: hostname(), kind: "local", enabled: true, state: "connecting", error: null, snapshot: null };
@@ -365,7 +432,7 @@ export class MachineManager {
   private readonly sshCandidateOptions: SshCandidatesOptions;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
-    options: { restoreReplaced?: () => boolean; bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number }; moveOfferMs?: { idle: number; active: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
+    options: { restoreReplaced?: () => boolean; installer?: string; bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number }; moveOfferMs?: { idle: number; active: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
     this.bootId = options.bootId;
     this.tailnet = new TailnetPcs(options.tailnet);
     this.sshCandidateOptions = options.sshCandidates ?? (options.tailnet?.readStatus === undefined ? {} : { readStatus: options.tailnet.readStatus });
@@ -383,8 +450,9 @@ export class MachineManager {
     this.profileState = new HerdrProfileState(stateDir);
     this.statePath = join(stateDir, "machines.json");
     this.relayStatePath = join(stateDir, "relay-pcs.json");
+    this.addressStatePath = join(stateDir, "address-pcs.json");
     this.sshDir = join(stateDir, "ssh");
-    this.installer = new PcInstaller({ sshDir: this.sshDir, connect: (request) => this.installConnect(request), onChange: (job) => this.showInstall(job), restore: () => options.restoreReplaced?.() === true });
+    this.installer = new PcInstaller({ sshDir: this.sshDir, connect: (request) => this.installConnect(request), onChange: (job) => this.showInstall(job), restore: () => options.restoreReplaced?.() === true, ...(options.installer ? { installer: options.installer } : {}) });
     this.settingsPath = join(stateDir, "machine-settings.json");
     try {
       const saved: unknown = JSON.parse(readFileSync(this.settingsPath, "utf8"));
@@ -399,8 +467,9 @@ export class MachineManager {
     // without saved PCs; JSON that is not a list of PCs still refuses to start, so nothing replaces it
     // PCs added through the relay live in a file of their own: a release from before them reads machines.json and
     // refuses one it does not know, so a rollback would not start (docs/development.md, rollback restores code)
-    for (const path of [this.statePath, this.relayStatePath]) {
+    for (const path of [this.statePath, this.relayStatePath, this.addressStatePath]) {
       const relayPcs = path === this.relayStatePath;
+      const addressPcs = path === this.addressStatePath;
       const read = readStateDocument(path);
       if (read.kind === "malformed") {
         const aside = setAsideDamaged(path);
@@ -418,7 +487,10 @@ export class MachineManager {
             if (item.kind !== "relay") throw new Error("Invalid machine registration");
             if (typeof item.relay?.server_id !== "string" || !SERVER_ID_PATTERN.test(item.relay.server_id) || typeof item.relay.relay !== "string" || !isWssOrigin(item.relay.relay)) throw new Error("Invalid machine registration");
             machine = { ...common, kind: "relay", relay: { server_id: item.relay.server_id, relay: item.relay.relay } };
-          } else if (item.kind === "relay") throw new Error("Invalid machine registration");
+          } else if (addressPcs) {
+            if (item.kind !== "address" || !savedOrigin(item.address)) throw new Error("Invalid machine registration");
+            machine = { ...common, kind: "address", address: item.address };
+          } else if (item.kind === "relay" || item.kind === "address") throw new Error("Invalid machine registration");
           else machine = { ...common, kind: "ssh", target: validateTarget(item.target), ...(typeof item.server_id === "string" && SERVER_ID_PATTERN.test(item.server_id) ? { server_id: item.server_id } : {}) };
           const runtime = this.runtime(machine);
           this.machines.set(item.id, runtime);
@@ -639,7 +711,7 @@ export class MachineManager {
   }
   private watchOwnOffer(runtime: Runtime, generation: number): void {
     const target = runtime.machine.target;
-    const own = runtime.machine.kind === "relay" || runtime.machine.kind === "ssh" && !!target && !!runtime.ownOvisAt && sameSshSession(runtime.ownOvisAt, target);
+    const own = runtime.machine.kind === "relay" || runtime.machine.kind === "address" || runtime.machine.kind === "ssh" && !!target && !!runtime.ownOvisAt && sameSshSession(runtime.ownOvisAt, target);
     if (!own) return;
     const read = async () => {
       const endpoint = runtime.endpoint;
@@ -746,29 +818,32 @@ export class MachineManager {
    * The registrations cannot be recomputed, so they are written durably (writePrivateState): a
    * crash after a plain rename can leave the file its old length in NULs. Every refresh of a remote
    * PC saves soon, mostly with the same snapshot, so only a document that differs from the one on
-   * disk pays for the write and its fsync. `relayLast` is for the save that adds a relay PC
-   * (addRelay): relay-pcs.json, its registration, goes last instead, so a save that fails before it
-   * leaves the PC off disk, as it leaves no key (#2833).
+   * disk pays for the write and its fsync. `last` is for the save that adds a relay or address PC
+   * (addRelay, addAddress): that kind's own file, its registration, goes last instead, so a save that
+   * fails before it leaves the PC off disk, as it leaves no key or token (#2833).
    */
-  private persist(relayLast = false): void {
-    if (!relayLast) this.persistRelayPcs();
+  private persist(last?: "relay" | "address"): void {
+    for (const kind of ["relay", "address"] as const) if (kind !== last) this.persistApart(kind);
     const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id && machine.kind !== "hc").map(({ machine }) => machine);
-    const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay").map((m) => ({ id: m.id, name: m.name, target: m.target!, ...(m.server_id ? { server_id: m.server_id } : {}), enabled: m.enabled, snapshot: m.snapshot }));
+    const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay" && m.kind !== "address").map((m) => ({ id: m.id, name: m.name, target: m.target!, ...(m.server_id ? { server_id: m.server_id } : {}), enabled: m.enabled, snapshot: m.snapshot }));
     const text = JSON.stringify(data);
     // the PCs' registrations are written last: a save that fails before them leaves them as they were on disk, so a
     // PC moved to another address (setup) is saved there only when nothing else of its save can still fail (#2075)
     for (const { machine } of this.machines.values()) if (machine.herdr_profile_id) this.profileState.saveSnapshot(machine.herdr_profile_id, machine.snapshot);
     this.profileState.flush();
     if (text !== this.written || !holdsDocument(this.statePath, text)) { writePrivateState(this.statePath, data); this.written = text; }
-    if (relayLast) this.persistRelayPcs();
+    if (last) this.persistApart(last);
   }
-  private persistRelayPcs(): void {
-    const relayPcs: StoredMachine[] = [...this.machines.values()].map(({ machine }) => machine).filter((m) => !m.herdr_profile_id && m.kind === "relay")
-      .map((m) => ({ id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }));
-    const relayText = JSON.stringify(relayPcs);
-    if (relayText !== this.relayWritten || !holdsDocument(this.relayStatePath, relayText)) {
-      if (relayPcs.length > 0 || this.relayWritten !== undefined || existsSync(this.relayStatePath)) writePrivateState(this.relayStatePath, relayPcs);
-      this.relayWritten = relayText;
+  /** relay-pcs.json and address-pcs.json: PCs a release from before them would refuse in machines.json */
+  private persistApart(kind: "relay" | "address"): void {
+    const path = kind === "relay" ? this.relayStatePath : this.addressStatePath;
+    const pcs: StoredMachine[] = [...this.machines.values()].map(({ machine }) => machine).filter((m) => !m.herdr_profile_id && m.kind === kind)
+      .map((m) => m.kind === "relay" ? { id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }
+        : { id: m.id, name: m.name, kind: "address", address: m.address!, enabled: m.enabled, snapshot: m.snapshot });
+    const text = JSON.stringify(pcs);
+    if (text !== this.apartWritten[kind] || !holdsDocument(path, text)) {
+      if (pcs.length > 0 || this.apartWritten[kind] !== undefined || existsSync(path)) writePrivateState(path, pcs);
+      this.apartWritten[kind] = text;
     }
   }
   job(id: string): SetupJob | undefined { return this.jobs.get(id)?.public; }
@@ -793,6 +868,7 @@ export class MachineManager {
     const runtime = this.machines.get(id);
     if (!runtime) throw new Error("PC not found");
     if (runtime.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
+    if (runtime.machine.kind === "address") throw new Error(ADDRESS_PC_UPDATES);
     if (runtime.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     // its own Ovis updating itself: a bridge update would disconnect it and take over its progress
     if (runtime.ownJob) throw new PcUpdateRefused("This PC is already updating.");
@@ -1058,7 +1134,13 @@ export class MachineManager {
     if (waiting && !request.update_remote && sameSshSession(target, waiting.public.target) && target.identity_file === waiting.public.target.identity_file) return waiting.public;
     if ([...this.jobs.values()].filter((j) => !["connected", "failed", "cancelled"].includes(j.public.phase)).length >= SETUP_JOBS_AT_ONCE) throw (request.update_remote ? new PcUpdateRefused(JOBS_FULL) : new Error(JOBS_FULL));
     if (request.machine_id && !existing) throw new Error("PC not found");
+    const accountAdd = request.account_add === true;
+    if (accountAdd && (request.update_remote || options.auto || options.fromInstall || options.keysOnly)) throw new Error("An account add is its own setup, asked in its dialog");
+    if (accountAdd && (target.herdr_socket || target.start_new_herdr)) throw new Error("An account add connects to that PC's own Ovis, not to a herdr session");
+    // the owner's socket is forwarded over a multiplexed connection, which this app has on Linux and macOS only
+    if (accountAdd && process.platform === "win32") throw new Error("Adding a PC to your account over SSH from Windows is not supported yet.");
     if (existing?.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
+    if (existing?.machine.kind === "address") throw new Error(ADDRESS_PC_UPDATES);
     if (existing?.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     if (existing && [...this.jobs.values()].some((j) => j.public.machine_id === existing.machine.id && !["connected", "failed", "cancelled"].includes(j.public.phase))) throw new Error("A connection job for this PC is already running");
     if ([...this.jobs.values()].some((job) => (!TERMINAL.has(job.public.phase) || job.closing) && samePc(job.public.target, target))) throw new Error("This app is already connecting to this PC; wait for that to finish, or cancel it.");
@@ -1077,9 +1159,10 @@ export class MachineManager {
     const switchingSession = !!existing && moving && target.destination === existing.machine.target!.destination && samePort(target.port, existing.machine.target!.port);
     if (switchingSession) { clearTimeout(existing.retry); existing.retry = undefined; }
     const resumeRetry = existing?.machine.state === "reconnecting";
-    const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
+    const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: setupStepWords({ code: "connecting" }), step_code: { code: "connecting" }, challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
     if (options.expectedRevision) job.expectedRevision = options.expectedRevision;
     if (options.fromInstall) job.fromInstall = true;
+    if (accountAdd) job.accountAdd = {};
     if (job.update && existing) { job.runtime = existing; existing.machine.update_error = null; }
     if (job.update && existing && !auto) existing.updateCancelled = false;
     job.timer.unref();
@@ -1089,7 +1172,9 @@ export class MachineManager {
     this.disconnect(runtime);
     runtime.triedAt = this.now();
     if (moving) runtime.move = {};
-    const ssh = new SshConnection(target, this.sshDir, join(this.sshDir, machineId));
+    // an account add vouches with the user's own keys alone: never a password, nor this app's reconnect key
+    const ssh = new SshConnection(target, this.sshDir, accountAdd ? undefined : join(this.sshDir, machineId));
+    ssh.publicKeyOnly = accountAdd;
     job.ssh = ssh;
     runtime.ssh = ssh;
     runtime.abort = job.abort;
@@ -1103,12 +1188,14 @@ export class MachineManager {
         await ssh.start(auto || options.keysOnly ? undefined : (prompt, host) => {
           job.public.phase = "authentication";
           job.public.challenge = { id: randomUUID(), kind: host ? "host_key" : "secret", prompt };
-          job.public.step = host ? "Verify the server fingerprint" : "SSH authentication required";
+          this.step(job, { code: host ? "fingerprint" : "authentication" });
           return this.wait(job);
         });
         reached = true;
-        this.stage(job, "checking", "Checking the remote environment…");
+        this.stage(job, "checking", { code: "checking" });
         await this.prepare(runtime, job);
+        if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
+        if (job.accountAdd) job.public.account_add = await this.inspectForAccount(job, ssh, generation);
         if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
         runtime.machine.enabled = true;
         if (!switchingSession) this.machines.set(machineId, runtime);
@@ -1148,9 +1235,10 @@ export class MachineManager {
         }
         if (switchingSession) this.disconnect(existing!);
         if (move) { clearInterval(runtime.offerTimer); this.watchOwnOffer(runtime, runtime.generation); }
-        this.stage(job, "connected", "Connected");
+        this.stage(job, "connected", { code: "connected" });
         this.emit();
       } catch (e) {
+        await job.accountAdd?.channel?.close();
         const ownsRuntime = runtime.generation === generation;
         if (ownsRuntime && !this.stopped && !job.abort.signal.aborted && job.public.phase !== "cancelled") {
           this.remoteDiagnostics.failed(machineId, e instanceof MachineActionRequired ? "action_required" : "connection_lost", { operation: "bridge", machine_id: machineId });
@@ -1169,8 +1257,9 @@ export class MachineManager {
           }
           else if (ownsRuntime && runtime.machine.action_required === "windows_login") { runtime.machine.action_required = null; runtime.machine.error = null; this.emit(); }
         } else {
-          job.public.phase = "failed"; job.public.step = "Connection failed";
+          job.public.phase = "failed"; this.step(job, { code: "failed" });
           job.public.error = error;
+          job.public.error_code = e instanceof MachineActionRequired ? e.code ?? null : null;
           if (moving) { if (!switchingSession && ownsRuntime && runtime.machine.enabled && !this.stopped) { runtime.machine.error = null; runtime.machine.action_required = null; this.retryLater(runtime); } }
           else if (ownsRuntime && existing && runtime.machine.enabled && !this.stopped && e instanceof MachineActionRequired && e.action === "windows_login") { runtime.machine.error = error; runtime.machine.action_required = e.action; this.retryLater(runtime); }
           else if (ownsRuntime && existing && runtime.machine.enabled && !this.stopped && !(e instanceof MachineActionRequired) && (unreachable || resumeRetry || runtime.machine.action_required === "windows_login")) { runtime.machine.error = error; runtime.machine.action_required = null; this.retryLater(runtime); }
@@ -1189,9 +1278,50 @@ export class MachineManager {
     })();
     return job.public;
   }
-  private stage(job: JobState, phase: SetupJob["phase"], step: string): void {
+  /**
+   * Reads, over this job's connection, what the PC's own Ovis says of itself for an account add (its owner's recovery
+   * socket, forwarded into this connection's private folder): its public relay fields, checked here, and its account.
+   */
+  private async inspectForAccount(job: JobState, ssh: SshConnection, generation: number): Promise<AccountAddTarget> {
+    const remote = job.accountAdd?.remoteSocket;
+    if (remote === undefined) throw new MachineActionRequired(ACCOUNT_ADD_OLD_OVIS, "setup");
+    const channel = job.accountAdd!.channel = await AccountAddChannel.open(ssh, remote);
+    const answer = await channel.inspect() as Record<string, unknown> | null;
+    if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new MachineActionRequired(answer.error, "setup");
+    const fields = accountAddTarget(answer);
+    if (fields === null) throw new MachineActionRequired("That PC's Ovis answered with something this app cannot use. Update Ovis there, then try again.", "setup");
+    job.accountAdd!.reached = { channel, ssh, generation, serverId: fields.server_id };
+    return fields;
+  }
+  /**
+   * The take of an account add (POST /api/account/ssh-add): tells the PC that job reached the account to join, `account`,
+   * which the caller derives from this PC's own binding. Only while the job's connection stands, its PC has not
+   * reconnected since, and the PC it answered for is `serverId`. The PC takes the admission on its own proof.
+   */
+  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string }> {
+    const job = this.jobs.get(jobId);
+    const reached = job?.accountAdd?.reached;
+    if (!job || !reached || job.public.phase !== "connected") throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.");
+    if (reached.serverId !== serverId) throw new AccountAddError("identity_changed", "That PC is not the one this add reached. Connect to it again.");
+    const runtime = this.machines.get(job.public.machine_id);
+    if (!runtime || runtime.ssh !== reached.ssh || runtime.generation !== reached.generation || !reached.channel.open) {
+      await reached.channel.close();
+      throw new AccountAddError("disconnected", "The SSH connection to that PC ended. Connect to it again.");
+    }
+    // one take per inspect: the channel closes the forward once it answers, whatever it answers
+    const answer = await reached.channel.take(account, serverId) as Record<string, unknown> | null;
+    if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
+    if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
+    return { account };
+  }
+  /** a step by its code (its English beside it), or by words with no code: a PC's own notice */
+  private step(job: JobState, step: SetupStepCode | string): void {
+    job.public.step = typeof step === "string" ? step : setupStepWords(step);
+    job.public.step_code = typeof step === "string" ? null : step;
+  }
+  private stage(job: JobState, phase: SetupJob["phase"], step: SetupStepCode | string): void {
     if (job.abort.signal.aborted) throw new Error("Setup cancelled");
-    job.public.phase = phase; job.public.step = step; job.public.challenge = null; job.public.ssh_output = null;
+    job.public.phase = phase; this.step(job, step); job.public.challenge = null; job.public.ssh_output = null;
     if (phase === "installing") clearTimeout(job.timer);
     job.public.progress = null;
     this.showUpdate(job);
@@ -1219,7 +1349,7 @@ export class MachineManager {
     if (action.action === "start_headless") {
       if (job.abort.signal.aborted || job.public.phase !== "starting" || (job.public.action_required !== "windows_login" && job.public.action_required !== "windows_start_failed")) throw new Error("This PC is not waiting for Windows sign-in");
       job.public.action_required = null;
-      job.public.step = "Starting without Windows sign-in…";
+      this.step(job, { code: "headless" });
       job.headlessStart = true;
       return;
     }
@@ -1234,7 +1364,7 @@ export class MachineManager {
     const pending = job.pending;
     job.pending = undefined; job.public.challenge = null;
     job.public.phase = action.action === "approve" ? "installing" : "connecting";
-    job.public.step = actionStep(action.action);
+    this.step(job, actionStep(action.action));
     pending.resolve(action.action === "answer" ? action.answer : "approved");
   }
   /** `asked`: the person cancelled it here (its Cancel, or the PC's cancel of its update): only then is that PC asked to stop its own update */
@@ -1243,10 +1373,11 @@ export class MachineManager {
     const job = this.jobs.get(id);
     if (!job || ["connected", "failed", "cancelled"].includes(job.public.phase)) return;
     job.timedOut = timedOut;
-    job.public.phase = timedOut ? "failed" : "cancelled"; job.public.step = timedOut ? "Connection timed out" : "Cancelled"; job.public.challenge = null; job.public.ssh_output = null;
+    job.public.phase = timedOut ? "failed" : "cancelled"; this.step(job, { code: timedOut ? "timed_out" : "cancelled" }); job.public.challenge = null; job.public.ssh_output = null;
     if (timedOut) job.public.error = "Connection timed out";
     job.public.action_required = null; job.headlessStart = false;
     job.abort.abort(); job.pending?.reject(new Error("Setup cancelled")); job.pending = undefined;
+    void job.accountAdd?.channel?.close();
     clearTimeout(job.timer);
     if (ownCancel) { job.closing = true; job.cancelling = ownCancel().then((words) => { job.public.error = words; this.emit(); }).finally(() => { job.ssh?.close(); job.closing = false; }); }
     else job.ssh?.close();
@@ -1272,6 +1403,8 @@ export class MachineManager {
       if (runtime.generation === generation && !moving) runtime.machine.remote_ovis = left;
     };
     const { host, inspection } = await detectHost(ssh, session, target.herdr_socket);
+    // the owner's socket an account add needs is POSIX only (server/account/recovery.ts); a Windows PC adds itself by its number
+    if (job?.accountAdd && host.kind !== "posix") throw new MachineActionRequired(ACCOUNT_ADD_WINDOWS, "setup");
     if (job) job.defaultSocket = !session && !!target.herdr_socket && inspection.expectedSocket === inspection.defaultSocket;
     // the account's herdr sessions by the confined rule (server/herdr-discovery.ts), for when no Ovis there lists them
     // listedHere: that PC could list them: only this app's runtime there applies the rule (without one, none are listed)
@@ -1315,7 +1448,8 @@ export class MachineManager {
     // Unasked, it is offered only in a setup the user started: a reconnect (or an update that asks nobody) of a PC saved
     // without an Ovis chosen connects as before, whatever runs beside it (its herdr may answer with no bridge in front yet)
     const asked = !!job && !job.auto;
-    const adding = asked && !job.fromInstall && !this.machines.has(runtime.machine.id);
+    // an account add looks for that PC's own Ovis whether or not the PC was added here before
+    const adding = asked && !job.fromInstall && (job.accountAdd !== undefined || !this.machines.has(runtime.machine.id));
     if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || asked && candidates.length > 0 && (adding || !await servedAlready()))) {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();
@@ -1339,7 +1473,7 @@ export class MachineManager {
           answered = true;
           const listed = proved.identity.found_herdr_sessions;
           if (listed === undefined) unlisted = true;
-          else { if (listed.length) for (const row of parseFoundHerdrSessions(listed)) sessions.set(row.socket_path, row); named = true; }
+          else { if (listed.length) for (const row of parseFoundHerdrSessions(listed, inspection.home)) sessions.set(row.socket_path, row); named = true; }
         } catch (error) {
           if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw error;
           // A stale or inaccessible registration grants no connection and no permission to start anything. A live one of
@@ -1359,6 +1493,11 @@ export class MachineManager {
         if (!found.length) throw await coreUnavailable();
         if (!answered) throw !job || job.auto ? new Error(OWN_OVIS_UNANSWERED) : await offer(OWN_OVIS_UNANSWERED);
         expectedSocket = target.own_ovis;
+      } else if (adding && answered && found.length === 1 && !session) {
+        // A PC added beside its one answering Ovis connects to it, whatever else runs there, with nothing to choose: a herdr
+        // session instead is named under the dialog's advanced settings
+        target.own_ovis = found[0]!.socket_path;
+        expectedSocket = target.own_ovis;
       } else if (found.length) {
         const choice = answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED;
         const served = adding && await servedAlready();
@@ -1370,7 +1509,11 @@ export class MachineManager {
           // the default session's socket is saved as herdr to start (job.defaultSocket), so the named one's row would save
           // the PC with that socket, and after that PC restarts its bridge would say the session no longer runs instead of
           // starting it by its name
-          if (!session && answered && !listedHere) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
+          if (!session && answered && !listedHere) {
+            // the default session is asked about too, though a throwaway one is not listed
+            if (!throwawayPath(expectedSocket, inspection.home)) sessions.set(expectedSocket, { socket_path: expectedSocket, label: "Default session" });
+            throw await offer(choice);
+          }
         }
         if (sessions.has(expectedSocket)) throw await offer(choice);
       }
@@ -1401,6 +1544,13 @@ export class MachineManager {
       descriptor = undefined;
     }
     if (target.own_ovis && !descriptor) throw await ownOvisGone();
+    // an account add lands only on that PC's own Ovis: never on a bridge this app runs there, nor one it would install
+    // or start in its place (nothing below installs or starts anything for it)
+    if (job?.accountAdd && descriptor?.managed_remote !== false) {
+      throw descriptor !== undefined || inspection.descriptors.some((d) => d.managed_remote === true)
+        ? new MachineActionRequired(ACCOUNT_ADD_BRIDGE_ONLY, "setup")
+        : new MachineActionRequired(ACCOUNT_ADD_NO_OVIS, "install_ovis");
+    }
     // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
     // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the
     // user reviews in its dialog may start this app's bridge there.
@@ -1443,7 +1593,7 @@ export class MachineManager {
         if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target, descriptor.token, descriptor.socket_path); }
         if (job) { job.public.remote_ovis = offer; job.offeredRevision = offeredRevision; }
         if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");
-        if (!update) throw new MachineActionRequired(ownUpdateOffered(offer), "update_bridge");
+        if (!update) throw new MachineActionRequired(ownUpdateOffered(offer), "update_bridge", false, undefined, undefined, { code: "own_ovis_older", version: offer.version, target: offer.latest_version });
         ownUpdate = offer;
         update = false;
         if (job) job.own = true;
@@ -1457,20 +1607,21 @@ export class MachineManager {
     if (!descriptor && !hasBundle) installs.push(host.bundleDescription);
     if (!descriptor && !herdrPath) installs.push(host.installHerdr ? `herdr 0.9.3 through its own installer (${HERDR_INSTALL_CMD})` : "Bundled herdr 0.9.3 (existing installations are preserved)");
     if (!descriptor && job) installs.push("Start the loopback bridge and, only if absent, the herdr daemon");
-    if (ssh.usedSecret) installs.push("Register a dedicated SSH public key for automatic reconnection");
+    // an account add enrolls no key of this app's on that PC
+    if (ssh.usedSecret && !job?.accountAdd) installs.push("Register a dedicated SSH public key for automatic reconnection");
     if (installs.length) {
       if (!job) throw new MachineActionRequired("Remote setup needs approval. Use Reconnect / setup on this PC.", "setup");
       job.public.installations = installs;
       // an automatic bridge update was approved by the app update (or the tap that started it)
       if (!job.auto) {
-        this.stage(job, "approval", "Review the changes on this PC");
+        this.stage(job, "approval", { code: "review" });
         await this.wait(job);
       }
       job.installationApproved = update || !descriptor;
-      if (update || !descriptor && !hasBundle) { this.stage(job, "installing", `Installing verified ${platform} bundle…`); await host.installBundle(ssh, platform, job.abort.signal, { cacheDir: join(this.stateDir, "bundles"), owner: installLockOwner(this.stateDir, target), onProgress: (stage, done, total) => this.progress(job, stage, done, total) }); }
-      if (!descriptor && !herdrPath && host.installHerdr) { this.stage(job, "installing", "Installing herdr with its own installer…"); herdrPath = await host.installHerdr(ssh); }
-      if (ssh.usedSecret) {
-        this.stage(job, "installing", "Registering the app SSH key…");
+      if (update || !descriptor && !hasBundle) { this.stage(job, "installing", { code: "install_bundle", platform }); await host.installBundle(ssh, platform, job.abort.signal, { cacheDir: join(this.stateDir, "bundles"), owner: installLockOwner(this.stateDir, target), onProgress: (stage, done, total) => this.progress(job, stage, done, total) }); }
+      if (!descriptor && !herdrPath && host.installHerdr) { this.stage(job, "installing", { code: "install_herdr" }); herdrPath = await host.installHerdr(ssh); }
+      if (ssh.usedSecret && !job.accountAdd) {
+        this.stage(job, "installing", { code: "register_key" });
         const path = join(this.sshDir, runtime.machine.id);
         if (!existsSync(path)) {
           // Generate privately until the job still owns this destination. A cancelled job
@@ -1506,7 +1657,7 @@ export class MachineManager {
       if (verified.identity.managed_remote !== true || verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; no process was stopped");
       if (newerBundle(verified.identity.bundle_version)) throw new MachineActionRequired(newerBridge(verified.identity.bundle_version), "bridge_conflict");
       if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
-      this.stage(job, "starting", "Restarting the verified remote bridge…");
+      this.stage(job, "starting", { code: "restart_bridge" });
       this.progress(job, "restart", 0, null);
       await host.stop(ssh, descriptor.pid);
       const deadline = Date.now() + 10_000;
@@ -1521,7 +1672,7 @@ export class MachineManager {
     if (!descriptor && !this.mayManageBridge(runtime) && !job) throw new MachineActionRequired("The saved herdr machine needs a web bridge. Set it up here; the SSH address and session are already filled in.", "setup");
     if (!descriptor) {
       if (job?.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
-      if (job) this.stage(job, "starting", "Starting the remote bridge…");
+      if (job) this.stage(job, "starting", { code: "start_bridge" });
       let notice: string | null = null;
       let waitingForLogin = false;
       do {
@@ -1539,7 +1690,8 @@ export class MachineManager {
           if (descriptor) break;
           const found = await host.foundSessions?.(ssh, inspection);
           if (found?.gone) throw new MachineActionRequired("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", "choose_herdr", false, found.sessions);
-          if (found?.sessions.length) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found.sessions);
+          // a startup the PC stopped for sessions found there: those it may offer (none, past the test sessions) or a new herdr
+          if (found) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found.sessions);
           if (!headless) notice = await host.startupNotice?.(ssh, session) ?? null;
           if (notice) break;
           await Bun.sleep(250);
@@ -1598,6 +1750,11 @@ export class MachineManager {
     if (verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; ownership was not changed");
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     learnServer(verified.identity, true);
+    if (job?.accountAdd) {
+      // proved over its own credential just now: the process registered there is that PC's own Ovis, not a bridge
+      if (verified.identity.managed_remote !== false || descriptor.managed_remote !== false) throw new MachineActionRequired(ACCOUNT_ADD_BRIDGE_ONLY, "setup");
+      job.accountAdd.remoteSocket = descriptor.recover_socket;
+    }
     runtime.endpoint = verified.endpoint;
     if (moving) runtime.move!.herdr = verified.identity.herdr; else runtime.machine.herdr = verified.identity.herdr;
     if (job) job.public.runtime = verified.identity.herdr.runtime ?? "herdr";
@@ -1745,8 +1902,7 @@ export class MachineManager {
     return answer(status, null);
   }
   private async runOwnUpdate(job: JobState, ssh: SshConnection, host: RemoteHost, descriptor: BridgeDescriptor, expectedSocket: string, offer: RemoteOvis): Promise<BridgeDescriptor> {
-    const to = offer.latest_version ? ` to v${offer.latest_version}` : "";
-    this.stage(job, "installing", `Asking this PC's own Ovis to update itself${to}…`);
+    this.stage(job, "installing", { code: "own_update_ask", target: offer.latest_version });
     const endpoint = await this.tunnel(ssh, descriptor);
     const updates = (install?: string) => fetch(`${endpoint.url}/api/updates${install ? "/install" : ""}`, {
       ...(install ? { method: "POST", body: JSON.stringify({ expected_revision: install }) } : {}),
@@ -1807,7 +1963,7 @@ export class MachineManager {
       if (next && await host.alive(ssh, next.pid)) {
         if (next.bundle_version !== REMOTE_BUNDLE_VERSION && !newerBundle(next.bundle_version)) throw new MachineActionRequired(`This PC's Ovis updated itself, but its version still differs from this app's (v${remoteWords(next.bundle_version)}; this app requires v${REMOTE_BUNDLE_VERSION}). Update it on that PC (Settings → Updates), then reconnect; it was left running.`, "setup");
         job.ownCancel = undefined;
-        this.stage(job, "starting", "Connecting to this PC's updated Ovis…");
+        this.stage(job, "starting", { code: "own_update_connect" });
         return next;
       }
       let status: Partial<UpdateStatus> | null = null;
@@ -1815,9 +1971,8 @@ export class MachineManager {
       if (ownInstallRunning(status)) started = true;
       if (status?.phase === "error" && (started || remoteWords(status.error) !== earlierError)) throw new Error(`That PC's Ovis could not update itself: ${remoteWords(status.error) ?? "no reason given"} Check its Settings → Updates there, then reconnect.`);
       if (status && ownInstallRunning(status)) {
-        const step = OWN_UPDATE_STEPS[status.step ?? ""] ?? status.phase;
-        const text = `This PC's own Ovis is updating itself${to}: ${step}…`;
-        if (job.public.step !== text) { job.public.step = text; this.showUpdate(job); }
+        const running: SetupStepCode = { code: "own_update_running", target: offer.latest_version, stage: status.step && Object.hasOwn(OWN_UPDATE_STEPS, status.step) ? status.step : status.phase ?? "" };
+        if (job.public.step !== setupStepWords(running)) { this.step(job, running); this.showUpdate(job); }
       }
       if (!started && status && Date.now() >= startBy) throw new Error(`This PC's Ovis did not start its update within ${Math.max(1, Math.round(this.ownUpdateStartMs / 1000))} seconds of being asked. Check its Settings → Updates there, then reconnect.`);
       await this.pause(job.abort.signal);
@@ -1872,7 +2027,7 @@ export class MachineManager {
     const endpoint = runtime.endpoint;
     const generation = runtime.generation;
     try {
-      if ((runtime.tunnel || runtime.hc) && !runtime.machine.herdr) {
+      if ((runtime.tunnel || runtime.forward || runtime.hc) && !runtime.machine.herdr) {
         await this.readRelayHerdr(runtime, endpoint, generation);
         if (generation !== runtime.generation || this.stopped) return;
       }
@@ -1906,13 +2061,13 @@ export class MachineManager {
     await this.refresh(runtime);
     if (generation !== runtime.generation || this.stopped) throw new Error("Connection cancelled");
     runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.found_herdr_sessions = undefined; runtime.machine.found_ovis = undefined; runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.installFix = undefined; runtime.attempts = 0; runtime.updateCancelled = false;
-    if (runtime.tunnel) runtime.machine.route = runtime.tunnel.route;
+    if (runtime.tunnel) { runtime.machine.route = runtime.tunnel.route; viewOnlyFrom(runtime.machine, runtime.tunnel); }
     this.openObserver(runtime, generation);
     this.watchOwnOffer(runtime, generation);
     if (runtime.ssh) runtime.ssh.onExit = () => this.lost(runtime, generation, new Error("SSH connection ended"));
     runtime.poll = setInterval(() => void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e)), 5000);
     runtime.poll.unref();
-    if (runtime.ssh || runtime.tunnel) this.watchMove(runtime, generation);
+    if (runtime.ssh || runtime.tunnel || runtime.forward) this.watchMove(runtime, generation);
   }
   private watchMove(runtime: Runtime, generation: number): void {
     const watch = runtime.moveWatch ??= { reading: false, again: false };
@@ -1962,7 +2117,7 @@ export class MachineManager {
       this.emit({ type: "machine-message", machine_id: runtime.machine.id, message });
       if (["pane-status", "pane-exited", "session-changed"].includes(message.type)) void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e));
     };
-    ws.onclose = () => this.lost(runtime, generation, new Error(runtime.tunnel ? "Relay connection to this PC was lost" : runtime.hc ? "This machine's server connection was lost" : "SSH bridge connection interrupted"));
+    ws.onclose = () => this.lost(runtime, generation, new Error(runtime.tunnel ? "Relay connection to this PC was lost" : runtime.forward ? "Connection to this PC was lost" : runtime.hc ? "This machine's server connection was lost" : "SSH bridge connection interrupted"));
     ws.onerror = () => ws.close();
   }
   private tunnelOptions(runtime: Runtime, generation: number): Parameters<typeof openRelayPcTunnel>[2] {
@@ -1986,7 +2141,7 @@ export class MachineManager {
     this.disconnect(runtime);
     runtime.machine.error = error instanceof Error ? error.message : String(error);
     // the other PC turned this one away for good (revoked it, say): trying again could only fail the same way
-    if (error instanceof RelayPcRefused) {
+    if (error instanceof RelayPcRefused || error instanceof AddressPcRefused) {
       runtime.machine.state = "error"; runtime.machine.action_required = null;
       this.emit();
       return;
@@ -2055,6 +2210,17 @@ export class MachineManager {
       } catch (e) { this.lost(runtime, generation, e); }
       return;
     }
+    if (runtime.machine.kind === "address") {
+      try {
+        delete runtime.machine.herdr;
+        await checkAddressTarget(runtime.machine.address!);
+        if (generation !== runtime.generation || this.stopped) return;
+        runtime.forward = openAddressPcForward(runtime.machine.address!, loadAddressPcToken(this.addressTokenPath(runtime.machine.id)), (error) => this.lost(runtime, generation, error));
+        runtime.endpoint = runtime.forward.endpoint;
+        await this.observe(runtime); this.emit();
+      } catch (e) { this.lost(runtime, generation, e); }
+      return;
+    }
     runtime.ssh = new SshConnection(runtime.machine.target!, this.sshDir, join(this.sshDir, runtime.machine.id));
     try {
       await runtime.ssh.start(); await this.prepare(runtime);
@@ -2084,6 +2250,7 @@ export class MachineManager {
     for (const close of runtime.terminals) close(); runtime.terminals.clear();
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
     runtime.tunnel?.close(); runtime.tunnel = undefined; delete runtime.machine.route;
+    runtime.forward?.close(); runtime.forward = undefined;
     if (runtime.hc?.bridge) { runtime.hc.bridge.stop(); runtime.hc.bridge = undefined; }
     runtime.verification?.abort.abort(); runtime.verification = undefined;
     runtime.acceptedEpoch = undefined; runtime.candidate = undefined; runtime.candidateRun = undefined; delete runtime.machine.source_boot_id;
@@ -2207,11 +2374,52 @@ export class MachineManager {
     this.dropUpdate(runtime);
     // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
+    if (runtime.machine.kind === "address") removeAddressPcToken(this.addressTokenPath(id));
     this.machines.delete(id); this.persist();
     for (const suffix of ["", ".pub"]) try { unlinkSync(join(this.sshDir, id + suffix)); } catch {}
     this.emit();
   }
   private relayKeyPath(id: string): string { return join(this.stateDir, "relay-pcs", `${id}.json`); }
+  private addressTokenPath(id: string): string { return join(this.stateDir, "address-pcs", `${id}.json`); }
+  /**
+   * Add a connection → Direct, an https address: pairs with that PC's own Ovis with the six-digit code it shows, as a
+   * device that drives it (server/address-pc.ts), and adds it once that pairing is saved here.
+   */
+  async addAddress(address: unknown, code: unknown, name?: unknown): Promise<Machine> {
+    if (this.stopped) throw new Error("Server stopping");
+    const origin = addressOrigin(address);
+    if (typeof code !== "string" || !/^\d{6}$/.test(code.trim())) throw new AddressPcError("code");
+    if (name !== undefined && (typeof name !== "string" || !name.trim() || name.length > 100)) throw new Error("Enter a PC name (1–100 characters)");
+    const added = (): boolean => [...this.machines.values()].some(({ machine }) => machine.address === origin);
+    if (added()) throw new AddressPcError("added");
+    await checkAddressTarget(origin);
+    // a code this PC shows, typed with this PC's own address, would pair it with itself
+    if (this.bootId && await addressBootId(origin) === this.bootId) throw new AddressPcError("self");
+    const deviceToken = await pairAddressPc(origin, code.trim(), relayPcLabel());
+    if (this.stopped || added()) throw new Error(this.stopped ? "Server stopping" : `That PC is already added. It now also lists ${relayPcLabel()} once more under Phone & devices: revoke that one there.`);
+    const id = randomUUID();
+    const tokenPath = this.addressTokenPath(id);
+    const runtime = this.runtime({
+      id, name: typeof name === "string" ? name.trim() : new URL(origin).hostname, kind: "address", address: origin,
+      enabled: true, state: "connecting", error: null, snapshot: null,
+    });
+    const generation = runtime.generation;
+    // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or token behind
+    try {
+      runtime.forward = openAddressPcForward(origin, deviceToken, (error) => this.lost(runtime, generation, error));
+      runtime.endpoint = runtime.forward.endpoint;
+      this.machines.set(id, runtime);
+      saveAddressPcToken(tokenPath, deviceToken); this.persist("address");
+    } catch (error) {
+      this.machines.delete(id);
+      runtime.machine.enabled = false; this.disconnect(runtime);
+      removeAddressPcToken(tokenPath);
+      throw new Error(`This PC could not be saved (${error instanceof Error ? error.message : String(error)}). That PC already lists it under Phone & devices as ${relayPcLabel()}: revoke it there.`, { cause: error });
+    }
+    this.emit();
+    try { await this.observe(runtime); this.emit(); } catch (e) { this.lost(runtime, generation, e); }
+    return runtime.machine;
+  }
   /**
    * Settings → Remote PCs, with the code another PC shows (its Settings → Phone & devices → Show a code to type):
    * finds that PC as a phone does (shared/relay-code-offer.ts) and holds its offer here, the one-time code in it
@@ -2322,12 +2530,11 @@ export class MachineManager {
   private readonly pairing = new Set<string>();
 
   /**
-   * Add a connection → Ovis relay → Add, once the page posted its admission: compares digits with that PC through
-   * the relay, as another PC of the account vouched for (PAIR_INTENT_VOUCHED), `onDigits` told them for the page to
-   * show, and adds it as addRelay does once a member of the account approved it there. `signal` ends the comparison,
+   * After the page posts its admission, prove this server’s identity over the pinned relay channel.
+   * Tell the page when a member can allow this join; add the PC only after the member allows it. `signal` ends the comparison,
    * and nothing is written: no key, no PC (the key stays in memory for the next Add of that PC).
    */
-  async pairAccountPc(ticket: unknown, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
+  async pairAccountPc(ticket: unknown, onWaiting: () => void, signal: AbortSignal): Promise<Machine> {
     if (this.stopped) throw new Error("Server stopping");
     const held = typeof ticket === "string" ? this.accountPcTickets.get(ticket) : undefined;
     if (held !== undefined) this.accountPcTickets.delete(ticket as string);
@@ -2356,17 +2563,15 @@ export class MachineManager {
     held.running = { comparison, done: new Promise<void>((resolve) => { ended = resolve; }) };
     this.pairing.add(id);
     try {
+      const identity = savedIdentityReader(this.stateDir)();
+      if (!identity) throw new RelayPcRefused("This PC has no server identity");
       tunnel = await openRelayPcTunnel(offer, key, { ...this.tunnelOptions(runtime, runtime.generation), pairing: {
-        compare: async (digits) => { shown = true; onDigits(digits); }, signal: comparison.signal,
+        identity, waiting: () => { shown = true; onWaiting(); }, signal: comparison.signal,
       } });
     } catch (error) {
       removeRelayPcKey(keyPath);
       if (key.paired && this.accountPcs.get(serverId) === held) this.accountPcs.delete(serverId);
-      if (comparison.signal.aborted) throw new AccountPcError("cancelled", "Cancelled. Nothing was added.", { cause: error });
-      if (error instanceof RelayPcOutdated) throw new AccountPcError("outdated", error.message, { cause: error });
-      if (shown) throw new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
-      if (error instanceof RelayPcRefused) throw new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
-      throw new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      throw accountPcFailure(error, { shown, aborted: comparison.signal.aborted });
     } finally {
       this.pairing.delete(id);
       signal.removeEventListener("abort", cancel);
@@ -2407,6 +2612,7 @@ export class MachineManager {
     try { tunnel = await openRelayPcTunnel(offer, key, this.tunnelOptions(runtime, generation)); }
     catch (error) {
       removeRelayPcKey(keyPath);
+      if (error instanceof TargetAccountPcError) throw error;
       throw new Error(error instanceof RelayPcRefused ? error.message : `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
     return this.adoptRelayPc(runtime, tunnel, keyPath);
@@ -2424,7 +2630,7 @@ export class MachineManager {
     runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint;
     this.machines.set(id, runtime);
     // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or key behind
-    try { this.persist(true); } catch (error) {
+    try { this.persist("relay"); } catch (error) {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);
       removeRelayPcKey(keyPath);
@@ -2458,6 +2664,29 @@ function snapshotAfterStatus(snapshot: SessionSnapshot, message: Extract<ServerM
     const { finish_id: _finish, ...rest } = pane;
     return rest;
   }) };
+}
+
+/**
+ * Why adding another PC of the account failed (pairAccountPc). Once the request was shown there, the PC closing it at its
+ * deadline (`timeout`, server/relay/session.ts) is nobody answering, kept apart from a member's Deny: a page remembers a
+ * Deny, never an unanswered request.
+ */
+export function accountPcFailure(error: unknown, { shown, aborted }: { shown: boolean; aborted: boolean }): AccountPcError {
+  if (aborted) return new AccountPcError("cancelled", "Cancelled. Nothing was added.", { cause: error });
+  if (error instanceof RelayPcOutdated) return new AccountPcError("outdated", error.message, { cause: error });
+  if (shown) {
+    for (let at: unknown = error; at instanceof Error; at = at.cause) {
+      if (at instanceof MuxProtocolError && at.code === "timeout") return new AccountPcError("unanswered", "Nobody approved that PC in time. Nothing was added.", { cause: error });
+    }
+    return new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
+  }
+  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
+  return new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+}
+
+/** A PC that admitted this one only to watch says so, so no device here is offered writes that PC refuses. */
+function viewOnlyFrom(machine: Machine, tunnel: RelayPcTunnel): void {
+  if (tunnel.role === "watch") machine.view_only = true; else delete machine.view_only;
 }
 
 function pcServerId(machine: Machine): string | undefined {

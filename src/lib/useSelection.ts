@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { paneStorageId, type Machine } from "../../shared/machines.ts";
 import { fetchSession } from "./api.ts";
-import { fileFromLink, resolveLink, type AppLink, type LinkNote } from "./deepLink.ts";
+import { fileFromLink, noteAfterSelection, resolveLink, type AppLink, type LinkNote } from "./deepLink.ts";
 import { linkLanding, machineGone, notificationLanding, notificationTargetFromSearch, sameLink, onNotificationTarget, type NotificationTarget } from "./notificationTarget.ts";
 import { pageSearch } from "./pageQuery.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
@@ -11,9 +11,11 @@ import { lastViewedPane } from "./lastViewedPane.ts";
 import type { PaneView } from "./actions.ts";
 import type { Translate } from "./i18n.ts";
 import { storedSelection, storeSelection } from "./useSplitView.ts";
+import { pcHeld, usePcNewness } from "./relay/newPcHere.ts";
 
 type SelectionHint = { machine: string; pane: string; workspace: string } | null;
-type SelectTarget = (machineId: string, paneId: string | null, view?: PaneView) => void;
+/** `keepNote`: a selection the user did not make (a link, a tapped notification, a pane moved, the selection restored on load) leaves the header's note to the landings (the service worker names a tapped pane twice, before and after focus, and the second must not take the first's note away) */
+type SelectTarget = (machineId: string, paneId: string | null, view?: PaneView, keepNote?: boolean) => void;
 
 export function linkSelects(initialLink: AppLink | null): boolean {
   return initialLink !== null && Boolean(initialLink.pane || initialLink.workspace || fileFromLink(initialLink) || initialLink.create);
@@ -35,6 +37,8 @@ export function useSelectionState({ initialLink }: { initialLink: AppLink | null
     if (initialLink && (initialLink.workspace || fileFromLink(initialLink))) return null;
     const stored = storedSelection();
     if (initialLink?.create && stored?.machine_id !== initialLink.machine) return null;
+    // C3 pin 1 (#16): no session of a PC new in the account is restored here
+    if ((stored?.machine_id ?? "local") === "local" && pcHeld()) return null;
     return stored?.pane_id ?? null;
   });
   const [notificationViewTarget, setNotificationViewTarget] = useState<NotificationTarget | null>(
@@ -129,7 +133,10 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   const selectedMachineRef = useRef(selectedMachineId);
   selectedMachineRef.current = selectedMachineId;
   const picks = useRef(0);
-  const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView) => {
+  const selectedPaneRef = useRef(selectedPaneId);
+  selectedPaneRef.current = selectedPaneId;
+  const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView, keepNote = false) => {
+    const samePane = machineId === selectedMachineRef.current && paneId === selectedPaneRef.current;
     picks.current += 1;
     onPickRef.current?.(paneId);
     // Only another PC mounts a new terminal (and socket), which reports its own state. A pane
@@ -140,6 +147,8 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     setOutputStopped(false);
     setNotificationViewTarget(view && paneId !== null ? { machine_id: machineId, pane_id: paneId, view } : null);
     setTerminalPeek(null);
+    // the user's own pick leaves behind the pane an earlier landing's note speaks of
+    if (!keepNote && !samePane) setHeaderNote(noteAfterSelection);
     // this browser's choice only: herdr's focus, its TUI and every other device stay where they are
     storeSelection(machineId, paneId);
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
@@ -147,13 +156,15 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     selectionSince.current = rosterSeq.current;
   }, []);
   const selectTargetRef = useRef(selectTarget); selectTargetRef.current = selectTarget;
+  const { held } = usePcNewness();
   const lastSeen = useRef<{ machine: string; pane: string; roster: NonNullable<typeof snapshot>; previous: string | null } | null>(null);
   useEffect(() => {
     // An offline PC's cached roster cannot invalidate a selection.
     if (!snapshot || selectedMachine?.state !== "connected") return;
     const seen = lastSeen.current?.machine === selectedMachineId && lastSeen.current.pane === selectedPaneId ? lastSeen.current : null;
-    const fallback = (current: typeof snapshot) => (seen && paneAfterClose(seen.roster, current, seen.pane, seen.previous, (scope, id) => lastViewedPane(scope, selectedMachineId, id)))
-      ?? current.panes.find((pane) => pane.pane_id === current.focused_pane_id)?.pane_id ?? current.panes[0]?.pane_id ?? null;
+    // C3 pin 1 (#16): nothing of a PC new in the account is selected by itself, the selection's fallback included
+    const fallback = (current: typeof snapshot) => selectedMachineId === "local" && held ? null : ((seen && paneAfterClose(seen.roster, current, seen.pane, seen.previous, (scope, id) => lastViewedPane(scope, selectedMachineId, id)))
+      ?? current.panes.find((pane) => pane.pane_id === current.focused_pane_id)?.pane_id ?? current.panes[0]?.pane_id ?? null);
     if (selectedPaneId !== null && snapshot.panes.some((pane) => pane.pane_id === selectedPaneId)) {
       const last = lastSeen.current?.machine === selectedMachineId ? lastSeen.current : null;
       const previous = last && last.pane !== selectedPaneId ? last.pane : (last?.previous ?? null);
@@ -224,32 +235,39 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
       setAutoSelected(true);
     }).catch(() => { /* a failed read is not evidence that the pane disappeared */ });
     return () => { cancelled = true; };
-  }, [snapshot, selectedPaneId, selectedMachineId, selectedMachine?.state, linkTick]);
+  }, [snapshot, selectedPaneId, selectedMachineId, selectedMachine?.state, linkTick, held]);
   useEffect(() => {
     storeSelection(selectedMachineId, selectedPaneId);
   }, [selectedMachineId, selectedPaneId]);
   return { selectedMachineRef, selectTarget, selectTargetRef, picks };
 }
 
-export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, onPick }: {
+export function useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, selectedPaneId, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick }: {
   pendingLink: RefObject<AppLink | null>;
   pendingFile: RefObject<string | null>;
   setLinkLanded: Dispatch<SetStateAction<boolean>>;
   selectionHint: RefObject<SelectionHint>;
+  selectedPaneId: string | null;
   setSelectedPaneId: Dispatch<SetStateAction<string | null>>;
   setNotificationViewTarget: Dispatch<SetStateAction<NotificationTarget | null>>;
   setTerminalPeek: Dispatch<SetStateAction<TerminalPeek | null>>;
   setAutoSelected: Dispatch<SetStateAction<boolean>>;
   setDrawerOpen: Dispatch<SetStateAction<boolean>>;
+  setHeaderNote: Dispatch<SetStateAction<LinkNote | "copied" | null>>;
   onPick?: () => void;
 }) {
   const onPickRef = useRef(onPick); onPickRef.current = onPick;
+  const shownPane = useRef(selectedPaneId); shownPane.current = selectedPaneId;
   const selectPane = useCallback((paneId: string, focusInput = true) => {
+    // as selectTarget: a pick of another pane takes an earlier landing's note away, the pane shown keeps it
+    const leaves = paneId !== shownPane.current;
+    shownPane.current = paneId;
     if (focusInput) onPickRef.current?.();
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
     selectionHint.current = null;
     setSelectedPaneId(paneId);
     setNotificationViewTarget(null); setTerminalPeek(null);
+    if (leaves) setHeaderNote(noteAfterSelection);
     setAutoSelected(!focusInput);
     setDrawerOpen(false);
   }, []);
@@ -282,21 +300,21 @@ export function useNotificationTargets({ machinesRef, selectTargetRef, selection
     if (target.link) {
       const link = target.link;
       const landing = linkLanding(machinesRef.current, link);
-      if (landing.kind === "select") { selectTargetRef.current(link.machine, landing.pane, link.view ?? undefined); return; }
+      if (landing.kind === "select") { selectTargetRef.current(link.machine, landing.pane, link.view ?? undefined, true); return; }
       if (sameLink(pendingLink.current, link)) return;
-      selectTargetRef.current(link.machine, null);
+      selectTargetRef.current(link.machine, null, undefined, true);
       onLinkWaitRef.current?.();
       wait(link, landing.stale);
       return;
     }
     const landing = notificationLanding(machinesRef.current, target);
     if (landing.kind === "select") {
-      selectTargetRef.current(target.machine_id, target.pane_id, target.view);
+      selectTargetRef.current(target.machine_id, target.pane_id, target.view, true);
       if (target.workspace_id) selectionHint.current = { machine: target.machine_id, pane: target.pane_id, workspace: target.workspace_id };
       return;
     }
     if (sameLink(pendingLink.current, landing.link)) return;
-    selectTargetRef.current(target.machine_id, target.pane_id, target.view);
+    selectTargetRef.current(target.machine_id, target.pane_id, target.view, true);
     wait(landing.link, landing.stale);
   }, [load]);
   const takeNotificationTargetRef = useRef(takeNotificationTarget); takeNotificationTargetRef.current = takeNotificationTarget;
@@ -359,7 +377,7 @@ export function useMachineGone({ machines, pendingLink, pendingFile, pendingCrea
     if (!machineGone(machines, rosterSeq.current, since, machineId)) return;
     pendingLink.current = null; pendingFile.current = null; pendingCreate.current = null;
     setLinkLanded(true);
+    selectTargetRef.current("local", null, undefined, true);
     setHeaderNote("machine-missing");
-    selectTargetRef.current("local", null);
   }, [machines, rosterTick, linkTick]);
 }

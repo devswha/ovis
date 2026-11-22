@@ -83,6 +83,7 @@ run_script scripts/terminal-images-demo-regression.ts
 run_script scripts/terminal-ghostty-demo-regression.ts
 run_script scripts/mirror-fold-demo-regression.ts
 run_script scripts/chat-no-rewind-demo-regression.ts
+run_script scripts/tab-switch-keeps-scroll-demo-regression.ts
 run_script scripts/terminal-cjk-punctuation-regression.ts
 run_script scripts/terminal-selection-cell-bg-regression.ts
 run_script scripts/terminal-late-faces-regression.ts
@@ -92,6 +93,7 @@ run_script scripts/terminal-bundled-mono-regression.ts
 run_script scripts/terminal-served-font-regression.ts
 run_script scripts/application-paging-regression.ts
 run_script scripts/pane-paging-demo-regression.ts
+run_script scripts/chat-reading-position-demo-regression.ts
 run_script scripts/link-menu-demo-regression.ts
 run_script scripts/external-link-tab-regression.ts
 run_script scripts/key-bar-customization-demo-regression.ts
@@ -168,6 +170,7 @@ run_script scripts/file-viewer-page-scripts-browser-qa.ts
 run_script scripts/text-file-edit-regression.ts
 run_script scripts/web-panel-mobile-regression.ts
 run_script scripts/palette-local-page-demo-regression.ts
+run_script scripts/built-in-browser-demo-regression.ts
 run_script scripts/pwa-update-browser-qa.ts
 run_script scripts/install-state-demo-regression.ts
 run_script scripts/revision-bound-update-demo-regression.ts
@@ -271,6 +274,8 @@ run_script scripts/relay-second-device-join-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
 run_script scripts/relay-e2e-regression.ts
+run_script scripts/offline-typing-relay-regression.ts
+run_script scripts/add-pc-more-relay-regression.ts
 run_script scripts/relay-shell-browser-qa.ts
-run_script scripts/relay-dashboard-browser-qa.ts
+run_script scripts/relay-offline-reasons-regression.ts
 run_script scripts/relay-media-browser-qa.ts
