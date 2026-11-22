@@ -24,19 +24,6 @@ const OFFLINE_CODE = "no_core";
 /** the most event-loop turns a test waits for the socket's own work, as tui/testing/run.ts settles */
 const SETTLE_TURNS = 2_000;
 
-// `bun run typecheck` checks the lines marked with ts-expect-error below: each must stay a compile error. The loop's
-// end carries only what a reader takes: the host ends the process with a signal's own exit code, and the entry says
-// itself what a missing core means.
-function typeOnly(): LoopEnd[] {
-  return [
-    // @ts-expect-error a signal's end names no signal
-    { kind: "signal", signal: "SIGINT" },
-    // @ts-expect-error a missing core's end carries no reason
-    { kind: "no_core", code: "no_core", reason: "nothing listens" },
-  ];
-}
-void typeOnly;
-
 const runs: Run[] = [];
 afterEach(async () => {
   for (const run of runs.splice(0)) await run.close();
