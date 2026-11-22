@@ -207,10 +207,10 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect(shown(seen.grid)).toEqual([true, true, true]);
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("finished");
     await hc.call("terminal.rm", { terminal: address });
-    // the frame that drops the pane can arrive in two reads too: wait until its title and its marker are both gone
-    const dropped = (grid: string) => [grid.includes("+- stays "), grid.includes("+- ends "), grid.includes("END-MARK")];
+    // the frame that drops the pane can arrive in two reads too: wait until its title, its marker and its banner are gone
+    const dropped = (grid: string) => [grid.includes("+- stays "), grid.includes("+- ends "), grid.includes("END-MARK"), grid.includes("ended (3)")];
     while (dropped(seen.grid).slice(1).includes(true)) seen = await nextShot(run, seen);
-    expect(dropped(seen.grid)).toEqual([true, false, false]);
+    expect(dropped(seen.grid)).toEqual([true, false, false, false]);
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
   }, TEST_MS);
