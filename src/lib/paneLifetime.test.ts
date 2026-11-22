@@ -236,6 +236,21 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent().filter((item) => item.kind === "pending" && item.text === "yes")).toHaveLength(2);
   });
 
+  it("keeps the record an unconfirmed row already has, and makes one more for a second row with the same text (#3990)", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    const pending = new PendingMessageStore(() => lifetimes.paneStorage, lifetimes);
+    lifetimes.onRetire((machineId) => pending.forget(machineId));
+    lifetimes.observe([pc("local", undefined)], title);
+    pending.keepUnconfirmed("w1:p1", "yes");
+    const [kept] = lifetimes.unsent();
+    pending.accept("w1:p1", { id: "two", request_id: 1, text: "yes", state: "queued", created_at: "2026-10-06T00:00:00Z" }, null);
+    lifetimes.observe([pc("local", "herdr-a")], title);
+    expect(pending.read("w1:p1")).toEqual([]);
+    expect(lifetimes.unsent().map(({ kind, text }) => `${kind}:${text}`)).toEqual(["pending:yes", "pending:yes"]);
+    expect(lifetimes.unsent().map(({ id }) => id)).toContain(kept!.id);
+  });
+
   it("keeps no held input past its age in the carry, when the page leaves or when the next one takes it", () => {
     const storage = new MemoryStorage();
     const carried = (): string => storage.getItem("ovis:pane-carried:") ?? "";
