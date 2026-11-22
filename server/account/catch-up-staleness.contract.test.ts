@@ -1,7 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
-import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
-import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
+import { bounded, relayAccountFixture, relayConnection, TestClock } from "../relay/test-helpers.ts";
+import { ACCOUNT, createListedPc, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
+import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { PcAccountState } from "./pc-binding.ts";
+import { exportAccountKey } from "../../shared/account-records.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
 import { ask, phone } from "./pairing.test-helpers.ts";
@@ -257,4 +260,96 @@ test.each(["removed", "removed and listed again"] as const)("a PC bound by a dev
   await accountMailbox.pull();
   expect(devices.account()).toBeNull();
   expect(await open(pc.device)).toBe("auth_failed");
+});
+
+/**
+ * A PC as an update finds it: bound by a device's link before listings were kept (its binding names none), listed by its
+ * account, with the account's rows it let in before. `answer`: what a call to the account service gets instead of the
+ * service's own answer.
+ */
+async function linkBoundPc(answer?: (request: Request, service: FakeAccountService) => Promise<Response | undefined>) {
+  const service = new FakeAccountService();
+  service.opensAll = true;
+  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true,
+    accountService: { url: "https://account.test", fetch: async (request) => await answer?.(request, service) ?? service.fetch(request) } });
+  closes.push(() => fixture.close());
+  const serverId = await registerSnapshotPc(service, fixture);
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  const publicKey = await exportAccountKey(keys.publicKey);
+  service.registerDevice(ACCOUNT, publicKey, "Laptop");
+  const { devices, accountMailbox } = fixture.app.context.services;
+  // a read with no pull beside it names no listing, as every read before the update
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
+  closes.push(() => wall.mockRestore());
+  const open = async (device: { id: string; keys: CryptoKeyPair; publicKey: string }) => {
+    const link = await relayConnection(fixture, { serverId });
+    return { link, answer: await link.auth(device, [ACCOUNT_OPENS_ALL_FEATURE]).then(() => "admitted", () => bounded(link.serverError)) };
+  };
+  const binding = () => PcAccountState.open(fixture.stateDir).binding();
+  const listed = async () => {
+    const pcs = await (await service.fetch(new Request("https://account.test/v1/pcs", { headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` } }))).json() as { pcs: { server_id: string; listing_id?: string }[] };
+    return pcs.pcs.find(row => row.server_id === serverId)?.listing_id;
+  };
+  return { fixture, member, device: { keys, publicKey, id: accountDeviceId(serverId, publicKey) }, service, serverId, devices, accountMailbox, open, binding, listed };
+}
+
+test("update: a PC bound by a link that its account lists keeps its account, its rows and its sessions, with nothing done by anyone", async () => {
+  const pc = await linkBoundPc();
+  expect(pc.binding()).toMatchObject({ account: ACCOUNT });
+  expect(pc.binding()?.listing_id).toBeUndefined();
+  // the first read after the update
+  await pc.accountMailbox.pull();
+  const listing = await pc.listed();
+  expect(listing).toMatch(/^[0-9a-f]{32}$/);
+  expect(pc.binding()).toMatchObject({ account: ACCOUNT, listing_id: listing });
+  const account = await pc.open(pc.device);
+  const own = await pc.open(pc.member);
+  expect([account.answer, own.answer]).toEqual(["admitted", "admitted"]);
+  for (let poll = 0; poll < 3; poll++) await pc.accountMailbox.pull();
+  expect((await ask(account.link, "/api/health")).status).toBe(200);
+  expect((await ask(own.link, "/api/health")).status).toBe(200);
+  expect(pc.binding()).toMatchObject({ account: ACCOUNT, listing_id: listing });
+  expect(pc.devices.addAtPcRequired()).toBe(false);
+  expect(PcAccountState.open(pc.fixture.stateDir).clears()).toEqual([]);
+});
+
+const pathOf = (request: Request) => new URL(request.url).pathname;
+test.each([
+  ["the account service is down", async () => new Response(null, { status: 503 })],
+  ["its snapshot does not parse", async (request: Request) => pathOf(request) === "/v1/pc/snapshot" ? Response.json({ last: true }) : undefined],
+  ["its mailbox does not parse", async (request: Request) => pathOf(request) === "/v1/pc/mailbox" ? Response.json({ listing_id: "f".repeat(32) }) : undefined],
+  ["its mailbox names a listing that is no listing ID", async (request: Request, service: FakeAccountService) =>
+    pathOf(request) === "/v1/pc/mailbox" ? Response.json({ ...await (await service.fetch(request)).json() as object, listing_id: "L1" }) : undefined],
+  ["its mailbox names another listing in an answer that does not parse", async (request: Request) => pathOf(request) === "/v1/pc/mailbox" ? Response.json({ listing_id: "e".repeat(32), records: "none" }) : undefined],
+] as const)("update: a PC bound by a link clears nothing when %s at its first read, and names its listing at the next", async (_case, failing) => {
+  let fails = false;
+  const pc = await linkBoundPc(async (request, service) => fails ? failing(request, service) : undefined);
+  fails = true;
+  for (let poll = 0; poll < 2; poll++) await pc.accountMailbox.pull();
+  expect(pc.devices.account()).toBe(ACCOUNT);
+  expect(pc.binding()?.listing_id).toBeUndefined();
+  expect(PcAccountState.open(pc.fixture.stateDir).clears()).toEqual([]);
+  expect(pc.devices.addAtPcRequired()).toBe(false);
+  expect((await pc.open(pc.member)).answer).toBe("admitted");
+  // the account's device it let in before still gets in
+  expect((await pc.open(pc.device)).answer).toBe("admitted");
+  fails = false;
+  await pc.accountMailbox.pull();
+  expect(pc.binding()).toMatchObject({ account: ACCOUNT, listing_id: await pc.listed() });
+  expect((await pc.open(pc.device)).answer).toBe("admitted");
+});
+
+test("a PC a device's link bound a moment ago, which its account does not list yet, stays in the account", async () => {
+  const pc = await linkBoundPc();
+  const url = `https://account.test/v1/pcs/${pc.serverId}`;
+  // the device that linked it lists it only after its link was answered: a read in between finds no listing
+  expect((await pc.service.fetch(new Request(url, { method: "DELETE", headers: { authorization: `Bearer ${pc.service.issueToken(ACCOUNT)}` } }))).status).toBe(204);
+  await pc.accountMailbox.pull();
+  expect(pc.devices.account()).toBe(ACCOUNT);
+  expect(pc.devices.addAtPcRequired()).toBe(false);
+  await registerSnapshotPc(pc.service, pc.fixture, pc.fixture.app.context.services.relay.currentIdentity()!);
+  await pc.accountMailbox.pull();
+  expect(pc.binding()).toMatchObject({ account: ACCOUNT, listing_id: await pc.listed() });
+  expect((await pc.open(pc.device)).answer).toBe("admitted");
 });
