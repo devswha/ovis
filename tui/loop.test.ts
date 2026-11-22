@@ -324,6 +324,22 @@ describe("the loop", () => {
     expect(run.loop.model().focus.panes["t-main"]).toBe("t1");
   }, TEST_MS);
 
+  it("zoom: a zoom of a pane without the focus moves the focus to it, and what is typed reaches only that pane", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    expect(run.loop.model().focus.panes["t"] ?? "t1").toBe("t1");
+    const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+    await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 0 });
+    await run.advance(1_000);
+    expect([run.loop.panes.view("t1")?.covered, run.loop.panes.view("t2")?.covered]).toEqual([true, false]);
+    await run.live();
+    await run.advance(1);
+    await run.keys("k");
+    await run.advance(20);
+    expect([run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()]).toEqual(["", Buffer.from("k").toString("hex")]);
+    expect(run.loop.model().notices.map((notice) => notice.code)).not.toContain("input_refused");
+  }, TEST_MS);
+
   it("one read routes as the same bytes split across reads: an action and the text after it in one read", async () => {
     /** the focus, the mode and what every program received after `reads`, each read followed by a turn */
     const outcome = async (reads: string[]) => {
