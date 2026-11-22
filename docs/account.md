@@ -894,7 +894,13 @@ asked, so a press the PC then refuses (it restarted, was put in another account 
 not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
 not in that account (in none, or in another one it joined meanwhile), and the page waits for the
 digits as before, and its notice says what to do if nobody added it. A PC bound this way leaves the
-account as soon as a snapshot read finds the account no longer lists it. Before recording the
+account as soon as a snapshot read finds the account no longer lists it, or its scoped completion
+receipt says the admitted listing was replaced. A bare relisting is not a new admission. The PC
+keeps the admission's `listing_id` in its binding and checks it with the service before a snapshot
+can release account rows and before granting a new account-only relay session. With no new sign-in,
+the PC checks at its normal five-minute mailbox poll. An unavailable service cannot authorize a new
+account-only connection. An older binding with no listing ID needs a still-current one-press
+admission to establish standing; a snapshot alone cannot identify the old listing. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
 after an offline restart from either state folder. A pairing by code or digits counts as local

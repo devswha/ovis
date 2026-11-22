@@ -26,6 +26,7 @@ export interface AccountBinding {
   readonly pending?: true;
   /** bound in one press, on the account service's word for the account this PC's owner named; no row made it */
   readonly service?: true;
+  readonly listing_id?: string;
 }
 
 interface ServiceStep2 {
@@ -66,6 +67,7 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   }
   const binding = doc.binding;
   if (binding !== null && !(typeof binding === "object" && binding !== undefined && typeof binding.account === "string" && ACCOUNT.test(binding.account) && typeof binding.bind_id === "string" && ID.test(binding.bind_id) && (binding.pending === undefined || binding.pending === true) && (binding.service === undefined || (binding.service === true && binding.pending === undefined)))) return "invalid binding";
+  if (binding?.listing_id !== undefined && (binding.service !== true || typeof binding.listing_id !== "string" || !ID.test(binding.listing_id))) return "invalid listing";
   if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string")) return "invalid clears";
   if (binding !== null && doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "a cleared binding stands";
   const first = doc.first;
@@ -323,9 +325,16 @@ export class PcAccountState {
    * One press binds a PC in no account on the account service's word for `account`, the one its owner named here: no row
    * is written with it, so it stands at once, and no device is its first (T67).
    */
-  bindByService(account: string): void {
+  bindByService(account: string, listingId?: string): void {
     if (this.doc.binding !== null) throw new Error("This PC is already in an account");
-    this.write({ ...this.doc, binding: { account, bind_id: randomBytes(16).toString("hex"), service: true }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0 });
+    this.write({ ...this.doc, binding: { account, bind_id: randomBytes(16).toString("hex"), service: true, listing_id: listingId }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0 });
+  }
+
+  pinListing(bindId: string, listingId: string): void {
+    const binding = this.doc.binding;
+    if (binding?.service && binding.bind_id === bindId && binding.listing_id === undefined) {
+      this.write({ ...this.doc, binding: { ...binding, listing_id: listingId } });
+    }
   }
 
   /** The PC leaves its account: only for one of the named reasons. The clear is kept, and the file stays. */

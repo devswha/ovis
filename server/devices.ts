@@ -489,6 +489,12 @@ function pairedHere(device: StoredDevice): boolean {
   return device.added_by === undefined && device.link_moved_key !== true;
 }
 
+function keepsPairingOnUnlist(row: StoredDevice): boolean {
+  const origin = row.origin;
+  return !row.imported && !row.invalid_origin && (origin?.from === "pc" || (pairedHere(row) && row.account_add === undefined &&
+    (origin?.from === "legacy" || (origin?.from === "remote" && (origin.how === "code" || origin.how === "digits") && origin.by === null))));
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** What a thrown value says, for a log line; a value that cannot be told says so. */
@@ -1422,15 +1428,23 @@ export class DeviceStore {
    * One press (docs/account.md): binds this PC, in no account, to `account` on the account service's word for it. Only
    * with the release flag on; a PC already in an account is refused here as at the route.
    */
-  bindByService(account: string): void {
+  bindByService(account: string, listingId?: string): void {
     this.assertWritable();
     if (this.pc === null) throw new Error("One press needs OVIS_ACCOUNT_OPENS_ALL");
     if (this.account() !== null) throw new Error("This PC is already in an account");
-    this.pc.bindByService(account);
+    this.pc.bindByService(account, listingId);
   }
 
   /** The id of this PC's binding when it stands on the account service's word alone (bindByService), else null. */
   serviceBinding(): string | null { const binding = this.pc?.binding(); return binding?.service === true ? binding.bind_id : null; }
+
+  serviceListing(): string | undefined { return this.pc?.binding()?.listing_id; }
+  pinServiceListing(binding: string, listing: string): void { this.pc?.pinListing(binding, listing); }
+
+  accountOnly(id: string): boolean {
+    const member = this.devices.find(row => row.id === id);
+    return member ? (member.account !== undefined || member.member_approved_in !== undefined) && !keepsPairingOnUnlist(member) : this.isAccountRow(id);
+  }
 
   /** The PC leaves its account, for one of the named reasons (P12); nothing else clears the binding. */
   clearAccountBinding(reason: ClearReason, by: string): boolean {
@@ -1453,13 +1467,8 @@ export class DeviceStore {
   private settleMemberRows(account: string, reason: ClearReason): void {
     const members = this.devices.filter(row => row.account === account || row.member_approved_in === account);
     if (!members.length) return;
-    const gone = members.filter(row => {
-      const origin = row.origin;
-      const local = origin?.from === "pc" || (pairedHere(row) && row.account_add === undefined &&
-        (origin?.from === "legacy" || (origin?.from === "remote" && (origin.how === "code" || origin.how === "digits") && origin.by === null)));
-      // A removal that covered the member must not stop covering it just because its account field is gone.
-      return !local || row.imported || row.invalid_origin || this.coveredByEvidence(row);
-    });
+    // A removal that covered the member must not stop covering it just because its account field is gone.
+    const gone = members.filter(row => !keepsPairingOnUnlist(row) || this.coveredByEvidence(row));
     if (gone.length) this.drop(gone, "pc", reason);
     if (gone.length === members.length) return;
     const next = this.devices.map(row => {

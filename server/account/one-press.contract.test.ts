@@ -43,8 +43,8 @@ async function admitAt(f: Pc, account: string, twoStep: boolean | null = true): 
 
 const press = (f: Pc, account: string) => f.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account } });
 
-async function firstPcWithPhone(f: Pc) {
-  f.account.completions = true;
+async function firstPcWithPhone(f: Pc, completions = true) {
+  f.account.completions = completions;
   await setUpFor(f, "acct_1");
   await admitAt(f, "acct_1", null);
   expect((await press(f, "acct_1")).status).toBe(200);
@@ -69,7 +69,11 @@ async function firstPcWithPhone(f: Pc) {
       const answer = await f.account.fetch(new Request(url, { method: "PUT", headers, body: JSON.stringify({
         label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.test",
       }) }));
-      expect(await answer.json()).toMatchObject({ pc: { completed_at: null } });
+      expect(answer.status).toBe(200);
+      const { pc: listed } = await answer.json();
+      expect(listed.server_id).toBe(serverId);
+      expect(listed.admitted_at ?? null).toBeNull();
+      expect(listed.completed_at ?? null).toBeNull();
     },
   };
 }
@@ -133,9 +137,9 @@ test("removed PC: new account-only grants wait for the service, not the next per
   expect(await bounded(verdict)).toBe("auth_failed");
 });
 
-test("removed PC: restarting after a bare relist cannot release the old phone row", async () => {
+test.each([true, false])("removed PC: restarting after a bare relist cannot release the old phone row (listing ID: %p)", async completions => {
   const f = await pc();
-  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f, completions);
   await f.app.stop();
   await remove();
   await relist();

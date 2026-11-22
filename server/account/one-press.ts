@@ -40,12 +40,14 @@ export async function pressOnce(services: PressServices, account: string): Promi
   if (devices.account() !== null) return refuse("in_account", "This PC is already in an account", 409);
   if ((relay.currentIdentity()?.server_id ?? null) !== identity) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
   if (devices.gen() !== generation) return refuse("revoked", "Every device was revoked on this PC while it was being added. Add it again.", 409);
-  devices.bindByService(account);
-  await accountMailbox.readSnapshot();
+  devices.bindByService(account, admitted.listing_id);
+  const binding = devices.serviceBinding();
+  await accountMailbox.readSnapshot(binding);
   // the account may have stopped listing this PC during that first read: then it is in no account, and says so
-  if (devices.account() !== account) return refuse("not_listed", "The account removed this PC while it was being added", 409);
+  if (devices.serviceBinding() !== binding) return refuse("not_listed", "The account removed this PC while it was being added", 409);
   // bound: the add is complete, on this PC's own scoped word (account#57), so the account never shows it only listed
   if (admitted.listing_id !== undefined) await accountMailbox.complete(account, admitted.listing_id);
+  if (devices.serviceBinding() !== binding) return refuse("not_listed", "The account removed this PC while it was being added", 409);
   return { account };
 }
 

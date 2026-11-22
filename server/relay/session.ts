@@ -406,14 +406,15 @@ export class RelaySession {
             this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
             return;
           }
-          if (joined !== null) { this.enter(joined.match); return; }
+          if (joined !== null) { await this.enterProved(joined.match); return; }
         }
         if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
           const receipts = await devices.refusedRelayReceipts(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId });
           this.close("auth_failed", receipts.slice(-AUTH_RECEIPTS_MAX));
           return;
         }
-        this.enter(device);
+        if (device && frame.type === FrameType.AUTH) await this.enterProved(device);
+        else this.enter(device);
         return;
       }
       case FrameType.KEY_PROVE: {
@@ -616,6 +617,19 @@ export class RelaySession {
   }
 
   private get path(): PairingPath { return this.intent === "account" ? "account" : this.intent === "vouched" ? "vouched" : "code"; }
+
+  private async enterProved(device: DeviceMatch): Promise<void> {
+    const { devices, accountMailbox } = this.options.services;
+    const binding = devices.serviceBinding();
+    if (binding !== null && devices.accountOnly(device.id)) {
+      const key = devices.sessionRow(device.id)?.key;
+      if (!key || !await accountMailbox.confirmsListing(binding) || devices.serviceBinding() !== binding || devices.sessionRow(device.id)?.key !== key) {
+        if (this.mux.active) this.close("auth_failed");
+        return;
+      }
+    }
+    this.enter(device);
+  }
 
   /** A verified AUTH, PAIR or approved comparison becomes this session's one principal. */
   private enter(device: DeviceMatch | null | undefined): void {

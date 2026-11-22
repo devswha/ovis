@@ -270,11 +270,34 @@ export class AccountMailbox {
   }
 
   /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
-  readSnapshot(): Promise<ReadOutcome | null> {
-    return this.exclusively(async () => (await this.readSnapshotNow()).outcome);
+  readSnapshot(justAdmitted?: string | null): Promise<ReadOutcome | null> {
+    return this.exclusively(async () => (await this.readSnapshotNow(undefined, justAdmitted)).outcome);
   }
 
-  private async readSnapshotNow(readmission?: Readmission): Promise<{ outcome: ReadOutcome | null; adds: number }> {
+  /** A successful snapshot identifies the account, not the listing. Only the original listing's
+   * scoped receipt (or a still-current admission on older PCs) can attest to a one-press bind. */
+  async confirmsListing(binding: string): Promise<boolean> {
+    const { devices } = this.options;
+    const account = devices.account();
+    const identity = this.options.identity();
+    if (!identity || !account || devices.serviceBinding() !== binding || this.stopped) return false;
+    const current = () => !this.stopped && devices.serviceBinding() === binding && this.options.identity()?.server_id === identity.server_id;
+    try {
+      const listing = devices.serviceListing();
+      if (listing === undefined) {
+        const admitted = await this.admission(account);
+        if (admitted?.account !== account || !current()) return false;
+        if (admitted.listing_id) devices.pinServiceListing(binding, admitted.listing_id);
+      } else {
+        const scope = { account, listing_id: listing };
+        const result = await this.confirmCompletion(identity, scope);
+        if (typeof result?.completed_at !== "string") return false;
+      }
+      return current();
+    } catch { return false; }
+  }
+
+  private async readSnapshotNow(readmission?: Readmission, justAdmitted?: string | null): Promise<{ outcome: ReadOutcome | null; adds: number }> {
     const empty = { outcome: null, adds: 0 };
     const snapshot = this.options.snapshot;
     if (!snapshot || this.stopped) return empty;
@@ -291,7 +314,7 @@ export class AccountMailbox {
       let staged: Awaited<ReturnType<typeof stageMailboxAdds>> = [];
       const outcome = await readSnapshot(async (cursor) => {
         if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
-        return await this.snapshotPage(account, cursor, used).catch((error: unknown) => {
+        const page = await this.snapshotPage(account, cursor, used).catch((error: unknown) => {
           if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/snapshot") {
             // A hidden 404 is ambiguous. Only the named refusal can excuse legacy catch-up.
             unlisted = error.status === 403 && error.code === "not_listed";
@@ -299,6 +322,8 @@ export class AccountMailbox {
           }
           throw error;
         });
+        if (cursor.page === 0 && binding !== null && binding !== justAdmitted && !await this.confirmsListing(binding)) throw new Error("PC admission not confirmed");
+        return page;
       }, { ...ports, scope: () => this.stopped ? null : ports.scope(), commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         const committedLifts = ports.commit(stage);
@@ -359,13 +384,27 @@ export class AccountMailbox {
     await this.sendCompletion();
   }
 
+  private async confirmCompletion(identity: RelayIdentity, scope: CompletionScope) {
+    const devices = this.options.devices;
+    const binding = devices.serviceBinding();
+    try { return await this.proved(identity, "/v1/pc/complete", { ...scope }, false, scope); }
+    catch (error) {
+      if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/complete" && error.status === 409 && error.code === "listing_changed"
+        && !this.stopped && binding !== null && devices.serviceBinding() === binding && devices.account() === scope.account
+        && devices.serviceListing() === scope.listing_id && this.options.identity()?.server_id === identity.server_id) {
+        devices.clearAccountBinding("unlisted", "account");
+      }
+      throw error;
+    }
+  }
+
   private async sendCompletion(): Promise<void> {
     const scope = this.completion;
     const identity = this.options.identity();
     if (scope === null || !identity) return;
     // a PC that left that account since has nothing of it to complete
     const done = this.options.devices.account() !== scope.account;
-    try { if (!done) await this.proved(identity, "/v1/pc/complete", { ...scope }, false, scope); }
+    try { if (!done) await this.confirmCompletion(identity, scope); }
     catch (error) {
       if (!(error instanceof AccountServiceRefusal && error.status === 409)) {
         console.warn(`[account] the account service did not take this PC's completed add yet: ${error instanceof Error ? error.message : String(error)}`);
