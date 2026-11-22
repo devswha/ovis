@@ -128,20 +128,32 @@ export function askRecovery(stateDir: string, request: unknown): Promise<unknown
   return askRecoverySocket(join(stateDir, RECOVER_DIR, RECOVER_SOCKET), request);
 }
 
-/** One request to a recovery socket at `path`: this PC's own, or another PC's forwarded over SSH (server/machines.ts). */
-export function askRecoverySocket(path: string, request: unknown): Promise<unknown> {
+/**
+ * One request to a recovery socket at `path`: this PC's own, or another PC's forwarded over SSH (server/machines.ts).
+ * `signal` ends it: the connection is cut and its answer, if one still comes, is never taken.
+ */
+export function askRecoverySocket(path: string, request: unknown, signal?: AbortSignal): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
     let buffered = "";
     let settled = false;
+    let connection: { terminate(): void } | null = null;
+    const abort = () => { settle(signal!.reason instanceof Error ? signal!.reason : new Error(String(signal!.reason))); connection?.terminate(); };
     const settle = (error: Error | null, value?: unknown) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener("abort", abort);
       if (error) reject(error);
       else resolve(value);
     };
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener("abort", abort, { once: true });
     Bun.connect({ unix: path, socket: {
-      open(socket) { socket.write(`${JSON.stringify(request)}\n`); },
+      open(socket) {
+        if (settled) { socket.terminate(); return; }
+        connection = socket;
+        socket.write(`${JSON.stringify(request)}\n`);
+      },
       data(_socket, chunk) {
         if (settled) return;
         buffered += decoder.decode(chunk, { stream: true });

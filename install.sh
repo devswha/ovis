@@ -439,30 +439,41 @@ find_other_ovis() {
 # comes first, a new launcher would take its name, so none is written; where it comes first, the
 # launcher is written and the installer says which one the name runs, and that it is the launcher's once
 # BIN_DIR comes first (a profile that puts ~/.local/bin first does that at the next login).
+launcher_kept() {
+  { [ -e "$launcher" ] || [ -L "$launcher" ]; } || return 1
+  [ -L "$launcher" ] || [ ! -f "$launcher" ] || [ "$(sed -n 2p "$launcher" 2>/dev/null || true)" != "$LAUNCHER_MARK" ] || return 1
+  say "$launcher is there already and is not this installer's, so it is left as it is and no ovis command was installed"
+}
+
 write_launcher() {
   launcher="$BIN_DIR/ovis"
   launcher_ours=0
   launcher_there=0
-  if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-    if [ -L "$launcher" ] || [ ! -f "$launcher" ] || [ "$(sed -n 2p "$launcher" 2>/dev/null || true)" != "$LAUNCHER_MARK" ]; then
-      say "$launcher is there already and is not this installer's, so it is left as it is and no ovis command was installed"
-      return 0
-    fi
-    launcher_there=1
-  fi
+  if launcher_kept; then return 0; fi
+  if [ -e "$launcher" ] || [ -L "$launcher" ]; then launcher_there=1; fi
   find_other_ovis
   if [ -n "$other_ovis" ] && [ "$other_ovis_hidden" = 1 ] && [ "$launcher_there" = 0 ]; then
     say "$other_ovis is another ovis on your PATH, and $BIN_DIR comes before it there: an ovis command of this installer's would take its name, so none was installed"
     return 0
   fi
   # written beside it under a name of its own (mktemp never follows a link or reuses a file that is
-  # there) and moved over it: an interrupted run leaves no half-written command
+  # there) and moved over it: an interrupted run leaves no half-written command. Where none was there,
+  # it is linked in (ln never replaces a file), so one another installer wrote meanwhile is checked as
+  # above instead of overwritten
   launcher_new=""
   if mkdir -p "$BIN_DIR" 2>/dev/null && launcher_new=$(mktemp "$BIN_DIR/.ovis.XXXXXX" 2>/dev/null) \
-    && launcher_text >"$launcher_new" && chmod 755 "$launcher_new" && mv -f "$launcher_new" "$launcher"; then
-    launcher_ours=1
-  else
-    [ -z "$launcher_new" ] || rm -f "$launcher_new" 2>/dev/null || true
+    && launcher_text >"$launcher_new" && chmod 755 "$launcher_new"; then
+    if [ "$launcher_there" = 0 ] && ln "$launcher_new" "$launcher" 2>/dev/null; then
+      launcher_ours=1
+    elif launcher_kept; then
+      rm -f "$launcher_new" 2>/dev/null || true
+      return 0
+    elif mv -f "$launcher_new" "$launcher"; then
+      launcher_ours=1
+    fi
+  fi
+  [ -z "$launcher_new" ] || rm -f "$launcher_new" 2>/dev/null || true
+  if [ "$launcher_ours" = 0 ]; then
     say "could not write $launcher, so no ovis command was installed"
     return 0
   fi

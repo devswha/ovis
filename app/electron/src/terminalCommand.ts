@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join, posix, win32 } from "node:path";
 
 /**
@@ -85,7 +85,9 @@ export function launcherText(platform: NodeJS.Platform, places: LauncherPlaces):
 export function writeLauncher(dir: string, platform: NodeJS.Platform, places: LauncherPlaces): string {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, launcherName(platform));
-  writeFileSync(`${file}.tmp`, launcherText(platform, places), { mode: 0o755 });
+  // a staging file left there (or a link someone put at that name) is unlinked, never written through
+  rmSync(`${file}.tmp`, { force: true });
+  writeFileSync(`${file}.tmp`, launcherText(platform, places), { mode: 0o755, flag: "wx" });
   chmodSync(`${file}.tmp`, 0o755);
   renameSync(`${file}.tmp`, file);
   return file;

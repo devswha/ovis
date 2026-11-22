@@ -528,7 +528,8 @@ export class SshConnection {
   async forwardSocket(remotePath: string): Promise<string> {
     if (this.closed) throw new Error("SSH connection closed");
     if (!this.multiplexed) throw new Error("Forwarding a socket needs a multiplexed SSH connection");
-    if (/[\s:]/.test(remotePath) || !remotePath.startsWith("/")) throw new Error("Invalid remote socket path");
+    // ssh takes the forward as one argument, so a space in a state dir is fine; a colon would split it
+    if (/[\0-\x1f\x7f:]/.test(remotePath) || !remotePath.startsWith("/")) throw new Error("Invalid remote socket path");
     const local = join(this.makeDir(), `fwd-${randomBytes(8).toString("hex")}.sock`);
     this.socketForwards.set(local, remotePath);
     try { await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "forward", "-L", `${local}:${remotePath}`, this.target.destination]); }

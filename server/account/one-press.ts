@@ -4,7 +4,7 @@
  * its owner that adds it over SSH, through this PC's recovery socket (docs/account.md, "Adding a PC over SSH").
  */
 import type { DeviceStore } from "../devices.ts";
-import type { RelayService } from "../relay/service.ts";
+import { ACCOUNT_ID, type RelayService } from "../relay/service.ts";
 import type { AccountMailbox } from "./mailbox.ts";
 
 export interface PressServices {
@@ -20,10 +20,15 @@ export type PressOutcome = { readonly account: string } | { readonly refused: Pr
 const refuse = (code: string, message: string, status: number): PressOutcome => ({ refused: { code, message, status } });
 const SET_UP_FOR_ANOTHER = "This PC was set up for another account. Sign in to that one, or add this PC again.";
 
-export async function pressOnce(services: PressServices, account: string): Promise<PressOutcome> {
+/**
+ * `naming`: an add over SSH, which names `account` for this PC itself, but only once the service admitted it there: a
+ * refused add leaves the account named before as it was.
+ */
+export async function pressOnce(services: PressServices, account: string, naming = false): Promise<PressOutcome> {
   const { devices, relay, accountMailbox } = services;
+  const named = relay.savedRelayAccount();
   // the account the owner's browser is signed in to must be the one named for this PC, which a press never sets
-  if (relay.savedRelayAccount() !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
+  if (!naming && named !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
   if (devices.account() !== null) return refuse("in_account", "This PC is already in an account", 409);
   // a Revoke all, a reset or a denial while the service answers raises this: the press then binds nothing (PADD-1)
   const generation = devices.gen();
@@ -36,10 +41,11 @@ export async function pressOnce(services: PressServices, account: string): Promi
   // the service's word counts only for the account named here (G1)
   if (admitted.account !== account) return refuse("account_mismatch", "The account service answered for another account", 502);
   // what the PC was named for, or its account, may have changed while the service answered: decided again now
-  if (relay.savedRelayAccount() !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
+  if (relay.savedRelayAccount() !== (naming ? named : account)) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
   if (devices.account() !== null) return refuse("in_account", "This PC is already in an account", 409);
   if ((relay.currentIdentity()?.server_id ?? null) !== identity) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
   if (devices.gen() !== generation) return refuse("revoked", "Every device was revoked on this PC while it was being added. Add it again.", 409);
+  if (naming) relay.setRelayAccount(account);
   devices.bindByService(account);
   await accountMailbox.readSnapshot();
   // the account may have stopped listing this PC during that first read: then it is in no account, and says so
@@ -51,7 +57,7 @@ export async function pressOnce(services: PressServices, account: string): Promi
 
 /**
  * Over SSH, another PC of the owner names only the account (its own binding's) and this PC's ID as it read it a moment
- * before: this PC names itself for that account and presses, on its own proof to the service. A PC already in that
+ * before: this PC presses for that account, on its own proof to the service, and names itself for it once admitted. A PC already in that
  * account answers as added (a lost answer asked again); one in another account binds nothing.
  */
 export async function takeForAccount(services: PressServices, account: string, serverId: string): Promise<PressOutcome> {
@@ -59,6 +65,6 @@ export async function takeForAccount(services: PressServices, account: string, s
   const bound = services.devices.account();
   if (bound === account) return { account };
   if (bound !== null) return refuse("other_account", "This PC is in another account", 409);
-  if (!services.relay.setRelayAccount(account)) return refuse("invalid_account", "Name the account", 400);
-  return await pressOnce(services, account);
+  if (!ACCOUNT_ID.test(account)) return refuse("invalid_account", "Name the account", 400);
+  return await pressOnce(services, account, true);
 }

@@ -34,6 +34,8 @@ export const TAILNET_PROMPT_MS = 2 * 60_000;
 export const TAILNET_DECLINED_QUIET_MS = 10 * 60_000;
 /** a node seen again is written at most this often: when it was seen is a hint, not authority */
 const SEEN_WRITE_MS = 60 * 60_000;
+/** what a connection from a node this PC could not name is ended under: any block, since it might be that node (never a StableNodeID) */
+const UNNAMED_NODE = "*";
 
 export interface StoredTailnetNode {
   id: string;
@@ -84,10 +86,11 @@ function mergeNode(a: StoredTailnetNode, b: StoredTailnetNode): StoredTailnetNod
   return { id: a.id, hostname: seen.hostname, login: seen.login, seen_at: seen.seen_at, blocked: changed.blocked, changed_at: changed.changed_at };
 }
 
+/** Every decided node (blocked, or allowed after a block: the Allow must outlive older removal evidence), then the rest by sighting. */
 function trimmed(nodes: readonly StoredTailnetNode[]): StoredTailnetNode[] {
-  const blocked = nodes.filter((node) => node.blocked);
-  const rest = nodes.filter((node) => !node.blocked).sort((a, b) => time(b.seen_at) - time(a.seen_at));
-  return [...blocked, ...rest.slice(0, Math.max(0, TAILNET_NODES_MAX - blocked.length))];
+  const decided = nodes.filter((node) => node.blocked || node.changed_at !== null);
+  const rest = nodes.filter((node) => !node.blocked && node.changed_at === null).sort((a, b) => time(b.seen_at) - time(a.seen_at));
+  return [...decided, ...rest.slice(0, Math.max(0, TAILNET_NODES_MAX - decided.length))];
 }
 
 /**
@@ -180,9 +183,9 @@ export class TailnetNodes {
     this.end([...this.streams.keys()]);
   }
 
-  /** Ends `close` when the node `id` is blocked; returns its unsubscribe. */
+  /** Ends `close` when the node `id` is blocked (an unnamed one's when any node is); returns its unsubscribe. */
   onBlocked(id: string, close: () => void): () => void {
-    if (this.isBlocked(id)) { close(); return () => {}; }
+    if (id === UNNAMED_NODE ? this.anyBlocked() : this.isBlocked(id)) { close(); return () => {}; }
     const set = this.streams.get(id) ?? new Set();
     set.add(close);
     this.streams.set(id, set);
@@ -190,7 +193,7 @@ export class TailnetNodes {
   }
 
   private end(ids: readonly string[]): void {
-    for (const id of ids) {
+    for (const id of ids.length > 0 ? [...ids, UNNAMED_NODE] : ids) {
       const closes = this.streams.get(id);
       this.streams.delete(id);
       for (const close of closes ?? []) {
@@ -320,7 +323,7 @@ export interface TailnetNodeRows {
  * on its row. `address` is the request's one tailnet source address (X-Forwarded-For from the local tailscaled), null
  * for every request that did not come that way. A node that cannot be named is let in as before only while no node is
  * blocked: with one blocked it might be that one. `node`: the StableNodeID of a request let in from the tailnet, whose
- * connections and streams end when that node is blocked.
+ * connections and streams end when that node is blocked (an unnamed node's when any node is).
  */
 export async function tailnetNodeGate(access: Access, input: {
   readonly address: string | null;
@@ -334,7 +337,7 @@ export async function tailnetNodeGate(access: Access, input: {
   const { address, nodes } = input;
   if (access.via === "tailscale") {
     const node = address === null ? null : await input.whois(address);
-    if (node === null) return as(nodes.anyBlocked() ? { level: "none", reason: "tailnet_blocked" } : access);
+    if (node === null) return nodes.anyBlocked() ? as({ level: "none", reason: "tailnet_blocked" }) : as(access, UNNAMED_NODE);
     if (nodes.isBlocked(node.id)) {
       nodes.ask(node);
       return as({ level: "none", reason: "tailnet_blocked" });

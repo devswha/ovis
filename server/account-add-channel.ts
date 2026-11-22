@@ -3,7 +3,7 @@
  * "Adding a PC over SSH"). That socket answers every recovery act of its owner (admit, lift, remove, revoke_all...) with
  * no terminal confirm, so nothing else may ever be sent on it: `sendAccountAddAct` is the one function that writes to
  * it and allows exactly two requests, and the forward is closed once take answers, on any error, and after
- * ACCOUNT_ADD_FORWARD_MS at most.
+ * ACCOUNT_ADD_FORWARD_MS at most. Closing it also ends a request already on its way: no late answer is taken.
  */
 import { askRecoverySocket } from "./account/recovery.ts";
 import type { SshConnection } from "./ssh.ts";
@@ -16,17 +16,20 @@ export type AccountAddRequest =
 export const ACCOUNT_ADD_FORWARD_MS = 10 * 60_000;
 
 /** Sends one of the two account-add requests, and nothing else, on a forwarded recovery socket. */
-export async function sendAccountAddAct(socket: string, request: AccountAddRequest): Promise<unknown> {
+export async function sendAccountAddAct(socket: string, request: AccountAddRequest, signal?: AbortSignal): Promise<unknown> {
   const fields = Object.keys(request).sort().join(",");
   const allowed = (request.act === "account_add_inspect" && fields === "act")
     || (request.act === "account_add_take" && fields === "account,act,server_id" && typeof request.account === "string" && typeof request.server_id === "string");
   if (!allowed) throw new Error("Only an account add's inspect and take go on another PC's recovery socket");
-  return await askRecoverySocket(socket, request);
+  return await askRecoverySocket(socket, request, signal);
 }
+
+const CLOSED = "This account add's connection to that PC is closed";
 
 /** One account add's forward: inspect, then take once; closed after the take, on any error, or when its time is up. */
 export class AccountAddChannel {
   #open = true;
+  readonly #ended = new AbortController();
   readonly #timer: ReturnType<typeof setTimeout>;
   private constructor(private readonly ssh: SshConnection, private readonly socket: string) {
     this.#timer = setTimeout(() => { void this.close(); }, ACCOUNT_ADD_FORWARD_MS);
@@ -51,15 +54,16 @@ export class AccountAddChannel {
     if (!this.#open) return;
     this.#open = false;
     clearTimeout(this.#timer);
+    this.#ended.abort(new Error(CLOSED));
     await this.ssh.closeSocketForward(this.socket).catch((error: unknown) => {
       console.warn("Ovis: an account add's forward did not close cleanly", error instanceof Error ? error.message : error);
     });
   }
 
   async #send(request: AccountAddRequest, last: boolean): Promise<unknown> {
-    if (!this.#open) throw new Error("This account add's connection to that PC is closed");
+    if (!this.#open) throw new Error(CLOSED);
     try {
-      const answer = await sendAccountAddAct(this.socket, request);
+      const answer = await sendAccountAddAct(this.socket, request, this.#ended.signal);
       if (last || (answer !== null && typeof answer === "object" && "error" in answer)) await this.close();
       return answer;
     } catch (error) {
