@@ -12,6 +12,7 @@ import { serveDemo } from "./demo-server.ts";
 // A list's markers sit outside its items, in the list's indent, and are drawn in the Chat font: in
 // a monospace face each digit and the ". " after it take a whole cell, so "1. " outgrew the old
 // fixed 20px and was cut off at the transcript's left edge (#1993), and "10." or "100." need more.
+// A sent message's markers start at its text's edge instead, where a number typed as plain text would.
 // All files and HTTP traffic stay in this disposable, loopback-only app and no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-chat-list-markers-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
@@ -24,8 +25,14 @@ const REPLY = [
   "Past a hundred:", "", "99. ninety-nine", "100. a hundred", "",
   "Bullets:", "", "- a bullet", "- another", "  - nested under it",
 ].join("\n");
+const COUNTED = [
+  "Count past ten:", "",
+  ...Array.from({ length: 11 }, (_, at) => `${at + 1}. ${at === 1 ? "a second item long enough to wrap onto another line inside the bubble at a phone's width" : `item ${at + 1}`}`), "",
+  "And bullets:", "", "- a bullet", "  1. numbered under it",
+].join("\n");
 const TURNS = [
   { role: "user", ts: "2026-10-28T10:00:00.000Z", parts: [{ kind: "text", text: "Number them\n\n1. Let's try the first\n4. The fourth would be nice too" }] },
+  { role: "user", ts: "2026-10-28T10:00:01.000Z", parts: [{ kind: "text", text: COUNTED }] },
   { role: "assistant", ts: "2026-10-28T10:00:05.000Z", parts: [{ kind: "text", text: REPLY }] },
 ];
 
@@ -41,8 +48,8 @@ interface Marker { list: number; text: string; width: number; indent: number; fo
  * tree names the marker (so an item's own `value`, or the count from the list's `start`, is read as
  * drawn, not worked out here), its width in its own font, and its list's indent.
  */
-async function markers(page: Page, scope: Locator): Promise<Marker[]> {
-  const count = await scope.locator(".markdown-list").evaluateAll((lists) => {
+async function markers(page: Page, lists: Locator): Promise<Marker[]> {
+  const count = await lists.evaluateAll((lists) => {
     let at = 0;
     for (const list of lists) for (const item of list.children) item.setAttribute("data-marker-at", String(at++));
     return at;
@@ -67,7 +74,7 @@ async function markers(page: Page, scope: Locator): Promise<Marker[]> {
       if (index !== undefined) texts[index] = String(node.name?.value ?? "");
     }
     assert.ok(texts.every((text) => text !== ""), "every item's marker is named in the accessibility tree");
-    return await scope.locator(".markdown-list").evaluateAll((lists, drawn) => {
+    return await lists.evaluateAll((lists, drawn) => {
       const found: Marker[] = [];
       lists.forEach((list, index) => {
         const indent = parseFloat(getComputedStyle(list).paddingLeft);
@@ -87,6 +94,60 @@ async function markers(page: Page, scope: Locator): Promise<Marker[]> {
       });
       return found;
     }, texts);
+  } finally { await cdp.detach(); }
+}
+
+interface BubbleMarker { text: string; left: number; right: number; edge: number; itemLeft: number; lines: number[] }
+/**
+ * Every marker of the sent bubbles' lists as the browser lays it out (a `::before` or the `::marker`):
+ * its drawn text and box, the edge it should start at (the bubble's text edge, or for a nested list
+ * its parent item's text) and the left of each line of its item's own text.
+ */
+async function bubbleMarkers(page: Page, scope: Locator): Promise<BubbleMarker[]> {
+  const items = await scope.locator(".chat-bubble .markdown-list > li").evaluateAll((items) => items.map((item, at) => {
+    item.setAttribute("data-bubble-item", String(at));
+    const list = item.parentElement!;
+    const body = item.closest(".chat-bubble-body")!;
+    const style = getComputedStyle(body);
+    const range = document.createRange();
+    const lines: number[] = [];
+    const texts = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+    for (let node = texts.nextNode(); node !== null; node = texts.nextNode()) {
+      if (node.parentElement!.closest(".markdown-list") !== list) continue;
+      range.selectNodeContents(node);
+      for (const rect of range.getClientRects()) lines.push(rect.left);
+    }
+    return {
+      edge: list.parentElement!.closest(".markdown-list") !== null ? list.getBoundingClientRect().left
+        : body.getBoundingClientRect().left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+      itemLeft: item.getBoundingClientRect().left + parseFloat(getComputedStyle(item).paddingLeft),
+      lines,
+    };
+  }));
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { documents, strings } = await cdp.send("DOMSnapshot.captureSnapshot", { computedStyles: [] });
+    const { nodes, layout } = documents[0]!;
+    const pseudo = (node: number): boolean => /^::(?:before|marker)$/.test(strings[nodes.nodeName![node]!] ?? "");
+    const itemAt = new Map<number, number>();
+    nodes.attributes!.forEach((attributes, node) => {
+      for (let at = 0; at < attributes.length; at += 2) {
+        if (strings[attributes[at]!] === "data-bubble-item") itemAt.set(node, Number(strings[attributes[at + 1]!]));
+      }
+    });
+    const drawn = items.map(() => ({ text: "", left: Infinity, right: -Infinity }));
+    layout.nodeIndex.forEach((node, at) => {
+      const owner = pseudo(node) ? node : nodes.parentIndex![node]!;
+      if (owner < 0 || !pseudo(owner)) return;
+      const item = itemAt.get(nodes.parentIndex![owner]!);
+      if (item === undefined) return;
+      const [x, , width, height] = layout.bounds[at]!;
+      if (width === 0 && height === 0) return;
+      drawn[item]!.left = Math.min(drawn[item]!.left, x!);
+      drawn[item]!.right = Math.max(drawn[item]!.right, x! + width!);
+      if (layout.text[at]! >= 0) drawn[item]!.text += strings[layout.text[at]!];
+    });
+    return items.map((item, at) => ({ ...item, ...drawn[at]! }));
   } finally { await cdp.detach(); }
 }
 
@@ -131,11 +192,30 @@ async function check(browser: Browser, origin: string, width: number, testCase: 
     await scope.getByText("a hundred", { exact: true }).waitFor();
     await appFaces(page);
 
-    const found = await markers(page, scope);
-    assert.equal(found.length, 2 + 3 + 5 + 2 + 3, `${testCase.name} ${width}px: every item of the message's and the reply's lists is drawn`);
-    assert.deepEqual(found.filter((marker) => marker.list === 0).map((marker) => marker.text.trim()), ["1.", "4."],
-      `${testCase.name} ${width}px: the user's skipping list keeps the numbers typed`);
-    if (testCase.name !== "default") assert.match(found[0]!.font, /monospace/, `${testCase.name} ${width}px: the markers are drawn in the Chat font`);
+    const label = `${testCase.name} ${width}px`;
+    const bubble = await bubbleMarkers(page, scope);
+    assert.equal(bubble.length, 2 + 11 + 1 + 1, `${label}: every item of the sent messages' lists is drawn`);
+    assert.deepEqual(bubble.filter((marker) => Math.abs(marker.left - marker.edge) > 1).map((marker) => `${marker.text.trim()} starts ${(marker.left - marker.edge).toFixed(1)}px from its edge`), [],
+      `${label}: every marker of a sent message starts at the edge of its text, as a paragraph's first letter does`);
+    assert.deepEqual(bubble.map((marker) => marker.text.trim()), ["1.", "4.", ...Array.from({ length: 11 }, (_, at) => `${at + 1}.`), "", "1."],
+      `${label}: a sent message's lists keep the numbers typed`);
+    assert.deepEqual(bubble.filter((marker) => marker.right > marker.itemLeft + 0.5).map((marker) => marker.text), [], `${label}: no marker of a sent message runs into its item's text`);
+    assert.ok(width > 480 || bubble.some((marker) => marker.lines.length > 1), `${label}: an item of a sent message wraps at a phone's width`);
+    assert.deepEqual(bubble.filter((marker) => marker.lines.some((left) => Math.abs(left - marker.itemLeft) > 0.5)).map((marker) => marker.text), [],
+      `${label}: an item's wrapped lines start under its text, not under its marker`);
+
+    const found = await markers(page, scope.locator(".chat-turn-agent .markdown-list"));
+    assert.equal(found.length, 3 + 5 + 2 + 3, `${label}: every item of the reply's lists is drawn`);
+    if (testCase.name !== "default") assert.match(found[0]!.font, /monospace/, `${label}: the markers are drawn in the Chat font`);
+    const indents = await scope.locator(".chat-turn-agent .markdown-list").evaluateAll((lists) => lists.map((list) => {
+      const probe = document.createElement("div");
+      probe.style.paddingLeft = list.tagName === "OL" ? "max(var(--space-5), calc((var(--markdown-list-digits) + 2) * 1ch))" : "max(var(--space-5), 2ch)";
+      list.append(probe);
+      const sized = parseFloat(getComputedStyle(probe).paddingLeft);
+      probe.remove();
+      return { indent: parseFloat(getComputedStyle(list).paddingLeft), sized };
+    }));
+    assert.deepEqual(indents.filter(({ indent, sized }) => Math.abs(indent - sized) > 0.5), [], `${label}: an answer's list keeps the indent of its widest marker`);
     const clipped = found.filter((marker) => marker.width > marker.indent + 0.5);
     assert.deepEqual(clipped, [], `${testCase.name} ${width}px: every marker fits inside its list's indent`);
     if (testCase.defaultFace) {
@@ -148,7 +228,7 @@ async function check(browser: Browser, origin: string, width: number, testCase: 
       await page.screenshot({ path: join(evidence, `chat-list-markers-${testCase.name}-${width}.png`) });
     }
     const widest = found.reduce((most, marker) => marker.width > most.width ? marker : most);
-    console.log(`PASS ${width}px ${testCase.name}: ${found.length} markers fit their indents (widest "${widest.text.trim()}" ${widest.width.toFixed(1)}px in ${widest.indent.toFixed(1)}px)`);
+    console.log(`PASS ${width}px ${testCase.name}: ${found.length} markers fit their indents (widest "${widest.text.trim()}" ${widest.width.toFixed(1)}px in ${widest.indent.toFixed(1)}px), ${bubble.length} of sent messages start at their text's edge`);
   } finally { await context.close(); }
 }
 

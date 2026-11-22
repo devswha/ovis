@@ -552,6 +552,45 @@ ol.markdown-list {
   margin: var(--space-1) 0 0;
 }
 
+/* A sent message draws its markers from its text's edge, where a number typed as plain text starts:
+   a ::marker ends where its item's text starts, and how wide it is in a proportional face is not
+   known to CSS. */
+.chat-bubble .markdown-list {
+  position: relative;
+  list-style: none;
+}
+
+.chat-bubble ol.markdown-list {
+  padding-left: calc((var(--markdown-list-digits) + 1.5) * 1ch);
+}
+
+.chat-bubble .markdown-list > li:not(.markdown-task)::before {
+  position: absolute;
+  left: 0;
+}
+
+.chat-bubble ul.markdown-list > li:not(.markdown-task)::before {
+  margin-top: calc((1lh - 0.3em) / 2);
+  border: 0.15em solid;
+  border-radius: 50%;
+  content: "";
+}
+
+.chat-bubble .markdown-list ul.markdown-list > li:not(.markdown-task)::before {
+  padding: calc(0.15em - var(--hairline));
+  border-width: var(--hairline);
+}
+
+.chat-bubble ol.markdown-list > li:not(.markdown-task)::before {
+  content: counter(list-item) ". ";
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chrome's counter(list-item) ignores an item's value attribute */
+.chat-bubble ol.markdown-list > li[value]:not(.markdown-task)::before {
+  content: attr(value) ". ";
+}
+
 .markdown-task {
   list-style: none;
 }
