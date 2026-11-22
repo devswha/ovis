@@ -288,7 +288,9 @@ window: the join lapses at its own deadline. It is never approved by itself. `ov
 PC's terminal (the same loopback, unforwarded request, with `x-herdr-machine` from the same origin)
 reads the same list and asks the same way: no digits shown, all six typed, one wrong entry ends that
 join, Enter by itself leaves it waiting, a locked or strict PC refuses and the command says so, and an
-input that is not a terminal approves nothing.
+input that is not a terminal approves nothing. On a machine several people log in to, set an access
+token: without one, any local OS account counts as this PC's own window and could approve a join
+(it would still need the six digits the asking device shows).
 
 A first join (a PC added in one press, its owner's first phone) has nobody else to approve it: this PC's
 own window alone shows it, as a card with the digits to compare and Allow / Decline (`POST /api/relay/join`

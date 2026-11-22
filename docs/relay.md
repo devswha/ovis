@@ -166,6 +166,9 @@ two screens instead, as in Bluetooth's numeric comparison:
    waiting for a run at a terminal. The PC's terminal is the PC itself, so it also asks about each
    account join a member could approve ([Who may admit a device](account.md#who-may-admit-a-device)):
    no digits are shown for it, all six the new device shows are typed, and one wrong entry ends it.
+   On a machine several people log in to, set an access token: without one, any local OS account
+   counts as this PC's own window and could approve a join (it would still need the six digits the
+   asking device shows).
 
 The approval may also come from a phone already linked to the owner's account, connected through
 the relay: it is shown three sets of digits and must pick the new device's
