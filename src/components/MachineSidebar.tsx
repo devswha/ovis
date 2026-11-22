@@ -33,6 +33,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
+import { leavePageFromSheet } from "../lib/sheetHistory.ts";
 import { chooseAnotherPc, inNativeApp } from "../lib/nativeApp.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
@@ -71,11 +72,14 @@ export function addPcMoreItem(exit: "app" | "shell" | null, sheetWidth: boolean)
   return exit !== null && sheetWidth ? { id: "add-pc", label: t("Connect a PC"), icon: Plus, run: () => void openAddPc(exit) } : null;
 }
 
-/** Opens Add a PC where `exit` (addPcExit) leads: the phone app's connect tabs keep this PC open until another is picked. */
+/**
+ * Opens Add a PC where `exit` (addPcExit) leads: the phone app's connect tabs keep this PC open until another is picked;
+ * the hosted app's loads once More's step off its entry has landed, which would otherwise cancel it or bring this page back.
+ */
 export async function openAddPc(exit: "app" | "shell"): Promise<void> {
   if (exit === "app") { await chooseAnotherPc(); return; }
   try { sessionStorage.setItem(ADD_PC_FROM_KEY, window.location.pathname); } catch { /* no storage: Back drops #add and stays */ }
-  window.location.assign("/#add");
+  leavePageFromSheet("/#add");
 }
 
 function asksWhatToConnect(machine: Machine): boolean {
