@@ -18,6 +18,7 @@ import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
+import { heldBody, type ClaudePermissionHooks } from "./claude-permission-hook.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "./dialogs/registry.ts";
@@ -1315,8 +1316,21 @@ export interface PromptRequestOptions {
   openCodeStateDir?: string;
   openCodeState?: OpenCodePromptState;
   onAnswered?: () => void;
+  /** the command approvals a Claude this server started holds through its hook */
+  permissionHooks?: ClaudePermissionHooks;
   answerDeadlineMs?: number;
   beforeKey?: (paneId: string, agent: string, deadline: AbortSignal) => Promise<void>;
+}
+
+/**
+ * A Claude command approval with the whole command its held hook request carries, where the screen may have cut it.
+ * The read is also what tells the hooks the screen no longer shows a request, which releases it.
+ */
+function withHeldPermission(paneId: string, agent: string, prompt: InteractivePrompt | null, hooks: ClaudePermissionHooks | undefined): InteractivePrompt | null {
+  if (hooks === undefined || agent !== "claude") return prompt;
+  const approval = prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "claude-approval" ? prompt.body ?? "" : null;
+  const held = hooks.shown(paneId, approval);
+  return held === null || prompt === null ? prompt : { ...prompt, body: heldBody(held) };
 }
 
 /**
@@ -1464,7 +1478,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         : await paneScrollInfo(paneId, undefined, SUGGESTION_READ_MS).then((scroll) => (scroll?.offset_from_bottom ?? 0) > 0 ? null : found, () => null);
       const outcomes = await commandOutcomes(paneId, read.pane, read.prompt, read.screen, readSendId, options.codexHome, read.snapshot);
       return jsonResponse({
-        prompt,
+        prompt: withHeldPermission(paneId, agent, prompt, options.permissionHooks),
         suggestion,
         restored: box === null || agent !== "claude" ? null : await restoredOnLiveScreen(paneId, box).catch(() => null),
         ...(outcomes.length ? { outcomes: watching ? outcomes.map(({ preview: _preview, result_text: _resultText, ...outcome }) => outcome) : outcomes } : {}),
@@ -1848,6 +1862,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           answerTurns.set(body.pane_id, (answerTurns.get(body.pane_id) ?? 0) + 1);
           if (!done && keys.pressed()) askingEnded(body.pane_id);
         }
+      }
+
+      // Yes or No on a Claude command approval whose request its hook holds goes as the hook's answer, with no key
+      if (parsedPrompt?.responder === "claude-approval" && body.option_index !== undefined && body.custom_text === undefined
+        && options.permissionHooks?.answer(body.pane_id, prompt.body ?? "", prompt.options[body.option_index]?.label ?? "")) {
+        delivered = true;
+        askingEnded(body.pane_id);
+        form.still = claudeStepStill(parsedPrompt);
+        return jsonResponse({ ok: true });
       }
 
       let steps: AnswerStep[];
