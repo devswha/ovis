@@ -270,7 +270,9 @@ public class MainActivity extends BridgeActivity {
             // over what the person types on the app's own page
             PCStore.homeFailed = true;
             bridge.getWebView().stopLoading();
-            reopen();
+            // at once: no page of a PC is up that would have text to hand over first (reopen)
+            leaving = true;
+            restart();
         } else if (action == Home.Action.KEEP_HOSTED) {
             PCStore.keepHosted(this, BuildConfig.APP_ORIGIN);
             // a cover still up is a PC's from here on, with its Change PC
