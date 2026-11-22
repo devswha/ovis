@@ -508,7 +508,7 @@ describe("Connect a phone on a phone", () => {
     expect(starts()).toBe(1);
     const values = () => qrCodes().map((qr) => String(qr.props.value));
     // the Tailscale tab's QR code is its Tailscale address, never the proxy this page is open at
-    expect(values()).toEqual(["https://workstation.example.ts.net/?pair=482913"]);
+    expect(values()).toEqual(["https://app.ovis.sh/t/#workstation.example.ts.net/482913"]);
     // the relay tab's Pair with a code shows the same code, with no QR code, and asks for no second code, which would end the first
     await act(async () => { renderer!.root.findByProps({ "data-tab": "relay" }).props.onClick(); });
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
@@ -543,7 +543,7 @@ describe("Connect a phone on a phone", () => {
     await act(async () => { refuse(); });
     // the request it waited on failed: nothing will announce a code, so the waiting tab asks itself
     await until(() => starts() === 2, "the waiting tab's own request");
-    await until(() => qrCodes().some((qr) => String(qr.props.value).endsWith("pair=246810")), "the waiting tab's own code");
+    await until(() => qrCodes().some((qr) => qr.props.value === "https://app.ovis.sh/t/#workstation.example.ts.net/246810"), "the waiting tab's own code");
   });
 
   it("puts the Tailscale tab's phone QR code and code above its list of PCs, and its tabs above the body that scrolls", async () => {
@@ -610,7 +610,7 @@ describe("Connect a phone on a phone", () => {
       await act(async () => { button("Open with Tailscale").props.onClick(); });
       await until(() => qrCodes().length === 1, "the served address's QR code");
       expect(asked("/api/access/tailscale/serve")).toBe(1);
-      expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://workstation.example.ts.net:8443/?pair=482913"]);
+      expect(qrCodes().map((qr) => String(qr.props.value))).toEqual(["https://app.ovis.sh/t/#workstation.example.ts.net:8443/482913"]);
       expect(commands()).toEqual([]);
       // served: nothing reads Tailscale again
       expect(polls.every((poll) => poll.cleared)).toBe(true);

@@ -526,13 +526,16 @@ async function load() {
 void load();
 
 // a PC's link on the app's origin tapped outside the app (a message, the camera reading the PC's QR
-// code), which Android hands to the app (MainActivity's app link): opened as a scanned QR code is
+// code), which Android or iOS hands to the app: opened as a scanned QR code is
 async function openAppLink() {
-  if (window.Capacitor?.getPlatform?.() !== "android") return;
+  if (!["android", "ios"].includes(window.Capacitor?.getPlatform?.())) return;
   const { url } = await shell("takeLink");
   if (!url) return;
-  pick("ssh");
-  showAddressForm(true, url);
+  if (url.startsWith("https://app.ovis.sh/t/#")) pick("tailscale");
+  else {
+    pick("ssh");
+    showAddressForm(true, url);
+  }
   await open(url);
 }
 

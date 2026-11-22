@@ -810,6 +810,10 @@ public class MainActivity extends BridgeActivity {
      * saved, as the browser would have; for any other PC the app has nothing to show.
      */
     private boolean openAppLink(String link) {
+        if (PCStore.tailnetHandoff(link)) {
+            PCStore.link = link;
+            return true;
+        }
         if (PCStore.pairingLink(link)) {
             if (PCStore.showsHostedShell(PCStore.current(this))) {
                 PCStore.open(this, PCStore.appScope(link), link);

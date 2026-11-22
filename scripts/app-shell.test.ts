@@ -10,6 +10,13 @@ const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const offer = { v: 1 as const, server_id: SERVER_ID, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.ovis.sh", code: "123456", name: "Studio PC" };
 const link = (text: string, appOrigin?: string) => relayLink(parseAddress(text), appOrigin);
 
+it("opens old and wrapped Tailscale QR codes at the same PC, keeping leading zeroes", () => {
+  const target = "https://desk.tailnet.ts.net:8443/?pair=012345";
+  expect(parseAddress(target)?.href).toBe(target);
+  expect(parseAddress("https://app.ovis.sh/t/#desk.tailnet.ts.net:8443/012345")?.href).toBe(target);
+  expect(parseAddress("https://app.ovis.sh/t/#elsewhere.example/012345")).toBeNull();
+});
+
 describe("the sign-in buttons", () => {
   it("draws the sign-ins the account service names, in the app's order, and none it does not know", () => {
     expect(listedProviders({ providers: ["apple", "github"], device: ["github"] })).toEqual(["github", "apple"]);

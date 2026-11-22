@@ -64,7 +64,13 @@ final class PCStore {
      */
     static String appLink(String action, String data) {
         if (!"android.intent.action.VIEW".equals(action) || data == null) return null;
+        if (tailnetHandoff(data)) return data;
         return appScope(data) == null ? null : data;
+    }
+
+    // Only the bundled connect screen decodes the fragment, using the same parser as the scanner.
+    static boolean tailnetHandoff(String link) {
+        return link.startsWith("https://app.ovis.sh/t/#") && link.length() <= 300;
     }
 
     /** Whether the page the app shows (`current`, a saved key) is the hosted shell's: its own list, or one of its PCs. */

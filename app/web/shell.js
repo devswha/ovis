@@ -1,3 +1,5 @@
+import { unwrapPairAddress } from "./tailnet-pair.js";
+
 export const APP_ORIGIN = "https://app.ovis.sh";
 
 export const ACCOUNT_SIGN_IN = true;
@@ -188,7 +190,7 @@ export function parseAddress(text) {
   let url;
   try { url = new URL(value); } catch { return null; }
   if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") return null;
-  return url;
+  return unwrapPairAddress(url);
 }
 
 const SSH_TARGET = /^(?:ssh:\/\/)?([^\s@/:]+)@([^\s@/:[\]]+|\[[0-9a-f:.]+\])(?::(\d{1,5}))?\/?$/i;

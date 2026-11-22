@@ -84,6 +84,10 @@ const KEPT = { "ovis-v4-sheep-0000000000aa": { "/": OLD_SHELL, "/assets/index-ol
 const NETWORK = { [new URL(SCOPE).pathname]: NEW_SHELL, "/assets/index-new.js": "new" };
 
 describe("service worker navigations", () => {
+  it("does not substitute or cache the pairing fallback as the main shell", async () => {
+    const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: { "/t/": "pair" } });
+    expect(await sw.navigate(`${ORIGIN}/t/`)).toBe("(left to the network)");
+  });
   it("leaves a sign-in's return to the network and keeps nothing of it", async () => {
     const sw = worker({ shell: false, build: "0000000000aa", network: { "/callback": NEW_SHELL, "/assets/index-new.js": "new" } });
     expect(await sw.navigate(`${ORIGIN}/callback?code=secret-code&state=s`)).toBe("(left to the network)");

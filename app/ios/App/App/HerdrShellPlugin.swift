@@ -8,6 +8,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "HerdrShell"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "takeLink", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "forget", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "disconnect", returnType: CAPPluginReturnPromise),
@@ -17,6 +18,16 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "openSshSetup", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "takeSshSetup", returnType: CAPPluginReturnPromise)
     ]
+
+    @objc func takeLink(_ call: CAPPluginCall) {
+        guard bridge?.webView?.url?.scheme == "capacitor", PCStore.shown == nil else {
+            call.resolve(["url": ""])
+            return
+        }
+        let link = PCStore.link
+        PCStore.link = nil
+        call.resolve(["url": link ?? ""])
+    }
 
     @objc func getState(_ call: CAPPluginCall) {
         call.resolve([

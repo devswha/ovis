@@ -250,8 +250,8 @@ self.addEventListener("fetch", (event) => {
     }
   }
 
-  // a sign-in's return carries its code in the address: never answered or kept by this worker
-  if (request.mode === "navigate" && url.pathname === "/callback") return;
+  // Neither the sign-in return nor the hosted pairing handoff is an app shell to serve or cache.
+  if (request.mode === "navigate" && (url.pathname === "/callback" || (RELAY_RESOURCES && url.pathname === "/t/"))) return;
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {

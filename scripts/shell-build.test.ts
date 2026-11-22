@@ -113,14 +113,17 @@ describe("the shell's app links", () => {
     expect(JSON.parse(files[".well-known/assetlinks.json"] ?? "null")).toEqual([{
       relation: ["delegate_permission/common.handle_all_urls"],
       target: { namespace: "android_app", package_name: APP_ID, sha256_cert_fingerprints: ANDROID_APP_FINGERPRINTS },
-    }]);
+    }, ...["sh.ovis.app.preview", "sh.ovis.app.previewqa"].map((package_name) => ({
+      relation: ["delegate_permission/common.handle_all_urls"],
+      target: { namespace: "android_app", package_name, sha256_cert_fingerprints: ["BD:49:0B:C8:3D:3F:22:C8:55:9E:57:60:C4:7D:71:63:7D:34:22:92:95:82:C9:B4:05:E3:E6:79:AD:8E:29:C6"] },
+    }))]);
     expect(APP_ID).toBe(JSON.parse(readFileSync(join(root, "app", "capacitor.config.json"), "utf8")).appId);
     for (const fingerprint of ANDROID_APP_FINGERPRINTS) expect(fingerprint).toMatch(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
   });
 
   it("name the same app and only a PC's pages for iOS", () => {
     expect(JSON.parse(files[".well-known/apple-app-site-association"] ?? "null")).toEqual({
-      applinks: { details: [{ appIDs: [IOS_APP_ID], components: [{ "/": "/s/*" }] }] },
+      applinks: { details: [{ appIDs: [IOS_APP_ID], components: [{ "/": "/s/*" }, { "/": "/t/" }] }] },
     });
     expect(IOS_APP_ID).toBe(`5987KT43TJ.${APP_ID}`);
   });

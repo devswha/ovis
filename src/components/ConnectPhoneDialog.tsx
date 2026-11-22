@@ -4,6 +4,7 @@ import { Check, RefreshCw, Smartphone, X } from "lucide-react";
 
 import "./ConnectPhoneDialog.css";
 import "./DevicesPanel.css";
+import { pairQrUrl } from "../../app/web/tailnet-pair.js";
 
 import { ADDRESS_PC_FAILURES, type AddressPcFailure, type Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
@@ -1524,7 +1525,7 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
   }, [startAtOnce, shared]);
 
   const spaced = code ? `${code.code.slice(0, 3)} ${code.code.slice(3)}` : "";
-  const qrValue = code && pairUrl ? `${pairUrl.replace(/\/$/, "")}/?pair=${code.code}` : null;
+  const qrValue = code && pairUrl ? pairQrUrl(pairUrl, code.code) : null;
   const newCode = <button type="button" className="btn" disabled={busy} aria-busy={busy || undefined} onClick={() => void pair()}><RefreshCw aria-hidden="true" />{t("New code")}</button>;
   if (compact && code === null && !busy && !started.current) return (
     <div className="connect-phone-code">

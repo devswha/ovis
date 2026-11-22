@@ -1,4 +1,5 @@
 import "./RelayAddPc.css";
+import { unwrapPairAddress } from "../../app/web/tailnet-pair.js";
 
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Globe, QrCode, SquareTerminal, type LucideIcon } from "lucide-react";
@@ -51,7 +52,7 @@ export function addressOf(text: string): URL | null {
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) value = (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?([/?#]|$)/.test(value) ? "http://" : "https://") + value;
   try {
     const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "" ? url : null;
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "" ? unwrapPairAddress(url) : null;
   } catch { return null; }
 }
 

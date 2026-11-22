@@ -489,21 +489,59 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   An app built before the plugin makes the viewer say it couldn't save.
 - A PC's link on the hosted shell tapped outside the app (a message, the camera app reading the
   PC's QR code) opens in the app: the manifest's `autoVerify` intent-filter takes
-  `https://app.ovis.sh/s/`, which Android verifies against
+  `https://app.ovis.sh/s/` and the exact `/t/` handoff below, which Android verifies against
   `https://app.ovis.sh/.well-known/assetlinks.json` (written by `scripts/shell-build.ts` with Play's
   app signing certificate and the upload certificate, so it is live once a release deploys the
-  hosted shell). `MainActivity` takes only a link to a PC's scope (`PCStore.appLink`); one to
+  hosted shell). `MainActivity` takes only those links (`PCStore.appLink`); one to
   another page of the hosted shell leaves the open page alone. A view of a PC (a file's `#read=`, a
   pane's `#pane=` or an older `?pane=`) opens that PC at that view when the app has it saved, and
   otherwise leaves the open page alone too. A link to pair from (the scope alone, with its
   `#offer=`, or with a provider's `#sign-in=`) is kept in memory (`PCStore.link`) for the connect screen, which takes it once (`HerdrShellPlugin.takeLink`, which an activity showing a PC never answers, as its
   page has the bridge too) and opens it as a scanned QR code, so `relayLink()` checks the offer the
   same way. A link handed back when the app is restored or started from Recents is not opened again. Until the link is verified, Android opens such links in the
-  browser as before. The hosted shell also serves `apple-app-site-association` for the iOS app,
-  which still needs the Associated Domains capability (`applinks:app.ovis.sh`) and a handler.
+  browser as before.
   `minSdkVersion` is 26 (Android 8), which the QR scanner's library needs. The merged manifest
   asks for INTERNET, ACCESS_NETWORK_STATE, CAMERA (the QR scanner) and androidx's own
   `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`.
+
+### Tailscale pairing links (Android and iOS)
+
+The PC's Settings, setup guide and `ovis pair` encode
+`https://app.ovis.sh/t/#<tailnet-host>[:<port>]/<six-digit-code>`.
+Only `/t/` goes in the HTTP request to Pages. The Android intent and the iOS scene hand the
+fragment to the bundled connect screen in memory; it opens the same PC address as an old QR.
+Without a verified app the standalone `/t/` page uses `location.replace` to open
+`https://<tailnet-host>[:<port>]/?pair=<code>` directly. Only the PC receives that query.
+The fallback has no telemetry, sends no referrer, and constructs the destination from validated
+DNS labels ending in `.ts.net`, an optional decimal port (1–65535) and six ASCII digits.
+It accepts no scheme, credentials, arbitrary path, extra query or encoded URL in the fragment.
+Other direct addresses (LAN, private proxies) keep their old QR rather than becoming
+destinations of a public redirect. Relay links retain their `/s/` scopes.
+
+After review:
+
+1. Build the hosted shell (`bun run build:shell`) and publish the reviewed `dist-shell/` through
+   the normal `ovis-app` Cloudflare Pages release. Include `t/`, the worker, `_headers`, and both
+   `.well-known` files. Verify each association URL answers **200 JSON without a redirect**.
+2. Build/install the matching Android app. `assetlinks.json` keeps both existing production
+   certs and adds `sh.ovis.app.preview` and `sh.ovis.app.previewqa` with **only the upload cert**.
+   On API 31+, `adb shell pm verify-app-links --re-verify <package>` then
+   `adb shell pm get-app-links <package>` should show `app.ovis.sh: verified`.
+3. Apple Developer already has Associated Domains enabled on `sh.ovis.app`. On eamac open
+   `app/ios/App/App.xcodeproj`, select **App** (not OvisNotifications), and confirm Signing &
+   Capabilities → Associated Domains lists `applinks:app.ovis.sh`. Archive the App scheme for a
+   generic iOS device: Release uses team `5987KT43TJ` and the installed manual profile
+   **Ovis App Store Push SIWA AppLinks 2026-11-22**. Leave the notification extension on its
+   own signing configuration. Before distribution inspect the archived app with
+   `codesign -d --entitlements :- <archive>/Products/Applications/App.app`; verify
+   `application-identifier` is `5987KT43TJ.sh.ovis.app` and the associated domain is present.
+   No iOS preview bundle ID or additional Apple account change is needed.
+4. After Pages and the signed builds are available, install the iOS build and tap a fresh QR
+   in Camera (or tap the link in Notes) on a device on the tailnet. Test both a cold and a
+   running app. Apple caches AASA; until association succeeds Safari uses the same fallback.
+
+### Android storage and WebView behavior
+
 - Backups are off (`allowBackup="false"`, and `data_extraction_rules.xml` for a move to a new
   phone on Android 12 and later): the WebView's store holds each PC's device cookie, so a restored
   copy would be signed in without pairing.

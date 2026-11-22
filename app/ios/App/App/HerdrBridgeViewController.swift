@@ -35,6 +35,9 @@ enum PCStore {
     /// its `?pair=` code through Try again. In memory only, as it can hold that code.
     static var pendingStart: String?
 
+    /// A Universal Link waiting for the bundled scanner's validation, never given to a PC page.
+    static var link: String?
+
     /// The connect screen is up to pick another way or PC, the current PC kept (HerdrShell chooseAnother): its button
     /// reopens that PC, and opening another replaces it. In memory only, so an app started again opens the current PC.
     static var choosing = false

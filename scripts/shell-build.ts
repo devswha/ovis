@@ -68,9 +68,10 @@ export const APP_ID = "sh.ovis.app";
  * installs, and the upload key (the certificate in a bundle built for upload), which signs a
  * release build installed by hand.
  */
+const UPLOAD_CERT = "BD:49:0B:C8:3D:3F:22:C8:55:9E:57:60:C4:7D:71:63:7D:34:22:92:95:82:C9:B4:05:E3:E6:79:AD:8E:29:C6";
 export const ANDROID_APP_FINGERPRINTS = [
   "7A:F3:97:1A:B8:7A:22:3B:A4:6D:58:13:89:ED:7A:EB:A9:31:3F:97:E5:A1:03:87:63:74:BE:CB:54:1C:1D:63",
-  "BD:49:0B:C8:3D:3F:22:C8:55:9E:57:60:C4:7D:71:63:7D:34:22:92:95:82:C9:B4:05:E3:E6:79:AD:8E:29:C6",
+  UPLOAD_CERT,
 ];
 
 const APPLE_TEAM_ID = "5987KT43TJ";
@@ -82,15 +83,15 @@ export const IOS_APP_ID = `${APPLE_TEAM_ID}.${APP_ID}`;
  * message, or the camera reading the PC's QR code) instead of the browser: Android checks
  * `assetlinks.json` for the app's `autoVerify` link (app/android/app/src/main/AndroidManifest.xml),
  * iOS `apple-app-site-association` for an app whose Associated Domains name this host. Only a PC's
- * scope, `/s/`, is the app's: the front page stays the hosted shell's.
+ * scope, `/s/`, and the Tailscale handoff, `/t/`, are the app's: the front page stays the hosted shell's.
  */
 export function appLinkFiles(): Record<string, string> {
   return {
-    ".well-known/assetlinks.json": `${JSON.stringify([{
+    ".well-known/assetlinks.json": `${JSON.stringify([APP_ID, `${APP_ID}.preview`, `${APP_ID}.previewqa`].map(package_name => ({
       relation: ["delegate_permission/common.handle_all_urls"],
-      target: { namespace: "android_app", package_name: APP_ID, sha256_cert_fingerprints: ANDROID_APP_FINGERPRINTS },
-    }], null, 2)}\n`,
-    ".well-known/apple-app-site-association": `${JSON.stringify({ applinks: { details: [{ appIDs: [IOS_APP_ID], components: [{ "/": "/s/*" }] }] } }, null, 2)}\n`,
+      target: { namespace: "android_app", package_name, sha256_cert_fingerprints: package_name === APP_ID ? ANDROID_APP_FINGERPRINTS : [UPLOAD_CERT] },
+    })), null, 2)}\n`,
+    ".well-known/apple-app-site-association": `${JSON.stringify({ applinks: { details: [{ appIDs: [IOS_APP_ID], components: [{ "/": "/s/*" }, { "/": "/t/" }] }] } }, null, 2)}\n`,
   };
 }
 
@@ -201,6 +202,12 @@ export function shellCaddyfile(site: string, root = "/opt/ovis-shell/current"): 
 
 export function shellFiles(manifest: string): Record<string, string> {
   return {
+    "t/index.html": `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; base-uri 'none'; form-action 'none'"><title>Ovis</title></head><body><p></p><script type="module" src="./open.js"></script></body></html>\n`,
+    "t/open.js": `${readFileSync(new URL("../app/web/tailnet-pair.js", import.meta.url), "utf8")}
+const target = tailnetPairTarget(location.href);
+if (target) location.replace(target.href);
+else document.querySelector("p").textContent = /^ko\\b/i.test(navigator.language) ? "PC의 QR 코드를 다시 스캔하세요." : "Scan the QR code on your PC again.";
+`,
     "render.html": `<!doctype html><html><head><meta charset="utf-8"><title>Ovis</title></head><body><script>
 function render(event) {
   if (event.source !== parent || event.data?.type !== "ovis-render" || typeof event.data.html !== "string") return;

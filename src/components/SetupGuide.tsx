@@ -3,6 +3,7 @@ import { ArrowRight, Bell, BellRing, Check, ChevronLeft, Circle, CircleCheck, Co
 
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { HealthAuth, PairingCode, RemoteAccess } from "../../shared/protocol.ts";
+import { pairQrUrl } from "../../app/web/tailnet-pair.js";
 import type { SecurityFacts } from "../lib/useAccess.ts";
 import { ApiError, createWorkspace, fetchAgentCatalog, fetchDevices, fetchRemoteAccess, fetchUsage, startPairing } from "../lib/api.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
@@ -975,7 +976,7 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
     </div>
   );
   if (!ready || typeof address !== "string") return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
-  const value = code === null ? address : `${address.replace(/\/$/, "")}/?pair=${code.code}`;
+  const value = code === null ? address : pairQrUrl(address, code.code);
   if (large) return (
     <QrPanel value={value} label={code === null ? t("Open this address on your phone") : t("QR code that pairs a phone with code {code}", { code: code.code })} address={address}>
       {paired !== null && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("Paired: {name}.", { name: paired })}</span>}

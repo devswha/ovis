@@ -34,6 +34,9 @@ describe("a QR scan in the phone app", () => {
 describe("an address typed on Add a PC", () => {
   it("reads it as people write it: http for a bare IPv4 address, https for a name, a whole URL as it is", () => {
     const read = (text: string) => addressOf(text)?.href ?? null;
+    const target = "https://desk.tailnet.ts.net:8443/?pair=012345";
+    expect(read(target)).toBe(target);
+    expect(read("https://app.ovis.sh/t/#desk.tailnet.ts.net:8443/012345")).toBe(target);
     expect(read("192.168.0.12:7421")).toBe("http://192.168.0.12:7421/");
     expect(read(" 100.101.102.103 ")).toBe("http://100.101.102.103/");
     expect(read("my-pc.tailnet.ts.net")).toBe("https://my-pc.tailnet.ts.net/");

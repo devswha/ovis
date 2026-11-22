@@ -37,6 +37,7 @@ import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 // No application package (node_modules) is loaded with this file: `stop` and `status` must work in a checkout whose
 // install was cut off, so a server that runs from it can be stopped.
 import { DEFAULT_PORT } from "../shared/protocol.ts";
+import { pairQrUrl } from "../app/web/tailnet-pair.js";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
 import type { WaitingDevice } from "./plugin-link.ts";
@@ -970,7 +971,7 @@ async function pair(args: readonly string[], parts?: Awaited<ReturnType<typeof p
   const out: string[] = [`Pairing code: ${code.slice(0, 3)} ${code.slice(3)}   (good for 10 minutes, for one device)`];
   if (url !== null) {
     out.push(`On the other device, open ${link(url)} and enter the code, or scan this to open it with the code filled in:`, "");
-    out.push(qr(`${url}/?pair=${code}`));
+    out.push(qr(pairQrUrl(url, code)));
   } else {
     out.push("On the other device, open the app's address and enter the code. Settings → Phone, on any signed-in device, shows the address and how to get one.");
   }

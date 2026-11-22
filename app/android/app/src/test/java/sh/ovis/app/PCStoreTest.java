@@ -345,6 +345,17 @@ public class PCStoreTest {
     }
 
     @Test
+    public void onlyAViewOfTheExactTailnetHandoffGetsToTheConnectScreen() {
+        String link = "https://app.ovis.sh/t/#desk.tailnet.ts.net:8443/012345";
+        String view = "android.intent.action.VIEW";
+        assertEquals(link, PCStore.appLink(view, link));
+        assertNull(PCStore.appLink("android.intent.action.SEND", link));
+        for (String other : new String[] {link.replace("https:", "http:"), link.replace("/t/", "/t/more/"),
+                link.replace("app.ovis.sh", "app.ovis.sh.example"), link.replace("//app", "//user@app"),
+                link.replace("/#", "/?other=#")}) assertNull(PCStore.appLink(view, other));
+    }
+
+    @Test
     public void aRelayLinkThatResolvesOutsideItsScopeIsRefused() {
         String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
         String other = "fedcba9876543210fedcba9876543210/";
