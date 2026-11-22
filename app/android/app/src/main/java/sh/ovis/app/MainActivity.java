@@ -327,7 +327,7 @@ public class MainActivity extends BridgeActivity {
                     @Override
                     public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                         super.doUpdateVisitedHistory(view, url, isReload);
-                        syncBack(pc, url);
+                        syncBack(pc);
                     }
 
                     // WebView does not ask shouldOverrideUrlLoading about a form's POST: a sign-in form
@@ -402,8 +402,6 @@ public class MainActivity extends BridgeActivity {
                         // its bar, until the client is up (watchOpening): until then it shows only its
                         // loading spinner, for minutes on a slow link
                         pageShown = true;
-                        // Back again once the new page is on screen and its history list holds it
-                        syncBack(pc);
                         if (url == null || !PCStore.belongs(url, pc)) hideOpening();
                         else answerTimer.post(MainActivity.this::pollPage);
                     }
@@ -659,21 +657,12 @@ public class MainActivity extends BridgeActivity {
      * (PCStore.pageTakesBack). Told before the next Back, so the system knows which way out to draw.
      */
     private void syncBack(String place) {
-        syncBack(place, null);
-    }
-
-    /**
-     * `reported`: the entry the WebView just reported (doUpdateVisitedHistory, onPageCommitVisible), which a new document
-     * (the hosted app's Add a PC opened from a relay PC) reports before its history list holds it (PCStore.pageTakesBackAt).
-     */
-    private void syncBack(String place, String reported) {
         WebView view = bridge.getWebView();
-        WebBackForwardList list = view.copyBackForwardList();
-        String[] entries = new String[list.getSize()];
-        for (int i = 0; i < entries.length; i++) entries[i] = list.getItemAtIndex(i).getUrl();
-        int at = list.getCurrentIndex();
-        String here = reported != null ? reported : at < 0 ? null : entries[at];
-        pageBack.setEnabled(PCStore.pageTakesBackAt(here, entries, at, place));
+        WebBackForwardList entries = view.copyBackForwardList();
+        int at = entries.getCurrentIndex();
+        String here = at < 0 ? null : entries.getItemAtIndex(at).getUrl();
+        String before = at < 1 ? null : entries.getItemAtIndex(at - 1).getUrl();
+        pageBack.setEnabled(view.canGoBack() && PCStore.pageTakesBack(here, before, place));
     }
 
     private void followThemeColor(Set<String> origins) {

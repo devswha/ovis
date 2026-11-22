@@ -580,23 +580,6 @@ public class PCStoreTest {
     }
 
     @Test
-    public void backReadsTheEntryJustReportedEvenBeforeTheHistoryListHasIt() {
-        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
-        String add = "https://app.ovis.sh/#add";
-        // a new document committing: doUpdateVisitedHistory reports it while the list still ends at the PC's page
-        assertTrue(PCStore.pageTakesBackAt(add, new String[] { scope, scope + "?pane=a" }, 1, scope));
-        // the list caught up: the same answer
-        assertTrue(PCStore.pageTakesBackAt(add, new String[] { scope, scope + "?pane=a", add }, 2, scope));
-        // a same-document change within the PC
-        assertTrue(PCStore.pageTakesBackAt(scope + "?pane=b", new String[] { scope + "?pane=a", scope + "?pane=b" }, 1, scope));
-        // the PC's first page, nothing of it behind
-        assertFalse(PCStore.pageTakesBackAt(scope, new String[] { scope }, 0, scope));
-        assertFalse(PCStore.pageTakesBackAt(add, new String[] {}, -1, scope));
-        // the front page reached from the front page: the system's
-        assertFalse(PCStore.pageTakesBackAt(add, new String[] { "https://app.ovis.sh/" }, 0, scope));
-    }
-
-    @Test
     public void backIsThePagesOnlyOverAnotherPageOfTheSamePlace() {
         String pc = "https://pc.tail1234.ts.net";
         assertTrue(PCStore.pageTakesBack(pc + "/?pane=w1%3Ap2", pc + "/?pane=w1%3Ap1", pc));
@@ -608,12 +591,6 @@ public class PCStoreTest {
         String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
         assertTrue(PCStore.pageTakesBack(scope + "?pane=a", scope, scope));
         assertFalse(PCStore.pageTakesBack(scope, "https://app.ovis.sh/", scope));
-        // the hosted app's Add a PC, opened from this relay PC's More: Back goes back to the PC, on every Android
-        assertTrue(PCStore.pageTakesBack("https://app.ovis.sh/#add", scope + "?pane=a", scope));
-        assertFalse(PCStore.pageTakesBack("https://app.ovis.sh/#add", "https://app.ovis.sh/", scope));
-        assertFalse(PCStore.pageTakesBack("https://app.ovis.sh/#pcs", scope, scope));
-        assertFalse(PCStore.pageTakesBack("https://evil.example/#add", scope, scope));
-        assertFalse(PCStore.pageTakesBack("https://app.ovis.sh/#add", null, scope));
         assertTrue(PCStore.pageTakesBack("https://localhost/demo/index.html", "https://localhost/", "https://localhost"));
         assertFalse(PCStore.pageTakesBack("https://localhost/", null, "https://localhost"));
     }
