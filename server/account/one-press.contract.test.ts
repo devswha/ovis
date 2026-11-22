@@ -784,6 +784,24 @@ test("listing confirmation: a yes that arrives after a later check failed is not
   expect(await signIn(f, serverId, device)).toBe("account_unreachable");
 });
 
+test("removed PC: a device whose digits the owner approves on the PC after it left brings it into the account again", async () => {
+  const { f, serverId, remove, reopen, link } = await pcWithLocalPhone();
+  await remove();
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(f.devices.account()).toBeNull();
+  // the PC's own Add this PC screen waits, and its owner approves the digits a device of the account shows
+  const key = await phone();
+  const approved = f.devices.pairRelayApproved("Tablet", key.spki, { path: "code" })?.device;
+  if (!approved) throw new Error("The PC approved no device");
+  expect(f.devices.originOf(approved.id)).toMatchObject({ how: "digits", by: null });
+  // the phone it kept paired from before is still not the one to add it
+  expect((await sendLink(await reopen(), await link())).status).toBe(409);
+  const session = await relayConnection(f, { serverId });
+  await session.auth({ id: approved.id, keys: key.keys, publicKey: key.spki });
+  expect((await sendLink(session, await linkOf(serverId, approved.id, "acct_1", key))).status).toBe(200);
+  expect(f.devices.account()).toBe("acct_1");
+});
+
 test("removed PC: restarting after a bare relist cannot release the old phone row", async () => {
   const f = await pc();
   const { device, serverId, remove, relist } = await firstPcWithPhone(f);
