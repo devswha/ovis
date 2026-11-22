@@ -1,5 +1,6 @@
 import type { Subprocess } from "bun";
 import { join } from "node:path";
+import { settledWithin } from "./drain.ts";
 import { answerQueries, gridText, runSupervised, screenOutput, type PtyRun, type SupervisedRun } from "./pty.ts";
 
 export const SOURCE_OVIS = [process.execPath, join(import.meta.dir, "../../scripts/plugin.ts")] as const;
@@ -47,24 +48,16 @@ export function fresh(run: PtyRun, from: number, text: string): Promise<void> {
 /** A child this code spawned, through its own handle: the only thing the helpers below ever signal. */
 type Owned = Pick<Subprocess, "kill" | "exited" | "exitCode" | "signalCode">;
 
-/** True when `work` settled within `ms`, false at the limit; the timer never outlives the call. */
-async function settledWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([work.then(() => true), new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), ms); })]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** SIGTERM, then SIGKILL after `graceMs`, on a child this code spawned; says how far it had to go. */
-export async function terminate(child: Owned, graceMs: number): Promise<"exited" | "SIGTERM" | "SIGKILL"> {
+/**
+ * SIGTERM, then SIGKILL after `graceMs`, on a child this code spawned; says how far it had to go. After
+ * SIGKILL the reap is bounded too: a child whose exit does not show within `graceMs` is `"unconfirmed"`.
+ */
+export async function terminate(child: Owned, graceMs: number): Promise<"exited" | "SIGTERM" | "SIGKILL" | "unconfirmed"> {
   if (child.exitCode !== null || child.signalCode !== null) return "exited";
   child.kill("SIGTERM");
   if (await settledWithin(child.exited, graceMs)) return "SIGTERM";
   child.kill("SIGKILL");
-  await child.exited;
-  return "SIGKILL";
+  return (await settledWithin(child.exited, graceMs)) ? "SIGKILL" : "unconfirmed";
 }
 
 async function readCapped(stream: ReadableStream<Uint8Array>, maxBytes: number, stop: AbortSignal): Promise<string> {
@@ -115,31 +108,18 @@ export async function runBounded(command: readonly string[], options: BoundedRun
     stop.abort();
     const ended = await terminate(child, options.graceMs);
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${command.join(" ")}: ${reason}${ended === "exited" ? "" : ` (stopped with ${ended})`}`, { cause: error });
+    throw new Error(`${command.join(" ")}: ${reason}${ended === "exited" ? "" : ended === "unconfirmed" ? " (SIGKILL sent, exit not confirmed)" : ` (stopped with ${ended})`}`, { cause: error });
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** Keeps only the last `keep` characters of a stream, and drains the rest, so a noisy child never fills memory. */
-export function drainTail(stream: ReadableStream<Uint8Array>, keep: number): { text(): string; readonly done: Promise<void> } {
-  const decoder = new TextDecoder();
-  let tail = "";
-  const done = (async () => {
-    try {
-      for await (const chunk of stream) tail = (tail + decoder.decode(chunk, { stream: true })).slice(-keep);
-    } catch (error) {
-      tail += `[read failed: ${error instanceof Error ? error.message : String(error)}]`;
-    }
-  })();
-  return { text: () => tail, done };
-}
-
 /**
  * Ends a child this code spawned: `ask` (already bounded) is its polite stop request; a child still
- * alive `graceMs` after that is stopped through its handle. `forced` names the signal that was needed.
+ * alive `graceMs` after that is stopped through its handle. `forced` names the signal that was needed;
+ * `unconfirmed` is set when even SIGKILL showed no exit within `graceMs`.
  */
-export async function shutdownOwned(child: Owned, ask: () => Promise<unknown>, graceMs: number): Promise<{ forced: "SIGTERM" | "SIGKILL" | null; askError: unknown }> {
+export async function shutdownOwned(child: Owned, ask: () => Promise<unknown>, graceMs: number): Promise<{ forced: "SIGTERM" | "SIGKILL" | null; unconfirmed: boolean; askError: unknown }> {
   let askError: unknown;
   if (child.exitCode === null && child.signalCode === null) {
     try {
@@ -148,9 +128,9 @@ export async function shutdownOwned(child: Owned, ask: () => Promise<unknown>, g
       askError = error;
     }
   }
-  if (await settledWithin(child.exited, graceMs)) return { forced: null, askError };
+  if (await settledWithin(child.exited, graceMs)) return { forced: null, unconfirmed: false, askError };
   const ended = await terminate(child, graceMs);
-  return { forced: ended === "exited" ? null : ended, askError };
+  return { forced: ended === "exited" ? null : ended === "unconfirmed" ? "SIGKILL" : ended, unconfirmed: ended === "unconfirmed", askError };
 }
 
 /** Wait for any output past byte `from`: the first sign that the program reacted. */

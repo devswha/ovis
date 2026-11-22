@@ -117,11 +117,11 @@ export function runOnPty(options: PtyOptions): PtyRun {
     onData: (data) => {
       if (overflowed) return;
       output += data;
-      options.onData?.(data);
       if (output.length > maxOutputChars) {
         overflowed = true;
         session.kill();
       }
+      options.onData?.(data);
       wake();
     },
     onExit: (exit) => { code = exit; },
@@ -145,7 +145,8 @@ export function runOnPty(options: PtyOptions): PtyRun {
     stop,
     until: (match, what) => new Promise<void>((resolve, reject) => {
       const check = () => {
-        if (typeof match === "string" ? output.includes(match) : match.test(output)) {
+        // a run past its limit never matches: its transcript is incomplete, so a marker in it proves nothing
+        if (!overflowed && (typeof match === "string" ? output.includes(match) : match.test(output))) {
           wakers.delete(check);
           resolve();
         } else if (timedOut || ended || overflowed) {

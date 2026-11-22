@@ -7,7 +7,8 @@ import type { Subprocess } from "bun";
 import { constants, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { isolatedHcEnv } from "../../scripts/test-hc.ts";
-import { DETACH, anyFresh, closedBoxes, drainTail, entryEnv, entryPty, fresh, runBounded, shutdownOwned, visibleGrid } from "./entry-pty.ts";
+import { DETACH, anyFresh, closedBoxes, entryEnv, entryPty, fresh, runBounded, shutdownOwned, visibleGrid } from "./entry-pty.ts";
+import { drainTail } from "./drain.ts";
 import { stopAllPtyRuns } from "./pty.ts";
 
 const [herdr] = process.argv.slice(2);
@@ -81,7 +82,8 @@ try {
     }, STOP_GRACE_MS);
     if (ended.forced) console.warn(`herdr cleanup: the server did not stop by itself, ended with ${ended.forced}`);
     if (ended.askError) console.warn(`herdr cleanup: server stop failed: ${ended.askError instanceof Error ? ended.askError.message : String(ended.askError)}`);
-    await serverErr.done;
+    if (ended.unconfirmed) console.warn(`herdr cleanup: SIGKILL was sent but the server's exit was not confirmed within ${STOP_GRACE_MS} ms`);
+    if (await serverErr.finish(STOP_GRACE_MS) === "cancelled") console.warn(`herdr cleanup: the server's stderr stayed open ${STOP_GRACE_MS} ms after its exit; the reader was cancelled`);
     if (existsSync(apiPath) || existsSync(clientPath)) throw new Error(`isolated herdr left a socket at ${root}`);
     console.log("herdr cleanup: owned server exited; both scratch sockets removed");
   });

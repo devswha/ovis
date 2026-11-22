@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { closedBoxes, drainTail, runBounded, shutdownOwned } from "./entry-pty.ts";
+import { drainTail } from "./drain.ts";
+import { closedBoxes, runBounded, shutdownOwned, terminate } from "./entry-pty.ts";
 
 const ENV = { PATH: "/usr/bin:/bin" };
 const TEST_MS = 20_000;
@@ -30,12 +31,12 @@ describe("runBounded", () => {
 describe("shutdownOwned", () => {
   it("does not force a child that stops after the request", async () => {
     const child = spawn(["sleep", "30"]);
-    expect(await shutdownOwned(child, async () => { child.kill("SIGTERM"); }, 2000)).toEqual({ forced: null, askError: undefined });
+    expect(await shutdownOwned(child, async () => { child.kill("SIGTERM"); }, 2000)).toEqual({ forced: null, unconfirmed: false, askError: undefined });
   }, TEST_MS);
 
   it("ends a child through its handle when the request does nothing, and reports the signal", async () => {
     const child = spawn(["sleep", "30"]);
-    expect(await shutdownOwned(child, async () => {}, 300)).toEqual({ forced: "SIGTERM", askError: undefined });
+    expect(await shutdownOwned(child, async () => {}, 300)).toEqual({ forced: "SIGTERM", unconfirmed: false, askError: undefined });
     expect(child.signalCode).toBe("SIGTERM");
   }, TEST_MS);
 
@@ -43,8 +44,26 @@ describe("shutdownOwned", () => {
     const child = spawn(STUBBORN);
     const failure = new Error("stop hung");
     const ended = await shutdownOwned(child, () => Promise.reject(failure), 300);
-    expect(ended).toEqual({ forced: "SIGKILL", askError: failure });
+    expect(ended).toEqual({ forced: "SIGKILL", unconfirmed: false, askError: failure });
     expect(child.signalCode).toBe("SIGKILL");
+  }, TEST_MS);
+});
+
+describe("an exit that never shows", () => {
+  const unreapable = () => {
+    const signals: string[] = [];
+    return { signals, child: { exitCode: null, signalCode: null, exited: new Promise<number>(() => {}), kill: (signal?: string | number) => { signals.push(String(signal)); } } };
+  };
+
+  it("terminate gives up on the reap after SIGKILL and reports it unconfirmed", async () => {
+    const { child, signals } = unreapable();
+    expect(await terminate(child, 100)).toBe("unconfirmed");
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  }, TEST_MS);
+
+  it("shutdownOwned reports the forced signal and the unconfirmed exit", async () => {
+    const { child } = unreapable();
+    expect(await shutdownOwned(child, async () => {}, 100)).toEqual({ forced: "SIGKILL", unconfirmed: true, askError: undefined });
   }, TEST_MS);
 });
 
@@ -52,9 +71,24 @@ describe("drainTail", () => {
   it("keeps only the last characters of a flood and reads it to the end", async () => {
     const child = Bun.spawn(["sh", "-c", 'head -c 300000 /dev/zero | tr "\\0" x; printf END'], { env: ENV, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
     const tail = drainTail(child.stdout, 64);
-    await tail.done;
+    expect(await tail.finish(10_000)).toBe("complete");
     expect(tail.text()).toHaveLength(64);
     expect(tail.text().endsWith("xxEND")).toBe(true);
+  }, TEST_MS);
+
+  it("cancels a reader mid-read when the stream stays open, keeping what arrived", async () => {
+    const open = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("partial")); } });
+    const tail = drainTail(open, 64);
+    expect(await tail.finish(100)).toBe("cancelled");
+    expect(tail.text()).toBe("partial");
+  }, TEST_MS);
+
+  it("completes when the stream ends before the limit, whether or not the child has exited", async () => {
+    const child = Bun.spawn(["sh", "-c", "printf late >&2"], { env: ENV, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+    await child.exited;
+    const tail = drainTail(child.stderr, 64);
+    expect(await tail.finish(5000)).toBe("complete");
+    expect(tail.text()).toBe("late");
   }, TEST_MS);
 });
 
