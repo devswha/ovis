@@ -314,3 +314,35 @@ it("prefers fresher cached card text over stale storage and keeps concurrent sou
   expect(JSON.parse(data.get("ovis:card-text:w10:p2")!).text).toBe("before race");
   expect(JSON.parse(data.get("ovis:card-text:w9:p1")!).text).toBe("written concurrently");
 });
+
+it("carries the card text another tab stored over this tab's older cached copy, and drops the copy once it moved (#3458)", async () => {
+  const { getMemoryCardText, heldCardTextFor } = await import("./cardText.ts");
+  const { data, drafts, storage } = fixture();
+  const payload = (paneId: string, text: string) => JSON.stringify({ machineId: "local", paneId, session: "s1", promptId: "q1", text });
+
+  // this tab drew the card and cached its text; another tab then typed more under the same ID
+  data.set("ovis:card-text:w11:p1", payload("w11:p1", "seen here"));
+  expect(heldCardTextFor("w11:p1", storage)?.text).toBe("seen here");
+  data.set("ovis:card-text:w11:p1", payload("w11:p1", "typed in another tab"));
+  carryPaneState("local", "w11:p1", "w12:p2", drafts, storage);
+  expect(JSON.parse(data.get("ovis:card-text:w12:p2")!).text).toBe("typed in another tab");
+  expect(heldCardTextFor("w12:p2", storage)?.text).toBe("typed in another tab");
+  expect(data.get("ovis:card-text:w11:p1")).toBeUndefined();
+
+  // the other tab heard of the move first and carried it: this tab's cached copy under the old ID goes,
+  // so a later herdr replacement does not offer the same words twice
+  data.set("ovis:card-text:w13:p1", payload("w13:p1", "carried by the other tab"));
+  expect(heldCardTextFor("w13:p1", storage)?.text).toBe("carried by the other tab");
+  data.delete("ovis:card-text:w13:p1");
+  data.set("ovis:card-text:w14:p2", payload("w14:p2", "carried by the other tab"));
+  carryPaneState("local", "w13:p1", "w14:p2", drafts, storage);
+  expect(getMemoryCardText("w13:p1")).toBeUndefined();
+  expect(heldCardTextFor("w14:p2", storage)?.text).toBe("carried by the other tab");
+
+  // another tab cleared the card (its prompt was answered): this tab's cached copy is not written back
+  data.set("ovis:card-text:w15:p1", payload("w15:p1", "answered elsewhere"));
+  expect(heldCardTextFor("w15:p1", storage)?.text).toBe("answered elsewhere");
+  data.delete("ovis:card-text:w15:p1");
+  carryPaneState("local", "w15:p1", "w16:p2", drafts, storage);
+  expect(data.get("ovis:card-text:w16:p2")).toBeUndefined();
+});
