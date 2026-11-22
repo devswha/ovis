@@ -27,10 +27,10 @@ import { Framer } from "./input/framer.ts";
 import type { TuiThemeMode } from "./theme.generated.ts";
 import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
-import { type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
+import { type Deadlines, earliest, FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
 import { focused } from "./model/focus.ts";
-import { initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
+import { type Following, initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
@@ -287,9 +287,11 @@ export function startLoop(options: LoopOptions): Loop {
    * waits behind that write, in order, and goes through once the write is done, so it meets the layout the write
    * leaves (the pane a close focuses, the pane a split follows), as a later read would. null when no write holds it.
    * `ahead` is the state core as if what waits had gone through: to see a detach in it, which never waits, and a layout
-   * action, which is refused as busy when it is read, against the layout the user saw.
+   * action, which is refused as busy when it is read, against the layout the user saw. `awaiting`: the write is done
+   * and made or moved a pane, which the screen does not show yet: what waits goes there once focus follows it, and is
+   * refused if it does not by `until`, never sent to the pane focused before.
    */
-  let behindWrite: { readonly events: ModelEvent[]; ahead: ModelState } | null = null;
+  let behindWrite: { readonly events: ModelEvent[]; ahead: ModelState; awaiting: { readonly following: Following; readonly until: number } | null } | null = null;
   /** what waited behind a write is going through: a layout action in it was refused when it was read */
   let replaying = false;
 
@@ -329,22 +331,48 @@ export function startLoop(options: LoopOptions): Loop {
     dispatch({ type: "notice", code: "layout_busy", data: { action }, at: clock.now() });
   }
 
-  /** Holds the user's input until `writing` is done; then what waited goes through in order. */
+  /**
+   * Holds the user's input until `writing` is done; then what waited goes through in order, or, when the write asked
+   * focus to follow a pane the screen does not show yet, once focus followed it.
+   */
   function holdUntil(writing: Promise<void>): void {
-    behindWrite ??= { events: [], ahead: state };
+    behindWrite ??= { events: [], ahead: state, awaiting: null };
+    const before = state.following;
     void writing.then(() => {
       guard(() => {
-        const waited = behindWrite?.events ?? [];
-        behindWrite = null;
-        replaying = true;
-        try {
-          for (const event of waited) userInput(event);
-        } finally {
-          replaying = false;
+        if (behindWrite !== null && state.following !== null && state.following !== before) {
+          behindWrite.awaiting = { following: state.following, until: clock.now() + FOLLOW_WAIT_MS };
+          return;
         }
+        release();
       });
       arm();
     });
+  }
+
+  /** What waited behind a write goes through, in order. */
+  function release(): void {
+    const waited = behindWrite?.events ?? [];
+    behindWrite = null;
+    replaying = true;
+    try {
+      for (const event of waited) userInput(event);
+    } finally {
+      replaying = false;
+    }
+  }
+
+  /** What waited behind a write goes nowhere, with one notice saying so when anything did. */
+  function drop(reason: string): void {
+    const count = behindWrite?.events.length ?? 0;
+    behindWrite = null;
+    if (count > 0) dispatch({ type: "notice", code: "input_dropped", data: { reason, events: count }, at: clock.now() });
+  }
+
+  /** Once focus no longer waits for the pane a write made or moved: what waited goes there if focus landed on it, else nowhere. */
+  function followed(following: Following): void {
+    if (focused(state.world, state.focus).pane?.id === following.target.id) release();
+    else drop("not_shown");
   }
 
   /** One event through the state core, and its effects performed in order, now. */
@@ -357,6 +385,8 @@ export function startLoop(options: LoopOptions): Loop {
       reshow();
       owePass();
     }
+    const awaiting = behindWrite?.awaiting;
+    if (awaiting && state.following !== awaiting.following) followed(awaiting.following);
   }
 
   function perform(effect: Effect): void {
@@ -542,6 +572,8 @@ export function startLoop(options: LoopOptions): Loop {
       if (quitting && now >= quitting.at) quitting.settle();
       return;
     }
+    // the pane a write made or moved never showed in time: what waited for it is refused, not sent elsewhere
+    if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop("not_shown");
     for (const event of framer.tick(now)) userInput(event);
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
@@ -658,6 +690,7 @@ export function startLoop(options: LoopOptions): Loop {
     const input = framer.deadline();
     if (input !== undefined) all.set("input", input);
     if (pasteAt !== null) all.set("paste", pasteAt);
+    if (behindWrite?.awaiting) all.set("follow", behindWrite.awaiting.until);
     for (const [name, at] of link.deadlines()) all.set(`link:${name}`, at);
     for (const [name, at] of panes.deadlines()) all.set(`panes:${name}`, at);
     for (const [name, at] of state.deadlines) all.set(`model:${name}`, at);

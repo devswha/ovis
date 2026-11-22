@@ -6,7 +6,7 @@ import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnect
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
-import { FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
+import { FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
 import { SCALE_LARGEST_TAB, SCALE_TERMINALS, SCALE_WORKSPACES, scale } from "./testing/fixtures/scale.ts";
@@ -334,6 +334,30 @@ describe("the loop", () => {
     expect(run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"])).toEqual(["t1"]);
     expect(run.core.terminal("t2").state).toBe("live");
     expect(run.loop.model().notices.map(({ code, data }) => [code, data["action"]])).toEqual([["layout_busy", "close_pane"]]);
+  }, TEST_MS);
+
+  it("input behind a write that makes a pane waits until the screen shows that pane, and never reaches the pane before", async () => {
+    const focusOf = (run: Run) => { const state = run.loop.model(); return state.focus.panes[state.focus.tabs[state.focus.workspace!]!]; };
+    const notices = (run: Run) => run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]);
+    for (const shown of [true, false]) {
+      const run = await start({ fixture: demo });
+      await run.live();
+      await run.advance(1);
+      run.type("\x02c");
+      await settled(run);
+      // the core answers the new tab's write before it tells of the new pane
+      run.core.holdingEvents = true;
+      // the name, Enter and text in one read: the text waits behind the new tab's write
+      run.type("logs\rabc");
+      await settled(run);
+      expect([shown, "answered", run.core.calls().some(({ method }) => method === "terminal.run"), focusOf(run), sentTo(run, "t1")]).toEqual([shown, "answered", true, "t1", ""]);
+      // never shown in time: the text is refused; shown in time: it goes to the new pane (which refuses it while it opens)
+      if (!shown) await run.advance(FOLLOW_WAIT_MS);
+      run.core.releaseEvents();
+      await settled(run);
+      expect([shown, focusOf(run), sentTo(run, "t1"), sentTo(run, "t5"), notices(run)])
+        .toEqual([shown, "t5", "", "", [shown ? ["input_refused", "opening"] : ["input_dropped", "not_shown"]]]);
+    }
   }, TEST_MS);
 
   it("a focus loss behind a layout write disarms the prefix in order: q after it is typed, not a detach; without it, q detaches", async () => {

@@ -113,6 +113,11 @@ export const FRAME_PASS_MS = 8;
 export const PASS_CREDIT_BYTES = 512 * 1024;
 /** Quit and a hang-up close every pane channel and the event stream within this long, answered or not. */
 export const QUIT_BOUND_MS = 2_000;
+/**
+ * Input that waited behind a layout write which made or moved a pane waits this long more, once the write is done, for
+ * the screen to show that pane and focus to follow it; past it that input is refused, never sent to the pane before.
+ */
+export const FOLLOW_WAIT_MS = 2_000;
 /** A program's synchronized-output hold is ended this long after it began, if the program did not end it. */
 export const HOLD_RELEASE_MS = 1_000;
 /**
