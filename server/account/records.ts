@@ -350,7 +350,9 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (store.isTombstoned(link.key) && !(waits && link.key === link.old_key && !store.removedByAccount(link.key))) return { refused: "tombstoned" };
   // a row moving to a key this PC holds back would let that key in without anyone approving it here
   if (link.key !== link.old_key && rules.gates?.held(link.key)) return { refused: "removal_pending" };
-  if (store.keyHeldByOther(link.key, deviceId)) return { refused: "key_in_use" };
+  // a row that waits with the key of a pairing this PC already has is that device, pairing again: its link renews it
+  const renews = waits && link.key === link.old_key && store.pairingsRenewedBy(link.key) !== null;
+  if (store.keyHeldByOther(link.key, deviceId) && !renews) return { refused: "key_in_use" };
   const takeBack = waits ? rules.barrier?.() : undefined;
   let device: PairedDevice | null = null;
   try { device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId, vouched); }

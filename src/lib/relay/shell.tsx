@@ -688,10 +688,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }
     // a first link this PC refused (linkRefused): its words say more than the end of the session that may follow it
     const refused = refusedLinks.get(attempt.offer.server_id);
-    const restored = refused === undefined ? "none" : await reopenOlder(attempt);
+    let failure = refusalOf(error) ?? failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
+    // the PC ended a marked pairing's new row before its link passed, with a refusal of its own words or none: the
+    // record the scan replaced still names a pairing the PC may hold, and opens it as before the scan
+    const restored = refused !== undefined || (attempt.fresh === true && failure === "revoked") ? await reopenOlder(attempt) : "none";
     if (restored === "restored") { refusedLinks.delete(attempt.offer.server_id); return; }
     if (last !== attempt) return;
-    let failure = refusalOf(error) ?? failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
     if (failure === "revoked") {
       const saved = await store.get(attempt.offer.server_id);
       if (last !== attempt) return;

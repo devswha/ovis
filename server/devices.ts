@@ -2354,6 +2354,8 @@ export class DeviceStore {
     const waiting = this.pending?.waiting;
     if (!row || !waiting || row.key !== link.oldKey || this.account() !== null || this.removedByAccount(link.key)) return null;
     if (waiting.confirmedId !== undefined && waiting.confirmedId !== row.id) return null;
+    const renewed = link.key === link.oldKey ? this.pairingsRenewedBy(link.key) : [];
+    if (renewed === null) return null;
     // Only a same-key screen confirmation, or this PC's screen confirm of a moved key as its replacement, carries a
     // confirm proof (T72, P22)
     const kept = link.key === row.key ? row.confirmed : undefined;
@@ -2392,7 +2394,7 @@ export class DeviceStore {
         device.origin = this.pc.admit(confirm.proof.source === "screen" ? "pc" : "recover", confirm.how, null, now);
         if (confirm.proof.recoveredOver) device.recovered_over = confirm.proof.recoveredOver;
       }
-      enrolled = this.bindingWith(link.account, link.key, () => this.enroll(device, now, [], false, path));
+      enrolled = this.bindingWith(link.account, link.key, () => this.enroll(device, now, [], false, { ...path, renews: renewed }));
     } catch (error) {
       waiting.rows.set(row.id, row);
       delete waiting.joined;
@@ -2400,12 +2402,38 @@ export class DeviceStore {
     }
     row.cancel();
     if (!enrolled) return null;
+    this.retireRenewed(renewed);
     for (const listener of [...this.relinks.get(id) ?? []]) listener(sessionId);
     if (link.key === link.oldKey) {
       try { this.clearTombstone(link.key); }
       catch (error) { console.error(`[devices] the tombstone of a key that paired again could not be cleared; the next start clears it: ${error instanceof Error ? error.message : String(error)}`); }
     }
     return this.list(null).find((d) => d.id === id) ?? null;
+  }
+
+  /**
+   * The rows of `key` that the link of a row waiting with that same key takes the place of (promote): the pairings this
+   * PC already has of a device that paired again with a code made for a PC in no account. The link is signed with the
+   * key, so its sender is the device those rows are for, and a device new to this PC would be taken with the same code.
+   * Null when one of them is no pairing a new one may stand in for: it only watches, is in an account, or is kept out.
+   */
+  pairingsRenewedBy(key: string): readonly StoredDevice[] | null {
+    const rows = this.devices.filter(row => row.relay_public_key === key);
+    return rows.every(row => row.role === "drive" && row.account === undefined && !this.stale(row) && !this.replacements.has(row.id)) ? rows : null;
+  }
+
+  /**
+   * The rows a new pairing of their key took the place of are out of devices.json already (enroll). Their sessions
+   * end as a row's do when its link changes it, so a page still open with one signs in again with the record its
+   * device holds now, and no removal is announced: nobody removed the device.
+   */
+  private retireRenewed(rows: readonly StoredDevice[]): void {
+    for (const row of rows) {
+      for (const listener of [...this.relinks.get(row.id) ?? []]) listener("");
+      this.closeAccountSessions(row.id);
+      try { this.journalRemoval(row, "pc", "renewed"); }
+      catch (error) { console.error(`[devices] the end of a pairing that was renewed could not be journalled: ${describe(error)}`); }
+    }
   }
 
   pair(code: string, label: string, role: DeviceRole, now = Date.now(), origin: readonly string[] = [], localCodeOnly = false): { token: string; device: DeviceMatch } | null {
@@ -2466,7 +2494,7 @@ export class DeviceStore {
   }
 
   /** One authorization write precedes every state change and enrollment announcement. */
-  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean; replaces?: StoredDevice } = {}, signerKey?: string): boolean {
+  private enroll(admitting: StoredDevice, now: number, origin: readonly string[], codeSpent = true, path: { startedBy?: string | null; digits?: boolean; confirm?: ConfirmProof; by?: string; pairingHere?: boolean; replaces?: StoredDevice; renews?: readonly StoredDevice[] } = {}, signerKey?: string): boolean {
     // the final guard, in the commit turn: nothing waits between it and the write
     if (!this.admits(admitting.relay_public_key, path.confirm, path)) throw new AdmissionRefusedError();
     const initial = this.knowingRemovals(this.admitted(admitting, now, path));
@@ -2487,7 +2515,7 @@ export class DeviceStore {
     let entry: JournalEntry | null = null;
     const standing = this.admitListedRows(() => {
       entry = this.journalAdmission(device, joined, notice, path.by);
-      const next = path.replaces ? this.devices.map(row => row === path.replaces ? device : row) : [...this.devices, device];
+      const next = path.replaces ? this.devices.map(row => row === path.replaces ? device : row) : [...this.devices.filter(row => !path.renews?.includes(row)), device];
       const gate = path.replaces && !this.opensAll() ? this.gateClosedAt : this.gateClosedAt ?? device.created_at;
       this.save(next, gate);
       this.devices = next;

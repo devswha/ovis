@@ -21,6 +21,8 @@
 - A device that an account's removal of a PC cut off can join again with the number approved at the
   PC after the PC was restarted, where the PC used to turn it away although its owner pressed
   Approve.
+- A phone that is already paired with a PC can put that PC back in its account by scanning the PC's
+  QR code. The scan used to end with the phone told it was removed, and without the pairing it had.
 - Adding this PC with a sign-in that has no two-step sign-in now says so and what works instead; it
   no longer offers **Sign in again**, which could not help, and a second refused press says why.
 

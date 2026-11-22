@@ -1467,7 +1467,12 @@ account's rows and keeps the pairings made at the PC ([Adding a PC](#adding-a-pc
 itself (its own window, `ovis add`), or from a device whose digits its own screen approved since it
 left (for a removal recorded by an older version: since this version first read it); one press at
 the PC brings it back too. A device it kept paired opens it as before and sends
-it no link, and a code that device asked for joins it to no account.
+it no link, and a code that device asked for joins it to no account. When that device scans the
+code the PC issued itself, it pairs again with the key it already has there: its link brings the PC
+into the account, and the new row takes the place of the pairing it had (same key, a row that
+drives and is in no account), whose sessions end `auth_changed` with no removal told. An app whose
+new row the PC ends before its link passed opens the PC again with the record it had before the
+scan.
 No app lists a PC again by opening it: only the enrollment that brings a PC into the account writes
 its directory entry. A PC the directory does not list gets no [relay pass](relay.md#relay-pass)
 (`not_listed`) and none of the account's later records. The apps offer the removal in Settings →
@@ -1565,7 +1570,7 @@ with "continue only if you started this on your own PC".
 | `tombstoned` | — | the key was removed through the account; only this PC can let it back in (a record outcome) |
 | `link_not_owner` | 403 | a link for another device, another PC, or a key that is not the row's |
 | `link_required` | 403 | the device paired with a code made for a PC in no account and has not linked itself into an account: it reads its own account status and sends its link, and gets nothing else |
-| `key_in_use` | 409 | a link to a key another row already has |
+| `key_in_use` | 409 | a link to a key another row already has; not the first link of a device that paired again with a code made for a PC in no account and kept its key, which replaces the row it had |
 | `introduction_unknown_key` | 404 | an introduction for a key no account member added on this PC |
 | `introduction_invalid` | 400 | an introduction's PC list does not parse, or a `server_id` does not derive from its key |
 | `introduction_none` | 404 | no introduction waits for this device |
