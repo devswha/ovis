@@ -46,25 +46,39 @@ const evalNumber = (value: unknown): number | null => {
   const n = typeof value === "number" ? value : typeof value === "string" && /^\d{1,9}$/.test(value) ? Number(value) : Number.NaN;
   return Number.isSafeInteger(n) && n >= 0 ? n : null;
 };
-const asText = (value: unknown): string => typeof value === "string" ? value : value === undefined ? "" : JSON.stringify(value, null, 2) ?? "";
+/** A value that is not text, as JSON: indented only while it stays short, as deep nesting would grow it without bound. */
+const asText = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value === undefined) return "";
+  try {
+    const flat = JSON.stringify(value) ?? "";
+    return flat.length <= 2000 ? JSON.stringify(value, null, 2) ?? "" : flat;
+  } catch { return ""; }
+};
+const FAILED = /^(?:threw|error|failed|rejected|refused)$/;
+/** A child of an output element, whole or empty (`<result/>`). Its text holds no child's tag (Claude Code escapes
+ *  `<`), so a child that never closes ends at the next tag and the body is read in one pass. */
+const CHILD = /<(log|result|error|refused)(?:\s[^>]*)?(?:\/>|>((?:(?!<\/?(?:log|result|error|refused)\b)[\s\S])*)<\/\1>)/g;
 
 /**
  * A script's output from an element's children: `<log>` lines, then `<result>`, or `<error>` (`<refused>` when it
- * never ran). A child's closing tag inside its text is escaped, so the first closing tag ends the child.
+ * never ran). An empty log is an empty line; an empty result or error adds no text.
  */
 function childrenOutput(body: string): { output: string; error: boolean } | null {
   const parts: string[] = [];
   let error = false;
   let found = false;
-  for (const match of body.matchAll(/<(log|result|error|refused)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g)) {
+  for (const match of body.matchAll(CHILD)) {
     found = true;
     if (match[1] === "error" || match[1] === "refused") error = true;
-    parts.push(unescaped(match[2]!));
+    if (match[2] !== undefined) parts.push(unescaped(match[2]));
+    else if (match[1] === "log") parts.push("");
   }
   return found ? { output: parts.join("\n"), error } : null;
 }
 
-/** The other form of an event's body: one JSON object, `eval` with its `log` lines and its `result` or `error`. */
+/** The other form of an event's body: one JSON object, `eval` with its `status`, its `log` lines and its `result` or
+ *  `error`, or a `text` in their place (a script that failed before it settled). Null for an object of another shape. */
 function jsonOutput(body: string): { eval: number | null; output: string; error: boolean } | null {
   const text = body.trim();
   if (!text.startsWith("{")) return null;
@@ -72,30 +86,34 @@ function jsonOutput(body: string): { eval: number | null; output: string; error:
   try { value = JSON.parse(text); } catch { return null; }
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
+  if (!["eval", "log", "result", "error", "text"].some((key) => key in record)) return null;
   const logs = Array.isArray(record["log"]) ? record["log"].map(asText) : typeof record["log"] === "string" ? [record["log"]] : [];
-  const error = "error" in record;
-  const end = error ? asText(record["error"]) : "result" in record ? asText(record["result"]) : "";
+  const error = "error" in record || (typeof record["status"] === "string" && FAILED.test(record["status"]));
+  const end = asText("error" in record ? record["error"] : "result" in record ? record["result"] : record["text"]);
   return { eval: evalNumber(record["eval"]), output: [...logs, ...(end.length > 0 ? [end] : [])].join("\n"), error };
 }
 
 /** One event's script output, from its opening tag and its body; null for an event of another kind or no number. */
 function eventOutput(open: string, body: string): ReplOutput | null {
   if (attribute(open, "kind") !== "repl-eval") return null;
-  const children = childrenOutput(body);
-  const json = children === null ? jsonOutput(body) : null;
+  // a JSON body first: its strings are not escaped, so markup in them is the script's text
+  const json = jsonOutput(body);
+  const children = json === null ? childrenOutput(body) : null;
   const n = evalNumber(attribute(open, "eval")) ?? json?.eval ?? null;
   if (n === null) return null;
   // a body in neither form is still the script's output, as it reads
-  const read = children ?? json ?? { output: unescaped(body.trim()), error: false };
+  const read = json ?? children ?? { output: unescaped(body.trim()), error: false };
   const status = attribute(open, "status");
-  return { eval: n, output: read.output, error: read.error || (status !== null && /^(?:threw|error|failed|rejected|refused)$/.test(status)), at: attribute(open, "at") };
+  return { eval: n, output: read.output, error: read.error || (status !== null && FAILED.test(status)), at: attribute(open, "at") };
 }
 
 const EVENT_OPEN = /^<event nonce="([A-Za-z0-9_-]+)"[^>]*>/;
-const EVENT_CLOSE = /^<\/event(?: nonce="[A-Za-z0-9_-]+")?>$/;
+const EVENT_CLOSE = /<\/event(?: nonce="[A-Za-z0-9_-]+")?>/g;
 
 /** The events a text delivers, each its opening tag and its body. `nonces` null: the text is one envelope, whose
- *  first line is its opening. */
+ *  first line is its opening. A body ends at its last closing tag, wherever it stands: on a line of its own after
+ *  children, at the end of a text or a JSON body, or before a delivery's closing notice (no body holds one
+ *  unescaped). */
 function events(text: string, nonces: ReadonlySet<string> | null): { open: string; body: string }[] {
   const lines = text.split("\n");
   const found: { open: string; body: string[] }[] = [];
@@ -105,9 +123,10 @@ function events(text: string, nonces: ReadonlySet<string> | null): { open: strin
     found.at(-1)?.body.push(line);
   }
   return found.map(({ open, body }) => {
-    while (body.length > 0 && body.at(-1)!.trim() === "") body.pop();
-    if (body.length > 0 && EVENT_CLOSE.test(body.at(-1)!.trim())) body.pop();
-    return { open, body: body.join("\n") };
+    if (open.endsWith("/>")) return { open, body: "" };
+    const joined = body.join("\n");
+    const close = [...joined.matchAll(EVENT_CLOSE)].at(-1);
+    return { open, body: close === undefined ? joined.trimEnd() : joined.slice(0, close.index) };
   });
 }
 
@@ -131,12 +150,13 @@ export function replDeliveries(text: string, envelope = false): { outputs: ReplO
   return { outputs, other };
 }
 
-/** A REPL call's own result when the script ended in time: `<repl-output eval="N">` and its children. */
-export function replOutput(text: string): ReplOutput | null {
-  const match = /^\s*<repl-output\s[^>]*?eval="(\d{1,9})"[^>]*>([\s\S]*)<\/repl-output>\s*$/.exec(text);
+/** A REPL call's own result when the script ended in time: `<repl-output eval="N">` and its children. Its number,
+ *  which Claude Code leaves out for a script that has none, is the one its late output comes under. */
+export function replOutput(text: string): (Omit<ReplOutput, "eval"> & { eval: number | null }) | null {
+  const match = /^\s*(<repl-output(?:\s[^>]*)?>)([\s\S]*)<\/repl-output>\s*$/.exec(text);
   if (match === null) return null;
   const read = childrenOutput(match[2]!) ?? { output: unescaped(match[2]!.trim()), error: false };
-  return { eval: Number(match[1]), output: read.output, error: read.error, at: null };
+  return { eval: evalNumber(attribute(match[1]!, "eval")), output: read.output, error: read.error, at: null };
 }
 
 /**
