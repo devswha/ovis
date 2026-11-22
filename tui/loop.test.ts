@@ -563,15 +563,27 @@ describe("the loop", () => {
     type Outcome = Awaited<ReturnType<typeof outcome>>;
     const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
     // A layout action read while another's write is under way is refused as busy, so a read that holds two of them
-    // differs by design from reads that split them, where both act: such a sequence is left out here (the busy case is
-    // pinned on its own above).
+    // differs by design from reads that split them, where both act. Such a sequence is marked from its tokens alone,
+    // generously: two or more tokens that can choose a layout write (a zoom, a close, Enter submitting a dialog, and a
+    // side key once resize mode was entered). A marked sequence is left out here (the busy case is pinned on its own
+    // above); any other must never be refused as busy, so the mark cannot hide a case it should not.
+    const writes = (picked: readonly string[], prefix: string) => {
+      let resize = false;
+      return picked.filter((token) => {
+        if (token === `${prefix}r`) resize = true;
+        return token === `${prefix}z` || token === `${prefix}x` || token === "\r" || (resize && (token === `${prefix}h` || token === `${prefix}l`));
+      }).length;
+    };
     for (const prefix of ["\x02", "-"]) {
       const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
       for (let n = 0; n < 10; n++) {
-        const text = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
+        const picked = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!);
+        const text = picked.join("");
         const bytes = new TextEncoder().encode(text);
-        const joined = compared(await outcome(prefix, [bytes]));
-        if ("busy" in joined && joined.busy) continue;
+        const whole = await outcome(prefix, [bytes]);
+        if (writes(picked, prefix) >= 2) continue;
+        expect({ text, busy: whole.busy }).toEqual({ text, busy: false });
+        const joined = compared(whole);
         expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)))) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
           expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ text, cut, outcome: joined });
