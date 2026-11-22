@@ -12,6 +12,7 @@ import type { AgentStatus, HerdrPane, InteractivePrompt, SessionSnapshot } from 
 import { CompletionTracker } from "./completion.ts";
 import { handlePreferencesRequest, PreferenceStore } from "./preferences.ts";
 import { DeviceStore } from "./devices.ts";
+import { FriendStore } from "./fork/friends.ts";
 import { createPushService, handlePushRequest, parseSubscription, RELAY_MAX_BODY_BYTES, type PushService } from "./push.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { privateStateFs } from "./private-state.ts";
@@ -1670,6 +1671,27 @@ describe("answer buttons on a question's alert (#2916)", () => {
     slow.resolve();
     await push.settled();
     expect(fake.received.map((r) => r.payload.prompt_id)).toEqual(["prompt-2"]);
+  });
+
+  it("an alert under way when its pane moves to another workspace wears that workspace's friend", async () => {
+    fake.received.length = 0;
+    const slow = deferred();
+    const started = deferred();
+    const store = new FriendStore(mkdtempSync(join(tmpdir(), "push-friends-")));
+    const panes = [{ ...pane("w1:p1", "working", "claude"), workspace_id: "w1", agent: "claude" }, { ...pane("w2:p1", "working", "claude"), workspace_id: "w2", agent: "claude" }];
+    const sources = [{ id: "local", snapshot: { panes } }];
+    const [first, second] = [store.friendOf("local", "w1:p1", sources), store.friendOf("local", "w2:p1", sources)];
+    expect(first).not.toBe(second);
+    const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 }, friendOf: store.friendOf.bind(store),
+      lookupPrompt: async () => { started.resolve(); await slow.promise; return onScreen(prompt()); } });
+    push.subscribe(fake.subscription, { input: true, done: "always" });
+    push.seed(panes);
+    await push.onStatus("w1:p1", "blocked");
+    await started.promise;
+    push.moved("w1:p1", "w2:p2", "local", "w2");
+    slow.resolve();
+    await push.settled();
+    expect(fake.received.map((r) => r.payload.friend)).toEqual([second]);
   });
 
   it("never lets a question's slow read send it after the finish that followed", async () => {

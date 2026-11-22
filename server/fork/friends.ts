@@ -21,13 +21,13 @@ export function forkAlertFriends(lookup?: FriendLookup) {
       return lookup?.(machineId, paneId, source ? [source] : []);
     },
     /** herdr gave a pane a new ID: what is known of it (its parent, its workspace) goes to the new one, for the alert still waiting */
-    moved(machineId: string, from: string, to: string): void {
+    moved(machineId: string, from: string, to: string, workspaceId?: string): void {
       const panes = sources.get(machineId)?.snapshot?.panes;
       const pane = panes?.find((candidate) => candidate.pane_id === from);
       if (!panes || !pane) return;
       const others = panes.filter((candidate) => candidate.pane_id !== from && candidate.pane_id !== to)
         .map((candidate) => candidate.parent_pane_id === from ? { ...candidate, parent_pane_id: to } : candidate);
-      sources.set(machineId, { id: machineId, snapshot: { panes: [...others, { ...pane, pane_id: to }] } });
+      sources.set(machineId, { id: machineId, snapshot: { panes: [...others, { ...pane, pane_id: to, ...(workspaceId === undefined ? {} : { workspace_id: workspaceId }) }] } });
     },
     /** the pane as last seen, for what its alert depends on: whether another agent started it (shared/fork/alerts.ts) */
     pane(machineId: string, paneId: string): Pick<HerdrPane, "parent_pane_id"> | undefined {

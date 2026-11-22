@@ -203,7 +203,7 @@ export interface PushService {
   /** a pane closed with no exit of its own: its alerts are called off, silently (an exit's alert is `onEnded`'s) */
   closed(paneId: string, machineId?: string): void;
   /** herdr gave a pane a new ID (moved to another workspace): its status and an alert waiting or under way go with it */
-  moved(from: string, to: string, machineId?: string): void;
+  moved(from: string, to: string, machineId?: string, workspaceId?: string): void;
   /**
    * A pane created while the server ran, first read at `status` by a snapshot, where nothing was heard of it yet: told
    * as a change from what it was `created` as, so a question or finish it reached before anyone listened alerts. Not
@@ -1059,7 +1059,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       forget(paneStorageId(machineId, paneId));
     },
 
-    moved(from, to, machineId = "local") {
+    moved(from, to, machineId = "local", workspaceId) {
       const before = paneStorageId(machineId, from);
       const after = paneStorageId(machineId, to);
       forget(after);
@@ -1070,7 +1070,8 @@ export function createPushService(options: PushServiceOptions): PushService {
       }
       // the fork's own pane state goes with it too: whether it is an agent (its friend) and what is known of its parent
       if (agentPanes.delete(before)) agentPanes.add(after);
-      friends.moved(machineId, from, to);
+      friends.moved(machineId, from, to, workspaceId);
+      if (workspaceId !== undefined && workspaces.has(after)) workspaces.set(after, workspaceId);
       // its alert reads the pane it is for when it goes out: under way already, it goes out under the new ID too
       for (const entry of unsent) {
         if (entry.key !== before) continue;

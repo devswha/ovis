@@ -77,7 +77,7 @@ export interface StatusCollectorHandlers {
    * program that ended and whose pane then closed.
    */
   onPaneClosed?: (paneId: string) => void;
-  onPaneMoved?: (previousPaneId: string, paneId: string) => void;
+  onPaneMoved?: (previousPaneId: string, paneId: string, workspaceId?: string) => void;
   onStructureChange: () => void;
   /**
    * A herdr that died closes it, while its socket file can stay behind; a file replaced meanwhile names none.
@@ -129,7 +129,7 @@ export function parseStatusFrame(frame: EventFrame): { paneId: string; status: A
 
 export type StructureEvent =
   | { kind: "pane-ended"; paneId: string }
-  | { kind: "structure-changed"; closed?: string; moved?: { previousPaneId: string; paneId: string; status: AgentStatus; agent: string | null }; created?: { paneId: string; status: AgentStatus }; scopedClose?: true };
+  | { kind: "structure-changed"; closed?: string; moved?: { previousPaneId: string; paneId: string; workspaceId?: string; status: AgentStatus; agent: string | null }; created?: { paneId: string; status: AgentStatus }; scopedClose?: true };
 
 export function parseFocusFrame(frame: EventFrame): string | null {
   const data = frame.data as { type?: unknown; pane_id?: unknown } | undefined;
@@ -137,7 +137,7 @@ export function parseFocusFrame(frame: EventFrame): string | null {
 }
 
 export function parseStructureFrame(frame: EventFrame): StructureEvent | null {
-  const data = frame.data as { type?: unknown; pane_id?: unknown; previous_pane_id?: unknown; pane?: { pane_id?: unknown; agent_status?: unknown; agent?: unknown } } | undefined;
+  const data = frame.data as { type?: unknown; pane_id?: unknown; previous_pane_id?: unknown; pane?: { pane_id?: unknown; agent_status?: unknown; agent?: unknown; workspace_id?: unknown } } | undefined;
   switch (data?.type) {
     case "pane_exited":
       return typeof data.pane_id === "string" ? { kind: "pane-ended", paneId: data.pane_id } : null;
@@ -145,7 +145,7 @@ export function parseStructureFrame(frame: EventFrame): StructureEvent | null {
       return typeof data.pane_id === "string" ? { kind: "structure-changed", closed: data.pane_id } : { kind: "structure-changed" };
     case "pane_moved":
       return typeof data.previous_pane_id === "string" && typeof data.pane?.pane_id === "string" && typeof data.pane.agent_status === "string"
-        ? { kind: "structure-changed", moved: { previousPaneId: data.previous_pane_id, paneId: data.pane.pane_id, status: data.pane.agent_status as AgentStatus, agent: typeof data.pane.agent === "string" ? data.pane.agent : null } }
+        ? { kind: "structure-changed", moved: { previousPaneId: data.previous_pane_id, paneId: data.pane.pane_id, workspaceId: typeof data.pane.workspace_id === "string" ? data.pane.workspace_id : undefined, status: data.pane.agent_status as AgentStatus, agent: typeof data.pane.agent === "string" ? data.pane.agent : null } }
         : { kind: "structure-changed" };
     case "pane_created":
       // herdr's frame carries the pane; herdr-core's names only its ID, nothing of its status
@@ -505,7 +505,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       else {
         // a move inside one workspace keeps the pane ID: its subscription and status history stay as they are
         if (parsed.moved !== undefined && parsed.moved.previousPaneId !== parsed.moved.paneId) {
-          const { previousPaneId, paneId, status, agent } = parsed.moved;
+          const { previousPaneId, paneId, workspaceId, status, agent } = parsed.moved;
           // The lifecycle connection can overtake a queued working/blocked event
           // on the old status connection. The move's active payload advances a
           // resting baseline; a resting payload must not erase unfinished work.
@@ -516,7 +516,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
           born.delete(previousPaneId);
           actedOn.set(previousPaneId, ++statusEvents);
           lastEventOf.set(paneId, statusEvents);
-          handlers.onPaneMoved?.(previousPaneId, paneId);
+          handlers.onPaneMoved?.(previousPaneId, paneId, workspaceId);
         }
         if (parsed.closed !== undefined) {
           const exited = exitedAt.get(parsed.closed);
