@@ -79,29 +79,41 @@ async function firstPcWithPhone(f: Pc, completions = true) {
 }
 
 test("removed PC: not_listed closes the open account session and keeps the local pairing", async () => {
-    let refusal: unknown;
-    const f = await pc({ accountFetch: async (request, service) => {
-      const response = await service.fetch(request);
-      if (new URL(request.url).pathname === "/v1/pc/snapshot" && response.status === 403) refusal = await response.clone().json();
-      return response;
-    } });
-    const { device, serverId, remove } = await firstPcWithPhone(f);
-    const local = await phone();
-    const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
-    const link = await relayConnection(f, { serverId });
-    expect(await link.auth(device)).toMatchObject({ role: "drive" });
-    await remove();
-    await f.app.context.services.accountMailbox.readSnapshot();
-    expect(refusal).toMatchObject({ error: { code: "not_listed" } });
-    expect(await bounded(link.serverError, 2000)).toBe("auth_revoked");
-    await bounded(link.closed, 2000);
-    expect(f.devices.serviceBinding()).toBeNull();
-    expect(f.devices.sessionRow(device.id)).toBeNull();
-    const next = await relayConnection(f, { serverId });
-    await expect(next.auth(device)).rejects.toThrow("Relay closed before admission");
-    expect(await next.serverError).toBe("auth_failed");
-    const own = await relayConnection(f, { serverId });
-    expect(await own.auth({ id: paired.id, keys: local.keys, publicKey: local.spki })).toMatchObject({ role: paired.role });
+  let refusal: unknown;
+  const f = await pc({ accountFetch: async (request, service) => {
+    const response = await service.fetch(request);
+    if (new URL(request.url).pathname === "/v1/pc/snapshot" && response.status === 403) refusal = await response.clone().json();
+    return response;
+  } });
+  const { device, serverId, remove } = await firstPcWithPhone(f);
+  const local = await phone();
+  const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
+  using audit = spyOn(console, "info").mockImplementation(() => {});
+  const link = await relayConnection(f, { serverId });
+  expect(await link.auth(device)).toMatchObject({ role: "drive" });
+  const second = await relayConnection(f, { serverId });
+  expect(await second.auth(device)).toMatchObject({ role: "drive" });
+  await remove();
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(refusal).toMatchObject({ error: { code: "not_listed" } });
+  expect(await bounded(link.serverError, 2000)).toBe("auth_revoked");
+  await bounded(Promise.all([link.closed, second.closed]), 2000);
+  expect(f.devices.serviceBinding()).toBeNull();
+  expect(f.devices.sessionRow(device.id)).toBeNull();
+  const next = await relayConnection(f, { serverId });
+  await expect(next.auth(device)).rejects.toThrow("Relay closed before admission");
+  expect(await next.serverError).toBe("auth_failed");
+  const own = await relayConnection(f, { serverId });
+  expect(await own.auth({ id: paired.id, keys: local.keys, publicKey: local.spki })).toMatchObject({ role: paired.role });
+  const time = expect.any(String);
+  expect(audit.mock.calls.map(([line]) => JSON.parse(line))).toEqual(expect.arrayContaining([
+    { time, event: "relay.session.accepted", role: "drive", origin: "account", device_no: expect.any(Number) },
+    { time, event: "relay.session.closed", reason: "auth_revoked" },
+    { time, event: "account.snapshot.refused", status: 403, reason: "not_listed" },
+    { time, event: "account.binding.cleared", reason: "unlisted" },
+    { time, event: "account.sessions.closed", count: 2 },
+    { time, event: "relay.session.accepted", role: paired.role, origin: "local-pairing", device_no: expect.any(Number) },
+  ]));
 });
 
 test("removed PC: an idle PC learns of removal at the five-minute poll", async () => {

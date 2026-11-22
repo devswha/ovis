@@ -7,6 +7,7 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { readFileSync } from "node:fs";
 import { writePrivateState } from "../private-state.ts";
+import { logAccess } from "../connection-diagnostics.ts";
 import { accountServiceOff, DEFAULT_ACCOUNT_SERVICE } from "../../shared/web-policy.ts";
 import { ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
@@ -318,6 +319,7 @@ export class AccountMailbox {
           if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/snapshot") {
             // A hidden 404 is ambiguous. Only the named refusal can excuse legacy catch-up.
             unlisted = error.status === 403 && error.code === "not_listed";
+            if (unlisted) logAccess({ event: "account.snapshot.refused", status: 403, reason: "not_listed" });
             step2Off = error.status === 404 && error.code === "step2_off";
           }
           throw error;

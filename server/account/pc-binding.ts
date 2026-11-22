@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { writePrivateState } from "../private-state.ts";
+import { logAccess } from "../connection-diagnostics.ts";
 import { ADMISSION_FILE, type OriginFrom, type OriginHow, type RowOrigin } from "./admission-order.ts";
 import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
 
@@ -343,6 +344,7 @@ export class PcAccountState {
     // a PC already strict writes nothing: what it was told to clear waits for its repair, and it serves nobody meanwhile
     if (binding === null || this.problem !== null) return false;
     this.write({ ...this.doc, binding: null, clears: [...this.doc.clears, { bind_id: binding.bind_id, reason, by }], gen: this.doc.gen + 1 });
+    logAccess({ event: "account.binding.cleared", reason });
     return true;
   }
 

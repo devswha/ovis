@@ -20,6 +20,7 @@ import type { RequestServices, ServerContext } from "../dispatch.ts";
 import { jsonResponse } from "../http.ts";
 import type { EventStreamBudget } from "../machine-api.ts";
 import { VirtualSocket, type RelaySocketHandlers } from "./virtual-socket.ts";
+import { logAccess } from "../connection-diagnostics.ts";
 
 /** The PC a first join waits on, as the phone names it (PAIR_CHALLENGE `approve_on`); any other system is a PC. */
 const APPROVER_OF: Partial<Record<NodeJS.Platform, PairApprover>> = { darwin: "mac", win32: "windows", linux: "linux" };
@@ -131,6 +132,7 @@ export class RelaySession {
     phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
+  private closingReason: SessionError | undefined;
   /** The key this session's device signed in or paired with: a `link` must start from it (docs/account.md). */
   private key = "";
   /** Whether the device signed in with AUTH, the only admission that proves it holds its key. */
@@ -181,6 +183,7 @@ export class RelaySession {
       filterRequestHeaders: true,
       close: (code) => options.channel.close(code),
       onClose: (error) => {
+        logAccess({ event: "relay.session.closed", reason: this.closingReason ?? this.mux.failureCode ?? error.code });
         this.state = "closed";
         this.leaveKeyProof();
         this.endPairing(false);
@@ -274,6 +277,7 @@ export class RelaySession {
 
   close(code: SessionError = "auth_revoked", receipts?: readonly BlockReceipt[]): void {
     if (this.state === "closed") return;
+    this.closingReason = code;
     this.state = "closed";
     this.leaveKeyProof();
     this.endPairing(false);
@@ -637,6 +641,7 @@ export class RelaySession {
     if (!this.mux.active) return;
     if (!device) { this.close("auth_failed"); return; }
     const unrevoke = devices.onRevoke(device.id, (waiting) => {
+      if (this.state === "ready") devices.noteRelayRevoked();
       if (waiting) this.leave();
       else this.close(devices.has(device.id) ? "auth_changed" : "auth_revoked");
     });
@@ -669,6 +674,8 @@ export class RelaySession {
       if (!devices.sessionRow(device.id)) { this.close("auth_revoked"); return; }
       this.mux.authenticate(device.id);
       this.state = "ready";
+      logAccess({ event: "relay.session.accepted", origin: devices.accountOnly(device.id) ? "account" : "local-pairing",
+        role: device.role, device_no: devices.deviceNumber(device.id) });
       this.options.onAuthenticated?.(device.id);
     });
   }

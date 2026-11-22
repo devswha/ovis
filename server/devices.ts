@@ -31,6 +31,7 @@ import { PromotedHolds } from "./account/promoted-holds.ts";
 import { mayEndHold, type Sayer } from "./account/join-hold.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
 import { verifyRelayProof } from "./relay/auth-proof.ts";
+import { logAccess } from "./connection-diagnostics.ts";
 import { type AccountPairing, type AccountPairingEnd, type AccountPairingState, type AccountPairingTurnedAway, type DevicePairedEvent, type DeviceRemovedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, type DeviceConnection, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
 import type { MuxClock } from "../shared/relay-mux-engine.ts";
 import { ownerAccess, type Access } from "./access.ts";
@@ -1446,6 +1447,15 @@ export class DeviceStore {
     return member ? (member.account !== undefined || member.member_approved_in !== undefined) && !keepsPairingOnUnlist(member) : this.isAccountRow(id);
   }
 
+  deviceNumber(id: string): number | null {
+    return this.joinedRows?.row(id)?.no ?? this.originOf(id)?.admit_no ?? null;
+  }
+
+  private unbindingSessions: number | null = null;
+  noteRelayRevoked(): void {
+    if (this.unbindingSessions !== null) this.unbindingSessions++;
+  }
+
   /** The PC leaves its account, for one of the named reasons (P12); nothing else clears the binding. */
   clearAccountBinding(reason: ClearReason, by: string): boolean {
     if (reason !== "revoke_all") this.resumeRevokeAll();
@@ -1455,12 +1465,16 @@ export class DeviceStore {
     try {
       // The binding clear is the commit point: after it reaches disk no row can still name the old account.
       this.assertWritable();
+      this.unbindingSessions = 0;
       this.endAccountRows(reason);
       this.settleMemberRows(binding.account, reason);
       return pc.clear(reason, by);
     } catch (error) {
       pc.unwritten(error, "This PC could not finish clearing its account");
       throw error;
+    } finally {
+      if (this.unbindingSessions !== null) logAccess({ event: "account.sessions.closed", count: this.unbindingSessions });
+      this.unbindingSessions = null;
     }
   }
 
