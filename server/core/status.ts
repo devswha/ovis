@@ -213,6 +213,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (status !== undefined && pending.current(paneId) !== queueStatus(paneId, status)) { pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId); }
   }
   const heard = new Map<string, AgentStatus>();
+  /** Claude panes a delivery read at rest on the transcript's word alone, herdr reading them at work, until herdr reads them at rest */
+  const restedOnTranscript = new Set<string>();
   /** Claude keeps its busy title up while a background subagent works after its turn ended, and herdr reads `working` (#2069). */
   function restingClaude(paneId: string, agent: string | null | undefined, status: AgentStatus): AgentStatus {
     if (agent !== "claude" || agentNow.get(paneId) !== "claude") return status;
@@ -436,6 +438,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       agentLifetime.delete(paneId);
       eventAgent.delete(paneId);
       heard.delete(paneId);
+      restedOnTranscript.delete(paneId);
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
@@ -465,7 +468,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     const snapshot = await completions.readSnapshot(async () => {
       const raw = await rawSnapshot();
-      return { ...raw, panes: raw.panes.map((pane) => ({ ...pane, agent_status: restingClaude(pane.pane_id, pane.agent, pane.agent_status) })) };
+      return { ...raw, panes: raw.panes.map((pane) => {
+        const status = restingClaude(pane.pane_id, pane.agent, pane.agent_status);
+        if (pane.agent_status !== "working") restedOnTranscript.delete(pane.pane_id); else if (status !== "working") restedOnTranscript.add(pane.pane_id);
+        return { ...pane, agent_status: status };
+      }) };
     });
     if (epoch !== finishes.epoch) return deliverySnapshot();
     // the same herdr before and after the read: its panes are that herdr's. Without that proof the
@@ -808,6 +815,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     taskAgents.forget(paneId);
     completions.forget(paneId);
     heard.delete(paneId);
+    restedOnTranscript.delete(paneId);
     agentNow.delete(paneId);
     agentRead.set(paneId, opencodeAgents.beginRead());
     agentExited.delete(paneId);
@@ -970,11 +978,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up
    * to a poll old, with every test still passing. Read fresh, a rest the queue has on the transcript's word alone,
-   * herdr reading the pane at work (restingClaude), ends with a turn begun since the last read.
+   * herdr reading the pane at work (restingClaude), ends with a turn begun since the last read, also one a poll read
+   * first. A turn herdr tells is not this: a message typed at once still commits into it.
    */
-  const queueHeld = (paneId: string, fresh: boolean): boolean =>
-    fresh ? agentNow.get(paneId) === "claude" && (claudeAgents.loopHoldsNow(paneId) || (restingClaude(paneId, "claude", "working") !== "working" && !claudeAgents.restsOnNow(paneId)))
-      : queueStatus(paneId, "idle") === "working";
+  const queueHeld = (paneId: string, fresh: boolean): boolean => {
+    if (!fresh) return queueStatus(paneId, "idle") === "working";
+    if (agentNow.get(paneId) !== "claude") return false;
+    if (claudeAgents.loopHoldsNow(paneId)) return true;
+    return (restedOnTranscript.has(paneId) || restingClaude(paneId, "claude", "working") !== "working") && !claudeAgents.restsOnNow(paneId);
+  };
   /** A socket file alone proves nothing: a herdr that died can leave its file behind. */
   const currentHerdrLifetime = (): string | undefined => {
     const identity = finishes.herdrIdentity();

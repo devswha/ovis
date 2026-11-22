@@ -2697,4 +2697,22 @@ describe("a Claude turn at rest while its teammate works, with no turn_duration 
     expect(h.waiting()).toEqual(["uncertain"]);
   });
 
+
+  it("sends no Enter when the watcher's poll has read a turn begun after the reads before the Enter", async () => {
+    const h = await teammateAtWork();
+    await h.submit(1, "pasted");
+    await h.flush();
+    h.on.keys = () => {
+      delete h.on.keys;
+      appendFileSync(h.path, line({ type: "user", isSidechain: false, turnPosition: { promptIndex: 1, turnIndex: 2 }, timestamp: ts(400), message: { role: "user", content: "Another Claude session sent a message: done" } }));
+      h.poll();
+    };
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+    expect(h.waiting()).toEqual(["uncertain"]);
+  });
+
 });
