@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { constants } from "node:os";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
-import { runSupervised, stopAllPtyRuns, type SupervisedRun } from "../testing/pty.ts";
+import { fresh } from "../testing/entry-pty.ts";
+import { runOnPty, runSupervised, stopAllPtyRuns, type SupervisedRun } from "../testing/pty.ts";
 
 /**
  * `restore`: the real host (tui/host/unix.ts) in a fixture entry on a real pseudo-terminal that this
@@ -11,6 +13,7 @@ import { runSupervised, stopAllPtyRuns, type SupervisedRun } from "../testing/pt
  * bytes written are the exact undo of the setup, written once.
  */
 const FIXTURE = join(import.meta.dir, "..", "testing", "host-fixture.ts");
+const LAUNCHER = join(import.meta.dir, "..", "testing", "launcher-fixture.ts");
 const TEST_MS = 30_000;
 const ESC = "\x1b";
 const ST = `${ESC}\\`;
@@ -301,5 +304,64 @@ describe("not a terminal", () => {
     child.stdin.end();
     const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect({ code, out, err }).toEqual({ code: 3, out: "", err: "host-fixture: not a terminal\n" });
+  }, TEST_MS);
+});
+
+/**
+ * `ovis tui`'s launcher (tui/testing/launcher-fixture.ts) with the host fixture as its screen, on a pseudo-terminal, in a
+ * scratch home with no core: what the launcher does when the screen cannot give the terminal back itself, and a stop of
+ * the whole job from an interactive shell.
+ */
+describe("the launcher and the screen together", () => {
+  const scratch = () => {
+    const root = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "launcher-"));
+    for (const sub of ["home", "run", "config"]) mkdirSync(join(root, sub));
+    return {
+      ...BASE_ENV, HOME: join(root, "home"), TMPDIR: root, PORT: "1", XDG_RUNTIME_DIR: join(root, "run"),
+      HC_SOCKET: join(root, "run", "none.sock"), HERDR_PLUGIN_CONFIG_DIR: join(root, "config"),
+    };
+  };
+
+  it("gives back every mode the screen can turn on, the colour-scheme watch too, when the screen dies by SIGKILL", async () => {
+    const run = runSupervised({ entry: [process.execPath, LAUNCHER, "watch-kill"], env: scratch(), cols: 80, rows: 24 });
+    await run.until(PROBE);
+    run.type(ANSWER);
+    await run.until("READY\r");
+    run.type("q");
+    const end = await run.ended;
+    const output = run.output();
+    expect({ code: end.code, after: [end.after?.canonical, end.after?.echo] }).toEqual({ code: 128 + constants.signals.SIGKILL, after: [true, true] });
+    expect(output).toContain(`${ESC}[?2031h`);
+    expect(output.endsWith(`${ESC}[?2031l${LEAVE}`)).toBe(true);
+  }, TEST_MS);
+
+  it.skipIf(process.platform === "win32")("comes back after an interactive shell stopped the whole job and `fg` continued it: the screen takes keys again", async () => {
+    const env = { ...scratch(), PS1: "$ ", SHELL: "/bin/bash" };
+    // the shell leads the pty's session with every stream on it, so its prompt shows and its job control works
+    const run = runOnPty({ command: ["bash", "--norc", "--noprofile", "-i"], env, cols: 80, rows: 24 });
+    await run.until("$ ");
+    run.type(`${process.execPath} ${LAUNCHER} job\r`);
+    await run.until(PROBE);
+    run.type(ANSWER);
+    await run.until("READY\r");
+    // Ctrl+Z reaches the screen as a byte (raw mode); the fixture then stops its process group as a shell's Ctrl+Z does.
+    // Many rounds: the fixture holds nothing but its input, so a continue that came before the loop held on again would
+    // end it now and then
+    for (let round = 0; round < 25; round++) {
+      let from = run.output().length;
+      run.type("\x1a");
+      await fresh(run, from, "Stopped");
+      await fresh(run, from, "$ ");
+      // fg once the screen has given the terminal back (it stops itself right after), as a person types it: a continue
+      // that came before the screen's own stop handler ran would be met by the stop it then sends itself
+      await fresh(run, from, LEAVE);
+      from = run.output().length;
+      run.type("fg\r");
+      await fresh(run, from, ENTER);
+      from = run.output().length;
+      run.type("x");
+      await fresh(run, from, "INPUT 1 78\r");
+    }
+    await run.stop();
   }, TEST_MS);
 });

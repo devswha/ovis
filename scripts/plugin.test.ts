@@ -916,18 +916,27 @@ describe("add and login", () => {
     expect([result, calls.filter((call) => call === "POST /api/relay/offer").length], await new Response(child.stderr).text()).toEqual(["taken back", 2]);
   }, 30_000);
 
-  it("are in the usage an unknown command gets, with what they do", async () => {
+  /** the command names the usage's first line lists */
+  const commandsOf = (usage: string) => /^usage: \S+ \S+ <([^>]+)>$/m.exec(usage)?.[1]?.split("|");
+  const COMMANDS = ["start", "stop", "status", "pair", "link", "add", "login", "phone", "phone-setup", "tui", "help"];
+
+  it("are in the usage an unknown command gets, recover and confirm among them while their release flag is on", async () => {
     const result = await run("constructor", { HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_ACCOUNT_OPENS_ALL: "1" });
     expect(result.exitCode).toBe(2);
-    expect(result.err).toBe([
-      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|recover|confirm|phone|phone-setup|tui>",
-      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
-      "link --code: show a code and a QR code to pair one device instead.",
-      "tui: herdr-core's terminals in this terminal, as herdr shows them.",
-      "recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.",
-      "confirm: open this PC's confirm page, where turning strict mode on or off waits for your approval.",
-      "",
-    ].join("\n"));
+    expect(commandsOf(result.err)).toEqual(["start", "stop", "status", "pair", "link", "add", "login", "recover", "confirm", "phone", "phone-setup", "tui", "help"]);
+  });
+
+  it("are in the usage help and -h print, with exit 0", async () => {
+    for (const word of ["help", "-h"]) {
+      const result = await run(word, { HERDR_PLUGIN_CONFIG_DIR: configDir });
+      expect([result.exitCode, result.err]).toEqual([0, ""]);
+      expect(commandsOf(result.out)).toEqual(COMMANDS);
+    }
+  });
+
+  it("--version and -V print the version, with exit 0", async () => {
+    const { version } = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string };
+    for (const word of ["--version", "-V"]) expect(await run(word, { HERDR_PLUGIN_CONFIG_DIR: configDir })).toEqual({ out: `${version}\n`, err: "", exitCode: 0 });
   });
 
   it("with the release flag off, recover is not a command and the usage does not offer it (T70, flag off)", async () => {

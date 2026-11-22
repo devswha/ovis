@@ -41,24 +41,20 @@ import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
 import type { WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript, COMMAND_ALIASES } from "./plugin-runtime.ts";
-import { runTui } from "./plugin-tui.ts";
+import { runFront, usage } from "./plugin-tui.ts";
+import { discardTyped } from "./libc.ts";
+import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
 import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
 
-/**
- * Read in this order, so `.env` wins: `env` is what this plugin read first, `.env` is what herdr's
- * plugin docs suggest, and a user who edits `.env` from those docs must not be overridden by an old `env`.
- * Declared before CONFIG_DIR, whose lookup uses it.
- */
-const ENV_FILES = ["env", ".env"];
+// The screen and the answers that need nothing of this install's state come first, before the work below reads the
+// state and config dirs, asks herdr for its config dir, or copies an old install's settings (adoptLegacyConfig)
+const first = process.argv[2];
+if (first === "tui" || first === "help" || first === "-h" || first === "--help" || first === "--version" || first === "-V") process.exit(await runFront(process.argv.slice(2)));
+
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
-function ownDir(parent: string): string {
-  const legacy = join(parent, "herdr-web-ui");
-  const next = join(parent, "ovis");
-  return existsSync(next) || !existsSync(legacy) ? next : legacy;
-}
 const DEFAULT_STATE_DIR = ownDir(join(homedir(), ".local", "state"));
 const PLUGIN_ID = "devswha.ovis";
 const LEGACY_PLUGIN_ID = "devswha.herdr-web-ui";
@@ -137,18 +133,6 @@ function adoptLegacyConfig(dir: string): void {
     // the token is in there: keep the old file's owner-only mode
     chmodSync(join(dir, name), statSync(from).mode & 0o777);
   }
-}
-
-function readEnvFile(file: string): Record<string, string> {
-  const vars: Record<string, string> = {};
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq <= 0) continue;
-    vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-  }
-  return vars;
 }
 
 /** the settings files in the plugin's config dir: the token lives here, not in herdr's env */
@@ -977,7 +961,7 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
 
 /** The PC's terminal is the PC itself, so this is approval on this PC (docs/account.md, "Who may admit a device"). */
 async function approvePairings(): Promise<number> {
-  const { approveWaiting, discardTyped } = await import("./plugin-link.ts");
+  const { approveWaiting } = await import("./plugin-link.ts");
   if (!(await health())) return notRunning();
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
@@ -1052,7 +1036,7 @@ async function linkCommand(): Promise<number> {
   const active = activePluginScript(ROOT, port, APP_STATE_DIR);
   // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
   if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["link", ...process.argv.slice(3)]);
-  const { discardTyped, link: linkPc, linkSettings } = await import("./plugin-link.ts");
+  const { link: linkPc, linkSettings } = await import("./plugin-link.ts");
   if (!(await health())) return notRunning();
   const headers: Record<string, string> = {};
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
@@ -1304,18 +1288,10 @@ export async function runPlugin(): Promise<void> {
   else if (command === "confirm" && accountOpensAll()) process.exit(await confirm());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
-  else if (command === "tui") process.exit(await runTui(process.argv.slice(3), { platform: platform(), where: { root: ROOT, home: homedir() }, caller: process.env, settings: env, err: (text) => process.stderr.write(text), on: (signal, handler) => { process.on(signal, handler); return () => process.off(signal, handler); } }));
   else {
     const active = activePluginScript(ROOT, port, APP_STATE_DIR);
     if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) process.exit(await handOn(active, process.argv.slice(2)));
-    process.stderr.write([
-      `usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|${accountOpensAll() ? "recover|confirm|" : ""}phone|phone-setup|tui>`,
-      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
-      "link --code: show a code and a QR code to pair one device instead.",
-      "tui: herdr-core's terminals in this terminal, as herdr shows them.",
-      ...(accountOpensAll() ? ["recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.", "confirm: open this PC's confirm page, where turning strict mode on or off waits for your approval."] : []),
-      "",
-    ].join("\n"));
+    process.stderr.write(usage(accountOpensAll()));
     process.exit(2);
   }
 }

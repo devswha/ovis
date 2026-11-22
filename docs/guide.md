@@ -1363,7 +1363,7 @@ connection.
 <details>
 <summary><b>Does it replace herdr's own TUI?</b></summary>
 
-No. Both attach to the same terminals at the same time. Use the TUI at your desk and the web app anywhere else. Nothing needs to be stopped or handed over.
+No. Both attach to the same terminals at the same time. Use the TUI at your desk and the web app anywhere else. Nothing needs to be stopped or handed over. herdr-core has no screen of its own: there, `ovis tui` is the one, with herdr's keys ([Terminal screen](tui.md)).
 </details>
 
 <details>

@@ -1,16 +1,19 @@
 /**
- * Capture a two-pane layout through herdr's own entry on an isolated PTY: the reference the screen is compared with.
- * Run with a scratch TMPDIR: bun tui/testing/herdr-reference.ts /absolute/herdr
+ * Capture the same two-pane layout through the herdr and Ovis entries on isolated PTYs.
+ * Run with a scratch TMPDIR: bun tui/testing/herdr-reference.ts /absolute/herdr /absolute/hc
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { isolatedHcEnv } from "../../scripts/test-hc.ts";
-import { DETACH, entryEnv, entryPty, fresh, visibleGrid } from "./entry-pty.ts";
+import { IsolatedCore, isolatedHcEnv, stoppedCleanly } from "../../scripts/test-hc.ts";
+import { HcConnection } from "../../server/herdr-core/connection.ts";
+import { PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
+import { connectCoreSocket } from "../../server/herdr-core/socket-transport.ts";
+import { DETACH, entryEnv, entryPty, fresh, SOURCE_OVIS, visibleGrid } from "./entry-pty.ts";
 import { stopAllPtyRuns } from "./pty.ts";
 
-const [herdr] = process.argv.slice(2);
-if (!herdr || !isAbsolute(herdr)) throw new Error("pass the absolute path to herdr");
+const [herdr, hc] = process.argv.slice(2);
+if (!herdr || !hc || !isAbsolute(herdr) || !isAbsolute(hc)) throw new Error("pass absolute paths to herdr and hc");
 const SESSION = "r32";
 const SIZES = [[120, 40], [80, 24]] as const;
 const PANES = ["LEFT", "RIGHT"] as const;
@@ -103,8 +106,30 @@ try {
   ));
   await call("pane", "rename", split.result.pane.pane_id, "RIGHT");
 
+  const core = new IsolatedCore(hc);
+  active.push(async () => {
+    const report = await core.stop();
+    console.log("hc cleanup", JSON.stringify(report));
+    if (!stoppedCleanly(report)) throw new Error("isolated hc did not stop");
+  });
+  await core.start();
+  const connection = new HcConnection(await connectCoreSocket(core.socket).then((transport) => () => transport));
+  active.push(async () => { connection.close(); });
+  console.log("hc", (await connection.hello()).version);
+  for (const pane of PANES) {
+    await connection.call("terminal.run", {
+      argv: [env.SHELL], cwd: home, env: { ROW32_PANE: pane },
+      labels: {
+        [SPACE_LABEL]: "work", [WORKSPACE_NAME_LABEL]: "work", [TAB_LABEL]: "one",
+        [TAB_NAME_LABEL]: "one", [PANE_NAME_LABEL]: pane,
+      },
+    });
+  }
   for (const [cols, rows] of SIZES) {
-    for (const [name, entry, vars] of [["herdr", args, env]] as const) {
+    for (const [name, entry, vars] of [
+      ["herdr", args, env],
+      ["Ovis", [...SOURCE_OVIS, "tui"], { ...entryEnv(core, hc), HERDR_TEST_SESSION: SESSION }],
+    ] as const) {
       // Start the quiet interval over whenever a chunk of a paint arrives.
       let outputArrived: (() => void) | undefined;
       const run = entryPty(entry, vars, cols, rows, { onData: () => outputArrived?.() });
@@ -132,16 +157,18 @@ try {
         const bytes = run.output().length;
         return { bytes, text: await visibleGrid(run, cols, rows) };
       };
-      await run.until(new RegExp(BOTH), `${name}: both pane markers`);
+      await run.until(new RegExp(name === "Ovis" ? `${BOTH}[\\s\\S]*\\x1b\\[\\?25h\\x1b\\[\\?2026l` : BOTH), `${name}: both pane markers`);
+      const splitBottom = name === "herdr" ? /└─+┘└─+┘/ : /\+-+\+\+-+\+/;
       const grid = await settledGrid((text) => PANES.every((pane) => text.includes(`${pane}-READY`)) &&
-        /└─+┘└─+┘/.test(text.split("\n")[rows - 1] ?? ""));
+        splitBottom.test(text.split("\n")[name === "herdr" ? rows - 1 : rows - 2] ?? ""));
       console.log(`\n=== ${name} ${cols}x${rows} ===\n${grid.trimEnd()}`);
       if (cols === 80) {
         const from = run.output().length;
         run.type("\x02?");
-        await fresh(run, from, "scroll j/k/");
-        // the help is whole once its last line, the scroll hint, is on the grid
-        console.log(`\n=== ${name} help ${cols}x${rows} ===\n${(await settledGrid((text) => text.includes("scroll j/k/"))).trimEnd()}`);
+        await fresh(run, from, name === "herdr" ? "scroll j/k/" : "close: esc");
+        if (name === "Ovis") await fresh(run, from, "\x1b[?2026l");
+        // the help is whole once its last line is on the grid: herdr's scroll hint, the screen's close hint
+        console.log(`\n=== ${name} help ${cols}x${rows} ===\n${(await settledGrid((text) => text.includes(name === "herdr" ? "scroll j/k/" : "close: esc"))).trimEnd()}`);
         const leavingHelp = run.output().length;
         run.type("\x1b");
         await fresh(run, leavingHelp, "LEFT-READY");

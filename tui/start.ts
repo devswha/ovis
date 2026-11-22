@@ -7,7 +7,7 @@
 
 import { join } from "node:path";
 import { plainSession } from "../server/herdr-core/core-socket.ts";
-import type { LoopEnd } from "./loop.ts";
+import type { LoopEnd } from "./loop-end.ts";
 
 export const USAGE = "usage: ovis tui [--session NAME] | -h | -V";
 
