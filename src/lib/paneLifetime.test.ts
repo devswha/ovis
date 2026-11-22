@@ -221,10 +221,10 @@ describe("pane state per herdr lifetime", () => {
     expect(back.unsent().map(({ kind, text }) => `${kind}:${text}`)).toEqual(["pending:yes", "pending:yes"]);
   });
 
-  it("keeps two held messages with the same text as two recovery items (#3990)", () => {
+  it("keeps two held messages with the same text, stored before any herdr was named, as two recovery items once one is (#3990)", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);
-    // A PC naming no herdr keeps pending rows in memory; two distinct messages can carry the same text.
+    // rows an earlier release stored with no lifetime record: the first herdr named retires them (settle, retireStored)
     lifetimes.observe([pc("local", undefined)], title);
     storage.setItem("ovis:pending:w1:p1", JSON.stringify({ version: 1, messages: [{ id: "one", text: "yes" }, { id: "two", text: "yes" }] }));
     storage.setItem("ovis:queue:w1:p1", "carry this too");
