@@ -27,6 +27,9 @@ const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[
 /** what a terminal answers to the queries the screen's start probe ends with */
 const ANSWERS: [query: string, answer: string][] = [["\x1b[c", "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
 
+/** A grid decoded from the run's output, and the length of the output it was decoded from. */
+interface Shown { text: string; length: number }
+
 describe.skipIf(!bin || process.platform === "win32")("the screen's entry against a real hc", () => {
   const cores: IsolatedCore[] = [];
   const lines: HcConnection[] = [];
@@ -154,10 +157,19 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     }
   }, TEST_MS);
 
-  /** The screen's grid once more output arrived than now; the run's own deadline bounds the wait. */
-  const nextGrid = async (run: SupervisedRun): Promise<string> => {
-    await run.until(new RegExp(`^[\\s\\S]{${run.output().length + 1}}`), "more output");
-    return gridText(run.output(), 100, 30);
+  /** The screen's grid as the output so far draws it, and how much output that was. */
+  const gridNow = async (run: SupervisedRun): Promise<Shown> => {
+    const output = run.output();
+    return { text: await gridText(output, 100, 30), length: output.length };
+  };
+
+  /**
+   * The screen's grid once output arrived beyond what `seen` was decoded from (output that came while it was decoded counts);
+   * the run's own deadline bounds the wait.
+   */
+  const nextGrid = async (run: SupervisedRun, seen: Shown): Promise<Shown> => {
+    await run.until(new RegExp(`^[\\s\\S]{${seen.length + 1}}`), "more output");
+    return gridNow(run);
   };
 
   it("shows a program named like an agent coming to the front as that agent, in its pane's title and the Agents list, with no reconnect", async () => {
@@ -172,11 +184,11 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect([before.includes("[claude]"), before.includes("No agents")]).toEqual([false, true]);
     run.type(`exec ${join(root, "bin", "claude")} -c 'read line'\r`);
     await run.until("[claude]", "the agent in the pane's title");
-    let grid = await gridText(run.output(), 100, 30);
-    while (grid.includes("No agents")) grid = await nextGrid(run);
-    expect(grid.split("\n").filter((line) => line.startsWith(" · front-pane /")).length).toBe(1);
-    expect(grid.split("\n")[1]).toContain("front-pane");
-    expect(grid.split("\n")[1]).toContain("[claude]");
+    let grid = await gridNow(run);
+    while (grid.text.includes("No agents")) grid = await nextGrid(run, grid);
+    expect(grid.text.split("\n").filter((line) => line.startsWith(" · front-pane /")).length).toBe(1);
+    expect(grid.text.split("\n")[1]).toContain("front-pane");
+    expect(grid.text.split("\n")[1]).toContain("[claude]");
     expect(run.output()).not.toContain("herdr-core is not answering");
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
@@ -191,15 +203,15 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     await hc.call("terminal.send", { terminal: address, text: "go\r" });
     await run.until("ended (3)", "the ended pane's banner");
     // the banner can arrive in one read and the rest of its frame in the next
-    const shown = (grid: string) => [grid.includes("+- stays "), grid.includes("+- ends "), grid.includes("+- ended (3) ")];
-    let ended = await gridText(run.output(), 100, 30);
-    while (shown(ended).includes(false)) ended = await nextGrid(run);
+    const shown = ({ text }: Shown) => [text.includes("+- stays "), text.includes("+- ends "), text.includes("+- ended (3) ")];
+    let ended = await gridNow(run);
+    while (shown(ended).includes(false)) ended = await nextGrid(run, ended);
     expect(shown(ended)).toEqual([true, true, true]);
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("finished");
     await hc.call("terminal.rm", { terminal: address });
     let grid = ended;
-    while (grid.includes("+- ends ")) grid = await nextGrid(run);
-    expect([grid.includes("+- stays "), grid.includes("ended (3)")]).toEqual([true, false]);
+    while (grid.text.includes("+- ends ")) grid = await nextGrid(run, grid);
+    expect([grid.text.includes("+- stays "), grid.text.includes("ended (3)")]).toEqual([true, false]);
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
   }, TEST_MS);
