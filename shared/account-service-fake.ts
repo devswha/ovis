@@ -17,11 +17,14 @@ export const CHALLENGE_TTL_MS = 60_000;
 /** How long a PC's own leave (POST /v1/pcs/{server_id}/leave) keeps a PUT without its proof from listing it again. */
 export const PC_LEFT_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** a listing's own ID (account#57), as the service makes it */
+const LISTING_ID = /^[0-9a-f]{32}$/;
+
 /** account#57's completion scope, and the context its challenge is stored and proved under */
 function completionScope(value: unknown): { account: string; listing_id: string } | null {
   if (value === null || typeof value !== "object") return null;
   const { account, listing_id } = value as Record<string, unknown>;
-  return Object.keys(value).length === 2 && typeof account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(account) && typeof listing_id === "string" && /^[0-9a-f]{32}$/.test(listing_id)
+  return Object.keys(value).length === 2 && typeof account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(account) && typeof listing_id === "string" && LISTING_ID.test(listing_id)
     ? { account, listing_id } : null;
 }
 const completionKey = (scope: { account: string; listing_id: string }, nonce: string): string => `pc-complete/1:${scope.account}:${scope.listing_id}:${nonce}`;
@@ -646,10 +649,13 @@ export class FakeAccountService {
     }
     const pc = /^\/v1\/pcs\/([0-9a-f]{32})$/.exec(path)?.[1];
     if (pc !== undefined && request.method === "PUT") {
-      const body = await request.json() as { label?: unknown; public_key?: unknown; relay?: unknown; confirm?: unknown; challenge_id?: unknown; proof?: unknown };
+      const body = await request.json() as { label?: unknown; public_key?: unknown; relay?: unknown; confirm?: unknown; listing_id?: unknown; challenge_id?: unknown; proof?: unknown };
       // PCL-1: only an app's own sign-in may say "this is my PC"; a device code can be typed for someone else's PC
       const own = !this.deviceFamilies.has(session.family);
       const confirm = body.confirm === true;
+      // account#67: a confirm names the listing its card showed, and only a confirm does
+      const named = body.listing_id !== undefined;
+      if (named && (!confirm || typeof body.listing_id !== "string" || !LISTING_ID.test(body.listing_id))) return problem(400, "invalid_request", "Name a listing only to confirm it");
       if (confirm && !own) return problem(403, "own_sign_in_required", "Sign in on this device to confirm the PC");
       if (typeof body.label !== "string" || body.label.length < 1 || body.label.length > 48) return problem(400, "invalid_label", "Name the PC");
       // the key is stored, but it cannot be forged: it must give this server_id
@@ -672,8 +678,12 @@ export class FakeAccountService {
       if (fresh && directory.size >= DIRECTORY_MAX) return problem(409, "directory_full", "Remove a PC first");
       // a re-PUT (the nine-minute relist) keeps the PC's admission and its confirmation mark
       const before = directory.get(pc);
+      // a named confirm acts only on that listing, still the PC's current one and still unconfirmed, and writes the confirm alone
+      if (named && (before === undefined || before.listing_id !== body.listing_id || before.listed_by_device !== true)) {
+        return problem(409, "listing_changed", "This add is no longer waiting for that action");
+      }
       const confirming = confirm && before?.listed_by_device === true;
-      const entry: FakePc = { server_id: pc, label: body.label, public_key: body.public_key as string, relay: body.relay, added_at: before?.added_at ?? this.iso(), last_seen_at: before?.last_seen_at ?? null,
+      const entry: FakePc = { server_id: pc, ...(named ? { label: before!.label, public_key: before!.public_key, relay: before!.relay } : { label: body.label, public_key: body.public_key as string, relay: body.relay }), added_at: before?.added_at ?? this.iso(), last_seen_at: before?.last_seen_at ?? null,
         ...(before?.new_until == null ? {} : { new_until: before.new_until, admitted_at: before.admitted_at ?? null, exempt: before.exempt ?? false }),
         listed_by_device: before === undefined ? !own : before.listed_by_device === true && !confirming,
         pending_under_step2: before === undefined ? !own && this.opensAll : before.pending_under_step2 === true,
@@ -692,6 +702,12 @@ export class FakeAccountService {
       return json({ pc: { ...shown, unconfirmed: this.opensAll && listed_by_device === true } });
     }
     if (pc !== undefined && request.method === "DELETE") {
+      // account#67: a Decline names the listing its card showed; after the sign-in checks, it removes only that listing while
+      // it still asks to join (not admitted by one press, a confirm or digits, and not completed)
+      const named = new URL(request.url).searchParams.get("listing_id");
+      if (named !== null && !LISTING_ID.test(named)) return problem(400, "invalid_request", "That is no listing ID");
+      const listed = directory.get(pc);
+      const changed = named !== null && (listed === undefined || listed.listing_id !== named || listed.admitted_at != null || listed.digit_admitted === true || listed.completed_at != null);
       // PCR-1: removing unbinds the PC and cuts the account's devices off it, so it asks what deleting the account asks. The
       // compat ruling's one exception: a device code's sign-in ends its own listing (written by it, never confirmed, admitted
       // or completed), as an installed CLI renews its card
@@ -702,12 +718,14 @@ export class FakeAccountService {
           || own.completed_at != null || own.digit_admitted === true) {
           return problem(403, "own_sign_in_required", "Sign in on this device to remove a PC");
         }
+        if (changed) return problem(409, "listing_changed", "This PC no longer asks to join by that listing");
         directory.delete(pc);
         // ruling (b): a member's end is a member's removal (the account is used); a listing pending under Step 2 was never one
         if (this.member(own)) this.usedAccounts.add(account);
         return new Response(null, { status: 204 });
       }
       if (!recent) return problem(403, "reauth_required", "Sign in again first");
+      if (changed) return problem(409, "listing_changed", "This PC no longer asks to join by that listing");
       const removed = directory.get(pc);
       directory.delete(pc);
       this.pcAdmissions.delete(box(pc, account));

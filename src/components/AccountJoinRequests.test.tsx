@@ -172,6 +172,31 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     }
   });
 
+  it("account#67: Decline names the listing it showed; one let in meanwhile is not removed, and the card shows the account as it is now", async () => {
+    fake.completions = true;
+    await listedByItsOwner(mac, "hasang-MacBookPro");
+    const shown = fake.pcs(ACCOUNT).find((pc) => pc.server_id === MAC)!.listing_id!;
+    const declines: string[] = [];
+    // another device lets the PC in after this card's own re-read, just before its removal reaches the service
+    service = new AccountService({ store, lock: memoryLock(), now: () => now, fetch: async (input: Request | string | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.method === "DELETE") {
+        declines.push(request.url);
+        const pc = fake.pcs(ACCOUNT).find((each) => each.server_id === MAC)!;
+        pc.completed_at = pc.last_seen_at = new Date(now).toISOString();
+      }
+      return fake.fetch(request);
+    } });
+    await mount();
+    await press("Decline");
+    expect(declines).toEqual([`${ORIGIN}/v1/pcs/${MAC}?listing_id=${shown}`]);
+    // the service's 409 listing_changed removed nothing and is no failure to show: the PCs are read again instead
+    expect(fake.pcs(ACCOUNT).map((pc) => pc.server_id)).toEqual([DESK, MAC]);
+    expect(fake.requests.lastIndexOf("GET /v1/pcs")).toBeGreaterThan(fake.requests.indexOf(`DELETE /v1/pcs/${MAC}`));
+    expect(text()).not.toContain("The request could not be declined.");
+    expect(buttons()).toEqual([]);
+  });
+
   it("asks nothing for a PC paired here, one whose request is over ten minutes old, or one that already joined", async () => {
     await listedByItsOwner(mac, "hasang-MacBookPro");
     now += 11 * MINUTE;

@@ -248,6 +248,47 @@ it("PCR-1: a removal from a sign-in older than ten minutes removes nothing, and 
     expect(text()).toContain(`Name the PC gave itself: "${LABEL}"`);
   });
 
+  /** another device said No to the listing this card shows, and the PC listed itself again: a new listing behind the same card */
+  async function replacedBehindTheCard(): Promise<string> {
+    const shown = fake.pcs(ACCOUNT)[0]!.listing_id!;
+    const removed = await fake.fetch(`${ORIGIN}/v1/pcs/${PC}`, { method: "DELETE", headers: { authorization: `Bearer ${fake.issueToken(ACCOUNT)}` } });
+    expect(removed.status).toBe(204);
+    await listedByDeviceCode();
+    expect(fake.pcs(ACCOUNT)[0]!.listing_id).not.toBe(shown);
+    return shown;
+  }
+
+  it("account#67: Add names the listing its card showed: a replacement is not confirmed, and the card shows it as it is now", async () => {
+    fake.completions = true;
+    await signIn();
+    await listedByDeviceCode();
+    await mount();
+    await replacedBehindTheCard();
+    await press("Add");
+    expect(fake.pcs(ACCOUNT)[0]?.listed_by_device).toBe(true);
+    // the service's 409 listing_changed is no failure to show: the PCs are read again instead
+    expect(fake.requests.lastIndexOf("GET /v1/pcs")).toBeGreaterThan(fake.requests.lastIndexOf(`PUT /v1/pcs/${PC}`));
+    expect(text()).not.toContain("The PC could not be added.");
+    expect(text()).not.toContain("New PC added to your account");
+    expect(buttons()).toEqual(["Add", "No"]);
+  });
+
+  it("account#67: No names the listing its card showed: a replacement is not removed, and the card shows it as it is now", async () => {
+    fake.completions = true;
+    await signIn();
+    await listedByDeviceCode();
+    await mount();
+    const shown = await replacedBehindTheCard();
+    const declined = fake.requests.length;
+    await press("No");
+    expect(fake.requests.slice(declined)).toContain(`DELETE /v1/pcs/${PC}`);
+    expect(fake.pcs(ACCOUNT)).toHaveLength(1);
+    expect(fake.pcs(ACCOUNT)[0]!.listing_id).not.toBe(shown);
+    expect(fake.requests.lastIndexOf("GET /v1/pcs")).toBeGreaterThan(fake.requests.lastIndexOf(`DELETE /v1/pcs/${PC}`));
+    expect(text()).not.toContain("The PC could not be removed.");
+    expect(buttons()).toEqual(["Add", "No"]);
+  });
+
   it("offers nothing to press to a device code's sign-in", async () => {
     await listedByDeviceCode();
     const token = fake.issueToken(ACCOUNT, { device: true });
