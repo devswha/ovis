@@ -6,6 +6,7 @@ import { ChevronRight, type LucideIcon } from "lucide-react";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { ACCOUNT_PROVIDERS } from "../lib/account/store.ts";
+import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 
 /** The phone app's QR scanner (@capacitor/barcode-scanner, app/package.json) and its SSH screen (Android's OvisSsh). */
@@ -56,21 +57,54 @@ export function addressOf(text: string): URL | null {
 }
 
 /**
- * Whether opening `url` would send a pairing code and everything typed across the internet unencrypted: plain http to a
- * host that does not look like this device's, a home network's or a tailnet's (the phone app's own rule, app/web/shell.js
- * `publicHttp`, judged by the name alone).
+ * Whether `hostname` (a URL's) is this device, a home network's or a tailnet's, which opens only from inside it, judged by
+ * the name alone (the phone app's own rule, app/web/shell.js `homeHost`): a private or link-local IP, a Tailscale address,
+ * a one-word name or a name under .local, .lan, .home.arpa or .internal. Any other name is a public server.
  */
-export function publicHttp(url: URL): boolean {
-  if (url.protocol !== "http:") return false;
-  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || host.endsWith(".ts.net") || host.startsWith("fd7a:115c:a1e0:")) return false;
+function homeHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || host.endsWith(".ts.net") || host.startsWith("fd7a:115c:a1e0:")) return true;
   const ipv4 = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(host);
   if (ipv4) {
     const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-    return !(a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127));
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
   }
-  if (host.includes(":")) return !(/^f[cd]/.test(host) || /^fe[89ab]/.test(host));
-  return host.includes(".") && !/\.(local|lan|home\.arpa|internal)$/.test(host);
+  if (host.includes(":")) return /^f[cd]/.test(host) || /^fe[89ab]/.test(host);
+  return !host.includes(".") || /\.(local|lan|home\.arpa|internal)$/.test(host);
+}
+
+/**
+ * Whether opening `url` would send a pairing code and everything typed across the internet unencrypted: plain http to a
+ * host that does not look like this device's, a home network's or a tailnet's (the phone app's own rule, `publicHttp`).
+ */
+export function publicHttp(url: URL): boolean {
+  return url.protocol === "http:" && !homeHost(url.hostname);
+}
+
+/** how long the Android app asks an address whether it is Ovis before it gives up (PCStore.ANSWER_SECONDS) */
+const ANSWER_SECONDS = 20;
+
+/**
+ * Why the phone app could not open `url`, from the reason its check gave (`code`, Android's PCStore.check; app/web/shell.js
+ * `openFailure` says the same): nothing for a Cancel, otherwise what went wrong and what to do, with Tailscale's own hint
+ * for an address that opens only while Tailscale is on. `message` is the app's own words, used only where no reason fits.
+ */
+export function openFailureText(t: Translate, url: URL, code: string | undefined, message: string): string {
+  const host = url.host;
+  const tailscale = tailnetHost(url.hostname.replace(/^\[|\]$/g, "")) ? ` ${t("This is a Tailscale address, and Tailscale may be off on this phone: turn it on in the Tailscale app.")}` : "";
+  switch (code) {
+    case "cancelled": return "";
+    case "not-ovis": return t("{host} answered{status}, but it is not Ovis: another web server, or herdr itself, which the app cannot open. Open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.", { host, status: /^HTTP \d{3}$/.test(message) ? ` (${message})` : "" });
+    case "refused": {
+      const said = t("{host} refused the connection: nothing listens there. Ovis has to run on the PC (herdr alone is not enough), and by default it listens only on the PC itself (127.0.0.1). Open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.", { host });
+      return isLoopbackHost(url.hostname) ? `${said} ${t("On a phone, localhost and 127.0.0.1 are the phone itself, not your PC.")}` : said;
+    }
+    case "timeout": return (homeHost(url.hostname)
+      ? t("{host} did not answer within {seconds} seconds. The PC may be off, or out of this phone's reach: a home network address does not open over mobile data or another Wi-Fi, and a firewall on the PC can block the port.", { host, seconds: ANSWER_SECONDS })
+      : t("Nothing came back from {host} within {seconds} seconds. The server may be down, or this phone's connection (or a VPN on it) may not reach it.", { host, seconds: ANSWER_SECONDS })) + tailscale;
+    case "unknown-host": return t("{name} was not found. Check the name, or open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.", { name: url.hostname }) + tailscale;
+    default: return t("{host} could not be reached: {reason}", { host, reason: message }) + tailscale;
+  }
 }
 
 /**
@@ -83,12 +117,6 @@ function pcPage(url: URL): string | null {
   const signIn = url.hash.startsWith("#sign-in=") && (ACCOUNT_PROVIDERS as readonly string[]).includes(url.hash.slice("#sign-in=".length));
   if (url.hash !== "" && !signIn && !url.hash.startsWith("#offer=")) return null;
   return url.origin + serverScopePath(serverId) + url.hash;
-}
-
-/** Opens a PC's address: the phone app checks it is Ovis first (HerdrShell.open, app/web/connect.js); a browser goes there. */
-async function openAddress(url: URL): Promise<void> {
-  if (hasNativePlugin("HerdrShell")) await callNative("HerdrShell", "open", { url: url.href, check: true });
-  else window.location.assign(url.href);
 }
 
 /** One way to add a PC, as a card: its icon, what it is and where it takes the person. */
@@ -132,26 +160,34 @@ function scan(t: Translate, take: (url: URL | null) => void, failed: (cause: unk
 export type AddressOpen = ReturnType<typeof useAddressOpen>;
 
 /**
- * What a scanned or typed address does, with the error it ends on: `cancel` stops an address the phone app is still
- * checking (Android asks it for up to 20 s), which leaving the screen does by itself.
+ * What a scanned or typed address does, with what it ends on: `opening`, the host the phone app is opening now (Android
+ * asks the address whether it is Ovis for up to 20 s; iOS opens at once), and `cancel`, which stops it, as leaving the
+ * screen does by itself; `error`, why it did not open.
  */
 export function useAddressOpen() {
   const t = useT();
   const [error, setError] = useState<string | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
   // the public http address the person was just warned about: opening it again goes ahead
   const warned = useRef<string | null>(null);
-  const opening = useRef(false);
-  const cancel = (): void => {
-    if (opening.current && hasNativePlugin("HerdrShell")) void callNative("HerdrShell", "cancelOpen").catch(() => undefined);
-    opening.current = false;
+  // each open counts here: a later one, or a Cancel, leaves an earlier one's end unsaid
+  const attempt = useRef(0);
+  const pending = useRef(false);
+  const stop = (): void => {
+    if (!pending.current) return;
+    pending.current = false;
+    attempt.current += 1;
+    // an app without the method (iOS, which opens at once) would never settle a call to it
+    if (hasNativeMethod("HerdrShell", "cancelOpen")) void callNative("HerdrShell", "cancelOpen").catch(() => undefined);
   };
-  useEffect(() => cancel, []);
+  useEffect(() => stop, []);
+  const cancel = (): void => { stop(); setOpening(null); };
   const failed = (cause: unknown): void => { setError(cause instanceof Error ? cause.message : String(cause)); };
   /**
    * What a scanned or typed address does: a pairing link of this app opens at its PC's page, where the pairing asks
    * first, and so does an account PC's standing QR (its page, with the sign-in fragment or none: signInLink); a pairing
-   * link of another origin is refused; a PC's own address opens (a public http one only after a warning); anything
-   * else says so.
+   * link of another origin is refused; a PC's own address opens (a public http one only after a warning): the phone app
+   * checks it is Ovis first (HerdrShell.open, app/web/connect.js), a browser goes there; anything else says so.
    */
   const take = (url: URL | null): void => {
     if (url === null) { setError(t("That is not an http or https address.")); return; }
@@ -169,10 +205,37 @@ export function useAddressOpen() {
       return;
     }
     setError(null);
-    opening.current = true;
-    openAddress(url).catch(failed).finally(() => { opening.current = false; });
+    if (!hasNativePlugin("HerdrShell")) { window.location.assign(url.href); return; }
+    const mine = ++attempt.current;
+    pending.current = true;
+    setOpening(url.host);
+    void callNative("HerdrShell", "open", { url: url.href, check: true }).then(() => undefined, (cause: unknown) => {
+      if (mine !== attempt.current) return;
+      const code = typeof (cause as { code?: unknown } | null)?.code === "string" ? (cause as { code: string }).code : undefined;
+      const said = openFailureText(t, url, code, cause instanceof Error ? cause.message : String(cause));
+      setError(said === "" ? null : said);
+    }).finally(() => {
+      if (mine !== attempt.current) return;
+      pending.current = false;
+      setOpening(null);
+    });
   };
-  return { error, setError, failed, cancel, take };
+  return { error, setError, failed, cancel, take, opening };
+}
+
+/** What opening a PC came to: the host the phone app is opening, with Cancel, or why it did not open. */
+export function OpenState({ open }: { readonly open: AddressOpen }) {
+  const t = useT();
+  if (open.opening !== null) {
+    return (
+      <p className="relay-add-opening" role="status" data-opening="">
+        <span className="boot-spinner" aria-hidden="true" />
+        <span className="relay-add-opening-text">{t("Opening {host}…", { host: open.opening })}</span>
+        <button type="button" className="btn btn-ghost" onClick={open.cancel}>{t("Cancel")}</button>
+      </p>
+    );
+  }
+  return open.error === null ? null : <p className="account-error" role="alert">{open.error}</p>;
 }
 
 /**
@@ -186,7 +249,7 @@ export function AddressForm({ label, placeholder, submit: submitLabel, labelShow
 }) {
   const fieldId = useId();
   const own = useAddressOpen();
-  const { error, setError, failed, take } = open ?? own;
+  const { setError, failed, take } = open ?? own;
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const typed = (event.currentTarget.elements.namedItem("address") as HTMLInputElement).value;
@@ -201,7 +264,7 @@ export function AddressForm({ label, placeholder, submit: submitLabel, labelShow
         <input id={fieldId} name="address" className="input" type="url" inputMode="url" {...(labelShown ? {} : { "aria-label": label })} placeholder={placeholder} autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="url" autoFocus={autoFocus} />
         <button type="submit" className="btn btn-primary">{submitLabel}</button>
       </form>
-      {open === undefined && error !== null && <p className="account-error" role="alert">{error}</p>}
+      {open === undefined && <OpenState open={own} />}
     </>
   );
 }

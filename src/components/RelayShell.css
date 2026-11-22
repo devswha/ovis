@@ -254,7 +254,25 @@
   height: var(--icon-size);
 }
 
+/* past eight PCs: a search by name, and on a wide screen the All, On and Off chips beside it */
+.my-pcs-find {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.my-pcs-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.my-pcs-chips {
+  flex: none;
+}
+
 .my-pcs > .relay-shell-copy,
+.my-pcs > .relay-add-opening,
 .my-pcs > .account-error,
 .my-pcs > .account-notice,
 .my-pcs > .relay-shell-none-online {
@@ -561,4 +579,51 @@
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
+}
+
+/* a wide screen (a desktop browser): My PCs on the left, its list scrolling on its own, and Add a PC always open beside
+   it; Connect a PC alone, signed out with nothing saved, as one centred card */
+@media (min-width: 1024px) {
+  .relay-shell-screen.relay-add-screen.connect-desk-screen {
+    height: var(--app-height, 100dvh);
+    padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
+    overflow: hidden;
+  }
+
+  .connect-desk-screen > .relay-shell {
+    width: min(100%, var(--content-w));
+    min-height: 0;
+  }
+
+  .connect-desk {
+    display: grid;
+    flex: 1;
+    grid-template-columns: minmax(0, 1fr) var(--relay-signin-w);
+    align-items: start;
+    gap: var(--space-8);
+    min-height: 0;
+  }
+
+  .connect-desk > .my-pcs {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .connect-desk .my-pcs-list {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .connect-add-side,
+  .connect-add-front {
+    padding: var(--space-5);
+    border: var(--hairline) solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-panel);
+  }
+
+  .connect-add-side > .connect-start-head > .connect-start-title {
+    font-size: var(--fs-lg);
+  }
 }

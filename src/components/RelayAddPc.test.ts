@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
-import { addressOf, publicHttp, scanQr } from "./RelayAddPc.tsx";
+import { translate, type Vars } from "../lib/i18n.ts";
+import { addressOf, openFailureText, publicHttp, scanQr } from "./RelayAddPc.tsx";
 
 describe("a QR scan in the phone app", () => {
   async function scan(granted: boolean | null): Promise<{ calls: string[]; failed: number }> {
@@ -49,5 +50,34 @@ describe("an address typed on Add a PC", () => {
   it("warns before plain http leaves this device, a home network or a tailnet", () => {
     for (const text of ["http://203.0.113.9:7421", "http://pc.example.com"]) expect(publicHttp(addressOf(text)!)).toBe(true);
     for (const text of ["192.168.0.12:7421", "http://10.0.0.2", "http://100.101.102.103", "http://pc.local:7421", "http://pc:7421", "https://pc.example.com", "http://my-pc.tailnet.ts.net"]) expect(publicHttp(addressOf(text)!)).toBe(false);
+  });
+});
+
+describe("an address the phone app could not open", () => {
+  const en = (key: string, vars?: Vars) => translate("en", key, vars);
+  const ko = (key: string, vars?: Vars) => translate("ko", key, vars);
+  const said = (address: string, code: string | undefined, message = "", t = en) => openFailureText(t, new URL(address), code, message);
+  const tailscale = "This is a Tailscale address, and Tailscale may be off on this phone: turn it on in the Tailscale app.";
+
+  it("says why from the app's own reason, never the raw native message, and nothing for a Cancel", () => {
+    expect(said("https://desk.example.com/", "cancelled")).toBe("");
+    expect(said("http://192.168.0.5:7317/", "not-ovis", "HTTP 404")).toBe("192.168.0.5:7317 answered (HTTP 404), but it is not Ovis: another web server, or herdr itself, which the app cannot open. Open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.");
+    expect(said("http://192.168.0.5:7317/", "not-ovis", "It answered, but not as Ovis.")).toContain("192.168.0.5:7317 answered, but it is not Ovis");
+    expect(said("http://192.168.0.5:7317/", "refused")).toBe("192.168.0.5:7317 refused the connection: nothing listens there. Ovis has to run on the PC (herdr alone is not enough), and by default it listens only on the PC itself (127.0.0.1). Open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.");
+    expect(said("http://127.0.0.1:7421/", "refused")).toMatch(/ On a phone, localhost and 127\.0\.0\.1 are the phone itself, not your PC\.$/);
+  });
+
+  it("tells a home network address that did not answer from a public one, and adds the Tailscale hint for a tailnet address", () => {
+    expect(said("http://192.168.0.5:7317/", "timeout")).toBe("192.168.0.5:7317 did not answer within 20 seconds. The PC may be off, or out of this phone's reach: a home network address does not open over mobile data or another Wi-Fi, and a firewall on the PC can block the port.");
+    expect(said("https://pc.example.com/", "timeout")).toBe("Nothing came back from pc.example.com within 20 seconds. The server may be down, or this phone's connection (or a VPN on it) may not reach it.");
+    expect(said("https://desk.tail1e211e.ts.net/", "timeout")).toMatch(new RegExp(` ${tailscale.replace(/[.:]/g, "\\$&")}$`));
+    expect(said("https://desk.tail1e211e.ts.net/", "unknown-host")).toBe(`desk.tail1e211e.ts.net was not found. Check the name, or open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC. ${tailscale}`);
+    expect(said("https://pc.example.com/", "unknown-host")).not.toContain("Tailscale");
+    expect(said("https://desk.tail1e211e.ts.net/", undefined, "No route")).toBe(`desk.tail1e211e.ts.net could not be reached: No route ${tailscale}`);
+  });
+
+  it("says it in the page's language", () => {
+    expect(said("https://desk.tail1e211e.ts.net/", "unknown-host", "", ko)).toContain("Tailscale 앱에서 연결을 켜세요");
+    expect(said("http://192.168.0.5:7317/", "refused", "", ko)).toContain("연결을 거부했어요");
   });
 });

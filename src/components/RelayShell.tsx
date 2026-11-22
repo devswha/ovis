@@ -19,7 +19,7 @@ import { StartScreenAccountMenu } from "./AccountHead.tsx";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { AccountSignIn } from "./AccountPcs.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
-import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, MyPcs, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
+import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CodeWays, MyPcs, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
@@ -33,6 +33,9 @@ import { SheepMascot } from "./SheepMascot.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 
 export { INSTALLER_COMMAND, PLUGIN_COMMANDS, TypedDigits };
+
+/** wide enough for My PCs and Add a PC side by side (a desktop browser): narrower, Add a PC opens from My PCs */
+const WIDE_QUERY = "(min-width: 1024px)";
 
 export interface RelayShellProps {
   state: RelayShellState;
@@ -220,25 +223,38 @@ export function RelayShell(props: RelayShellProps) {
   // neither, so it does not flash the other
   const listed = addOpen || account?.kind === "signed-in" || devices.length > 0 || phone.pcs.length > 0;
   const undecided = !listed && !phone.read;
-  const myPcsShown = listed && !addView;
+  // a wide screen (a desktop browser) keeps Add a PC open beside My PCs; a narrower one opens it from Add PC
+  const wide = useMediaQuery(WIDE_QUERY);
+  const desk = wide && listed;
+  const myPcsShown = listed && (desk || !addView);
   const signIn = signedOut && onSignIn ? (
     <AccountSignIn onSignIn={onSignIn} error={account.kind === "signed-out" ? account.error : null} notice={account.kind === "signed-out" ? (account.notice ?? null) : null}
       busy={account.kind === "signing-in"} busyProvider={account.kind === "signing-in" ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null}
       {...(accountProviders ? { providers: accountProviders } : {})} />
   ) : null;
-  // signed in, a code is typed in the pairing dialog over the page; otherwise on a screen of its own, whose Cancel comes back
-  const relayPanel = account?.kind === "signed-in" ? <AccountRelayPanel onCodeStart={() => { setAddingPc(true); onCodeStart(); }} />
-    : account !== null ? <SignedOutRelayPanel signIn={signIn} signingIn={account.kind === "signing-in"} onCodeStart={onCodeStart} />
-    : <AccountlessRelayPanel onCodeStart={onCodeStart} />;
-  const frontView = (top: ReactNode, menu?: ReactNode): ReactNode => myPcsShown
-    ? <MyPcs devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} phone={phone} onForget={props.onForgetSaved}
-      inUse={addOpen && addFrom !== null ? serverIdOfPath(addFrom) : null} onBack={addOpen ? () => { setAddOpen(false); leaveAddEntry(addFrom); } : undefined}
-      onAdd={() => setAddView(true)} menu={menu} top={top}
-      empty={account?.kind === "signed-in" && account.pcs !== null ? <p className="relay-shell-copy">{t("Sign in with the same account on the PC where Ovis runs")}</p> : undefined} />
-    : <AddPcTabs title={listed ? t("Add PC") : t("Connect a PC")} relay={relayPanel} onBack={listed ? () => setAddView(false) : account === null && scoped ? onBack : undefined} />;
+  // signed in, a code is typed on in the pairing dialog over the page; otherwise on a screen of its own, whose Cancel comes
+  // back. A code typed in the relay tab's own field goes there at once, already submitted
+  const dialog = account?.kind === "signed-in";
+  const code: CodeWays = {
+    start: () => { if (dialog) setAddingPc(true); onCodeStart(); },
+    submit: (typed) => { if (dialog) setAddingPc(true); onCodeStart(); onCodeSubmit(typed); },
+  };
+  const relayPanel = account?.kind === "signed-in" ? <AccountRelayPanel code={code} />
+    : account !== null ? <SignedOutRelayPanel signIn={signIn} signingIn={account.kind === "signing-in"} code={code} />
+    : <AccountlessRelayPanel code={code} />;
+  const frontView = (top: ReactNode, menu?: ReactNode): ReactNode => {
+    if (!myPcsShown) return <AddPcTabs title={listed ? t("Add PC") : t("Connect a PC")} relay={relayPanel} layout={listed ? "page" : "front"} onBack={listed ? () => setAddView(false) : account === null && scoped ? onBack : undefined} />;
+    const list = (
+      <MyPcs devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} phone={phone} onForget={props.onForgetSaved} wide={desk}
+        inUse={addOpen && addFrom !== null ? serverIdOfPath(addFrom) : null} onBack={addOpen ? () => { setAddOpen(false); leaveAddEntry(addFrom); } : undefined}
+        onAdd={desk ? undefined : () => setAddView(true)} menu={menu} top={top}
+        empty={account?.kind === "signed-in" && account.pcs !== null ? <p className="relay-shell-copy">{t("Sign in with the same account on the PC where Ovis runs")}</p> : undefined} />
+    );
+    return desk ? <div className="connect-desk">{list}<AddPcTabs title={t("Add PC")} relay={relayPanel} layout="side" /></div> : list;
+  };
   // the sign-in's progress, told to a screen reader as the page that holds it changes
   const announcedSignIn = useAnnouncedText(front && account?.kind === "signing-in" ? t("Signing in…") : null);
-  const frontClass = (shownList: boolean): string => shownList ? "relay-shell-screen relay-add-screen my-pcs-screen" : "relay-shell-screen relay-add-screen";
+  const frontClass = (shownList: boolean): string => !shownList ? "relay-shell-screen relay-add-screen" : desk ? "relay-shell-screen relay-add-screen my-pcs-screen connect-desk-screen" : "relay-shell-screen relay-add-screen my-pcs-screen";
 
   // signed in, the front page is My PCs, the account's notices and menu on it (#16: with no PC on, or none in the account
   // yet, the same page, the rows saying Off or the list saying to sign in on a PC); a code typed from Add PC's relay tab

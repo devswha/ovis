@@ -642,15 +642,16 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await pairedStraightIn(a);
       await inApp(a);
       await a.goto(`${APP}/`);
-      // signed out with a PC saved here, the front page is My PCs; the sign-in is behind its Add PC
+      // signed out with a PC saved here, the front page is My PCs; the sign-in is on its Add a PC, which a wide screen keeps
+      // open beside the list (no Add PC button there)
       await a.locator('main.relay-add-screen[data-account-state="signed-out"] [data-view="my-pcs"]').waitFor();
       assert.equal(await a.locator(".relay-add-saved-pc").getAttribute("href"), `/s/${pc1.id}/`, "My PCs lists the PC this device paired, by its page");
-      assert.equal(await a.getByRole("button", { name: "Continue with GitHub" }).count(), 0, "no sign-in on My PCs itself");
+      assert.equal(await a.locator('[data-view="my-pcs"]').getByRole("button", { name: "Continue with GitHub" }).count(), 0, "no sign-in on My PCs itself");
+      assert.equal(await a.locator('[data-action="add-pc"]').count(), 0, "at 1440 Add a PC stands open beside My PCs, with no Add PC button");
       await capture(a, "local-1440-dark");
-      await a.locator('[data-action="add-pc"]').click();
       await a.getByRole("heading", { name: "Add PC" }).waitFor();
       assert.equal(await a.locator('[data-tab-panel="relay"]').getByRole("button", { name: "Continue with GitHub" }).count(), 1, "Add PC's relay tab holds the sign-in");
-      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / (the tab's launch is past, so it stays) -> My PCs lists Desk PC at /s/${pc1.id}/; its Add PC holds the sign-in`);
+      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / (the tab's launch is past, so it stays) -> My PCs lists Desk PC at /s/${pc1.id}/, Add a PC beside it at 1440 holding the sign-in`);
 
       // the sign-in's return opens the PC this device paired, as a launch does: no list of PCs first. Opening it lists it in
       // the account, as Open on its row did
@@ -784,24 +785,30 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await until(async () => (await pc1.pairings()).length === 0 && pc1.joined() && (await saved(b, pc1.id))?.enrollment === "complete", "Desk PC settled and this device recorded completion after the member's approval", 75_000);
       log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) signed in -> its launch went to Desk PC and asked to join by itself (plain wait, no tabs, sheet or list) -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app`);
 
-      // the signed-in front page (My PCs) at both widths and themes, and the pairing dialog of its Add PC (the relay tab's
-      // Pair with a code), whose Escape closes it and leaves no sheet entry in the history
+      // the signed-in front page (My PCs) at both widths and themes, and the pairing dialog a code typed in its Add a PC's
+      // relay tab opens (a code that does not read: no lookup goes out), whose Escape closes it and leaves no sheet entry
       for (const [page, width] of [[a, 1440], [b, 390]] as const) {
         for (const theme of ["dark", "light"] as const) {
           await page.goto(`${APP}/`);
           await setTheme(page, theme);
           await pcLink(page, "Desk PC").waitFor();
           await capture(page, `front-${width}-${theme}`);
-          await front(page).locator('[data-action="add-pc"]').click();
+          // a wide screen keeps Add a PC open beside My PCs; a phone opens it from Add PC
+          const desk = width >= 1024;
+          if (desk) assert.equal(await front(page).locator('[data-view="add-pc"]').count(), 1, "Add a PC stands open beside My PCs at 1440");
+          else await front(page).locator('[data-action="add-pc"]').click();
+          // the code is one line that opens its field in place
           await front(page).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
+          await front(page).locator('[data-code-form] input[name="code"]').fill("x");
+          await front(page).locator('[data-code-form] button[type="submit"]').click();
           await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
           await settledSheet(page);
           await capture(page, `pair-dialog-${width}-${theme}`);
           await page.keyboard.press("Escape");
           await page.locator("[role=dialog]").waitFor({ state: "detached" });
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
-          // the dialog closes back to Add PC, whose Back is My PCs
-          await front(page).locator('[data-view="add-pc"] .relay-add-back').click();
+          // the dialog closes back to Add a PC: on a phone its Back is My PCs, beside it at 1440
+          if (!desk) await front(page).locator('[data-view="add-pc"] .relay-add-back').click();
           await pcLink(page, "Desk PC").waitFor();
           // the account is in the ⋮ menu at the top of My PCs: who is signed in, Manage account and Sign out
           assert.equal(await front(page).locator('[data-action="manage-account"]').count(), 0, "no Manage account link on My PCs");
