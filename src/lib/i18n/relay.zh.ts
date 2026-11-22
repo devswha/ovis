@@ -138,7 +138,6 @@ export const RELAY_ZH: Record<string, string> = {
   "Ready · not in the account yet": "就绪 · 尚未加入账户",
   "Press [Allow] on {name}": "在 {name} 上点按 [允许]",
   "Type this number on {name}": "请在 {name} 上输入这个数字",
-  "Turn on Ovis on the PC": "请在 PC 上打开 Ovis",
   "Or scan the QR on the PC's screen": "或扫描 PC 屏幕上的二维码",
   "Or pair with a code": "或用代码配对",
   "{name} is off. Turn on Ovis on it.": "{name} 已关闭 - 请打开 Ovis",

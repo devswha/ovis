@@ -396,6 +396,7 @@ const BASE: Record<string, string> = {
   "It changed on the PC": "PC 側で変更されました",
   "The PC took too long": "PC の応答が遅すぎました",
   "Can't reach the PC": "PC に接続できません",
+  "Turn on Ovis on the PC": "PC で Ovis を起動してください",
   "PC disk is full": "PC のディスクがいっぱいです",
   "No permission on the PC": "PC で権限がありません",
   "Pair it again in Settings → Devices and PCs.": "設定 → デバイスと PCでもう一度ペアリングしてください。",
