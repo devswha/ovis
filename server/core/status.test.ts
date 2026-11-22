@@ -2715,4 +2715,35 @@ describe("a Claude turn at rest while its teammate works, with no turn_duration 
     expect(h.waiting()).toEqual(["uncertain"]);
   });
 
+
+  it("keeps the transcript's rest a newer read took when an older read that saw herdr at rest comes back after it", async () => {
+    const h = await teammateAtWork();
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    h.herdrSays({ ...h.pane, agent_status: "idle" });
+    const older = await h.heldSnapshot();
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    await h.snapshot();
+    await older();
+    appendFileSync(h.path, line({ type: "user", isSidechain: false, turnPosition: { promptIndex: 1, turnIndex: 2 }, timestamp: ts(400), message: { role: "user", content: "Another Claude session sent a message: done" } }));
+    h.poll();
+    expect(h.status.queueHeld(h.pane.pane_id, true)).toBe(true);
+  });
+
+  it("lets a turn herdr tells after herdr told the pane at rest take a message typed at once", async () => {
+    const h = await teammateAtWork();
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    await h.snapshot();
+    h.herdrSays({ ...h.pane, agent_status: "idle" });
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    prompted(h.path, 5000, "next");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.poll();
+    expect(h.status.queueHeld(h.pane.pane_id, true)).toBe(false);
+  });
+
 });

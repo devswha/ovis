@@ -213,7 +213,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (status !== undefined && pending.current(paneId) !== queueStatus(paneId, status)) { pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId); }
   }
   const heard = new Map<string, AgentStatus>();
-  /** Claude panes a delivery read at rest on the transcript's word alone, herdr reading them at work, until herdr reads them at rest */
+  /**
+   * Claude panes a snapshot read at rest on the transcript's word alone, herdr reading them at work, until herdr's word
+   * is rest, by an event or a read: each told only by the newest word on the pane (agentRead)
+   */
   const restedOnTranscript = new Set<string>();
   /** Claude keeps its busy title up while a background subagent works after its turn ended, and herdr reads `working` (#2069). */
   function restingClaude(paneId: string, agent: string | null | undefined, status: AgentStatus): AgentStatus {
@@ -226,6 +229,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * idle before it: the subagents' spinner keeps herdr at working across turns.
    */
   function hearClaude(paneId: string, agent: string | null | undefined, status: AgentStatus, event: boolean): void {
+    if (agent !== "claude" || status !== "working") restedOnTranscript.delete(paneId);
     if (agent !== "claude") { heard.delete(paneId); return; }
     const before = heard.get(paneId);
     heard.set(paneId, status);
@@ -453,6 +457,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     for (const pane of named.panes) {
       pane.agent_status = launchedAgents.settle(pane.pane_id, pane.agent_status);
       if (pane.agent === "claude" && agentNow.get(pane.pane_id) === "claude") claudeAgents.poll(pane.pane_id);
+      if (agentRead.get(pane.pane_id) === read && pane.agent_status === "working" && restingClaude(pane.pane_id, pane.agent, "working") !== "working") restedOnTranscript.add(pane.pane_id);
     }
     options.openCodeState?.reconcile(named.panes, promptCheckpoint);
     return named;
@@ -468,11 +473,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     const snapshot = await completions.readSnapshot(async () => {
       const raw = await rawSnapshot();
-      return { ...raw, panes: raw.panes.map((pane) => {
-        const status = restingClaude(pane.pane_id, pane.agent, pane.agent_status);
-        if (pane.agent_status !== "working") restedOnTranscript.delete(pane.pane_id); else if (status !== "working") restedOnTranscript.add(pane.pane_id);
-        return { ...pane, agent_status: status };
-      }) };
+      return { ...raw, panes: raw.panes.map((pane) => ({ ...pane, agent_status: restingClaude(pane.pane_id, pane.agent, pane.agent_status) })) };
     });
     if (epoch !== finishes.epoch) return deliverySnapshot();
     // the same herdr before and after the read: its panes are that herdr's. Without that proof the
