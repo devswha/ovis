@@ -1328,8 +1328,12 @@ export class UsageService {
       return { key: accountKey(provider.id, known, found.source), account: known?.label ?? null };
     };
     // the last numbers stay, named by what went wrong since - unless the place now holds another
-    // account's sign-in: those numbers and that name were someone else's
-    const kept = previous !== null && (!found.account || previous.key === identity(null).key) ? previous : null;
+    // account's sign-in: those numbers and that name were someone else's. A source-keyed sign-in is
+    // keyed by its place alone, so the account it names is compared as well
+    const named = found.account;
+    const kept = previous !== null && (!named || (
+      previous.key === identity(null).key && (!named.sourceKey || previous.account === named.label)
+    )) ? previous : null;
     const keep = (problem: UsageProblem, plan: string | null, wait: number) => settle({
       id: provider.id, ...(kept ? { key: kept.key, account: kept.account } : identity(null)),
       plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, checked_at: kept?.checked_at ?? null,

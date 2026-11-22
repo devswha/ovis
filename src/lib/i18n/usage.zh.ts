@@ -15,6 +15,7 @@ export const USAGE_ZH: Record<string, string> = {
   "Could not load sign-in options": "无法加载登录方式",
   "On the server PC": "在服务器 PC 上登录",
   "Install {cli} on the server PC first.": "请先在服务器 PC 上安装 {cli}。",
+  "Sign in through Gemini CLI on the server PC.": "请在服务器 PC 上通过 Gemini CLI 登录。",
   "Sign in from the Antigravity app on the server PC.": "请在服务器 PC 的 Antigravity 应用中登录。",
   "Signed in as {account}. Continuing may replace it.": "已以 {account} 登录，继续可能会替换此账号。",
   "an existing account": "现有账号",

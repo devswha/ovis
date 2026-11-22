@@ -758,6 +758,31 @@ describe("providers", () => {
     expect(requests).toHaveLength(status === 403 ? 1 : 2);
   });
 
+  it("retains source-keyed Antigravity windows only for the same identified account", async () => {
+    const path = join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+    const signIn = (email: string, access: string) => write(path, {
+      token: { access_token: access, expiry: new Date(NOW + HOUR).toISOString() },
+      id_token_email: email,
+    });
+    const url = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+    signIn("first@example.com", "first-token");
+    replies.set(url, { body: { groups: [{ buckets: [{ id: "gemini-weekly", remaining_fraction: 0.5 }] }] } });
+    const service = new UsageService(context(), only("antigravity"));
+    const [first] = (await service.report()).providers;
+    expect(first?.windows).toHaveLength(1);
+
+    replies.set(url, { status: 401 });
+    signIn("first@example.com", "rotated-token");
+    now += FRESH_MS + 1;
+    expect((await service.report()).providers).toMatchObject([{ ...first, problem: "expired" }]);
+
+    signIn("second@example.com", "second-token");
+    now += RETRY_MS + 1;
+    expect((await service.report()).providers).toMatchObject([{
+      key: first!.key, account: "second@example.com", problem: "expired", windows: [], checked_at: null,
+    }]);
+  });
+
   it("keeps a previously removed Antigravity account removed after learning its email", async () => {
     const path = join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
     const token = { access_token: "fake-antigravity-token", expiry: new Date(NOW + HOUR).toISOString() };

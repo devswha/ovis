@@ -15,6 +15,7 @@ export const USAGE_JA: Record<string, string> = {
   "Could not load sign-in options": "ログイン方法を読み込めませんでした",
   "On the server PC": "サーバーPCでログイン",
   "Install {cli} on the server PC first.": "先にサーバーPCに{cli}をインストールしてください。",
+  "Sign in through Gemini CLI on the server PC.": "サーバーPCのGemini CLIでログインしてください。",
   "Sign in from the Antigravity app on the server PC.": "サーバーPCのAntigravityアプリでログインしてください。",
   "Signed in as {account}. Continuing may replace it.": "{account}でログイン済みです。続けると置き換わる場合があります。",
   "an existing account": "既存のアカウント",

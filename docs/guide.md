@@ -459,7 +459,7 @@ The strip beside the **Settings** gear shows the plan limits of the AI tools sig
 | Grok | Every account in `~/.grok/auth.json` |
 | Antigravity | The CLI's Google sign-in (Gemini and other-model quota). If the quota service refuses the request, Ovis reads the CLI's own `/usage` output when it reports limits. |
 | OpenCode | OpenCode Go: the active `opencode-go` key, else the active `opencode` key, in the `credential` table of `opencode.db` (`~/.local/share/opencode/opencode.db`, or where `XDG_DATA_HOME` and `OPENCODE_DB` put it); with no OpenCode 2 store there, the `opencode-go` key, else the `opencode` key, in `~/.local/share/opencode/auth.json` (`opencode/auth.json` under `XDG_DATA_HOME` when it is set), else `OPENCODE_API_KEY`. Its rolling, weekly and monthly limits; a key without a Go subscription is left out |
-| Gemini CLI | Gemini CLI: `settings.json` in `~/.gemini` (or the directory `GEMINI_CLI_HOME` names). Shows configured auth mode with no quota limits |
+| Gemini CLI | `~/.gemini/settings.json` (or `GEMINI_CLI_HOME/.gemini/settings.json` when set). Shows configured auth mode with no quota limits |
 
 Only providers with a sign-in, or with another tool's record of one (below), are shown; a GitHub account without Copilot is left out. One PC signed in to two accounts of a provider shows both, each named by its email (a login for Copilot) and told apart by its account id, so the same account found in two places counts once. A credential file, a command's output or a provider's answer over 1 MiB is treated as unreadable. Where each sign-in lives and which endpoint states its limits follows [OpenUsage](https://github.com/robinebers/openusage).
 

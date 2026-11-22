@@ -15,6 +15,7 @@ export const USAGE_KO: Record<string, string> = {
   "Could not load sign-in options": "로그인 방법을 불러오지 못했습니다",
   "On the server PC": "서버 PC에서 로그인",
   "Install {cli} on the server PC first.": "먼저 서버 PC에 {cli}를 설치하세요.",
+  "Sign in through Gemini CLI on the server PC.": "서버 PC의 Gemini CLI에서 로그인하세요.",
   "Sign in from the Antigravity app on the server PC.": "서버 PC의 Antigravity 앱에서 로그인하세요.",
   "Signed in as {account}. Continuing may replace it.": "{account}로 로그인돼 있어요. 계속하면 바뀔 수 있어요.",
   "an existing account": "기존 계정",
