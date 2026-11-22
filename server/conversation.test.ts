@@ -282,6 +282,23 @@ describe("pane process roots", () => {
     });
   }
 
+  it("reads the environment of the bundled pi gentle-shell runs under node (#4198)", async () => {
+    const recorded = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "herdr-0.9.5-gentle-shell-pane.json"), "utf8"));
+    const front = recorded["pane.process_info"].process_info.foreground_processes[0];
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue(recorded["pane.process_info"]);
+    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue(null);
+    const environ = spyOn(omo, "processEnviron").mockReturnValue(["PI_CODING_AGENT_DIR=/home/user/.gentle-shell/agent"]);
+    try {
+      expect(await paneProcessRoots("gentle-shell-fixture", "pi")).toMatchObject({
+        omo: null, environ: ["PI_CODING_AGENT_DIR=/home/user/.gentle-shell/agent"], pid: front.pid, cwd: front.cwd,
+      });
+    } finally {
+      environ.mockRestore();
+      identity.mockRestore();
+      rpc.mockRestore();
+    }
+  });
+
   it("matches a runtime launcher but never an agent name in unrelated arguments", async () => {
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
       process_info: { foreground_processes: [
@@ -4080,6 +4097,26 @@ describe("Agy native ledger through shared paging", () => {
       expect(scrolled.screen).toBe(true);
       expect(scrolled.metadata?.model ?? null).toBeNull();
       expect(scrolled.metadata?.reasoning_effort ?? null).toBeNull();
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
+  it("falls back to the agy transcript model when scroll info is absent (herdr-core) and lets the live status row override it", async () => {
+    const session = "00000000-0000-4000-8000-000000000002";
+    add(0, "USER_INPUT", "<USER_REQUEST>\nhey\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 4 Neon (Medium).\n</USER_SETTINGS_CHANGE>");
+    add(1, "PLANNER_RESPONSE", "Hi", { model: "gemini-4-neon-medium" });
+    const pane = { pane_id: "agy-model-fallback", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    let hasScroll = false;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: hasScroll ? { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } : pane }
+      : { process_info: { foreground_processes: [] } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: " ? for shortcuts   Gemini 3.8 Flash · high\n" }) as never);
+    try {
+      const noScroll = await paneConversation(pane.pane_id);
+      expect(noScroll.metadata).toMatchObject({ model: "Gemini 4 Neon", reasoning_effort: "medium" });
+      hasScroll = true;
+      const live = await paneConversation(pane.pane_id);
+      expect(live.metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
   });
   it("refuses a conversation whose pane was forgotten or rebound while its status row was read", async () => {
