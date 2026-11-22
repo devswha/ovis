@@ -249,6 +249,8 @@ class Pane {
   covered = false;
   /** the picture to draw */
   shown: Emulator | null = null;
+  /** the grid `shown` has: set with it, and as it is resized (the attach on its way may have another one) */
+  private shownGrid: Size | null = null;
   dropped = false;
   // What follows remembers something across steps. Each describes one thing and is cleared when that thing is over: a memory that
   // outlives what it describes is counted again later (the waits of `size` follow the same rule, in size.ts).
@@ -463,15 +465,16 @@ class Pane {
     const resized = attempt.emulator!.resize(actual.cols, actual.rows, cell[0], cell[1]);
     if (resized.ok) {
       attempt.grid = actual;
+      if (attempt.emulator === this.shown) this.shownGrid = actual;
       return true;
     }
     const { kind, message } = resized.error;
     if (kind === "trapped") this.rebuild(attempt, message);
     else if (kind === "size" || kind === "failed") {
       // a grid no emulator takes, or one it refused: this terminal cannot be drawn until it has another size. A picture still
-      // shown keeps the last grid this attach's emulator took, which is one an emulator takes
+      // shown keeps its own grid, which may be an earlier attach's
       this.abandon();
-      this.size = refused(this.size, this.shown ? attempt.grid : null);
+      this.size = refused(this.size, this.shown ? this.shownGrid : null);
       this.fail("size", message);
     }
     // busy or disposed: nothing was done, and the next pump asks again
@@ -507,6 +510,7 @@ class Pane {
       this.shown?.dispose();
       this.shown = attempt.emulator;
     }
+    this.shownGrid = attempt.grid;
     this.set.tell({ type: "state", terminal: this.terminal });
   }
 
