@@ -59,6 +59,7 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
     y: number;
     frame: number;
     over: string | null;
+    moved: boolean;
     /** The offset the row's transform was last written with, so a drop before the next frame reads the row where it is drawn. */
     placedOffset: number;
   } | null = null;
@@ -97,19 +98,23 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
   const dragFrame = (): void => {
     if (lift === null) return;
     lift.frame = 0;
+    let step = 0;
     let scrolled = false;
     const scroller = lift.scroller;
     if (scroller !== null) {
       const box = scroller.getBoundingClientRect();
-      const step = edgeScrollStep(lift.y, box.top, box.bottom);
+      step = edgeScrollStep(lift.y, box.top, box.bottom);
       if (step !== 0) {
         const before = scroller.scrollTop;
         scroller.scrollTop = before + step;
         scrolled = scroller.scrollTop !== before;
       }
     }
-    place();
-    if (scrolled) lift.frame = window.requestAnimationFrame(dragFrame);
+    if (lift.moved || scrolled) {
+      lift.moved = false;
+      place();
+    }
+    if (step !== 0) lift.frame = window.requestAnimationFrame(dragFrame);
   };
 
   const pickUp = (): void => {
@@ -118,7 +123,7 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
     press = null;
     if (!row.isConnected || !handlers.canLift(id)) return;
     const scroller = row.closest<HTMLElement>(SCROLLER);
-    lift = { id, row, scroller, startY: y, startScroll: scroller?.scrollTop ?? 0, y, frame: 0, over: id, placedOffset: 0 };
+    lift = { id, row, scroller, startY: y, startScroll: scroller?.scrollTop ?? 0, y, frame: 0, over: id, moved: false, placedOffset: 0 };
     row.style.transition = "none";
     // a long press may have begun selecting the title: the lifted row drags, it does not select
     document.getSelection?.()?.removeAllRanges();
@@ -164,6 +169,7 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
     event.preventDefault();
     event.stopImmediatePropagation();
     lift.y = touch.clientY;
+    lift.moved = true;
     if (lift.frame === 0) lift.frame = window.requestAnimationFrame(dragFrame);
   };
 

@@ -267,6 +267,56 @@ async function openOrderPage(browser: Browser, url: string) {
   await page.locator(".machine-workspaces .workspace-group").first().waitFor();
   return { context, page, errors };
 }
+
+async function checkEdgeHoldGrowth(browser: Browser, url: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
+  try {
+    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+    const page = await context.newPage();
+    await page.goto(url);
+    await page.locator(".conn-live").waitFor({ state: "attached" });
+    await page.locator('button[aria-controls="workspace-drawer"]').click();
+    await page.locator(".machine-workspaces .workspace-group").first().waitFor();
+    await page.waitForFunction(() => (document.querySelector("#workspace-drawer.is-open")?.getBoundingClientRect().left ?? -1) >= 0);
+    const rowCount = () => page.locator(".machine-workspaces .workspace-group[data-workspace]").count();
+    const grow = async (prefix: string, count: number): Promise<string[]> => {
+      const rows = await rowCount();
+      const ids = await page.evaluate(async ({ prefix, count }) => {
+        const created: string[] = [];
+        for (let i = 0; i < count; i += 1) {
+          const response = await fetch("/api/workspace/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: `/home/demo/${prefix}${i}`, label: `${prefix}${i}` }) });
+          if (!response.ok) throw new Error(`create demo workspace: ${response.status}`);
+          created.push((await response.json() as { workspace_id: string }).workspace_id);
+        }
+        return created;
+      }, { prefix, count });
+      await page.waitForFunction((want) => document.querySelectorAll(".machine-workspaces .workspace-group[data-workspace]").length >= want, rows + count);
+      return ids;
+    };
+    const [source] = await grow("fill", 20);
+    const scroller = page.locator(".machine-list");
+    const scrollTop = () => scroller.evaluate((list) => list.scrollTop);
+    const list = await scroller.evaluate((list) => ({ bottom: list.getBoundingClientRect().bottom, overflow: list.scrollHeight - list.clientHeight }));
+    assert.ok(list.overflow > 100, `the filled list scrolls: ${list.overflow}px past its box`);
+    const height = await page.locator(`.workspace-group[data-workspace="${source}"]`).evaluate((row) => row.getBoundingClientRect().height);
+    const from = await centerOf(page, source!);
+    const rest = Math.round(list.bottom - height / 2 - 12);
+    assert.ok(rest > list.bottom - 48, `the finger rests in the bottom edge zone with the row inside the list: ${rest} for a list ending at ${list.bottom}`);
+    const cdp = await context.newCDPSession(page);
+    await stroke(page, cdp, from, { x: from.x, y: rest }, 600, async () => {
+      await page.waitForFunction(() => { const list = document.querySelector(".machine-list")!; return list.scrollTop + list.clientHeight >= list.scrollHeight - 1; });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      const held = await scrollTop();
+      await grow("grow", 16);
+      await page.waitForFunction((held) => document.querySelector(".machine-list")!.scrollTop > held + 20, held, { timeout: 5_000 })
+        .catch(async () => { throw new Error(`a finger resting at the list's bottom edge scrolls on when the list grows: scrollTop stayed at ${await scrollTop()} from ${held}`); });
+    });
+    console.log("PASS a finger resting at the list's bottom edge keeps scrolling when a live update makes the list longer");
+  } finally {
+    await context.close();
+  }
+}
+
 const reorderError = (page: Page) => page.locator(".machine-workspaces .sidebar-inline-error", { hasText: "Reorder failed" });
 
 async function checkRefusedMoves(browser: Browser, url: string): Promise<unknown> {
@@ -780,6 +830,7 @@ try {
       await checkPinned(page, cdp);
       assert.deepEqual(errors, []);
       await context.close();
+      await checkEdgeHoldGrowth(browser, `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`);
       const desktop = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
       await desktop.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
       const desktopPage = await desktop.newPage();
