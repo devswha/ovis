@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { writePrivateState } from "../private-state.ts";
 import { logAccess } from "../connection-diagnostics.ts";
 import { accountServiceOff, DEFAULT_ACCOUNT_SERVICE } from "../../shared/web-policy.ts";
-import { ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
+import { ACCOUNT_RECORDS_MAX, isAccountKeyEncoding, isIsoTime } from "../../shared/account-records.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
@@ -155,15 +155,9 @@ export const LISTING_CONFIRMED_MS = 60_000;
  */
 export type ListingVerdict = "confirmed" | "unreachable" | "readd" | "refused";
 
-function lastPage(answer: PageAnswer): boolean {
-  const page = "page" in answer ? answer.page : null;
-  return typeof page === "object" && page !== null && "last" in page && page.last === true;
-}
-
-/** A completion the service took: its answer names when, as a time. */
+/** A completion the service took: its answer names when, as the service writes a time. */
 function completed(answer: Record<string, unknown> | null): boolean {
-  const at = answer?.completed_at;
-  return typeof at === "string" && at !== "" && !Number.isNaN(Date.parse(at));
+  return isIsoTime(answer?.completed_at);
 }
 
 function listingChanged(error: unknown): boolean {
@@ -222,7 +216,10 @@ export class AccountMailbox {
   /** A bind's completion receipt the account service has not taken yet (account#57): sent again after each pull. */
   private completion: CompletionScope | null;
 
-  private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number } | null = null;
+  private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number; readonly seq: number } | null = null;
+  /** The newest check that brought no yes: a yes asked for before it is not kept. */
+  private listingFailed: { readonly key: string; readonly seq: number } | null = null;
+  private listingChecks = 0;
   private listingCheck: { readonly key: string; readonly verdict: Promise<ListingVerdict> } | null = null;
 
   constructor(private readonly options: AccountMailboxOptions) {
@@ -333,16 +330,20 @@ export class AccountMailbox {
     if (key === null) return Promise.resolve("refused");
     const at = this.options.devices.waitClock().now();
     const wallAt = Date.now();
+    const seq = ++this.listingChecks;
     const verdict = this.askListing(binding, reached).then((answer) => {
       const kept = this.listingConfirmed;
       if (answer !== "confirmed") {
-        // a later check that brought no yes ends an earlier yes for the same listing
-        if (kept !== null && kept.key === key && kept.at <= at) this.listingConfirmed = null;
+        // a later check that brought no yes ends an earlier yes for the same listing, also one still on its way
+        const failed = this.listingFailed;
+        if (failed === null || failed.key !== key || failed.seq < seq) this.listingFailed = { key, seq };
+        if (kept !== null && kept.key === key && kept.seq <= seq) this.listingConfirmed = null;
         return answer;
       }
       const confirmed = this.listingKey(binding);
       if (confirmed === null) return "refused";
-      if (kept === null || kept.key !== confirmed || kept.at <= at) this.listingConfirmed = { key: confirmed, at, wallAt };
+      if (this.listingFailed?.key === confirmed && this.listingFailed.seq > seq) return answer;
+      if (kept === null || kept.key !== confirmed || kept.seq <= seq) this.listingConfirmed = { key: confirmed, at, wallAt, seq };
       return answer;
     });
     if (this.listingCheck?.key !== key) {
@@ -431,12 +432,9 @@ export class AccountMailbox {
     const binding = this.options.devices.serviceBinding();
     let unlisted = false;
     let step2Off = false;
-    let reading = false;
-    let listed = false;
     try {
       let staged: Awaited<ReturnType<typeof stageMailboxAdds>> = [];
       const outcome = await readSnapshot(async (cursor) => {
-        reading = true;
         if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
         const page = await this.snapshotPage(account, cursor, used).catch((error: unknown) => {
           if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/snapshot") {
@@ -447,13 +445,11 @@ export class AccountMailbox {
           }
           throw error;
         });
-        // asked once the whole snapshot is here, so the listing's answer is the newest thing its commit rests on
-        if (binding !== null && lastPage(page)) {
-          if (await this.checkListing(binding, true) !== "confirmed") throw new Error("PC admission not confirmed");
-          listed = true;
-        }
         return page;
-      }, { ...ports, scope: () => this.stopped || (reading && binding !== null && !(listed && this.listingFresh(binding))) ? null : ports.scope(), commit: (stage) => {
+      }, { ...ports, scope: () => this.stopped ? null : ports.scope(),
+        // the snapshot is whole and checked, so the service answered this PC: the listing's answer is the newest thing the commit rests on
+        widen: async () => binding === null || (await this.checkListing(binding, true) === "confirmed" && this.listingFresh(binding)),
+        commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         const committedLifts = ports.commit(stage);
         const removed = new Set(stage.snapshot.removed.map((row) => row.key));

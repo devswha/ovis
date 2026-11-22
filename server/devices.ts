@@ -24,7 +24,7 @@ import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
-import type { CatchUpGate } from "./account/catch-up-gate.ts";
+import { pairedAtPc, type CatchUpGate } from "./account/catch-up-gate.ts";
 import { accountOpensAll, type DeviceNotice, type NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isDeviceSafetyRecord, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceLiftRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import { PromotedHolds } from "./account/promoted-holds.ts";
@@ -1462,13 +1462,27 @@ export class DeviceStore {
   }
 
   /**
-   * T56 for devices.json: the last whole read is an hour old, so every row that stands on the account alone waits for
-   * the next one, its sessions closed, as the account's listed rows do. A pairing made at this PC is no such row.
+   * T56 for devices.json: the last whole read is an hour old, so until the next one every member that never paired its
+   * key with this PC waits, its sessions closed, as the account's listed rows do, and so does one made meanwhile. A
+   * member that paired its key here keeps its access and only what it may do for the account waits (waitsOnStaleRead).
    */
   staleAccountMembers(): void {
-    const ids = this.devices.filter(row => this.accountOnly(row.id)).map(row => row.id);
-    this.catchUp?.staleRead(ids);
-    for (const id of ids) if (this.catchingUp(id)) this.closeAccountSessions(id);
+    this.catchUp?.staleRead();
+    for (const row of [...this.devices]) if (this.catchingUp(row.id)) this.closeAccountSessions(row.id);
+  }
+
+  private waitsOnStaleRead(device: StoredDevice, credential: boolean): boolean {
+    if (this.catchUp?.readStale() !== true || (device.account === undefined && device.member_approved_in === undefined) || pairedAtPc(device.origin)) return false;
+    const pairedItsKeyHere = pairedHere(device) && device.account_add === undefined && !device.imported && !device.invalid_origin;
+    return !pairedItsKeyHere || !credential;
+  }
+
+  /** Whether the row `id` only waits for a whole read: its sign-in is put off, never refused as a removed device's. */
+  waitsForRead(id: string): boolean {
+    if (this.devices.some(row => row.id === id)) return this.catchingUp(id);
+    const row = this.joinedRows?.row(id) ?? null;
+    const access = row && this.listedAccess(row);
+    return access !== null && !("ok" in access) && access.refused === "catching_up";
   }
 
   accountOnly(id: string): boolean {
@@ -2237,6 +2251,7 @@ export class DeviceStore {
   catchingUp(id: string, credential = true): boolean {
     const device = this.devices.find((d) => d.id === id);
     if (device === undefined) return false;
+    if (this.waitsOnStaleRead(device, credential)) return true;
     // A Step-1 writer may have added a credential during rollback. It gets no admission order.
     const offPair = device.off_pair_binding !== undefined && !device.imported && device.relay_public_key === undefined
       && this.pc?.binding()?.bind_id === device.off_pair_binding && this.pc.serviceStep2Off();

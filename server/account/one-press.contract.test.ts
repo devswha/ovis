@@ -712,6 +712,7 @@ test("a snapshot whose listing cannot be confirmed still applies its blocks, and
   const { device, serverId } = await firstPcWithPhone(f);
   const target = await phone();
   f.account.registerDevice("acct_1", target.spki, "Target");
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const late = await phone();
   f.account.registerDevice("acct_1", late.spki, "Late");
   const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 2,
@@ -755,7 +756,8 @@ test("listing confirmation: a sign-in whose row starts to wait for a read while 
   atAsk = () => clock.advance(1_000);
   expect(await signIn(f, serverId, device, [ACCOUNT_OPENS_ALL_FEATURE, ACCOUNT_LISTING_ERRORS])).toBe("held");
   expect(atAsk).toBeNull();
-  expect(await signIn(f, serverId, device, [])).toBe("internal_error");
+  // the refused sign-in started the read the row waited for
+  expect(await signIn(f, serverId, device, [ACCOUNT_OPENS_ALL_FEATURE, ACCOUNT_LISTING_ERRORS])).toBe("admitted");
 });
 
 test("listing confirmation: a yes that arrives after a later check failed is not kept", async () => {

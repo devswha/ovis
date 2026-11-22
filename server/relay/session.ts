@@ -409,8 +409,7 @@ export class RelaySession {
         if (frame.type === FrameType.AUTH && device && devices.catchingUp(device.id)) {
           // Step 2 (S2-27): a row not paired at this PC waits for the first whole read after a start (T41)
           if (!await this.readComing(device.id) || !this.mux.active) return;
-          const refusal = accountSignInRefusal({ refused: "catching_up" }, null, this.accountCodes);
-          this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
+          this.refuseWaiting();
           return;
         }
         if (frame.type === FrameType.AUTH && device === null && devices.opensAll()) {
@@ -552,6 +551,24 @@ export class RelaySession {
   private finishPairing(): void {
     const sas = this.sas;
     if (!sas || !sas.phoneConfirmed || !sas.approved || this.state !== "pair-wait") return;
+    // a member's approval from afar lets a device in on the account's word: asked about first, as a sign-in's is, and
+    // nothing is written until the account service confirms this PC's listing
+    const binding = sas.approvedBy === undefined ? null : this.options.services.devices.serviceBinding();
+    if (binding !== null && !this.options.services.accountMailbox.listingFresh(binding)) {
+      this.state = "verifying";
+      void this.listingVerdict(binding).then((verdict) => {
+        if (!this.mux.active || this.sas !== sas || sas.ended) return;
+        // no word of the account service is no failed pairing of this device's: it counts against nobody
+        if (verdict !== "confirmed" || this.options.services.devices.serviceBinding() !== binding) { this.endPairing(true); this.refuseListing(verdict); return; }
+        this.state = "pair-wait";
+        this.admitCompared(sas);
+      });
+      return;
+    }
+    this.admitCompared(sas);
+  }
+
+  private admitCompared(sas: NonNullable<RelaySession["sas"]>): void {
     // an answer that lands after the deadline, before its timer ran, makes no device either
     if (Date.now() > sas.expiresAt) { this.close("timeout"); return; }
     // approved on this PC, then the window it was taken under was closed before the phone confirmed: no device after a close
@@ -646,13 +663,19 @@ export class RelaySession {
     if (binding !== null && devices.accountOnly(device.id)) {
       const key = devices.sessionRow(device.id)?.key;
       const verdict = key ? await this.listingVerdict(binding) : "refused";
-      if (verdict !== "confirmed" || devices.serviceBinding() !== binding || devices.sessionRow(device.id)?.key !== key) {
-        if (this.mux.active) this.refuseListing(verdict);
-        return;
-      }
+      if (!this.mux.active) return;
+      // the hour since the last whole read may have ended while the service was asked: the row waits, its key stands
+      if (verdict === "confirmed" && devices.serviceBinding() === binding && devices.waitsForRead(device.id)) { this.refuseWaiting(); return; }
+      if (verdict !== "confirmed" || devices.serviceBinding() !== binding || devices.sessionRow(device.id)?.key !== key) { this.refuseListing(verdict); return; }
       this.listedFor = binding;
     }
     this.enter(device);
+  }
+
+  /** A proved row that only waits for this PC's next whole read. */
+  private refuseWaiting(): void {
+    const refusal = accountSignInRefusal({ refused: "catching_up" }, null, this.accountCodes);
+    this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
   }
 
   /**
@@ -702,6 +725,8 @@ export class RelaySession {
     // anew for every stream (principal), never from the answer below
     const row = devices.sessionRow(device.id);
     if (!row || !this.mux.active) {
+      // a row that began to wait for a read meanwhile (the hour ended, or it was made after it) keeps its key
+      if (!row && this.mux.active && devices.opensAll() && devices.waitsForRead(device.id)) { this.unwatch(); this.refuseWaiting(); return; }
       // a row that stopped standing while its proof was checked (an account row that expired) ends the session; with
       // the flag off nothing changes
       if (!row && this.mux.active && devices.opensAll()) { this.close("auth_failed"); return; }
