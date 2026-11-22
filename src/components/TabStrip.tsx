@@ -163,7 +163,15 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       start: (tabId) => {
         const tab = tabs.find((entry) => entry.tab_id === tabId);
         const pane = tab ? paneFor(tab) : undefined;
-        if (pane) paneDrag.start({ machineId, paneId: pane.pane_id });
+        if (!tab || !pane) return;
+        const ownAll = snapshot.panes.filter((entry) => entry.tab_id === tab.tab_id);
+        const targets = closable && canMoveOut(tab) && ownAll.length === 1
+          ? new Set(destinations(tab).map((entry) => entry.workspace_id))
+          : null;
+        paneDrag.start(
+          { machineId, paneId: pane.pane_id },
+          targets && targets.size > 0 ? { targets, move: (workspaceId) => moveToWorkspace(tab, workspaceId) } : undefined,
+        );
       },
       move: paneDrag.move, back: paneDrag.back, drop: paneDrag.drop, cancel: paneDrag.cancel,
     } : undefined,
