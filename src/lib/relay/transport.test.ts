@@ -12,7 +12,7 @@ import { RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../../shared/relay-regions.ts";
 import type { RelayChannelOptions, RelaySocket } from "./channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
-import { isFatalRelayError, openRelayTransport, RECONNECT_PC_ANSWER_MS, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
+import { DIRECT_BUDGET_MS, isFatalRelayError, openRelayTransport, RECONNECT_PC_ANSWER_MS, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
 import { LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { RelayResourceTooLargeError } from "./resources.ts";
 import { writeFileSync } from "node:fs";
@@ -806,6 +806,23 @@ it("settles a first pairing cancelled while its replacement still reads the devi
   await bounded(pairing.then(() => undefined, () => undefined), 2_000);
   expect(sockets.map((socket) => socket.closed)).toEqual([1]);
   reads[1]!.resolve(undefined);
+});
+
+it("settles a native connection with the relay's failure while the saved direct route is still being read", async () => {
+  const shown = page("visible");
+  let reads = 0;
+  const store: RelayDeviceStore = {
+    get: () => { reads++; return new Promise<never>(() => {}); },
+    update: async (_id, change) => change(undefined), list: async () => [], remove: async () => {},
+  };
+  const unreachable = new RelayUnreachableError(null, true);
+  const connecting = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", relay: "wss://relay.example" }, {
+    store, directSocket: () => { throw new Error("No direct route was read"); }, openChannel: () => Promise.reject(unreachable),
+  });
+  shown.hide();
+  shown.show();
+  expect(reads).toBe(2);
+  expect(await bounded(connecting.then(() => null, (error: unknown) => error), DIRECT_BUDGET_MS + 1_000)).toBe(unreachable);
 });
 
 function referenceSse(text: string) {
