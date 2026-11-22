@@ -2418,11 +2418,17 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   }
   if (agyScreen !== null) {
     // Enrich the response, never the shared page.
+    // Live screen wins when readable (e.g. a /model switch before the next turn);
+    // otherwise keep the transcript's recorded model/effort (e.g. herdr-core or a scrolled pane).
+    const model = agyScreen.model ?? answer.metadata.model;
+    const reasoning_effort = agyScreen.model !== null
+      ? agyScreen.reasoning_effort
+      : (agyScreen.reasoning_effort ?? answer.metadata.reasoning_effort);
     return {
       ...answer,
       screen: true,
-      metadata: { ...answer.metadata, ...agyScreen },
-      version: answerVersion(answer.version, `${agyScreen.model}\0${agyScreen.reasoning_effort}`),
+      metadata: { ...answer.metadata, model, reasoning_effort },
+      version: answerVersion(answer.version, `${model}\0${reasoning_effort}`),
     };
   }
   return answer;
@@ -2595,7 +2601,22 @@ export function transcriptPage(source: Exclude<StreamSource, "agy-transcript">, 
 }
 
 export async function agyTranscriptPage(path: string, page: ConversationPage = {}, codexHome?: string, authorized?: { dev: number; ino: number }): Promise<RecognizedConversation> {
-  try { return await withAgyHistory(path, (projection, fd) => ({ ...transcriptPageRead("agy-transcript", path, page, codexHome, projection, fd), activity: projection.activity }), authorized); }
+  try {
+    return await withAgyHistory(path, (projection, fd) => {
+      const read = transcriptPageRead("agy-transcript", path, page, codexHome, projection, fd);
+      const model = projection.model ?? read.metadata.model;
+      const reasoning_effort = projection.model !== null ? projection.reasoning_effort : (projection.reasoning_effort ?? read.metadata.reasoning_effort);
+      const metadata = { ...read.metadata, model, reasoning_effort };
+      return {
+        ...read,
+        metadata,
+        activity: projection.activity,
+        version: model !== read.metadata.model || reasoning_effort !== read.metadata.reasoning_effort
+          ? answerVersion(read.version, `${model}\0${reasoning_effort}`)
+          : read.version,
+      };
+    }, authorized);
+  }
   catch (error) {
     // every file thread busy: worth another try soon (http.ts answers 503); another file than the
     // authorized one is pending (withAgyHistory)

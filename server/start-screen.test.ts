@@ -186,6 +186,10 @@ describe("startScreenMetadata", () => {
     expect(startScreenMetadata("agy-transcript", panel)).toEqual({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
     const mode = AGY.replace("Gemini 3.8 Flash · high", "auto · Gemini 4 Hydrogen · medium");
     expect(startScreenMetadata("agy-transcript", mode)).toEqual({ model: "Gemini 4 Hydrogen", reasoning_effort: "medium" });
+    const twoWordMode = AGY.replace("Gemini 3.8 Flash · high", "accept edits · Gemini 4 Neon · medium");
+    expect(startScreenMetadata("agy-transcript", twoWordMode)).toEqual({ model: "Gemini 4 Neon", reasoning_effort: "medium" });
+    const prose = AGY.replace("Gemini 3.8 Flash · high", "some random prose · Gemini 4 Neon · medium");
+    expect(startScreenMetadata("agy-transcript", prose)).toEqual({ model: null, reasoning_effort: null });
     // the banner and a quoted picker are not the row; a missing row names none
     expect(startScreenMetadata("agy-transcript", AGY.replace("? for shortcuts   Gemini 3.8 Flash · high", "? for shortcuts"))).toEqual({ model: null, reasoning_effort: null });
     expect(startScreenMetadata("agy-transcript", AGY.replace("? for shortcuts   Gemini 3.8 Flash · high", "Switch Model\n> Gemini 3.1 Pro (Low)"))).toEqual({ model: null, reasoning_effort: null });

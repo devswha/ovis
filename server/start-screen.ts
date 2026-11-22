@@ -170,7 +170,7 @@ function agyScreen(lines: string[]): Screen {
   if (!aligned) return NOTHING;
   const parts = aligned[1]!.split(" · ");
   if (parts.length < 2 || parts.length > 3 || !AGY_EFFORT.test(parts[parts.length - 1]!)) return NOTHING;
-  if (parts.length === 3 && /\s/u.test(parts[0]!)) return NOTHING;
+  if (parts.length === 3 && !/^[a-z][a-z-]*(?: [a-z][a-z-]*)?$/u.test(parts[0]!)) return NOTHING;
   const model = parts.length === 3 ? parts[1]! : parts[0]!;
   if (model === "" || model !== model.trim()) return NOTHING;
   return { model, reasoning_effort: parts[parts.length - 1]! };
