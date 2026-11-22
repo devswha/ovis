@@ -384,6 +384,8 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
         const result = generics[idx]!;
         if (!result.content) continue;
         trimOutput(calls[idx]!, result.content, path && result.step ? outputRef(path, result.step) : `agy:${hash(result.line)}`);
+        const previous = turns.at(-1);
+        if (previous?.role === "assistant" && !woken && !idle) previous.end_ts = result.ts ?? undefined;
       }
       return;
     }

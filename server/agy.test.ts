@@ -407,6 +407,18 @@ it("reads a dotted model name from agy's own trailing settings block, never from
   }
 });
 
+it("ends a turn at its last tool output when that output is paired with its call, as a separate row did", () => {
+  const step = (step_index: number, type: string, created_at: string, content = "", extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ step_index, type, status: "DONE", created_at, content, ...extra });
+  const turns = parseAgyTranscript([
+    step(0, "USER_INPUT", "2026-11-22T10:00:00Z", "build it"),
+    step(1, "PLANNER_RESPONSE", "2026-11-22T10:00:05Z", "", { tool_calls: [{ name: "run_command", args: { CommandLine: "make" } }] }),
+    step(2, "GENERIC", "2026-11-22T10:03:00Z", "built"),
+  ].join("\n"));
+  expect(turns[1]).toMatchObject({ role: "assistant", ts: "2026-11-22T10:00:05Z", end_ts: "2026-11-22T10:03:00Z" });
+  expect(turns[1]?.parts.map((part) => part.kind === "tool" ? [part.name, part.output] : part.kind)).toEqual([["run_command", "built"]]);
+});
+
 it("splits the longest effort word off a planner model id", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-model-id-")));
   try {
