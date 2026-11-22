@@ -25,6 +25,11 @@ export type LayoutAnswer =
   | { readonly type: "notice"; readonly code: string; readonly data: Readonly<Record<string, string>>; readonly calm?: true }
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null };
 
+/** What a layout write did that the screen is still to show: the terminals a close ended (none for any other write). */
+export interface LayoutDone { readonly ended: readonly string[] }
+
+const NOTHING_ENDED: LayoutDone = { ended: [] };
+
 interface LayoutWritesOptions {
   /** the core's line (the screen's link) */
   hc: Pick<HcConnection, "call" | "hello">;
@@ -80,23 +85,26 @@ export class LayoutWrites {
   }
 
   /**
-   * Performs `effect` when it is a layout action and answers when it is done (it never rejects: a failure is a notice);
-   * null for any other action.
+   * Performs `effect` when it is a layout action and answers when it is done, with the terminals it ended (it never
+   * rejects: a failure is a notice); null for any other action.
    */
-  run(effect: RunEffect): Promise<void> | null {
+  run(effect: RunEffect): Promise<LayoutDone> | null {
     const work = this.work(effect);
     if (work === null) return null;
     if (this.busy) {
       this.notice("layout_busy", { action: effect.action });
-      return Promise.resolve();
+      return Promise.resolve(NOTHING_ENDED);
     }
     this.busy = true;
-    return work().catch((error: unknown) => this.refused(effect.action, error)).finally(() => {
+    return work().then((done) => done ?? NOTHING_ENDED, async (error: unknown) => {
+      await this.refused(effect.action, error);
+      return NOTHING_ENDED;
+    }).finally(() => {
       this.busy = false;
     });
   }
 
-  private work(effect: RunEffect): (() => Promise<void>) | null {
+  private work(effect: RunEffect): (() => Promise<LayoutDone | void>) | null {
     const { action, target } = effect;
     const id = target?.id;
     const store = this.store;
@@ -151,14 +159,15 @@ export class LayoutWrites {
   }
 
   /** A close, once the core still holds exactly the terminals the user saw: it ends those and no other; anything else ends nothing. */
-  private async close(action: string, target: CloseTarget, seen: readonly Seen[]): Promise<void> {
+  private async close(action: string, target: CloseTarget, seen: readonly Seen[]): Promise<LayoutDone> {
     const { view, created, finished } = await this.fresh();
     const ends = this.store.endsOf(view.shown, target);
     if (!sameTerminals(ends, seen, created)) {
       this.notice("target_changed", { action });
-      return;
+      return NOTHING_ENDED;
     }
     await this.store.end(ends, finished);
+    return { ended: ends };
   }
 
   private follow(pane: string, away: string | null): void {

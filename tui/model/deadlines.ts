@@ -119,10 +119,11 @@ export const PASS_CREDIT_BYTES = 512 * 1024;
 /** Quit and a hang-up close every pane channel and the event stream within this long, answered or not. */
 export const QUIT_BOUND_MS = 2_000;
 /**
- * Input that waited behind a layout write which made or moved a pane waits this long more, once the write is done, for
- * the screen to show that pane and focus to follow it; past it that input is refused, never sent to the pane before.
+ * Input that waited behind a layout write waits this long more, once the write is done, for the screen to show what the
+ * write did (the pane it made or moved, with focus on it; the panes a close ended, gone); past it that input is
+ * refused, never sent to the pane focused before.
  */
-export const FOLLOW_WAIT_MS = 2_000;
+export const LAYOUT_SHOWN_WAIT_MS = 2_000;
 /** The most input events that wait behind a layout write; past it nothing more waits until the write is done. */
 export const BEHIND_WRITE_EVENTS = 4_096;
 /** The most bytes of typed and pasted text that wait behind a layout write: one paste at its limit. */

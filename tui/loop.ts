@@ -15,7 +15,7 @@ import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts"
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
-import { LayoutWrites } from "./core/layout.ts";
+import { type LayoutDone, LayoutWrites } from "./core/layout.ts";
 import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
 import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
@@ -27,9 +27,9 @@ import { Framer } from "./input/framer.ts";
 import type { TuiThemeMode } from "./theme.generated.ts";
 import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
-import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
+import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
-import { focused } from "./model/focus.ts";
+import { exists, focused } from "./model/focus.ts";
 import { type Following, initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
@@ -288,14 +288,15 @@ export function startLoop(options: LoopOptions): Loop {
    * leaves (the pane a close focuses, the pane a split follows), as a later read would. null when no write holds it.
    * `ahead` is the state core as if what waits had gone through: to see a detach in it, which never waits, and a layout
    * action, which is refused as busy when it is read, against the layout the user saw. `awaiting`: the write is done
-   * and made or moved a pane, which the screen does not show yet: what waits goes there once focus follows it, and is
-   * refused if it does not by `until`, never sent to the pane focused before. `bytes`: the text and pastes among what
+   * and the screen does not show what it did yet: the pane it made or moved (`follow`: what waits goes there once
+   * focus follows it), or the panes a close ended still in the world (`gone`: what waits goes through once they left
+   * and focus moved off them). It is refused if that is not so by `until`, never sent to the pane focused before. `bytes`: the text and pastes among what
    * waits; `full`: what waits reached BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
    */
   let behindWrite: {
     readonly events: ModelEvent[];
     ahead: ModelState;
-    awaiting: { readonly following: Following; readonly until: number } | null;
+    awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly panes: readonly string[] }) & { readonly until: number } | null;
     bytes: number;
     full: boolean;
   } | null = null;
@@ -370,21 +371,27 @@ export function startLoop(options: LoopOptions): Loop {
 
   /**
    * Holds the user's input until `writing` is done; then what waited goes through in order, or, when the write asked
-   * focus to follow a pane the screen does not show yet, once focus followed it.
+   * focus to follow a pane the screen does not show yet or ended panes the screen still shows, once the screen shows
+   * what it did.
    */
-  function holdUntil(writing: Promise<void>): void {
+  function holdUntil(writing: Promise<LayoutDone>): void {
     behindWrite ??= { events: [], ahead: state, awaiting: null, bytes: 0, full: false };
     const before = state.following;
-    void writing.then(() => {
+    void writing.then((done) => {
       guard(() => {
-        if (behindWrite !== null && state.following !== null && state.following !== before) {
-          behindWrite.awaiting = { following: state.following, until: clock.now() + FOLLOW_WAIT_MS };
-          return;
-        }
-        release();
+        if (behindWrite === null) return;
+        const until = clock.now() + LAYOUT_SHOWN_WAIT_MS;
+        if (state.following !== null && state.following !== before) behindWrite.awaiting = { kind: "follow", following: state.following, until };
+        else if (!closedShown(done.ended)) behindWrite.awaiting = { kind: "gone", panes: done.ended, until };
+        else release();
       });
       arm();
     });
+  }
+
+  /** Whether the screen shows these ended panes gone: none of them is in the world any more. */
+  function closedShown(panes: readonly string[]): boolean {
+    return panes.every((id) => !exists(state.world, { kind: "pane", id }));
   }
 
   /** What waited behind a write goes through, in order. */
@@ -412,6 +419,15 @@ export function startLoop(options: LoopOptions): Loop {
     else drop("not_shown");
   }
 
+  /** What waits for the screen to show what a write did goes on once it does. */
+  function onceShown(): void {
+    const awaiting = behindWrite?.awaiting;
+    if (!awaiting) return;
+    if (awaiting.kind === "follow") {
+      if (state.following !== awaiting.following) followed(awaiting.following);
+    } else if (closedShown(awaiting.panes)) release();
+  }
+
   /** One event through the state core, and its effects performed in order, now. */
   function dispatch(event: ModelEvent): void {
     const before = state;
@@ -422,8 +438,7 @@ export function startLoop(options: LoopOptions): Loop {
       reshow();
       owePass();
     }
-    const awaiting = behindWrite?.awaiting;
-    if (awaiting && state.following !== awaiting.following) followed(awaiting.following);
+    onceShown();
   }
 
   function perform(effect: Effect): void {
@@ -609,8 +624,8 @@ export function startLoop(options: LoopOptions): Loop {
       if (quitting && now >= quitting.at) quitting.settle();
       return;
     }
-    // the pane a write made or moved never showed in time: what waited for it is refused, not sent elsewhere
-    if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop("not_shown");
+    // what a write did never showed in time: what waited for it is refused, not sent elsewhere
+    if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop(behindWrite.awaiting.kind === "follow" ? "not_shown" : "not_closed");
     for (const event of framer.tick(now)) userInput(event);
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
@@ -727,7 +742,7 @@ export function startLoop(options: LoopOptions): Loop {
     const input = framer.deadline();
     if (input !== undefined) all.set("input", input);
     if (pasteAt !== null) all.set("paste", pasteAt);
-    if (behindWrite?.awaiting) all.set("follow", behindWrite.awaiting.until);
+    if (behindWrite?.awaiting) all.set("layout_shown", behindWrite.awaiting.until);
     for (const [name, at] of link.deadlines()) all.set(`link:${name}`, at);
     for (const [name, at] of panes.deadlines()) all.set(`panes:${name}`, at);
     for (const [name, at] of state.deadlines) all.set(`model:${name}`, at);

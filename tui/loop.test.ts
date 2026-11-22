@@ -6,7 +6,7 @@ import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnect
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
-import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
+import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
 import { SCALE_LARGEST_TAB, SCALE_TERMINALS, SCALE_WORKSPACES, scale } from "./testing/fixtures/scale.ts";
@@ -357,6 +357,48 @@ describe("the loop", () => {
     }
   }, TEST_MS);
 
+  it("input behind a close goes to the pane focus moves to once the closed pane left the world, whichever came first", async () => {
+    // two and three panes; the core tells of the close before it answers, or answers first; the text in the close's
+    // own read or in a read of its own
+    for (const panes of [2, 3]) {
+      for (const answerFirst of [false, true]) {
+        for (const reads of [["\x02xabc"], ["\x02x", "abc"]]) {
+          const run = await start({ core: oneTab(panes) });
+          await run.live();
+          await run.advance(1);
+          const label = { panes, answerFirst, reads };
+          run.core.holdingEvents = answerFirst;
+          for (const read of reads) run.type(read);
+          await settled(run);
+          expect([label, run.core.calls().filter(({ method }) => method === "terminal.rm").length, sentTo(run, "t1")]).toEqual([label, 1, ""]);
+          run.core.releaseEvents();
+          await settled(run);
+          const state = run.loop.model();
+          expect([label, state.focus.panes["t"], sentTo(run, "t1"), sentTo(run, "t2"), state.notices.map(({ code }) => code)])
+            .toEqual([label, "t2", "", Buffer.from("abc").toString("hex"), []]);
+          await run.close();
+        }
+      }
+    }
+  }, TEST_MS);
+
+  it("input behind a close whose pane never leaves the world is refused once the wait ends, and reaches no pane", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    await run.advance(1);
+    run.core.holdingEvents = true;
+    run.type("\x02xabc");
+    await settled(run);
+    await run.advance(LAYOUT_SHOWN_WAIT_MS);
+    expect([sentTo(run, "t1"), sentTo(run, "t2"), run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])]).toEqual(["", "", [["input_dropped", "not_closed"]]]);
+    run.core.releaseEvents();
+    await settled(run);
+    // the screen catches up, and what comes after goes to the survivor as usual
+    run.type("d");
+    await settled(run);
+    expect([sentTo(run, "t1"), sentTo(run, "t2")]).toEqual(["", Buffer.from("d").toString("hex")]);
+  }, TEST_MS);
+
   it("input behind a write that makes a pane waits until the screen shows that pane, and never reaches the pane before", async () => {
     const focusOf = (run: Run) => { const state = run.loop.model(); return state.focus.panes[state.focus.tabs[state.focus.workspace!]!]; };
     const notices = (run: Run) => run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]);
@@ -373,7 +415,7 @@ describe("the loop", () => {
       await settled(run);
       expect([shown, "answered", run.core.calls().some(({ method }) => method === "terminal.run"), focusOf(run), sentTo(run, "t1")]).toEqual([shown, "answered", true, "t1", ""]);
       // never shown in time: the text is refused; shown in time: it goes to the new pane (which refuses it while it opens)
-      if (!shown) await run.advance(FOLLOW_WAIT_MS);
+      if (!shown) await run.advance(LAYOUT_SHOWN_WAIT_MS);
       run.core.releaseEvents();
       await settled(run);
       expect([shown, focusOf(run), sentTo(run, "t1"), sentTo(run, "t5"), notices(run)])
