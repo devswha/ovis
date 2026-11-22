@@ -855,7 +855,7 @@ The relay service has limits of its own (frame size, phones per PC, connections 
 | `timeout` | admission or a keepalive took too long, or a comparison of digits was not finished in 90 seconds |
 | `internal_error` | something failed on the other side |
 | `account_unreachable` | the PC could not ask the account service whether its account still lists it, so it lets no device of the account in; only to a client that offered `account-listing-errors-1` ([account.md](account.md#adding-a-pc)) |
-| `account_readd_required` | the PC left its account because its binding named no listing; only to a client that offered `account-listing-errors-1` |
+| `account_readd_required` | the PC left its account because its binding named no listing; only to a client that offered `account-listing-errors-1`, after it proved a key the PC knew for that account |
 
 `RESET` ends one stream and leaves the others: `cancelled`, `refused` (over a stream limit, or the
 session is closing), `bad_request`, `body_too_large`, `message_too_large`, `stream_protocol_error`,

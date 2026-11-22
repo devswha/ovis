@@ -25,6 +25,8 @@ afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
 async function pc(options: Parameters<typeof pairingPc>[0] = {}): Promise<Pc> {
   const made = await pairingPc({ ...options, server: { accountOpensAll: true, ...options.server } });
   made.account.opensAll = true;
+  // as the account service is: each listing has an ID, and an admission names its listing
+  made.account.completions = true;
   pcs.push(made);
   return made;
 }
@@ -44,8 +46,7 @@ async function admitAt(f: Pc, account: string, twoStep: boolean | null = true): 
 
 const press = (f: Pc, account: string) => f.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account } });
 
-async function firstPcWithPhone(f: Pc, completions = true) {
-  f.account.completions = completions;
+async function firstPcWithPhone(f: Pc) {
   const clock = new TestClock();
   f.devices.useClock(clock);
   await setUpFor(f, "acct_1");
@@ -294,7 +295,6 @@ test("listing confirmation: a removal the PC has not read ends the account's ses
 
 const restarted: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const end of restarted.splice(0)) await end(); });
-const noAdmission = () => Response.json({ error: { code: "no_admission", message: "No one-press add of this PC is waiting for that account" } }, { status: 404 });
 const bindingOf = (stateDir: string) => JSON.parse(readFileSync(join(stateDir, "account-pc.json"), "utf8")).binding;
 
 /**
@@ -321,18 +321,10 @@ async function restartedFrom(f: Pc, options: { legacy?: boolean; receipt?: boole
 const updated = (f: Pc, options: Omit<NonNullable<Parameters<typeof restartedFrom>[1]>, "legacy"> = {}) => restartedFrom(f, { ...options, legacy: true });
 const pathOf = (request: Request) => new URL(request.url).pathname;
 
-test("upgrade: a binding without a listing ID pins the listing of an admission still current", async () => {
-  const f = await pc();
-  const { device, serverId } = await firstPcWithPhone(f);
-  const now = await updated(f);
-  expect(bindingOf(now.stateDir)).toMatchObject({ bind_id: now.bindId, listing_id: now.listing });
-  expect(await signIn(now, serverId, device)).toBe("admitted");
-});
-
 test("upgrade: a binding without a listing ID pins the listing of its kept completion receipt", async () => {
   const f = await pc();
   const { device, serverId } = await firstPcWithPhone(f);
-  const now = await updated(f, { receipt: true, fetch: async req => new URL(req.url).pathname === "/v1/pc/admission" ? noAdmission() : f.account.fetch(req) });
+  const now = await updated(f, { receipt: true });
   expect(bindingOf(now.stateDir)).toMatchObject({ bind_id: now.bindId, listing_id: now.listing });
   expect(await signIn(now, serverId, device)).toBe("admitted");
 });
@@ -341,11 +333,7 @@ test("upgrade: a kept completion receipt is not spent by a pull whose read faile
   const f = await pc();
   const { device, serverId } = await firstPcWithPhone(f);
   let down = true;
-  const now = await updated(f, { receipt: true, fetch: async req => {
-    const path = new URL(req.url).pathname;
-    if (path === "/v1/pc/admission") return noAdmission();
-    return down && path === "/v1/pc/snapshot" ? new Response(null, { status: 503 }) : f.account.fetch(req);
-  } });
+  const now = await updated(f, { receipt: true, fetch: async req => down && pathOf(req) === "/v1/pc/snapshot" ? new Response(null, { status: 503 }) : f.account.fetch(req) });
   expect(bindingOf(now.stateDir)).toEqual({ account: "acct_1", bind_id: now.bindId, service: true });
   down = false;
   await now.app.context.services.accountMailbox.pull();
@@ -354,19 +342,22 @@ test("upgrade: a kept completion receipt is not spent by a pull whose read faile
 });
 
 test.each([
+  // its admission is still current: an admission is no evidence of the old bind (another device can make one)
   ["completed", false],
   ["relisted", false],
   // the receipt names the listing the account removed: the relisting is another
   ["relisted", true],
-] as const)("upgrade: with no admission left and a %s listing (receipt kept: %p) the PC leaves the account and says to add it again", async (listing, receipt) => {
+] as const)("upgrade: with a %s listing and no receipt the service confirms (receipt kept: %p) the PC leaves the account and says to add it again", async (listing, receipt) => {
   const f = await pc();
   const { device, serverId, remove, relist } = await firstPcWithPhone(f);
   const local = await phone();
   const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
   if (listing === "relisted") { await remove(); await relist(); }
   const completions = completionChecks(f);
-  let lapsed = true;
-  const now = await updated(f, { receipt, fetch: async req => lapsed && new URL(req.url).pathname === "/v1/pc/admission" ? noAdmission() : f.account.fetch(req) });
+  const admissions = () => f.account.requests.filter(path => path === "POST /v1/pc/admission").length;
+  const taken = admissions();
+  const now = await updated(f, { receipt });
+  expect(admissions()).toBe(taken);
   expect(bindingOf(now.stateDir)).toBeNull();
   expect(now.devices.account()).toBeNull();
   // A listing some device wrote since is never completed on this PC's own word.
@@ -380,7 +371,6 @@ test.each([
   const stranger = await phone();
   expect(await accountOpen(now, serverId, { id: accountDeviceId(serverId, stranger.spki), keys: stranger.keys, publicKey: stranger.spki })).toBe("auth_failed");
   expect(await accountOpen(now, serverId, { ...device, keys: stranger.keys })).toBe("auth_failed");
-  lapsed = false;
   await admitAt(f, "acct_1");
   expect(await pressOnce(now.app.context.services, "acct_1")).toEqual({ account: "acct_1" });
   expect(bindingOf(now.stateDir)).toMatchObject({ account: "acct_1", service: true, listing_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
@@ -393,13 +383,14 @@ test.each([
 
 test.each([
   ["an outage", () => new Response(null, { status: 503 })],
-  // Step 2 off for the account hides the route: that is no word on the admission
   ["a hidden 404", () => Response.json({ error: { code: "not_found", message: "Unknown request" } }, { status: 404 })],
-] as const)("upgrade: %s clears no binding, and the admission pins once the service answers", async (_case, answer) => {
+  ["a 409 that names no changed listing", () => Response.json({ error: { code: "try_again", message: "Send it again" } }, { status: 409 })],
+  ["a success with no completion time", () => Response.json({})],
+] as const)("upgrade: %s for the kept receipt clears no binding, and it pins once the service confirms it", async (_case, answer) => {
   const f = await pc();
   const { device, serverId } = await firstPcWithPhone(f);
   let failing = true;
-  const now = await updated(f, { fetch: async req => failing && new URL(req.url).pathname === "/v1/pc/admission" ? answer() : f.account.fetch(req) });
+  const now = await updated(f, { receipt: true, fetch: async req => failing && pathOf(req) === "/v1/pc/complete" ? answer() : f.account.fetch(req) });
   expect(await signIn(now, serverId, device)).toBe("account_unreachable");
   expect(bindingOf(now.stateDir)).toEqual({ account: "acct_1", bind_id: now.bindId, service: true });
   failing = false;
@@ -408,26 +399,17 @@ test.each([
   expect(await signIn(now, serverId, device)).toBe("admitted");
 });
 
-test.each([
-  [listingFeatures, "account_readd_required"],
-  [[], "auth_failed"],
-] as const)("upgrade: a sign-in that finds no admission left for a binding without a listing ID is answered %p %p, and the PC leaves the account", async (features, code) => {
-  let lapsed = false;
-  const f = await pc({ accountFetch: async (req, svc) => lapsed && new URL(req.url).pathname === "/v1/pc/admission" ? noAdmission() : svc.fetch(req) });
-  // an account service from before listings had IDs: its admission names none
-  const made = await firstPcWithPhone(f, false);
-  const { device, serverId } = made;
-  expect(f.devices.serviceListing()).toBeUndefined();
-  const { clock } = made;
-  const open = await relayConnection(f, { serverId });
-  expect(await open.auth(device, listingFeatures)).toMatchObject({ role: "drive" });
-  clock.advance(LISTING_CONFIRMED_MS);
-  lapsed = true;
-  expect(await signIn(f, serverId, device, features)).toBe(code);
-  expect(f.devices.account()).toBeNull();
-  expect(await bounded(open.serverError, 2000)).toBe("auth_revoked");
-  expect(await signIn(f, serverId, device)).toBe("auth_failed");
-  expect(await accountOpen(f, serverId, device)).toBe("account_readd_required");
+test("upgrade: with the account service down, a binding with nothing to ask about is kept until the service answers", async () => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  let down = true;
+  const now = await updated(f, { fetch: async req => down ? new Response(null, { status: 503 }) : f.account.fetch(req) });
+  expect(await signIn(now, serverId, device)).toBe("account_unreachable");
+  expect(bindingOf(now.stateDir)).toEqual({ account: "acct_1", bind_id: now.bindId, service: true });
+  down = false;
+  await now.app.context.services.accountMailbox.pull();
+  expect(bindingOf(now.stateDir)).toBeNull();
+  expect(await accountOpen(now, serverId, device)).toBe("account_readd_required");
 });
 
 test("upgrade: an admission another device made for a replacement listing pins nothing to a binding without a listing ID", async () => {
@@ -469,7 +451,6 @@ test("the completion receipt is kept until the service takes it or says its list
     if (answer !== null && pathOf(req) === "/v1/pc/complete") return answer();
     return svc.fetch(req);
   } });
-  f.account.completions = true;
   await setUpFor(f, "acct_1");
   await admitAt(f, "acct_1", null);
   expect((await press(f, "acct_1")).status).toBe(200);
@@ -495,7 +476,6 @@ test.each([
     const answer = await svc.fetch(req);
     return pathOf(req) === "/v1/pc/admission" && answer.ok ? Response.json(change(await answer.json())) : answer;
   } });
-  f.account.completions = true;
   await setUpFor(f, "acct_1");
   await admitAt(f, "acct_1", null);
   const pressed = await press(f, "acct_1");
@@ -522,7 +502,6 @@ test("one press: a listing replaced between the admission and the first read rel
     if (pathOf(req) === "/v1/pc/admission" && replace !== null) { const run = replace; replace = null; await run(); }
     return answer;
   } });
-  f.account.completions = true;
   await setUpFor(f, "acct_1");
   await admitAt(f, "acct_1");
   const token = f.account.issueToken("acct_1");
@@ -579,7 +558,7 @@ test("listing confirmation: an AUTH_OK that leaves the queue after the 60 second
 
 test("listing confirmation: a later check that fails ends a warm answer", async () => {
   let offline = false;
-  const f = await pc({ accountFetch: async (req, svc) => offline ? new Response(null, { status: 503 }) : svc.fetch(req) });
+  const f = await pc({ accountFetch: async (req, svc) => offline && pathOf(req) === "/v1/pc/complete" ? new Response(null, { status: 503 }) : svc.fetch(req) });
   const { device, serverId, clock } = await firstPcWithPhone(f);
   clock.advance(LISTING_CONFIRMED_MS);
   expect(await signIn(f, serverId, device)).toBe("admitted");
@@ -589,9 +568,9 @@ test("listing confirmation: a later check that fails ends a warm answer", async 
   expect(await signIn(f, serverId, device)).toBe("account_unreachable");
 });
 
-test.each([true, false])("removed PC: restarting after a bare relist cannot release the old phone row (listing ID: %p)", async completions => {
+test("removed PC: restarting after a bare relist cannot release the old phone row", async () => {
   const f = await pc();
-  const { device, serverId, remove, relist } = await firstPcWithPhone(f, completions);
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
   await f.app.stop();
   await remove();
   await relist();

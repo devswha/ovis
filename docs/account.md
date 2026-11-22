@@ -900,22 +900,36 @@ keeps the admission's `listing_id` in its binding and checks it with the service
 can release account rows and before granting a new account-only relay session. A positive answer
 stands for 60 seconds from when it was asked for, on a clock that only moves forward and on the PC's
 wall clock (either one outside the 60 seconds ends it), so a burst of sign-ins asks once and a
-removal refuses new sign-ins within a minute. A failed or negative answer is never kept, and a
-snapshot read asks for itself after its first page. With no new sign-in, the PC checks at its normal
+removal refuses new sign-ins within a minute. A failed or negative answer is never kept, and a later
+check that brings no yes ends an earlier yes for the same listing. A sign-in's `AUTH_OK` is
+committed only while the answer it was let in by still stands; one that waited longer in the queue
+ends with `timeout`, and the device asks again. A snapshot read asks for itself once its last page
+is here, the first read after one press included, and commits only while that answer stands. Only a
+completion answer that names a time counts as a yes. With no new sign-in, the PC checks at its normal
 five-minute mailbox poll, which is also when sessions already open end. An unavailable service, or
 one that has not answered a sign-in within 4 seconds, cannot authorize a new account-only connection
 and clears nothing: the device is refused with `account_unreachable` and says that the PC could not
 reach the account service. A client that did not offer `account-listing-errors-1` in HELLO gets
-`internal_error` instead, which forgets no key.
+`internal_error` instead, which forgets no key; so does one that knows none of the account codes
+while its row waits for a first read the service cannot give.
 
-A binding made before 0.5.10 names no listing. It pins one only on the service's word for the
-listing the PC was admitted in: a one-press admission still current, or the completion receipt the
-PC kept from its bind, when the service still confirms it. The account's current listing is never
-pinned: a device may have listed the PC again since, and the PC's own mailbox pull would let it
-complete that listing. When the service says there is no admission (`no_admission`, never a hidden
-404) and no receipt holds, the PC leaves the account as for an unlisting, and until it joins one
-again it refuses an account's device with `account_readd_required` (to a client that offered the
-feature): **Add this PC to your account again**. So a PC added in one press on 0.5.9 is added again
+While no whole read can be applied (an outage, or a listing the service does not confirm), the
+binding stays, and after one hour without one every row that stands on the account alone waits for
+the next read, its sessions closed: the account's listed rows, and the account's members kept in
+`devices.json` (a signed `add`, a member's remote approval). A pairing made at this PC is no such
+row and keeps working.
+
+One press binds only when the admission names its listing (502 `listing_unnamed` otherwise). A
+binding made before 0.5.10 names none. It pins one only on evidence of its own bind: the completion
+receipt the PC kept from it, when the service still confirms that listing. The receipt is kept until
+the service takes it or answers 409 `listing_changed`. An admission is no such evidence, since a
+device of the account can list the PC again and admit it with no press at the PC; nor is the
+account's current listing, which the PC's own mailbox pull would let it complete. When the service
+refuses the receipt, or the PC holds none and a snapshot read reached its last page (the service
+answers, so an outage clears nothing), the PC leaves the account as for an unlisting. Until it joins
+one again, a device that proves a key the PC numbered for that account is refused with
+`account_readd_required` (when it offered the feature): **Add this PC to your account again**.
+Nobody else is told why. So a PC added in one press on 0.5.9 is added again
 once after the update. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including

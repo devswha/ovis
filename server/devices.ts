@@ -1448,6 +1448,23 @@ export class DeviceStore {
     return this.pc?.binding() === null && last?.reason === "unlisted" && last.by === UNPINNED_CLEAR;
   }
 
+  /** Whether `proof` is by a key this PC numbered for an account it was in: the one peer told why it left (relay/session.ts). */
+  async provedFormerAccountKey(deviceId: string, proof: { nonce: Uint8Array; signature: string; serverId: string }): Promise<boolean> {
+    if (proof.nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(proof.signature)) return false;
+    const key = this.accountOrder?.relayKey(proof.serverId, deviceId);
+    return key !== undefined && this.accountOrder?.no(key) != null && await verifyRelayProof(key, proof);
+  }
+
+  /**
+   * T56 for devices.json: the last whole read is an hour old, so every row that stands on the account alone waits for
+   * the next one, its sessions closed, as the account's listed rows do. A pairing made at this PC is no such row.
+   */
+  staleAccountMembers(): void {
+    const ids = this.devices.filter(row => this.accountOnly(row.id)).map(row => row.id);
+    this.catchUp?.staleRead(ids);
+    for (const id of ids) if (this.catchingUp(id)) this.closeAccountSessions(id);
+  }
+
   accountOnly(id: string): boolean {
     const member = this.devices.find(row => row.id === id);
     return member ? (member.account !== undefined || member.member_approved_in !== undefined) && !keepsPairingOnUnlist(member) : this.isAccountRow(id);

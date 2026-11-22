@@ -44,6 +44,12 @@ export class CatchUpGate {
     this.lifted.clear();
   }
 
+  /** T56: the read these rows were let in by is too old, so they wait for the next one as after a start. */
+  staleRead(ids: readonly string[]): void {
+    if (this.caughtUpFor === null || this.caughtUpFor !== this.binding()) return;
+    for (const id of ids) this.waiting.add(id);
+  }
+
   /** An exact recovery can supersede this read's refusal, never the first read or a wait after a lift. */
   recoveredHere(id: string): void {
     if (this.caughtUpFor !== null && this.caughtUpFor === this.binding()) this.waiting.delete(id);

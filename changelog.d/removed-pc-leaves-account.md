@@ -7,6 +7,9 @@
   of reading the refusal as its own removal.
 - On this PC's own page, adding it to an account that still shows its earlier add as complete works
   again.
+- After an hour in which a PC could not confirm its account, the account's devices are signed out of
+  it until it can, also those another device of the account approved. Devices paired with the PC
+  itself keep working.
 
 ### Changed
 - A PC that was added to an account in one press before this release is added again once after the
