@@ -721,7 +721,10 @@ export class DeviceStore {
   pendingLockRemovals(): string[] { return [...this.lockHeld]; }
   private readonly lockHeld = new Set<string>();
 
-  /** Whether the last journal entry naming row `id` removed it (P24): read once, at open, from the journal on disk. */
+  /**
+   * Whether the last journal entry naming row `id` removed it (P24): read at open from the journal on disk, and
+   * followed from there, so a row admitted again since (journalAdmission) is no longer one.
+   */
   private journalEnded(id: string): boolean {
     if (this.journalEndedRows === null) {
       const last = new Map<string, string>();
@@ -2632,6 +2635,10 @@ export class DeviceStore {
       this.noteRelayFailure(approval.path, now);
       return null;
     }
+    // approved on this PC for a key whose row here already stands (its phone never heard the first answer): that row
+    // is let in, as its own sign-in would be, and nothing is written
+    const standing = pairingHere && id !== undefined ? this.devices.find(d => d.id === id && d.relay_public_key === publicKey) : undefined;
+    if (standing !== undefined && !this.stale(standing) && !this.catchingUp(standing.id)) return { device: { id: standing.id, label: standing.label, role: standing.role } };
     const collision = listed
       ? id !== listed.id || !this.canAddAt(listed.id, publicKey) || this.keyHeldByOther(publicKey, listed.id)
       : id !== undefined && this.has(id);
@@ -2832,8 +2839,11 @@ export class DeviceStore {
     if (this.journal === null) return null;
     const recovered = device.origin?.from === "recover";
     const promotion = joined !== undefined;
-    return this.journal.append({ kind: promotion ? "promote" : "admit", ...(promotion ? { awaitingListCheck: true } : {}),
+    const entry = this.journal.append({ kind: promotion ? "promote" : "admit", ...(promotion ? { awaitingListCheck: true } : {}),
       how: recovered ? "recover" : device.origin?.how ?? "code", key: device.relay_public_key ?? null, no: device.origin?.admit_no ?? null, row: device.id, label: device.label, by: recovered ? by ?? null : promotion ? device.origin?.by ?? null : device.added_by ?? null, account: device.account ?? notice?.account ?? null });
+    // the row's last journal entry is this admission from here on, not the removal that open read (journalEnded)
+    this.journalEndedRows?.delete(device.id);
+    return entry;
   }
 
   /** A removal's journal entry, after its deny (P8 step 4). A journal that cannot be written stops no removal. */
