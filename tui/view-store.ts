@@ -9,7 +9,7 @@ import { chmodSync, closeSync, constants, fstatSync, mkdirSync, openSync, readSy
 import { join } from "node:path";
 import { errorCode } from "./crash.ts";
 import type { ModelState } from "./model/reduce.ts";
-import { readView, type SavedView, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./model/view-file.ts";
+import { readView, refusedView, type SavedView, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./model/view-file.ts";
 
 /** The file's name for a core id: the id itself when it is a plain word, else its hash (an id never names a path). */
 function viewFileName(core: string): string {
@@ -20,6 +20,8 @@ function viewFileName(core: string): string {
 export class ViewStore {
   private path: string | null = null;
   private last: string | null = null;
+  /** the last text the reader would refuse: not checked again until the view changes */
+  private refused: string | null = null;
   private failed = false;
   /** the line changed and the core it reaches is not known yet: nothing is written until `open` names it */
   private suspended = false;
@@ -68,12 +70,19 @@ export class ViewStore {
 
   /**
    * Writes the view of `state` when it differs from what the file holds; not before `open`, not while suspended, not
-   * while a kept view waits to be applied. Answers the error's code the first time a write fails (later failures say nothing), else null.
+   * while a kept view waits to be applied, and never a view the next run would refuse to read (the file it replaces
+   * stays). Answers the error's code, or the reader's problem with the view, the first time a write fails (later
+   * failures say nothing), else null.
    */
   keep(state: ModelState): string | null {
     if (this.path === null || this.suspended || state.restoring !== null) return null;
     const text = viewText(state.world, state.focus);
-    if (text === null || text === this.last) return null;
+    if (text === null || text === this.last || text === this.refused) return null;
+    const problem = refusedView(text);
+    if (problem !== null) {
+      this.refused = text;
+      return this.failure(problem);
+    }
     this.last = text;
     const temp = `${this.path}.${randomUUID()}.tmp`;
     let made = false;
@@ -91,9 +100,14 @@ export class ViewStore {
       return null;
     } catch (error) {
       if (made) rmSync(temp, { force: true });
-      if (this.failed) return null;
-      this.failed = true;
-      return errorCode(error);
+      return this.failure(errorCode(error));
     }
+  }
+
+  /** `code` the first time a write fails, null after. */
+  private failure(code: string): string | null {
+    if (this.failed) return null;
+    this.failed = true;
+    return code;
   }
 }

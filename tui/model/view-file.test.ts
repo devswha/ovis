@@ -217,6 +217,40 @@ describe("the file on disk", () => {
     for (const core of ["fifo", "zero", "folder"]) expect({ core, read: new ViewStore(folder).open(core) }).toEqual({ core, read: { view: null, problem: "not_a_file" } });
   });
 
+  it("the writer keeps the reader's limits: a file of 1 MiB and an id of 256 characters are written, one byte or character more is refused and the good file stays", () => {
+    const folder = scratch();
+    const file = join(folder, "view-core1.json");
+    /** a view whose file is exactly `bytes` long: panes of 200-character ids, the last one's id sized to land on it */
+    const sized = (bytes: number): ModelState => {
+      const panes: { id: string; name: string }[] = [{ id: "p0", name: "" }];
+      const world = (): World => ({ workspaces: [{ id: "w1", name: "", tabs: [{ id: "t1", name: "", panes }] }] });
+      const focus: Focus = { workspace: "w1", tabs: { w1: "t1" }, panes: { t1: "p0" }, previous: null };
+      const length = () => Buffer.byteLength(viewText(world(), focus)!);
+      // each pane adds `,{"id":"<id>"}`: 10 bytes and its id; the last one's id is left 1 to 210 characters
+      const count = Math.floor((bytes - length() - 11) / 210);
+      for (let n = 0; n < count; n++) panes.push({ id: `${panes.length}-`.padEnd(200, "x"), name: "" });
+      panes.push({ id: `${panes.length}-`.padEnd(bytes - length() - 10, "x"), name: "" });
+      expect(length()).toBe(bytes);
+      return stateOf(world(), focus);
+    };
+    const store = new ViewStore(folder);
+    store.open("core1");
+    const long = (chars: number) => stateOf(WORLD, { ...AT_P2, panes: { ...AT_P2.panes, ["t".repeat(chars)]: "p1" } });
+    expect(store.keep(long(256))).toBeNull();
+    expect(new ViewStore(folder).open("core1").view?.focus.panes["t".repeat(256)]).toBe("p1");
+    const good = readFileSync(file, "utf8");
+    expect(store.keep(long(257))).toBe("shape");
+    expect(readFileSync(file, "utf8")).toBe(good);
+    expect(store.keep(sized(VIEW_FILE_MAX_BYTES + 1))).toBeNull();
+    expect(readFileSync(file, "utf8")).toBe(good);
+    expect(store.keep(sized(VIEW_FILE_MAX_BYTES))).toBeNull();
+    expect([statSync(file).size, new ViewStore(folder).open("core1").problem]).toEqual([VIEW_FILE_MAX_BYTES, null]);
+    // the first refusal is said, by the reader's own problem
+    const fresh = new ViewStore(scratch());
+    fresh.open("core1");
+    expect(fresh.keep(sized(VIEW_FILE_MAX_BYTES + 1))).toBe("too_large");
+  });
+
   it("a write that fails is told once, by its code", () => {
     const parent = scratch();
     const folder = join(parent, "file");

@@ -78,6 +78,16 @@ export function readView(text: string): { view: SavedView } | { problem: ViewPro
   };
 }
 
+/**
+ * Why the next run would refuse a file holding `text`, by the reader's own checks (its size, then `readView`), or null:
+ * the writer asks before it replaces a good file, so it never leaves one the next launch rejects.
+ */
+export function refusedView(text: string): ViewProblem | null {
+  if (new TextEncoder().encode(text).byteLength > VIEW_FILE_MAX_BYTES) return "too_large";
+  const read = readView(text);
+  return "problem" in read ? read.problem : null;
+}
+
 /** A pane id no live terminal has, for a saved pane whose address the core now gives another terminal. */
 const gone = (id: string): string => `${id}\u0000gone`;
 
