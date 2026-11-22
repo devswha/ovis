@@ -475,12 +475,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
 
   /**
    * git run on the machine whose terminals these are, by the core (`hc exec --on`): read-only lookups of its checkouts,
-   * in English as this PC's git (worktrees.ts gitEnvironment): an older git's refused -z is told by its message
+   * in English as this PC's git (worktrees.ts gitEnvironment): an older git's refused -z is told by its message.
+   * A repository its core was started inside is not the one asked about, and an answer cut short is none.
    */
   const gitOnMachine: typeof git = async (cwd, args) => {
-    const ran = await hc.call("machine.exec", { argv: ["/usr/bin/git", "-C", cwd, ...args], env: { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }, timeout: 8 });
+    const unset = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"].flatMap((name) => ["-u", name]);
+    const ran = await hc.call("machine.exec", { argv: ["/usr/bin/env", ...unset, "/usr/bin/git", "-C", cwd, ...args], env: { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }, timeout: 8 });
     const text = (base64: string) => Buffer.from(base64, "base64").toString("utf8");
-    return { ok: ran.code === 0 && !ran.timed_out, stdout: text(ran.stdout), stderr: text(ran.stderr).trim() };
+    return { ok: ran.code === 0 && !ran.timed_out && !ran.truncated, stdout: text(ran.stdout), stderr: text(ran.stderr).trim() };
   };
   /** another machine's folders and git folders are not on this disk: git runs there, and no path is resolved or stat'ed here */
   const gitReads: RepositoryReads = options.otherMachine ? { run: gitOnMachine, real: (path) => path } : {};

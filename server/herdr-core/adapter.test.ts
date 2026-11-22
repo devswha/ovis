@@ -2214,13 +2214,40 @@ describe("another machine of the core, as its own PC (#2497)", () => {
     const snapshot = await sessionSnapshot(socket);
     expect(snapshot.workspaces[0]!.worktree).toEqual({ repo_key: "/srv/lab/.git", repo_name: "lab", repo_root: "/srv/lab", checkout_path: "/srv/lab/wt", is_linked_worktree: true });
     expect(asked.length).toBeGreaterThan(0);
-    expect(asked.every((argv) => argv[0] === "/usr/bin/git" && argv[1] === "-C" && argv[2] === "/srv/lab/wt")).toBe(true);
+    expect(asked.every((argv) => argv.slice(argv.indexOf("/usr/bin/git"), argv.indexOf("/usr/bin/git") + 3).join(" ") === "/usr/bin/git -C /srv/lab/wt")).toBe(true);
     // aimed at that machine: without `on` the core would run git on this PC, where the folder is not
     const execs = cores[0]!.calls.filter((call) => call.method === "machine.exec");
     expect(execs.length).toBeGreaterThan(0);
     expect(execs.every((call) => call.params["on"] === "lab-id")).toBe(true);
     // in git's own words, as this PC's git runs: an older git's refused -z is told by its English message
     expect(execs.every((call) => (call.params["env"] as Record<string, string> | undefined)?.["LC_ALL"] === "C")).toBe(true);
+  });
+
+  it("asks that machine's git about the folder itself, not a repository its core was started in", async () => {
+    const answer = (stdout: string) => ({ code: 0, timed_out: false, truncated: false, stdout: Buffer.from(stdout).toString("base64"), stderr: "" });
+    const inherited = { GIT_DIR: "/home/u/.dotfiles", GIT_WORK_TREE: "/home/u" };
+    const { socket } = await setup([terminal("lab/t1", { cwd: "/srv/plain" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => {
+        const argv = params["argv"] as string[];
+        // as that machine runs it: on top of its core's environment, less what env -u takes away
+        const unset = argv[0] === "/usr/bin/env" ? argv.filter((_, at) => argv[at - 1] === "-u") : [];
+        if (Object.keys(inherited).some((name) => !unset.includes(name))) {
+          return answer(argv.includes("rev-parse") ? "/srv/plain\n/home/u/.dotfiles\n/home/u/.dotfiles\n" : "worktree /home/u\0HEAD abc\0branch refs/heads/main\0\0");
+        }
+        return { code: 128, timed_out: false, truncated: false, stdout: "", stderr: Buffer.from("fatal: not a git repository").toString("base64") };
+      },
+    }, undefined, "lab");
+    expect((await sessionSnapshot(socket)).workspaces[0]!.worktree ?? null).toBeNull();
+  });
+
+  it("draws nothing from a listing that machine's core cut short", async () => {
+    const answer = (stdout: string, truncated = false) => ({ code: 0, timed_out: false, truncated, stdout: Buffer.from(stdout).toString("base64"), stderr: "" });
+    const { socket } = await setup([terminal("lab/t1", { cwd: "/srv/lab/wt" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => (params["argv"] as string[]).includes("rev-parse") ? answer("/srv/lab/wt\n/srv/lab/.git\n/srv/lab/.git/worktrees/wt\n") : answer("worktree /srv/la", true),
+    }, undefined, "lab");
+    expect((await sessionSnapshot(socket)).workspaces[0]!.worktree ?? null).toBeNull();
   });
 
   it("lists that machine's checkouts by line when its git is older than 2.36, whatever its language", async () => {
