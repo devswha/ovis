@@ -320,14 +320,26 @@ describe("herdr-core adapter", () => {
     expect(claudeInputDraft(live, colors)).toBe(false);
   });
 
+  it("leaves out the main screen's history as well, which hc 0.1.21 paints before a full-screen program's screen when the attach asks for history", () => {
+    // measured on hc 0.1.21, as a 3-row terminal: its reset, the shell's history pushed up, a second clear,
+    // the shell's screen (the line that started the program), its title, the switch, then the alternate screen
+    const paint = "\u0018\u001b[!p\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J\u001b[0mline1\r\nline2\u001b[0m\r\n\n\n\n\u001b[H\u001b[2J"
+      + "\u001b[3g\u001b[9G\u001bH\u001b[H\u001b[0mline3\r\n$ claude\u001b[3;1H\u001b[0m\u001b]2;shell\u001b\\\u001b[?1049h\u001b[!p\u001b[3g\u001b[9G\u001bH\u001b[H"
+      + "\r\n\u001b[0m\u276f\u00a0\u001b[2mdo it\u001b[0m\u001b[3;1H\u001b[0m\u001b]2;claude\u001b\\\u001b[?9001l";
+    expect(paintedScreen(paint, 3)).toBe("\n\u001b[0m\u276f\u00a0\u001b[2mdo it\u001b[0m\u001b[0m");
+  });
+
   it("reads no history of a terminal on the alternate screen, which hc would scroll and repaint for every viewer (#3128)", async () => {
     const preamble = "\u0018\u001b[!p\u001b[?2026l\u001b[?1004l\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J";
     // a program a shell started: hc 0.1.21 paints the shell's modes, tab stops and lines first, then switches
     const shell = "\u001b[?2004h\u001b[3g\u001b[9G\u001bH\u001b[H\u001b[0m$ codex\u001b[2;1H";
-    for (const shown of ["alternate", "after a shell", "main", "refused"] as const) {
+    // the terminal's own program: hc 0.1.21 paints the main screen it never wrote to first, then switches
+    const own = "\u001b[3g\u001b[H\u001b[1;1H\u001b[0m";
+    const before = { alternate: "\u001b[?1049h", "after a shell": `${shell}\u001b[?1049h\u001b[!p`, "on its own": `${own}\u001b[?1049h\u001b[!p`, main: "", refused: "" };
+    for (const shown of ["alternate", "after a shell", "on its own", "main", "refused"] as const) {
       const full = shown !== "main";
       // as hc 0.1.14 paints with no history: its reset, the alternate screen if the program is on it, the screen
-      const paint = `${preamble}${shown === "alternate" ? "\u001b[?1049h" : shown === "after a shell" ? `${shell}\u001b[?1049h\u001b[!p` : ""}\u001b[H\u001b[0m\u203a Ask Codex\r\n\u001b[?9001l`;
+      const paint = `${preamble}${before[shown]}\u001b[H\u001b[0m\u203a Ask Codex\r\n\u001b[?9001l`;
       const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
         "terminal.read": (params) => ({ text: params["lines"] ? "older\n\u203a Ask Codex" : "\u203a Ask Codex", complete: true, how: params["lines"] ? "history" : "screen" }),
         "terminal.attach": () => {
