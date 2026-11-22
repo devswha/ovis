@@ -1837,7 +1837,8 @@ button {
   }
 }
 
-.visually-hidden {
+.visually-hidden,
+:root[data-fold-rail] .app-header .conn-text {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -4042,4 +4043,317 @@ time {
 button, a, [role="button"], [role="tab"], [role="menuitem"], [role="option"], [role="switch"] {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+}
+
+/* lib/foldRail.ts: on the open foldable iPhone the header moves into the safe-area band the system status
+   bar sits in: a strip down the side column under the clock (landscape), or the top band beside the
+   clock (portrait). */
+.header-trailing {
+  display: contents;
+}
+
+:root[data-fold-rail] {
+  /* iOS draws its status items a little off the band's middle, toward the screen: the rail lines up under them */
+  --fold-rail-shift: 14px;
+}
+
+:root[data-fold-rail] .header-trailing {
+  position: fixed;
+  z-index: var(--z-banner);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+:root[data-fold-rail] .header-trailing .header-meta {
+  margin-left: 0;
+}
+
+/* the sticky header is a stacking context: without a level of its own the pane below paints over the
+   rail where it reaches past the header */
+:root[data-fold-rail] .app-header {
+  z-index: var(--z-header);
+}
+
+/* ---- landscape: the side column is a strip of its own, from the top of the screen to the bottom ---- */
+:root[data-fold-rail="right"] .app-header,
+:root[data-fold-rail="right"] .app-body {
+  margin-right: var(--fold-rail-band);
+}
+
+:root[data-fold-rail="right"] .app-header {
+  padding-right: var(--space-3);
+}
+
+:root[data-fold-rail="right"] .terminal-host {
+  padding-right: 0;
+}
+
+:root[data-fold-rail="left"] .app-header,
+:root[data-fold-rail="left"] .app-body {
+  margin-left: var(--fold-rail-band);
+}
+
+:root[data-fold-rail="left"] .app-header {
+  padding-left: var(--space-3);
+}
+
+:root[data-fold-rail="left"] .terminal-host,
+:root[data-fold-rail="left"] .sidebar {
+  padding-left: 0;
+}
+
+/* the strip: the header's colour, a hairline at its inner edge the whole height */
+:root[data-fold-rail="right"] .app {
+  background: linear-gradient(var(--divider), var(--divider)) no-repeat right calc(var(--fold-rail-band) - var(--hairline)) top 0 / var(--hairline) 100%, var(--bg-panel);
+}
+
+:root[data-fold-rail="left"] .app {
+  background: linear-gradient(var(--divider), var(--divider)) no-repeat left calc(var(--fold-rail-band) - var(--hairline)) top 0 / var(--hairline) 100%, var(--bg-panel);
+}
+
+:root[data-fold-rail="right"] .header-trailing,
+:root[data-fold-rail="left"] .header-trailing {
+  /* at the bottom of the strip, as far from the island as it gets: a live activity grows the island and
+     pushes the clock down, and a page is told neither. --app-height is the visible height
+     (lib/viewport.ts), so the rail rides up over the keyboard like an iOS toolbar. */
+  top: calc(var(--app-height, 100dvh) - max(var(--space-3), env(safe-area-inset-bottom, 0px)));
+  transform: translateY(-100%);
+  width: var(--fold-rail-band);
+  flex-direction: column;
+}
+
+:root[data-fold-rail="right"] .header-trailing {
+  right: 0;
+  padding-right: var(--fold-rail-shift);
+}
+
+:root[data-fold-rail="left"] .header-trailing {
+  left: 0;
+  padding-left: var(--fold-rail-shift);
+}
+
+:root[data-fold-rail="right"] .header-trailing .header-meta,
+:root[data-fold-rail="left"] .header-trailing .header-meta {
+  flex-direction: column;
+}
+
+/* the switch stands up: Chat over Terminal, icons only */
+:root[data-fold-rail="right"] .view-switch,
+:root[data-fold-rail="left"] .view-switch {
+  grid-template-columns: auto;
+  grid-template-rows: 1fr 1fr;
+  row-gap: var(--space-half);
+  height: auto;
+  width: calc(var(--touch-target-header) + 2 * var(--space-half));
+}
+
+:root[data-fold-rail="right"] .view-switch .lens-option,
+:root[data-fold-rail="left"] .view-switch .lens-option {
+  width: var(--touch-target-header);
+  height: var(--touch-target-header);
+  padding: 0;
+}
+
+:root[data-fold-rail] .view-switch .lens-label,
+:root[data-fold-rail] .view-switch .pill-soon {
+  display: none;
+}
+
+:root[data-fold-rail="right"] .view-switch .lens-thumb,
+:root[data-fold-rail="left"] .view-switch .lens-thumb {
+  right: var(--space-half);
+  width: auto;
+  height: calc(50% - var(--space-px-3));
+  bottom: auto;
+}
+
+:root[data-fold-rail="right"] .view-switch[data-view="terminal"] .lens-thumb,
+:root[data-fold-rail="left"] .view-switch[data-view="terminal"] .lens-thumb {
+  transform: translateY(calc(100% + var(--space-half)));
+}
+
+/* ---- portrait: the header is the top band alone. Menu and search sit left of the clock, the switch and
+   More in the middle; the title row goes, the tab row below says the same. A header 0px tall puts
+   everything placed under the header (the drawer, the chat under a phone's header) right under the band. */
+:root[data-fold-rail="top"] {
+  --header-h: 0px;
+  /* iOS centres its status items about two thirds down the band; the buttons keep their full height in it */
+  --fold-rail-pad: min(calc(var(--fold-rail-band) * 0.32), calc(var(--fold-rail-band) - var(--touch-target-header)));
+}
+
+:root[data-fold-rail="top"] .app-header {
+  align-items: center;
+  padding-top: var(--fold-rail-pad);
+}
+
+:root[data-fold-rail="top"] .app-header > .context:not(:has(.header-note)),
+:root[data-fold-rail="top"] .app-header > .machine-context-name {
+  display: none;
+}
+
+/* left, right after search: the island grows from the camera on the right toward the clock, so the
+   left end of the band is the one place nothing of the system's reaches */
+:root[data-fold-rail="top"] .header-trailing {
+  position: static;
+  margin-left: var(--space-2);
+}
+
+/* the connection in the rail is its dot alone, as iOS shows its own status: the composer ("Reconnecting…")
+   and the chat ("Waiting for the PC…") already say it in words. The words stay for a screen reader
+   (:root[data-fold-rail] .app-header .conn-text joins .visually-hidden). */
+:root[data-fold-rail] .app-header .conn {
+  gap: 0;
+}
+
+/* the left column: the header's logo row and the inbox rail pad by the same inset the margin above keeps */
+:root[data-fold-rail="left"] .app:not(.sidebar-collapsed) .header-side {
+  padding-left: var(--space-3);
+}
+
+:root[data-fold-rail="left"] .inbox-rail {
+  --inbox-rail-box: var(--inbox-rail-w);
+}
+
+/* ---- the cover display (closed): the island's column is a strip at the side held upright, and the
+   phone is too narrow for a header row: the whole header is the strip's rail, at its foot, and the
+   tab row is the top of the app. The title goes; the tab row says it. */
+:root[data-fold-cover] {
+  --header-h: 0px;
+  /* the tab row's height: a button and its rule */
+  --fold-cover-bar-h: calc(var(--touch-target-header) + var(--hairline));
+}
+
+/* the strip's whole height, its buttons at the foot: no transform, which would hold the menu button
+   (fixed, below) inside the header. --app-height is the visible height, so the rail rides the keyboard. */
+:root[data-fold-cover][data-fold-rail] .app-header {
+  position: fixed;
+  top: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  width: var(--fold-rail-band);
+  height: var(--app-height, 100dvh);
+  margin: 0;
+  padding: 0 0 max(var(--space-3), env(safe-area-inset-bottom, 0px));
+  background: transparent;
+  border: 0;
+  pointer-events: none;
+}
+
+:root[data-fold-cover][data-fold-rail] .app-header > *,
+:root[data-fold-cover][data-fold-rail] .header-side > *,
+:root[data-fold-cover][data-fold-rail] .header-trailing > * {
+  pointer-events: auto;
+}
+
+/* the menu where a phone has it: top left, at the head of the tab row */
+:root[data-fold-cover][data-fold-rail] #drawer-toggle {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: calc(env(safe-area-inset-left, 0px) + var(--space-1));
+  height: var(--fold-cover-bar-h);
+  z-index: var(--z-header);
+}
+
+:root[data-fold-cover][data-fold-rail] .pane-column .tab-strip {
+  padding-left: calc(var(--touch-target-header) + var(--space-2));
+}
+
+:root[data-fold-cover][data-fold-rail="right"] .app-header {
+  right: 0;
+  left: auto;
+  padding-right: var(--fold-rail-shift);
+}
+
+:root[data-fold-cover][data-fold-rail="left"] .app-header {
+  left: 0;
+  padding-left: var(--fold-rail-shift);
+}
+
+:root[data-fold-cover][data-fold-rail] .app-header > :not(.header-side, .header-trailing, .header-tabs, .context),
+:root[data-fold-cover][data-fold-rail] .app-header > .context:not(:has(.header-note)) {
+  display: none;
+}
+
+:root[data-fold-cover][data-fold-rail] .header-trailing {
+  position: static;
+  transform: none;
+  display: contents;
+  padding: 0;
+}
+
+:root[data-fold-cover][data-fold-rail] .app-body {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* the open drawer and its scrim start under the tab row: the menu at its head stays in sight, an X that
+   closes the drawer again */
+:root[data-fold-cover][data-fold-rail] .sidebar {
+  top: calc(var(--fold-cover-bar-h) + env(safe-area-inset-top, 0px));
+}
+
+:root[data-fold-cover][data-fold-rail] .scrim {
+  top: calc(var(--fold-cover-bar-h) + env(safe-area-inset-top, 0px));
+}
+
+/* search in the rail: a phone hides it for want of a header's room, the strip has that room */
+:root[data-fold-cover][data-fold-rail] .palette-button {
+  display: inline-flex;
+}
+
+/* the palette (and any sheet on the scrim) keeps to the app's side of the island's column */
+:root[data-fold-cover][data-fold-rail="right"] .palette-scrim {
+  padding-right: var(--fold-rail-band);
+}
+
+:root[data-fold-cover][data-fold-rail="left"] .palette-scrim {
+  padding-left: var(--fold-rail-band);
+}
+
+/* a chat's phone header is frosted glass over the transcript (above); that makes it the containing block
+   of the fixed menu button, which then lands in the island's column. The cover display's header is a bare
+   rail: no glass, no overlap, and the transcript's room under it is already the body's. */
+:root[data-fold-cover][data-fold-rail] .app:has(> .app-body > .pane-column.is-chat > .pane-split:first-child > .pane-slot > .terminal-host:first-child) {
+  --header-over: 0px;
+}
+
+:root[data-fold-cover][data-fold-rail] .app:has(> .app-body > .pane-column.is-chat > .pane-split:first-child > .pane-slot > .terminal-host:first-child) > .app-header {
+  margin-bottom: 0;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* a workspace with one tab has no tab row: the menu button still gets the band it sits in */
+:root[data-fold-cover][data-fold-rail] .pane-column:not(:has(.tab-strip)) {
+  padding-top: var(--fold-cover-bar-h);
+  background: var(--bg-panel);
+}
+
+/* what stays in the header besides the buttons runs along the top, between the menu and the island's
+   column: a status note (a link to a closed workspace, say), and the tab row when the tabs are set to
+   live in the header */
+:root[data-fold-cover][data-fold-rail] .app-header > .context:has(.header-note),
+:root[data-fold-cover][data-fold-rail] .app-header > .header-tabs {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: calc(var(--touch-target-header) + var(--space-2));
+  right: calc(var(--fold-rail-band) + var(--space-1));
+  height: var(--fold-cover-bar-h);
+  z-index: var(--z-header);
+}
+
+:root[data-fold-cover][data-fold-rail] .app-header > .header-tabs {
+  background: var(--bg-panel);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+/* a note covers the tab row for as long as it is shown */
+:root[data-fold-cover][data-fold-rail] .app-header > .context:has(.header-note) {
+  align-items: center;
+  max-height: none;
+  padding-inline: var(--space-2);
+  background: var(--bg-panel);
 }
