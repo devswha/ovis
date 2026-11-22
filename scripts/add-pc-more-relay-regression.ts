@@ -64,10 +64,11 @@ let browser: Browser | undefined;
 let workspaceId: string | null = null;
 
 /** Where the tab's history stands, as the Navigation API tells it, and whether a sheet is up. */
-async function place(page: Page): Promise<{ index: number; path: string; hash: string; sheet: boolean }> {
+async function place(page: Page): Promise<{ index: number; path: string; hash: string; sheet: boolean; entries: string[] }> {
   return await page.evaluate(() => {
-    const at = (window as unknown as { navigation: { currentEntry: { index: number } } }).navigation.currentEntry;
-    return { index: at.index, path: location.pathname, hash: location.hash, sheet: document.querySelector(".row-sheet") !== null };
+    const navigation = (window as unknown as { navigation: { currentEntry: { index: number }; entries(): Array<{ url: string | null }> } }).navigation;
+    const entries = navigation.entries().map((entry) => entry.url === null ? "?" : new URL(entry.url).pathname + new URL(entry.url).hash.replace(/^#ws=.*/, ""));
+    return { index: navigation.currentEntry.index, path: location.pathname, hash: location.hash, sheet: document.querySelector(".row-sheet") !== null, entries };
   });
 }
 
@@ -169,6 +170,8 @@ try {
     assert.equal(added.path + added.hash, "/#add", `${round}: Add a PC stays open for ${STAYS_MS} ms, not taken back to the PC page\n${report()}`);
     assert.equal(await addScreen.count(), 1, `${round}: Add a PC is on screen`);
     assert.equal(added.index, before.index + 1, `${round}: Add a PC is one entry over the PC page it was opened from, with no entry of the closed sheet between them\n${report()}`);
+    // the tab's history ends [..., PC page, Add a PC]: the sheet's entry went with the step back, and nothing is ahead
+    assert.deepEqual(added.entries.slice(before.index), [pcPage, "/#add"], `${round}: the history ends on the PC page and Add a PC (${JSON.stringify(added.entries)})`);
     if (evidence) writeFileSync(join(evidence, `add-pc-more-order-${round}.txt`), `${report()}\n`);
     console.log(report());
     await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
