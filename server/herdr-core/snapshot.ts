@@ -7,6 +7,7 @@ import { worktreeOfLabels } from "./worktrees.ts";
 import { paneAgent, type ProgramPlatform, reportedAgent, reportedStatus } from "../agent-identity.ts";
 import { catalogPlatform, type CatalogPlatform } from "../../shared/agent-catalog.ts";
 import type { JobProcess } from "../foreground-job.ts";
+import { shownStatusOfWord } from "../../shared/attention.ts";
 
 /**
  * hc has no workspaces, tabs or panes. The Herdr desktop app keeps its own (spaces, tabs and split
@@ -27,11 +28,7 @@ export const TAB_LABEL = "herdr.tab";
 export const WORKSPACE_NAME_LABEL = "ovis.workspace";
 export const TAB_NAME_LABEL = "ovis.tab";
 export const PANE_NAME_LABEL = "ovis.pane";
-/**
- * The last turn a person looked at, shared by every Herdr client (herdr-app docs/labels.md): an
- * agent at rest whose turn is past it is done, one at or below it idle.
- */
-export const SEEN_LABEL = "herdr.seen";
+export { SEEN_LABEL, seenTurnOf } from "../../shared/attention.ts";
 
 /**
  * One OSC 7501 report (hc's `Status`): the program's own words. `kind` (permission, question, auth)
@@ -60,22 +57,23 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * agy reports `blocked` permission "Approve plan" (OSC 7501) when a turn ends on an artifact for review, while its own input box
+ * takes the reply as at any rest: at rest here, so no card holds the composer and queued messages go to it. A question
+ * in those words is still a question.
+ */
+export function agyPlanReview(status: HcStatus | null | undefined): boolean {
+  return status?.app === "antigravity" && status.state === "blocked" && status.kind === "permission" && status.msg === "Approve plan";
+}
+
 export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus {
-  return reportedStatus(status?.state);
+  return agyPlanReview(status) ? "done" : reportedStatus(status?.state);
 }
 
-export function seenTurnOf(labels: Readonly<Record<string, string>> | undefined): number | null {
-  const value = labels?.[SEEN_LABEL];
-  if (value === undefined || !/^\d{1,15}$/.test(value)) return null;
-  return Number(value);
-}
-
+/** The status a terminal shows (shared/attention.ts `shownStatusOfWord`), from its program's report. */
 export function shownStatusOf(status: HcStatus | null | undefined, turn: number | undefined, labels: Readonly<Record<string, string>> | undefined, firstTurn?: number): AgentStatus {
   const word = agentStatusOf(status);
-  if (word !== "idle" && word !== "done") return word;
-  const seen = seenTurnOf(labels);
-  if (seen !== null) return (turn ?? 0) > seen ? "done" : "idle";
-  return firstTurn !== undefined && (turn ?? 0) > firstTurn ? "done" : word;
+  return shownStatusOfWord(word, turn, labels, firstTurn);
 }
 
 export function agentOfStatus(status: HcStatus | null | undefined): string | null {
@@ -345,7 +343,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
 export type FirstTurn = (terminal: Pick<HcTerminal, "address" | "turn">) => number;
 
 export function reportedFacts(status: HcStatus | null | undefined): Pick<HerdrPane, "agent_kind" | "agent_message" | "agent_progress"> {
-  if (!status) return {};
+  if (!status || agyPlanReview(status)) return {};
   const { kind, msg, progress } = status;
   return {
     ...(status.state === "blocked" && typeof kind === "string" && kind !== "" ? { agent_kind: kind } : {}),

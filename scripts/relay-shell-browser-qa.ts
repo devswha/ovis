@@ -51,11 +51,60 @@ import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
 import { closeMarked, whileOpen } from "./relay-qa-teardown.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
 import { relayShellQaVersions } from "./relay-shell-qa-versions.ts";
-import { openSettingsPage } from "./settings-page.ts";
+import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { answerServerChallenge, deriveServerId } from "../shared/relay-server-proof.ts";
 
+export async function defaultStep2BrowserQa({ createServer }: RelayServerTree): Promise<void> {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-default-step2-qa-"));
+  const prior = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+  delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+  try {
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null,
+      sidecar: false, accountService: { url: "off" } });
+    try {
+      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+      try {
+        const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+        await page.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+        await page.goto(`http://127.0.0.1:${app.port}`);
+        await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
+        const lockState = () => page.waitForResponse(response => new URL(response.url()).pathname === "/api/account/lock" && response.request().method() === "GET");
+        const unbound = lockState();
+        await openSettingsPage(page, "Devices and PCs");
+        assert.ok((await unbound).status() >= 400);
+        assert.equal(await page.locator(".strict-mode").count(), 0);
+        assert.equal(await page.getByText("Strict mode needs this PC signed in to an Ovis account.", { exact: true }).count(), 0);
+        app.context.services.devices.bindByService("acct_browser_qa");
+        await page.reload();
+        await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
+        await openSettingsPage(page, "Devices and PCs");
+        // one row of More settings, its switch; what it ends is named once it is turned on
+        await openSettingsFolds(page);
+        await page.getByRole("switch", { name: "Strict mode (Linux)", exact: true }).waitFor();
+        console.log("default Step 2: only the bound PC offers to turn on strict mode");
+      } finally { await closeMarked(browser); }
+    } finally { await app.stop(); }
+  } finally {
+    if (prior === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    else process.env["OVIS_ACCOUNT_OPENS_ALL"] = prior;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}
+
 export async function relayShellQa(tree: RelayServerTree): Promise<void> {
+  if (resolve(tree.dir) === resolve(import.meta.dir, "..")) await defaultStep2BrowserQa(tree);
+  // The remaining cross-version paths require direct pairing, without PC fingerprint confirmation.
+  const prior = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+  process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
+  try { await legacyRelayShellQa(tree); }
+  finally {
+    if (prior === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    else process.env["OVIS_ACCOUNT_OPENS_ALL"] = prior;
+  }
+}
+
+async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
   const { createServer, RelayService } = tree;
   const repo = join(import.meta.dir, "..");
   const evidence = process.env["UI_EVIDENCE_DIR"] || null;
@@ -527,6 +576,11 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     };
     const signIn = async (page: Page): Promise<void> => {
       await page.getByRole("button", { name: "Continue with GitHub" }).click();
+      // a sign-in lands on Add a PC, or on the join card of an account PC this device is not in yet, never the dashboard:
+      // that opens only by its own address
+      await page.locator('main.relay-add-screen[data-account-state="signed-in"] .relay-add, [data-add-pc-mode]').first().waitFor();
+      assert.equal(await page.locator(".relay-dash").count(), 0, "the sign-in landed on the dashboard");
+      await page.goto(`${APP}/#overview`);
       await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor();
     };
     const row = (page: Page, name: string) => page.locator("[data-pc-list] [data-pc-id]", { hasText: name });
@@ -598,7 +652,12 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       seenDesk.last_seen_at = new Date(Date.now() - 5 * 60_000).toISOString();
       const seenFirst = pc1.lastSeen();
       assert.equal(seenFirst, seenDesk.last_seen_at, "Desk PC's last_seen_at is five minutes ago");
+      // signed in, the front page is Add a PC, listing Desk PC; the dashboard opens only by its own address
       await a.goto(`${APP}/`);
+      await a.locator('main.relay-add-screen[data-account-state="signed-in"]').locator(".relay-add-saved-pc", { hasText: "Desk PC" }).waitFor();
+      assert.equal(await a.locator(".relay-dash").count(), 0, "the signed-in front page is not the dashboard");
+      await capture(a, "front-signed-in-1440-dark");
+      await a.goto(`${APP}/#overview`);
       await stateWord(a, "Desk PC").and(a.getByText("Ready", { exact: true })).waitFor();
       await row(a, "Desk PC").locator(".relay-pc-cell-seen", { hasText: /^\d+ min ago$/ }).waitFor();
       assert.equal(await row(a, "Desk PC").getAttribute("data-pc-state"), "paired");
@@ -645,7 +704,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       }));
       assert.equal(put.status, 200, `Mac mini listed itself: ${await put.text()}`);
       assert.equal((await pc2.local("/api/relay/link", { headers: { "x-ovis-local-only": "1" } })).status, 200);
-      await a.goto(`${APP}/`);
+      await a.goto(`${APP}/#overview`);
       await row(a, "Mac mini").locator('[data-pc-action="add"]').waitFor();
       assert.equal(await row(a, "Mac mini").getAttribute("data-pc-state"), "needs-approval");
       await row(a, "Mac mini").getByRole("button", { name: "Add", exact: true }).click();
@@ -669,7 +728,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await inApp(a);
       await until(async () => pc2.joined() && (await saved(a, pc2.id))?.enrollment === "complete", "Mac mini joined the account and this device recorded completion", 75_000);
       await pc2.mailbox.pull();
-      await a.goto(`${APP}/`);
+      await a.goto(`${APP}/#overview`);
       await row(a, "Mac mini").and(a.locator('[data-pc-state="paired"]')).waitFor();
       log9(`new PC: Mac mini ${pc2.id} listed itself and opened its local-only window -> row Add -> sheet (new) -> Add this PC (no confirm step, no second Pair) -> typed the ${asked!.digits.length} digits its own screen listed -> approved on the PC -> app -> row Ready`);
 
@@ -706,7 +765,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await until(async () => (await pc1.pairings()).length === 0 && pc1.joined() && (await saved(b, pc1.id))?.enrollment === "complete", "Desk PC settled and this device recorded completion after the member's approval", 75_000);
       await pc1.mailbox.pull();
       await pc2.mailbox.pull();
-      await b.goto(`${APP}/`);
+      await b.goto(`${APP}/#overview`);
       await row(b, "Desk PC").and(b.locator('[data-pc-state="paired"]')).waitFor();
       log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) Join -> Ask to join (no confirm step, no second Pair) -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app -> row Ready`);
 
@@ -715,7 +774,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         [b, 390, () => b.locator(".relay-dash-brand-bar").getByRole("button", { name: "Add a PC", exact: true }).click()],
       ] as const) {
         for (const theme of ["dark", "light"] as const) {
-          await page.goto(`${APP}/`);
+          await page.goto(`${APP}/#overview`);
           await setTheme(page, theme);
           await row(page, "Desk PC").and(page.locator('[data-pc-state="paired"]')).waitFor();
           await capture(page, `dashboard-${width}-${theme}`);

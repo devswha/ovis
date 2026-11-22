@@ -100,7 +100,7 @@ export class AccountDeviceStore implements AccountRowSource {
 
   private dropEntry(row: AccountRow, account: string | null, reason: DropReason): JournalEntry {
     const drop = reason === "remove" || reason === "block" || reason === "revoke" || reason === "revoke_all" ? rowDrop(row, reason) : undefined;
-    return { kind: "drop", row: row.id, key: row.key, account, reason, drop };
+    return { kind: "drop", row: row.id, key: row.key, account, no: row.origin.admit_no, reason, drop };
   }
 
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void {
@@ -124,7 +124,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const row = this.rows().find((candidate) => candidate.id === id);
     if (!row) return { refused: "not_listed" };
     if (row.state === "expired") return { refused: "expired" };
-    if (this.waiting.has(id) && this.release(row) === null) return { refused: "catching_up" };
+    if (this.ports.serviceStep2Off?.() || (this.waiting.has(id) && this.release(row) === null)) return { refused: "catching_up" };
     if (row.state === "live") return { ok: true };
     const seconds = holdSecondsLeft(row.hold_until === null ? null : Date.parse(row.hold_until), this.ports.now());
     if (seconds === null || seconds > 0) return { refused: "join_hold", seconds };
@@ -163,7 +163,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const idle = this.file.devices.filter(row => expiresAt(row) <= now);
     for (const row of idle) {
       this.ports.closeSessions(row.id, "expired");
-      this.ports.journal({ kind: "drop", key: row.key, row: row.id, account: this.file.account, reason: "expired" });
+      this.ports.journal(this.dropEntry(row, this.file.account, "expired"));
     }
     const ids = new Set(idle.map((row) => row.id));
     if (ids.size > 0) this.write({ ...this.file, devices: this.file.devices.map((row) => ids.has(row.id) ? { ...row, state: "expired", hold_until: null } : row) });
@@ -198,15 +198,25 @@ export class AccountDeviceStore implements AccountRowSource {
     for (const row of this.rows()) if (!ids || ids.has(row.id)) this.wait(row);
   }
 
+  waitForService(): void {
+    // A session may already be open under a named release, even though its row was waiting.
+    for (const row of this.rows()) {
+      if (row.state === "expired") continue;
+      this.waiting.add(row.id);
+      this.ports.closeSessions(row.id, "catching_up");
+    }
+  }
+
   /** A release excuses the wait only while it stands; undo must not need to reconstruct that wait. */
   private release(row: AccountRow): string | null {
+    if (this.ports.serviceStep2Off?.()) return null;
     const release = this.ports.releaseOf?.(row.id) ?? null;
     return release !== null && row.state === "live" && this.admits(row.key) ? release : null;
   }
 
   waitingRows(): readonly AccountRow[] {
     this.ports.checkFreshness?.();
-    if (this.error !== null) return [];
+    if (this.error !== null || this.ports.serviceStep2Off?.()) return [];
     this.expire();
     return this.rows().filter(row => this.waiting.has(row.id));
   }

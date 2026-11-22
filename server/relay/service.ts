@@ -1,5 +1,5 @@
 import { MACHINE_DIRECT_CARRIER_ENABLED, MachineCodeForAccountError } from "../machine-profile.ts";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { DeviceConnection } from "../../shared/access.ts";
@@ -13,7 +13,7 @@ import type { RequestServices } from "../dispatch.ts";
 import { isJsonObject } from "../http.ts";
 import { writePrivateState } from "../private-state.ts";
 import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
-import { loadRelayIdentity, relayIdentityPath, RelayIdentityError, rotateRelayIdentity, savedServerId } from "./identity.ts";
+import { loadRelayIdentity, RelayIdentityError, rotateRelayIdentity, savedIdentityReader, savedServerId } from "./identity.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { SignedInSessions } from "./admissions.ts";
 import { DirectCarrier } from "./direct.ts";
@@ -37,6 +37,11 @@ export class NoAccountNamedError extends Error {
   constructor() {
     super("This PC is not set up for an Ovis account yet. Sign in on this PC and add it to your account, or run `ovis add` on it; then it can show its QR code.");
   }
+}
+
+export class ResetRegistryUnavailableError extends Error {
+  readonly code = "gate_unavailable";
+  constructor() { super("Cannot reset the relay identity while this PC's paired device registry is unreadable."); }
 }
 
 /**
@@ -150,6 +155,7 @@ export class RelayService {
   private services: RequestServices | undefined;
   private port = 0;
   private identity: RelayIdentity | undefined;
+  private readonly readSavedIdentity: () => RelayIdentity | undefined;
   private saved: string | null | undefined;
   private enabled = false;
   private shuttingDown = false;
@@ -172,6 +178,7 @@ export class RelayService {
   private directOn: boolean | undefined;
 
   constructor(private readonly options: RelayServiceOptions) {
+    this.readSavedIdentity = savedIdentityReader(options.stateDir);
     // the pairing window outlives a restart (pairing-approvals.ts), so it is read from this PC's state
     this.approvals = new RelayPairingApprovals({ path: join(options.stateDir, "relay", "pairing-window.json") });
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
@@ -193,13 +200,7 @@ export class RelayService {
   }
 
   currentIdentity(): RelayIdentity | undefined {
-    if (this.identity) return this.identity;
-    // one already on disk (the relay off since a restart) still names the PC; none is ever made here
-    if (!existsSync(relayIdentityPath(this.options.stateDir))) return undefined;
-    try { return loadRelayIdentity(this.options.stateDir); } catch (error) {
-      if (error instanceof RelayIdentityError) return undefined;
-      throw error;
-    }
+    return this.link ? this.identity : this.readSavedIdentity();
   }
 
 
@@ -616,10 +617,10 @@ export class RelayService {
    * PC, and the owner approves it here (server/relay/session.ts). It holds nothing secret; asking for it
    * opens the window in which this PC takes comparisons (pairing-approvals.ts PAIRING_WINDOW_MS).
    */
-  pairingLink(options: { localOnly?: boolean } = {}): { url: string } {
+  pairingLink(options: { localOnly?: boolean } = {}): { url: string; window_id: string } {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
-    this.approvals.openWindow(Date.now(), options);
-    return { url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key, relay: this.advertised, ...offerName() }, this.app) };
+    const window_id = this.approvals.openWindow(Date.now(), options);
+    return { window_id, url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key, relay: this.advertised, ...offerName() }, this.app) };
   }
 
   async resetIdentity(): Promise<RelayStatus> {
@@ -627,6 +628,7 @@ export class RelayService {
     if (!services || this.shuttingDown) throw new Error("Relay service is not available.");
     if (services.serveOnly) { this.blocked = "serve_only"; return this.status(); }
     // Close old admissions before revoking or replacing the key they authenticated against.
+    if (services.devices.error !== null) throw new ResetRegistryUnavailableError();
     if (this.resetting) throw new Error("Relay identity reset is in progress.");
     this.resetting = true;
     try {
