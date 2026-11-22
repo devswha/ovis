@@ -11,14 +11,16 @@ import { usePcRemoval } from "./usePcRemoval.tsx";
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
 
-type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[]; readonly listings: ReadonlyMap<string, string> };
+/** `ids`: each shown row's own listing ID (account#57), as rendered, which its Decline names */
+type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[]; readonly listings: ReadonlyMap<string, string>; readonly ids: ReadonlyMap<string, string> };
 
 /** One listing of a PC: a PC that asks again after a Decline is listed anew, so its new request is not the declined one. */
 const listingOf = (pc: DirectoryPc): string => pc.listing_id ?? `${pc.server_id}@${pc.added_at}`;
 
 /** The PCs still asking to join, each with the listing it asks by. */
-function askingPcs(listed: readonly DirectoryPc[], here: readonly RelayDevice[], now: number): { pcs: MyPc[]; listings: Map<string, string> } {
-  return { pcs: newPcs(myPcs(listed, here, { now }), now), listings: new Map(listed.map((pc) => [pc.server_id, listingOf(pc)])) };
+function askingPcs(listed: readonly DirectoryPc[], here: readonly RelayDevice[], now: number): { pcs: MyPc[]; listings: Map<string, string>; ids: Map<string, string> } {
+  return { pcs: newPcs(myPcs(listed, here, { now }), now), listings: new Map(listed.map((pc) => [pc.server_id, listingOf(pc)])),
+    ids: new Map(listed.flatMap((pc) => typeof pc.listing_id === "string" ? [[pc.server_id, pc.listing_id] as const] : [])) };
 }
 
 /**
@@ -105,8 +107,8 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
         window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
         return;
       }
-      const listingId = listed.find((each) => each.server_id === pc.server_id)?.listing_id;
-      await removal.remove(asking.session, pc.server_id, typeof listingId === "string" ? listingId : undefined);
+      // the re-read above is only the guard: the removal names the listing this card was rendered with
+      await removal.remove(asking.session, pc.server_id, asking.ids.get(pc.server_id));
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       setFailed(pc.server_id);

@@ -40,9 +40,13 @@ function keepPendingAdd(account: string, pc: DirectoryPc): void {
   catch { /* not kept: Add is pressed again after the sign-in */ }
 }
 
-/** the add pressed before a Sign in again goes on only for the listing it was pressed on: a replacement waits for its own press */
+/**
+ * The add pressed before a Sign in again goes on only for the listing it was pressed on: a replacement waits for its own
+ * press, and so does any listing when the kept add names none (an older Ovis kept it) or another. Only where the service
+ * gives the PC no listing ID at all is there nothing to tell listings apart by, and an add kept without one goes on.
+ */
 const pendingFor = (pending: PendingAdd | null, pc: DirectoryPc): boolean =>
-  pending?.server_id === pc.server_id && (pending.listing_id === undefined || pending.listing_id === pc.listing_id);
+  pending?.server_id === pc.server_id && pending.listing_id === (typeof pc.listing_id === "string" ? pc.listing_id : undefined);
 
 /** the confirm refusals about the sign-in alone (docs/account.md) say so, with Sign in again: a fresh own sign-in may pass them */
 function refusal(t: Translate, error: Error): Problem {
