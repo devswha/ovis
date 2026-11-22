@@ -179,6 +179,10 @@ describe("agy's queued messages", () => {
     // cut to nothing on a narrow pane: it could be any message, an earlier one too
     ["a row cut to its dots alone", agy(["▸ ... (alt+m to send immediately)"])],
     ["a row cut to its ellipsis alone", agy(["▸ … (alt+m to send immediately)"])],
+    // alt+m is agy's "send with the opposite Queued Messages setting": it would send a draft in the box at once too
+    ["a draft in the input box", agy(["▸ send this now (alt+m to send immediately)"]).replace("\n>\n", "\n> half a thought\n")],
+    ["a draft over two rows", agy(["▸ send this now (alt+m to send immediately)"]).replace("\n>\n", "\n> half\n  a thought\n")],
+    ["a picker's row in place of the input box", agy(["▸ send this now (alt+m to send immediately)"]).replace("\n>\n", "\n> Yes, I trust this folder\n")],
   ] as const) it(`ignores ${name}`, () => expect(agySteeringPending(screen, "send this now")).toBe(false));
 
   it("sends it now with alt+m, joining the turn at work rather than restarting it", async () => {

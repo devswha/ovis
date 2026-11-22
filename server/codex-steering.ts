@@ -64,8 +64,10 @@ export function codexSteeringPending(screen: string, text: string): boolean {
 export function agySteeringPending(screen: string, text: string): boolean {
   const lines = stripVTControlCharacters(screen).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const composer = lastLine(lines, (line) => /^>(?:\s|$)/.test(line));
+  // the box empty between its rules: alt+m is agy's "send with the opposite Queued Messages setting", which sends a draft too
+  const empty = lines[composer] === ">" && /^─+$/.test(lines[composer + 1] ?? "");
   const entry = /^▸\s*(.*?)\s*\(alt\+m to send immediately\)$/.exec(lines[composer - 2] ?? "");
-  if (composer < 2 || !/^─+$/.test(lines[composer - 1]!) || !entry) return false;
+  if (composer < 2 || !empty || !/^─+$/.test(lines[composer - 1]!) || !entry) return false;
   const shown = compact(entry[1]!), sent = compact(text);
   const cut = /(?:\.\.\.|…)$/.exec(shown);
   // a row cut to its dots alone could be any message

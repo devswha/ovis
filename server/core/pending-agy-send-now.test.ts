@@ -151,6 +151,18 @@ describe("Send now on a working agy (#4325)", () => {
     expect(d.rows()).toEqual([]);
   });
 
+  it("presses nothing while a draft sits in agy's input box, which alt+m would send at once too", async () => {
+    const d = pane();
+    d.event("working");
+    await d.queue("X");
+    // someone types into agy's own terminal right after the Enter
+    d.on.keys = (keys) => { if (keys.includes("Enter")) d.now.screen = agyScreen([queuedRow("X")]).replace("\n>\n", "\n> not finished yet\n"); };
+    await d.sendNow("X");
+    await d.settled();
+    expect(d.typed).toEqual(["paste:X", "Enter"]);
+    expect(d.results.at(-1)).toEqual({ ok: true });
+  });
+
   it("presses nothing for a row of another message, and settles the send once no row of its own shows", async () => {
     const d = pane();
     d.event("working");
