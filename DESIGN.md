@@ -3630,7 +3630,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The one rule of an exchange is the hairline under each of its folded work blocks.
 - Each pane keeps its reading row and viewport offset when returning from another tab, workspace
   or the terminal lens. A remounted chat loads earlier pages when needed to find that row in the
-  same history. A pane following the latest messages continues to follow. This is the return
+  same history, only until the loaded turns reach back past the row's time (ten pages for a row
+  with no time); an outcome row waits for the prompt state that draws it. A row that is gone
+  returns to the latest messages. A pane following the latest messages continues to follow,
+  including one that reached its end without a scroll. This is the return
   behavior requested for the [Codex desktop app](https://github.com/openai/codex/issues/58227),
   applied to Ovis's panes and lenses.
 - Meta (time, copy) fades in on hover or focus and takes no click or tap while unseen; with any
