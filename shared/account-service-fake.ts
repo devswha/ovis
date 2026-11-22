@@ -172,9 +172,10 @@ export class FakeAccountService {
   reportsStep2Off = false;
   /**
    * account#57: each listing has its own ID; a PC's admission may name it (`with_listing_id`), and the PC, once bound,
-   * records its add complete with a proof scoped to that account and listing (POST /v1/pc/complete). Off: an older service.
+   * records its add complete with a proof scoped to that account and listing (POST /v1/pc/complete). Off: an older service,
+   * which a PC no longer binds to in one press.
    */
-  completions = false;
+  completions = true;
   private seq = 0;
   readonly requests: string[] = [];
 
@@ -881,7 +882,10 @@ export class FakeAccountService {
       const quiet = entry === undefined ? [] : this.quietList
         .filter((a) => a.server_id === challenge.server_id && a.account === body.account && this.now() - Date.parse(a.at) < ADMISSION_TTL_MS)
         .map(({ key, label, at }) => ({ key, label, at }));
-      return json({ records: rest.slice(0, MAILBOX_PAGE).map(({ seq, record }) => ({ seq, record })), more: rest.length > MAILBOX_PAGE, admissions, quiet_admissions: quiet });
+      // as the service: the listing it holds this PC under, when it confirms one (never one a device code listed under Step 2)
+      const listing = this.completions && body.with_listing_id === true
+        ? { listing_id: entry !== undefined && !(this.opensAll && entry.listed_by_device === true) ? entry.listing_id ?? null : null } : {};
+      return json({ ...listing, records: rest.slice(0, MAILBOX_PAGE).map(({ seq, record }) => ({ seq, record })), more: rest.length > MAILBOX_PAGE, admissions, quiet_admissions: quiet });
     }
     return problem(404, "not_found", "Unknown request");
   }

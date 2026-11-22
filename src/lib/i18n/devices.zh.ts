@@ -327,7 +327,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "{name} loses access to every PC of your account. Pairings it made outside the account stay.": "{name} 将无法再访问你账户的所有电脑。在账户之外完成的配对会保留。",
   "{name} could not be disconnected. Try again.": "无法断开 {name}。请重试。",
   "Remove {name} from your account?": "从账户中移除 {name}？",
-  "{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.": "{name} 将在所有设备上从账户的电脑列表中移除。{name} 上不会撤销任何内容；它重新上线后，请再次添加。",
+  "{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.": "{name} 将在所有设备上从账户的电脑列表中移除。{name} 重新上线后，它也会离开你的账户：账户中的设备无法再打开它，直接与 {name} 配对的设备仍可打开。要在账户中再次使用它，请在 {name} 上重新添加。",
   "Devices could not be loaded.": "无法加载设备列表。",
   "PCs could not be loaded.": "无法加载电脑列表。",
   "This device was removed on the PC, so your Tailscale login no longer lets it in. Allow it on the PC's own screen, or pair it with a code.": "此设备已在 PC 上被移除，你的 Tailscale 登录不再能让它进入。请在 PC 本机屏幕上允许它，或用代码配对。",

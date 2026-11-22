@@ -24,7 +24,7 @@ afterEach(async () => {
  * `unusable`: the directory sends `listing` for the row, and the refresh route answers a structured 404 as an old service would.
  * `age`: how long ago the row was listed (stale by default, so the invitation is due for its refresh).
  */
-async function fixture(mode: "bind" | "complete" | "pending" | "refusal" | "unusable", listing: unknown = LISTING, age = 2 * INVITATION_MS) {
+async function fixture(mode: "bind" | "complete" | "completed" | "pending" | "refusal" | "unusable", listing: unknown = LISTING, age = 2 * INVITATION_MS) {
   const pc = await pairingPc({ server: { accountOpensAll: true } });
   let passSetup: Promise<Response> | undefined;
   closes.push(async () => { try { await passSetup; } finally { await pc.close(); } });
@@ -65,7 +65,7 @@ async function fixture(mode: "bind" | "complete" | "pending" | "refusal" | "unus
       const pcs: readonly unknown[] = body.pcs;
       return Response.json({ pcs: pcs.map((entry) =>
         typeof entry === "object" && entry !== null && "server_id" in entry && entry.server_id === serverId
-          ? { ...entry, added_at: added, listing_id: listing, invited_at: invitedAt }
+          ? { ...entry, added_at: added, listing_id: listing, invited_at: invitedAt, ...(mode === "completed" ? { completed_at: added } : {}) }
           : entry,
       ) });
     }
@@ -76,7 +76,7 @@ async function fixture(mode: "bind" | "complete" | "pending" | "refusal" | "unus
       if (pathname === `${path}/refresh`) {
         if (mode === "unusable") return Response.json({ error: { code: "not_found" } }, { status: 404 });
         expect(await request.json()).toEqual({ listing_id: LISTING });
-        if (mode === "refusal" || mode === "complete") return Response.json({ error: { code: "listing_changed" } }, { status: 409 });
+        if (mode === "refusal" || mode === "complete" || mode === "completed") return Response.json({ error: { code: "listing_changed" } }, { status: 409 });
         invitedAt = new Date(now).toISOString();
         return Response.json({ invited_at: invitedAt });
       }
@@ -106,6 +106,17 @@ test.each(["bind", "complete"] as const)("refresh races a real one-press %s with
   expect(f.pc.devices.account()).toBe(ACCOUNT);
   expect(f.changes).toEqual([f.refresh]);
   expect(listed).toMatchObject({ membership: { account: ACCOUNT, enrolling: false } });
+});
+
+test("a PC out of the account whose old add the account holds as complete is listed in place and added by a new press", async () => {
+  const f = await fixture("completed");
+
+  const listed = await listThisPc(f.directory, { relistMs: RELIST_MS });
+
+  expect(listed.membership).toBeUndefined();
+  expect(f.changes).toEqual([`PUT /v1/pcs/${f.serverId}`]);
+  await f.bind();
+  expect(f.pc.devices.account()).toBe(ACCOUNT);
 });
 
 test("a changed-listing response never triggers legacy removal or recreates the row", async () => {

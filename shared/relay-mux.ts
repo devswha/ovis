@@ -5,6 +5,8 @@ import { AccountDevicesApiError, parseBlockReceipt, parseHoldState, type BlockRe
 export const RELAY_PROTOCOL = 1;
 export const RELAY_HINTS = "relay-hints";
 export const ACCOUNT_OPENS_ALL_FEATURE = "account-opens-all-1";
+/** A client that offers it reads `account_unreachable` and `account_readd_required`; one without it takes either as a protocol error. */
+export const ACCOUNT_LISTING_ERRORS = "account-listing-errors-1";
 /** Eight numbered receipts fit the existing 1 KiB session error, even with safe-integer log numbers. */
 export const AUTH_RECEIPTS_MAX = 8;
 /** The address is a hint: Noise against the pinned PC key proves the PC. */
@@ -81,6 +83,8 @@ export const SESSION_ERRORS = [
   "flow_control_error", "resource_exhausted", "timeout", "internal_error",
   // Step 2, sent only by a PC with Step 2 on to an account-joined sign-in; `held` carries its HoldState
   "held", "not_listed", "admission",
+  // sent only to a client that offered ACCOUNT_LISTING_ERRORS
+  "account_unreachable", "account_readd_required",
 ] as const;
 export type SessionError = typeof SESSION_ERRORS[number];
 export const STREAM_ERRORS = [

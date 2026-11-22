@@ -221,7 +221,9 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   // only an old service omits the ID; a row with an unusable one is a malformed answer, whatever its age: nothing is written for it
   if (listed?.listing_id === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent an unusable listing ID");
   let refreshed = false;
-  if (listed !== undefined && Date.now() - Date.parse(listed.invited_at ?? listed.added_at) >= NEW_PC_MS - options.relistMs) {
+  // an add the account already holds as complete is no invitation to renew: a PC out of that account is added again by a new press
+  const completed = typeof listed?.completed_at === "string";
+  if (listed !== undefined && !completed && Date.now() - Date.parse(listed.invited_at ?? listed.added_at) >= NEW_PC_MS - options.relistMs) {
     running();
     const outcome = await directory.refreshPc(offer.server_id, listed.listing_id);
     // A new service preserves an admission even if the PC binds after the first status read. Read again

@@ -327,7 +327,7 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} loses access to every PC of your account. Pairings it made outside the account stay.": "계정의 모든 PC에서 {name}의 접속이 끊깁니다. 계정 밖에서 한 페어링은 남습니다.",
   "{name} could not be disconnected. Try again.": "{name} 연결을 끊지 못했습니다. 다시 시도하세요.",
   "Remove {name} from your account?": "계정에서 {name} PC를 뺄까요?",
-  "{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.": "모든 기기의 계정 PC 목록에서 {name} PC가 빠집니다. {name}에서 해제되는 것은 없으며, 다시 켜지면 다시 추가하세요.",
+  "{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.": "모든 기기의 계정 PC 목록에서 {name} PC가 빠집니다. {name} PC가 다시 온라인이 되면 그 PC도 계정에서 빠집니다. 계정의 기기로는 더 이상 열 수 없고, {name} PC와 직접 페어링한 기기로는 그대로 열 수 있습니다. 계정에서 다시 쓰려면 {name}에서 다시 추가하세요.",
   "Devices could not be loaded.": "기기 목록을 불러오지 못했습니다.",
   "PCs could not be loaded.": "PC 목록을 불러오지 못했습니다.",
   "This device was removed on the PC, so your Tailscale login no longer lets it in. Allow it on the PC's own screen, or pair it with a code.": "이 기기는 PC에서 제거되어 Tailscale 로그인으로는 더 이상 들어갈 수 없어요. PC 화면에서 허용하거나 코드로 페어링하세요.",

@@ -327,7 +327,7 @@ export const DEVICES_JA: Record<string, string> = {
   "{name} loses access to every PC of your account. Pairings it made outside the account stay.": "{name} はアカウントのすべての PC に入れなくなります。アカウントの外で行ったペアリングは残ります。",
   "{name} could not be disconnected. Try again.": "{name} の接続を切れませんでした。もう一度お試しください。",
   "Remove {name} from your account?": "{name} をアカウントから外しますか？",
-  "{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.": "すべてのデバイスで、アカウントの PC から {name} が外れます。{name} 側では何も取り消されません。再びオンラインになったら、もう一度追加してください。",
+  "{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.": "すべてのデバイスで、アカウントの PC から {name} が外れます。{name} が再びオンラインになると、その PC 自身もアカウントから外れます。アカウントのデバイスからは開けなくなり、{name} と直接ペアリングしたデバイスは引き続き開けます。アカウントでもう一度使うには、{name} で追加し直してください。",
   "Devices could not be loaded.": "デバイス一覧を読み込めませんでした。",
   "PCs could not be loaded.": "PC 一覧を読み込めませんでした。",
   "This device was removed on the PC, so your Tailscale login no longer lets it in. Allow it on the PC's own screen, or pair it with a code.": "このデバイスは PC で削除されたため、Tailscale のログインでは入れなくなりました。PC 本体の画面で許可するか、コードでペアリングしてください。",
