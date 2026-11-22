@@ -743,6 +743,24 @@ it("does not fall back to the other relay when an attempt that began before the 
   expect([f.clock.tasks.size, f.fatal]).toEqual([0, []]);
 });
 
+it("carries the pairing code into the attempt that replaces a hidden first pairing, whose outcome the first callers wait for", async () => {
+  const shown = page("visible");
+  const offered: (string | undefined)[] = [];
+  const refusal = new MuxProtocolError("auth_failed", "Pairing refused");
+  const pairing = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", code: "123456", relay: "wss://relay.example" }, {
+    openChannel: (channelOffer, config = {}) => {
+      offered.push(channelOffer.code);
+      if (offered.length > 1) return Promise.reject(refusal);
+      // the first socket is still connecting when the app goes to the background
+      return new Promise<never>((_, reject) => config.signal?.addEventListener("abort", () => reject(new DOMException("Relay connection aborted", "AbortError")), { once: true }));
+    },
+  });
+  shown.hide();
+  shown.show();
+  await expect(pairing).rejects.toBe(refusal);
+  expect(offered).toEqual(["123456", "123456"]);
+});
+
 function referenceSse(text: string) {
   const events: { type: string; data: string; id: string }[] = [];
   let id = "";

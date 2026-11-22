@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { signInLink } from "./ConnectPhoneDialog.tsx";
 import { keyIdGroups } from "./KeyId.tsx";
 import { leaveAddEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
 
@@ -465,6 +466,36 @@ describe("the hosted front page", () => {
         expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
         await act(async () => { button("Open Tailscale").props.onClick(); });
         expect(called).toContain("HerdrShell.openTailscale");
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("opens an account PC's standing QR scanned from the relay tab, and still refuses another app's pairing link", async () => {
+      const assigned: string[] = [];
+      (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { assigned.push(href); };
+      let scanned = "";
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "CapacitorBarcodeScanner" }],
+        nativePromise: async (_plugin: string, method: string) => method === "scanBarcode" ? { ScanResult: scanned } : {},
+      } });
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false });
+        const scan = async (qr: string): Promise<string> => {
+          scanned = qr;
+          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "scan-qr").props.onClick(); });
+          return renderer!.root.findAll((node) => node.props.role === "alert").map(textOf).join("");
+        };
+        expect(await scan(signInLink("https://app.ovis.sh", ids.mini, "github"))).toBe("");
+        expect(await scan(signInLink("https://app.ovis.sh", ids.desk, null))).toBe("");
+        expect(assigned).toEqual([`https://app.ovis.sh/s/${ids.mini}/#sign-in=github`, `https://app.ovis.sh/s/${ids.desk}/`]);
+        expect(await scan(`https://other.example/s/${ids.mini}/#offer=abc`)).toBe("This pairing link is not this app's. Scan the QR code your PC shows.");
+        expect(await scan("https://app.ovis.sh/#sign-in=github")).toBe("That is not an http or https address.");
+        expect(await scan(`https://app.ovis.sh/s/${ids.mini}/#pcs`)).toBe("That is not an http or https address.");
+        expect(assigned).toHaveLength(2);
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
         else Reflect.deleteProperty(globalThis, "Capacitor");
