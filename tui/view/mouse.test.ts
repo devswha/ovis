@@ -20,7 +20,7 @@ const TEST_MS = 120_000;
 const EMULATOR = {};
 /** pane a: screen cells x 0-8, y 1-5, drawn from grid row 2 of its 9x8 grid; 20 rows of history above, at the bottom */
 const lookA = (programMouse: boolean, history = { scrollback: 20, total: 28, viewportTop: 20 }): PaneLook => ({
-  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, screen: 0, emulator: EMULATOR, history,
+  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, altScreen: false, screen: 0, emulator: EMULATOR, history,
 });
 const HITS = new HitMap([
   { rect: { x: 0, y: 0, width: 20, height: 1 }, target: { part: "tabs", id: "" } },
@@ -220,7 +220,7 @@ describe("the pointer", () => {
   });
 
   it("a drag whose pane got a new emulator or switched screens before its release selects and copies nothing", () => {
-    for (const changed of [{ ...lookA(false), emulator: {} }, { ...lookA(false), screen: 1 }]) {
+    for (const changed of [{ ...lookA(false), emulator: {} }, { ...lookA(false), altScreen: true }, { ...lookA(false), screen: 1 }]) {
       const pointer = new Pointer();
       expect(pointer.mouse("screen", ev(["press", "left", 1, 1]), sceneOf("a", lookA(false)))).toEqual([]);
       expect(pointer.mouse("screen", ev(["motion", "left", 3, 2]), sceneOf("a", lookA(false)))).toEqual([{ kind: "redraw" }]);
@@ -247,6 +247,8 @@ describe("the pointer", () => {
     expect(pointer.shown("a", "a", lookA(false))).toBeNull();
     pointer = select();
     expect(pointer.shown("a", "a", { ...lookA(false), emulator: {} })).toBeNull();
+    pointer = select();
+    expect(pointer.shown("a", "a", { ...lookA(false), altScreen: true })).toBeNull();
     pointer = select();
     expect(pointer.shown("a", "a", { ...lookA(false), screen: 1 })).toBeNull();
   });
@@ -628,6 +630,42 @@ describe("mouse on the whole screen", () => {
     expect(run.host.output().slice(from)).not.toContain("]52;");
     expect(notices(run)).not.toContain("copied");
     expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
+  }, TEST_MS);
+
+  it("a drag on an alternate screen that a restored mode leaves before the release copies nothing", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    // mode 47 saved off on the main screen, then set
+    program.output("\x1b[?47s\x1b[?47h\x1b[H\x1b[2JALT-ONE-TEXT");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("T-ON");
+    // restored: back on the main screen, whose text lies under the selection's cells
+    program.output("\x1b[?47r");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 30)).toBe("$ echo");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+  }, TEST_MS);
+
+  it("a switch to the screen a pane already shows keeps its selection, which the release copies", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("echo");
+    // already on the main screen: the reset changes nothing
+    program.output("\x1b[?47l");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("echo");
+    const from = run.host.output().length;
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).toContain(osc52Of("echo"));
   }, TEST_MS);
 
   it("a click on a pane without focus focuses it and is not forwarded; a click on a tab or a sidebar row selects it", async () => {

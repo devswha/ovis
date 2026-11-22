@@ -580,18 +580,31 @@ describe("shared/ghostty engine", () => {
   it("a screen's engine counts the screen switches its written bytes make, also two in one write and one split across writes", () => {
     const { engine } = screenEngine(20, 4);
     const screens = () => engine.modes().screens;
+    const state = () => [engine.modes().altScreen, screens()];
     try {
       expect(screens()).toBe(0);
+      // a switch to the screen already shown changes nothing and counts nothing
+      engine.write(bytesOf("\x1b[?47l\x1b[?1049l"));
+      expect(state()).toEqual([false, 0]);
+      // saved on the main screen, set, then restored: the restore moves back to the main screen and counts
+      engine.write(bytesOf("\x1b[?47s\x1b[?47h"));
+      expect(state()).toEqual([true, 1]);
+      engine.write(bytesOf("\x1b[?47r"));
+      expect(state()).toEqual([false, 2]);
+      // set and restored in one write: two switches
+      engine.write(bytesOf("\x1b[?47hY\x1b[?47r"));
+      expect(state()).toEqual([false, 4]);
+      engine.reset();
+      expect(state()).toEqual([false, 5]);
       // left and entered again in one write: the same alternate screen, two switches
       engine.write(bytesOf("\x1b[?1049h\x1b[?1049l\x1b[?1049hX"));
-      expect([engine.modes().altScreen, screens()]).toEqual([true, 3]);
+      expect(state()).toEqual([true, 8]);
       engine.write(bytesOf("\x1b[?10"));
       engine.write(bytesOf("47l"));
-      expect(screens()).toBe(4);
+      expect(state()).toEqual([false, 9]);
+      // a full reset counts on the main screen too; a CSI that is not private switches nothing
       engine.write(bytesOf("\x1b[?1;47h\x1b[?25l\x1b[47h\x1bc"));
-      expect(screens()).toBe(6);
-      engine.reset();
-      expect(screens()).toBe(7);
+      expect(state()).toEqual([false, 11]);
     } finally {
       engine.dispose();
     }
