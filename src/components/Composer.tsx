@@ -516,7 +516,8 @@ export function Composer({
 
   const syncTextarea = (element: HTMLTextAreaElement): void => {
     const { value, selectionStart } = element;
-    if (viewOnly || value === composerDrafts.read(draftKey).text) return;
+    // a textarea reports CRLF and CR as LF: a draft that holds them (a pasted clipboard) is not edited by that
+    if (viewOnly || value === composerDrafts.read(draftKey).text.replace(/\r\n?/g, "\n")) return;
     barePick.current = null;
     setText(value);
     setCaret(selectionStart);
