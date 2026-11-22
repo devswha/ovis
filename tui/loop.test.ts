@@ -460,6 +460,28 @@ describe("the loop", () => {
     expect([dropped(full), ended]).toEqual([["full"], true]);
   }, TEST_MS);
 
+  it("a queue that fills with the prefix last leaves no prefix armed: a focus loss past the bound still disarms, and q after the release is typed", async () => {
+    // the focus loss dropped past the bound, or the key meant for the prefix dropped past it
+    for (const after of ["\x1b[O", "z"]) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      let ended = false;
+      void run.loop.done.then(() => { ended = true; });
+      // every read before the close's write could be answered: the prefix is the last event that fits
+      run.type("\x02x");
+      for (let n = 0; n < BEHIND_WRITE_EVENTS - 1; n++) run.type("a");
+      run.type("\x02");
+      run.type(after);
+      await settled(run);
+      expect([after, run.loop.model().armed, run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"])]).toEqual([after, false, ["full"]]);
+      // after the release: q is typed into the survivor, not a detach
+      run.type("q");
+      await settled(run);
+      expect([after, ended, sentTo(run, "t2") === Buffer.from(`${"a".repeat(BEHIND_WRITE_EVENTS - 1)}q`).toString("hex")]).toEqual([after, false, true]);
+    }
+  }, TEST_MS);
+
   it("a focus loss behind a layout write disarms the prefix in order: q after it is typed, not a detach; without it, q detaches", async () => {
     for (const focus of [true, false]) {
       const run = await start({ fixture: demo });

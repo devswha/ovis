@@ -397,10 +397,14 @@ export function startLoop(options: LoopOptions): Loop {
   /** What waited behind a write goes through, in order. */
   function release(): void {
     const waited = behindWrite?.events ?? [];
+    const full = behindWrite?.full === true;
     behindWrite = null;
     replaying = true;
     try {
       for (const event of waited) userInput(event);
+      // what came after the queue filled went nowhere, a focus loss or the key after a prefix among it: a prefix the
+      // replay armed would take the next key typed as its own, so it returns to Idle
+      if (full) dispatch({ type: "consumed", overlay: false, mode: false, at: clock.now() });
     } finally {
       replaying = false;
     }
