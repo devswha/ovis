@@ -524,7 +524,7 @@ export class DeviceStore {
    * `expires`: the wall-clock end of its ten minutes, which its `expires_at` shows; `deadline`: the same end on the
    * store's clock, which only moves forward; `over`: set the first time either says its ten minutes are over (codeOver)
    */
-  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; approvedIn?: string; memberRequired: boolean; ownPc?: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string }; issuedUnder?: string; reserved?: Map<string, { readonly key: string; readonly how: "code" | "qr" }>; cancelExpiry?: () => void } | null = null;
+  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; approvedIn?: string; memberRequired: boolean; ownPc?: boolean; open?: boolean; noAccountOnly?: boolean; atPc?: true; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string }; issuedUnder?: string; reserved?: Map<string, { readonly key: string; readonly how: "code" | "qr" }>; cancelExpiry?: () => void } | null = null;
   private readonly pairingEndedListeners = new Set<(codeId: string) => void>();
   /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
   private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
@@ -1442,6 +1442,12 @@ export class DeviceStore {
   serviceListing(): string | undefined { return this.pc?.binding()?.listing_id; }
   pinServiceListing(binding: string, listing: string): void { this.pc?.pinListing(binding, listing); }
 
+  /** PcAccountState.addAtPcRequired: a link joins this PC to an account only under a code it issued itself (issuedAtPc). */
+  addAtPcRequired(): boolean { return this.pc?.addAtPcRequired() === true; }
+
+  /** Whether the code `pinned` (pinnedCode) was started at this PC itself, by its own window or command, and is still the code pending. */
+  issuedAtPc(pinned: object): boolean { return this.pending === pinned && this.pending.atPc === true; }
+
   /** This PC left its account over a binding that named no listing (AccountMailbox.confirmsListing) and is in none since. */
   readdRequired(): boolean {
     const last = this.pc?.clears().at(-1);
@@ -1733,6 +1739,8 @@ export class DeviceStore {
       ...(how.startedBy !== null && this.approverAccount(how.startedBy) !== null ? { approvedIn: this.approverAccount(how.startedBy)! } : {}),
       holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
       ...(how.noAccountOnly === true ? { waiting: { usesLeft: PAIRING_USES, rows: new Map<string, ProvisionalRow>(), turnedAway: [] } } : {}),
+      // no paired device asked for it: a person at this PC did (addAtPcRequired)
+      ...(how.noAccountOnly === true && by === null ? { atPc: true as const } : {}),
       ...(how.noAccountOnly === true && account !== undefined ? { named: { account } } : {}),
       ...(how.noAccountOnly === true && issuedUnder !== undefined ? { issuedUnder } : {}),
     };
@@ -1771,6 +1779,7 @@ export class DeviceStore {
     const carried = pending?.noAccountOnly === true && pending.named === undefined && pending.issuedUnder === issuedUnder;
     if (active !== null && carried) {
       if (by !== null) pending.holders.add(by);
+      else pending.atPc = true;
       return active;
     }
     // past its ten minutes, the code stays while a device that paired with it in time may still link (expirePending)
@@ -1804,6 +1813,7 @@ export class DeviceStore {
     const pending = this.pending;
     if (active !== null && pending?.named?.account === account && (want === undefined || want === pending.id)) {
       if (by !== null) pending.holders.add(by);
+      else pending.atPc = true;
       return { ...active, expect_account: account, pairing: { id: pending.id } };
     }
     // a PC in an account says so first (startAccountPairing)

@@ -282,6 +282,13 @@ export class PcAccountState {
 
   clears(): readonly AccountClear[] { return this.doc.clears; }
 
+  /**
+   * The account stopped listing this PC (or its listing was replaced), and it is in none since: only an add a person
+   * makes at this PC brings it into one again. It stands on the kept clear, so a restart keeps it, and ends with the
+   * next binding.
+   */
+  addAtPcRequired(): boolean { return this.doc.binding === null && this.doc.clears.at(-1)?.reason === "unlisted"; }
+
   gen(): number { return this.doc.gen; }
 
   /** All admissions already numbered here are strictly below this boundary, even with the PC clock set back. */
