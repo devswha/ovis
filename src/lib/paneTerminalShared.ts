@@ -1,3 +1,4 @@
+import type { Terminal } from "@xterm/xterm";
 import { HerdrSocket } from "./ws.ts";
 import { userErrorMessage } from "./userError.ts";
 
@@ -14,6 +15,20 @@ export const RESUME_INPUT_WAIT_MS = 5_000;
 export const VIEW_BUFFER_MAX = 512 * 1024;
 export const VIEW_HOLD_MS = 1000;
 
+declare const __HERDR_TEST_HOOKS__: boolean;
+export interface TerminalTimerTestWindow extends Window {
+  __herdrTestTerminalTimeout?: (run: () => void, delay: number) => number;
+}
+
+/** Lets browser regressions track terminal work without counting unrelated timers with the same delay. */
+export function setTerminalTimeout(run: () => void, delay: number): number {
+  const timers: TerminalTimerTestWindow = window;
+  if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && timers.__herdrTestTerminalTimeout) {
+    return timers.__herdrTestTerminalTimeout(run, delay);
+  }
+  return timers.setTimeout(run, delay);
+}
+
 // A switch's pane attaches before the hidden recent tabs' views start or stop: herdr serves a
 // starting view and the attach in turn, so a view started beside it delays the pane the user picked.
 const viewHold = { held: false, queued: new Set<() => void>(), timer: 0 };
@@ -21,7 +36,7 @@ const viewHold = { held: false, queued: new Set<() => void>(), timer: 0 };
 export function holdViews(): void {
   viewHold.held = true;
   window.clearTimeout(viewHold.timer);
-  viewHold.timer = window.setTimeout(releaseViews, VIEW_HOLD_MS);
+  viewHold.timer = setTerminalTimeout(releaseViews, VIEW_HOLD_MS);
 }
 
 export function releaseViews(): void {
@@ -50,6 +65,20 @@ export function dropViewChange(change: () => void): void {
 // in the background: taking the pane then sized it for nobody, and herdr's own TUI drew it cut
 // off at its split's edge
 export const inUse = (): boolean => document.visibilityState === "visible" && document.hasFocus();
+
+/**
+ * A herdr-core pane's stream is the program's own bytes, drawn for the pty's grid (`terminal-history`): a page attached
+ * without sizing the pty draws it in that grid, as an observer does, until it sizes the pty again.
+ */
+export const keepsCoreGrid = (socket: HerdrSocket | null, pane: string | null): boolean =>
+  pane !== null && socket !== null && socket.hasTerminalHistory() && socket.keepsSize(pane);
+
+/** Draws a kept herdr-core pty in its grid as last heard (another device may have sized it meanwhile): whether that moved the grid. */
+export function takeKeptCoreGrid(term: Terminal, socket: HerdrSocket | null, pane: string | null, shared: { cols: number; rows: number } | null): boolean {
+  if (!shared || !keepsCoreGrid(socket, pane) || (term.cols === shared.cols && term.rows === shared.rows)) return false;
+  term.resize(shared.cols, shared.rows);
+  return true;
+}
 
 export const connectedSockets = new WeakSet<HerdrSocket>();
 
