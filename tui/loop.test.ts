@@ -61,6 +61,10 @@ const channelOf = (run: Run, terminal: string): number => run.core.viewers(termi
 /** every byte the screen sent a terminal's program, as hex, read from the fake's log: kept after the terminal is removed */
 const sentTo = (run: Run, terminal: string): string => Buffer.concat(run.core.log.flatMap((entry) =>
   entry.what === "frame" && entry.from === "viewer" && entry.terminal === terminal && (entry.kind === FRAME_DATA || entry.kind === FRAME_AUTOMATIC_INPUT) ? [entry.payload] : [])).toString("hex");
+/** what the screen sent each terminal's program, by terminal, for every terminal it sent anything (one a split or a new
+ * tab made too), so a destination outside the fixture's own terminals is seen */
+const received = (run: Run): Record<string, string> => Object.fromEntries([...new Set(run.core.log.flatMap((entry) =>
+  entry.what === "frame" && entry.from === "viewer" && (entry.kind === FRAME_DATA || entry.kind === FRAME_AUTOMATIC_INPUT) && entry.terminal !== null ? [entry.terminal] : []))].sort().map((terminal) => [terminal, sentTo(run, terminal)]));
 /** each read once the screen settled from the one before: the core answers a write, then tells of what it did, and the
  * screen draws it over its own clock; a read after the instant a pane went live */
 async function settled(run: Run): Promise<void> {
@@ -453,7 +457,7 @@ describe("the loop", () => {
         return {
           ended, busy: model.notices.some((notice) => notice.code === "layout_busy"), focus: model.focus, mode: model.mode.name,
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
-          received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)),
+          received: received(run),
         };
       } finally {
         await run.close();
@@ -587,7 +591,7 @@ describe("the loop", () => {
           await run.advance(20);
         }
         const model = run.loop.model();
-        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)) };
+        return { focus: model.focus, mode: model.mode.name, received: received(run) };
       } finally {
         await run.close();
       }
@@ -596,8 +600,15 @@ describe("the loop", () => {
     // each followed by text in the same read
     // the help's close key with a combining mark after it: read apart, q closes the help and the mark goes on to the pane,
     // so one read must give the overlay code points too (a text field joins a mark to its letter itself)
-    for (const bytes of ["\x02lzy\r", "\x02l\x02hab", "\x02wlab", "\x02rhab", "\x02zab", "\x02xab", "\x02?qab", "\x02?q\u0301ab"]) {
+    // each with where its text lands: the pane moved to, the zoomed one, the one a close focuses, none in a mode
+    const hex = (text: string) => Buffer.from(text).toString("hex");
+    const lands: [string, Record<string, string>][] = [
+      ["\x02lzy\r", { t2: hex("zy\r") }], ["\x02l\x02hab", { t1: hex("ab") }], ["\x02wlab", {}], ["\x02rhab", {}], ["\x02zab", { t1: hex("ab") }],
+      ["\x02xab", { t2: hex("ab") }], ["\x02?qab", { t1: hex("ab") }], ["\x02?q\u0301ab", { t1: hex("\u0301ab") }],
+    ];
+    for (const [bytes, destination] of lands) {
       const joined = await outcome([bytes]);
+      expect({ bytes, received: joined.received }).toEqual({ bytes, received: destination });
       expect({ bytes, outcome: await outcome([...bytes]) }).toEqual({ bytes, outcome: joined });
       for (let cut = 1; cut < bytes.length; cut++) {
         expect({ bytes, cut, outcome: await outcome([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ bytes, cut, outcome: joined });
@@ -605,7 +616,7 @@ describe("the loop", () => {
     }
     // the gate's case: the text after the move reaches the pane moved to, and nothing reaches the one left
     const moved = await outcome(["\x02lzy\r"]);
-    expect([moved.focus.panes["t-main"], moved.received[0], moved.received[1]]).toEqual(["t2", "", Buffer.from("zy\r").toString("hex")]);
+    expect([moved.focus.panes["t-main"], moved.received]).toEqual(["t2", { t2: hex("zy\r") }]);
   }, TEST_MS);
 
   it("scale: 200 terminals in 50 workspaces draw a frame, and only the shown tab's 16 panes are attached", async () => {
