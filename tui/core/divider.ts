@@ -143,8 +143,15 @@ export class DividerWrites {
     if (!drag) return;
     this.writing = drag;
     drag.sent = drag.ratio;
+    const grab = drag.grab;
+    // only the grab that issued the write ends with it: a newer grab of the same divider writes its own ratio, and
+    // its own answer says whether that landed
     const end = (refusal: DividerRefusal) => {
-      this.ended = Math.max(this.ended, drag.grab);
+      this.ended = Math.max(this.ended, grab);
+      if (drag.grab !== grab) {
+        drag.sent = null;
+        return;
+      }
       this.drags = this.drags.filter((one) => one !== drag);
       this.options.refused(refusal);
     };

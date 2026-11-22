@@ -154,6 +154,25 @@ describe("a divider drag's writes", () => {
     expect(asked.length).toBe(2);
   });
 
+  it("a refused write ends only the grab that issued it: a newer grab of the same divider released meanwhile still writes its ratio", async () => {
+    const { asked, edit } = heldEdits();
+    const refusals: DividerRefusal[] = [];
+    const writes = new DividerWrites({ edit, refused: (refusal) => refusals.push(refusal) });
+    writes.move(1, "t", NAME, 0.3, false);
+    writes.move(1, "t", NAME, 0.3, true);
+    // grabbed again and released before the first write is answered, at the same ratio and then another
+    writes.move(2, "t", NAME, 0.3, false);
+    writes.move(2, "t", NAME, 0.45, true);
+    asked[0]!.fail(Object.assign(new Error("refused"), { code: "unsupported" }));
+    await turn();
+    expect(asked.map((one) => ratioWritten(one.change))).toEqual([0.3, 0.45]);
+    expect(refusals).toEqual([]);
+    expect(writes.shape("t", { root: right(leaf("a"), leaf("b")), zoomed: null })?.root).toEqual(right(leaf("a"), leaf("b"), 0.45));
+    asked[1]!.answer(null);
+    await turn();
+    expect(asked.length).toBe(2);
+  });
+
   it("a refused write: the error's code, the local ratio dropped", async () => {
     const { asked, edit } = heldEdits();
     const refusals: DividerRefusal[] = [];
