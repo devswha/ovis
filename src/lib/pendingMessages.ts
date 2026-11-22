@@ -530,15 +530,17 @@ export class PendingMessageStore {
     if (!this.unsaved.has(owner)) return true;
     try { return !this.restored(this.storage().getItem(PREFIX + owner), true).some((message) => message.id === id && message.state === "held"); } catch { return false; }
   }
-  end(owner: string, id: string): void {
+  /** @returns the owner the row is under now: a pane moved while it was busy takes it along here */
+  end(owner: string, id: string): string {
     this.unconfirmed.delete(`${owner}\0${id}`);
     this.busy.delete(`${owner}\0${id}`);
     this.rows.set(owner, [...this.read(owner)]);
     this.notify();
     const to = this.afterSend.get(`${owner}\0${id}`);
-    if (to === undefined) return;
+    if (to === undefined) return owner;
     this.afterSend.delete(`${owner}\0${id}`);
     this.move(owner, to, id);
+    return to;
   }
   fail(owner: string, id: string, error: { code: string; message: string }, uncertain: boolean, attemptedGeneration?: number): void {
     this.unconfirmed.delete(`${owner}\0${id}`);

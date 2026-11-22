@@ -262,8 +262,8 @@ export function useComposerSends(deps: ComposerSendsDeps) {
         if (dismiss) hideLocally = true;
         else pendingMessages.fail(owner, id, { code: "disconnected", message: t("Not confirmed. Check the terminal before sending again.") }, true);
       } finally {
-        pendingMessages.end(owner, id);
-        if (hideLocally) pendingMessages.dismissCopy(owner, id);
+        const now = pendingMessages.end(owner, id);
+        if (hideLocally) pendingMessages.dismissCopy(now, id);
       }
     };
     // Web Locks reduce contention where supported; the bridge's stable resend ID is the

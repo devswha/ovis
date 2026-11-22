@@ -123,6 +123,25 @@ it.each(["disconnected", "not_transmitted"])("a live owner's dismissal whose con
   } finally { saved.restore(); }
 });
 
+it("a dismissal whose pane moved while it waited, and whose connection then ended, hides the copy under the pane's new ID", async () => {
+  const saved = savedStorage(), pane = "dismiss-moved", owner = paneStorageId("local", pane), moved = paneStorageId("local", "dismiss-moved-to"), wire: unknown[] = [];
+  const pending = { id: "moved-uncertain", request_id: 13, text: "question", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
+  pendingMessages.accept(owner, pending, "scope");
+  const socket = { connected: true, on: () => () => {}, pendingAction: (...args: unknown[]) => {
+    wire.push(args);
+    pendingMessages.move(owner, moved);
+    pendingMessages.suspend(owner, "scope");
+    return Promise.resolve({ ok: false, code: "disconnected", message: "the connection dropped" });
+  } } as unknown as HerdrSocket;
+  try {
+    await sends(pane, { ok: true }, [], { socketRef: { current: socket } }).actOnPending(pending.id, "dismiss");
+    expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]);
+    expect(pendingMessages.read(owner)).toEqual([]);
+    expect(pendingMessages.read(moved)).toEqual([]);
+    expect(new PendingMessageStore(() => saved.storage).read(moved)).toEqual([]);
+  } finally { saved.restore(); }
+});
+
 it("another tab's dismissal of its uncertain copy leaves this tab's live row with Edit, Send now and Discard, and its updates", async () => {
   const saved = savedStorage(), pane = "dismiss-other-tab", owner = paneStorageId("local", pane), wire: unknown[] = [];
   const live = { id: "live-queued", request_id: 12, text: "run the tests", state: "queued" as const, created_at: "2026-11-17T00:00:00Z" };
