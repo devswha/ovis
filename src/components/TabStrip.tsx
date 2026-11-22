@@ -728,7 +728,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   return (
     <>
       {!rowShown ? (error && <p className="pane-notice" role="alert">{error}</p>)
-        : end === undefined ? row : <div className="tab-strip-row">{row}<div className="tab-strip-end">{end}</div></div>}
+        : end === undefined ? row : <div className={`tab-strip-row${browserTabs ? " browser-tabs" : ""}`}>{row}<div className="tab-strip-end">{end}</div></div>}
       {rowShown && error && popup === "dialog" && <p className="pane-notice tab-strip-notice" role="alert">{error}</p>}
       {picker && pickedTab && <RowMenu key={picker.workspaces ? "workspaces" : "tab"} anchor={picker.anchor} point={picker.point} restoreFocusTo={picker.previousFocus}
         title={picker.workspaces ? t("Move {tab} to", { tab: nameOf(pickedTab) }) : nameOf(pickedTab)}
