@@ -453,6 +453,8 @@ class Link implements CoreLink {
     try {
       docs = await Promise.all(LINK_DOCS.map((name) => line.hc.call("doc.get", { name })));
     } catch (error) {
+      // a newer resync took over this line: its own reads decide, and a failure here ends nothing
+      if (line.over || round !== line.round) return;
       this.lineEnded(line, callCode(error), `herdr-core's layout documents could not be read: ${messageOf(error)}`);
       return;
     }
