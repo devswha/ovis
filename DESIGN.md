@@ -71,7 +71,7 @@ Only tokens overridden by `[data-theme="light"]` have a light value. Both column
 | Surface/input | `--bg-input` | `#1c1916` | `#fffdf9` |
 | Border | `--border` | `#2d2924` | `#dcd4c6` |
 | Border/strong | `--border-strong` | `#3e3830` | `#c5baa8` |
-| Chat bubble edge | `--bubble-border` | `transparent` | `var(--border)` |
+| Legacy bubble edge (unused) | `--bubble-border` | `transparent` | `var(--border)` |
 | Text/primary | `--text` | `#d8d0c3` | `#2a251f` |
 | Text/dim | `--text-dim` | `#9b9183` | `#685e52` |
 | Text/strong | `--text-strong` | `#f2ebdf` | `#16120d` |
@@ -237,14 +237,15 @@ custom themes, a small file of colours the app draws its interface from; it diff
 Base16, so the schemes that exist work as they are, and in checking contrast when a file is
 imported.
 
-`--bubble-border` is the edge of the chat's legacy neutral bubble token. It is `transparent` where `--bg-elevated`
-alone parts the bubble from `--bg`: dark amber and dark charcoal. It is `var(--border)`
-where the two surfaces sit close: every light theme (the `[data-theme="light"]` block sets it for
-all palettes) and dark Catppuccin, whose elevated surface is darker than its canvas. To make sent
-messages stand out reliably without breaking legacy palette parity or adding a per-palette token
-override, `.chat-bubble`, `.pending-message-bubble`, and `.setup-preview-user` draw `--bubble-bg`
-(`9%` `--accent` over `--bg`) inside `--bubble-edge` (`28%` `--accent` over `--border`), keeping
-text readable (>= 4.5:1 AA) and separation clear across every built-in and custom Base16 theme (#4329).
+The user's bubbles (`.chat-bubble`, `.pending-message-bubble`, `.setup-preview-user`) draw
+`--bubble-bg` (9% `--accent` over `--bg`) inside `--bubble-edge` (28% `--accent` over `--border`),
+both derived in `:root` so no palette needs an override of its own (#4329). Every built-in theme
+keeps `--text`, `--text-strong` and `--text-dim` at 4.5:1 on `--bubble-bg`, the fill at 1.08:1 and
+the edge at 1.5:1 on `--bg` (`themes.contrast.test.ts`). An imported theme keeps the text floor
+(`themeDerive.ts` moves its text, or its accent as a last resort); how far its bubble stands off
+the canvas follows its accent and `base02`. `--bubble-border`, the edge of the neutral bubble
+before #4329, is drawn by nothing now: it stays in the theme blocks (`transparent` in dark amber,
+charcoal and Codex, `var(--border)` elsewhere) only for the frozen palette parity baseline.
 
 - **Charcoal** is a neutral Ghostty-style dark: near-black canvas, a slightly lighter panel and
   terminal, a near-white accent and primary, and muted agent states. It keeps amber's rounded
@@ -3682,7 +3683,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The chip's **Answer** / **Open Terminal** are text
   buttons in the fold control's register (`--chip-h`, `--touch-target` where the primary pointer
   is coarse). A command the transcript keeps no turn for (Claude's `/btw`, an informational
-  command) still gets a sent row (`.chat-turn-sent`): the same neutral bubble, time and copy,
+  command) still gets a sent row (`.chat-turn-sent`): the same bubble, time and copy,
   placed by its send time; once a transcript turn records the command the chip moves onto that
   turn and the row goes, so a command never shows twice. Prose messages carry no chip.
 - Selecting text in chat copies the browser's rendered selection as plain text, not reconstructed

@@ -29,8 +29,8 @@
   --bg-input: #1c1916;
   --border: #2d2924;
   --border-strong: #3e3830;
-  /* the chat's user bubble: no edge where --bg-elevated alone parts it from --bg (the dark
-     amber and charcoal palettes), --border where the two surfaces sit close */
+  /* legacy: nothing draws it since the user's bubble takes --bubble-bg and --bubble-edge (#4329);
+     kept for the frozen palette parity baseline (themes.parity.test.ts) */
   --bubble-border: transparent;
 
   /* text */
