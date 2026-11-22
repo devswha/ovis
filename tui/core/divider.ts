@@ -80,8 +80,11 @@ interface Drag {
    * The core's tree it was last drawn over before its newest ratio was answered (at the release at the latest): once
    * released and answered, the local ratio is drawn until the core's tree differs from it
    */
-  over: string | null;
+  over: LayoutNode | null;
 }
+
+/** Whether two trees differ; the same object (the core's view unchanged) needs no comparison. */
+const differ = (one: LayoutNode, other: LayoutNode): boolean => one !== other && JSON.stringify(one) !== JSON.stringify(other);
 
 const sameDivider = (drag: Drag, tab: string, name: DividerName): boolean =>
   drag.tab === tab && drag.name.first === name.first && drag.name.second === name.second && drag.name.direction === name.direction;
@@ -119,17 +122,16 @@ export class DividerWrites {
   /** The tab's shape as drawn: each dragged divider at its local ratio while its drag lasts and until the tree changes after it. */
   shape(tab: string, shape: TabShape | undefined): TabShape | undefined {
     if (!shape) return shape;
-    const seen = JSON.stringify(shape.root);
     let root = shape.root;
     for (const drag of [...this.drags]) {
       if (drag.tab !== tab) continue;
       if (drag.done && this.writing !== drag && drag.sent === drag.ratio) {
-        drag.over ??= seen;
-        if (drag.over !== seen) {
+        drag.over ??= shape.root;
+        if (differ(drag.over, shape.root)) {
           this.drags = this.drags.filter((one) => one !== drag);
           continue;
         }
-      } else drag.over = seen;
+      } else drag.over = shape.root;
       const path = dividerPath(root, drag.name);
       root = (path && setRatio(root, path, drag.ratio)) ?? root;
     }
