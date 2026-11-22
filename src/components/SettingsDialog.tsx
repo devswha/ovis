@@ -74,7 +74,7 @@ import { ADD_CONNECTION_EVENT, takeAddConnection, type AddConnectionTab } from "
 import { PushTestControls } from "./PushTestControls.tsx";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
-import { HerdrUpdateControls, UpdateControls } from "./UpdateControls.tsx";
+import { HerdrUpdateControls, PreviewAppUpdate, UpdateControls } from "./UpdateControls.tsx";
 import { TelemetryControls } from "./TelemetryControls.tsx";
 import { AgentsSettings } from "./AgentsSettings.tsx";
 import { AgentGroupNames } from "./AgentGroupNames.tsx";
@@ -1664,6 +1664,7 @@ function AboutPage({ updates, herdrVersion, herdrRuntime, herdrCore, herdrRuntim
       {/* the facts read as one list, as herdr-app's About */}
       <div className="settings-joined">
       <RuntimeFacts version={herdrVersion} runtime={herdrRuntime} core={herdrCore} facts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} onOpenPane={onOpenPane} />
+      <PreviewAppUpdate />
       <UpdateControls updates={updates} bridgesFollow={bridgesFollow} />
       {/* herdr's own version and update: on herdr-core there is no herdr TUI here, and Terminals names the core */}
       {herdrRuntime !== "herdr-core" && <HerdrUpdateControls enabled herdrVersion={herdrVersion} showVersion={(herdrRuntimeFacts?.serving ?? herdrRuntime) === null} />}
