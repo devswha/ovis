@@ -1,11 +1,12 @@
 ### Fixed
-- Moving a pane across workspaces now carries unsent prompt-card text safely (write-first and
-  keep-on-conflict) so a subsequent herdr restart does not offer stale answers under the old pane
-  ID (#3458).
-- Removed redundant per-pane `/api/health` role fetches in `PaneTerminal`, relying on the already
-  provided `deviceWatching` prop (#3458).
-- Made the composer context ring keyboard-focusable on desktop with a focus tooltip showing the
-  remaining context percentage and token counts (#3458).
-- Live-updated relative timestamps while the Recover unsent text dialog stays open (#3458).
-- Scoped the hidden-command suppression check to the active trigger prefix (`/` vs `$`) so `$`
-  skill triggers are not suppressed by hidden `/` commands (#3458).
+- An unsent answer in a prompt card moves with its pane to another workspace, so it is no longer
+  offered under the pane's old ID after herdr restarts; newer text typed in another tab is kept.
+- On desktop, the composer's context ring can be reached by keyboard; its focus shows how much
+  context is left and the token counts.
+- The times in Recover unsent text keep counting while the dialog stays open.
+- A Codex `$` skill is no longer kept from "No command matches" by a hidden `/` command of the
+  same name.
+
+### Maintenance
+- Panes no longer each ask the server for this device's role when they open; they use the role the
+  app already knows.
