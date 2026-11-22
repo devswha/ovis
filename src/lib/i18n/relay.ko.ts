@@ -3,6 +3,7 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const RELAY_KO: Record<string, string> = {
+  "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis가 카메라를 쓸 수 없어요. 휴대폰 설정의 앱 → Ovis → 권한에서 허용하세요.",
   "Removed|pc state": "빠짐",
   "PCs this phone is on": "이 폰이 연결한 PC",
   "Forget {name}": "{name} 지우기",

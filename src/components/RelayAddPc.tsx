@@ -116,6 +116,15 @@ export function canScanQr(): boolean {
  * run (the camera refused). The plugin's own JS fills these defaults; the page calls the bridge without it (app/web/connect.js).
  */
 export function scanQr(t: Translate, take: (url: URL | null) => void, failed: (cause: unknown) => void): void {
+  // the Android app asks for the camera itself first (HerdrShell camera): the scanner's own refusal is in English alone
+  const camera = hasNativeMethod("HerdrShell", "camera") ? callNative<{ granted?: boolean }>("HerdrShell", "camera") : Promise.resolve({ granted: true });
+  camera.then((answer) => {
+    if (answer.granted !== true) { failed(new Error(t("Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions."))); return; }
+    scan(t, take, failed);
+  }, failed);
+}
+
+function scan(t: Translate, take: (url: URL | null) => void, failed: (cause: unknown) => void): void {
   void callNative<{ ScanResult?: string }>(SCANNER, "scanBarcode", { hint: 0, scanInstructions: t("Point at the QR code on the PC's screen"), scanButton: false, scanText: " ", cameraDirection: 1, scanOrientation: 3 }).then((result) => {
     if (result.ScanResult) take(addressOf(result.ScanResult));
   }, failed);

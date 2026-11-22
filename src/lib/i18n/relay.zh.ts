@@ -3,6 +3,7 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const RELAY_ZH: Record<string, string> = {
+  "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis 无法使用相机。请在手机的设置 → 应用 → Ovis → 权限中允许。",
   "Removed|pc state": "已移除",
   "PCs this phone is on": "这部手机连接过的电脑",
   "Forget {name}": "移除 {name}",

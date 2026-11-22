@@ -1,13 +1,17 @@
 package sh.ovis.app;
 
+import android.Manifest;
 import com.getcapacitor.JSArray;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
-@CapacitorPlugin(name = "HerdrShell")
+@CapacitorPlugin(name = "HerdrShell", permissions = { @Permission(alias = "camera", strings = { Manifest.permission.CAMERA }) })
 public class HerdrShellPlugin extends Plugin {
     private final PCStore.Openings openings = new PCStore.Openings();
     @PluginMethod
@@ -203,6 +207,26 @@ public class HerdrShellPlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("asked", target != null);
         result.put("target", target == null ? "" : target);
+        call.resolve(result);
+    }
+
+    /**
+     * Whether the app may use the camera, asked for when it may not: the QR scanner (ionbarcode) asks too, but answers a
+     * refusal in English alone, so the pages ask here first and say it themselves (connect.js, RelayAddPc scanQr).
+     */
+    @PluginMethod
+    public void camera(PluginCall call) {
+        if (getPermissionState("camera") == PermissionState.GRANTED) {
+            cameraAnswered(call);
+            return;
+        }
+        requestPermissionForAlias("camera", call, "cameraAnswered");
+    }
+
+    @PermissionCallback
+    private void cameraAnswered(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("granted", getPermissionState("camera") == PermissionState.GRANTED);
         call.resolve(result);
     }
 

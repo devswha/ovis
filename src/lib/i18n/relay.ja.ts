@@ -3,6 +3,7 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const RELAY_JA: Record<string, string> = {
+  "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis はカメラを使えません。スマホの設定の アプリ → Ovis → 権限 で許可してください。",
   "Removed|pc state": "削除済み",
   "PCs this phone is on": "このスマホが接続した PC",
   "Forget {name}": "{name} を削除",

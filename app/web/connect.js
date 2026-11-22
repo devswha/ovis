@@ -260,6 +260,12 @@ if (ACCOUNT_SIGN_IN) {
 for (const scan of document.querySelectorAll("[data-scan]")) scan.addEventListener("click", async () => {
   error.textContent = "";
   try {
+    // the Android app asks for the camera itself first (HerdrShell camera): the scanner's own refusal is in English alone
+    const cameraCheck = (window.Capacitor?.PluginHeaders ?? []).some((header) => header.name === "HerdrShell" && (header.methods ?? []).some((each) => each.name === "camera"));
+    if (cameraCheck && (await shell("camera")).granted !== true) {
+      error.textContent = t("Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.", "Ovis가 카메라를 쓸 수 없어요. 휴대폰 설정의 앱 → Ovis → 권한에서 허용하세요.");
+      return;
+    }
     // the plugin's own JS fills these defaults; this page calls the bridge without it
     const result = await window.Capacitor.nativePromise("CapacitorBarcodeScanner", "scanBarcode", { hint: 0, scanInstructions: t("Point at the QR code under Settings → Phone & devices on your PC", "PC의 설정 → 폰 및 기기에 있는 QR 코드를 비추세요"), scanButton: false, scanText: " ", cameraDirection: 1, scanOrientation: 3 });
     if (result?.ScanResult) await open(result.ScanResult);
