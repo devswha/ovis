@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
-import { ViewStore } from "../view-store.ts";
+import { type ViewFiles, ViewStore } from "../view-store.ts";
 import { type Focus, nextFocus, type World } from "./focus.ts";
 import { initialState, type ModelState, reduce } from "./reduce.ts";
 import { readView, restoredFocus, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./view-file.ts";
@@ -249,6 +249,58 @@ describe("the file on disk", () => {
     const fresh = new ViewStore(scratch());
     fresh.open("core1");
     expect(fresh.keep(sized(VIEW_FILE_MAX_BYTES + 1))).toBe("too_large");
+  });
+
+  describe("a write that fails part-way leaves the good file", () => {
+    const DISK: ViewFiles = { write: (fd, bytes, offset) => writeSync(fd, bytes, offset), rename: renameSync, remove: (path) => rmSync(path, { force: true }) };
+    /** a store over a folder that already holds a good file for core1 (AT_P2) */
+    const withGood = (files: Partial<ViewFiles>) => {
+      const folder = scratch();
+      const before = new ViewStore(folder);
+      before.open("core1");
+      before.keep(stateOf(WORLD, AT_P2));
+      const store = new ViewStore(folder, { ...DISK, ...files });
+      store.open("core1");
+      return { store, held: () => ({ files: readdirSync(folder), text: readFileSync(join(folder, "view-core1.json"), "utf8") }) };
+    };
+    const MOVED = { ...AT_P2, workspace: "w2" };
+
+    it("a write that takes a few bytes at a time: the rest follows, and the whole view is renamed in", () => {
+      const { store, held } = withGood({ write: (fd, bytes, offset) => writeSync(fd, bytes, offset, Math.min(7, bytes.length - offset)) });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBeNull();
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, MOVED)! });
+    });
+
+    it("a write that takes nothing more: refused by code, the good file kept, the temp file gone", () => {
+      const { store, held } = withGood({ write: (fd, bytes, offset) => (offset === 0 ? writeSync(fd, bytes, 0, 7) : 0) });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBe("short_write");
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, AT_P2)! });
+    });
+
+    it("a rename that fails: refused by code, the good file kept, and the same view written once a rename works", () => {
+      let failing = true;
+      const { store, held } = withGood({
+        rename: (from, to) => {
+          if (failing) throw Object.assign(new Error("cross-device"), { code: "EXDEV" });
+          renameSync(from, to);
+        },
+      });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBe("EXDEV");
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, AT_P2)! });
+      failing = false;
+      expect(store.keep(stateOf(WORLD, MOVED))).toBeNull();
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, MOVED)! });
+    });
+
+    it("a rename that fails and a temp file that cannot be removed: the rename's code is said, nothing thrown", () => {
+      const { store, held } = withGood({
+        rename: () => { throw Object.assign(new Error("cross-device"), { code: "EXDEV" }); },
+        remove: () => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); },
+      });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBe("EXDEV");
+      const { files, text } = held();
+      expect([files.length, text]).toEqual([2, viewText(WORLD, AT_P2)!]);
+    });
   });
 
   it("a write that fails is told once, by its code", () => {

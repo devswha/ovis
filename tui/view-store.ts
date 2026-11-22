@@ -17,6 +17,20 @@ function viewFileName(core: string): string {
   return `view-${plain}.json`;
 }
 
+/** The calls of a write that can fail part-way: what a test hands in to make them fail; the disk's own by default. */
+export interface ViewFiles {
+  /** writes `bytes` from `offset` on; answers how many were written */
+  write(fd: number, bytes: Uint8Array, offset: number): number;
+  rename(from: string, to: string): void;
+  remove(path: string): void;
+}
+
+const DISK: ViewFiles = {
+  write: (fd, bytes, offset) => writeSync(fd, bytes, offset),
+  rename: (from, to) => renameSync(from, to),
+  remove: (path) => rmSync(path, { force: true }),
+};
+
 export class ViewStore {
   private path: string | null = null;
   private last: string | null = null;
@@ -26,7 +40,7 @@ export class ViewStore {
   /** the line changed and the core it reaches is not known yet: nothing is written until `open` names it */
   private suspended = false;
 
-  constructor(private readonly folder: string) {}
+  constructor(private readonly folder: string, private readonly files: ViewFiles = DISK) {}
 
   /**
    * The line to the core changed: the world shown next may be another core's, so `keep` writes nothing until `open`
@@ -83,7 +97,7 @@ export class ViewStore {
       this.refused = text;
       return this.failure(problem);
     }
-    this.last = text;
+    const bytes = Buffer.from(text, "utf8");
     const temp = `${this.path}.${randomUUID()}.tmp`;
     let made = false;
     try {
@@ -92,14 +106,27 @@ export class ViewStore {
       const fd = openSync(temp, "wx", 0o600);
       made = true;
       try {
-        writeSync(fd, text);
+        // a write may take only part of the bytes: the rest follows until all are written, never a half file renamed
+        for (let at = 0; at < bytes.length;) {
+          const wrote = this.files.write(fd, bytes, at);
+          if (wrote <= 0) throw Object.assign(new Error("the view file took no more bytes"), { code: "short_write" });
+          at += wrote;
+        }
       } finally {
         closeSync(fd);
       }
-      renameSync(temp, this.path);
+      this.files.rename(temp, this.path);
+      // only a file in place is what the file holds: after a failed write the same view is tried again
+      this.last = text;
       return null;
     } catch (error) {
-      if (made) rmSync(temp, { force: true });
+      if (made) {
+        try {
+          this.files.remove(temp);
+        } catch {
+          // the write's own failure is what is said; a temp file left beside the view file is never read
+        }
+      }
       return this.failure(errorCode(error));
     }
   }
