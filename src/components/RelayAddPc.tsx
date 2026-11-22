@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight, Globe, QrCode, SquareTerminal, type LucideIc
 
 import { useT, type Translate } from "../lib/i18n.ts";
 import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
+import { ACCOUNT_PROVIDERS } from "../lib/account/store.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { SheepMascot } from "./SheepMascot.tsx";
 
@@ -71,6 +72,18 @@ export function publicHttp(url: URL): boolean {
   }
   if (host.includes(":")) return !(/^f[cd]/.test(host) || /^fe[89ab]/.test(host));
   return host.includes(".") && !/\.(local|lan|home\.arpa|internal)$/.test(host);
+}
+
+/**
+ * The PC page a link of this app's origin opens, built from the PC's scope: the page itself (`/s/<id>/`, no query) with
+ * its pairing offer, an account's sign-in (signInLink) or neither; null for anything else, a file under the scope too.
+ */
+function pcPage(url: URL): string | null {
+  const serverId = serverIdOfPath(url.pathname);
+  if (serverId === null || url.pathname !== serverScopePath(serverId) || url.search !== "") return null;
+  const signIn = url.hash.startsWith("#sign-in=") && (ACCOUNT_PROVIDERS as readonly string[]).includes(url.hash.slice("#sign-in=".length));
+  if (url.hash !== "" && !signIn && !url.hash.startsWith("#offer=")) return null;
+  return url.origin + serverScopePath(serverId) + url.hash;
 }
 
 /** Opens a PC's address: the phone app checks it is Ovis first (HerdrShell.open, app/web/connect.js); a browser goes there. */
@@ -150,14 +163,16 @@ export function useAddressOpen() {
   const failed = (cause: unknown): void => { setError(cause instanceof Error ? cause.message : String(cause)); };
   /**
    * What a scanned or typed address does: a pairing link of this app opens at its PC's page, where the pairing asks
-   * first; one of another origin is refused; a PC's own address opens (a public http one only after a warning); anything
+   * first, and so does an account PC's standing QR (its page, with the sign-in fragment or none: signInLink); a pairing
+   * link of another origin is refused; a PC's own address opens (a public http one only after a warning); anything
    * else says so.
    */
   const take = (url: URL | null): void => {
     if (url === null) { setError(t("That is not an http or https address.")); return; }
     const offer = url.hash.startsWith("#offer=");
     if (url.origin === window.location.origin) {
-      if (offer && serverIdOfPath(url.pathname) !== null) window.location.assign(url.href);
+      const page = pcPage(url);
+      if (page !== null) window.location.assign(page);
       else setError(t("That is not an http or https address."));
       return;
     }

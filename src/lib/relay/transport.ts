@@ -40,11 +40,14 @@ const DIRECT_IDLE_CHECKS = 12;
 const SOCKET_QUIET_MS = 3_000;
 
 
-function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void; readonly reject: (error: unknown) => void } {
   let resolve = (): void => {};
-  const promise = new Promise<void>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject = (_error: unknown): void => {};
+  const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
+
+type Opening = ReturnType<typeof deferred>;
 
 function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
   let listener: RelaySocket["onclose"] = null;
@@ -159,7 +162,8 @@ export class RelayTransport implements Transport {
   private known: RelayServerInfo | undefined;
   private generation = 0;
   private relay: string;
-  private opening: Promise<void> | undefined;
+  /** What the callers of connect() wait for: the outcome of the attempt running for them now (`attempt`). */
+  private opening: Opening | undefined;
   /**
    * The attempt `opening` runs: its own abort, and whether the page was hidden at any time since it began. Such an
    * attempt may have been frozen with its socket still connecting: showing the page drops it (wake), and its failure
@@ -197,8 +201,11 @@ export class RelayTransport implements Transport {
     if (!this.stopped && this.opening && this.attempt?.hidden) {
       ++this.generation;
       this.attempt.abort.abort();
-      this.attempt = undefined;
-      this.opening = undefined;
+      this.cancelRetry?.();
+      this.cancelRetry = undefined;
+      // whoever waits for the dropped attempt waits for this one from now on, whatever the dropped one still does
+      this.begin(this.opening);
+      return;
     }
     if (this.stopped || this.channel || this.opening) return;
     this.cancelRetry?.();
@@ -217,27 +224,37 @@ export class RelayTransport implements Transport {
   }
 
   connect(): Promise<void> {
-    if (this.opening) return this.opening;
+    if (this.opening) return this.opening.promise;
     if (this.stopped || this.channel) return Promise.resolve();
+    const opening = deferred();
+    this.opening = opening;
+    this.begin(opening);
+    return opening.promise;
+  }
+
+  /** Runs an attempt for the callers waiting on `opening`: only the attempt running when it ends settles them. */
+  private begin(opening: Opening): void {
     const attempt = { abort: new AbortController(), hidden: globalThis.document?.visibilityState === "hidden" };
     this.attempt = attempt;
-    const opening = this.establish(attempt).finally(() => {
-      if (this.opening !== opening) return;
-      this.opening = undefined;
+    const settle = (error?: { readonly cause: unknown }): void => {
+      if (this.attempt !== attempt) return;
       this.attempt = undefined;
-    });
-    this.opening = opening;
-    return opening;
+      this.opening = undefined;
+      if (error === undefined) opening.resolve(); else opening.reject(error.cause);
+    };
+    this.establish(attempt).then(() => settle(), (cause: unknown) => settle({ cause }));
   }
 
   private async establish(attempt: { readonly abort: AbortController; readonly hidden: boolean }): Promise<void> {
     const generation = ++this.generation;
-    // A one-use pairing code must never be reused after admission.
+    // A one-use pairing code must never be reused after admission; until a channel opened, an attempt that replaces
+    // the first one (wake) is still the first pairing.
+    const first = this.known === undefined;
     const { code, ...savedOffer } = this.offer;
-    const offer = generation === 1 ? this.offer : savedOffer;
+    const offer = first ? this.offer : savedOffer;
     const options: RelayChannelOptions & { readonly signal: AbortSignal } = {
       ...this.options, signal: AbortSignal.any([this.abort.signal, attempt.abort.signal]),
-      ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
+      ...(first ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
         const switching = this.switching !== undefined && this.switching === this.channel;
@@ -256,7 +273,7 @@ export class RelayTransport implements Transport {
       },
     };
     let opened: { channel: RelayChannel; relay: string };
-    try { opened = await this.race(generation, offer, options, () => !attempt.hidden); }
+    try { opened = await this.race(offer, options, () => !attempt.hidden); }
     catch (error) {
       // dropped for a newer attempt (wake) or by close: its failure is no one's
       if (generation !== this.generation) return;
@@ -286,10 +303,10 @@ export class RelayTransport implements Transport {
     }
   }
 
-  private race(generation: number, offer: RelayOffer, options: RelayChannelOptions & { readonly signal: AbortSignal }, mayFallBack: () => boolean): Promise<{ channel: RelayChannel; relay: string }> {
+  private race(offer: RelayOffer, options: RelayChannelOptions & { readonly signal: AbortSignal }, mayFallBack: () => boolean): Promise<{ channel: RelayChannel; relay: string }> {
     const viaRelay = (signal: AbortSignal, onClose = options.onClose) => openRelayChannelWithFallback(offer,
       { ...options, signal, onClose, offerDirect: this.options.directSocket !== undefined, offerTailnet: this.options.directTailnet?.() === true }, this.options.openChannel ?? openRelayChannel, this.relay, mayFallBack);
-    if (!this.options.directSocket || (generation === 1 && this.offer.code !== undefined)) return viaRelay(options.signal);
+    if (!this.options.directSocket || offer.code !== undefined) return viaRelay(options.signal);
     // a race the relay won by a hair would bring a switch the probe just earned back onto the relay, time after time
     const proven = this.switchingDirect;
     const headStartMs = proven ? undefined : DIRECT_HEAD_START_MS;
@@ -342,8 +359,22 @@ export class RelayTransport implements Transport {
   private async openDirect(offer: RelayOffer, options: RelayChannelOptions & { readonly signal: AbortSignal }, ended: AbortSignal, proven = false): Promise<RelayChannel | undefined> {
     const socket = this.options.directSocket;
     if (!socket) return undefined;
+    // the direct budget counts from here: reading the saved route spends it too, so a store that never answers ends
+    // with no direct carrier and leaves the outcome to the relay
+    const ends = performance.now() + DIRECT_BUDGET_MS;
     if (this.directCarriers === undefined) {
-      const saved = (await (this.options.store ?? indexedDeviceStore).get(offer.server_id).catch(() => undefined))?.direct ?? [];
+      const read = (this.options.store ?? indexedDeviceStore).get(offer.server_id);
+      const signal = AbortSignal.any([options.signal, ended]);
+      let gaveUp = (): void => {};
+      // null: the read did not answer in time (a later attempt reads again); a failed read is an answer with no route
+      const saved = await new Promise<readonly string[] | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), DIRECT_BUDGET_MS);
+        const aborted = (): void => resolve(null);
+        signal.addEventListener("abort", aborted, { once: true });
+        gaveUp = () => { clearTimeout(timer); signal.removeEventListener("abort", aborted); };
+        read.then((device) => resolve(device?.direct ?? []), () => resolve([]));
+      }).finally(() => gaveUp());
+      if (saved === null) return undefined;
       this.directCarriers ??= saved;
     }
     const carriers = [...new Set(this.directCarriers)];
@@ -353,7 +384,6 @@ export class RelayTransport implements Transport {
     // the race, and the Tailscale one keeps its whole budget (away from home it is the slow one); a lane alone has both.
     const lanes = [carriers.filter((carrier) => isTailnetCarrier(carrier)), carriers.filter((carrier) => !isTailnetCarrier(carrier))]
       .map((queue) => ({ queue, running: 0 }));
-    const ends = performance.now() + DIRECT_BUDGET_MS;
     let kept: string | undefined;
     let settled = false;
     const attempts = new Map<string, AbortController>();
@@ -661,6 +691,11 @@ export class RelayTransport implements Transport {
   close(): void {
     if (this.stopped) return;
     this.stopped = true;
+    // whoever waits for an attempt is done now, not once its pending reads or socket give up
+    const opening = this.opening;
+    this.opening = undefined;
+    this.attempt = undefined;
+    opening?.resolve();
     this.failWaitingHttp(new TypeError("Relay transport is closed"));
     this.renewing.clear();
     this.stopResources();
