@@ -555,12 +555,15 @@ export function startLoop(options: LoopOptions): Loop {
       end(first.kind === "NoCore" ? { kind: "no_core", code: first.code } : { kind: "incompatible", code: first.code, reason: first.reason });
       return;
     }
+    // heard before the entry: the entry's own write can find the terminal gone, and a signal held during it is told at its end
+    host.onEnd((how) => onHostEnd(how));
     if (!host.enter()) {
       void link.close().catch(() => {});
       end({ kind: "not_a_terminal" });
       return;
     }
     entered = true;
+    if (closing) return;
     framer.setModes({ mouse: true });
     host.onInput((bytes) => {
       guard(() => read(bytes));
@@ -576,14 +579,13 @@ export function startLoop(options: LoopOptions): Loop {
       });
       arm();
     });
-    host.onEnd((how) => onHostEnd(how));
     const size = host.size();
     guard(() => {
       dispatch({ type: "resize", cols: size.cols, rows: size.rows, at: clock.now() });
       reshow();
     });
     const probe = await host.probe();
-    if (ended) return;
+    if (ended || closing) return;
     guard(() => {
       framer.setModes({ kitty: (probe.kittyFlags ?? 0) > 0 });
       sync = probe.syncOutput === true;

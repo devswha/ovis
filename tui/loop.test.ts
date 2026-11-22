@@ -6,6 +6,7 @@ import { FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/h
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
+import { ending, EXIT_FAILED } from "./start.ts";
 import { FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
@@ -20,6 +21,8 @@ const SOAK_MS = 600_000;
 const OWN_HEAP_GROWTH_BYTES = 2 * 1024 * 1024;
 /** the link's code once its line was cut and a retry found no core listening (tui/core/link.ts) */
 const OFFLINE_CODE = "no_core";
+/** the most event-loop turns a test waits for the socket's own work, as tui/testing/run.ts settles */
+const SETTLE_TURNS = 2_000;
 
 // `bun run typecheck` checks the lines marked with ts-expect-error below: each must stay a compile error. The loop's
 // end carries only what a reader takes: the host ends the process with a signal's own exit code, and the entry says
@@ -293,6 +296,38 @@ describe("the loop", () => {
     expect(run.host.writeAttempts()).toBe(attempts);
     expect(run.loop.report().writes).toBe(writes);
     expect(run.sent.filter((frame) => frame.kind === FRAME_CLOSE).length).toBe(3);
+  }, TEST_MS);
+
+  it("a terminal gone at the entry's first write: the screen goes no further, ends as gone, and the entry gives the terminal back", async () => {
+    const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "loop-"));
+    const socket = join(folder, "hc.sock");
+    const listener = await oneTab(1).listen(socket);
+    try {
+      const host = new HeadlessHost();
+      host.failWrites("EIO");
+      const clock = new ManualClock();
+      const loop = startLoop({ host, clock, socket, keys: undefined });
+      let end: LoopEnd | null = null;
+      void loop.done.then((how) => { end = how; });
+      /** turns of the event loop (the socket's own) until `done` holds, at most SETTLE_TURNS */
+      const turns = async (done: () => boolean) => {
+        for (let turn = 0; turn < SETTLE_TURNS && !done(); turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+      };
+      await turns(() => host.writeAttempts() > 0);
+      expect(host.log()).toEqual(["raw on"]);
+      // the closing is bounded on the loop's clock
+      clock.current = QUIT_BOUND_MS;
+      clock.fireDue();
+      await turns(() => end !== null);
+      expect(end).toEqual({ kind: "gone", why: "write-failed" });
+      const said = ending(end!, { path: socket, session: "test" });
+      expect([said.leave, said.exit]).toEqual([true, EXIT_FAILED]);
+      host.leave();
+      expect([host.log(), host.writeAttempts(), loop.report().passes, clock.armed()]).toEqual([["raw on", "raw off"], 1, 0, 0]);
+    } finally {
+      await listener.close();
+      rmSync(folder, { recursive: true, force: true });
+    }
   }, TEST_MS);
 
   it("flood does not delay input: a key typed into one pane leaves in its read's turn while another pane floods", async () => {
