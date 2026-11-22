@@ -9,7 +9,7 @@ import { DEFAULT_ACCOUNT_SERVICE } from "../shared/web-policy.ts";
 import { loadRelayIdentity } from "../server/relay/identity.ts";
 import { updateStateDir } from "../server/update-state.ts";
 import { mergeEnvLayers } from "../server/legacy-env.ts";
-import { approveWaiting, link, linkSettings, type WaitingDevice } from "./plugin-link.ts";
+import { approveJoins, approveWaiting, link, linkSettings, type JoinOutcome, type WaitingDevice } from "./plugin-link.ts";
 import { COMMAND_ALIASES } from "./plugin-runtime.ts";
 
 const ORIGIN = "http://127.0.0.1:7317";
@@ -3393,5 +3393,77 @@ describe("pair --approve, asked as ovis add asks", () => {
     expect(gone.code).toBe(0);
     expect(gone.out).toContain("Phone p1 is no longer waiting.\n");
     expect(gone.decisions).toEqual([{ id: "p2", decision: "approve" }]);
+  });
+});
+
+describe("ovis approve, a members join typed with all six of its digits (#28)", () => {
+  // labels without digits, so a digit on the screen can only be one the command showed
+  const joinOf = (id: string) => ({ id, label: `Tablet ${id === "j1" ? "one" : "two"}` });
+  /** `said`: each text the command writes; `answer` types lines once the prompt was on the screen long enough. */
+  async function joining(options: { joins: { id: string; label: string }[]; said: (text: string, answer: (...lines: string[]) => void) => void; terminal?: boolean; approve?: (attempt: number) => JoinOutcome }) {
+    let at = Date.parse("2026-11-22T12:00:00Z");
+    const keys = keyboard();
+    const out: string[] = [];
+    const sent: { id: string; digits: string }[] = [];
+    let reads = 0;
+    const code = await approveJoins(options.joins, {
+      lines: { next: () => { reads++; return keys.lines.next(); } }, terminal: options.terminal ?? true, signal: new AbortController().signal, now: () => at, discard: keys.discard,
+      out: (text) => {
+        out.push(text);
+        options.said(text, (...lines) => { setTimeout(() => { at += 2_000; for (const line of lines) keys.type(line); }, 0); });
+      },
+      approve: async (id, digits) => { sent.push({ id, digits }); return options.approve?.(sent.length) ?? "approved"; },
+    });
+    return { code, out, text: out.join(""), sent, reads };
+  }
+  const prompt = (said: string, id: string): boolean => said.includes(joinOf(id).label) && said.endsWith(": ");
+
+  it("asks for the six digits the new device shows, shows none itself, takes no three, and lets it in with all six", async () => {
+    let asked = 0;
+    const { code, out, sent } = await joining({
+      joins: [joinOf("j1")],
+      said: (said, answer) => { if (prompt(said, "j1")) answer(++asked === 1 ? "456" : "123 456"); },
+    });
+    expect(code).toBe(0);
+    expect(asked).toBe(2);
+    // no candidates: the terminal shows no digits to pick from
+    expect(out.filter((said) => prompt(said, "j1")).join("")).not.toMatch(/[0-9]/);
+    expect(sent).toEqual([{ id: "j1", digits: "123456" }]);
+  });
+
+  it("ends a join at one wrong entry, never asking for it again, and goes on to the next; Enter by itself sends nothing", async () => {
+    const asked: string[] = [];
+    const { code, sent } = await joining({
+      joins: [joinOf("j1"), joinOf("j2")],
+      said: (said, answer) => {
+        if (prompt(said, "j1")) { asked.push("j1"); answer("000000"); }
+        if (prompt(said, "j2")) { asked.push("j2"); answer(""); }
+      },
+      approve: () => "wrong_digits",
+    });
+    expect(code).toBe(0);
+    expect(asked).toEqual(["j1", "j2"]);
+    expect(sent).toEqual([{ id: "j1", digits: "000000" }]);
+  });
+
+  it("stops at a locked or strict PC, says so, and asks about no other join", async () => {
+    for (const refusal of ["locked", "strict"] as const) {
+      const asked: string[] = [];
+      const { code, text, sent } = await joining({
+        joins: [joinOf("j1"), joinOf("j2")],
+        said: (said, answer) => { if (prompt(said, "j1")) { asked.push("j1"); answer("123456"); } if (prompt(said, "j2")) asked.push("j2"); },
+        approve: () => refusal,
+      });
+      expect(code).toBe(1);
+      expect(asked).toEqual(["j1"]);
+      expect(sent).toHaveLength(1);
+      expect(text).toContain(refusal === "locked" ? "locked" : "safety log");
+    }
+  });
+
+  it("approves nothing when its input is not a terminal: it reads no line and sends nothing", async () => {
+    const { code, sent, reads } = await joining({ joins: [joinOf("j1")], terminal: false, said: (_said, answer) => answer("123456") });
+    expect(code).toBe(1);
+    expect([sent, reads]).toEqual([[], 0]);
   });
 });

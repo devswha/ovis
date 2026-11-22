@@ -557,6 +557,9 @@ function asking(input: AnswerInput) {
   };
 }
 
+/** What `ovis approve` says when its input is no terminal: it answers nothing, and declines nothing either. */
+const NOT_A_TERMINAL = "This is not run in a terminal, so no request can be answered here. Nothing was declined: the requests keep waiting. Run this in a terminal to answer them (over ssh, run ssh -t).\n";
+
 export interface ApproveOptions extends AnswerInput {
   readonly decide: (id: string, decision: "approve" | "decline") => Promise<"taken" | "gone" | "away">;
   /**
@@ -578,7 +581,7 @@ export async function approveWaiting(pairings: readonly WaitingDevice[], options
   // own phone among them, for a run at a terminal or the app. (A decline ends a request for good; `ovis add --approve`,
   // whose run opened the window those requests came through, declines them as they show.)
   if (options.terminal !== true) {
-    out("This is not run in a terminal, so no request can be answered here. Nothing was declined: the requests keep waiting. Run this in a terminal to answer them (over ssh, run ssh -t).\n");
+    out(NOT_A_TERMINAL);
     return 1;
   }
   const desk = asking(options);
@@ -627,6 +630,56 @@ export async function approveWaiting(pairings: readonly WaitingDevice[], options
   return 0;
 }
 
+/** What a locked or strict PC says to its terminal (server/lock-boundary.ts): nothing is approved here then. */
+export function lockRefusal(code: "locked" | "strict"): string {
+  return code === "locked"
+    ? "This PC is locked, so no device can be approved from its terminal. Unlock it on its own screen, then run this again.\n"
+    : "This PC cannot read its safety log, so no device can be approved from its terminal. Open it on its own screen, or run ovis recover there, then run this again.\n";
+}
+
+/** A members-only account join waiting for this PC (`GET /api/relay/joins` without digits): its digits are typed, never shown. */
+export interface OwnJoin { readonly id: string; readonly label: string }
+
+/** What `POST /api/relay/join` made of the six digits typed: `away` when its answer did not come. */
+export type JoinOutcome = "approved" | "wrong_digits" | "gone" | "locked" | "strict" | "away";
+
+export interface JoinOptions extends AnswerInput {
+  readonly approve: (id: string, digits: string) => Promise<JoinOutcome>;
+}
+
+/**
+ * `ovis approve` for account joins a member could also approve (#28): the PC's terminal is the PC itself, so it asks
+ * as the own window's card does (src/components/OwnJoins.tsx OwnJoinCard). Its person types all six digits the new
+ * device shows: no candidates are shown and three digits are not enough. The PC compares them (pairing-approvals.ts
+ * decideTyped), and one wrong entry ends that join. Enter by itself leaves it waiting until its own deadline. A locked
+ * or strict PC refuses, and nothing more is asked. What is not a terminal answers nothing. The exit code.
+ */
+export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptions): Promise<number> {
+  const { out } = options;
+  if (options.terminal !== true) {
+    out(NOT_A_TERMINAL);
+    return 1;
+  }
+  for (const join of joins) {
+    const label = plainLabel(join.label);
+    for (;;) {
+      const line = await askLine(options, `${label} asks to join your account. Type all six digits its screen shows to let it in (one wrong entry ends this request), or press Enter by itself to leave it waiting: `);
+      if (line === null) { out("The terminal's input ended: nothing more is approved here.\n"); return 1; }
+      const typed = line.normalize("NFKC").replace(/\s/g, "");
+      if (typed === "") { out(`${label} is left waiting until its time runs out.\n`); break; }
+      if (!SIX_DIGITS.test(typed)) { out(`That line answered nothing: only all six digits ${label} shows let it in. Answer again.\n`); continue; }
+      const outcome = await options.approve(join.id, typed);
+      if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
+      if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
+      out(outcome === "approved" ? `Approved: ${label} joins your account once it confirms.\n`
+        : outcome === "wrong_digits" ? `That is not the number ${label} shows. It was not let in; it can ask again.\n`
+        : `${label} is no longer waiting.\n`);
+      break;
+    }
+  }
+  return 0;
+}
+
 const groups = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
 
 export function linkSettings(env: Readonly<Record<string, string | undefined>>): Pick<LinkOptions, "preview" | "cliName" | "app"> {
@@ -645,7 +698,7 @@ function cli(options: LinkOptions): string {
  * typed ahead where the input cannot be discarded, or a key pressed twice) answers nothing, and the prompt is shown
  * again. For a run that reads nothing else meanwhile: it reads one line at a time, and leaves no read open.
  */
-async function askLine(options: LinkOptions, prompt: string): Promise<string | null> {
+async function askLine(options: AnswerInput, prompt: string): Promise<string | null> {
   const now = options.now ?? Date.now;
   // Where the terminal's input cannot be emptied (Windows, no C library found), a line begun before the prompt comes
   // with the first Enter pressed at it, however late: that first line answers nothing, as `asking` does for a request

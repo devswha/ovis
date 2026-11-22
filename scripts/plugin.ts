@@ -1007,37 +1007,68 @@ async function pair(args: readonly string[], parts?: Awaited<ReturnType<typeof p
   return 0;
 }
 
-/** The PC's terminal is the PC itself, so this is approval on this PC (docs/account.md, "Who may admit a device"). */
+/**
+ * The PC's terminal is the PC itself, so this is approval on this PC (docs/account.md, "Who may admit a device"): the
+ * devices waiting with their digits, and the account joins a member could also approve, which this PC's own route
+ * lists (GET /api/relay/joins, as its own window's card does) and lets in with all six digits typed (#28).
+ */
 async function approvePairings(): Promise<number> {
-  const { approveWaiting, discardTyped } = await import("./plugin-link.ts");
+  const { approveJoins, approveWaiting, discardTyped, lockRefusal } = await import("./plugin-link.ts");
   if (!(await health())) return notRunning();
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
+  const errorCode = async (response: Response): Promise<unknown> => ((await response.json().catch(() => null)) as { error?: { code?: unknown } } | null)?.error?.code;
+  // a locked or strict PC refuses its terminal too (server/lock-boundary.ts), and says so in words
+  const refused = async (what: string, response: Response): Promise<number> => {
+    const text = await response.text();
+    let code: unknown;
+    try { code = (JSON.parse(text) as { error?: { code?: unknown } }).error?.code; } catch {}
+    process.stderr.write(code === "locked" || code === "strict" ? lockRefusal(code) : `could not read ${what} (${response.status}): ${text}\n`);
+    return 1;
+  };
   let pairings: WaitingDevice[];
+  let joins: { id: string; label: string }[];
   try {
     const listed = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
-    if (!listed.ok) {
-      process.stderr.write(`could not read the waiting pairings (${listed.status}): ${await listed.text()}\n`);
-      return 1;
-    }
+    if (!listed.ok) return await refused("the waiting pairings", listed);
     ({ pairings } = (await listed.json()) as { pairings: WaitingDevice[] });
+    // an Ovis older than this route lists none (404, 405); a first join, which comes with its digits, stays its window's
+    const asked = await serverFetch("/api/relay/joins", { headers, signal: AbortSignal.timeout(15_000) });
+    if (asked.status === 404 || asked.status === 405) joins = [];
+    else if (!asked.ok) return await refused("the waiting account joins", asked);
+    else joins = ((await asked.json()) as { joins: { id: string; label: string; digits?: string }[] }).joins.filter((join) => join.digits === undefined);
   } catch (error) {
     if (!timedOut(error)) throw error;
     process.stderr.write(`Ovis at ${origin} did not answer in time; try again\n`);
     return 1;
   }
-  if (pairings.length === 0) {
+  if (pairings.length === 0 && joins.length === 0) {
     process.stdout.write("No device is waiting to pair.\n");
     return 0;
   }
+  const out = (text: string): void => { process.stdout.write(text); };
+  const lines = console[Symbol.asyncIterator]();
+  // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever
+  const terminal = process.stdin.isTTY === true;
+  const signal = new AbortController().signal;
+  if (joins.length > 0) {
+    const code = await approveJoins(joins, {
+      out, lines, terminal, discard: discardTyped, signal,
+      approve: async (id, digits) => {
+        try {
+          const typed = await serverFetch("/api/relay/join", { method: "POST", headers, body: JSON.stringify({ id, digits }), signal: AbortSignal.timeout(15_000) });
+          if (typed.ok) return "approved";
+          const code = await errorCode(typed);
+          if (code === "wrong_digits" || code === "locked" || code === "strict") return code;
+          return code === "relay_pairing_gone" ? "gone" : "away";
+        } catch { return "away"; }
+      },
+    });
+    if (code !== 0 || pairings.length === 0) return code;
+  }
   // asked as `ovis add` asks (scripts/plugin-link.ts): a line answers only the request it was typed under
   return approveWaiting(pairings, {
-    out: (text) => process.stdout.write(text),
-    lines: console[Symbol.asyncIterator](),
-    // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever
-    terminal: process.stdin.isTTY === true,
-    discard: discardTyped,
-    signal: new AbortController().signal,
+    out, lines, terminal, discard: discardTyped, signal,
     // read again before three digits approve: a request that came since may end in the same three
     list: async () => {
       const again = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });

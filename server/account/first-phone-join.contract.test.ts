@@ -170,6 +170,44 @@ test("#16: a members join waits in the PC's own window for the typed number, one
   expect((await http(pc, "/api/relay/join", own, { id: "x", digits: "123456" })).status).toBe(403);
 });
 
+/** What `ovis approve` sends from this PC's terminal (scripts/plugin.ts approvePairings): loopback, the same origin, x-herdr-machine. */
+const terminal = (pc: Pc) => ({ ...own, "x-herdr-machine": "1", "x-herdr-update": "1", origin: `http://127.0.0.1:${pc.app.port}` });
+
+test("#28: ovis approve, at this PC's terminal, lists a members join without its digits and lets it in with the six digits typed", async () => {
+  const pc = await startedPc("darwin", [(await memberRow("acct_1")).row]);
+  await firstPairingRead(pc);
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  const listed = await http(pc, "/api/relay/joins", terminal(pc));
+  expect(listed.status).toBe(200);
+  expect(listed.body.joins).toEqual([expect.objectContaining({ label: "Android · Chrome" })]);
+  expect(listed.text).not.toContain(digits);
+  const typed = await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits });
+  expect(typed.status).toBe(200);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect((await next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
+  expect(pc.devices.hasKey(device.spki)).toBe(true);
+});
+
+test("#28: a members join the terminal lists is still a member's card, with three candidates, and the member's right pick decides it", async () => {
+  const member = await memberRow("acct_1");
+  const pc = await startedPc("darwin", [member.row]);
+  await firstPairingRead(pc);
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { digits } = await join(pc, device);
+  await waiting;
+  expect((await http(pc, "/api/relay/joins", terminal(pc))).body.joins).toHaveLength(1);
+  const approvals = pc.app.context.services.relay.approvals;
+  const [card] = approvals.remoteList();
+  expect(card!.choices).toHaveLength(3);
+  expect(card!.choices).toContain(digits);
+  expect(approvals.decideRemote(card!.id, true, digits, { id: member.row.id, label: "Account phone", role: "drive" }).outcome).toBe("decided");
+  expect((await http(pc, "/api/relay/joins", terminal(pc))).body.joins).toEqual([]);
+});
+
 test("a PC with an account member keeps the member's approval: its own window gets no digits to tap, and the member is asked", async () => {
   const pc = await startedPc("darwin", [(await memberRow("acct_1")).row]);
   await firstPairingRead(pc);

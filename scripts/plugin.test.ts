@@ -1116,6 +1116,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       { door: "socket", call: "GET /api/account/status", host: "localhost", origin: null },
       { door: "socket", call: "GET /api/health", host: "localhost", origin: null },
       { door: "socket", call: "GET /api/relay/pairings", host: "localhost", origin: "http://localhost" },
+      { door: "socket", call: "GET /api/relay/joins", host: "localhost", origin: "http://localhost" },
     ]);
   }, 30_000);
 
@@ -1268,7 +1269,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     } finally { await pc.stop(); }
     expect(pc.calls.filter((call) => call.door === "tcp")).toEqual([]);
     expect(pc.calls.map((call) => call.call)).toEqual([
-      "GET /api/health", "GET /api/relay/pairings",
+      "GET /api/health", "GET /api/relay/pairings", "GET /api/relay/joins",
       "GET /api/health", "GET /api/account/status",
     ]);
   }, 60_000);
@@ -1489,6 +1490,36 @@ describe("pair --approve", () => {
     } finally { await server.stop(true); }
   });
 
+  /** `pair --approve` at a real terminal (script), against the Ovis on `port`: what it shows, and what is typed at it. */
+  function atTerminal(port: number) {
+    const bin = join(scratch, "bin");
+    const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state"), PORT: String(port) };
+    for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
+    // util-linux takes the command as one string, BSD (macOS) as arguments after the file it records to. Behind cat:
+    // Bun hands a child a socket for stdin, which macOS's script refuses (tcgetattr), and cat gives it a pipe
+    const command = platform() === "darwin" ? "script -q /dev/null bun scripts/plugin.ts pair --approve" : "script -qfec 'bun scripts/plugin.ts pair --approve' /dev/null";
+    const child = Bun.spawn(["sh", "-c", `cat | ${command}`], { cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    let screen = "";
+    const reading = (async () => { for await (const chunk of child.stdout) screen += Buffer.from(chunk).toString(); })();
+    return {
+      child,
+      get screen() { return screen; },
+      type: (text: string): void => { child.stdin.write(text); child.stdin.flush(); },
+      shows: async (text: string): Promise<void> => {
+        const deadline = Date.now() + 20_000;
+        while (!screen.includes(text)) {
+          if (Date.now() > deadline) throw new Error(`the terminal never showed ${JSON.stringify(text)}: ${JSON.stringify(screen)}`);
+          await Bun.sleep(25);
+        }
+      },
+      close: async (): Promise<void> => {
+        try { child.stdin.end(); } catch {}
+        child.kill();
+        await reading.catch(() => undefined);
+      },
+    };
+  }
+
   it.skipIf(platform() === "win32" || Bun.which("script") === null)("discards what was typed at a real terminal before the question showed: digits begun ahead of it are no part of the Enter pressed at it", async () => {
     const decisions: unknown[] = [];
     let asked = (): void => undefined;
@@ -1500,45 +1531,82 @@ describe("pair --approve", () => {
       if (path === "/api/relay/pairing") { decisions.push(await request.json()); return Response.json({ ok: true }); }
       return new Response(null, { status: 404 });
     } });
-    const bin = join(scratch, "bin");
-    const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state"), PORT: String(server.port) };
-    for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
-    // util-linux takes the command as one string, BSD (macOS) as arguments after the file it records to. Behind cat:
-    // Bun hands a child a socket for stdin, which macOS's script refuses (tcgetattr), and cat gives it a pipe
-    const command = platform() === "darwin" ? "script -q /dev/null bun scripts/plugin.ts pair --approve" : "script -qfec 'bun scripts/plugin.ts pair --approve' /dev/null";
-    const child = Bun.spawn(["sh", "-c", `cat | ${command}`], { cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    let screen = "";
-    const reading = (async () => { for await (const chunk of child.stdout) screen += Buffer.from(chunk).toString(); })();
-    const shows = async (text: string): Promise<void> => {
-      const deadline = Date.now() + 20_000;
-      while (!screen.includes(text)) {
-        if (Date.now() > deadline) throw new Error(`the terminal never showed ${JSON.stringify(text)}: ${JSON.stringify(screen)}`);
-        await Bun.sleep(25);
-      }
-    };
+    const terminal = atTerminal(server.port!);
     try {
-      child.stdin.write("222");
-      child.stdin.flush();
-      await shows("222");
+      terminal.type("222");
+      await terminal.shows("222");
       asked();
-      await shows("press Enter to decline: ");
+      await terminal.shows("press Enter to decline: ");
       // fixed wait: a line counts only a second and a half after its question showed, by the command's own clock
       await Bun.sleep(1_700);
-      child.stdin.write("\n");
-      child.stdin.flush();
+      terminal.type("\n");
       // kept, the digits would head the line this Enter sends and approve the request; discarded, the line is empty
-      await shows("Declined.");
+      await terminal.shows("Declined.");
       expect(decisions).toEqual([{ id: "p1", decision: "decline" }]);
-      expect(screen).not.toContain("That line answered nothing");
-      child.stdin.end();
-      expect(await child.exited).toBe(0);
+      expect(terminal.screen).not.toContain("That line answered nothing");
+      terminal.child.stdin.end();
+      expect(await terminal.child.exited).toBe(0);
     } finally {
-      try { child.stdin.end(); } catch {}
-      child.kill();
-      await reading.catch(() => undefined);
+      await terminal.close();
       await server.stop(true);
     }
   }, 40_000);
+
+  /** A PC with a members-only account join waiting (#28): `refusal` answers every relay read, as a locked PC does. */
+  function joinWaitingPc(options: { refusal?: "locked" | "strict"; answer?: Response } = {}) {
+    const typed: { body: unknown; machine: string | null }[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (options.refusal !== undefined && path.startsWith("/api/relay/")) return Response.json({ error: { code: options.refusal, message: "refused" } }, { status: 403 });
+      if (path === "/api/relay/pairings") return Response.json({ pairings: [] });
+      if (path === "/api/relay/joins") return Response.json({ joins: [{ id: "j1", label: "Galaxy Tab", asked_at: new Date().toISOString(), left_ms: 60_000 }] });
+      if (path === "/api/relay/join") { typed.push({ body: await request.json(), machine: request.headers.get("x-herdr-machine") }); return options.answer ?? Response.json({ ok: true }); }
+      return new Response(null, { status: 404 });
+    } });
+    return { server, typed };
+  }
+
+  it.skipIf(platform() === "win32" || Bun.which("script") === null)("#28: lists a members join and lets it in with the six digits typed at the terminal, through this PC's own route", async () => {
+    const { server, typed } = joinWaitingPc();
+    const terminal = atTerminal(server.port!);
+    try {
+      await terminal.shows("Galaxy Tab");
+      await terminal.shows(": ");
+      // fixed wait: a line counts only a second and a half after its question showed, by the command's own clock
+      await Bun.sleep(1_700);
+      terminal.type("123456\n");
+      await terminal.shows("Approved");
+      expect(typed).toEqual([{ body: { id: "j1", digits: "123456" }, machine: "1" }]);
+      terminal.child.stdin.end();
+      expect(await terminal.child.exited).toBe(0);
+    } finally {
+      await terminal.close();
+      await server.stop(true);
+    }
+  }, 40_000);
+
+  it("#28: approves no members join with lines piped in: it says it is not a terminal, fails, and types nothing", async () => {
+    const { server, typed } = joinWaitingPc();
+    try {
+      const result = await run("pair", { PORT: String(server.port) }, { args: ["--approve"], stdin: "123456\n" });
+      expect(result.exitCode, result.err).toBe(1);
+      expect(result.out).toContain("not run in a terminal");
+      expect(typed).toEqual([]);
+    } finally { await server.stop(true); }
+  });
+
+  it("#28: refuses on a locked or strict PC and says so", async () => {
+    for (const refusal of ["locked", "strict"] as const) {
+      const { server, typed } = joinWaitingPc({ refusal });
+      try {
+        const result = await run("pair", { PORT: String(server.port) }, { args: ["--approve"], stdin: "123456\n" });
+        expect(result.exitCode).toBe(1);
+        expect(result.out + result.err).toContain(refusal === "locked" ? "This PC is locked" : "safety log");
+        expect(typed).toEqual([]);
+      } finally { await server.stop(true); }
+    }
+  });
 
   it("says so when no device waits", async () => {
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {

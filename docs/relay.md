@@ -163,7 +163,9 @@ two screens instead, as in Bluetooth's numeric comparison:
    ([A PC with no screen](#a-pc-with-no-screen)), and reads the waiting requests once more before
    it sends an approval typed as three digits. Input that is not a terminal (a pipe, `ssh` without
    `-t`) answers nothing: the command says so and fails, and no request is declined, so each keeps
-   waiting for a run at a terminal. The PC's terminal is the PC itself.
+   waiting for a run at a terminal. The PC's terminal is the PC itself, so it also asks about each
+   account join a member could approve ([Who may admit a device](account.md#who-may-admit-a-device)):
+   no digits are shown for it, all six the new device shows are typed, and one wrong entry ends it.
 
 The approval may also come from a phone already linked to the owner's account, connected through
 the relay: it is shown three sets of digits and must pick the new device's

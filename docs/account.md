@@ -284,7 +284,11 @@ picked out of three, as always) and, so a one-PC owner is never stuck, to this P
 without its digits, one join at a time on a card that window shows by itself, whose field never takes
 the focus on its own, and approved only by the owner typing the six digits the new device shows
 (`POST /api/relay/join`); one wrong entry ends that join. **Not now** only hides the card in that
-window: the join lapses at its own deadline. It is never approved by itself.
+window: the join lapses at its own deadline. It is never approved by itself. `ovis approve` in the
+PC's terminal (the same loopback, unforwarded request, with `x-herdr-machine` from the same origin)
+reads the same list and asks the same way: no digits shown, all six typed, one wrong entry ends that
+join, Enter by itself leaves it waiting, a locked or strict PC refuses and the command says so, and an
+input that is not a terminal approves nothing.
 
 A first join (a PC added in one press, its owner's first phone) has nobody else to approve it: this PC's
 own window alone shows it, as a card with the digits to compare and Allow / Decline (`POST /api/relay/join`
