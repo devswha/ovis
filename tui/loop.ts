@@ -335,8 +335,8 @@ export function startLoop(options: LoopOptions): Loop {
   /** Bytes read from the host (or drained): events, each through the state core at once. */
   function read(bytes: Uint8Array): void {
     const events: InputEvent[] = framer.feed(bytes, clock.now());
-    if (events.some((event) => event.type === "paste" && !event.complete)) pasteAt = clock.now() + PASTE_ABANDON_MS;
-    else if (pasteAt !== null) pasteAt = events.length > 0 ? null : clock.now() + PASTE_ABANDON_MS;
+    // only a refused paste whose end mark has not come yet is waited for: a paste begun after its end is framed as any paste
+    pasteAt = framer.discarding() ? clock.now() + PASTE_ABANDON_MS : null;
     for (const event of events) {
       act(`read:${event.type}`);
       if (event.type === "reply") {

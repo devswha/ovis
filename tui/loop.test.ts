@@ -199,6 +199,21 @@ describe("the loop", () => {
     expect(run.core.program("t1").receivedHex()).toBe(Buffer.from("k").toString("hex"));
   }, TEST_MS);
 
+  it("a paste begun in the read that ends a refused paste is framed whole, however long it pauses", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    run.type(`\x1b[200~${"a".repeat(PASTE_LIMIT_BYTES + 10)}`);
+    await run.settle();
+    expect(run.loop.model().notices.map((notice) => notice.code)).toContain("paste_refused");
+    // one read: the refused paste's last bytes and end mark, then a new paste that pauses past the wait
+    run.type("aaa\x1b[201~\x1b[200~first ");
+    await run.advance(PASTE_ABANDON_MS * 2);
+    run.type("second\x1b[201~");
+    await run.advance(20);
+    expect([run.loop.report().actions.includes("paste_reset"), Buffer.from(run.core.program("t1").receivedHex(), "hex").toString()]).toEqual([false, "first second"]);
+  }, TEST_MS);
+
   it("the loop draws for the host's colour depth: an RGB cell leaves as RGB on a truecolour host, as a palette colour on a 256-colour one", async () => {
     for (const [colorTerm, written, never] of [["truecolor", "38;2;95;135;175", "38;5;67"], ["", "38;5;67", "38;2;"]] as const) {
       const run = await start({ fixture: demo, colorTerm });
