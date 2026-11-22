@@ -3,10 +3,11 @@
  * Run with a scratch TMPDIR: bun tui/testing/herdr-reference.ts /absolute/herdr
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { Subprocess } from "bun";
 import { constants, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { isolatedHcEnv } from "../../scripts/test-hc.ts";
-import { DETACH, entryEnv, entryPty, fresh, visibleGrid } from "./entry-pty.ts";
+import { DETACH, anyFresh, closedBoxes, drainTail, entryEnv, entryPty, fresh, runBounded, shutdownOwned, visibleGrid } from "./entry-pty.ts";
 import { stopAllPtyRuns } from "./pty.ts";
 
 const [herdr] = process.argv.slice(2);
@@ -14,6 +15,12 @@ if (!herdr || !isAbsolute(herdr)) throw new Error("pass the absolute path to her
 const SESSION = "r32";
 const SIZES = [[120, 40], [80, 24]] as const;
 const PANES = ["LEFT", "RIGHT"] as const;
+// every wait and every retained byte of the capture has a limit
+const CALL_MS = 15_000;
+const CALL_BYTES = 1024 * 1024;
+const STOP_GRACE_MS = 5_000;
+const SERVER_ERR_CHARS = 16 * 1024;
+const TRANSCRIPT_CHARS = 4 * 1024 * 1024;
 const BOTH = "(?:LEFT-READY[\\s\\S]*RIGHT-READY|RIGHT-READY[\\s\\S]*LEFT-READY)";
 const active: (() => Promise<void>)[] = [];
 let cleaning: Promise<void> | undefined;
@@ -42,11 +49,12 @@ while IFS= read -r line; do printf '%s: %s\\r\\n' "$ROW32_PANE" "$line"; done
 
 try {
   const root = mkdtempSync(join(tmpdir(), "h-"));
+  // runs after the server's shutdown, which is registered later: the steps run last to first
+  active.push(async () => { rmSync(root, { recursive: true, force: true }); });
   const folders = { root, env: isolatedHcEnv(root, { XDG_CONFIG_HOME: join(root, "c"), PATH: "/usr/bin:/bin" }) };
   const clientPath = join(root, "c", "herdr", "sessions", SESSION, "herdr-client.sock");
   const apiPath = join(root, "c", "herdr", "sessions", SESSION, "herdr.sock");
   if (Buffer.byteLength(clientPath) > 107) {
-    rmSync(root, { recursive: true, force: true });
     throw new Error(`herdr's client socket exceeds 107 bytes: ${clientPath}`);
   }
   const env = {
@@ -58,31 +66,28 @@ try {
   writeFileSync(env.SHELL, SHELL, { mode: 0o700 });
   writeFileSync(env.HERDR_CONFIG_PATH, "onboarding = false\n[update]\nversion_check = false\nmanifest_check = false\n");
   const args = [herdr, "--session", SESSION];
-  const server = Bun.spawn([...args, "server"], { cwd: home, env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-  const serverErr = new Response(server.stderr).text();
+  const server: Subprocess<"ignore", "ignore", "pipe"> = Bun.spawn([...args, "server"], { cwd: home, env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+  const serverErr = drainTail(server.stderr, SERVER_ERR_CHARS);
   async function call(...command: string[]): Promise<string> {
-    const child = Bun.spawn([...args, ...command], { cwd: home, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    if (code !== 0) throw new Error(`herdr ${command.join(" ")} exited ${code}: ${err}`);
+    const { code, out, err } = await runBounded([...args, ...command], { cwd: home, env, deadlineMs: CALL_MS, maxBytes: CALL_BYTES, graceMs: STOP_GRACE_MS });
+    if (code !== 0) throw new Error(`herdr ${command.join(" ")} exited ${code}: ${err.slice(-2000)}`);
     return out.trim();
   }
   active.push(async () => {
-    try {
-      if (server.exitCode === null && existsSync(apiPath) && existsSync(clientPath)) await call("server", "stop");
-      else if (server.exitCode === null) server.kill("SIGTERM");
-    } catch (error) {
-      if (server.exitCode === null) server.kill("SIGTERM");
-      throw error;
-    } finally {
-      await server.exited;
-      if (existsSync(apiPath) || existsSync(clientPath)) throw new Error(`isolated herdr left a socket at ${root}`);
-      rmSync(root, { recursive: true, force: true });
-      console.log("herdr cleanup: owned server exited; both scratch sockets removed");
-    }
+    // the server is this code's own child: it is asked to stop, then ended through its handle
+    const ended = await shutdownOwned(server, async () => {
+      if (existsSync(apiPath) && existsSync(clientPath)) await call("server", "stop");
+      else server.kill("SIGTERM");
+    }, STOP_GRACE_MS);
+    if (ended.forced) console.warn(`herdr cleanup: the server did not stop by itself, ended with ${ended.forced}`);
+    if (ended.askError) console.warn(`herdr cleanup: server stop failed: ${ended.askError instanceof Error ? ended.askError.message : String(ended.askError)}`);
+    await serverErr.done;
+    if (existsSync(apiPath) || existsSync(clientPath)) throw new Error(`isolated herdr left a socket at ${root}`);
+    console.log("herdr cleanup: owned server exited; both scratch sockets removed");
   });
   const limit = performance.now() + 5_000;
   while (!existsSync(apiPath) || !existsSync(clientPath)) {
-    if (server.exitCode !== null) throw new Error(`isolated herdr exited ${server.exitCode}: ${await serverErr}`);
+    if (server.exitCode !== null) throw new Error(`isolated herdr exited ${server.exitCode}: ${serverErr.text()}`);
     if (performance.now() >= limit) throw new Error(`herdr sockets not ready at ${root}`);
     await Bun.sleep(10);
   }
@@ -107,7 +112,7 @@ try {
     for (const [name, entry, vars] of [["herdr", args, env]] as const) {
       // Start the quiet interval over whenever a chunk of a paint arrives.
       let outputArrived: (() => void) | undefined;
-      const run = entryPty(entry, vars, cols, rows, { onData: () => outputArrived?.() });
+      const run = entryPty(entry, vars, cols, rows, { onData: () => outputArrived?.(), maxOutputChars: TRANSCRIPT_CHARS });
       const settledGrid = async (complete: (grid: string) => boolean = () => true) => {
         for (;;) {
           const grid = await quietGrid();
@@ -139,9 +144,11 @@ try {
       if (cols === 80) {
         const from = run.output().length;
         run.type("\x02?");
-        await fresh(run, from, "scroll j/k/");
-        // the help is whole once its last line, the scroll hint, is on the grid
-        console.log(`\n=== ${name} help ${cols}x${rows} ===\n${(await settledGrid((text) => text.includes("scroll j/k/"))).trimEnd()}`);
+        await anyFresh(run, from, `${name}: output after the help key`);
+        // the help is whole once the settled grid holds a closed frame that the screen before it did not
+        const framed = new Set(closedBoxes(grid));
+        const help = await settledGrid((text) => closedBoxes(text).some((box) => !framed.has(box)));
+        console.log(`\n=== ${name} help ${cols}x${rows} ===\n${help.trimEnd()}`);
         const leavingHelp = run.output().length;
         run.type("\x1b");
         await fresh(run, leavingHelp, "LEFT-READY");
@@ -149,6 +156,11 @@ try {
       run.type(DETACH);
       const end = await run.ended;
       if (end.code !== 0) throw new Error(`${name} detach exited ${end.code}: ${end.stderr}`);
+      if (!end.after) throw new Error(`${name} left a pty whose terminal modes could not be read`);
+      const [was, now] = [end.before, end.after];
+      if (was.canonical !== now.canonical || was.echo !== now.echo || was.signals !== now.signals) {
+        throw new Error(`${name} did not restore the terminal modes: before ${was.text.trim()}; after ${now.text.trim()}`);
+      }
       await run.exited;
     }
   }

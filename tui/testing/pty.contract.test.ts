@@ -53,6 +53,13 @@ describe("runOnPty", () => {
     expect(processesWith(marker, env.HOME)).toEqual([]);
   }, TEST_MS);
 
+  it("ends a run whose output passes its limit and rejects the wait instead of truncating", async () => {
+    const run = runOnPty({ command: ["yes"], env: ENV, maxOutputChars: 20_000 });
+    await expect(run.until("never printed")).rejects.toThrow("the output passed 20000 characters");
+    await run.exited;
+    expect(run.output().length).toBeGreaterThan(20_000);
+  }, TEST_MS);
+
   it("a wait for output that never comes rejects when the command ends", async () => {
     const run = runOnPty({ command: ["sh", "-c", "printf done"], env: ENV });
     await expect(run.until("other")).rejects.toThrow("the command ended");

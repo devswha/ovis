@@ -19,6 +19,8 @@ import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
  * after, and it alone signals the entry, through the handle of the child it started.
  */
 export const PTY_DEADLINE_MS = 20_000;
+/** The transcript a run keeps: past it the run is ended and every wait rejects, so nothing is truncated silently. */
+export const PTY_MAX_OUTPUT_CHARS = 16 * 1024 * 1024;
 const SUPERVISOR = join(import.meta.dir, "supervise.ts");
 
 export interface PtyOptions {
@@ -28,6 +30,8 @@ export interface PtyOptions {
   cols?: number;
   rows?: number;
   deadlineMs?: number;
+  /** ends the run, through the PTY host, once its output passes this many characters */
+  maxOutputChars?: number;
   /** called with each piece of output as it arrives */
   onData?: (text: string) => void;
 }
@@ -103,12 +107,23 @@ export function runOnPty(options: PtyOptions): PtyRun {
   let output = "";
   let ended = false;
   let timedOut = false;
+  let overflowed = false;
+  const maxOutputChars = options.maxOutputChars ?? PTY_MAX_OUTPUT_CHARS;
   let code: number | null = null;
   const wakers = new Set<() => void>();
   const wake = () => { for (const waker of [...wakers]) waker(); };
   const session = new PtySession({
     command, args, cols: options.cols ?? 80, rows: options.rows ?? 24, env: options.env, inheritEnv: false,
-    onData: (data) => { output += data; options.onData?.(data); wake(); },
+    onData: (data) => {
+      if (overflowed) return;
+      output += data;
+      options.onData?.(data);
+      if (output.length > maxOutputChars) {
+        overflowed = true;
+        session.kill();
+      }
+      wake();
+    },
     onExit: (exit) => { code = exit; },
   });
   const deadline = setTimeout(() => { timedOut = true; session.kill(); wake(); }, deadlineMs);
@@ -133,9 +148,10 @@ export function runOnPty(options: PtyOptions): PtyRun {
         if (typeof match === "string" ? output.includes(match) : match.test(output)) {
           wakers.delete(check);
           resolve();
-        } else if (timedOut || ended) {
+        } else if (timedOut || ended || overflowed) {
           wakers.delete(check);
-          const why = timedOut ? `the deadline of ${deadlineMs} ms passed` : "the command ended";
+          const why = overflowed ? `the output passed ${maxOutputChars} characters`
+            : timedOut ? `the deadline of ${deadlineMs} ms passed` : "the command ended";
           reject(new Error(`${why} before ${what ?? JSON.stringify(String(match))}; output: ${JSON.stringify(output.slice(-2000))}`));
         }
       };
