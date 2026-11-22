@@ -12,6 +12,8 @@ import { initialState, type ModelState, reduce } from "./reduce.ts";
 import { readView, restoredFocus, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./view-file.ts";
 
 const TEST_MS = 120_000;
+/** how long the child that opens a FIFO in the view file's place may take; it starts in well under a second */
+const PROBE_DEADLINE_MS = 20_000;
 const folders: string[] = [];
 const runs: Run[] = [];
 afterEach(async () => {
@@ -214,8 +216,17 @@ describe("the file on disk", () => {
     expect(await made.exited).toBe(0);
     symlinkSync("/dev/zero", join(folder, "view-zero.json"));
     mkdirSync(join(folder, "view-folder.json"));
-    for (const core of ["fifo", "zero", "folder"]) expect({ core, read: new ViewStore(folder).open(core) }).toEqual({ core, read: { view: null, problem: "not_a_file" } });
-  });
+    // the reads run in a child this test ends by its own handle at a deadline: an open that waited on the FIFO would
+    // fail the test there, not hold the test run for ever
+    const store = join(import.meta.dir, "..", "view-store.ts");
+    const probe = Bun.spawn([process.execPath, "-e", [
+      `const { ViewStore } = await import(${JSON.stringify(store)});`,
+      `console.log(JSON.stringify(["fifo", "zero", "folder"].map((core) => new ViewStore(${JSON.stringify(folder)}).open(core))));`,
+    ].join("\n")], { env: { PATH: "/usr/bin:/bin", HOME: folder, TMPDIR: folder }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: PROBE_DEADLINE_MS, killSignal: "SIGKILL" });
+    const [out, err, exit] = await Promise.all([new Response(probe.stdout).text(), new Response(probe.stderr).text(), probe.exited]);
+    const refused = { view: null, problem: "not_a_file" };
+    expect({ exit, signal: probe.signalCode, err, out }).toEqual({ exit: 0, signal: null, err: "", out: `${JSON.stringify([refused, refused, refused])}\n` });
+  }, TEST_MS);
 
   it("the writer keeps the reader's limits: a file of 1 MiB and an id of 256 characters are written, one byte or character more is refused and the good file stays", () => {
     const folder = scratch();
