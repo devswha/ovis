@@ -5,8 +5,12 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { forgetTranscriptState, MAX_PAGE_PROMPTS, TRANSCRIPT_WINDOW_BYTES, transcriptPage, transcriptToolOutput } from "./conversation.ts";
-import { kimiWireForPane, kimiWireForWindowsProcesses, parseKimiTranscript } from "./kimi.ts";
+import * as herdr from "./herdr/client.ts";
+import { kimiTranscriptPathForPane, kimiWireForPane, kimiWireForWindowsProcesses, parseKimiTranscript } from "./kimi.ts";
+import { processStartedAt } from "./process-start.ts";
+import * as windowsProcesses from "./windows-processes.ts";
 import { tryWindowsProcessTable, type ProcessRow } from "./windows-processes.ts";
+import type { HerdrPane } from "../shared/protocol.ts";
 import { TOOL_OUTPUT_CHARS } from "./tool-output.ts";
 import { turnStarts } from "./transcript-turns.ts";
 
@@ -23,7 +27,7 @@ function kimiHome(...sessions: string[]): { home: string; wire: (id: string) => 
   return { home, wire, lock: (id, body) => writeFileSync(join(locks, `${id}.lock`), typeof body === "string" ? body : JSON.stringify(body)) };
 }
 const TEST_PROCESS_START = 1_000;
-const testProcessIdentity = {
+const testProcessIdentity = process.platform === "linux" || process.platform === "darwin" ? undefined : {
   startUpperBound: (pid: number) => pid === process.pid ? TEST_PROCESS_START : null,
   program: (pid: number) => pid === process.pid ? String(TEST_PROCESS_START) : null,
 };
@@ -207,6 +211,31 @@ it("keeps an idle Windows Kimi binding through an unavailable process table", ()
   expect(kimiWireForWindowsProcesses("win:probe", 10_000, rows, home)).toBe(wire("session_a"));
 });
 
+it("reads a Windows pane's Kimi below the shell herdr names, and keeps it while the process table cannot be read", async () => {
+  const { home, wire, lock } = kimiHome("session_a");
+  const rows = windowsKimiRows();
+  lock("session_a", { ...liveLock(), startedAt: rows[1]!.started! + 1 });
+  let table: ProcessRow[] | null = rows;
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "win:route", shell_pid: 10_000, foreground_processes: [{ pid: 10_000, name: "powershell.exe", argv: ["powershell.exe"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  const probe = spyOn(windowsProcesses, "tryWindowsProcessTable").mockImplementation(async () => table);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const pane = { pane_id: "win:route" } as HerdrPane;
+    expect(await kimiTranscriptPathForPane(pane, home)).toBe(wire("session_a"));
+    rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
+    table = null;
+    expect(await kimiTranscriptPathForPane(pane, home)).toBeNull();
+    table = rows;
+    expect(await kimiTranscriptPathForPane(pane, home)).toBe(wire("session_a"));
+    expect(probe).toHaveBeenCalledTimes(3);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    info.mockRestore();
+    probe.mockRestore();
+  }
+});
+
 it("keeps an idle Kimi's last session while the same process runs in the pane, and only then", () => {
   const { home, wire, lock } = kimiHome("session_a", "session_b");
   const locks = join(home, ".kimi-code", "locks", "sessions");
@@ -331,7 +360,7 @@ it("ignores a lock dated where its process may not have started yet", () => {
   const { home, lock } = kimiHome("session_old");
   // the earliest the process may have started (Linux's btime is whole seconds): a lock a dead
   // process wrote then could be one its reused pid never wrote
-  lock("session_old", { ...liveLock(), startedAt: TEST_PROCESS_START - 1 });
+  lock("session_old", { ...liveLock(), startedAt: testProcessIdentity === undefined ? processStartedAt(process.pid)! : TEST_PROCESS_START - 1 });
   expect(kimiWireForProcesses([process.pid], home)).toBeNull();
 });
 
