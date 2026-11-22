@@ -10,7 +10,9 @@ The herdr look (amber) is a warm terminal: an amber-phosphor console on lamp-lit
 with chat-app clarity. Tonal surfaces and hairlines keep the chrome out of the way. There is ONE
 chrome color, amber: focus, the chosen lens, the terminal cursor and the user's own action (Send, primary
 buttons). Agent states carry the remaining saturated colors and none of them is amber. The user's
-chat turns are neutral raised cards, so a long thread never turns into a wall of color. Dark is the
+chat turns are softly accent-tinted raised cards (`--bubble-bg`, `--bubble-edge`), so sent messages
+stand out from long assistant prose and neutral tool/code cards without turning a long thread into a
+wall of saturated color. Dark is the
 default, light follows the same hierarchy, and comfortable or compact density changes scale without
 changing information architecture. A new browser starts on the Codex theme (dark and light), which
 draws this hierarchy in Codex's neutral surfaces and blue accent; amber, charcoal, Catppuccin and
@@ -155,6 +157,8 @@ The glass tokens are expressions over the palette above, not colors of their own
 | Surface/raised | `--surface-raised` | `var(--bg-elevated)` | `var(--bg-panel)` |
 | Surface/overlay | `--surface-overlay` | `var(--bg-elevated)` | `var(--bg-input)` |
 | Surface/navigation | `--bg-nav` | `var(--bg)` | `var(--bg-panel)` |
+| Chat bubble background | `--bubble-bg` | `color-mix(in srgb, var(--accent) 9%, var(--bg))` | same expression |
+| Chat bubble border | `--bubble-edge` | `color-mix(in srgb, var(--accent) 28%, var(--border))` | same expression |
 | Border/input | `--border-input` | `color-mix(in srgb, var(--text-dim) 78%, var(--border-strong))` | same expression |
 | Border/contrast | `--border-contrast` | `var(--border-strong)` | `var(--border-strong)` |
 | Status/reconnecting | `--status-reconnecting` | `var(--notice)` | `var(--notice)` |
@@ -174,7 +178,7 @@ The glass tokens are expressions over the palette above, not colors of their own
 
 `--border-contrast` is the edge of a field, a card, a chip or a switch that must stay readable when
 the OS asks for more contrast: the strong border by default, the text ink under
-`prefers-contrast: more`, where `--border-input` takes it too (the same block turns the glass bars
+`prefers-contrast: more`, where `--border-input` and `--bubble-edge` take it too (the same block turns the glass bars
 and cards opaque and `--border` strong). `--status-ink` is the numeral drawn on a status fill (the
 More button's waiting count): the panel's paper, which every palette's `--status-blocked` clears at
 6:1 or more (the contrast test floors the status colours at 3:1 on the panel the other way round,
@@ -233,10 +237,14 @@ custom themes, a small file of colours the app draws its interface from; it diff
 Base16, so the schemes that exist work as they are, and in checking contrast when a file is
 imported.
 
-`--bubble-border` is the edge of the chat's user bubble. It is `transparent` where `--bg-elevated`
+`--bubble-border` is the edge of the chat's legacy neutral bubble token. It is `transparent` where `--bg-elevated`
 alone parts the bubble from `--bg`: dark amber and dark charcoal. It is `var(--border)`
 where the two surfaces sit close: every light theme (the `[data-theme="light"]` block sets it for
-all palettes) and dark Catppuccin, whose elevated surface is darker than its canvas.
+all palettes) and dark Catppuccin, whose elevated surface is darker than its canvas. To make sent
+messages stand out reliably without breaking legacy palette parity or adding a per-palette token
+override, `.chat-bubble`, `.pending-message-bubble`, and `.setup-preview-user` draw `--bubble-bg`
+(`9%` `--accent` over `--bg`) inside `--bubble-edge` (`28%` `--accent` over `--border`), keeping
+text readable (>= 4.5:1 AA) and separation clear across every built-in and custom Base16 theme (#4329).
 
 - **Charcoal** is a neutral Ghostty-style dark: near-black canvas, a slightly lighter panel and
   terminal, a near-white accent and primary, and muted agent states. It keeps amber's rounded
@@ -3612,9 +3620,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   floor stays in px (`--content-w` is px); under a 13.67px root, where 60rem is less than 820px, the
   floor wins and Default is the same lane as Narrow.
   Structured Claude/omp transcripts fall back to ANSI-stripped pane scrollback when unavailable.
-- The register is Codex / gajae-code-app: a quiet document. User turns are right-aligned neutral
-  cards (`--bg-elevated`, a `--bubble-border` edge, `--radius-lg` on all four corners, ≤80% wide,
-  no avatar or name). Assistant turns have no header: the answer is plain prose.
+- The register is Codex / gajae-code-app: a quiet document. User turns are right-aligned
+  accent-tinted cards (`--bubble-bg`, a `--bubble-edge` border, `--radius-lg` on all four corners,
+  ≤80% wide, no avatar or name), following the Claude app and T3 Code in framing the user's own
+  turns distinctly beside long assistant prose and neutral work/code cards while keeping the tint
+  at low strength tied to `--accent` rather than a saturated fill or a separate bubble-color
+  setting (#4329). Assistant turns have no header: the answer is plain prose.
 - A long user message (`lib/userMessageFold.ts`: more than `--chat-fold-lines` lines, or more
   characters than about that many lines of the widest bubble hold, a link or image counted by its
   label) is capped at `--chat-fold-lines` lines of its prose. Only such a message is measured, and
@@ -4309,7 +4320,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   sign-in of the account; a stale record is left out like a failed limit. This is not active-account detection. Mobile and
   remote panes omit it. The context ring only shows: its number is in the tooltip, and a press does nothing.
 - Working Send on a supporting bridge adds a pending message above the input card, before the
-  prompt dock. `PendingMessages` uses the chat's column and neutral user-bubble surface: plain
+  prompt dock. `PendingMessages` uses the chat's column and user-bubble surface (`--bubble-bg`,
+  `--bubble-edge`): plain
   text aligned right, with no outer card. Its scrolling stack is capped by `--pending-max-h`
   (`min(20dvh, 12rem)`). The text stays selectable. Its separate ↑ Send now action sends it, and the small sibling X
   discards it. A sibling pencil **Edit queued message** withdraws only that exact unsent ID

@@ -274,6 +274,8 @@
   --surface-raised: var(--bg-elevated);
   --surface-overlay: var(--bg-elevated);
   --bg-nav: var(--bg);
+  --bubble-bg: color-mix(in srgb, var(--accent) 9%, var(--bg));
+  --bubble-edge: color-mix(in srgb, var(--accent) 28%, var(--border));
 
   /* control edge, status & marker contrast roles >= 3:1 (G-028, G-074, G-148, G-194) */
   --border-input: color-mix(in srgb, var(--text-dim) 78%, var(--border-strong));
@@ -3983,6 +3985,7 @@ button {
     --border-contrast: var(--text);
     --border: var(--border-strong);
     --border-input: var(--border-contrast);
+    --bubble-edge: var(--border-contrast);
   }
 }
 
