@@ -220,8 +220,9 @@ export function useComposerSends(deps: ComposerSendsDeps) {
             const releaseSubmit = submitRetention?.retain(pane);
             const answer = await result.finally(() => releaseSubmit?.());
             if (answer.ok && action === "steer" && delivered) showSentCommand(pane, message.text, known, seen);
-            // still in flight on the bridge, or no longer there: the copy goes from this page only
-            if (!answer.ok && dismiss && (answer.code === "pending_uncertain" || answer.code === "pending_not_found")) hideLocally = true;
+            // still in flight on the bridge, no longer there, or its connection ended (the bridge settles that one's
+            // records itself): the copy goes from this page only
+            if (!answer.ok && dismiss && ["pending_uncertain", "pending_not_found", "disconnected", "not_transmitted"].includes(answer.code)) hideLocally = true;
             else if (!answer.ok) pendingMessages.fail(owner, id, { code: answer.code, message: answer.message }, pendingActionUncertain(answer.code, message.state),
               action === "steer" ? message.resendGeneration ?? 0 : undefined);
           } finally {

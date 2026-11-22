@@ -103,6 +103,24 @@ it.each(["pending_uncertain", "pending_not_found"])("a live owner's dismissal th
   } finally { saved.restore(); }
 });
 
+it.each(["disconnected", "not_transmitted"])("a live owner's dismissal whose connection ends before the bridge answers (%s) hides only this page's copy", async (code) => {
+  const saved = savedStorage(), pane = `dismiss-dropped-${code}`, owner = paneStorageId("local", pane), wire: unknown[] = [];
+  const pending = { id: `dropped-${code}`, request_id: 11, text: "question", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
+  pendingMessages.accept(owner, pending, "scope");
+  const socket = { connected: true, on: () => () => {}, pendingAction: (...args: unknown[]) => {
+    wire.push(args);
+    pendingMessages.suspend(owner, "scope");
+    return Promise.resolve({ ok: false, code, message: "the connection dropped" });
+  } } as unknown as HerdrSocket;
+  try {
+    await sends(pane, { ok: true }, [], { socketRef: { current: socket } }).actOnPending(pending.id, "dismiss");
+    expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]);
+    expect(pendingMessages.read(owner)).toEqual([]);
+    pendingMessages.publish(owner, [pending], [], "next-scope");
+    expect(pendingMessages.read(owner)).toEqual([]);
+  } finally { saved.restore(); }
+});
+
 it("display-only intent never turns into a queue discard after an uncertain row changes", async () => {
   const saved = savedStorage(), pane = "dismiss-race", owner = paneStorageId("local", pane), wire: unknown[] = [];
   const pending = { id: "changed-row", request_id: 8, text: "question", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
