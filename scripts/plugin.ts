@@ -157,6 +157,16 @@ const CONFIG_FILES = ENV_FILES.map((name) => join(CONFIG_DIR, name)).filter((fil
 const fileVars = CONFIG_FILES.map(readEnvFile);
 const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) => key in fileVars[1]! && fileVars[0]![key] !== fileVars[1]![key]) : [];
 const env = mergeEnvLayers([process.env, ...fileVars]);
+/**
+ * The OVIS_STATE_DIR this command was run with, which a settings file may set over (stateDirWayOut). A command handed on
+ * to the release Settings installed (handOn) is told it apart: its own environment is the merged one.
+ */
+const GIVEN_STATE_DIR_VARIABLE = "OVIS_PLUGIN_GIVEN_STATE_DIR";
+const givenStateDir = process.env[GIVEN_STATE_DIR_VARIABLE] ?? mergeEnvLayers([process.env])["OVIS_STATE_DIR"] ?? "";
+// resolved where the command was run: a handed-on release runs in the plugin's root. And told this process alone: a server
+// or command it starts reads its own
+const GIVEN_STATE_DIR = givenStateDir === "" ? "" : resolve(givenStateDir);
+delete env[GIVEN_STATE_DIR_VARIABLE];
 const configuredSocket = fileVars.some((vars) => (vars["HERDR_SOCKET"] ?? "") !== "");
 /** The default session's socket, from the one herdr handed this plugin: a named session's is sessions/<name>/herdr.sock beside it */
 function defaultSocket(own: string): string {
@@ -227,6 +237,34 @@ function ownerDoor(): string | null {
   } catch { return null; }
 }
 /**
+ * The way out when a machine profile is not found because the plugin's settings file sets OVIS_STATE_DIR over the one
+ * the command was run with (the file wins, as INSTALL.md documents): the command looked for the owner socket in another
+ * folder (#4210). Empty in any other case: also where the file's folder has an owner socket that did not answer.
+ */
+function stateDirWayOut(): string {
+  const given = GIVEN_STATE_DIR;
+  if (!machineProfile || given === "" || serverDoor() !== null || sameDir(given, APP_STATE_DIR)) return "";
+  // the last file that sets it is the one that wins
+  const setting = CONFIG_FILES.filter((_, index) => "OVIS_STATE_DIR" in mergeEnvLayers([fileVars[index]!]));
+  const file = setting[setting.length - 1];
+  if (file === undefined) return "";
+  return `${file} sets OVIS_STATE_DIR to ${APP_STATE_DIR}, which wins over ${given}. Run it with that profile's HERDR_PLUGIN_CONFIG_DIR, or set the same OVIS_STATE_DIR in the file.\n`;
+}
+
+function sameDir(one: string, other: string): boolean {
+  try {
+    return realpathSync(one) === realpathSync(other);
+  } catch {
+    return resolve(one) === resolve(other);
+  }
+}
+
+function notRunning(): number {
+  process.stderr.write(`Ovis is not running at ${origin}; start it first\n${stateDirWayOut()}`);
+  return 1;
+}
+
+/**
  * The door of this command: the one its first passing health check went to (appHealth), kept for every later request
  * of the command, so a command never moves from one door to the other.
  */
@@ -254,6 +292,11 @@ function profileRelayOnly(): string {
 
 function serverFetch(path: string, init: RequestInit = {}, door = serverDoor()): Promise<Response> {
   return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
+}
+
+/** A request that ran past its `AbortSignal.timeout`: the server answered health, then stopped answering. */
+function timedOut(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "TimeoutError";
 }
 
 /**
@@ -877,21 +920,27 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
     return 1;
   }
   const { qr, decodeOffer } = parts ?? await pairingParts();
-  if (!(await health())) {
-    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
-    return 1;
-  }
+  if (!(await health())) return notRunning();
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1" };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
-  const started = await serverFetch("/api/devices/pair/start", { method: "POST", headers, body: "{}" });
-  if (!started.ok) {
-    process.stderr.write(`could not start a pairing (${started.status}): ${await started.text()}\n`);
+  let code: string;
+  try {
+    const started = await serverFetch("/api/devices/pair/start", { method: "POST", headers, body: "{}", signal: AbortSignal.timeout(5000) });
+    if (!started.ok) {
+      process.stderr.write(`could not start a pairing (${started.status}): ${await started.text()}\n`);
+      return 1;
+    }
+    ({ code } = (await started.json()) as { code: string; expires_at: string });
+  } catch (error) {
+    if (!timedOut(error)) throw error;
+    // the start may have reached the PC, which then made a code this never got. No route reads it back, and a cancel
+    // cannot tell it from a code made elsewhere since; a new start replaces whichever is pending, as every start does
+    process.stderr.write(`Ovis at ${origin} did not answer in time. It may have made a pairing code that was not shown: run ${env["OVIS_CLI_NAME"] || "ovis"} pair again to replace it.\n`);
     return 1;
   }
-  const { code } = (await started.json()) as { code: string; expires_at: string };
   let url: string | null = null;
   try {
-    const access = (await (await serverFetch("/api/access", { headers })).json()) as { tailscale: { serving_url: string | null } };
+    const access = (await (await serverFetch("/api/access", { headers, signal: AbortSignal.timeout(5000) })).json()) as { tailscale: { serving_url: string | null } };
     url = access.tailscale.serving_url;
   } catch {}
   const out: string[] = [`Pairing code: ${code.slice(0, 3)} ${code.slice(3)}   (good for 10 minutes, for one device)`];
@@ -937,18 +986,22 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
 /** The PC's terminal is the PC itself, so this is approval on this PC (docs/account.md, "Who may admit a device"). */
 async function approvePairings(): Promise<number> {
   const { approveWaiting, discardTyped } = await import("./plugin-link.ts");
-  if (!(await health())) {
-    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
-    return 1;
-  }
+  if (!(await health())) return notRunning();
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
-  const listed = await serverFetch("/api/relay/pairings", { headers });
-  if (!listed.ok) {
-    process.stderr.write(`could not read the waiting pairings (${listed.status}): ${await listed.text()}\n`);
+  let pairings: WaitingDevice[];
+  try {
+    const listed = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
+    if (!listed.ok) {
+      process.stderr.write(`could not read the waiting pairings (${listed.status}): ${await listed.text()}\n`);
+      return 1;
+    }
+    ({ pairings } = (await listed.json()) as { pairings: WaitingDevice[] });
+  } catch (error) {
+    if (!timedOut(error)) throw error;
+    process.stderr.write(`Ovis at ${origin} did not answer in time; try again\n`);
     return 1;
   }
-  const { pairings } = (await listed.json()) as { pairings: WaitingDevice[] };
   if (pairings.length === 0) {
     process.stdout.write("No device is waiting to pair.\n");
     return 0;
@@ -994,7 +1047,9 @@ async function handOn(active: string, args: readonly string[]): Promise<number> 
   const handlers = { SIGINT: process.platform === "win32" ? () => undefined : pass("SIGINT"), SIGTERM: pass("SIGTERM"), SIGHUP: pass("SIGHUP") } as const;
   for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
   try {
-    child = Bun.spawn([process.execPath, active, ...args], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    // the merged environment as it is (the release may not find a settings file named by a relative path), and the folder
+    // this command was run with apart, to name both where it finds no machine profile (stateDirWayOut)
+    child = Bun.spawn([process.execPath, active, ...args], { cwd: ROOT, windowsHide: true, env: { ...env, [GIVEN_STATE_DIR_VARIABLE]: GIVEN_STATE_DIR }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     return await child.exited;
   } finally {
     for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
@@ -1006,10 +1061,7 @@ async function linkCommand(): Promise<number> {
   // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
   if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["link", ...process.argv.slice(3)]);
   const { discardTyped, link: linkPc, linkSettings } = await import("./plugin-link.ts");
-  if (!(await health())) {
-    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
-    return 1;
-  }
+  if (!(await health())) return notRunning();
   const headers: Record<string, string> = {};
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   const stop = new AbortController();
@@ -1190,6 +1242,8 @@ async function status(): Promise<number> {
   const pid = recordedPid();
   const answer = await appHealth();
   process.stdout.write(`${answer !== null ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
+  // on stderr: install.sh reads status's stdout lines, and a folder's name could begin with "running"
+  if (answer === null) process.stderr.write(stateDirWayOut());
   if (typeof answer?.engineDown === "string") process.stdout.write(`engine: down${answer.engineDown === "" ? "" : ` (${answer.engineDown})`}\n`);
   // the groups of the app's own answer, which carries no token: on a machine profile's owner socket, or over TCP when
   // the app lets the command in without one. Nothing proves which program holds a TCP port, so no token goes there
@@ -1212,6 +1266,41 @@ async function status(): Promise<number> {
   return 0;
 }
 
+/**
+ * The release flag, read as shared/account-devices-api.ts accountOpensAll() reads it: this script loads in a checkout
+ * whose packages are not installed, so it imports nothing the contract module pulls in.
+ */
+// Like the server, require an explicit opt-out: a padded or otherwise mistyped value must not disable Step 2.
+const accountOpensAll = (): boolean => env["OVIS_ACCOUNT_OPENS_ALL"] !== "0";
+
+/** `ovis recover` (scripts/plugin-recover.ts), over the server's recovery socket in this PC's state folder. */
+async function recover(): Promise<number> {
+  const { runRecover } = await import("./plugin-recover.ts");
+  const { askRecovery } = await import("../server/account/recovery.ts");
+  const { createInterface } = await import("node:readline/promises");
+  const lines = process.stdin.isTTY === true ? createInterface({ input: process.stdin, output: process.stdout }) : null;
+  try {
+    return await runRecover(process.argv.slice(3), {
+      out: (text) => process.stdout.write(text),
+      terminal: lines !== null,
+      platform: process.platform,
+      ask: (question) => lines === null ? Promise.resolve("") : lines.question(question),
+      send: (request) => askRecovery(runningStateDir(APP_STATE_DIR), request),
+    });
+  } finally { lines?.close(); }
+}
+
+/** `ovis confirm` (scripts/plugin-confirm.ts): this PC's confirm page, opened in a browser where there is a desktop. */
+async function confirm(): Promise<number> {
+  const { runConfirm } = await import("./plugin-confirm.ts");
+  return await runConfirm({
+    stateDir: runningStateDir(APP_STATE_DIR), platform: process.platform, uid: process.getuid?.(),
+    env: { DISPLAY: process.env["DISPLAY"], WAYLAND_DISPLAY: process.env["WAYLAND_DISPLAY"] },
+    out: (text) => process.stdout.write(text),
+    open: (url) => { spawn("xdg-open", [url], { stdio: "ignore", detached: true }).on("error", () => {}).unref(); },
+  });
+}
+
 export async function runPlugin(): Promise<void> {
   const named = process.argv[2] ?? "status";
   const command = Object.hasOwn(COMMAND_ALIASES, named) ? COMMAND_ALIASES[named] : named;
@@ -1220,6 +1309,8 @@ export async function runPlugin(): Promise<void> {
   else if (command === "status") process.exit(await status());
   else if (command === "pair") process.exit(await pair());
   else if (command === "link") process.exit(await linkCommand());
+  else if (command === "recover" && accountOpensAll()) process.exit(await recover());
+  else if (command === "confirm" && accountOpensAll()) process.exit(await confirm());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
   else if (command === "tui") process.exit(await runTui(process.argv.slice(3), { platform: platform(), where: { root: ROOT, home: homedir() }, caller: process.env, settings: env, err: (text) => process.stderr.write(text), on: (signal, handler) => { process.on(signal, handler); return () => process.off(signal, handler); } }));
@@ -1227,10 +1318,11 @@ export async function runPlugin(): Promise<void> {
     const active = activePluginScript(ROOT, port, APP_STATE_DIR);
     if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) process.exit(await handOn(active, process.argv.slice(2)));
     process.stderr.write([
-      "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup|tui>",
+      `usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|${accountOpensAll() ? "recover|confirm|" : ""}phone|phone-setup|tui>`,
       "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
       "link --code: show a code and a QR code to pair one device instead.",
       "tui: herdr-core's terminals in this terminal, as herdr shows them.",
+      ...(accountOpensAll() ? ["recover: list the devices that wait for this PC's account to be read; --release <id>... lets them in until then, --undo ends that.", "confirm: open this PC's confirm page, where turning strict mode on or off waits for your approval."] : []),
       "",
     ].join("\n"));
     process.exit(2);

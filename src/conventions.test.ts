@@ -249,11 +249,11 @@ describe("icon cache", () => {
 
 describe("UI wording", () => {
   it("says New workspace, never New session", () => {
-    const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("site/**/*.{ts,tsx,html}"), "index.html"]
+    const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("site/**/*.{ts,tsx,html}"), "index.html", ...scan("tui/**/*.ts").filter((file) => !file.startsWith("tui/testing/"))]
       .filter((file) => !file.endsWith(".test.ts"))
       .flatMap((file) => read(file).split("\n").flatMap((line, index) =>
         /^\s*(?:\/\/|\/?\*)/.test(line) || !/\bNew [Ss]ession\b/.test(line) ? [] : [`${file}:${index + 1}: ${line.trim()}`]));
-    fail(offenders, "UI text says \"New workspace\", not \"New session\" (AGENTS.md, UI wording). Change the string and its i18n entries in src/lib/i18n.*.ts or src/lib/i18n/*.ts.");
+    fail(offenders, "UI text says \"New workspace\", not \"New session\" (AGENTS.md, UI wording). Change the string, and in src/ its i18n entries in src/lib/i18n.*.ts or src/lib/i18n/*.ts.");
   });
 });
 
@@ -267,6 +267,31 @@ describe("regular expressions", () => {
       return [...source.matchAll(/\(\?<[=!]/g)].map((match) => `${file}:${lineOf(source, match.index)}`);
     });
     fail(offenders, "No lookbehind ((?<= or (?<!) in the client: match the character before with the pattern, or check it in code (shared/lookbehind.ts).");
+  });
+});
+
+describe("opening outside the app", () => {
+  // src/lib/externalLink.ts is the one way out: the place that will decide which browser a link opens in
+  const OWNER = "src/lib/externalLink.ts";
+  const RAW = /["'\x60]_blank["'\x60]|\bwindow\s*\.\s*open\s*(?:\?\.\s*)?\(/gi;
+
+  it("goes through src/lib/externalLink.ts, never a raw new tab or window.open", () => {
+    const offenders = scan("src/**/*.{ts,tsx}").filter((name) => name !== OWNER && !/\.test\./.test(name)).flatMap((file) => {
+      const code = stripComments(read(file));
+      return [...code.matchAll(RAW)].map((match) => `${file}:${lineOf(code, match.index)}: ${match[0]}`);
+    });
+    fail(offenders, `A link that opens outside the app is an <ExternalLink kind=...> and an address opened from code goes to openExternal(url, kind), or reserveTab() for a sign-in, all from ${OWNER}: no target="_blank" or window.open( anywhere else.`);
+  });
+
+  it("tells a raw new tab from a comment that names one", () => {
+    const found = (code: string): number => [...stripComments(code).matchAll(RAW)].length;
+    expect(found('<a href={url} target="_blank" rel="noreferrer">')).toBe(1);
+    expect(found('link.target = "_blank";')).toBe(1);
+    expect(found('const tab = window.open("about:blank", "_blank");')).toBe(2);
+    expect(found('// opens a tab (`target="_blank"`) with window.open(')).toBe(0);
+    expect(found('<a target="_BLANK" href={url}>')).toBe(1);
+    expect(found("window.open (url); window.open?.(url);")).toBe(2);
+    expect(found("const blank = isBlank(window.opener);")).toBe(0);
   });
 });
 
@@ -338,7 +363,7 @@ describe("surfaces over the app", () => {
 });
 
 describe("terminal mount", () => {
-  // The attach stream is the only writer of the terminal and herdr owns scrollback (AGENTS.md): xterm
+  // The attach stream is the only writer of the terminal and herdr owns scrollback: xterm
   // keeps none, or the fit addon reserves a scrollbar column and the last columns go dead.
   it("creates every xterm Terminal with scrollback: 0", () => {
     const options: string[] = [];
@@ -353,7 +378,7 @@ describe("terminal mount", () => {
     }
     expect(options.length).toBeGreaterThan(0);
     fail(options.filter((entry) => !/\bscrollback:\s*0\b/.test(entry)).map((entry) => entry.split("\n")[0]!),
-      "Every new Terminal({...}) sets scrollback: 0: herdr owns scrollback, and xterm's own would reserve a scrollbar column (AGENTS.md).");
+      "Every new Terminal({...}) sets scrollback: 0: herdr owns scrollback, and xterm's own would reserve a scrollbar column.");
   });
 
   it("mounts the terminal before the attach reset effect runs", () => {
@@ -363,5 +388,28 @@ describe("terminal mount", () => {
     expect(mount).toBeGreaterThan(-1);
     expect(reset).toBeGreaterThan(-1);
     expect(mount).toBeLessThan(reset);
+  });
+});
+
+describe("herdr focus", () => {
+  const USERS: Record<string, string> = {
+    "src/lib/api.ts": "focusPane, the request itself",
+    "src/lib/machineContext.tsx": "hands focusPane to a machine's context",
+  };
+
+  it("asks herdr to move its focus from no selection", () => {
+    const uses: string[] = [];
+    const users = new Set<string>();
+    for (const file of scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name))) {
+      const code = stripComments(read(file));
+      for (const match of code.matchAll(/\bfocusPane\b|\/api\/pane\/focus/g)) {
+        users.add(file);
+        if (!(file in USERS)) uses.push(`${file}:${lineOf(code, match.index)}: ${code.split("\n")[lineOf(code, match.index) - 1]!.trim().slice(0, 160)}`);
+      }
+    }
+    fail(uses,
+      "Selecting a pane or tab in the browser never moves herdr's own focus: nothing in the client calls focusPane for a selection. A new caller is an explicit action that needs herdr to show the pane: list its file in USERS in src/conventions.test.ts with that action.");
+    fail(Object.keys(USERS).filter((file) => !users.has(file)),
+      "These files no longer name focusPane: remove them from USERS in src/conventions.test.ts.");
   });
 });

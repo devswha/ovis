@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Check, ChevronDown, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, ExternalLink as ExternalLinkIcon, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
 
 import { Markdown } from "../../components/Markdown.tsx";
 import { Segmented } from "../../components/SettingsControls.tsx";
@@ -7,6 +7,7 @@ import { Segmented } from "../../components/SettingsControls.tsx";
 import type { GithubCheck, GithubPull, GithubPullDetail } from "../../../shared/github.ts";
 import type { WorktreeOpened } from "../../../shared/protocol.ts";
 import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktrees, openWorktree } from "../../lib/api.ts";
+import { ExternalLink } from "../../lib/externalLink.ts";
 import { useT, type Translate } from "../../lib/i18n.ts";
 import { closeGithubPull, openGithubSibling, refreshGithubListing } from "./GithubInbox.tsx";
 import { GithubClose, GithubMerge, GithubReply } from "./GithubActions.tsx";
@@ -72,7 +73,7 @@ function ChecksBox({ checks }: { checks: GithubCheck[] }) {
         {check.required && <span className="fork-github-required">{t("Required")}</span>}
         {time && <span className="fork-github-pull-dim fork-github-check-time">{time}</span>}
       </>;
-      return <li key={`${check.name}:${index}`}>{check.url ? <a href={check.url} target="_blank" rel="noreferrer noopener">{inner}</a> : <span>{inner}</span>}</li>;
+      return <li key={`${check.name}:${index}`}>{check.url ? <ExternalLink kind="link" href={check.url}>{inner}</ExternalLink> : <span>{inner}</span>}</li>;
     })}</ul>}
   </div>;
 }
@@ -169,7 +170,7 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
         {busy ? t("Checking out…") : pull.workspace_id ? t("Checkout") : t("Clone and checkout")}</button>}
       {cloning && <GithubCloneDialog pull={pull} onClose={() => setCloning(false)}
         onOpened={(workspaceId) => { setCloning(false); refreshGithubListing(); void checkout(workspaceId); }} />}
-      <a className="icon-button inbox-round" href={pull.url} target="_blank" rel="noreferrer noopener" aria-label={t("Open on GitHub")} title={t("Open on GitHub")}><ExternalLink aria-hidden="true" /></a>
+      <ExternalLink kind="link" className="icon-button inbox-round" href={pull.url} aria-label={t("Open on GitHub")} title={t("Open on GitHub")}><ExternalLinkIcon aria-hidden="true" /></ExternalLink>
     </header>
     <div ref={scroll} className="fork-github-pull-scroll">
       <h1 dir="auto">{detail?.title ?? pull.title}</h1>

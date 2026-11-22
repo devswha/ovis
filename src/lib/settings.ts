@@ -5,14 +5,16 @@
 
 import type { TelemetrySettings } from "../../shared/telemetry.ts";
 import { MAX_PINS, mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
+import { browserBlockedSites } from "../../shared/browser-policy.ts";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, useSyncExternalStore } from "react";
-import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type ThemeId, type DrawnTheme } from "./themes.ts";
+import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type DrawnTheme, type ThemeId } from "./themes.ts";
 import { applyForkSettings, FORK_DEFAULTS, FORK_SCOPE, loadForkSettings, migrateForkSettings, sanitizeForkSettings, saveForkSettings, type ForkSettings } from "../fork/settings/settings.ts";
 import { currentOmarchyTheme, drawnOmarchyTheme, subscribeOmarchyTheme } from "./omarchyTheme.ts";
 import type { OmarchyTheme } from "../../shared/omarchy-theme.ts";
 import { bootRows, drawnTheme, NO_CUSTOM_THEMES, sanitizeCustomThemes, type CustomThemes } from "./customThemes.ts";
 import { LANGUAGE_SETTINGS, LOCALE_TAGS, resolveLanguage, setCurrentLanguage, type Language, type LanguageSetting } from "./i18n.ts";
 import type { AlertPrefs, DoneAlerts } from "../../shared/notify-policy.ts";
+import { AGENT_GROUP_SORTS, type AgentGroupSort } from "../../shared/attention.ts";
 import { chatFontStack, sanitizeFontFamily } from "./fontFamily.ts";
 import { fontScale, sanitizeUiFontSize, uiFontStack } from "./typography.ts";
 import { sanitizeKeyBarExtras, type KeyBarExtra } from "./keys.ts";
@@ -25,8 +27,7 @@ export type Density = "compact" | "comfortable";
 export type PhoneTabs = "row" | "header";
 export type SidebarRows = "one" | "two";
 export type AgentOrder = "waiting" | "workspace" | "activity";
-export const AGENT_GROUP_SORTS = ["wait", "recent", "name"] as const;
-export type AgentGroupSort = (typeof AGENT_GROUP_SORTS)[number];
+export { AGENT_GROUP_SORTS, type AgentGroupSort } from "../../shared/attention.ts";
 export type AgentMarks = "color" | "mono";
 export type UsageCount = "used" | "left";
 /** the limit a plan meter shows: the plan's week, or its short session (5 hours on Claude and Codex) */
@@ -55,6 +56,7 @@ import type { StatusIndicators } from "./status.ts";
 import { sanitizeGroupNames, sanitizeGroupOf } from "./namedAgentGroups.ts";
 import { WEB_LINK_TARGETS, type WebLinkTarget } from "./webPanel.ts";
 import { FILE_OPEN_TARGETS, type FilePresentation } from "./filePresentation.ts";
+import { browserToolChoices, type BrowserToolChoices } from "../../shared/browser-tools.ts";
 import { CLAUDE_EFFORTS, CLAUDE_LAUNCH_MODES, CODEX_EFFORTS, CODEX_LAUNCH_MODES, launchChoiceFault, type ClaudeLaunchMode, type CodexLaunchMode } from "./agentLaunchMode.ts";
 
 export interface Settings extends ForkSettings {
@@ -185,6 +187,11 @@ export interface Settings extends ForkSettings {
   filesPanel: boolean;
   webLinks: WebLinkTarget;
   reuseExternalLinkTab: boolean;
+  /** the desktop app's built-in browser (app/electron/src/browserTabs.ts), which its main process reads from the server's
+   *  preferences: off until chosen, and then nothing of it (tabs, profiles, the agents' way in) exists */
+  builtInBrowser: boolean;
+  /** the sites the built-in browser never loads, with their subdomains, as shared/browser-policy.ts blockedSite keeps them */
+  browserBlockedSites: string[];
   /** the mode a Claude Code started from the new workspace, tab and worktree dialogs runs in (lib/agentLaunchMode.ts); default adds no flag */
   claudeLaunchMode: ClaudeLaunchMode;
   /** the same for Codex: a sandbox and approval preset */
@@ -197,6 +204,8 @@ export interface Settings extends ForkSettings {
   codexLaunchModel: string;
   /** and Codex's effort (`-c model_reasoning_effort=`) */
   codexLaunchEffort: (typeof CODEX_EFFORTS)[number] | "";
+  /** the browser tool each agent this PC's server starts is given (shared/browser-tools.ts); an agent absent gets none */
+  agentBrowserTools: BrowserToolChoices;
 }
 
 export const DIFF_STYLES = ["unified", "split"] as const;
@@ -206,8 +215,8 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
  * Settings field in the projection makes a new field require an explicit collection decision. */
 type TelemetrySourceSettings = Omit<Settings, keyof ForkSettings |
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
-  | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
-  | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort"
+  | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "builtInBrowser" | "browserBlockedSites" | "claudeLaunchMode" | "codexLaunchMode"
+  | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
   | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "followOmarchy" | "speechVoice" | "liveVoice" | "openLiveWork"
@@ -279,7 +288,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
 export const SETTING_SCOPE = {
   ...FORK_SCOPE,
   theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
-  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", opencodeParentEnds: "shared", ompHeldFiles: "shared", restoreReplacedServer: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
+  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", opencodeParentEnds: "shared", ompHeldFiles: "shared", restoreReplacedServer: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared", builtInBrowser: "shared", browserBlockedSites: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
   terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", density: "device",
@@ -315,6 +324,7 @@ export const SETTING_SCOPE = {
   wrapCode: "device", editTextFiles: "device", reopenFileOnReturn: "device", diffStyle: "device", fileOpen: "device", filesPanel: "device", webLinks: "device", reuseExternalLinkTab: "device",
   claudeLaunchMode: "shared", codexLaunchMode: "shared",
   claudeLaunchModel: "shared", claudeLaunchEffort: "shared", codexLaunchModel: "shared", codexLaunchEffort: "shared",
+  agentBrowserTools: "shared",
   customThemes: "shared",
 } as const satisfies Record<keyof Settings, "shared" | "device">;
 
@@ -417,12 +427,15 @@ export const DEFAULT_SETTINGS: Settings = {
   filesPanel: false,
   webLinks: "tab",
   reuseExternalLinkTab: false,
+  builtInBrowser: false,
+  browserBlockedSites: [],
   claudeLaunchMode: "default",
   codexLaunchMode: "default",
   claudeLaunchModel: "",
   claudeLaunchEffort: "",
   codexLaunchModel: "",
   codexLaunchEffort: "",
+  agentBrowserTools: {},
 };
 
 export const QUICK_REPLIES_MAX = 12;
@@ -632,6 +645,8 @@ export function sanitizeSettings(raw: unknown): Settings {
       : record["filesPanel"] === undefined && record["fileBrowser"] === "panel" ? true : DEFAULT_SETTINGS.filesPanel,
     webLinks: WEB_LINK_TARGETS.find((target) => target === record["webLinks"]) ?? DEFAULT_SETTINGS.webLinks,
     reuseExternalLinkTab: typeof record["reuseExternalLinkTab"] === "boolean" ? record["reuseExternalLinkTab"] : DEFAULT_SETTINGS.reuseExternalLinkTab,
+    builtInBrowser: record["builtInBrowser"] === true,
+    browserBlockedSites: browserBlockedSites(record["browserBlockedSites"]),
     claudeLaunchMode: CLAUDE_LAUNCH_MODES.find((mode) => mode === record["claudeLaunchMode"]) ?? DEFAULT_SETTINGS.claudeLaunchMode,
     codexLaunchMode: CODEX_LAUNCH_MODES.find((mode) => mode === record["codexLaunchMode"]) ?? DEFAULT_SETTINGS.codexLaunchMode,
     // only a name the agent's launch takes: anything else would start it on a flag nobody chose
@@ -639,6 +654,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     claudeLaunchEffort: CLAUDE_EFFORTS.find((level) => level === record["claudeLaunchEffort"]) ?? DEFAULT_SETTINGS.claudeLaunchEffort,
     codexLaunchModel: launchModel("codex", record["codexLaunchModel"]),
     codexLaunchEffort: CODEX_EFFORTS.find((level) => level === record["codexLaunchEffort"]) ?? DEFAULT_SETTINGS.codexLaunchEffort,
+    agentBrowserTools: browserToolChoices(record["agentBrowserTools"]),
   };
 }
 

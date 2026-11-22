@@ -104,7 +104,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const [sent, setSent] = useState<{ tabId: string; label: string } | null>(null);
   const [confirm, setConfirm] = useState<{ tab: HerdrTab; title: string; body: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [room, setRoom] = useState<{ width: number; add: number; open: number } | null>(null);
+  const [room, setRoom] = useState<{ width: number; add: number; open: number; gap: number } | null>(null);
   const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
   const refocus = useRef<string | null>(null);
   const closing = useRef(new Set<string>());
@@ -310,7 +310,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       const addWidth = add ? add.getBoundingClientRect().width + (Number.parseFloat(getComputedStyle(add).marginLeft) || 0) : 0;
       const openTab = row.querySelector<HTMLElement>(".tab-strip-item.is-active");
       const openWidth = (openTab && Number.parseFloat(getComputedStyle(openTab).minWidth)) || TAB_MIN_WIDTH;
-      setRoom((was) => was?.width === row.clientWidth && was.add === addWidth && was.open === openWidth ? was : { width: row.clientWidth, add: addWidth, open: openWidth });
+      const gap = Number.parseFloat(getComputedStyle(row).columnGap) || 0;
+      setRoom((was) => was?.width === row.clientWidth && was.add === addWidth && was.open === openWidth && was.gap === gap ? was : { width: row.clientWidth, add: addWidth, open: openWidth, gap });
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -372,7 +373,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const rowShown = !tabsHidden || editing !== null;
   const openIndex = Math.max(0, stripTabs.findIndex((tab) => tab.tab_id === (forkTabs.parentOf.get(selectedPane.tab_id) ?? selectedPane.tab_id)));
   const editingIndex = editing ? stripTabs.findIndex((tab) => tab.tab_id === editing.tabId) : -1;
-  const inRow = room === null ? null : new Set(forkTabsInRow(stripTabs, forkTabs.children, openIndex, room.width, room.add, room.open, editingIndex));
+  const inRow = room === null ? null : new Set(forkTabsInRow(stripTabs, forkTabs.children, openIndex, room.width, room.add, room.open, editingIndex, room.gap));
   const leftOut = inRow === null ? [] : stripTabs.filter((_, index) => !inRow.has(index));
   const drawnNext = (index: number): boolean => stripTabs.some((tab, shown) => tabs.indexOf(tab) === index + 1 && (inRow === null || inRow.has(shown)));
   if (moreAnchor && leftOut.length === 0) setMoreAnchor(null);
@@ -755,7 +756,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   return (
     <>
       {!rowShown ? (error && <p className="pane-notice" role="alert">{error}</p>)
-        : end === undefined ? row : <div className="tab-strip-row">{row}<div className="tab-strip-end">{end}</div></div>}
+        : end === undefined ? row : <div className={`tab-strip-row${browserTabs ? " browser-tabs" : ""}`}>{row}<div className="tab-strip-end">{end}</div></div>}
       {rowShown && error && popup === "dialog" && <p className="pane-notice tab-strip-notice" role="alert">{error}</p>}
       {picker && pickedTab && <RowMenu key={picker.workspaces ? "workspaces" : "tab"} anchor={picker.anchor} point={picker.point} restoreFocusTo={picker.previousFocus}
         title={picker.workspaces ? t("Move {tab} to", { tab: nameOf(pickedTab) }) : nameOf(pickedTab)}

@@ -152,6 +152,10 @@ two screens instead, as in Bluetooth's numeric comparison:
 7. **Confirm and approve.** The phone sends `PAIR_CONFIRM` once its person taps **The numbers
    match**, and the PC's owner approves (`POST /api/relay/pairing`). Only both together make the
    device, the same record and key a pairing with a code makes, and `AUTH_OK` follows as usual.
+   A join that a PC's own page offers (a signed-in device the PC still has to approve) sends
+   `PAIR_CONFIRM` as soon as the digits show, with no tap: its person pressed **Ask to join** on
+   that page, the key is the one the page's id derives from, and the PC's approval of the same
+   digits stays the gate.
    On a PC without a screen, `bun scripts/plugin.ts pair --approve` in its terminal shows each
    waiting phone with its digits and asks for them: typing the six digits, or their last three,
    approves, Enter by itself declines, and anything else answers nothing and is asked again. It
@@ -195,14 +199,15 @@ the account's directory, checked against its id, so a relay cannot stand in for 
 encrypted channel, so it sees only a few more frames and their sizes and timing.
 
 The phone's screen asks **Does {name} show this number?** with **The numbers match** and **Cancel**,
-then waits for the approval. A PC that declines, or does not approve in time, leaves the phone at
+then waits for the approval. On a PC's own page, the join shows the digits under **Approve it on {name}**, with
+**Cancel** alone, and waits for the approval. A PC that declines, or does not approve in time, leaves the phone at
 **{name} did not approve this phone**, with no key saved.
 
 **Pairing with a typed code.** For a device with no camera pointed at the PC, **Show a code to
 type** under the QR code shows ten characters, `XXXXX-XXXXX` (Crockford base32: no I, L, O or U;
 O, I and L typed are read as 0, 1 and 1), and **Pair with a code** on app.ovis.sh takes them
-(on its front page, or behind **Pair with a QR or code** on the sign-in screen when the account
-service runs). The code finds the PC and hands the device the same offer the QR code carries, then the
+(in a browser, under **Add a PC → Scan a QR code**: Add a PC is behind **Start without signing in**
+on the sign-in screen, or the front page itself when no account service runs). The code finds the PC and hands the device the same offer the QR code carries, then the
 device pairs with the six-digit code in it as a scanned QR code does: nothing else admits it
 ([`shared/relay-pair-code.ts`](../shared/relay-pair-code.ts),
 [`server/relay/pair-code.ts`](../server/relay/pair-code.ts),

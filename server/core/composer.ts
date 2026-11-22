@@ -20,7 +20,7 @@ import { startOpenCodeWatch, openCodeSkillsToType, skillsNotAttached } from "../
 import { herdrSkillAttachIo, type SkillAttachIo, typeWithSkills } from "../opencode-skill-attach.ts";
 import { userHome } from "../user-home.ts";
 import { type GrokBeforeSend, grokEcho, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
-import { drawsColour, inputRowState, readsTypedDraft, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
+import { drawsColour, inputRowState, POWERLINE_WORKING_RULE, readsTypedDraft, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 
 const CLAUDE_INPUT_DRAFT_MESSAGE = "Claude Code's input box is not empty (a draft, bash mode, or a box that could not be read); send or clear it in the terminal, then send this message";
 
@@ -264,9 +264,10 @@ export function showsLive(colors: string, live: string): boolean {
 }
 
 const screenText = (text: string): string => stripVTControlCharacters(text).split(/\r?\n/).map((line) => line.trimEnd()).join("\n").trimEnd();
-/** a working agent's braille spinner turns between two reads (pi's `── ⠸ Working ──`): the same screen still. Only the
-    frame in a row that is that border counts, so a braille character anywhere else, the input box's included, still tells reads apart */
-const spinnerless = (text: string): string => text.replace(/^(\s*─{2,} )[\u2801-\u28ff](?= [^─]+ ─{9,}$)/gm, "$1\u2800");
+/** pi-powerline-footer's working border (shared/input-row.ts POWERLINE_WORKING_RULE) is the same screen whichever frame its
+    braille spinner shows. Every other row is compared as drawn, the box's own and plain pi's border included: no box is read under that one */
+const spinnerless = (text: string): string => text.split("\n")
+  .map((row) => POWERLINE_WORKING_RULE.test(row) ? row.replace(/^( ── )[\u2801-\u28ff]/, "$1\u2800") : row).join("\n");
 
 /**
  * herdr reports Codex at rest

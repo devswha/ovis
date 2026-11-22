@@ -1,5 +1,6 @@
 import type { ForkPaneFields } from "./fork/pane.ts";
 import type { HerdrKeys } from "./herdr-keys.ts";
+import type { ACCOUNT_OPENS_ALL_CAPABILITY, BlockReceipt, DeviceNotice, NoticeAnswer, NoticeReplay, NoticeSeen } from "./account-devices-api.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
@@ -102,7 +103,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, PendingKey, PendingRedemptionsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -191,10 +192,10 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         `admission: 1`, and a link while it lives needs the account's admission (docs/account.md, "The account's word")
  *  POST   /api/relay/offer/keep          -> AccountPairingState; JSON { id }: such a code read by its pairing.id;
  *         400 invalid_body without one
- *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
+ *  POST   /api/relay/link                -> { url, window_id }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
- *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
- *         comparisons this PC was shown under it; from this PC only (403 local_required through the relay)
+ *  POST   /api/relay/link/close          -> { ok: true }; ends the current window and declines its comparisons.
+ *         With `x-ovis-window: <window_id>`, a stale close does nothing. From this PC only (403 through the relay).
  *         500 internal_error when the saved window could not be cleared (closed until a restart)
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
@@ -1336,7 +1337,11 @@ export type ClientMessage =
    * client sends it when the page comes back, the network changes or nothing arrived for a while,
    * and drops a socket that stays silent: a half-open one still reads OPEN in the browser. A remote
    * PC's socket relays it unchanged, so the remote server's snapshot decides whether it is sent. */
-  | { type: "ping"; id: number };
+  | { type: "ping"; id: number }
+  /** device table T57 (feature "account-opens-all/1"): this row has seen the notices up to `seq`; it decides nothing */
+  | NoticeSeen
+  /** device table T51, T53 (feature "account-opens-all/1"): "It's me", or "Not me" with its signed blocks, for one notice */
+  | NoticeAnswer;
 
 /** Local-only diagnostic metadata. This contract never contains a message, URL or credential. */
 export type ClientConnectionEventKind = "connect" | "open" | "connect_timeout" | "close" | "socket_error"
@@ -1385,8 +1390,11 @@ export interface ClientConnectionTrace {
  * sign-in, sudo in any language, passwd, mysql, gpg, openssl too). A bridge answers `invalid_secret` at a prompt
  * outside what it lists, so the browser types that secret as direct input instead (`input`, never kept), while
  * its own screen still shows the prompt.
+ * `account-opens-all/1` (ACCOUNT_OPENS_ALL_CAPABILITY): listed only while OVIS_ACCOUNT_OPENS_ALL is on at the PC (device
+ * table P10, P15, T57). Only then may the server send `device-notice` and `device-notice-replay`, and only then does a
+ * client send `notice-seen` and `notice-answer`.
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "terminal-modes" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2" | "secret-prompts-3";
+export type ServerFeature = typeof ACCOUNT_OPENS_ALL_CAPABILITY | "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "terminal-modes" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2" | "secret-prompts-3";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
@@ -1485,6 +1493,16 @@ export type ServerMessage =
   | { type: "watch-end"; pane_id: string }
   /** the answer to a `ping`, with its id; only this frame, for a ping in flight, ends the client's liveness probe */
   | { type: "pong"; id: number }
+  /** device table P15, T57 (feature "account-opens-all/1"): one new journal entry, sent only by the server and only with the flag on */
+  | { type: "device-notice"; notice: DeviceNotice }
+  /** device table T57 (feature "account-opens-all/1"): the unseen notices. Sent right after the `features` frame and before
+   * any other frame (the snapshot included), never first, so the client already knows account-opens-all/1 when it arrives */
+  | { type: "device-notice-replay"; replay: NoticeReplay }
+  /**
+   * account-opens-all/1: the answer to a `notice-answer` "Not me", one receipt per block it carried, in its order
+   * (device table T51, T60). Only `applied` and `already_applied` are done
+   */
+  | { type: "notice-answer-result"; id: string; receipts: readonly BlockReceipt[] }
   /** `pane_id` names the pane an error is about, when it is about one (`attach_held`) */
   | { type: "error"; code: string; message: string; pane_id?: string };
 

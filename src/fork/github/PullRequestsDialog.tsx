@@ -8,13 +8,14 @@
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, GitPullRequest, X } from "lucide-react";
+import { ExternalLink as ExternalLinkIcon, GitPullRequest, X } from "lucide-react";
 
 import "../../components/WorktreeDialog.css";
 import "./PullRequestsDialog.css";
 
 import type { PullRequestEntry, PullRequestListing, WorkspaceInfo, WorktreeOpened } from "../../../shared/protocol.ts";
 import { ApiError } from "../../lib/api.ts";
+import { ExternalLink } from "../../lib/externalLink.ts";
 import { currentLocale, useT } from "../../lib/i18n.ts";
 import { useMachineApi } from "../../lib/machineContext.tsx";
 import { useSheetSwipe } from "../../lib/sheets.ts";
@@ -154,10 +155,10 @@ function PullRequestRow({ pr, busy, locked, onAct }: { pr: PullRequestEntry; bus
     <li className="pr-row">
       <GitPullRequest aria-hidden="true" className={`pr-icon${pr.draft ? " pr-icon-draft" : ""}`} />
       <div className="worktree-copy">
-        <a className="pr-title" href={pr.url} target="_blank" rel="noreferrer noopener">
+        <ExternalLink kind="link" className="pr-title" href={pr.url}>
           <span>{pr.title}</span>
-          <ExternalLink aria-hidden="true" />
-        </a>
+          <ExternalLinkIcon aria-hidden="true" />
+        </ExternalLink>
         <span className="worktree-path">{`#${pr.number} · ${pr.branch} · ${updated(pr.updated_at)}${pr.author ? ` · ${pr.author}` : ""}`}</span>
         <span className="pr-status">
           {pr.draft && <span className="pill">{t("Draft")}</span>}

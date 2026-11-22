@@ -273,9 +273,9 @@ export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing
 /**
  * Match Ovis-origin typed receipts to durable user records on the active Pi branch.
  * Candidates and matching entries are both FIFO. A record with a send's text is its record; where
- * none has it, a plain send takes the next record no later receipt's text claims, since Pi changes
- * text on the way in ways no list keeps up with. A later Ovis receipt may not cross an earlier
- * unmatched one. Content is only a bounded scoped correlator: Pi does not expose a submission id
+ * none has it, a plain send takes the next record unless a later receipt's text claims it, since Pi
+ * changes text on the way in ways no list keeps up with. A later Ovis receipt may not cross an
+ * earlier unmatched one. Content is only a bounded scoped correlator: Pi does not expose a submission id
  * in its TUI or transcript. A record stamped no
  * earlier than the receipt's capture confirms it. Where the only such text was stamped earlier,
  * either someone else submitted it before Ovis's Enter or the wall clock was set back, so the
@@ -313,18 +313,8 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       }
       if (parent !== anchor.leaf) { changed.push(candidate.id); continue; }
       const key = (entry: BranchEntry): string => JSON.stringify([path, file, session, entry.id]);
-      // the text as typed, or trimmed: a Pi that trims what it submits drops the space a phone
-      // keyboard leaves after the last word
-      const same = chain.reverse().filter((entry) => entry.start > afterMatched && entry.role === "user"
-        && (entry.text === candidate.text || entry.text === candidate.text.trim()) && !consumedEntries.has(key(entry)));
-      // Pi records `/skill:name request` as the skill's expansion, never as typed, so no record is in
-      // both sets: they are put back into the branch's order
-      const skill = piSkillSend(candidate.text);
-      if (skill !== undefined) {
-        same.push(...chain.filter((entry) => entry.start > afterMatched && entry.role === "user"
-          && entry.skill?.name === skill.name && entry.skill.request === skill.request && !consumedEntries.has(key(entry))));
-        same.sort((a, b) => a.start - b.start);
-      }
+      const same = chain.reverse().filter((entry) => entry.start > afterMatched && piRecordOf(candidate.text, entry)
+        && !consumedEntries.has(key(entry)));
       const fresh = (entry: BranchEntry): boolean => entry.at === null || entry.at >= anchor.at;
       const first = piMaybeCommand(candidate.text)
         ? chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)))
@@ -351,21 +341,25 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       const earlier = match ? undefined : same[0];
       // Pi changed a plain message on the way (a notice typed into its box before Enter, a character its
       // editor reads otherwise): the next record after the last one matched is this send's, unless a later
-      // receipt's own text needs it (the later receipts with its text, against the copies of it still to
-      // come), so a changed text never holds the receipts behind it. A `/name` send keeps to its own text
-      // above: Pi may record it as something else, or as nothing.
+      // receipt's own text needs it (the later receipts with its text that could take it, against the copies
+      // of it still to come), so a changed text never holds the receipts behind it. Where a later receipt
+      // needs it, this send has no record before that one's: it waits, as Pi records its sends in order. A
+      // `/name` send keeps to its own text above: Pi may record it as something else, or as nothing.
       const open = (entry: BranchEntry): boolean => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry));
-      const needed = (entry: BranchEntry): boolean => later.filter((other) => piRecordOf(other.text, entry)).length
+      const reaches = (other: PiDeliveryCandidate, entry: BranchEntry): boolean => other.anchor.path === path && other.anchor.session === session
+        && entry.start >= other.anchor.size && (entry.at === null || entry.at >= other.anchor.at) && piRecordOf(other.text, entry);
+      const needed = (entry: BranchEntry): boolean => later.filter((other) => reaches(other, entry)).length
         >= chain.filter((copy) => copy.start >= entry.start && open(copy) && copy.text === entry.text).length;
-      const following = match || earlier || skill !== undefined || piMaybeCommand(candidate.text)
-        ? undefined : chain.find((entry) => open(entry) && !needed(entry));
+      const upcoming = match || earlier || piSkillSend(candidate.text) !== undefined || piMaybeCommand(candidate.text)
+        ? undefined : chain.find(open);
+      const following = upcoming && !needed(upcoming) ? upcoming : undefined;
       if (match ?? following) consumed.push(candidate.id);
       else if (earlier) ambiguous.push(candidate.id);
       else break;
       const used = (match ?? following ?? earlier)!;
       if (following) matchedEntries.push(key(following));
       const laterCapture = Math.min(...candidates.slice(index + 1)
-        .filter((later) => later.text.trim() === candidate.text.trim()).map((later) => later.anchor.at));
+        .filter((later) => later.text === candidate.text).map((later) => later.anchor.at));
       for (const entry of same) {
         if (entry === used || entry.start < used.start && entry.at !== null && entry.at < laterCapture) matchedEntries.push(key(entry));
       }

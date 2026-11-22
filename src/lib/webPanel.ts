@@ -1,6 +1,6 @@
 import { createContext, useCallback } from "react";
 import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
-import { openWebLink } from "./terminalFileLinks.ts";
+import { openExternal } from "./externalLink.ts";
 
 export const WEB_LINK_TARGETS = ["tab", "panel"] as const;
 export type WebLinkTarget = (typeof WEB_LINK_TARGETS)[number];
@@ -72,7 +72,7 @@ export function usePaneLinkOpener(machines: readonly Pick<Machine, "id" | "targe
   return useCallback<WebPanelOpener>((uri, shiftKey, machineId) => {
     const remote = machineId === LOCAL_MACHINE ? null : remotePcUrl(uri, machines.find((item) => item.id === machineId)?.target?.destination);
     if (remote === null) return openWebPage(uri, shiftKey, machineId);
-    openWebLink(remote, false);
+    openExternal(remote, "link", false);
     return true;
   }, [machines, openWebPage]);
 }

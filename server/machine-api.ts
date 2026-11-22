@@ -1,6 +1,6 @@
 import { subscribeMachineEvents } from "./machine-events.ts";
 import { wireMachine, wireMachineEvent, type WireMachine } from "../shared/compact-agents.ts";
-import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, PcInstallJob, PcInstallRequest, PcUpdateAll, PcUpdateStarted, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest, Machine, MachineEvent, OpenRequest, ReadFinish } from "../shared/machines.ts";
+import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, PcInstallJob, PcInstallRequest, PcUpdateAll, PcUpdateStarted, PendingRedemptionsEvent, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest, Machine, MachineEvent, OpenRequest, ReadFinish } from "../shared/machines.ts";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
@@ -8,9 +8,11 @@ import { MAX_OMARCHY_THEME_BYTES, omarchyTheme } from "../shared/omarchy-theme.t
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
 import type { SeenFinish } from "../shared/seen.ts";
+import type { DeviceStore } from "./devices.ts";
 import { AccountPcError, MachineActionRequired, MachineManager, PcUpdateRefused, type AccountPcFailure } from "./machines.ts";
 import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offer.ts";
 import type { OmarchyThemeStore } from "./omarchy-themes.ts";
+import { TargetAccountPcError } from "../shared/relay-channel.ts";
 import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
@@ -20,6 +22,7 @@ import { snapshotWithoutHiddenTokens, withoutHiddenTokens } from "./herdr-sideba
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 import { HIDDEN_HEARTBEAT_MS, hiddenEvents } from "./hidden-events.ts";
 import { answerCode, moveAll, moveAllPlans, PC_MOVE_PATH, PC_UPDATE_REQUIRED, tooOldToMove } from "./remote-move.ts";
+import { ADDRESS_PC_WORDS, AddressPcError } from "./address-pc.ts";
 
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
 /**
@@ -144,10 +147,12 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   herdrSidebar?: { get(): AgentRowTokens | null; subscribe(listener: (agents: AgentRowTokens | null) => void): () => void },
   seen?: { list(): SeenFinish[]; subscribe(listener: (finish: SeenFinish) => void): () => void },
   /** durable device enrollments (server/devices.ts), already without the ones this stream's own device made, and relay pairings waiting for approval */
-  pairings?: { subscribe(listener: (event: DevicePairedEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent) => void): () => void },
+  pairings?: { subscribe(listener: (event: DevicePairedEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent | PendingRedemptionsEvent) => void): () => void },
   relayBudget?: EventStreamBudget,
   /** this PC's owner (access.ts ownerAccess): only they may start or stop updates of its PCs */
   owner = false,
+  /** OVIS_ACCOUNT_OPENS_ALL is on here: only then does the roster carry a block to another PC's account records */
+  accountOpensAll = false, source?: Pick<DeviceStore, "accountPolicyActive" | "accountError">,
   /** the device-keyed Omarchy themes; left out over a relay, whose peer has no address to key by */
   omarchyThemes?: Pick<OmarchyThemeStore, "get" | "set" | "subscribe">): Promise<Response> {
   const url = new URL(request.url);
@@ -165,9 +170,18 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   // one rule for every change to this PC's PCs (adding, setting up, approving, updating, turning on or off, removing,
   // its settings): the owner from any device he signed in or paired himself, from this app's own page. A PC's own
   // routes (its panes, workspaces and files, MACHINE_PROXY_PATH) are driven as this PC's are, and keep their rules
-  // this device's own routes (the Touch Bar's open, its Omarchy theme) change no PC either
-  const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !(parts.length >= 2 && MACHINE_PROXY_PATH.test(parts.slice(1).join("/"))) && !(parts.length === 1 && (parts[0] === "open" || parts[0] === "omarchy-theme"));
+  const path = parts.slice(1).join("/");
+  const accountRecords = accountOpensAll && request.method === "POST" && path === "account/records";
+  const proxyPath = MACHINE_PROXY_PATH.test(path) || accountRecords;
+  if (accountRecords && !owner) return fail("owner_only", "Manage the account from this PC itself, or from a paired device.", 403);
+  const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !proxyPath
+    // this device's own routes (the Touch Bar's open, its Omarchy theme) change no PC either
+    && !(parts.length === 1 && (parts[0] === "open" || parts[0] === "omarchy-theme"));
   if (managing && !(owner && updateRequestAllowed(request))) return fail("forbidden", OWNER_ONLY, 403);
+  if (request.method === "POST" && (parts.join("/") === "relay" || parts.join("/") === "relay/code" || parts.join("/") === "tailnet") && source?.accountPolicyActive()) {
+    if (source.accountError !== null) return fail("pc_add_account_unavailable", "Can't add a PC right now. Try again in a moment.", 409);
+    return fail("pc_add_source_bound", "This PC is in an account. Add PCs from your account.", 409);
+  }
   try {
     if (!parts.length && request.method === "GET") {
       setRequestRoute("/api/machines");
@@ -324,6 +338,20 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       const body: unknown = await request.json().catch(() => null);
       if (!isJsonObject(body)) return fail("invalid_body", "Expected a pairing link", 400);
       return jsonResponse({ machine: await manager.addRelay(body.link, body.name, body.found) }, 201);
+    }
+    // Add a connection → Direct, an https address: only a window direct to this PC that drives it gets here (dispatch.ts)
+    if (parts[0] === "address" && parts.length === 1 && request.method === "POST") {
+      setRequestRoute("/api/machines/address");
+      // the code that PC shows is a secret, like an SSH password
+      if (!canSendSecret(request)) return fail("https_required", "A pairing code requires HTTPS or localhost", 403);
+      const body: unknown = await request.json().catch(() => null);
+      if (!isJsonObject(body)) return fail("invalid_body", "Expected an address and a code", 400);
+      try { return jsonResponse({ machine: await manager.addAddress(body.address, body.code, body.name) }, 201); }
+      catch (error) {
+        if (!(error instanceof AddressPcError)) throw error;
+        const [message, status] = ADDRESS_PC_WORDS[error.failure];
+        return fail(`address_pc_${error.failure}`, message, status);
+      }
     }
     if (parts[0] === "relay" && parts[1] === "code" && parts.length === 2 && request.method === "POST") {
       setRequestRoute("/api/machines/relay/code");
@@ -503,7 +531,6 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       manager.patch(id, patch); return jsonResponse({ ok: true });
     }
     if (parts.length === 1 && request.method === "DELETE") { setRequestRoute("/api/machines/:machine_id"); manager.remove(id); return jsonResponse({ ok: true }); }
-    const path = parts.slice(1).join("/");
     // earlier sessions carry their first prompts, and a folder's command files name what is in it (the new-tab
     // dialog's agent commands, a pane's command rows), as do the paths under a pane's folder and a plugin run's
     // output, and a repository's checkouts: never asked for a watching device with the PC's credential
@@ -517,7 +544,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     // that PC refuses a move route with a query (updateRequestAllowed), which would read as an Ovis too old below
     if (movePath && url.search !== "") return fail("invalid_query", "The move routes take no query", 400);
     if (movePath && request.method !== "GET" && !updateRequestAllowed(request)) return fail("forbidden", MOVE_FROM_PAGE, 403);
-    if (MACHINE_PROXY_PATH.test(path) || movePath) {
+    if (proxyPath || movePath) {
       // `path` is a finite endpoint literal, never the machine id or an arbitrary suffix.
       setRequestRoute(`/api/machines/:machine_id/${path}`);
       // a connection that may only watch is refused here as well as at the access check, by the same rule
@@ -535,8 +562,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (contentType) headers.set("content-type", contentType);
       const ifNoneMatch = request.headers.get("if-none-match");
       if (ifNoneMatch) headers.set("if-none-match", ifNoneMatch);
-      // what that PC asks of a move from its own page; this server's own guards already passed it here
+      // The receiver's app mutation markers; this server has already checked the caller.
       if (movePath) headers.set("x-herdr-update", "1");
+      if (accountRecords) headers.set("x-herdr-machine", "1");
       const abort = new AbortController();
       if (path === "fs/file") {
         // a file (a video, say) streams through, with its ranges, never held here; it can
@@ -616,7 +644,10 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       finally { untrack(); }
     }
     return fail("not_found", "Unknown PC endpoint", 404);
-  } catch (e) { return fail("machine_request_failed", e instanceof Error ? e.message : String(e), 400); }
+  } catch (e) {
+    if (e instanceof TargetAccountPcError) return fail("pc_add_target_bound", e.message, 409);
+    return fail("machine_request_failed", e instanceof Error ? e.message : String(e), 400);
+  }
 }
 
 /**

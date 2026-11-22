@@ -6,12 +6,12 @@ export function forkTabGroupStyle(count: number): CSSProperties | undefined {
 }
 
 /** Keep upstream's More behavior, budgeting each group's attached controls as well. */
-export function forkTabsInRow(tabs: readonly { tab_id: string }[], children: ReadonlyMap<string, readonly unknown[]>, open: number, room: number, add: number, openWidth: number, keep = -1): number[] {
-  if (!children.size) return tabsInRow(tabs.length, open, room, add, openWidth, keep);
-  const widths = tabs.map((tab, index) => Math.max(index === open ? openWidth : TAB_MIN_WIDTH, TAB_MIN_WIDTH + ((children.get(tab.tab_id)?.length ?? 0) * 26 + (children.has(tab.tab_id) ? 4 : 0))));
-  if (widths.reduce((sum, width) => sum + width, add) <= room) return tabs.map((_, index) => index);
+export function forkTabsInRow(tabs: readonly { tab_id: string }[], children: ReadonlyMap<string, readonly unknown[]>, open: number, room: number, add: number, openWidth: number, keep = -1, gap = 0): number[] {
+  if (!children.size) return tabsInRow(tabs.length, open, room, add, openWidth, keep, gap);
+  const widths = tabs.map((tab, index) => Math.max(index === open ? openWidth : TAB_MIN_WIDTH, TAB_MIN_WIDTH + ((children.get(tab.tab_id)?.length ?? 0) * 26 + (children.has(tab.tab_id) ? 4 : 0))) + gap);
+  if (widths.reduce((sum, width) => sum + width, add + gap) <= room) return tabs.map((_, index) => index);
   const pinned = new Set(keep >= 0 && keep < tabs.length ? [open, keep] : [open]);
-  let left = room - add - TAB_MORE_WIDTH - [...pinned].reduce((sum, index) => sum + (widths[index] ?? 0), 0);
+  let left = room - add - TAB_MORE_WIDTH - gap - [...pinned].reduce((sum, index) => sum + (widths[index] ?? 0), 0);
   for (let index = 0; index < tabs.length; index++) {
     if (pinned.has(index)) continue;
     const width = widths[index]!;

@@ -1,7 +1,7 @@
 import type { PortalSignIn } from "./portal.ts";
 
 export type AccessVia = "local" | "tailscale" | "device" | "token" | "open" | "portal" | "relay";
-export type AccessRefusal = "other_user" | "pairing_required" | "token_required";
+export type AccessRefusal = "other_user" | "pairing_required" | "token_required" | "locked" | "strict";
 /** What a paired device may do: drive (type, answer, manage) or only watch. */
 export type DeviceRole = "drive" | "watch";
 
@@ -23,6 +23,11 @@ export interface HealthAuth {
   /** with `via: "portal"`: who signed in through Portal */
   readonly portal?: PortalLogin;
   readonly reason?: AccessRefusal;
+  /**
+   * account-opens-all/1: this request is this PC's own window (loopback with no proxy, or the access token from there),
+   * the rule the lock routes apply themselves. A display hint for the window about itself: it grants nothing.
+   */
+  readonly own_window?: true;
 }
 
 /**
@@ -97,6 +102,14 @@ export interface PairedDevice {
   readonly added_by?: string;
   /** how it reaches this PC right now, while one of its encrypted sessions is up; absent while none is */
   readonly connection?: DeviceConnection;
+  /** To the PC's own window: a signed Not me is waiting for this exact device's account order. */
+  readonly not_me_waiting?: true;
+  /**
+   * account-opens-all/1, to a remote caller only: whether it may Revoke this row from afar (device table T19 in 2d).
+   * `allowed`: the entire Revoke is in scope; `older` and `unorderable` require a different caller;
+   * `read_only`: this caller can only watch.
+   */
+  readonly remote_revoke?: "allowed" | "older" | "unorderable" | "read_only";
 }
 
 /**

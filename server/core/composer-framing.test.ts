@@ -181,5 +181,15 @@ describe("showsLive", () => {
     expect(showsLive(viewport.replace("how", "how⠋"), live.replace("how", "how⠙"))).toBeFalse();
     // nor does one typed after a dash: only a row that is the border itself carries the spinner
     expect(showsLive(" > ─ ⠋ x", " > ─ ⠙ x")).toBeFalse();
+    // nor does a row that only starts like the border: the match never runs on into the next row
+    expect(showsLive(" >\n   ── ⠋ x\n ──────────", " >\n   ── ⠙ x\n ──────────")).toBeFalse();
+    // a typed row the box runs onto (indented three columns) is the box's own, drawn like the border or not
+    expect(showsLive(" > a\n   ── ⠼ notation ──────────", " > a\n   ── ⠴ notation ──────────")).toBeFalse();
+    // plain pi's own working border (not indented) is compared as drawn: no box is read under it, so a turned spinner
+    // taken for the same screen only ever lets a misreading through
+    expect(showsLive("── ⠸ Working ──────────", "── ⠴ Working ──────────")).toBeFalse();
+    // that border where its status leaves few dashes, or where the editor scrolls, is the same screen too
+    expect(showsLive(" ── ⠸ Working ───────\n > how", " ── ⠴ Working ───────\n > how")).toBeTrue();
+    expect(showsLive(" ── ⠸ Working ──── ↑ 2 more ─────\n > how", " ── ⠴ Working ──── ↑ 2 more ─────\n > how")).toBeTrue();
   });
 });

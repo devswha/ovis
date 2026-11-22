@@ -198,8 +198,13 @@ const piStockInputRow: InputRowRecognizer = (screen, typed) => {
 
 /** pi-powerline-footer's editor border: a rule indented one column, `↑` or `↓` at its start where the editor scrolls. */
 const POWERLINE_RULE = /^ [↑↓─]─{9,}$/;
-/** its upper border while pi works: the turn's spinner and label in it (`── ⠸ Working ───`) */
-const POWERLINE_WORKING_RULE = /^ ── [^─]+ ─{9,}$/;
+/**
+ * its upper border while pi works: the turn's spinner and label in it (`── ⠸ Working ───`), as pi 1.5.2 draws it
+ * (CustomEditor.renderTopBorder): the label cut to leave one dash at least, ` ↑ 2 more ` in the dashes where the editor
+ * scrolls. The send's two reads (server/core/composer.ts showsLive) take this row alone as the same whichever frame
+ * its spinner shows.
+ */
+export const POWERLINE_WORKING_RULE = /^ ── [^─]+ ─+(?: ↑ \d+ more ─+)?$/;
 
 /**
  * pi with the pi-powerline-footer extension (0.22.0): its status bar sits above the editor, whose two borders

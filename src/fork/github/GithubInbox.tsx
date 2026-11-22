@@ -6,6 +6,7 @@ import { RowMenu } from "../../components/RowMenu.tsx";
 import type { GithubPull, GithubPullDetail, GithubPulls } from "../../../shared/github.ts";
 import type { WorktreeOpened } from "../../../shared/protocol.ts";
 import { ApiError, getJson } from "../../lib/api.ts";
+import { openExternal } from "../../lib/externalLink.ts";
 import { useT } from "../../lib/i18n.ts";
 import { useSettings } from "../../lib/settings.ts";
 import { githubGroups, githubSearched, githubStacks, loadGithubRepo, saveGithubRepo, useKeptScroll } from "./github.ts";
@@ -69,7 +70,7 @@ async function linkedPull(repository: string, number: number, url: string): Prom
 
 /** Another pull request opened from a page (one of its stack's), in its place: Back still returns to the list. */
 export function openGithubSibling(repository: string, number: number, url: string): void {
-  void linkedPull(repository, number, url).then((row) => openPull(row, false), () => window.open(url, "_blank", "noopener,noreferrer"));
+  void linkedPull(repository, number, url).then((row) => openPull(row, false), () => openExternal(url, "link"));
 }
 
 /** A chat's link opens its pull request: wide, in the inbox's Pull requests; on a phone, over the chat, Back returning to it. */
@@ -80,7 +81,7 @@ function openLinked(enter: () => void, inMode: boolean) {
     void linkedPull(repository, number, url).then((row) => {
       if (phone) linked = true;
       openPull(row, phone);
-    }, () => window.open(url, "_blank", "noopener,noreferrer"));
+    }, () => openExternal(url, "link"));
   };
 }
 
