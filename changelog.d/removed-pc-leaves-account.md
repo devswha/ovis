@@ -37,3 +37,5 @@
   devices are told the PC could not reach the account, and devices paired with the PC itself keep
   working. Only a PC the account had removed, or that a device merely listed again, is added again
   at the PC: the account's devices show **Add this PC to your account again** for it.
+- After a restart, a device paired with the PC itself no longer waits when the PC can read its
+  account but cannot confirm its own place in it.

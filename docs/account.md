@@ -924,6 +924,14 @@ the next read, its sessions closed: the account's listed rows, and the account's
 `devices.json` (a signed `add`, a member's remote approval), those made after the hour ended too. A
 pairing made at this PC is no such row and keeps working.
 
+After a start, every `devices.json` row whose key was not approved on this PC's screen waits for
+the first whole read, since a block may have been signed while the PC was off. A read that reached
+its last page with every block applied, but could let nothing more in because the listing was not
+confirmed, ends that wait for a pairing that is this PC's own (the ones a PC keeps when it leaves
+its account) and that nothing holds back; what such a row may do for the account, and every other
+row, waits on for a read that commits. With no read reaching its last page (the service down), they
+wait as before.
+
 A sign-in whose row only waits for a read (after a start, or once the hour has ended) is put off,
 never refused as a removed device's: `held` with `catching_up`, or `internal_error` to a client from
 before the account codes. A join a member approves from afar is asked about like a sign-in before

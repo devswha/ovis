@@ -513,7 +513,7 @@ export class AccountMailbox {
         // the snapshot is whole and checked, so the service answered this PC: the listing's answer is the newest thing the commit rests on
         // one a link bound lets more in only under the listing its rows were let in under, named by this read's own mailbox
         widen: async () => binding !== null ? await this.checkListing(binding) === "confirmed" && this.listingFresh(binding) : pinned === undefined || named === pinned,
-        narrow: (snapshot) => this.options.devices.dropListedRemoved(snapshot.removed.map((row) => row.key)),
+        narrow: (snapshot) => { this.options.devices.dropListedRemoved(snapshot.removed.map((row) => row.key)); this.options.devices.narrowedRead(); },
         commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         const committedLifts = ports.commit(stage);

@@ -2303,8 +2303,13 @@ export class DeviceStore {
     const offPair = device.off_pair_binding !== undefined && !device.imported && device.relay_public_key === undefined
       && this.pc?.binding()?.bind_id === device.off_pair_binding && this.pc.serviceStep2Off();
     return this.catchUp?.waits({ id, origin: device.origin }, credential && (this.isLegacyCredential(device) || offPair)
-      ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential", { retainedRow: device }) : undefined) ?? false;
+      ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential", { retainedRow: device }) : undefined,
+      // the pairing a PC keeps when it leaves its account is its own; what the row may do for the account waits on
+      credential ? () => keepsPairingOnUnlist(device) && this.admits(device.relay_public_key, undefined, { retainId: device.id }) : undefined) ?? false;
   }
+
+  /** CatchUpGate.narrowedRead, for a whole snapshot read that could widen nothing. */
+  narrowedRead(): void { this.catchUp?.narrowedRead(); }
 
   /** Whether `id` is an account-joined row (S2-26): its every route goes through accountRowMay. */
   isAccountRow(id: string): boolean { return !this.devices.some((d) => d.id === id) && (this.joinedRows?.row(id) ?? null) !== null; }
