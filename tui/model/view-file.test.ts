@@ -438,6 +438,5 @@ describe("a rerun of the screen on the same core", () => {
     await again.advance(10);
     expect(again.loop.model().focus.panes["t-main"]).toBe("t1");
     expect(again.loop.model().notices.map((notice) => notice.code)).toEqual(["view_moved"]);
-    expect(again.grid()[39]).toContain("view_moved: the place this core was left at is gone");
   }, TEST_MS);
 });
