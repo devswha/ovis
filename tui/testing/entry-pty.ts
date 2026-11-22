@@ -153,7 +153,8 @@ export async function closeOwnedServer(options: {
   const { report, graceMs } = options;
   const ended = await shutdownOwned(options.child, options.ask, graceMs);
   const problems: string[] = [];
-  if (ended.forced) report.warn(`herdr cleanup: the server did not stop by itself, ended with ${ended.forced}`);
+  if (ended.unconfirmed) report.warn("herdr cleanup: the server did not stop by itself; SIGKILL sent; exit not confirmed");
+  else if (ended.forced) report.warn(`herdr cleanup: the server did not stop by itself, ended with ${ended.forced}`);
   if (ended.askError) report.warn(`herdr cleanup: server stop failed: ${ended.askError instanceof Error ? ended.askError.message : String(ended.askError)}`);
   if (ended.unconfirmed) problems.push(`the server's exit was not confirmed within ${graceMs} ms after SIGKILL`);
   if (await options.stderr.finish(graceMs) === "cancelled") report.warn(`herdr cleanup: the server's stderr stayed open ${graceMs} ms; the reader was cancelled`);

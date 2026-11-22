@@ -130,6 +130,8 @@ describe("closeOwnedServer", () => {
     const { lines, report } = reports();
     await expect(closeOwnedServer({ child: stuck(), ask: async () => {}, graceMs: 100, stderr: drainTail(closedStream(), 64), sockets: sockets(false, false), report })).rejects.toThrow(/exit was not confirmed within 100 ms after SIGKILL/);
     expect(lines.some((line) => line.startsWith("info"))).toBe(false);
+    expect(lines.some((line) => line.includes("SIGKILL sent; exit not confirmed"))).toBe(true);
+    expect(lines.some((line) => line.includes("ended with SIGKILL"))).toBe(false);
   }, TEST_MS);
 
   it("fails for an unconfirmed exit with the pipe held open, after cancelling the drain", async () => {
