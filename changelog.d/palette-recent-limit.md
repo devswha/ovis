@@ -1,3 +1,3 @@
 ### Changed
-- Command palette's Recent section now shows up to 8 recently visited panes (up from 3), storing 9
-  so excluding the currently open pane still leaves 8 entries (#4035).
+- Command palette's Recent section now shows up to eight recently visited panes, not counting the
+  selected one (up from 3), and stores nine so the selected pane does not take a row (#4035).

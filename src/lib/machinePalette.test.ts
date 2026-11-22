@@ -77,5 +77,8 @@ describe("all-PC palette", () => {
     expect(loaded).toHaveLength(RECENT_SHOWN + 1);
     const shown = recentTargets(rankMachinePanes("", [localMachine], "all", new Map(), t), recent, { machineId: "local", paneId: "p9" }, RECENT_SHOWN);
     expect(shown.map((item) => item.paneId)).toEqual(["p8", "p7", "p6", "p5", "p4", "p3", "p2", "p1"]);
+    // Nine eligible targets and none selected: only the eight newest are shown.
+    const capped = recentTargets(rankMachinePanes("", [localMachine], "all", new Map(), t), recent, { machineId: "local", paneId: "p0" }, RECENT_SHOWN);
+    expect(capped.map((item) => item.paneId)).toEqual(["p9", "p8", "p7", "p6", "p5", "p4", "p3", "p2"]);
   });
 });
