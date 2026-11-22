@@ -27,6 +27,8 @@ const DETACH = "\x02q";
 const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
 /** the query that ends the screen's start probe (DA1): the probe waits for its answer, or REPLY_WAIT_MS */
 const DA1 = "\x1b[c";
+/** what the screen writes once its start probe ended (tui/host/guard.ts watchDisplay): the sign that it got past the probe */
+const DISPLAY_WATCH = "\x1b[?2031h";
 /** what a terminal answers to the queries the screen's start probe ends with */
 const ANSWERS: [query: string, answer: string][] = [[DA1, "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
 
@@ -251,6 +253,12 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
         expect([stage, run.output().split(LEAVE).length - 1]).toEqual([stage, 1]);
         // the held attach never replied: nothing of the pane was drawn
         if (holder) expect([stage, run.output().includes("READY-MARK")]).toEqual([stage, false]);
+        // the signal came before the probe ended: the display watch the screen turns on right after it (tui/loop.ts) never went
+        // out. Read once every byte of the pty is in, so a late one is not missed
+        if (hold.answerDa1 === false) {
+          await run.exited;
+          expect([stage, run.output().includes(DISPLAY_WATCH)]).toEqual([stage, false]);
+        }
         expect((await hc.call("terminal.get", { terminal: address })).state).toBe("live");
       } finally {
         holder?.close();
