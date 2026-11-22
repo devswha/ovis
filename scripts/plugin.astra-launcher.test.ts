@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { recoveryActs } from "../server/account/recovery-acts.ts";
+import { RecoveryReleases } from "../server/account/recovery.ts";
+import { runLogout } from "./plugin-recover.ts";
 
 const plugin = join(import.meta.dir, "plugin.ts");
 let home: string;
@@ -23,4 +26,13 @@ it("does not request a signal for an unverified legacy pid", () => {
   const child = Bun.spawnSync([process.execPath, "-e", probe], { env, cwd: home, stdout: "pipe", stderr: "pipe" });
   expect(child.exitCode, child.stderr.toString()).toBe(0);
   expect(child.stdout.toString().trim().split("\n").at(-1)).toBe("[]");
+});
+
+it("does not revoke a replacement account under the old account's logout confirmation", async () => {
+  let account: string | null = "first-account";
+  const send = recoveryActs({ user: "test", releases: new RecoveryReleases({ journal() {} }), logReadable: () => true,
+    seams: { pendingList: () => [], standing: () => [], admitPending: () => null, removeKey: () => ({ removed: [] }), appendLift: () => ({ outcome: "unused" }), revokeAll() { account = null; return ["replacement-phone"]; } } });
+  await runLogout({ label: "fixture", terminal: true, platform: "linux", out() {},
+    account: async () => ({ account, members: 1 }), ask: async () => { account = "second-account"; return "yes"; }, send, leave: async () => true });
+  expect(account).toBe("second-account");
 });

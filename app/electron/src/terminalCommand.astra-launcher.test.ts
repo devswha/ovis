@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isFile } from "./children.ts";
@@ -21,6 +21,26 @@ function fixture() {
   const env = { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir(), TEST_BUN: process.execPath, TEST_SERVER: join(import.meta.dir, "../../../server/main.ts") };
   return { home, cli, host, places, env };
 }
+
+// Links in a POSIX ~/.local/bin, which a Windows host does not use.
+it.skipIf(process.platform === "win32")("keeps a user's launcher out of a redirected shared bin", async () => {
+  const { home, host } = fixture();
+  const shared = join(root, "shared-bin");
+  mkdirSync(shared); mkdirSync(join(home, ".local"));
+  symlinkSync(shared, join(home, ".local/bin"));
+  await installCommand(host).catch(() => undefined);
+  expect(existsSync(join(shared, "ovis")), "launcher appeared outside home").toBe(false);
+});
+
+it.skipIf(process.platform === "win32")("finishes a partially installed off-PATH command on retry", async () => {
+  const { home, host } = fixture();
+  const profile = join(home, ".zprofile");
+  mkdirSync(profile);
+  await expect(installCommand(host)).rejects.toThrow();
+  rmSync(profile, { recursive: true });
+  await installCommand(host);
+  expect(existsSync(profile), "retry did not create the missing PATH entry").toBe(true);
+});
 
 // Runs a real /bin/bash login shell and the POSIX launcher, which a Windows host has neither of.
 it.skipIf(process.platform === "win32")("preserves the login profile bash was actually reading", async () => {
