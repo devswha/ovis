@@ -591,6 +591,12 @@ public class PCStoreTest {
         String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
         assertTrue(PCStore.pageTakesBack(scope + "?pane=a", scope, scope));
         assertFalse(PCStore.pageTakesBack(scope, "https://app.ovis.sh/", scope));
+        // the hosted app's Add a PC, opened from this relay PC's More: Back goes back to the PC, on every Android
+        assertTrue(PCStore.pageTakesBack("https://app.ovis.sh/#add", scope + "?pane=a", scope));
+        assertFalse(PCStore.pageTakesBack("https://app.ovis.sh/#add", "https://app.ovis.sh/", scope));
+        assertFalse(PCStore.pageTakesBack("https://app.ovis.sh/#pcs", scope, scope));
+        assertFalse(PCStore.pageTakesBack("https://evil.example/#add", scope, scope));
+        assertFalse(PCStore.pageTakesBack("https://app.ovis.sh/#add", null, scope));
         assertTrue(PCStore.pageTakesBack("https://localhost/demo/index.html", "https://localhost/", "https://localhost"));
         assertFalse(PCStore.pageTakesBack("https://localhost/", null, "https://localhost"));
     }

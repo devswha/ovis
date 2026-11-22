@@ -376,7 +376,25 @@ final class PCStore {
     }
 
     static boolean pageTakesBack(String here, String before, String place) {
-        return here != null && before != null && belongs(here, place) && belongs(before, place);
+        if (here == null || before == null || !belongs(before, place)) return false;
+        return belongs(here, place) || (scoped(place) && addPcOf(here, place));
+    }
+
+    /**
+     * Whether `url` is the hosted app's Add a PC (its front page at `#add`) on a relay PC's own origin: a relay PC's
+     * More opens it over the PC's page (MachineSidebar openAddPc), so Back there returns to the PC as the page's own Back
+     * does, rather than leaving the app.
+     */
+    static boolean addPcOf(String url, String key) {
+        String origin = origin(url);
+        if (origin == null || !origin.equals(origin(key))) return false;
+        try {
+            URI uri = new URI(url);
+            String path = uri.getRawPath() == null ? "" : uri.getRawPath();
+            return (path.isEmpty() || path.equals("/")) && "add".equals(uri.getRawFragment()) && uri.getRawQuery() == null;
+        } catch (URISyntaxException e) {
+            return false;
+        }
     }
 
     /**
