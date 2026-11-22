@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from "react";
 
 import { shellAccountActions, type FreshSignIn } from "../lib/account/hostedSignIn.ts";
-import { AccountServiceError, type AccountService } from "../lib/account/service.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { AccountServiceError, listingChanged, type AccountService } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
@@ -16,6 +17,7 @@ const refusalOf = (error: unknown): Refusal | null =>
 type Asked = {
   readonly session: AccountSession;
   readonly serverId: string;
+  readonly listingId: string | undefined;
   readonly refusal: Refusal;
   readonly step: "offered" | "signing-in" | "failed";
   readonly link: string | null;
@@ -26,10 +28,12 @@ type Asked = {
  * fresh own sign-in first it resolves false, and `prompt` says so with Sign in again. That press signs in again in place
  * (the desktop app, the PC's own window, the phone app) and removes the same PC with the fresh sign-in: the removal was
  * already asked for. Where the page signs in only by leaving (the hosted app in a browser), Sign in again leaves, and the
- * PC is removed by a press after the return. Any other failure throws.
+ * PC is removed by a press after the return. A removal naming the listing its card showed (`listingId`, account#67) that
+ * the service refuses as `listing_changed` removed nothing and is no failure: it resolves false and the account's PCs are
+ * read again, so the card shows what is there now. Any other failure throws.
  */
 export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed: (serverId: string) => void | Promise<void>): {
-  readonly remove: (session: AccountSession, serverId: string) => Promise<boolean>;
+  readonly remove: (session: AccountSession, serverId: string, listingId?: string) => Promise<boolean>;
   readonly prompt: ReactNode;
   /** the PC \`prompt\` speaks of, for a surface that draws one row per PC; null with no prompt */
   readonly promptFor: string | null;
@@ -42,13 +46,14 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
     : here === undefined ? undefined : (from, blocked) => here(from, { signal: new AbortController().signal, wanted: () => true, blocked });
   const leaving = shell?.signInAgain;
 
-  const remove = async (session: AccountSession, serverId: string): Promise<boolean> => {
+  const remove = async (session: AccountSession, serverId: string, listingId?: string): Promise<boolean> => {
     setAsked(null);
-    try { await service.forSignIn(session).deletePc(serverId); }
+    try { await service.forSignIn(session).deletePc(serverId, listingId); }
     catch (error) {
+      if (listingChanged(error)) { window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT)); return false; }
       const refusal = refusalOf(error);
       if (refusal === null) throw error;
-      setAsked({ session, serverId, refusal, step: "offered", link: null });
+      setAsked({ session, serverId, listingId, refusal, step: "offered", link: null });
       return false;
     }
     await removed(serverId);
@@ -61,7 +66,7 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
     const still = (now: Asked | null): boolean => now?.session === shown.session && now.serverId === shown.serverId;
     fresh(shown.session, (link) => setAsked((now) => still(now) ? { ...now!, link } : now)).then(async (again) => {
       if (again === null) { setAsked((now) => still(now) ? { ...shown, step: "failed" } : now); return; }
-      await remove(again, shown.serverId);
+      await remove(again, shown.serverId, shown.listingId);
     }).catch((error: unknown) => {
       console.warn("Ovis: the PC was not removed after signing in again", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
       setAsked((now) => still(now) || now === null ? { ...shown, step: "failed" } : now);

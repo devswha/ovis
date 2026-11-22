@@ -2,7 +2,7 @@ import { Monitor } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
-import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
+import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, listingChanged, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -14,27 +14,39 @@ import "./UpdateControls.css";
 
 /** security-triage condition 3: Add only while the listing is this young, by its added_at; after it, Remove alone */
 const ADD_WINDOW_MS = 10 * 60_000;
-/** the add a Sign in again was pressed for, by account and PC: the sign-in comes back as a page load, which goes on with it once */
+/** the add a Sign in again was pressed for, by account, PC and listing: the sign-in comes back as a page load, which goes on with it once */
 const PENDING_ADD = "ovis:confirm-pc";
 
+/** the add pressed before a Sign in again: that PC, and the listing its card showed when the service gave one (account#67) */
+type PendingAdd = { readonly server_id: string; readonly listing_id?: string };
 /** `addable`: false when this sign-in can be told before a press that the service would refuse it two_step_required */
-type Listing = { readonly session: AccountSession; readonly pcs: readonly DirectoryPc[]; readonly pending: string | null; readonly addable: boolean };
+type Listing = { readonly session: AccountSession; readonly pcs: readonly DirectoryPc[]; readonly pending: PendingAdd | null; readonly addable: boolean };
 /** `signInAgain`: a fresh own sign-in may pass it; `numberOnly`: none can, so Add goes and the PC is added with its number */
 type Problem = { readonly text: string; readonly signInAgain: boolean; readonly numberOnly?: true };
 
-function takePendingAdd(account: string): string | null {
+function takePendingAdd(account: string): PendingAdd | null {
   try {
     const kept = sessionStorage.getItem(PENDING_ADD);
     sessionStorage.removeItem(PENDING_ADD);
     const parsed: unknown = kept === null ? null : JSON.parse(kept);
-    return typeof parsed === "object" && parsed !== null && (parsed as { account?: unknown }).account === account && typeof (parsed as { server_id?: unknown }).server_id === "string"
-      ? (parsed as { server_id: string }).server_id : null;
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { account: of, server_id, listing_id } = parsed as { account?: unknown; server_id?: unknown; listing_id?: unknown };
+    return of === account && typeof server_id === "string" ? { server_id, ...(typeof listing_id === "string" ? { listing_id } : {}) } : null;
   } catch { return null; }
 }
 
-function keepPendingAdd(account: string, serverId: string): void {
-  try { sessionStorage.setItem(PENDING_ADD, JSON.stringify({ account, server_id: serverId })); } catch { /* not kept: Add is pressed again after the sign-in */ }
+function keepPendingAdd(account: string, pc: DirectoryPc): void {
+  try { sessionStorage.setItem(PENDING_ADD, JSON.stringify({ account, server_id: pc.server_id, ...(typeof pc.listing_id === "string" ? { listing_id: pc.listing_id } : {}) })); }
+  catch { /* not kept: Add is pressed again after the sign-in */ }
 }
+
+/**
+ * The add pressed before a Sign in again goes on only for the listing it was pressed on: a replacement waits for its own
+ * press, and so does any listing when the kept add names none (an older Ovis kept it) or another. Only where the service
+ * gives the PC no listing ID at all is there nothing to tell listings apart by, and an add kept without one goes on.
+ */
+const pendingFor = (pending: PendingAdd | null, pc: DirectoryPc): boolean =>
+  pending?.server_id === pc.server_id && pending.listing_id === (typeof pc.listing_id === "string" ? pc.listing_id : undefined);
 
 /** the confirm refusals about the sign-in alone (docs/account.md) say so, with Sign in again: a fresh own sign-in may pass them */
 function refusal(t: Translate, error: Error): Problem {
@@ -108,7 +120,7 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   return (
     <>
       {listing.pcs.filter((pc) => !told.has(pc.server_id) && !removed.has(pc.server_id)).map((pc) => (
-        <UnconfirmedPcNotice key={`${session.account}:${pc.server_id}`} pc={pc} session={session} service={service} now={now} addable={listing.addable} retry={listing.addable && listing.pending === pc.server_id}
+        <UnconfirmedPcNotice key={`${session.account}:${pc.server_id}:${pc.listing_id ?? pc.added_at}`} pc={pc} session={session} service={service} now={now} addable={listing.addable} retry={listing.addable && pendingFor(listing.pending, pc)}
           {...(onSignInAgain ? { onSignInAgain } : {})}
           onConfirmed={(row) => setConfirmed((prior) => [...prior.filter((each) => each.server_id !== row.server_id), row])}
           onRemoved={() => setRemoved((prior) => new Set([...prior, pc.server_id]))} />
@@ -165,11 +177,18 @@ function UnconfirmedPcNotice({ pc, session, service, now, addable, retry, onSign
   // the ten minutes are checked again at the press: a page left open never adds an old listing
   const add = (): Promise<void> => act(async () => {
     if (!youngAt(now())) { setYoung(false); return; }
-    const row = await directory.confirmPc(pc);
+    let row: DirectoryPc;
+    try { row = await directory.confirmPc(pc); }
+    catch (error) {
+      // account#67: the listing this card showed is no longer the one waiting: nothing was confirmed, and the card is drawn again
+      if (!listingChanged(error)) throw error;
+      window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+      return;
+    }
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
     onConfirmed(row);
   }, (error) => refusal(t, error));
-  const remove = (): Promise<void> => act(async () => { await removal.remove(session, pc.server_id); },
+  const remove = (): Promise<void> => act(async () => { await removal.remove(session, pc.server_id, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
     () => ({ text: t("The PC could not be removed. Try again."), signInAgain: false }));
   const latestAdd = useRef(add);
   latestAdd.current = add;
@@ -191,7 +210,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, addable, retry, onSign
       </span>
       <div className="device-paired-actions">
         {problem?.signInAgain === true && onSignInAgain !== undefined && (
-          <button type="button" className="btn" disabled={busy} onClick={() => { keepPendingAdd(session.account, pc.server_id); onSignInAgain(session.provider); }}>{t("Sign in again")}</button>
+          <button type="button" className="btn" disabled={busy} onClick={() => { keepPendingAdd(session.account, pc); onSignInAgain(session.provider); }}>{t("Sign in again")}</button>
         )}
         {young ? (
           <>

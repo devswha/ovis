@@ -120,6 +120,9 @@ export class AccountServiceError extends Error {
   }
 }
 
+/** The listing a request named is no longer the one waiting for it (account#57, #67): nothing was written, and the PCs are read again. */
+export const listingChanged = (error: unknown): boolean => error instanceof AccountServiceError && error.status === 409 && error.code === "listing_changed";
+
 /**
  * The access token's refresh failed before the request it was for went out: the service has not answered that
  * request, so its error is no refusal of it (a refused refresh that ends the sign-in is a SignedOutError instead).
@@ -384,11 +387,14 @@ export class AccountService {
   /**
    * PCL-1/PCL-4: this own sign-in says the PC is the account's, with the key and relay its listing gave. The service refuses
    * a device code's sign-in (`own_sign_in_required`), one older than ten minutes (`session_not_fresh`) and one without
-   * two-step in a used account (`two_step_required`). The confirmed row comes back new for 24 hours (C3).
+   * two-step in a used account (`two_step_required`). The confirmed row comes back new for 24 hours (C3). It names the
+   * listing the card showed (account#67), so a replacement is never confirmed by it: the service answers 409
+   * `listing_changed` (`listingChanged`); one that predates the field ignores it.
    */
   async confirmPc(pc: DirectoryPc): Promise<DirectoryPc> {
     if (pc.public_key === null || pc.relay === null) throw new AccountServiceError(409, "unconfirmable", "The listing gives no key or relay to confirm");
-    const body = await this.call("PUT", `/v1/pcs/${pc.server_id}`, { label: pc.label, public_key: pc.public_key, relay: pc.relay, confirm: true });
+    const body = await this.call("PUT", `/v1/pcs/${pc.server_id}`, { label: pc.label, public_key: pc.public_key, relay: pc.relay, confirm: true,
+      ...(typeof pc.listing_id === "string" ? { listing_id: pc.listing_id } : {}) });
     const row = isRecord(body) ? parsePc(body.pc) : null;
     if (row === null || row.server_id !== pc.server_id || row.unconfirmed === true) throw new AccountServiceError(502, "invalid_answer", "The account service did not confirm the PC");
     return row;
@@ -415,8 +421,12 @@ export class AccountService {
     await this.call("PUT", `/v1/pcs/${serverId}`, entry, signal, again);
   }
 
-  async deletePc(serverId: string): Promise<void> {
-    await this.call("DELETE", `/v1/pcs/${serverId}`);
+  /**
+   * Removes a PC. A Decline names the listing its card showed (account#67): the service then removes only that listing while
+   * it still asks to join, and answers 409 `listing_changed` (`listingChanged`) otherwise; one that predates it ignores it.
+   */
+  async deletePc(serverId: string, listingId?: string): Promise<void> {
+    await this.call("DELETE", `/v1/pcs/${serverId}${listingId === undefined ? "" : `?listing_id=${encodeURIComponent(listingId)}`}`);
   }
 
   /** Renews an invitation in place. Without a listing ID, the empty body probes for the old service's missing route. */
@@ -429,7 +439,7 @@ export class AccountService {
       return "refreshed";
     } catch (error) {
       if (error instanceof AccountServiceError) {
-        if (error.status === 409 && error.code === "listing_changed") return "changed";
+        if (listingChanged(error)) return "changed";
         if (listingId === undefined && error.status === 404 && error.code === "not_found") return "legacy";
       }
       throw error;

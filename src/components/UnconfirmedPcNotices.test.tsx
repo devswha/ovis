@@ -248,6 +248,77 @@ it("PCR-1: a removal from a sign-in older than ten minutes removes nothing, and 
     expect(text()).toContain(`Name the PC gave itself: "${LABEL}"`);
   });
 
+  /** another device said No to the listing this card shows, and the PC listed itself again: a new listing behind the same card */
+  async function replacedBehindTheCard(): Promise<string> {
+    const shown = fake.pcs(ACCOUNT)[0]!.listing_id!;
+    const removed = await fake.fetch(`${ORIGIN}/v1/pcs/${PC}`, { method: "DELETE", headers: { authorization: `Bearer ${fake.issueToken(ACCOUNT)}` } });
+    expect(removed.status).toBe(204);
+    await listedByDeviceCode();
+    expect(fake.pcs(ACCOUNT)[0]!.listing_id).not.toBe(shown);
+    return shown;
+  }
+
+  /** the account service as this device calls it, each write to /v1/pcs recorded with what it named */
+  function recorded(): { method: string; url: URL; body: Record<string, unknown> | null }[] {
+    const sent: { method: string; url: URL; body: Record<string, unknown> | null }[] = [];
+    service = new AccountService({ store, lock: memoryLock(), now: () => now, fetch: async (input: Request | string | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (request.method !== "GET" && url.pathname.startsWith("/v1/pcs/")) {
+        const text = await request.clone().text();
+        sent.push({ method: request.method, url, body: text === "" ? null : JSON.parse(text) as Record<string, unknown> });
+      }
+      return fake.fetch(request);
+    } });
+    return sent;
+  }
+
+  it("account#67: Add names the listing its card showed: a replacement is not confirmed, and the card shows it as it is now", async () => {
+    fake.completions = true;
+    await signIn();
+    await listedByDeviceCode();
+    const sent = recorded();
+    await mount();
+    const shown = await replacedBehindTheCard();
+    await press("Add");
+    expect(sent.filter((each) => each.method === "PUT").map((each) => each.body?.listing_id)).toEqual([shown]);
+    expect(fake.pcs(ACCOUNT)[0]?.listed_by_device).toBe(true);
+    // the service's 409 listing_changed is no failure to show: the PCs are read again instead
+    expect(fake.requests.lastIndexOf("GET /v1/pcs")).toBeGreaterThan(fake.requests.lastIndexOf(`PUT /v1/pcs/${PC}`));
+    expect(text()).not.toContain("The PC could not be added.");
+    expect(text()).not.toContain("New PC added to your account");
+    expect(buttons()).toEqual(["Add", "No"]);
+  });
+
+  it("account#67: No names the listing its card showed: a replacement is not removed, and the card shows it as it is now", async () => {
+    fake.completions = true;
+    await signIn();
+    await listedByDeviceCode();
+    const sent = recorded();
+    await mount();
+    const shown = await replacedBehindTheCard();
+    await press("No");
+    expect(sent.filter((each) => each.method === "DELETE").map((each) => `${each.url.pathname}${each.url.search}`)).toEqual([`/v1/pcs/${PC}?listing_id=${shown}`]);
+    expect(fake.pcs(ACCOUNT)).toHaveLength(1);
+    expect(fake.pcs(ACCOUNT)[0]!.listing_id).not.toBe(shown);
+    expect(fake.requests.lastIndexOf("GET /v1/pcs")).toBeGreaterThan(fake.requests.lastIndexOf(`DELETE /v1/pcs/${PC}`));
+    expect(text()).not.toContain("The PC could not be removed.");
+    expect(buttons()).toEqual(["Add", "No"]);
+  });
+
+  for (const [saved, kept] of [["no listing (an older Ovis saved it)", {}], ["another listing", { listing_id: "0".repeat(32) }]] as const) {
+    it(`C1: an Add kept across Sign in again for ${saved} never confirms the listing there now: it waits for a fresh press`, async () => {
+      fake.completions = true;
+      await signIn();
+      await listedByDeviceCode();
+      sessionStorage.setItem("ovis:confirm-pc", JSON.stringify({ account: ACCOUNT, server_id: PC, ...kept }));
+      await mount();
+      expect(fake.requests.filter((line) => line === `PUT /v1/pcs/${PC}`)).toHaveLength(1);
+      expect(fake.pcs(ACCOUNT)[0]?.listed_by_device).toBe(true);
+      expect(buttons()).toEqual(["Add", "No"]);
+    });
+  }
+
   it("offers nothing to press to a device code's sign-in", async () => {
     await listedByDeviceCode();
     const token = fake.issueToken(ACCOUNT, { device: true });
