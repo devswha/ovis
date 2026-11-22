@@ -60,6 +60,8 @@ export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable
   | "new-key-unvouched"
   /** the PC refused this device's first link: its code ended or ran out, the code is for another account, or the account service did not vouch for this device */
   | "link-required" | "account-mismatch" | "unverified-device"
+  /** the PC could not ask the account service whether it is still in the account, or left the account and must be added to it again */
+  | "account-unreachable" | "account-readd"
   /** the sign-in a marked pairing stopped for took longer than its code is good for: only a new scan pairs */
   | "scan-expired";
 
@@ -180,6 +182,8 @@ export function failureOf(error: unknown, attempt: { code: boolean; paired: bool
     case "auth_revoked": return "revoked";
     case "auth_failed": return attempt.code || !attempt.paired ? "code-expired" : "revoked";
     case "unsupported_version": case "unsupported_extension": case "unsupported_transport": return "needs-update";
+    case "account_unreachable": return "account-unreachable";
+    case "account_readd_required": return "account-readd";
     default: return "relay-unreachable";
   }
 }

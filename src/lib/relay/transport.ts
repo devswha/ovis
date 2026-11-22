@@ -65,6 +65,7 @@ export function isFatalRelayError(error: unknown, accountOpensAll = false): erro
   // the relay takes no new device for this PC while its account is past its limits: only a later try can differ
   if (error instanceof RelayNewSessionsRefusedError) return true;
   return error instanceof MuxProtocolError && ((accountOpensAll && openRefusalOf(error) !== null) || error.code === "auth_revoked" || error.code === "auth_failed"
+    || error.code === "account_unreachable" || error.code === "account_readd_required"
     || error.code === "unsupported_version" || error.code === "unsupported_extension" || error.code === "unsupported_transport");
 }
 

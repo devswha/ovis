@@ -14,7 +14,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
-import { type ClearReason, PcAccountState } from "./account/pc-binding.ts";
+import { type ClearReason, PcAccountState, UNPINNED_CLEAR } from "./account/pc-binding.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
 import { rowDrop } from "./account/row-drop-evidence.ts";
@@ -1441,6 +1441,12 @@ export class DeviceStore {
 
   serviceListing(): string | undefined { return this.pc?.binding()?.listing_id; }
   pinServiceListing(binding: string, listing: string): void { this.pc?.pinListing(binding, listing); }
+
+  /** This PC left its account over a binding that named no listing (AccountMailbox.confirmsListing) and is in none since. */
+  readdRequired(): boolean {
+    const last = this.pc?.clears().at(-1);
+    return this.pc?.binding() === null && last?.reason === "unlisted" && last.by === UNPINNED_CLEAR;
+  }
 
   accountOnly(id: string): boolean {
     const member = this.devices.find(row => row.id === id);

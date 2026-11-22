@@ -18,6 +18,8 @@ import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
 
 /** `unlisted`: a PC bound on the account service's word that the account stopped listing (one press, docs/account.md) */
 export type ClearReason = "revoke_all" | "identity_reset" | "unlisted";
+/** Who made an `unlisted` clear when the PC did it itself: its older one-press binding named no listing the account service still confirms. */
+export const UNPINNED_CLEAR = "unpinned";
 // A receipt written by an older version still invalidates its bind_id; new clears cannot emit that reason.
 export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string }
 export interface AccountBinding {

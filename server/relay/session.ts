@@ -5,13 +5,14 @@ import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPai
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_LISTING_ERRORS, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, PairApprover, SessionError } from "../../shared/relay-mux.ts";
 import { PC_CODE_ACCOUNT_ONLY } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { KeyProofPairings } from "../account/key-proof.ts";
+import type { ListingVerdict } from "../account/mailbox.ts";
 import { PENDING_MS } from "../account/pending.ts";
 import { pullForRefusedSignIn } from "./refused-signin.ts";
 import { accountSignInRefusal } from "../account/account-signin.ts";
@@ -26,6 +27,8 @@ import { logAccess } from "../connection-diagnostics.ts";
 const APPROVER_OF: Partial<Record<NodeJS.Platform, PairApprover>> = { darwin: "mac", win32: "windows", linux: "linux" };
 
 export const RELAY_ORIGIN = "https://relay.ovis.invalid";
+/** How long a sign-in waits for the account service's word on this PC's listing: with a refused sign-in's pull before it, still inside the device's ADMISSION_MS. */
+export const LISTING_WAIT_MS = 4_000;
 const SOURCE_LIMIT = 3 * 1024 * 1024;
 const SESSION_LIMIT = 32 * 1024 * 1024;
 export const relayClock: MuxClock = {
@@ -148,6 +151,8 @@ export class RelaySession {
   private accountCodes = false;
   private directing = false;
   private tailnet = false;
+  /** the phone offered ACCOUNT_LISTING_ERRORS: one that did not gets the older code that forgets no key over an outage */
+  private listingErrors = false;
   /** the phone offered SERVER_TIME_HEADER: one that did not refuses the header */
   private serverTime = false;
   private unwatch: (() => void) | undefined;
@@ -275,9 +280,9 @@ export class RelaySession {
     if (bytes.byteLength >= 8) this.activity.get(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(4))?.();
   }
 
-  close(code: SessionError = "auth_revoked", receipts?: readonly BlockReceipt[]): void {
+  close(code: SessionError = "auth_revoked", receipts?: readonly BlockReceipt[], reason: SessionError = code): void {
     if (this.state === "closed") return;
-    this.closingReason = code;
+    this.closingReason = reason;
     this.state = "closed";
     this.leaveKeyProof();
     this.endPairing(false);
@@ -356,6 +361,7 @@ export class RelaySession {
         this.serverTime = frame.payload.features.includes(SERVER_TIME_HEADER);
         this.keyProof = frame.payload.features.includes(KEY_PROOF_FEATURE);
         this.pcCodeAdd = frame.payload.features.includes(PC_CODE_ACCOUNT_ONLY);
+        this.listingErrors = frame.payload.features.includes(ACCOUNT_LISTING_ERRORS);
         // an intent is selected only with pair-sas, and only the one offered (docs/account.md, "Negotiation")
         const intents = frame.payload.features.filter((f) => f === PAIR_INTENT_PC || f === PAIR_INTENT_ACCOUNT || f === PAIR_INTENT_VOUCHED);
         if (intents.length > 1) { this.close("protocol_error"); return; }
@@ -370,7 +376,11 @@ export class RelaySession {
         this.authReceipts = this.options.services.devices.accountPolicyActive() && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE);
         if (this.authReceipts) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
         this.accountCodes = this.authReceipts;
-        if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
+        if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) {
+          const readd = this.listingErrors && frame.payload.required_features.includes(ACCOUNT_OPENS_ALL_FEATURE) && this.options.services.devices.readdRequired();
+          this.close(readd ? "account_readd_required" : "unsupported_extension");
+          return;
+        }
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
         if (this.sasBinding && intents[0] === PAIR_INTENT_VOUCHED) this.intent = "vouched";
@@ -396,7 +406,7 @@ export class RelaySession {
         if (this.refused) return;
         if (frame.type === FrameType.AUTH && device && devices.catchingUp(device.id)) {
           // Step 2 (S2-27): a row not paired at this PC waits for the first whole read after a start (T41)
-          if (!this.mux.active) return;
+          if (!await this.readComing(device.id) || !this.mux.active) return;
           const refusal = accountSignInRefusal({ refused: "catching_up" }, null, this.accountCodes);
           this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
           return;
@@ -405,6 +415,7 @@ export class RelaySession {
           // Step 2 (S2-25): an account-joined row signs in with its registered key; its refusal is told only after the proof
           const joined = await devices.matchAccountRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId);
           if (joined !== null && "refused" in joined) {
+            if (joined.refused.refused === "catching_up" && !await this.readComing(frame.payload.device_id)) return;
             if (!this.mux.active) return;
             const refusal = accountSignInRefusal(joined.refused, joined.holdUntil, this.accountCodes);
             this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
@@ -623,16 +634,46 @@ export class RelaySession {
   private get path(): PairingPath { return this.intent === "account" ? "account" : this.intent === "vouched" ? "vouched" : "code"; }
 
   private async enterProved(device: DeviceMatch): Promise<void> {
-    const { devices, accountMailbox } = this.options.services;
+    const { devices } = this.options.services;
     const binding = devices.serviceBinding();
     if (binding !== null && devices.accountOnly(device.id)) {
       const key = devices.sessionRow(device.id)?.key;
-      if (!key || !await accountMailbox.confirmsListing(binding) || devices.serviceBinding() !== binding || devices.sessionRow(device.id)?.key !== key) {
-        if (this.mux.active) this.close("auth_failed");
+      const verdict = key ? await this.listingVerdict(binding) : "refused";
+      if (verdict !== "confirmed" || devices.serviceBinding() !== binding || devices.sessionRow(device.id)?.key !== key) {
+        if (this.mux.active) this.refuseListing(verdict);
         return;
       }
     }
     this.enter(device);
+  }
+
+  /**
+   * Before an account device is told to wait for this PC's first read: with the account service not answering, or the
+   * PC out of its account, that read is not coming, and the device hears which. An older client keeps its wait.
+   */
+  private async readComing(id: string): Promise<boolean> {
+    const { devices } = this.options.services;
+    const binding = devices.serviceBinding();
+    if (!this.listingErrors || binding === null || !devices.accountOnly(id)) return true;
+    const verdict = await this.listingVerdict(binding);
+    if (verdict === "confirmed") return true;
+    if (this.mux.active) this.refuseListing(verdict);
+    return false;
+  }
+
+  /** An account service that does not answer in time is an outage to this sign-in; its answer, when it comes, serves the next. */
+  private async listingVerdict(binding: string): Promise<ListingVerdict> {
+    let cancel = (): void => {};
+    const late = new Promise<ListingVerdict>((resolve) => { cancel = this.clock.setTimeout(() => resolve("unreachable"), LISTING_WAIT_MS); });
+    try { return await Promise.race([this.options.services.accountMailbox.confirmsListing(binding), late]); }
+    finally { cancel(); }
+  }
+
+  /** An outage refuses without a word against the device's key; only a client that knows the two account codes is sent them. */
+  private refuseListing(verdict: ListingVerdict): void {
+    if (verdict === "unreachable") this.close(this.listingErrors ? "account_unreachable" : "internal_error", undefined, "account_unreachable");
+    else if (verdict === "readd") this.close(this.listingErrors ? "account_readd_required" : "auth_failed", undefined, "account_readd_required");
+    else this.close("auth_failed");
   }
 
   /** A verified AUTH, PAIR or approved comparison becomes this session's one principal. */

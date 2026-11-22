@@ -897,10 +897,26 @@ digits as before, and its notice says what to do if nobody added it. A PC bound 
 account as soon as a snapshot read finds the account no longer lists it, or its scoped completion
 receipt says the admitted listing was replaced. A bare relisting is not a new admission. The PC
 keeps the admission's `listing_id` in its binding and checks it with the service before a snapshot
-can release account rows and before granting a new account-only relay session. With no new sign-in,
-the PC checks at its normal five-minute mailbox poll. An unavailable service cannot authorize a new
-account-only connection. An older binding with no listing ID needs a still-current one-press
-admission to establish standing; a snapshot alone cannot identify the old listing. Before recording the
+can release account rows and before granting a new account-only relay session. A positive answer
+stands for 60 seconds from when it was asked for, on a clock that only moves forward and on the PC's
+wall clock (either one outside the 60 seconds ends it), so a burst of sign-ins asks once and a
+removal refuses new sign-ins within a minute. A failed or negative answer is never kept, and a
+snapshot read asks for itself after its first page. With no new sign-in, the PC checks at its normal
+five-minute mailbox poll, which is also when sessions already open end. An unavailable service, or
+one that has not answered a sign-in within 4 seconds, cannot authorize a new account-only connection
+and clears nothing: the device is refused with `account_unreachable` and says that the PC could not
+reach the account service. A client that did not offer `account-listing-errors-1` in HELLO gets
+`internal_error` instead, which forgets no key.
+
+A binding made before 0.5.10 names no listing. It pins one only on the service's word for the
+listing the PC was admitted in: a one-press admission still current, or the completion receipt the
+PC kept from its bind, when the service still confirms it. The account's current listing is never
+pinned: a device may have listed the PC again since, and the PC's own mailbox pull would let it
+complete that listing. When the service says there is no admission (`no_admission`, never a hidden
+404) and no receipt holds, the PC leaves the account as for an unlisting, and until it joins one
+again it refuses an account's device with `account_readd_required` (to a client that offered the
+feature): **Add this PC to your account again**. So a PC added in one press on 0.5.9 is added again
+once after the update. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
 after an offline restart from either state folder. A pairing by code or digits counts as local

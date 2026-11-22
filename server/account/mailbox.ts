@@ -15,6 +15,7 @@ import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { AccountHolds } from "./holds.ts";
+import { UNPINNED_CLEAR } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
 import type { UsedReport } from "../../shared/account-snapshot.ts";
 import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
@@ -146,6 +147,18 @@ function removedKey(record: unknown): string | null {
 const LISTING_ID = /^[0-9a-f]{32}$/;
 type CompletionScope = { readonly account: string; readonly listing_id: string };
 
+/** How long one positive answer for this PC's listing lets its account's devices in without asking again. */
+export const LISTING_CONFIRMED_MS = 60_000;
+/**
+ * The account service's word on this PC's listing: `unreachable` when it gave none (so nothing was decided), `readd`
+ * when an older binding could name no listing and was cleared for it, `refused` for every other end.
+ */
+export type ListingVerdict = "confirmed" | "unreachable" | "readd" | "refused";
+
+function listingChanged(error: unknown): boolean {
+  return error instanceof AccountServiceRefusal && error.path === "/v1/pc/complete" && error.status === 409 && error.code === "listing_changed";
+}
+
 function readCompletion(path: string | undefined): CompletionScope | null {
   if (!path) return null;
   try {
@@ -197,6 +210,9 @@ export class AccountMailbox {
 
   /** A bind's completion receipt the account service has not taken yet (account#57): sent again after each pull. */
   private completion: CompletionScope | null;
+
+  private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number } | null = null;
+  private listingCheck: { readonly key: string; readonly verdict: Promise<ListingVerdict> } | null = null;
 
   constructor(private readonly options: AccountMailboxOptions) {
     this.completion = readCompletion(options.completionPath);
@@ -275,27 +291,116 @@ export class AccountMailbox {
     return this.exclusively(async () => (await this.readSnapshotNow(undefined, justAdmitted)).outcome);
   }
 
-  /** A successful snapshot identifies the account, not the listing. Only the original listing's
-   * scoped receipt (or a still-current admission on older PCs) can attest to a one-press bind. */
-  async confirmsListing(binding: string): Promise<boolean> {
+  /**
+   * Whether the account still holds the listing this PC was admitted in. A successful snapshot identifies the account,
+   * not the listing, so only the admitted listing's scoped receipt answers. One positive answer stands for
+   * LISTING_CONFIRMED_MS from when it was asked for, so a burst of sign-ins asks once; nothing else is kept.
+   */
+  async confirmsListing(binding: string): Promise<ListingVerdict> {
+    const key = this.listingKey(binding);
+    if (key === null) return "refused";
+    if (this.listingStands(key)) return "confirmed";
+    const verdict = await (this.listingCheck?.key === key ? this.listingCheck.verdict : this.checkListing(binding));
+    if (verdict !== "confirmed") return verdict;
+    const now = this.listingKey(binding);
+    if (now === null) return "refused";
+    return this.listingStands(now) ? "confirmed" : "unreachable";
+  }
+
+  /** The same question, asked now: a read that releases account rows never rests on an answer from before its page. */
+  private checkListing(binding: string): Promise<ListingVerdict> {
+    const key = this.listingKey(binding);
+    if (key === null) return Promise.resolve("refused");
+    const at = this.options.devices.waitClock().now();
+    const wallAt = Date.now();
+    const verdict = this.askListing(binding).then((answer) => {
+      if (answer !== "confirmed") return answer;
+      const confirmed = this.listingKey(binding);
+      if (confirmed === null) return "refused";
+      const kept = this.listingConfirmed;
+      if (kept === null || kept.key !== confirmed || kept.at <= at) this.listingConfirmed = { key: confirmed, at, wallAt };
+      return answer;
+    });
+    if (this.listingCheck?.key !== key) {
+      const check = { key, verdict };
+      this.listingCheck = check;
+      void verdict.finally(() => { if (this.listingCheck === check) this.listingCheck = null; });
+    }
+    return verdict;
+  }
+
+  private listingKey(binding: string): string | null {
     const { devices } = this.options;
     const account = devices.account();
-    const identity = this.options.identity();
-    if (!identity || !account || devices.serviceBinding() !== binding || this.stopped) return false;
-    const current = () => !this.stopped && devices.serviceBinding() === binding && this.options.identity()?.server_id === identity.server_id;
+    let identity: RelayIdentity | undefined;
+    try { identity = this.options.identity(); } catch { return null; }
+    if (this.stopped || !identity || account === null || devices.serviceBinding() !== binding) return null;
+    return [binding, account, identity.server_id, devices.serviceListing() ?? ""].join("\0");
+  }
+
+  /** Both clocks bound it: the PC's wall clock set back, or a sleep the monotonic clock did not count, extends nothing. */
+  private listingStands(key: string): boolean {
+    const kept = this.listingConfirmed;
+    if (kept === null || kept.key !== key) return false;
+    const age = this.options.devices.waitClock().now() - kept.at;
+    const wallAge = Date.now() - kept.wallAt;
+    return age >= 0 && age < LISTING_CONFIRMED_MS && wallAge >= 0 && wallAge < LISTING_CONFIRMED_MS;
+  }
+
+  private async askListing(binding: string): Promise<ListingVerdict> {
+    const { devices } = this.options;
+    const account = devices.account();
+    let identity: RelayIdentity | undefined;
+    try { identity = this.options.identity(); } catch { return "refused"; }
+    if (!identity || account === null || devices.serviceBinding() !== binding || this.stopped) return "refused";
+    const serverId = identity.server_id;
+    const current = () => !this.stopped && devices.serviceBinding() === binding && this.options.identity()?.server_id === serverId;
     try {
       const listing = devices.serviceListing();
-      if (listing === undefined) {
-        const admitted = await this.admission(account);
-        if (admitted?.account !== account || !current()) return false;
-        if (admitted.listing_id) devices.pinServiceListing(binding, admitted.listing_id);
-      } else {
-        const scope = { account, listing_id: listing };
-        const result = await this.confirmCompletion(identity, scope);
-        if (typeof result?.completed_at !== "string") return false;
+      if (listing !== undefined) {
+        const answer = await this.listingCompleted(identity, { account, listing_id: listing });
+        return answer === "changed" || !current() ? "refused" : answer;
       }
-      return current();
-    } catch { return false; }
+      const pinned = await this.pinOldBinding(identity, binding, account, current);
+      if (!current()) return "refused";
+      if (pinned !== "unpinnable") return pinned;
+      devices.clearAccountBinding("unlisted", UNPINNED_CLEAR);
+      return "readd";
+    } catch { return current() ? "unreachable" : "refused"; }
+  }
+
+  private async listingCompleted(identity: RelayIdentity, scope: CompletionScope): Promise<"confirmed" | "changed" | "unreachable"> {
+    try {
+      const result = await this.confirmCompletion(identity, scope);
+      return typeof result?.completed_at === "string" ? "confirmed" : "unreachable";
+    } catch (error) {
+      return listingChanged(error) ? "changed" : "unreachable";
+    }
+  }
+
+  /**
+   * The one place that says whether a binding from before listings were kept (0.5.9) may name one, and pins it. Only
+   * the service's word for the listing this PC was admitted in counts: an admission still current, or the completion
+   * receipt this PC kept from its bind. The account's current listing is no such word: a device may have listed the PC
+   * again since, and this PC's own mailbox pull would let it complete that listing. `unpinnable` only on the service's
+   * definite answers; what becomes of such a binding is the caller's.
+   */
+  private async pinOldBinding(identity: RelayIdentity, binding: string, account: string, current: () => boolean): Promise<"confirmed" | "unreachable" | "unpinnable"> {
+    const pin = (listing: string): void => { if (current()) this.options.devices.pinServiceListing(binding, listing); };
+    try {
+      const admitted = await this.proved(identity, "/v1/pc/admission", { account, with_listing_id: true });
+      if (admitted?.account !== account) return "unreachable";
+      if (typeof admitted.listing_id === "string" && LISTING_ID.test(admitted.listing_id)) pin(admitted.listing_id);
+      return "confirmed";
+    } catch (error) {
+      // A hidden 404 is ambiguous. Only the named refusal says there is no admission.
+      if (!(error instanceof AccountServiceRefusal && error.path === "/v1/pc/admission" && error.status === 404 && error.code === "no_admission")) return "unreachable";
+    }
+    const receipt = this.completion;
+    if (receipt === null || receipt.account !== account) return "unpinnable";
+    const kept = await this.listingCompleted(identity, receipt);
+    if (kept === "confirmed") pin(receipt.listing_id);
+    return kept === "changed" ? "unpinnable" : kept;
   }
 
   private async readSnapshotNow(readmission?: Readmission, justAdmitted?: string | null): Promise<{ outcome: ReadOutcome | null; adds: number }> {
@@ -324,7 +429,7 @@ export class AccountMailbox {
           }
           throw error;
         });
-        if (cursor.page === 0 && binding !== null && binding !== justAdmitted && !await this.confirmsListing(binding)) throw new Error("PC admission not confirmed");
+        if (cursor.page === 0 && binding !== null && binding !== justAdmitted && await this.checkListing(binding) !== "confirmed") throw new Error("PC admission not confirmed");
         return page;
       }, { ...ports, scope: () => this.stopped ? null : ports.scope(), commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
@@ -389,13 +494,11 @@ export class AccountMailbox {
   private async confirmCompletion(identity: RelayIdentity, scope: CompletionScope) {
     const devices = this.options.devices;
     const binding = devices.serviceBinding();
+    const bound = () => !this.stopped && binding !== null && devices.serviceBinding() === binding && devices.account() === scope.account
+      && this.options.identity()?.server_id === identity.server_id;
     try { return await this.proved(identity, "/v1/pc/complete", { ...scope }, false, scope); }
     catch (error) {
-      if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/complete" && error.status === 409 && error.code === "listing_changed"
-        && !this.stopped && binding !== null && devices.serviceBinding() === binding && devices.account() === scope.account
-        && devices.serviceListing() === scope.listing_id && this.options.identity()?.server_id === identity.server_id) {
-        devices.clearAccountBinding("unlisted", "account");
-      }
+      if (listingChanged(error) && bound() && devices.serviceListing() === scope.listing_id) devices.clearAccountBinding("unlisted", "account");
       throw error;
     }
   }
@@ -404,8 +507,11 @@ export class AccountMailbox {
     const scope = this.completion;
     const identity = this.options.identity();
     if (scope === null || !identity) return;
+    const devices = this.options.devices;
     // a PC that left that account since has nothing of it to complete
-    const done = this.options.devices.account() !== scope.account;
+    const done = devices.account() !== scope.account;
+    // a binding that names no listing yet has this receipt as its proof of one: pinOldBinding spends it
+    if (!done && devices.serviceBinding() !== null && devices.serviceListing() === undefined) return;
     try { if (!done) await this.confirmCompletion(identity, scope); }
     catch (error) {
       if (!(error instanceof AccountServiceRefusal && error.status === 409)) {
