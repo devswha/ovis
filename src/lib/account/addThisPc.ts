@@ -266,8 +266,8 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
  * the PC then takes the service's word for that account. The account is the stored sign-in's, never the one the PC
  * was named for: the PC is named it again first, and refuses a press for any other. "refused" on every refusal, an
  * older service or PC included, and once `running` says the attempt is over: the caller keeps today's digit wait.
- * "sign-in-again" when the service refused the sign-in itself (not two-step, not fresh, or made with a code): a fresh
- * sign-in of this device's own may then add the PC in one press. `signIn`: that sign-in alone presses (such a fresh one):
+ * "sign-in-again" when the service refused the sign-in itself (not fresh, or made with a code): a fresh
+ * sign-in of this device's own may then add the PC in one press. "no-two-step" when the sign-in has no two-step. `signIn`: that sign-in alone presses (such a fresh one):
  * with another stored in its place since, nothing is asked.
  * `opensAll`: this PC lists account-opens-all/1 (its step-2 switch is on); without it the service is not asked at all,
  * so a PC that would refuse the press spends none of the account's daily adds and rings nobody.
@@ -279,7 +279,8 @@ export async function addInOnePress(service: AccountService, serverId: string, a
   const session = signIn ?? stored;
   try { await service.forSignIn(session).admitPc(serverId); } catch (error) {
     console.warn("Ovis: the account service did not add this PC in one press", error instanceof Error ? error.name : error);
-    return error instanceof AccountServiceError && SIGN_IN_REFUSALS.includes(error.code) ? "sign-in-again" : "refused";
+    if (!(error instanceof AccountServiceError)) return "refused";
+    return error.code === "two_step_required" ? "no-two-step" : SIGN_IN_REFUSALS.includes(error.code) ? "sign-in-again" : "refused";
   }
   // another tab signed in to another account while the service answered: this PC is named for nobody
   const still = await service.session();
@@ -297,7 +298,7 @@ export async function addInOnePress(service: AccountService, serverId: string, a
   }
 }
 
-export type OnePress = "added" | "sign-in-again" | "refused";
+export type OnePress = "added" | "sign-in-again" | "no-two-step" | "refused";
 
 /**
  * Whether the account still lists `serverId`, read as the stored sign-in of `account`: false once a device of the
@@ -314,8 +315,11 @@ export async function listedInAccount(service: AccountService, serverId: string,
   }
 }
 
-/** the admit refusals that are about the sign-in alone (docs/account.md, "One press"): a fresh own sign-in may pass them */
-const SIGN_IN_REFUSALS: readonly string[] = ["two_step_required", "session_not_fresh", "own_sign_in_required"];
+/**
+ * the admit refusals a fresh own sign-in may pass (docs/account.md, "One press"). A sign-in without two-step is not
+ * one: the same sign-in again is refused again, so it is told what works instead (`no-two-step`)
+ */
+const SIGN_IN_REFUSALS: readonly string[] = ["session_not_fresh", "own_sign_in_required"];
 
 /**
  * Lists the PC a QR code's offer names in `account`, beside the code: the code is drawn first and the listing never

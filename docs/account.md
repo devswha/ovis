@@ -871,13 +871,16 @@ app's own sign-in, so a press there still ends in that wait; it adds the PC in o
 page signs in on its own window.
 
 **Sign in again from the wait.** When the service refuses the press for the sign-in itself
-(`two_step_required`, `session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
-(the desktop app, the PC's own window), the wait offers **Sign in again** once. It signs in afresh
+(`session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
+(the desktop app, the PC's own window), the wait offers **Sign in again** once. A sign-in without
+two-step (`two_step_required`) gets no such offer, since the same sign-in again is refused again:
+the wait says so, and that the PC is added from another device of the account (which shows a number
+to approve at the PC) or by scanning the PC's QR code, or in one press once two-step is on. It signs in afresh
 with the stored provider; the new sign-in is kept only for the same account and only while the wait
 still runs (Stop waiting in any window of the PC ends it). The press is then made again inside that
 wait: for the PC the wait listed (the PC's address must still answer for it, and nothing is listed
 again), with exactly the sign-in just made, never one another tab stored meanwhile. A second refusal
-leaves the plain wait, with no offer: the wait offers it once.
+leaves the wait with no offer (it offers it once) and says why that press added nothing.
 
 The account's other devices are told: the service sends them its usual push, and at the top of the
 opened Ovis a notice names the new PC (only on a device that first signed in to the account before the

@@ -8,7 +8,7 @@ import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } 
 import { Check, Plus, X } from "lucide-react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
 import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
@@ -205,6 +205,14 @@ type Again =
   | { readonly until: number; readonly step: "signing-in"; readonly link: string | null }
   | { readonly until: number; readonly step: "adding" }
   | { readonly until: number; readonly step: "failed"; readonly message: string };
+
+/** Why a press added nothing, and what adds this PC all the same: said under the wait, which goes on. */
+function onePressRefusal(t: Translate, pressed: Exclude<OnePress, "added">): string {
+  const otherWays = t("Add this PC from another device of your account and approve the number it shows here, or scan this PC's QR code with your phone.");
+  return pressed === "no-two-step"
+    ? `${t("This sign-in has no two-step sign-in.")} ${otherWays} ${t("To add it in one press, turn on two-step sign-in with your sign-in provider and sign in again.")}`
+    : `${t("This PC was not added in one press.")} ${otherWays}`;
+}
 
 let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc> } | null = null;
 
@@ -634,6 +642,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       pressedUntil.current = mark?.until ?? null;
       keepAddPcWaiting(mark);
       if (from !== undefined && mark !== null && from.account === account) setAgain({ until: mark.until, step: "offered", from, mark, shared: readAddPcWaiting()?.until === mark.until });
+      // a sign-in without two-step is refused again however often it signs in: the wait says what works
+      else if (pressed === "no-two-step" && mark !== null) setAgain({ until: mark.until, step: "failed", message: onePressRefusal(t, pressed) });
       return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false, signedIn: as !== null };
     })();
     // an attempt given up, or whose screen went, while its window was still being opened: closed once it is open
@@ -783,9 +793,11 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       setAgain({ until, step: "adding" });
       try {
         // asked first: this address may answer for another PC now, and nothing is pressed for that one
-        const added = await within(ANSWER_MS, pcAnswers(mark.serverId)) && running()
-          && await addInOnePress(accountService(), mark.serverId, mark.account, running, opensAll(), session) === "added";
-        if (!added || !running()) { over(null); return; }
+        const pressed = await within(ANSWER_MS, pcAnswers(mark.serverId)) && running()
+          ? await addInOnePress(accountService(), mark.serverId, mark.account, running, opensAll(), session) : "refused";
+        if (!running()) { over(null); return; }
+        // the one offer is spent: the wait goes on, and says why this press added nothing
+        if (pressed !== "added") { over({ until, step: "failed", message: onePressRefusal(t, pressed) }); return; }
         over(null);
         listed();
         keepAddPcWaiting(null);

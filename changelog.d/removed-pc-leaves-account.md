@@ -18,6 +18,12 @@
 - When a PC leaves an account, a phone that was paired with the PC's own QR code and then joined the
   account with the same key keeps its own access to the PC.
 
+- A device that an account's removal of a PC cut off can join again with the number approved at the
+  PC after the PC was restarted, where the PC used to turn it away although its owner pressed
+  Approve.
+- Adding this PC with a sign-in that has no two-step sign-in now says so and what works instead; it
+  no longer offers **Sign in again**, which could not help, and a second refused press says why.
+
 ### Changed
 - **Remove** in Manage account now takes the PC out of the account for good, also a PC that was
   added by pairing a device: once it is online again, the account's devices no longer open it, and
