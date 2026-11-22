@@ -3521,6 +3521,25 @@ describe("ClaudeSubagentStatus, a turn Claude Code ends with no turn_duration wh
     } finally { status.stop(); }
   });
 
+  it("keeps a fire's hold through a summary of hooks that stopped the turn before it outright", async () => {
+    for (const loop of [true, false]) {
+      const s = session();
+      s.prompt(1);
+      teammate(s);
+      answer(s, 1);
+      hooksRan(s, 1);
+      s.prompt(2);
+      const status = await tracked(s);
+      try {
+        answer(s, 3);
+        s.parent({ type: "system", subtype: "scheduled_task_fire", timestamp: at(3), ...(loop ? { taskKind: "loop" } : {}), taskId: "591b6f5a" });
+        hooksRan(s, 3, { preventedContinuation: true, stopReason: "stopped by the hook" });
+        status.poll();
+        expect([loop, status.loopHolds("p1"), status.restsOn("p1")]).toEqual([loop, true, false]);
+      } finally { status.stop(); }
+    }
+  });
+
   it("is at work again once a prompt sent during the turn is taken into it after its answer", async () => {
     const s = session();
     s.prompt(1);

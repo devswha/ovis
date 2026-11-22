@@ -326,6 +326,8 @@ interface Parent {
   echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
   /** the session's last entry of its own is the answer that ended its turn (endsTurn), with no request or prompt after it */
   answered: boolean;
+  /** that answer is the last of its turn but its Stop hooks' feedback: a summary of hooks that stopped the turn ends it there */
+  stopping: boolean;
   /**
    * The last turn of the session to end ran Stop hooks: it wrote their summary after its answer. Its next answer is
    * then no rest until their summary too. One that ended with none (a /goal's hook gone with its goal) ends that.
@@ -348,7 +350,7 @@ function scanParent(path: string): Parent | null {
   let parent = parents.get(path);
   if (!parent || parent.id !== stat.id || parent.offset > stat.size || !sameHistory(parent.version, stat)) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, echo: null, answered: false, hooked: false };
+    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, echo: null, answered: false, stopping: false, hooked: false };
   }
   parent.version = stat;
   remember(parents, path, parent, 256);
@@ -365,7 +367,7 @@ function scanParent(path: string): Parent | null {
     state.skipping = read.skipping;
     state.behind = read.more;
     state.whole = read.offset >= stat.size && !read.skipping;
-    if (read.skipping) { state.restAt = null; state.echo = null; state.answered = false; openTurn(state, read.offset, null); }
+    if (read.skipping) { state.restAt = null; state.echo = null; state.answered = false; state.stopping = false; openTurn(state, read.offset, null); }
     left -= consumed;
     if (consumed === 0) break;
   }
@@ -514,6 +516,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         if (parent.answered) parent.hooked = false;
         parent.answered = false;
+        parent.stopping = false;
         rests(parent, stamp(entry["timestamp"]), end);
       }
     } catch {}
@@ -527,8 +530,9 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
         const stopped = entry["preventedContinuation"] === true;
         parent.hooked = true;
         if (!stopped && Array.isArray(context) && context.length > 0) parent.restAt = null;
-        else if (parent.answered || stopped) rests(parent, stamp(entry["timestamp"]), end);
+        else if (parent.answered || (stopped && parent.stopping)) rests(parent, stamp(entry["timestamp"]), end);
         parent.answered = false;
+        parent.stopping = false;
       }
     } catch {}
   } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
@@ -537,7 +541,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system") {
         const written = stamp(entry["timestamp"]);
-        if (entry["isSidechain"] !== true) { parent.loopAt = end; parent.loopTime = written; parent.answered = false; }
+        if (entry["isSidechain"] !== true) { parent.loopAt = end; parent.loopTime = written; parent.answered = false; parent.stopping = false; }
         if (entry["taskKind"] === "loop") {
           parent.echo = null;
           parent.restAt = null;
@@ -563,6 +567,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
     // feedback is a meta prompt written before its summary
     if (parent.answered && (line.includes('"type":"api-request"') || (user && !line.includes('"isMeta":true')))) parent.hooked = false;
     parent.answered = endsTurn(line);
+    parent.stopping = parent.answered || (parent.stopping && user && line.includes('"isMeta":true') && !SELF_RESUMED_RE.test(line));
     if (parent.answered && !parent.hooked) rests(parent, written, end);
   } else if (line.includes('"queued_command"') && !line.includes('"isSidechain":true')) {
     try {
@@ -572,6 +577,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
         addStart(parent, { end, at: stamp(entry["timestamp"]), turn: false });
         parent.echo = null;
         parent.answered = false;
+        parent.stopping = false;
         // a prompt taken into the turn after its answer: that turn goes on with it (claudeTurnEnd)
         if (attachment["commandMode"] === "prompt") parent.restAt = null;
       }
