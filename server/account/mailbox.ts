@@ -487,8 +487,9 @@ export class AccountMailbox {
       } });
       if (step2Off && !this.stopped) ports.step2Off?.();
       const devices = this.options.devices;
-      // a PC stands in its account on the account's listing of it: once the account stops listing it, it leaves
-      if (unlisted && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked))) devices.clearAccountBinding("unlisted", "account");
+      // A PC stands in its account on the account's listing of it: once the account stops listing it, it leaves. One a
+      // device's link bound is listed by that device after its link, so it leaves only a listing it was let in under
+      if (unlisted && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && devices.serviceListing() !== undefined))) devices.clearAccountBinding("unlisted", "account");
       else if (outcome.committed && linked !== null && devices.linkBinding() === linked && typeof named === "string" && this.namedListing(account) === named) devices.pinServiceListing(linked, named);
       return { outcome, adds };
     } catch (error) {

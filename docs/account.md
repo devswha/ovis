@@ -1451,7 +1451,8 @@ Clients:
 leaves the account at its next read of the account service: its snapshot is refused `not_listed`,
 or, when a device listed it again meanwhile, its mailbox names another listing than the one its
 account rows were let in under (a PC bound by a device's link keeps that listing's ID from its first
-whole read; one bound in one press asks about the listing it was admitted in). Leaving ends the
+whole read, and until it has one a missing listing changes nothing: the device that linked it lists
+it only after its link; one bound in one press asks about the listing it was admitted in). Leaving ends the
 account's rows and keeps the pairings made at the PC ([Adding a PC](#adding-a-pc)). From then on the PC says so
 (`pc_add_required` in `GET /api/account/status`) and takes a first link only under a code it issued
 itself (its own window, `ovis add`), or from a device whose digits its own screen approved since it
