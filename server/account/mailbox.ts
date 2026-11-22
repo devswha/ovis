@@ -19,6 +19,28 @@ import type { UsedReport } from "../../shared/account-snapshot.ts";
 import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
 import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcome } from "./records.ts";
 
+/** The account service refused a PC route: its status and error code, when it named one. */
+export class AccountServiceRefusal extends Error {
+  constructor(readonly status: number, readonly code: string | null, readonly path: string) {
+    super(`The account service answered ${status} to ${path}`);
+    this.name = "AccountServiceRefusal";
+  }
+}
+
+/** The service's JSON problem envelope, including a listed PC's `step2_off` refusal. */
+async function refusalCode(response: Response): Promise<string | null> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    if (error instanceof Error) return null;
+    throw error;
+  }
+  if (typeof body !== "object" || body === null || !("error" in body)) return null;
+  const problem = body.error;
+  return typeof problem === "object" && problem !== null && "code" in problem && typeof problem.code === "string" ? problem.code : null;
+}
+
 export const MAILBOX_PULL_MS = 5 * 60_000;
 /** How old an admission may be for the PC to take an account join outside the pairing window. */
 export const ADMISSION_TTL_MS = 10 * 60_000;
@@ -241,11 +263,22 @@ export class AccountMailbox {
     if (account === null || ports === null) return empty;
     let adds = 0;
     const used = snapshot.used?.();
+    // the binding this read is for: a refusal answers for it alone, never for one made after it to the same account
+    const binding = this.options.devices.serviceBinding();
+    let unlisted = false;
+    let step2Off = false;
     try {
       let staged: Awaited<ReturnType<typeof stageMailboxAdds>> = [];
       const outcome = await readSnapshot(async (cursor) => {
         if (cursor.page === 0) staged = await stageMailboxAdds(this.pending);
-        return this.snapshotPage(account, cursor, used);
+        return await this.snapshotPage(account, cursor, used).catch((error: unknown) => {
+          if (error instanceof AccountServiceRefusal && error.path === "/v1/pc/snapshot") {
+            // A hidden 404 is ambiguous. Only the named refusal can excuse legacy catch-up.
+            unlisted = error.status === 403 && error.code === "not_listed";
+            step2Off = error.status === 404 && error.code === "step2_off";
+          }
+          throw error;
+        });
       }, { ...ports, scope: () => this.stopped ? null : ports.scope(), commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         const committedLifts = ports.commit(stage);
@@ -264,10 +297,30 @@ export class AccountMailbox {
         }
         return committedLifts;
       } });
+      if (step2Off && !this.stopped) ports.step2Off?.();
+      // a PC bound in one press stands on the account's listing alone: once the account stops listing it, it leaves
+      if (unlisted && binding !== null && this.options.devices.serviceBinding() === binding) this.options.devices.clearAccountBinding("unlisted", "account");
       return { outcome, adds };
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       return empty;
+    }
+  }
+
+  /**
+   * One press (docs/account.md): the account service's word that `account`, the one this PC's owner named, admitted
+   * this PC within the last ten minutes. The admission is spent by this read. Null when there is none (404).
+   */
+  async admission(account: string): Promise<{ readonly account: string; readonly new_until: string } | null> {
+    const identity = this.options.identity();
+    if (!identity) throw new Error("This PC has no relay identity");
+    try {
+      const answer = (await this.proved(identity, "/v1/pc/admission", { account }))!;
+      if (typeof answer.account !== "string" || typeof answer.new_until !== "string") throw new Error("The account service sent a malformed admission");
+      return { account: answer.account, new_until: answer.new_until };
+    } catch (error) {
+      if (error instanceof AccountServiceRefusal && error.status === 404) return null;
+      throw error;
     }
   }
 
@@ -572,6 +625,8 @@ export class AccountMailbox {
             // applyBlock owns parseSafetyRecord and signature verification. Never ack an unwritten deny.
             const receipt = await this.options.devices.applyBlock(record, "mailbox");
             if (receipt.outcome === "refused") {
+              // The verified block is already in the durable safety queue. Do not postpone later records or the read.
+              if (receipt.reason === "unknown_target") continue;
               // Disk/queue failures also return record_invalid, but leave the PC strict.
               if (receipt.reason === "record_invalid" && !this.options.devices.failsClosed) continue;
               throw new Error(`Mailbox block not applied: ${receipt.reason}`);
@@ -632,7 +687,7 @@ export class AccountMailbox {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
     }));
     if (gone && response.status === 410) return null;
-    if (!response.ok) throw new Error(`The account service answered ${response.status} to ${path}`);
+    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path);
     return await response.json() as Record<string, unknown>;
   }
 

@@ -864,6 +864,12 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
   takes the focus on the marked entry, centered; a choice, Escape or a press outside closes it and
   the focus goes back to the button.
 - Web links from every agent's chat and terminal open in a new tab by default. The device setting `reuseExternalLinkTab` follows the Codex app's reusable-tab choice: one Ovis page keeps one external tab and replaces its address on later clicks. A browser lets a page steer a tab of another site only as its opener, so that tab keeps Ovis as its opener: the site in it can see and navigate the Ovis tab, which is why the setting is off by default and says so (Ovis's `Referrer-Policy: no-referrer` still sends no address). A new tab has no opener. If the browser refuses to steer the tab, the link opens in a new tab. Reuse is best effort: a site that sets Cross-Origin-Opener-Policy cuts the link, and the next click opens a new tab. Ctrl, Cmd and Alt clicks still open a new tab, and the iOS, Android, Mac and desktop apps, which hand links to the system browser, neither show the setting nor reuse a tab. The Web links panel choice and Shift-click behavior stay independent.
+- Browser for links (the desktop and Mac apps only, Settings → Chat → Files, under Web links): one select, the
+  system default first and named when the system says which it is, then the browsers the app found
+  on the PC (app/electron/src/browsers.ts, app/mac/Sources/OvisMac/LinkBrowsers.swift). The Codex and Claude apps, Paseo and T3 Code hand every
+  link to the system default; the row follows the system's own default-browser list instead, and
+  only for web links (`kind` link): sign-ins, Ovis pages and mailto stay with the system default.
+  The row is missing where the browser itself shows the link (a browser tab, the phone apps).
 - New agents (Settings → Agents): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
   `auto`, `plan`, `dontAsk`, `bypassPermissions`) and `codexLaunchMode` (`readOnly`, `auto`,
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
@@ -1087,7 +1093,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   one picked from the list opens there; `lib/tabOverflow.ts` picks them. The row is the panel's surface and the
   open tab a raised pill on it (`--bg-elevated`); its close (×) shows on the open tab alone, and a
   resting tab closes from its menu or a middle click, as a browser's does. A split view keeps a
-  strip per half and the title in the header. The Herdr app's Changes button is not carried over:
+  strip per half and the title in the header; from `769px` each half draws the same browser-style
+  tab row (`.tab-strip-row.browser-tabs`, following VS Code's and Zed's split editor tab bars) with
+  its shell glyph, open-tab close (×), `+` and More overflow, dimming the inactive half's open tab
+  to a hairline outline so the active half stays clear. The Herdr app's Changes button is not carried over:
   Files holds the changes as one of its tabs.
 - The Chat/Terminal switch (`.view-switch`) shows both lenses as Apple's segmented control: a
   track with the open lens on a raised thumb that slides to it in 180ms (`--ease-out`; no motion
@@ -1121,9 +1130,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   without them (a split view, the setup guide, no pane), the header takes the pane's surface: under
   the chat lens `--bg` with no bottom rule, the transcript scrolling under a `--space-5` fade from
   `--bg`; under the terminal lens, with no pane, or with a pane herdr could not restore, `--term-bg`
-  and the rule. A split view's strips take the same surface as the header over them (`--strip-bg`:
-  `--bg` under the chat lens, `--term-bg` otherwise, `--bg-panel` below `769px`) and keep their
-  hairline, under the chat the one line over the transcript (no fade under it). The update notice, the alerts health notice, a PC's action banner and the pairing line (below) are drawn in
+  and the rule. A split view's strips take the panel surface (`--bg-panel`) from `769px` as the
+  header's tab row does (and `--bg-panel` below `769px`) and keep their hairline, under the chat the one line over the transcript (no fade under it). The update notice, the alerts health notice, a PC's action banner and the pairing line (below) are drawn in
   the pane column, over the tab strip, never across the window: the sidebar and its top row stay
   one piece. A device pairing with this server while a window is open (`device-paired` on the
   machines event stream) is one `.update-notice.is-paired` line there: a `--accent` phone glyph
@@ -3436,6 +3444,23 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Layout: one column inside the Files sheet; bar, branches line, Checks, Open review threads,
   Merge, each separated by a hairline.
 
+### Browser side panel (`.browser-side-panel`)
+- The desktop app's built-in browser keeps a right panel, 232px, beside the pane and after the
+  docked file panel, on a wide window only and only while the browser's setting is on (main
+  answers the page's bridge, `window.ovisBrowser`, with null when it is off; `lib/desktopBrowser.ts`).
+  It follows the Claude and Codex apps' artifact rail: outputs sit beside the conversation, never
+  in it. GOAT's per-thread right panel was looked at for ideas; no code was taken.
+- **Results** (`결과물`): the files the browser kept and an agent's screenshots (from main), then
+  the pages the selected Claude Code pane published (`GET /api/pane/artifacts`, the Artifacts
+  chip's own read). A file row shows it in its folder; nothing is opened. Each row: icon,
+  name, `kind · size · time` in `--fs-xs` `--text-dim`.
+- **Tabs the agents use** (`에이전트가 쓰는 탭`): one card per agent-profile tab, title and **x**
+  (closes the tab), a 96px picture main takes on request when the page settles (only of a tab it
+  draws) and keeps nowhere, then `<agent> is using it` (the agent of the pane that opened it), or
+  **You have control** in `--accent` while a person holds the tab.
+- Empty sections say what will show there in one dim line. The panel never polls the browser:
+  it follows main's change events.
+
 ### Header context and connection
 - A selected pane shows agent mark + title (`--fs-md`), then on the same line the crumb
   PC › workspace › folder (`--fs-xs`, `--text-dim`); with one PC registered the PC is left out, as
@@ -4864,7 +4889,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   **Alerts** (the test, sound and other destinations; which alerts come is the **Alert me when**
   group of its More settings, as almost every install keeps them), **Agents**, **Shortcuts** (the
   platform-resolved global bindings), **Devices and PCs**
-  (**Account**; **My devices**: Connect a device, this PC with its ID, the other PCs and the paired
+  (**Account**, one line; **My devices**: Connect a device, this PC, the other PCs and the paired
   phones and browsers in one list; its More settings: This device, Ovis relay, Show in sidebar,
   Access, the PCs' bridge updates and load line), **About** (Updates,
   herdr, the repository links). Each page's other rows are in its folds (above). Voice input was a
@@ -5011,13 +5036,23 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   per keystroke.
 - Devices and PCs follows WhatsApp's **Linked devices**: the account on top, then one list of
   everything connected (**My devices**) under one **Connect a device** row whose **Connect** button
-  opens every way in, as Tailscale's admin **Add device** does. Devices and other PCs are one list
+  opens every way in, as Tailscale's admin **Add device** does. The page has no sentence of its own
+  under its title. The account is one line, as the ChatGPT and Claude apps keep the signed-in
+  account to one row with its sign-out: signed in, **Signed in with GitHub** (the provider's mark,
+  no account id anywhere), a neutral **Manage account** and **Sign out**; **Manage account** opens
+  a `.modal` sheet (`ManageAccountSheet` in `components/AccountHead.tsx`) with the ways to sign in,
+  the plan and **Delete account** at its foot. Where Add a connection's relay tab signs in (a page
+  of this PC that offers the relay), a signed-out page draws no account card at all: only why a
+  sign-in ended, when one did. A page without that tab keeps its sign-in in the card, and Add this
+  PC under it. Strict mode is one row of More settings → Devices and access, **Strict mode (Linux)**
+  with its switch and at most one line of why it is off; what it ends and what it cannot cover is
+  said in the confirmation that turning it on asks (`ConfirmDialog`), not on the page. The account's
+  PCs under My devices carry no sentence or link to the hosted app. Devices and other PCs are one list
   because to the person they are one thing: something connected to this PC. Rows are as short as
   the page allows; what pairing means is one folded sentence, and what few people change is in
   More settings. Old links to the Phone, Remote PCs and Portal groups land on My devices.
 - My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
-  first (its name, a **This PC** pill in the accent and its relay ID in `--font-mono` under it: the
-  ID a device that typed this PC's code compares, so it is shown here and not in the dialog), then
+  first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
   dimmed, and one this app added over SSH or the relay carries a **Remove PC** trash button that asks
   once, as the sidebar's PC menu does), then signed in the account's other PCs (their
@@ -5036,12 +5071,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   typed address close Settings and open the PC setup dialog with the address filled in. **Phones and
   devices** stacks, under a hairline each, the Tailscale address and QR code, the six-digit pairing
   code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
-  offers it. **Ovis relay** is the account's: signed out one sentence and **Sign in to Ovis** (which
-  opens the account's sign-in in More settings), signed in the relay's switch and **Open the
-  account** while this PC is in no account. Under either, behind a hairline (none where nothing is
+  offers it. **Ovis relay** is the account's, and draws buttons, not sentences, by state: signed
+  out, the sign-in buttons alone (GitHub, Google and Apple where the page signs in itself, the
+  desktop app and the PC's own window; one **Sign in to Ovis** that opens the link page elsewhere);
+  signed in with this PC in no account, one full-width primary **Add this PC to my account**
+  (`.account-add-pc-button`), which also turns the relay on when it is off, and then **Added** in
+  the done green (`--status-done` on `--status-done-tint`), or, where the one press does not
+  apply, one line naming the device to choose Add on and **Stop waiting** (when the service refused
+  the sign-in itself and the page signs in its own way, once per wait also **Sign in again**, whose
+  fresh sign-in of the same account presses again); signed in with this PC
+  in the account and the relay online, **Your account's PCs**: this PC first with a **This PC**
+  pill, then the account's others, one row and at most one button each (**Open**, **Add**). The
+  relay's own switch is in More settings, and on this tab only while a PC in the account has its
+  relay off. Under either, behind a hairline (none where nothing is
   drawn above it), one part (`.connect-account-qr`) that depends on the PC, not on the sign-in. On a PC in no account it is
-  **Add with a QR code**: one sentence and a neutral **Show the QR code**, which draws the relay's
-  QR code alone (`--qr-size`, its countdown, **New code**; no code to type). The QR code gives way
+  a small accent text button, **Phone QR code** (`.connect-qr-link`), which draws the relay's
+  QR code alone under **Add with a QR code** (`--qr-size`, its countdown, **New code**; no code to type). The QR code gives way
   to a notice box (`.connect-account-qr-notice`: `--bg-elevated`, a hairline, `--radius-md`) that
   says which account the PC joined and which device added it, or asks about a device nobody
   vouched for. In a notice the `.btn-danger` (**Not me: remove it**, **Not me: revoke every
@@ -5053,9 +5098,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   another one, or one it cannot tell while signed out), one sentence says to sign in to that
   account on the device, and a hint says the QR code is only for a PC in no account; the
   relay's switch stays above while the relay is not online. On a PC that no account was named
-  for, one hint line (`.settings-hint`) stands where the button would be: to sign in above first,
-  or, signed in, to add the PC to the account first. It is the line the part already shows when
-  the relay asks for a pass, so the tab says in one way that an account comes first.
+  for, nothing stands where the button would be: the sign-in or **Add this PC to my account**
+  above names one. Only a relay that asks for a pass keeps its one hint line, to sign in above first.
   Linked-device apps draw the same
   line (WhatsApp shows its linking QR code on the device being added, never on one already
   linked), and it is deliberate here: a QR code on a PC with members would let in whoever scans
@@ -5069,13 +5113,27 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Install (a row of More settings' This device, shown only when the browser can install) offers it;
   About links the repository.
 - In the hosted relay shell (app.ovis.sh, `<meta name="ovis-shell">`, lib/shellMode.ts) the page
-  opens with a **This app** group of two rows the native build never shows: **Change PC** (a neutral button to the
-  shell's front page: the paired-PC list, or, signed out where the account service runs, the sign-in
-  screen with that list behind **Continue without an account**; the same row the iOS app gets for
-  its own list)
+  opens with a **This app** group of three rows the native build never shows: **Change PC** (a neutral button to the
+  shell's front page: Add a PC, listing this device's PCs and the account's, or, signed out where the account
+  service runs, the sign-in screen with that list behind **Start without signing in**; the same row the iOS app
+  gets for its own list), **Relayed connections** with **Manage** (a neutral button to `/#overview`, the relay
+  dashboard, which no launch, sign-in or pairing ever lands on: people open it on purpose to manage the PCs they
+  reach through the relay)
   and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
+- The hosted shell's front page is never the dashboard. A launch opens the PC this device opened last unless its
+  check finds it off (the relay had nobody for it), then the next saved PC not found off (`launchOrder`, at most
+  four, two at a time; signed in with none saved here or every saved one found off, the account's PC opened last, else the one seen most
+  recently that has a way to join and is not off, on its own page with its join card; a check still running after four seconds, or one the relay refused, opens that PC, and when its
+  page then hears from the relay that it is off, the launch goes on to the front page, once; a PC a person opened
+  keeps its failure card and Try again; the connecting card meanwhile); every one off, a later visit, Back, a sign-in's return or the phone app's own row
+  (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
+  ChatGPT apps open on the last conversation and keep account pages behind Settings. The dashboard opens only by
+  its own addresses (`#overview`, `#pcs`, `#devices`, `#relay`, `#settings`), which a signed-in Add a PC offers as
+  one `.account-link` under its list (**Relayed connections**: the account's sign-out and device removal live there).
+  A launch is asked once a page; an address taken while it waits wins over it, and a page Back restores whole from
+  the browser's cache loads again rather than keep the launch's wait.
 - Portal, in Add a connection's Phones and devices tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)
@@ -5810,8 +5868,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Success mounts the shell; Lock unsubscribes push, deletes auth and returns to the gate.
 
 ### My machines (`.acct-*`)
-- `#my-machines` opens the signed-in machine list in the hosted shell. The front page stays the
-  relay dashboard. `MyMachinesPage` adapts the account directory, local pairings and connection
+- `#my-machines` opens the signed-in machine list in the hosted shell. The front page is Add a PC;
+  the relay dashboard opens only by its own address. `MyMachinesPage` adapts the account directory, local pairings and connection
   checks already held by the shell; the screens make no requests of their own. Today's source
   does not offer Devices, Invites or removal.
 - Layout: a section nav beside one column of rows -> the relay dashboard's shell; scroll owner:
@@ -6011,8 +6069,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
   "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
   codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
-  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Account, sign
-  in, then choose Add this PC to my account. It then shows here.") and leads to the QR and code
+  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Add a connection →
+  Ovis relay, sign in, then choose Add this PC to my account. It then shows here.") and leads to the QR and code
   modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
   only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
   and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis

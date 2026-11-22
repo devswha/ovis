@@ -200,7 +200,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (options.profile === "machine" && relayPeer === undefined && ctx.ownerSocket !== true) return machineTcpAnswer(request, pathname);
   // an act waiting for this PC's screen is answered there alone (server/account/local-confirm.ts): every caller of a
   // route gets the same refusal, before anything about it is decided
-  if (ctx.services.localConfirms !== undefined && /^\/api\/account\/local-confirm(?:\/|$)/.test(pathname)) {
+  if (/^\/api\/account\/local-confirm(?:\/|$)/.test(pathname) && ctx.services.localConfirms !== undefined) {
     setRequestRoute("/api/account/local-confirm");
     return jsonResponse({ error: { code: "local_required", message: "Confirm this on this PC's own screen." } }, 403);
   }
@@ -281,11 +281,19 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // this PC's own window may still read the lock and ask for an unlock: both only ask the screen, which grants
   // (on a PC with an access token, that window comes in with the token: the same window, loopback and not forwarded)
   const ownWindow = access.level === "full" && (access.via === "local" || (access.via === "token" && loopback && !forwarded));
+  // a lock or unlock is asked only from this PC's own window: any other is told so, before any other refusal (S36-1)
+  if (!ownWindow && request.method === "POST" && (pathname === "/api/account/lock" || pathname === "/api/account/unlock") && ctx.services.lockRoutes !== undefined) {
+    setRequestRoute(pathname);
+    return jsonResponse({ error: { code: "local_required", message: "Turn the lock on or off on this PC's own screen." } }, 403, { "cache-control": "no-store" });
+  }
   const askingTheScreen = ownWindow
     && ((pathname === "/api/account/lock" && request.method === "GET") || (pathname === "/api/account/unlock" && request.method === "POST"));
+  const localDenial = ownWindow && !funnel && devices.localRemovalRetry()
+    && ((request.method === "POST" && pathname === "/api/devices/revoke-all")
+      || (request.method === "DELETE" && /^\/api\/devices\/[0-9a-f]{16}$/.test(pathname)));
   // strict is every source the store fails closed on (the log, the admission order, removal evidence, the journal: S19)
   if (safety !== null && safety !== undefined && !askingTheScreen) {
-    access = lockBoundary(access, { locked: safety.state().locked, strict: devices.failsClosed }, {
+    access = lockBoundary(access, { locked: safety.state().locked, strict: devices.failsClosed && !localDenial }, {
       localProof: false, ownProgram: ctx.ownerSocket === true, originOf: (rowId) => devices.originOf(rowId),
     });
   }
@@ -397,6 +405,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Manage the account from this PC itself, or from a paired device." } }, 403);
   }
+  // one press binds this PC to an account: only this PC's own window may ask it (security-triage), never another
+  // device on the LAN, through the relay or with the access token from elsewhere
+  if (pathname === "/api/account/one-press" && !ownWindow) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
+  }
   // the list of waiting pairings shows their digits, so it goes only where the approval may come from
   if (access.level === "full" && (access.via === "open" || access.via === "portal") && pathname === "/api/relay/pairings") {
     setRequestRoute("owner-refusal");
@@ -500,7 +514,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const endsWith = deviceId ? (close: () => void) => devices.onRevoke(deviceId, close) : openAccess ? (close: () => void) => devices.endWithGate(close) : portalRecheckMs !== undefined ? (close: () => void) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined;
       // and with a lock, when what let it in is a grant the lock refuses
       const ends = untilLock === undefined ? endsWith : (close: () => void) => { const stops = [untilLock(close), endsWith?.(close)]; return () => { for (const stop of stops) stop?.(); }; };
-      const response = await handleMachineRequest(request, machines, ends, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access), ctx.services.safetyLog !== null);
+      const response = await handleMachineRequest(request, machines, ends, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access), ctx.services.safetyLog !== null, devices);
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
       return response;
@@ -568,21 +582,22 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     }
     return handleAuthRequest(request, token, client);
   }
-  const pendingRedemptions = ctx.services.pendingRedemptions;
-  if (pendingRedemptions !== undefined && (pathname === "/api/devices/pending" || pathname.startsWith("/api/devices/pending/"))) {
-    return handlePendingRequest(request, pathname, pendingRedemptions, access);
+  if (pathname === "/api/devices/pending" || pathname.startsWith("/api/devices/pending/")) {
+    const pendingRedemptions = ctx.services.pendingRedemptions;
+    if (pendingRedemptions !== undefined) return handlePendingRequest(request, pathname, pendingRedemptions, access);
   }
   if (pathname === "/api/devices" || pathname.startsWith("/api/devices/")) {
     try {
       // one device, or all of them: the registry names what was revoked, and the cleanup follows its ids
-      return await handleDeviceRequest(request, pathname, devices, access, ctx.peer.kind === "relay" ? ctx.peer.key : null, (revoked) => {
+      const revokeAccess = localDenial && access.level === "full" ? { ...access, via: "local" as const } : access;
+      return await handleDeviceRequest(request, pathname, devices, revokeAccess, ctx.peer.kind === "relay" ? ctx.peer.key : null, (revoked) => {
         for (const id of revoked) {
           // The device registry is the delivery authority even if cleaning the push file fails.
           try { push.revokeDevice(id); } catch (error) { logPushError(error); }
           // and every page media address its renders were given
           forgetPageMedia({ device: id });
         }
-      }, ctx.lanHttps === true, { list: () => ctx.services.relay.connections(), check: (ms) => ctx.services.relay.checkConnections(ms) });
+      }, ctx.lanHttps === true, { list: () => ctx.services.relay.connections(), check: (ms) => ctx.services.relay.checkConnections(ms) }, ownWindow && !funnel);
     } catch (error) { return errorResponse(error); }
   }
 
@@ -605,13 +620,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
     return handlePortalRequest(request, pathname, options.portal, { port: ctx.port ?? DEFAULT_PORT, ...portalGuards() });
   }
-  if (ctx.services.lockRoutes !== undefined && (pathname === "/api/account/lock" || pathname === "/api/account/unlock")) {
-    return ctx.services.lockRoutes(request, pathname, access, ctx.peer.kind === "relay");
+  if (pathname === "/api/account/lock" || pathname === "/api/account/unlock") {
+    const lockRoutes = ctx.services.lockRoutes;
+    if (lockRoutes !== undefined) return lockRoutes(request, pathname, access, ownWindow);
   }
   if (pathname.startsWith("/api/account/")) return handleAccountRequest(request, pathname, ctx, access);
   if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
     // the paired device that asks, when one does: a pairing code it starts or is handed goes with it (DeviceStore.revoke)
-    return handleRelayRequest(request, pathname, ctx, access.level === "full" ? access.device?.id ?? null : null, access.level === "full" && access.via === "local");
+    return handleRelayRequest(request, pathname, ctx, access.level === "full" ? access.device?.id ?? null : null, access.level === "full" && access.via === "local", ownWindow);
   }
   if (pathname === "/api/connection-diagnostics") { setRequestRoute(pathname); return clientConnectionLog.handle(request, client ?? "unknown"); }
   if (pathname === "/api/telemetry") { setRequestRoute(pathname); return handleTelemetryRequest(request, options.telemetry); }
@@ -659,9 +675,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   if (pathname === "/api/health") {
     setRequestRoute(pathname);
+    const own = ownWindow && ctx.services.lockRoutes !== undefined ? { own_window: true as const } : {};
     const auth: HealthAuth = access.level === "full"
-      ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}), ...(access.portal ? { portal: access.portal } : {}) }
-      : { required: true, authenticated, ...(authenticated ? {} : { reason: access.reason }) };
+      ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}), ...(access.portal ? { portal: access.portal } : {}), ...own }
+      // a window refused at the door of a locked PC is told the PC is locked, never offered a pairing it cannot use (T47, N4)
+      : { required: true, authenticated, ...(authenticated ? {} : { reason: ctx.services.safetyLog?.state().locked === true && access.reason === "pairing_required" ? "locked" as const : access.reason }), ...own };
     // this server is open to the network with no token and nothing paired, told to a client
     // that got in and to nobody else: naming it to an anonymous caller would be
     // reconnaissance, not help. Nothing here changes who is let in (server/access.ts).
@@ -701,7 +719,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         ...(security ? { security } : {}), web_ui: { boot_id: bootId, ...(serverId ? { server_id: serverId } : {}) },
       }, 200, { "cache-control": "no-store" });
     }
-    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(security ? { security } : {}), web_ui: { boot_id: bootId }, runtime: runtime(), ...(options.launchAccepted ? { accepted: options.launchAccepted() } : {}), ...(herdr_runtime ? { herdr_runtime } : {}) }, 200, securityHeaders);
+    // this PC's own window, and the port it reaches this server on: where the page may sign in to the account through
+    // the loopback redirect, an app's own sign-in (src/lib/account/ownWindow.ts); any other window signs in with a code
+    const own_window = ownWindow && ctx.port !== undefined ? { port: ctx.port } : undefined;
+    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(own_window ? { own_window } : {}), ...(security ? { security } : {}), web_ui: { boot_id: bootId }, runtime: runtime(), ...(options.launchAccepted ? { accepted: options.launchAccepted() } : {}), ...(herdr_runtime ? { herdr_runtime } : {}) }, 200, securityHeaders);
     const herdr_core = owner ? options.herdrCoreFacts?.() : undefined;
     try {
       const info = await ping();

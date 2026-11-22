@@ -17,6 +17,7 @@ import { dashboardModel, dashboardPcs } from "./dashboard.ts";
 import { accountOpenPeer, accountOpenRefusalFrame } from "./accountOpenPeer.fixture.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
+import { AccountOpenUnsupportedError } from "../../../shared/relay-channel.ts";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { openRelayTransport, RelayTransport } from "./transport.ts";
 
@@ -32,13 +33,14 @@ let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
 afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
-async function accountPc({ release = true, loseRegistrationReply = false, open }: {
-  release?: boolean; loseRegistrationReply?: boolean;
+async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, seen = true, open }: {
+  release?: boolean; loseRegistrationReply?: boolean; seen?: boolean;
+  newUntil?: string | null;
   open: (...args: [...Parameters<NonNullable<RelayShellMount["open"]>>, ReturnType<typeof generateKeyPair>]) => Promise<RelayTransport>;
 }) {
   const identity = generateKeyPair();
   const serverId = deriveServerId(identity.publicKey);
-  const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: new Date().toISOString() };
+  const entry = { server_id: serverId, label: "Desk", public_key: Buffer.from(identity.publicKey).toString("hex"), relay: RELAY, added_at: new Date().toISOString(), last_seen_at: seen ? new Date().toISOString() : null, new_until: newUntil };
   const accountStore = memoryAccountStore();
   const service = new FakeAccountService();
   service.signInAs("github", "acct_1");
@@ -49,6 +51,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
   const registrationKeys: string[] = [];
   const navigations: string[] = [];
   const navigated = Promise.withResolvers<string>();
+  const appOpened = Promise.withResolvers<void>();
   let props: RelayShellProps | undefined;
   let apps = 0;
   const render = (node: ReactNode): void => {
@@ -58,6 +61,8 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
   };
   const mountAt = (entryUrl: string) => mountRelayShell({
     container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore,
+    // these read the account's rows on the front page: a launch that leaves it for the PC (shell.test.tsx) does not run
+    ...(new URL(entryUrl).pathname === "/" ? { navigatedSinceEntry: () => true } : {}),
     accountService: SERVICE, accountFetch: async (input, init) => {
       const path = new URL(input instanceof Request ? input.url : input).pathname;
       requests.push(path);
@@ -77,7 +82,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
       }
     },
     createRoot: () => ({ render, unmount() {} }),
-    renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+    renderApp: () => { apps++; appOpened.resolve(); return { render() {}, unmount() {} }; },
     pendingPush: { get: async () => undefined, clear: async () => {} },
     checkPc: async () => ({ kind: "offline", reason: "relay" }),
     navigate: (path) => { navigations.push(path); navigated.resolve(path); },
@@ -91,8 +96,37 @@ async function accountPc({ release = true, loseRegistrationReply = false, open }
     const rows = dashboardModel(dashboardPcs(state.account.pcs, [], directoryRelays), { label: "Device" }, RELAY).rows;
     return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayPcTable, { rows, onSelect() {}, onOpenSheet() {} })));
   };
-  return { accountStore, serverId, requests, registrationKeys, navigations, navigated: navigated.promise, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`) };
+  return { accountStore, serverId, requests, registrationKeys, navigations, navigated: navigated.promise, appOpened: appOpened.promise, current, markup, apps: () => apps, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`), follow: (path: string) => mountAt(`${APP}${path}`) };
 }
+
+it("A3: a newly added account PC is marked New and its page waits for the Join press", async () => {
+  const attempts: boolean[] = [];
+  const pressed = Promise.withResolvers<void>();
+  const run = await accountPc({
+    newUntil: new Date(Date.now() + 23 * 60 * 60_000).toISOString(),
+    open: async (_offer, options) => {
+      attempts.push(options?.accountOpensAll === true);
+      pressed.resolve();
+      throw new RangeError("Stop after observing the requested connection");
+    },
+  });
+  const markup = run.markup();
+  await run.openPage();
+  expect(attempts).toEqual([]);
+  const path = run.navigations[0];
+  if (path === undefined) throw new TypeError("Missing the PC's join screen");
+  await run.follow(path);
+  expect(run.current().state.kind).toBe("confirm");
+  expect(attempts).toEqual([]);
+  expect(run.apps()).toBe(0);
+  run.current().onPair();
+  await pressed.promise;
+  expect(attempts).toEqual([false]);
+  // the overview shows nothing new (owner rule): no mark, and no quick Open
+  expect(markup).not.toMatch(/>New( PC)?<\//);
+  expect(markup).toContain('data-pc-action="join"');
+  expect(markup).not.toContain('data-pc-action="open"');
+});
 
 it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered account row", async () => {
   const admissions: { feature: boolean | undefined; row: string | null | undefined; key: string | undefined }[] = [];
@@ -106,6 +140,7 @@ it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered acco
   } });
   const key = await run.accountStore.get("signin_key");
   const markup = run.markup();
+  expect(markup).not.toContain(">New PC</");
   await run.openPage();
   expect({
     number: key?.no, open: markup.includes('data-pc-action="open"'), join: markup.includes('data-pc-action="join"'),
@@ -115,6 +150,37 @@ it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered acco
     admissions: key ? [{ feature: true, row: accountDeviceId(run.serverId, key.key.public_spki), key: key.key.public_spki }] : [],
     apps: 1, navigations: [],
   });
+});
+
+it("C3: a reload of the join card a launch put up, not pressed yet, asks again and opens nothing by the account's key", async () => {
+  const run = await accountPc({ open: () => { throw new TypeError("nothing may open before the press"); } });
+  browser.sessionStore.set("ovis-launch-join", run.serverId);
+  await run.openPage();
+  expect({ apps: run.apps(), navigations: run.navigations }).toEqual({ apps: 0, navigations: [expect.stringContaining(`/s/${run.serverId}/#offer=`)] });
+  expect(browser.sessionStore.get("ovis-launch-join")).toBe(run.serverId);
+  // back on the front page (Back, Forward or a reload into the card keep it), only a press on that PC's link ends it
+  await run.reload();
+  expect(browser.sessionStore.get("ovis-launch-join")).toBe(run.serverId);
+  const click = new Event("click");
+  Object.defineProperty(click, "target", { value: { closest: () => ({ getAttribute: () => `/s/${run.serverId}/` }) } });
+  browser.page.dispatchEvent(click);
+  expect(browser.sessionStore.has("ovis-launch-join")).toBe(false);
+});
+
+it("a PC just added to the account that no device is in yet opens on its own page as a new PC, typing the number it shows", async () => {
+  const run = await accountPc({ release: false, seen: false, open: () => { throw new TypeError("nothing opens before the number"); } });
+  await run.openPage();
+  expect(run.navigations).toEqual([expect.stringContaining(`/s/${run.serverId}/#offer=`)]);
+  expect(JSON.parse(browser.sessionStore.get("ovis-add-pc-sheet") ?? "null")).toMatchObject({ mode: "new", server_id: run.serverId, alone: true });
+  expect(browser.sessionStore.get("ovis-typed-join")).toBe(run.serverId);
+});
+
+it("a just-added PC that does not take the account's way in falls back to the new-PC pairing, typing its number", async () => {
+  const run = await accountPc({ seen: false, open: async () => { throw new AccountOpenUnsupportedError(); } });
+  await run.openPage();
+  expect(run.navigations).toEqual([expect.stringContaining(`/s/${run.serverId}/#offer=`)]);
+  expect(JSON.parse(browser.sessionStore.get("ovis-add-pc-sheet") ?? "null")).toMatchObject({ mode: "new", server_id: run.serverId, alone: true });
+  expect(browser.sessionStore.get("ovis-typed-join")).toBe(run.serverId);
 });
 
 it("P18: an account service without the release only receives the challenge probe and still offers Join", async () => {
@@ -223,7 +289,7 @@ it.each<HoldState>([{ reason: "catching_up" }, { reason: "join_hold", until: nul
   jest.advanceTimersByTime(999);
   expect({ kind: run.current().state.kind, attempts }).toEqual({ kind: "connecting", attempts: 1 });
   jest.advanceTimersByTime(1);
-  for (let turn = 0; turn < 100 && run.apps() === 0; turn++) await Promise.resolve();
+  await run.appOpened;
   expect({ attempts, apps: run.apps(), navigations: run.navigations }).toEqual({ attempts: 2, apps: 1, navigations: [] });
 });
 
@@ -277,8 +343,35 @@ it("T53, P17 wire: a held refusal whose notice is not published yet reaches the 
   expect(run.current().state).toMatchObject({ kind: "connecting", hold: { reason: "join_hold", until: null } });
 });
 
+it("OD3, T53, P17 wire: a held device asks again within a second, so when the PC lets it in early (It's me) the app opens before the deadline", async () => {
+  const rows: string[] = [];
+  let until = "";
+  const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
+    ...options, socket: () => accountOpenPeer(identity, { features: [ACCOUNT_OPENS_ALL_FEATURE], provisional: true, auth: (frame) => {
+      const device_id = frame.payload.device_id;
+      rows.push(device_id);
+      return rows.length === 1
+        ? accountOpenRefusalFrame("held", "", { reason: "join_hold", until })
+        : encodeFrame({ type: FrameType.AUTH_OK, stream_id: 0, flags: 0, payload: { device_id, session_id: "cd".repeat(16), role: "drive" } });
+    } }),
+  }) });
+  const key = await run.accountStore.get("signin_key");
+  if (key === undefined) throw new TypeError("Missing registered key");
+  const row = accountDeviceId(run.serverId, key.key.public_spki);
+  jest.useFakeTimers();
+  until = new Date(Date.now() + 10_000).toISOString();
+  await run.openPage();
+  expect({ rows, apps: run.apps() }).toEqual({ rows: [row], apps: 0 });
+  jest.advanceTimersByTime(999);
+  expect({ rows, apps: run.apps() }).toEqual({ rows: [row], apps: 0 });
+  expect(run.current().state).toMatchObject({ kind: "connecting", hold: { reason: "join_hold", until } });
+  jest.advanceTimersByTime(1);
+  await run.appOpened;
+  expect({ rows, apps: run.apps(), navigations: run.navigations }).toEqual({ rows: [row, row], apps: 1, navigations: [] });
+});
+
 it("T34 wire: the shell stays Connecting until the decoded hold deadline, then retries AUTH", async () => {
-  const delay = 4_321;
+  const delay = 900;
   let until = "";
   const rows: string[] = [];
   const run = await accountPc({ open: (offer, options, identity) => openRelayTransport(offer, {
