@@ -289,6 +289,38 @@ describe("FrameGate", () => {
     expect(gate.settle(gate.enqueue("\u001b[2J\u001b[Hscreen", true), true)).toBe(true);
   });
 
+  // hc 0.1.21's attach paint (server/herdr-core/adapter.test.ts): CAN, DECSTR and an end of synchronized update, then the
+  // screen outside any block; the server puts its history clear (attach-session.ts CLEAR_HISTORY) ahead of it
+  const CORE_PAINT = "\u001b[?1049l\u001b[3J\u001b[H\u001b[2J\u0018\u001b[!p\u001b[?2026l\u001b[H\u001b[2J\u00bb Ask Codex to do anything";
+
+  test("an end that closes no block frames nothing: herdr-core's attach paint reads, and the program's blocks after it", () => {
+    const gate = new FrameGate();
+    const paint = gate.enqueue(CORE_PAINT, true);
+    expect(paint.synchronized).toBe(false);
+    expect(gate.settle(paint, true)).toBe(true);
+    expect(gate.current).toBe(true);
+    gate.resized();
+    expect(gate.settle(gate.enqueue(`${OPEN}\u001b[1;1Hhalf`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(` drawn${CLOSE}`, true), true)).toBe(true);
+    // a stream drawn in blocks stays one: after a resize, an end alone is no frame of the new grid
+    gate.resized();
+    expect(gate.settle(gate.enqueue(`late${CLOSE}`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(`${OPEN}new${CLOSE}`, true), true)).toBe(true);
+  });
+
+  test("herdr-core's attach paint reads after a stream drawn in blocks, and when a read cuts its end in two", () => {
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(`${OPEN}old${CLOSE}`, true), true)).toBe(true);
+    gate.reset();
+    expect(gate.settle(gate.enqueue(CORE_PAINT, true), true)).toBe(true);
+    gate.reset();
+    const cut = CORE_PAINT.indexOf("?2026l") + 3;
+    gate.enqueue(CORE_PAINT.slice(0, cut), true);
+    expect(gate.settle(gate.enqueue(CORE_PAINT.slice(cut), true), true)).toBe(true);
+    gate.resized();
+    expect(gate.settle(gate.enqueue("\u001b[1;1Hthe shell's prompt", true), true)).toBe(true);
+  });
+
   test("a reset forgets a block the old stream left open", () => {
     const gate = new FrameGate();
     gate.enqueue(`${OPEN}cut off`, true);

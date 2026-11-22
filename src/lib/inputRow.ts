@@ -51,7 +51,10 @@ const SYNC = /\u001b\[\?2026([hl])/g;
 
 /**
  * herdr wraps each frame it draws in a synchronized-update block (`CSI ? 2026 h` … `l`). xterm 6 holds its drawing until a
- * block closes, but what it has parsed can still end inside one: a frame is read only once its block has closed. When the
+ * block closes, but what it has parsed can still end inside one: a frame is read only once its block has closed. An end
+ * that closes no block frames nothing: herdr-core's attach paint opens with one (CAN, DECSTR, `CSI ? 2026 l`) to reset
+ * the viewer, then paints the screen outside any block, so the stream is taken as drawn in blocks only once one opens, and
+ * that paint reads as a stream without blocks does (the program's own blocks come after it). When the
  * pane's grid itself changes size, herdr may first draw the old screen again, reflowed for the new size (an idle box cut at
  * its borders reads as gone), before the agent's own redraw, or both may come as one frame: the first frame after it is
  * `reflowing`, read when asked but never taken as a change of screen.
@@ -74,8 +77,7 @@ export class FrameGate {
     const text = this.carry + data;
     let whole = false;
     for (const match of text.matchAll(SYNC)) {
-      this.synced = true;
-      if (match[1] === "h") { this.open = true; this.openedIn = this.epoch; }
+      if (match[1] === "h") { this.synced = true; this.open = true; this.openedIn = this.epoch; }
       else { if (this.open && this.openedIn === this.epoch) whole = true; this.open = false; }
     }
     const escape = text.lastIndexOf("\u001b");
