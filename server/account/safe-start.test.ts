@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
 import { DeviceStore, readDeviceRegistry } from "../devices.ts";
-import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
+import { caughtUp, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { loadRelayIdentity, savedServerId } from "../relay/identity.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
@@ -96,7 +96,7 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     const dir = stateDir();
     const first = store(dir);
     await member(first);
-    first.clearAccountBinding("left_on_pc", "pc");
+    first.clearAccountBinding("unlisted", "account");
     // a code started, and a device that redeemed a code made for a PC in no account and waits to link
     const pending = first.startPairing();
     const waitingKey = await key();
@@ -118,7 +118,7 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     // the sibling holds a row this dir does not, an enrollment barrier, a held key and a clear of an old binding
     const other = store(sibling);
     const onlyThere = await member(other);
-    other.clearAccountBinding("left_on_pc", "pc");
+    other.clearAccountBinding("unlisted", "account");
     writeFileSync(join(sibling, "account-enrolling.json"), JSON.stringify({ by: onlyThere.id }), { mode: 0o600 });
     const heldKey = (await key()).spki;
     writeFileSync(join(sibling, "account-held.json"), JSON.stringify({ keys: [heldKey], full: false }), { mode: 0o600 });
@@ -202,6 +202,7 @@ describe("a safe PC state before any listener (T41, T48)", () => {
       return (await request.response).status;
     };
     const firstLink = await relayConnection(f);
+    caughtUp(f);
     await firstLink.auth({ keys: first.keys, publicKey: first.spki, id: firstId });
     const record = await signAccountRecord({ v: 1, kind: "link", account: ACCOUNT, key: first.spki, server_id: SERVER_ID, device_id: firstId, old_key: first.spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: first.spki }, first.keys.privateKey);
     expect(await post(firstLink, "/api/account/link", { record })).toBe(200);
@@ -209,11 +210,13 @@ describe("a safe PC state before any listener (T41, T48)", () => {
     // a second member's hand-over does not end the first member's barrier
     const second = await member(devices);
     const secondLink = await relayConnection(f);
+    caughtUp(f);
     await secondLink.auth({ keys: second.keys, publicKey: second.spki, id: second.id });
     expect(await post(secondLink, "/api/account/enroll", { account: ACCOUNT, records: [] })).toBe(200);
     expect(f.app.context.services.accountHolds.enrolling()).toBe(true);
     // the linking member's does, and the PC's journal says so
     const again = await relayConnection(f);
+    caughtUp(f);
     await again.auth({ keys: first.keys, publicKey: first.spki, id: firstId });
     expect(await post(again, "/api/account/enroll", { account: ACCOUNT, records: [] })).toBe(200);
     expect(f.app.context.services.accountHolds.enrolling()).toBe(false);

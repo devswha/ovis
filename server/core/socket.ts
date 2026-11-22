@@ -73,7 +73,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
   frames: Omit<FrameHandlers, ConnectionFrame>;
   accountEnabled?: boolean | undefined;
   /** the device journal's notices for a paired device (server/devices.ts), with OVIS_ACCOUNT_OPENS_ALL on */
-  notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void; block(record: unknown): Promise<BlockReceipt>; decide(id: string): void };
+  notices?: { replay(deviceId: string): NoticeReplay | null; seen(deviceId: string, seq: number): void; block(record: unknown, onApplied: () => void): Promise<BlockReceipt>; mayAnswer(caller: string | undefined, id: string): boolean; open(id: string): { readonly key: string | null; readonly account: string | null } | undefined; decide(id: string, replay: boolean): void; itsMe(deviceId: string, id: string, provedKey: string): boolean };
 }): SocketHandler {
   const notices = accountEnabled ? noticeHandlers : undefined;
   const websocketDiagnostics = new ConnectionDiagnostics("websocket");
@@ -157,7 +157,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       const features: ServerFeature[] = watchable() ? [...SERVER_FEATURES] : SERVER_FEATURES.filter((feature) => feature !== "watch");
       if (terminalHistory()) features.push("terminal-history");
       if (terminalModes()) features.push("terminal-modes");
-      if (client.data.machineEvents) features.push("machine-events");
+      if (client.data.machineEvents || client.data.localRoster) features.push("machine-events");
       if (accountEnabled) features.push(ACCOUNT_OPENS_ALL_CAPABILITY);
       // a folder OVIS_PASTE_DIR names lets the page read an upload's path whole through it (#2771); a
       // watch-only connection, which may list no folder, is not told where it is
@@ -199,13 +199,35 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         return;
       }
       if (message.type === "notice-answer") {
+        // "It's me" is the join hold's to judge (T53), only for the session's proved key, never a bare device id; the
+        // confirmation it publishes is the answer. A PC without notices (flag off) ignores it as before.
+        if (message.answer === "its_me") {
+          if (notices === undefined || typeof message.id !== "string" || client.data.deviceId === undefined || !client.data.provedKey) return;
+          try { notices.itsMe(client.data.deviceId, message.id, client.data.provedKey); }
+          catch (error) {
+            console.error(`[devices] It's me could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+            send(client, { type: "error", code: "notice_decision_failed", message: "The notice could not be closed and remains open." });
+          }
+          return;
+        }
         // "Not me": each block applies at once and is answered with its receipt; one that applied decides the notice (T51).
-        // "It's me" is the join hold's to judge (T53) and decides nothing here
         if (notices === undefined || typeof message.id !== "string" || message.answer !== "not_me" || !Array.isArray(message.blocks) || message.blocks.length > 2) return;
         const receipts: BlockReceipt[] = [];
-        for (const block of message.blocks) receipts.push(await notices.block(block));
-        if (receipts.some((receipt) => receipt.outcome !== "refused")) {
-          try { notices.decide(message.id); }
+        let answered = false;
+        let newlyApplied = false;
+        for (const block of message.blocks) {
+          const notice = notices.open(message.id);
+          if (notice && !notices.mayAnswer(client.data.deviceId, message.id)) break;
+          let applied = false;
+          const receipt = await notices.block(block, () => { applied = true; });
+          receipts.push(receipt);
+          if (receipt.outcome !== "refused" && notice && notice.key === block.target && notice.account === block.account) {
+            answered = true;
+            newlyApplied ||= applied;
+          }
+        }
+        if (answered && notices.mayAnswer(client.data.deviceId, message.id)) {
+          try { notices.decide(message.id, !newlyApplied); }
           catch (error) {
             console.error(`[devices] the notice could not be decided: ${error instanceof Error ? error.message : String(error)}`);
             send(client, { type: "error", code: "notice_decision_failed", message: "The notice could not be closed and remains open." });

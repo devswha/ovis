@@ -2,10 +2,11 @@
  * A relay client's side of a connection to a PC: Noise NK to its key, then Ovis Mux v1 admission with a device key
  * (docs/relay.md).
  */
+import { PENDING_MS, pairFingerprint, signPairProof } from "./pair-fingerprint.ts";
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { ACCOUNT_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, PC_CODE_ACCOUNT_ONLY, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
 import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine, MUX_SETUP_MS } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
@@ -16,12 +17,23 @@ import { getDevice, sign } from "./relay-device.ts";
 import { RELAY_NEW_SESSIONS_CLOSE } from "./relay-pass.ts";
 import type { RelayDevice, RelayDeviceStore } from "./relay-device.ts";
 
+export class AccountOpenUnsupportedError extends Error {
+  constructor() {
+    super("The PC did not negotiate account open");
+    this.name = "AccountOpenUnsupportedError";
+  }
+}
+
 export class UnsafeRelayDestinationError extends Error {
   readonly code = "unsafe_relay_destination";
   constructor(readonly field: "relay" | "server_id") {
     super(`Invalid relay destination: ${field}`);
     this.name = "UnsafeRelayDestinationError";
   }
+}
+
+export class TargetAccountPcError extends Error {
+  constructor() { super("That PC is in an account. Add it from that account."); }
 }
 
 export class RelayUnreachableError extends Error {
@@ -120,6 +132,7 @@ export interface RelayChannelOptions {
    * `vouched`: a PC's server pairing with another PC of its account (PAIR_INTENT_VOUCHED).
    */
   readonly intent?: "pc" | "account" | "vouched";
+  readonly pcCodeAdd?: boolean;
   /**
    * A comparison only: told what the PC selected in its answer to HELLO, before PAIR_REQUEST goes out. A throw
    * ends the attempt there with that error, and nothing is sent to pair.
@@ -130,6 +143,17 @@ export interface RelayChannelOptions {
    * "Direct on the same network") instead of through the relay: signing in only, never a pairing.
    */
   readonly direct?: string;
+  /**
+   * Offer ACCOUNT_OPENS_ALL_FEATURE in HELLO (device table T34, G5): a client signing in with its registered sign-in
+   * key, so a PC with the release on may answer held, not_listed or admission instead of a bare auth failure.
+   */
+  readonly accountOpensAll?: boolean;
+  /**
+   * Offer KEY_PROOF_FEATURE (device table T71, T72): a pairing by code proves its key over the PC's KEY_CHALLENGE and
+   * on KEY_PENDING reports the fingerprint it computed from this offer's server_id, that challenge and its own key.
+   * Nothing the PC or the relay sends is shown as a fingerprint.
+   */
+  readonly keyProof?: (fingerprint: string) => void;
   /** Offer DIRECT_CARRIER, so the PC names its direct carriers in AUTH_OK: only a client that can open them. */
   readonly offerDirect?: boolean;
   /** With offerDirect, also offer DIRECT_TAILNET: only a client that can open a carrier on a Tailscale address. */
@@ -192,13 +216,15 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     // an older PC selects none of these; a comparison names what it asks for, so the PC's prompt can say it
     const offered: readonly string[] = comparing
       ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC]
-      : [ACCOUNT_FEATURE];
+      : [ACCOUNT_FEATURE, ...options.accountOpensAll === true ? [ACCOUNT_OPENS_ALL_FEATURE] : [], ...options.keyProof !== undefined && offer.code !== undefined ? [KEY_PROOF_FEATURE] : [],
+        ...options.pcCodeAdd && offer.code !== undefined ? [PC_CODE_ACCOUNT_ONLY] : []];
     const hinted: readonly string[] = [RELAY_HINTS, ...options.offerDirect ? [DIRECT_CARRIER, ...options.offerTailnet ? [DIRECT_TAILNET] : []] : []];
     let phoneNonce: Uint8Array | undefined;
     let binding: Uint8Array | undefined;
     let challenge: Uint8Array | undefined;
     /** set once PAIR_CONFIRM went out: before it, AUTH_OK would be a PC skipping the comparison on this phone */
     let confirmed = false;
+    let keyProof: { readonly fingerprint: string; readonly shown: boolean } | undefined;
     let secure: SecureChannel | undefined;
     let mux: MuxEngine | undefined;
     let connectionId = "";
@@ -251,7 +277,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       const bytes = new Uint8Array(data);
       if (phase === "ready") { mux?.receive(bytes); return; }
       const frame = decodeFrame(bytes);
-      if (frame.type === FrameType.SESSION_ERROR) throw new MuxProtocolError(frame.payload.code, frame.payload.message);
+      if (options.accountOpensAll && phase === "welcome" && frame.type === FrameType.SESSION_ERROR && frame.payload.code === "unsupported_extension") throw new AccountOpenUnsupportedError();
+      if (frame.type === FrameType.SESSION_ERROR) throw new MuxProtocolError(frame.payload.code, frame.payload.message, frame.payload.receipts, frame.payload.hold);
       if (frame.type === FrameType.RECEIVED) {
         if (!mux || frame.payload > mux.stats.submitted) throw new MuxProtocolError("protocol_error", "Receipt exceeds submitted frames");
         receipt = bytes;
@@ -263,6 +290,12 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
         server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol, features: frame.payload.features };
         if (frame.payload.features.some((feature) => !offered.includes(feature))) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
+        if (options.accountOpensAll) {
+          // Account AUTH is sent only after the PC's final, authenticated feature selection.
+          if (frame.payload.provisional) { passed = bytes; provisionalNonce = frame.payload.nonce; return; }
+          if (provisionalNonce !== undefined && provisionalNonce !== frame.payload.nonce) throw new MuxProtocolError("protocol_error", "The PC's answer to HELLO changed its WELCOME");
+          if (!frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE)) throw new AccountOpenUnsupportedError();
+        }
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
         welcome = bytes;
@@ -280,6 +313,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           await send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
             payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)) } });
         } else if (offer.code !== undefined) {
+          if (options.pcCodeAdd && frame.payload.features.includes(PC_CODE_ACCOUNT_ONLY)) throw new TargetAccountPcError();
           await send({ type: FrameType.PAIR, flags: 0, stream_id: 0,
             payload: { code: offer.code, label: device.label, public_key: device.public_spki } });
         } else {
@@ -302,6 +336,25 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           confirmed = true;
           return send({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
         }).catch(failed);
+        return;
+      }
+      // one challenge per pairing: a second one, or one to a device that did not ask, ends the attempt
+      if (phase === "auth" && frame.type === FrameType.KEY_CHALLENGE && offer.code !== undefined && options.keyProof !== undefined && keyProof === undefined) {
+        const fingerprint = await pairFingerprint(offer.server_id, frame.payload.challenge, device.public_spki);
+        const signature = await signPairProof(offer.server_id, frame.payload.challenge, device.public_spki, device.private_key);
+        expect(PENDING_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
+        mux?.extendSetup(PENDING_MS + PAIR_APPROVAL_GRACE_MS);
+        await send({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature } });
+        keyProof = { fingerprint, shown: false };
+        return;
+      }
+      if (phase === "auth" && frame.type === FrameType.KEY_PENDING && keyProof !== undefined) {
+        if (!keyProof.shown) {
+          expect(PENDING_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
+          mux?.extendSetup(PENDING_MS + PAIR_APPROVAL_GRACE_MS);
+          options.keyProof?.(keyProof.fingerprint);
+        }
+        keyProof = { ...keyProof, shown: true };
         return;
       }
       // a PC that selects something (the account feature) answers HELLO after the provisional WELCOME this
@@ -419,7 +472,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         });
         mux.receiveLargeMessages();
         await send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
-          payload: { protocol: "ovis-mux", versions: [1], features: [...hinted, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: [] } });
+          payload: { protocol: "ovis-mux", versions: [1], features: [...hinted, LARGE_WS_MESSAGES, SERVER_TIME_HEADER, ...offered], required_features: options.accountOpensAll ? [ACCOUNT_OPENS_ALL_FEATURE] : [] } });
       }).catch(failed);
     };
   });
