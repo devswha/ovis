@@ -20,6 +20,9 @@ import type { LinkNotice } from "./link.ts";
 /** One tab as the screen lays it out: its tree over terminal addresses and the pane a zoom shows alone. */
 export interface TabShape { readonly root: LayoutNode; readonly zoomed: string | null }
 
+/** The zoom a tab of the state core's world carries: the zoomed pane, or nothing. */
+const zoomOf = (shape: TabShape | undefined): { zoomed?: string } => (shape?.zoomed ? { zoomed: shape.zoomed } : {});
+
 /** One pane as the chrome draws it (never reading agent_status off a tab or workspace). */
 interface PaneSummary {
   readonly label: string;
@@ -302,6 +305,7 @@ export class CoreWorld {
           tabs: snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id).map((tab) => ({
             id: tab.tab_id,
             name: tab.label,
+            ...zoomOf(tabs.get(tab.tab_id)),
             panes: (order.get(tab.tab_id) ?? []).map((id) => {
               const created = this.records.get(id)?.["created_ms"];
               return { id, name: panes.get(id)?.label ?? "", ...(typeof created === "number" ? { created } : {}) };

@@ -310,15 +310,7 @@ export function startLoop(options: LoopOptions): Loop {
   function reshow(): void {
     const size = host.size();
     const view = world.view();
-    const { tab, pane: focusedPane } = focused(state.world, state.focus);
-    // a zoom shows its pane alone: the focus goes to it, so what is typed reaches the pane on the screen, not one the zoom covers
-    const zoomed = tab ? view.tabs.get(tab.id)?.zoomed ?? null : null;
-    if (zoomed !== null && focusedPane?.id !== zoomed && tab?.panes.some((node) => node.id === zoomed)) {
-      const before = state;
-      dispatch({ type: "select", target: { kind: "pane", id: zoomed }, at: clock.now() });
-      // the select's own reshow has shown the tab
-      if (state !== before) return;
-    }
+    const tab = focused(state.world, state.focus).tab;
     shape = layOut(size.cols, size.rows, tab ? view.tabs.get(tab.id) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
     // a pane that left the shown tab keeps no grid: shown again, it is drawn anew from its new attach
     for (const pane of grids.keys()) if (!shape.spots.some((spot) => spot.pane === pane)) grids.delete(pane);

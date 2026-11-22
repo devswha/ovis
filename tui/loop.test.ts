@@ -364,6 +364,31 @@ describe("the loop", () => {
     expect(run.loop.model().notices.map((notice) => notice.code)).not.toContain("input_refused");
   }, TEST_MS);
 
+  it("zoom: text after a focus move under a zoom reaches the zoomed pane, in one read as in two", async () => {
+    /** what each program received after `reads`, with t2 zoomed and cycle_pane_next on prefix+y */
+    const outcome = async (reads: string[]) => {
+      const core = oneTab(2);
+      const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+      core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 1 });
+      const run = await Run.start({ core });
+      try {
+        await run.live();
+        run.loop.dispatch({ type: "keys", keys: { cycle_pane_next: "prefix+y" }, at: run.clock.current });
+        await run.advance(1);
+        for (const read of reads) {
+          run.type(read);
+          await run.advance(20);
+        }
+        return { reads, received: [run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()] };
+      } finally {
+        await run.close();
+      }
+    };
+    const received = ["", Buffer.from("k").toString("hex")];
+    expect(await outcome(["\x02yk"])).toEqual({ reads: ["\x02yk"], received });
+    expect(await outcome(["\x02y", "k"])).toEqual({ reads: ["\x02y", "k"], received });
+  }, TEST_MS);
+
   it("a size no emulator takes fails that pane alone: drawn as failed, no grid at the refused size, the other pane still typed into", async () => {
     const run = await start({ core: oneTab(2) });
     await run.live();

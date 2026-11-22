@@ -5,7 +5,8 @@
 
 /** `created`: when the core made the pane's terminal (its `created_ms`), so a later terminal at the same address is told apart */
 export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number }
-export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[] }
+/** `zoomed`: the pane a zoom shows alone; while it lasts it is the tab's shown pane, whatever pane the focus remembers */
+export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly zoomed?: string }
 export interface WorkspaceNode { readonly id: string; readonly name: string; readonly tabs: readonly TabNode[] }
 export interface World { readonly workspaces: readonly WorkspaceNode[] }
 
@@ -33,11 +34,15 @@ function find<T extends { readonly id: string }>(list: readonly T[], id: string 
   return id === null || id === undefined ? undefined : list.find((node) => node.id === id);
 }
 
-/** What the screen shows: the focused workspace, its tab and that tab's pane (the first of each when none is remembered). */
+/**
+ * What the screen shows: the focused workspace, its tab and that tab's pane (the first of each when none is remembered). A
+ * zoomed tab shows its zoomed pane, so what is typed reaches the pane on the screen; the remembered pane comes back when the
+ * zoom ends.
+ */
 export function focused(world: World, focus: Focus): Focused {
   const workspace = find(world.workspaces, focus.workspace) ?? world.workspaces[0] ?? null;
   const tab = workspace === null ? null : find(workspace.tabs, own(focus.tabs, workspace.id)) ?? workspace.tabs[0] ?? null;
-  const pane = tab === null ? null : find(tab.panes, own(focus.panes, tab.id)) ?? tab.panes[0] ?? null;
+  const pane = tab === null ? null : find(tab.panes, tab.zoomed) ?? find(tab.panes, own(focus.panes, tab.id)) ?? tab.panes[0] ?? null;
   return { workspace, tab, pane };
 }
 
