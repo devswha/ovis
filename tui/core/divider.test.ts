@@ -175,14 +175,15 @@ describe("a divider drag's writes", () => {
     const writes = new DividerWrites({ edit, tree: () => undefined, refused: (refusal) => refusals.push(refusal) });
     writes.move(1, "t", NAME, 0.3, false);
     writes.move(1, "t", NAME, 0.3, true);
-    // grabbed again and released before the first write is answered, at the same ratio and then another
-    writes.move(2, "t", NAME, 0.3, false);
-    writes.move(2, "t", NAME, 0.45, true);
+    // grabbed again and released before the first write is answered, at the very ratio that write carries
+    writes.move(2, "t", NAME, 0.45, false);
+    writes.move(2, "t", NAME, 0.3, true);
     asked[0]!.fail(Object.assign(new Error("refused"), { code: "unsupported" }));
     await turn();
-    expect(asked.map((one) => ratioWritten(one.change))).toEqual([0.3, 0.45]);
+    // the refused write did not land, so the same ratio is written again for the newer grab
+    expect(asked.map((one) => ratioWritten(one.change))).toEqual([0.3, 0.3]);
     expect(refusals).toEqual([]);
-    expect(writes.shape("t", { root: right(leaf("a"), leaf("b")), zoomed: null })?.root).toEqual(right(leaf("a"), leaf("b"), 0.45));
+    expect(writes.shape("t", { root: right(leaf("a"), leaf("b")), zoomed: null })?.root).toEqual(right(leaf("a"), leaf("b"), 0.3));
     asked[1]!.answer(null);
     await turn();
     expect(asked.length).toBe(2);
