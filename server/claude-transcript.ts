@@ -738,6 +738,8 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
             trimOutput(tool, own.output, result.tool_use_id);
             if (own.error) tool.error = true;
             tool.state = own.error ? "error" : "ok";
+            // what the script logs after it ended comes later under its number, as a dispatched one's output does
+            if (own.eval !== null) scripts.set(own.eval, { part: tool, text: own.output, delivered: new Set() });
             continue;
           }
         }
@@ -761,11 +763,12 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       // an entry that names no stop reason is still at work when it calls a tool
       const stop = entry.message?.stop_reason;
       // a call a Code Mode script made (isVirtual) is written after the script, inside the model's turn: it
-      // leaves the turn as it stands
+      // leaves whether the turn is at work as it stands. Calls written after the turn's answer open one turn
+      // after it, which the calls after them and the answer that follows join.
       if (entry.isVirtual !== true) {
         state.completed = stop === "end_turn";
         state.atWork = stop === "tool_use" || (stop == null && content.some((block: unknown) => typeof block === "object" && block !== null && "type" in block && block.type === "tool_use"));
-      }
+      } else state.completed = false;
       if (entry.timestamp) turn.end_ts = entry.timestamp;
       for (const block of content) {
         if (typeof block !== "object" || block === null) continue;

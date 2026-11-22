@@ -140,6 +140,37 @@ describe("Claude Code's Code Mode in the chat", () => {
     expect(tools(turns).map((tool) => [tool.name, tool.output, tool.state])).toEqual([["REPL", "1", "ok"], ["Poll", "the build finished", "ok"]]);
   });
 
+  it("puts the calls a script made after the turn's answer in one turn, with the answer that follows them", () => {
+    const turns = parseClaudeTranscript([
+      prompt("go"),
+      call("toolu_repl9", "REPL", { code: "go()", description: "Go" }),
+      result("toolu_repl9", "(dispatched #9)"),
+      answer("Started."),
+      scriptCall("repl_call-91", "Bash", { command: "ls" }),
+      scriptResult("repl_call-91", { stdout: "a" }),
+      scriptCall("repl_call-92", "Bash", { command: "pwd" }),
+      scriptResult("repl_call-92", { stdout: "/w" }),
+      pollEvents([event("Lt9", 'eval="9"', "<result>done</result>")]),
+      answer("It finished."),
+    ].join(""));
+    expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind === "tool" ? part.name : part.kind)])).toEqual([
+      ["user", ["text"]],
+      ["assistant", ["REPL", "text"]],
+      ["assistant", ["Bash", "Bash", "text"]],
+    ]);
+  });
+
+  it("adds a script's late output to a REPL row that held its own output", () => {
+    const turns = parseClaudeTranscript([
+      prompt("go"),
+      call("toolu_repl10", "REPL", { code: "go()", description: "Go" }),
+      result("toolu_repl10", '<repl-output eval="10" ms="3">\n<result>done</result>\n</repl-output>'),
+      pollEvents([`<event nonce="Lt10" kind="repl-eval" at="2026-11-20T11:20:04.000Z" eval="10" status="late">\n<log>after</log>\n</event>`]),
+      answer("ok"),
+    ].join(""));
+    expect(tools(turns).map((tool) => [tool.output, tool.state])).toEqual([["done\nafter", "ok"]]);
+  });
+
   it("leaves a session with no REPL call as it was: a tool named Poll there is an ordinary call", () => {
     const turns = parseClaudeTranscript([prompt("poll it"), call("toolu_p", "Poll", {}), result("toolu_p", "nothing yet"), answer("ok")].join(""));
     expect(tools(turns).map((tool) => [tool.name, tool.output])).toEqual([["Poll", "nothing yet"]]);
@@ -149,6 +180,7 @@ describe("Claude Code's Code Mode in the chat", () => {
     const dir = mkdtempSync(join(tmpdir(), "ovis-code-mode-"));
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
     const long = "x".repeat(6000);
+    const printedByCall = "y".repeat(6000);
     const path = join(dir, "session.jsonl");
     writeFileSync(path, [
       prompt("long"),
@@ -157,7 +189,7 @@ describe("Claude Code's Code Mode in the chat", () => {
       result("toolu_repl7", "(dispatched #7)"),
       result("toolu_poll7", `${system("Ff6")}\n${event("Ff6", 'eval="7"', `<result>${long}</result>`)}`),
       scriptCall("repl_call-7", "Bash", { command: "cat big" }),
-      scriptResult("repl_call-7", { stdout: long, stderr: "", interrupted: false }),
+      scriptResult("repl_call-7", { stdout: printedByCall, stderr: "", interrupted: false }),
       answer("ok"),
     ].join(""));
 
@@ -166,7 +198,45 @@ describe("Claude Code's Code Mode in the chat", () => {
       expect(repl!.output_ref).toBe("toolu_repl7");
       expect(bash!.output_ref).toBe("repl_call-7");
       expect(transcriptToolOutput("claude-transcript", path, "toolu_repl7")).toBe(long);
-      expect(transcriptToolOutput("claude-transcript", path, "repl_call-7")).toBe(long);
+      expect(transcriptToolOutput("claude-transcript", path, "repl_call-7")).toBe(printedByCall);
+    });
+
+    it("serves a REPL's own output with the late output its script logged after it", () => {
+      const late = join(dir, "late.jsonl");
+      writeFileSync(late, [
+        prompt("long"),
+        call("toolu_repl11", "REPL", { code: "big()", description: "Big" }),
+        result("toolu_repl11", `<repl-output eval="11" ms="8">\n<result>${long}</result>\n</repl-output>`),
+        pollEvents([`<event nonce="Lt11" kind="repl-eval" at="2026-11-20T11:20:05.000Z" eval="11" status="late">\n<log>after</log>\n</event>`]),
+        answer("ok"),
+      ].join(""));
+      const [repl] = tools(parseClaudeTranscript(readFileSync(late, "utf8")));
+      expect(repl!.output_ref).toBe("toolu_repl11");
+      expect(transcriptToolOutput("claude-transcript", late, "toolu_repl11")).toBe(`${long}\nafter`);
+    });
+
+    it("serves a Poll row's whole output as the row has it: what it brought besides the scripts' output", () => {
+      const mixed = join(dir, "mixed.jsonl");
+      writeFileSync(mixed, [
+        prompt("wait"),
+        call("toolu_repl12", "REPL", { code: "go()", description: "Go" }),
+        call("toolu_poll12", "Poll", {}),
+        result("toolu_repl12", "(dispatched #12)"),
+        result("toolu_poll12", `${system("Gg1", "Hh2")}\n${event("Gg1", 'eval="12"', "<result>1</result>")}\n<event nonce="Hh2" kind="world-event" at="2026-11-20T11:20:03.000Z">${printedByCall}</event>`),
+        answer("ok"),
+      ].join(""));
+      const [repl, poll] = tools(parseClaudeTranscript(readFileSync(mixed, "utf8")));
+      expect([repl!.output, poll!.output_ref]).toEqual(["1", "toolu_poll12"]);
+      expect(transcriptToolOutput("claude-transcript", mixed, "toolu_poll12")).toBe(printedByCall);
+    });
+
+    it("serves another tool's output as it reads, even one that looks like a REPL's", () => {
+      const printed = `<repl-output eval="3">\n<result>${long}</result>\n</repl-output>`;
+      const other = join(dir, "other.jsonl");
+      writeFileSync(other, [prompt("cat"), call("toolu_cat", "Bash", { command: "cat out.xml" }), result("toolu_cat", printed), answer("ok")].join(""));
+      const [bash] = tools(parseClaudeTranscript(readFileSync(other, "utf8")));
+      expect(bash!.output.startsWith("<repl-output")).toBe(true);
+      expect(transcriptToolOutput("claude-transcript", other, "toolu_cat")).toBe(printed);
     });
   });
 });
