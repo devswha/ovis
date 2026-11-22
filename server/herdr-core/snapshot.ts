@@ -58,11 +58,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * agy reports `blocked` "Approve plan" (OSC 7501) when a turn ends on an artifact for review, while its own input box
- * takes the reply as at any rest: at rest here, so no card holds the composer and queued messages go to it.
+ * agy reports `blocked` permission "Approve plan" (OSC 7501) when a turn ends on an artifact for review, while its own input box
+ * takes the reply as at any rest: at rest here, so no card holds the composer and queued messages go to it. A question
+ * in those words is still a question.
  */
 export function agyPlanReview(status: HcStatus | null | undefined): boolean {
-  return status?.app === "antigravity" && status.state === "blocked" && status.msg === "Approve plan";
+  return status?.app === "antigravity" && status.state === "blocked" && status.kind === "permission" && status.msg === "Approve plan";
 }
 
 export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus {

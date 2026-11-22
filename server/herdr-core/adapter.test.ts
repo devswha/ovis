@@ -194,24 +194,28 @@ describe("herdr-core adapter", () => {
       terminal("t1", { status: agy("Approve plan", "permission") }),
       terminal("t2", { status: agy("Which name would you like?", "question") }),
       terminal("t3", { status: agy("Run: rm -rf build", "permission") }),
+      // a question asked in those very words is still a question
+      terminal("t4", { status: agy("Approve plan", "question") }),
     ]);
     const snapshot = await sessionSnapshot(socket);
     expect(snapshot.panes.map((p) => [p.pane_id, p.agent_status, p.agent_kind ?? null, p.agent_message ?? null])).toEqual([
       ["t1", "done", null, null],
       ["t2", "blocked", "question", "Which name would you like?"],
       ["t3", "blocked", "permission", "Run: rm -rf build"],
+      ["t4", "blocked", "question", "Approve plan"],
     ]);
   });
 
   it("sends a prompt into agy's plan review with force, and into any other blocked program without", async () => {
-    const blocked = (app: string, msg: string) => ({ status: { app, state: "blocked", kind: "permission", msg } });
+    const blocked = (app: string, msg: string, kind = "permission") => ({ status: { app, state: "blocked", kind, msg } });
     const { socket, cores } = await setup([terminal("t1", blocked("antigravity", "Approve plan")), terminal("t2", blocked("antigravity", "Run: make")),
-      terminal("t3", blocked("codex", "Approve plan"))], { "terminal.send": () => ({ turn: 1 }) });
-    for (const target of ["t1", "t2", "t3"]) await agentPrompt(target, "use option 2", socket);
+      terminal("t3", blocked("codex", "Approve plan")), terminal("t4", blocked("antigravity", "Approve plan", "question"))], { "terminal.send": () => ({ turn: 1 }) });
+    for (const target of ["t1", "t2", "t3", "t4"]) await agentPrompt(target, "use option 2", socket);
     expect(cores.flatMap((core) => core.calls).filter((call) => call.method === "terminal.send").map((call) => call.params)).toEqual([
       { terminal: "t1", text: "use option 2", force: true },
       { terminal: "t2", text: "use option 2" },
       { terminal: "t3", text: "use option 2" },
+      { terminal: "t4", text: "use option 2" },
     ]);
   });
 
