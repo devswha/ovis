@@ -8,18 +8,19 @@
  * starts a core. It asks the Ovis server nothing and takes no turn in the plugin's lifecycle lock.
  */
 import { existsSync, readFileSync, readSync, writeSync } from "node:fs";
-import { constants, homedir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { isatty } from "node:tty";
-import { FFIType } from "bun:ffi";
+import { FFIType, ptr } from "bun:ffi";
 import { version } from "../package.json";
 import { COMPILED, entryCommand, ROOT } from "../server/entries.ts";
 import { mergeEnvLayers } from "../server/legacy-env.ts";
 import { coreLaunchEnv } from "../server/herdr-core/core-env.ts";
 import { coreSocket } from "../server/herdr-core/core-socket.ts";
 import { LEAVE_ALL } from "../tui/host/guard.ts";
-import { EXIT_FAILED, EXIT_OK, parseArgs, SCREEN_FOLDER, targetEnv } from "../tui/start.ts";
+import { EXIT_FAILED, EXIT_OK, parseArgs, SCREEN_FOLDER, SCREEN_SERVER, targetEnv } from "../tui/start.ts";
 import { openLibc } from "../tui/host/libc.ts";
+import { appOrigin } from "./plugin-port.ts";
 import { discardTyped, macExecEnv } from "./libc.ts";
 import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
 
@@ -43,7 +44,7 @@ export const usage = (accountOpensAll: boolean): string => [
 /** The setting that named the old hc-tui program: the screen is part of Ovis now. */
 const TUI_BIN_VARIABLE = "OVIS_TUI_BIN";
 
-/** What the screen never gets: it talks to herdr-core alone. */
+/** What the screen never gets: it asks the Ovis server for its two worktree entries only, with no token. */
 const WITHHELD = ["OVIS_TOKEN", "OVIS_URL", "HERDR_WEB_TOKEN", "HC_SCOPE"] as const;
 
 /** The screen's environment: the caller's (with the chosen core), without the Ovis server's token or address. */
@@ -130,12 +131,6 @@ const saidYes = (line: string | null) => line !== null && ["", "y", "yes"].inclu
 /** One connect to a core's socket: something accepts it, nothing listens there, or the connect failed otherwise. */
 export type Probe = { kind: "core" } | { kind: "none" } | { kind: "failed"; code: string; reason: string };
 
-/** The screen as a child process. */
-export interface Screen {
-  readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-  kill(signal: NodeJS.Signals): void;
-}
-
 /** How the screen is started: the entry `tui`, the folder it runs in, and its file from source (null: compiled in). */
 export interface ScreenStart {
   readonly command: readonly string[];
@@ -154,11 +149,36 @@ export function screenStart(compiled: boolean = COMPILED, root: string = ROOT): 
   return compiled ? { command: [bin, entry], cwd: root, file: null } : { command: [bin, "--no-env-file", entry], cwd: root, file: entry };
 }
 
-/** The terminal's settings, read before the screen starts and written back when it died by a signal. */
-export interface TerminalSettings {
-  save(): Uint8Array | null;
-  restore(saved: Uint8Array): void;
-  write(bytes: string): void;
+/**
+ * The waiter the screen runs under, a shell in place of the launcher (Bun would keep about 30 MB waiting beside the
+ * screen): it reads the terminal's settings, starts the screen with exactly its environment (`env -i`, so the shell
+ * adds nothing), ignores a SIGINT sent to the whole group (ignored, no handler), passes a SIGTERM or SIGHUP sent to it alone on, and exits
+ * with the screen's code, 128 + the signal when one ended it. The screen gives the terminal back itself on its own ends,
+ * SIGHUP, SIGINT and SIGTERM included (129, 130, 143); after any other signal it could not, so the waiter writes the
+ * settings back and undoes the modes the screen's host turns on. A background job of a shell without job control reads
+ * /dev/null, so the screen's stdin is taken back from fd 3.
+ */
+export const WAITER = [
+  'leave=$1; shift',
+  'saved=$(stty -g 2>/dev/null)',
+  // ignored, not trapped: bash 3.2 (macOS's /bin/sh) loses a signal that arrives while it runs a trap's handler, so a
+  // HUP right after a group SIGINT would never be passed on
+  "trap '' INT",
+  `trap 'kill -TERM "$pid" 2>/dev/null' TERM`,
+  `trap 'kill -HUP "$pid" 2>/dev/null' HUP`,
+  'exec 3<&0',
+  '{ exec 0<&3 3<&-; exec /usr/bin/env -i "$@"; } &',
+  'pid=$!',
+  'exec 3<&-',
+  'wait "$pid"; st=$?',
+  'while kill -0 "$pid" 2>/dev/null; do wait "$pid"; st=$?; done',
+  'case $st in 129|130|143) ;; *) if [ "$st" -gt 128 ]; then if [ -n "$saved" ]; then stty "$saved"; fi; printf %s "$leave"; fi;; esac',
+  'exit "$st"',
+].join("\n");
+
+/** The waiter's command line for `command` in `env`: the shell, its script, the modes to undo, then `env -i`'s words. */
+export function waiterCommand(command: readonly string[], env: Record<string, string>): string[] {
+  return ["/bin/sh", "-c", WAITER, "ovis-tui", LEAVE_ALL, ...Object.entries(env).map(([name, value]) => `${name}=${value}`), ...command];
 }
 
 /** Everything the launcher touches outside itself, so each case can be run without a terminal, a core or hc. */
@@ -182,10 +202,11 @@ export interface LaunchParts {
   discard(): boolean;
   /** the question at the terminal, in cooked mode: the line typed, or null at the end of the input */
   ask(question: string): Promise<string | null>;
-  run(command: readonly string[], options: { env: Record<string, string>; cwd: string }): Screen;
-  readonly terminal: TerminalSettings;
-  /** listens for a signal; what it returns stops listening */
-  on(signal: "SIGINT" | "SIGTERM" | "SIGHUP", handler: () => void): () => void;
+  /**
+   * Gives the terminal to the screen: this process becomes the screen's waiter (`waiterCommand`) and does not come back;
+   * the promise is the screen's exit code where the process is not replaced (a test's). Throws when it cannot start.
+   */
+  handOver(command: readonly string[], options: { env: Record<string, string>; cwd: string }): Promise<number>;
   err(text: string): void;
   now(): number;
   wait(ms: number): Promise<void>;
@@ -245,63 +266,40 @@ export async function launchTui(argv: readonly string[], parts: LaunchParts): Pr
     say("not_a_terminal", "stdin and stdout must both be a terminal");
     return EXIT_FAILED;
   }
-  return runScreen([], { ...tuiEnv(chosen), [SCREEN_FOLDER]: parts.folder }, parts);
+  return runScreen([], { ...tuiEnv(chosen), [SCREEN_FOLDER]: parts.folder, [SCREEN_SERVER]: appOrigin(mergeEnvLayers([parts.caller, parts.settings])) }, parts);
 }
 
-/**
- * Runs the screen with the terminal handed over and stays until it ends. The screen holds the terminal in raw mode and
- * owns Ctrl+C, so a SIGINT sent to the whole group is ignored from before it starts; a SIGTERM or SIGHUP sent to this
- * process alone is passed on. A screen that died by a signal could not give the terminal back: this process writes back
- * the settings it read before the start and undoes every mode the screen's host can turn on. After any other end it writes
- * nothing: the screen gave the terminal back itself, and popping the keyboard protocol twice would take the shell's own.
- */
+/** Gives the terminal to the screen (`LaunchParts.handOver`): nothing of the launcher waits beside it. */
 async function runScreen(argv: string[], env: Record<string, string>, parts: LaunchParts): Promise<number> {
-  const offs = [parts.on("SIGINT", () => undefined)];
-  let child: Screen | undefined;
-  for (const signal of ["SIGTERM", "SIGHUP"] as const) offs.push(parts.on(signal, () => child?.kill(signal)));
+  // Bun's own "Module not found" would be all a user saw of an install that lost the screen's file
+  if (parts.screen.file !== null && !existsSync(parts.screen.file)) {
+    parts.err(`ovis tui: screen_missing: the screen's file ${parts.screen.file} is missing; reinstall Ovis\n`);
+    return EXIT_FAILED;
+  }
   try {
-    // Bun's own "Module not found" would be all a user saw of an install that lost the screen's file
-    if (parts.screen.file !== null && !existsSync(parts.screen.file)) {
-      parts.err(`ovis tui: screen_missing: the screen's file ${parts.screen.file} is missing; reinstall Ovis\n`);
-      return EXIT_FAILED;
-    }
-    const saved = parts.terminal.save();
-    try {
-      child = parts.run([...parts.screen.command, ...argv], { env, cwd: parts.screen.cwd });
-    } catch (error) {
-      parts.err(`ovis tui: start_failed: the screen could not be started: ${error instanceof Error ? error.message : String(error)}\n`);
-      return EXIT_FAILED;
-    }
-    const end = await child.exited;
-    if (end.signal === null) return end.code ?? EXIT_FAILED;
-    if (saved !== null) parts.terminal.restore(saved);
-    parts.terminal.write(LEAVE_ALL);
-    return 128 + (constants.signals[end.signal] ?? 0);
-  } finally {
-    for (const off of offs) off();
+    return await parts.handOver([...parts.screen.command, ...argv], { env, cwd: parts.screen.cwd });
+  } catch (error) {
+    parts.err(`ovis tui: start_failed: the screen could not be started: ${error instanceof Error ? error.message : String(error)}\n`);
+    return EXIT_FAILED;
   }
 }
 
-/** Bytes enough for any system's `struct termios` (60 on Linux, 72 on macOS). */
-const TERMIOS_BYTES = 256;
-const TCSANOW = 0;
-
-/** The terminal on stdin and stdout, its settings through the C library; nothing where that cannot be opened. */
-function systemTerminal(): TerminalSettings {
-  const libc = openLibc({
-    tcgetattr: { args: [FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
-    tcsetattr: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
-  });
-  return {
-    save: () => {
-      const saved = new Uint8Array(TERMIOS_BYTES);
-      return libc !== null && libc.symbols.tcgetattr(0, saved) === 0 ? saved : null;
-    },
-    restore: (saved) => { libc?.symbols.tcsetattr(0, TCSANOW, saved); },
-    write: (bytes) => {
-      try { writeSync(1, bytes); } catch { /* the terminal is gone: nothing to give back */ }
-    },
+/** This process replaced by the screen's waiter: `execve` of the C library, in the screen's folder. */
+async function execWaiter(command: readonly string[], options: { env: Record<string, string>; cwd: string }): Promise<number> {
+  const libc = openLibc({ execve: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 } });
+  if (libc === null) throw new Error("no C library to start it with");
+  const words = (list: readonly string[]) => {
+    const kept = list.map((word) => Buffer.from(`${word}\0`));
+    const table = new BigUint64Array(kept.length + 1);
+    kept.forEach((word, at) => { table[at] = BigInt(ptr(word)); });
+    return { kept, table };
   };
+  const argv = words(waiterCommand(command, options.env));
+  // the waiter's own environment: only where stty is; the screen's is in its words
+  const envp = words(["PATH=/usr/bin:/bin"]);
+  process.chdir(options.cwd);
+  libc.symbols.execve(argv.kept[0]!, argv.table, envp.table);
+  throw new Error(`execve ${command[0]} failed`);
 }
 
 /** A line typed at the terminal in cooked mode, read straight from fd 0 so no reader stays to take the screen's keys. */
@@ -357,20 +355,32 @@ export function systemParts(caller: Env, home: string): LaunchParts {
       try { writeSync(1, question); } catch { return null; }
       return readLine();
     },
-    run: (command, options) => {
-      const child = Bun.spawn([...command], { env: options.env, cwd: options.cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-      return { exited: child.exited.then((code) => ({ code: child.signalCode === null ? code : null, signal: child.signalCode as NodeJS.Signals | null })), kill: (signal) => child.kill(signal) };
-    },
-    terminal: systemTerminal(),
-    on: (signal, handler) => {
-      process.on(signal, handler);
-      return () => process.off(signal, handler);
-    },
+    handOver: execWaiter,
     err: (text) => process.stderr.write(text),
     now: () => performance.now(),
     // fixed wait: the pause between two connects of launchTui's loop, which CORE_WAIT_MS bounds
     wait: (ms) => Bun.sleep(ms),
   };
+}
+
+/** `ovis` with no command word: no argument, or one that starts with `--session` (`--session NAME`, `--session=NAME`). */
+export const isBare = (argv: readonly string[]): boolean => argv[0] === undefined || argv[0] === "--session" || argv[0].startsWith("--session=");
+
+/**
+ * Whether a bare `ovis` opens the screen: it has stdin and stdout on a terminal, a platform the screen runs on and an hc
+ * program on this PC. Anything else (a pipe, a script, Windows, no hc) leaves the command as it was: `status`.
+ */
+export async function opensScreen(argv: readonly string[], parts: Pick<LaunchParts, "platform" | "isTty" | "caller" | "settings" | "findHc">): Promise<boolean> {
+  if (!isBare(argv) || !parts.isTty || parts.platform === "win32") return false;
+  return (await parts.findHc({ ...parts.caller, ...parts.settings })) !== null;
+}
+
+/** A bare `ovis` for scripts/plugin.ts before its own work: the screen's exit code, or null when the command goes on as before. */
+export async function runBare(argv: readonly string[], kernel: () => string | null = kernelEnv): Promise<number | null> {
+  if (!isBare(argv)) return null;
+  const caller = callerEnv({ kernel, env: process.env, cwd: process.cwd() });
+  const parts = systemParts(caller, caller["HOME"] || homedir());
+  return await opensScreen(argv, parts) ? launchTui(argv, parts) : null;
 }
 
 /** `tui`, `help` and the version, for scripts/plugin.ts before its own work: the exit code. */

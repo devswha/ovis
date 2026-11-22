@@ -39,6 +39,7 @@ import { CopyView } from "./view/copy.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene, type Scene } from "./view/paint.ts";
 import { layOut, paneScene, type PaneSpot, type ScreenShape } from "./view/screen.ts";
+import { ovisServer, type OvisServer } from "./core/ovis-server.ts";
 import type { ViewStore } from "./view-store.ts";
 
 /** The caller's clock and its one timer: `arm` sets the timer for `at` (on the same clock) and answers its cancel. */
@@ -66,6 +67,8 @@ export interface LoopOptions {
   home?: string;
   /** where the view is kept per core between runs; none: nothing is kept */
   views?: ViewStore;
+  /** the Ovis server the launcher named, for herdr's New worktree and Delete worktree checkout...; none: they say to start it */
+  server?: OvisServer;
 }
 
 export type { LoopEnd } from "./loop-end.ts";
@@ -221,6 +224,7 @@ export function startLoop(options: LoopOptions): Loop {
     folder: options.cwd,
     home: options.home,
     refreshLayout: () => link.refreshLayout(),
+    server: options.server ?? ovisServer(null),
     answer: (answer) => {
       guard(() => dispatch({ ...answer, at: clock.now() }));
       arm();

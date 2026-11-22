@@ -16,7 +16,7 @@ import { chosenAt, chosenHeading, type Place, pickerMatches, placeTarget, worksp
 /** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text. */
 export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly original: string }
 
-export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab";
+export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab" | "create_worktree";
 
 export type Overlay =
   /**
@@ -24,12 +24,13 @@ export type Overlay =
    * height and keeps `scroll` in range), its filter, and whether keys go to the filter now
    */
   | { readonly kind: "help"; readonly scroll: number; readonly paged: number; readonly filter: Field; readonly filtering: boolean }
-  | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field }
+  /** `repo`: for New worktree, the repository's name, which names the checkout's folder */
+  | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field; readonly repo?: string }
   /**
    * `seen`: the terminals the close ends, as the screen showed them when the dialog opened; `close_group` closes a
    * repository's workspace and the worktree workspaces under it (`spaces`: how many)
    */
-  | { readonly kind: "confirm"; readonly purpose: "close_workspace" | "close_group"; readonly target: Target; readonly seen: readonly Seen[]; readonly spaces?: number }
+  | { readonly kind: "confirm"; readonly purpose: "close_workspace" | "close_group" | "remove_worktree"; readonly target: Target; readonly seen: readonly Seen[]; readonly spaces?: number; readonly path?: string }
   /** a right-click menu (context.ts): what it is for, its entries, the chosen one, and the cell it was opened at */
   | { readonly kind: "context"; readonly target: Target; readonly entries: readonly ContextAction[]; readonly cursor: number; readonly at: { readonly x: number; readonly y: number } }
   /** herdr's Open worktree...: a repository's checkouts (its workspace is `target`), a filter, the chosen one */
@@ -301,6 +302,8 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: (overlay) => overlay.target,
     input: (overlay, input) => fieldInput(overlay, input, (name) => {
       if (overlay.purpose === "new_tab") return { overlay: null, effects: [run("new_tab", overlay.target, name)] };
+      // herdr's New worktree: a branch is needed, and the suggested one counts as typed
+      if (overlay.purpose === "create_worktree") return name.trim() === "" ? { overlay, effects: [] } : { overlay: null, effects: [run("create_worktree", overlay.target, name.trim())] };
       // herdr sends a rename only when the name changed
       return { overlay: null, effects: name === overlay.field.original ? [] : [run(overlay.purpose, overlay.target, name)] };
     }),

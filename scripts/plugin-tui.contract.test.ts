@@ -19,7 +19,7 @@ const FIRST_FRAME_END = "\x1b[?2026l";
 const ANSWERS: [query: string, answer: string][] = [["\x1b[c", "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
 /** names only the folder's files give: none may reach the screen or the core (Bun loads each, measured) */
 const FILE_ONLY = ["CANARY_GENERIC", "DOTENV_SECRET", "OVIS_TOKEN", "LOCAL_ONLY", "H1", "H4", "S1", "S2", "S3", "QUOTED", "EXPANDED", "EXPORTED", "BACKTICK", "CRLF_NAME",
-  "DB_HOST", "DATABASE_URL", "DEFAULT_TOKEN", "TOKEN", "HC_SESSION", "TZ", "TMPDIR", "HC_API_KEY"];
+  "DB_HOST", "DATABASE_URL", "DEFAULT_TOKEN", "TOKEN", "HC_SESSION", "TZ", "HC_API_KEY"];
 const PLUGIN = join(ROOT, "scripts", "plugin.ts");
 
 const cores: IsolatedCore[] = [];
@@ -71,7 +71,7 @@ exec '${HC}' "$@"
     "H1=a#b", "H4=pass#word123", "S1='$HOME'", "S2='pa$$word'", "S3='a$b'",
     'QUOTED="a b"', "EXPANDED=${HOME}/x", "export EXPORTED=e", "BACKTICK=`bt`", "CRLF_NAME=c\r",
     "DB_HOST=localhost", "DEFAULT_TOKEN=canary", "TOKEN=${TOKEN_OVERRIDE:-$DEFAULT_TOKEN}",
-    `HC_SOCKET=${join(project, "file.sock")}`, "HC_SESSION=file", "TZ=UTC", `TMPDIR=${project}`,
+    `HC_SOCKET=${join(project, "file.sock")}`, "HC_SESSION=file", "TZ=UTC",
     "HC_API_KEY=canary", `XDG_CONFIG_HOME=${project}`, "SAMEVAL=same",
     // the shell's own values repeated: they must stay
     `PATH=${path}`, `HOME=${home}`, "TERM=xterm-256color",
@@ -81,14 +81,21 @@ exec '${HC}' "$@"
   writeFileSync(join(project, "bunfig.toml"), 'preload = ["./preload.ts"]\n');
   writeFileSync(join(project, "preload.ts"), `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(marker)}, process.pid + "\\n");\n`);
   const mark = crypto.randomUUID();
-  // Leave HC_SESSION and TMPDIR to the file so the test can detect if either leaks.
+  // Leave HC_SESSION to the file so the test can detect if it leaks.
   const { HC_SESSION: _session, ...coreEnv } = folder.env;
+  const tmp = join(folder.root, "tmp");
+  mkdirSync(tmp);
   const env: Record<string, string> = {
-    ...coreEnv, PATH: path, HOME: home, TERM: "xterm-256color",
+    ...coreEnv, PATH: path, HOME: home, TERM: "xterm-256color", TMPDIR: tmp,
     SAMEVAL: "same", HERDR_TEST_SESSION: `plugin-tui-${process.pid}`, PLUGIN_TUI_MARK: mark,
-    // nothing listens on port 1, and the settings and state folders are the scratch home's
+    // a bare `ovis` that does not open the screen is `status`: it asks a server on PORT and reads its settings and state
+    // from these folders (without HERDR_PLUGIN_CONFIG_DIR it would ask the herdr on the PATH); nothing listens on port 1
     PORT: "1", HERDR_PLUGIN_CONFIG_DIR: settings, HERDR_PLUGIN_STATE_DIR: join(folder.root, "plugin-state"), ...extra,
   };
+  // whatever the command resolves (a --session flag, a missing HC_SOCKET, `status`'s config and state) lies in the scene's
+  // folder, and the server it would ask is a closed port, never the user's own Ovis server
+  for (const name of ["HOME", "TMPDIR", "HC_SOCKET", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "HERDR_PLUGIN_CONFIG_DIR", "HERDR_PLUGIN_STATE_DIR"]) expect(env[name]?.startsWith(`${folder.root}/`), name).toBe(true);
+  expect(env["PORT"], "PORT").toBe("1");
   return { folder, project, record, marker, env, mark };
 }
 
@@ -135,6 +142,7 @@ function shellOnly(at: Scene, env: Record<string, string>): void {
   expect(FILE_ONLY.filter((name) => name in env)).toEqual([]);
   expect(env["HC_SOCKET"]).toBe(at.folder.env["HC_SOCKET"]);
   expect([undefined, at.env["XDG_CONFIG_HOME"]]).toContain(env["XDG_CONFIG_HOME"]);
+  expect(env["TMPDIR"]).toBe(at.env["TMPDIR"]);
   expect([env["PATH"], env["HOME"], env["TERM"]]).toEqual([at.env["PATH"], at.env["HOME"], at.env["TERM"]]);
 }
 
@@ -196,6 +204,14 @@ else process.exit(await (await import(${JSON.stringify(join(ROOT, "scripts", "pl
     const { screenPid: pid, marker } = await startsACore(`bun '${PLUGIN}' tui`);
     expect(marker.split("\n")).not.toContain(String(pid));
     console.log(`from source: the folder's preload ran in ${marker.split("\n").filter(Boolean).length} process(es): the launcher's own Bun, not the screen`);
+  }, CASE_MS);
+
+  it("a bare ovis from source opens the same screen: the question, the folder it was typed in, the detach line", async () => {
+    await startsACore(`bun '${PLUGIN}'`);
+  }, CASE_MS);
+
+  it("a bare ovis compiled opens the same screen", async () => {
+    await startsACore(`'${join(built, "ovis-server")}' plugin`);
   }, CASE_MS);
 
   it("dotenv canary: compiled, run from the user's folder: none of the folder's .env names, and no preload in the screen", async () => {

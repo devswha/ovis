@@ -3,11 +3,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { version } from "../package.json";
+import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { ENTRIES } from "../server/entries.ts";
 import { LEAVE_ALL } from "../tui/host/guard.ts";
 import * as libc from "./libc.ts";
 import { importClosure, read } from "./source-scan.ts";
-import { callerEnv, launchTui, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
+import { callerEnv, isBare, launchTui, opensScreen, screenStart, shellEnv, systemParts, tuiEnv, waiterCommand, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
+import { findHc } from "../server/herdr-core/discovery.ts";
+import { runOnPty, stopAllPtyRuns } from "../tui/testing/pty.ts";
 
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
@@ -22,12 +25,10 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-const SAVED = new Uint8Array([1, 2, 3]);
 const SOCKET = "/scratch/hc.sock";
 /** a home with nothing in it: hc's own config.toml is looked for under it, never under the real one */
 const HOME = "/nonexistent-home";
 
-type End = { code: number | null; signal: NodeJS.Signals | null };
 
 interface Fake {
   /** what the launcher did, in order: probe, ask, find, start, wait, run, kill, on and off */
@@ -36,9 +37,6 @@ interface Fake {
   readonly codes: () => string[];
   readonly said: string[];
   readonly runs: { command: readonly string[]; env: Record<string, string>; cwd: string | undefined }[];
-  readonly restored: Uint8Array[];
-  readonly written: string[];
-  readonly handlers: Map<string, () => void>;
   readonly parts: LaunchParts;
 }
 
@@ -46,13 +44,10 @@ interface Fake {
  * The launcher's parts as data: `probes` answer the connects in turn (the last one again after that), `answer` is the
  * line typed at the question, `hc` what the finder finds, `started` the exit of `hc server start`, `end` the screen's.
  */
-function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; end?: End | Promise<End>; over?: Partial<LaunchParts> } = {}): Fake {
+function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; end?: number; over?: Partial<LaunchParts> } = {}): Fake {
   const calls: string[] = [];
   const said: string[] = [];
   const runs: Fake["runs"] = [];
-  const restored: Uint8Array[] = [];
-  const written: string[] = [];
-  const handlers = new Map<string, () => void>();
   const probes = [...options.probes ?? [{ kind: "core" } as const]];
   let clock = 0;
   const parts: LaunchParts = {
@@ -82,16 +77,10 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
       calls.push("ask");
       return options.answer === undefined ? "" : options.answer;
     },
-    run: (command, run) => {
+    handOver: async (command, run) => {
       calls.push(`run ${command.join(" ")}`);
       runs.push({ command, ...run });
-      return { exited: Promise.resolve(options.end ?? { code: 0, signal: null }), kill: (signal) => { calls.push(`kill ${signal}`); } };
-    },
-    terminal: { save: () => SAVED, restore: (saved) => { restored.push(saved); }, write: (bytes) => { written.push(bytes); } },
-    on: (signal, handler) => {
-      calls.push(`on ${signal}`);
-      handlers.set(signal, handler);
-      return () => { calls.push(`off ${signal}`); };
+      return options.end ?? 0;
     },
     err: (text) => { said.push(text); },
     now: () => clock,
@@ -102,7 +91,7 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
     ...options.over,
   };
   const codes = () => said.flatMap((text) => [...text.matchAll(/^ovis tui: ([a-z_]+): /gm)].map((match) => match[1]!));
-  return { calls, codes, said, runs, restored, written, handlers, parts };
+  return { calls, codes, said, runs, parts };
 }
 
 /** the launcher's work, without its signal listeners */
@@ -117,7 +106,7 @@ describe("the launch decision table", () => {
     ["win32 runs nothing", { over: { platform: "win32" } }, [], 1, [], []],
     ["a core answers: the screen, nothing asked", {}, [], 0, RAN, []],
     ["on macOS too", { over: { platform: "darwin" } }, [], 0, RAN, []],
-    ["the screen's exit code is the launcher's", { end: { code: 3, signal: null } }, [], 3, RAN, []],
+    ["the screen's exit code is the launcher's", { end: 3 }, [], 3, RAN, []],
     ["no core, Enter: hc found, a core started, the screen once it answers", { probes: [none, none, core] }, [], 0, STARTED, []],
     ["no core, y", { probes: [none, none, core], answer: "y" }, [], 0, STARTED, []],
     ["no core, Yes with blanks", { probes: [none, none, core], answer: " Yes " }, [], 0, STARTED, []],
@@ -184,11 +173,17 @@ describe("core choice", () => {
     const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, XDG_RUNTIME_DIR: "/run/test", OVIS_TOKEN: "secret", PATH: "/usr/bin" } } });
     expect(await launchTui(["--session", "work"], run.parts)).toBe(0);
     expect(work(run.calls)).toEqual(["probe /run/test/herdr-core/work.sock", "run screen"]);
-    expect(run.runs[0]!.env).toEqual({ HOME, HC_SESSION: "work", XDG_RUNTIME_DIR: "/run/test", PATH: "/usr/bin", OVIS_TUI_CWD: "/home/me/project" });
+    // the app's address as `ovis status` reaches it (no token: the screen holds none)
+    const app = `http://127.0.0.1:${DEFAULT_PORT}`;
+    expect(run.runs[0]!.env).toEqual({ HOME, HC_SESSION: "work", XDG_RUNTIME_DIR: "/run/test", PATH: "/usr/bin", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_SERVER: app });
     const fromSettings = fake({ over: { caller: { HOME, XDG_RUNTIME_DIR: "/run/test" }, settings: { HC_SESSION: "ovis", OVIS_TOKEN: "secret" } } });
     expect(await launchTui([], fromSettings.parts)).toBe(0);
     expect(work(fromSettings.calls)).toEqual(["probe /run/test/herdr-core/ovis.sock", "run screen"]);
-    expect(fromSettings.runs[0]!.env).toEqual({ HOME, HC_SESSION: "ovis", XDG_RUNTIME_DIR: "/run/test", OVIS_TUI_CWD: "/home/me/project" });
+    expect(fromSettings.runs[0]!.env).toEqual({ HOME, HC_SESSION: "ovis", XDG_RUNTIME_DIR: "/run/test", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_SERVER: app });
+    // the settings' PORT and HOST name it, a bind to every address reached on loopback
+    const moved = fake({ over: { caller: { HOME, XDG_RUNTIME_DIR: "/run/test" }, settings: { PORT: "18555", HOST: "0.0.0.0" } } });
+    expect(await launchTui([], moved.parts)).toBe(0);
+    expect(moved.runs[0]!.env["OVIS_TUI_SERVER"]).toBe("http://127.0.0.1:18555");
   });
 
   it.each([
@@ -204,47 +199,68 @@ describe("core choice", () => {
   });
 });
 
-describe("signals and the terminal", () => {
-  it("ignores SIGINT and passes SIGTERM and SIGHUP on, listening from before the screen starts until it ended", async () => {
-    let end!: (value: End) => void;
-    const run = fake({ end: new Promise<End>((resolve) => { end = resolve; }) });
-    const ran = launchTui([], run.parts);
-    for (let turns = 0; turns < 50 && !run.calls.includes("run screen"); turns++) await Promise.resolve();
-    expect(run.calls).toEqual(["probe /scratch/hc.sock", "on SIGINT", "on SIGTERM", "on SIGHUP", "run screen"]);
-    run.handlers.get("SIGINT")!();
-    run.handlers.get("SIGTERM")!();
-    run.handlers.get("SIGHUP")!();
-    end({ code: 143, signal: null });
-    expect(await ran).toBe(143);
-    expect(run.calls.slice(5)).toEqual(["kill SIGTERM", "kill SIGHUP", "off SIGINT", "off SIGTERM", "off SIGHUP"]);
-    expect(run.written).toEqual([]);
+/** The waiter run as a child (the launcher becomes it with execve): its exit code, what it wrote, and the child itself. */
+function waiterChild(script: string | readonly string[], env: Record<string, string> = {}, input = "") {
+  const child = Bun.spawn(waiterCommand(typeof script === "string" ? ["/bin/sh", "-c", script] : script, env), { env: { PATH: "/usr/bin:/bin" }, cwd: scratch, stdin: new Blob([input]), stdout: "pipe", stderr: "inherit" });
+  return { child, out: new Response(child.stdout).text() };
+}
+
+/** `LaunchParts.handOver` for a test: the real waiter, as a child that inherits the test's stdio. */
+async function waiterRun(command: readonly string[], options: { env: Record<string, string>; cwd: string }): Promise<number> {
+  return Bun.spawn(waiterCommand(command, options.env), { env: { PATH: "/usr/bin:/bin" }, cwd: options.cwd, stdin: "ignore", stdout: "inherit", stderr: "inherit" }).exited;
+}
+
+describe("the waiter the screen runs under", () => {
+  it("hands the terminal over: the screen runs under the waiter, with exactly its environment and stdin, and its exit code", async () => {
+    const run = fake();
+    expect(await launchTui([], run.parts)).toBe(0);
+    expect(run.calls).toEqual(["probe /scratch/hc.sock", "run screen"]);
+    const env = waiterChild(["/usr/bin/env"], { A: "1", B: "x=y z" });
+    expect(await env.child.exited).toBe(0);
+    expect(await env.out).toBe("A=1\nB=x=y z\n");
+    const typed = waiterChild('read line; echo "got:$line"; exit 3', {}, "typed\n");
+    expect(await typed.child.exited).toBe(3);
+    expect(await typed.out).toBe("got:typed\n");
   });
 
-  it("stops listening when the screen cannot be started", async () => {
-    const run = fake({ over: { run: () => { throw new Error("ENOENT"); } } });
-    expect(await launchTui([], run.parts)).toBe(1);
-    expect(run.codes()).toEqual(["start_failed"]);
-    expect(run.calls.filter((call) => call.startsWith("off ")).sort()).toEqual(["off SIGHUP", "off SIGINT", "off SIGTERM"]);
-  });
-
-  /** the real runner, with a screen that ends as told: by its own SIGKILL, or with a code */
-  const realRun = (script: string) => fake({ over: { screen: { command: ["/bin/sh", "-c", script], cwd: scratch, file: null }, run: systemParts({}, scratch).run } });
-
-  it.skipIf(process.platform === "win32")("writes the saved settings back and leaves the screen's modes when it was killed by SIGKILL", async () => {
-    const run = realRun("kill -KILL $$");
-    expect(await launchTui([], run.parts)).toBe(128 + 9);
-    expect(run.restored).toEqual([SAVED]);
-    expect(run.written).toEqual([LEAVE_ALL]);
-  });
-
-  it.skipIf(process.platform === "win32")("writes nothing after the screen exited by itself, whatever its code", async () => {
-    for (const [script, code] of [["exit 0", 0], ["exit 143", 143]] as const) {
-      const run = realRun(script);
-      expect(await launchTui([], run.parts)).toBe(code);
-      expect(run.restored).toEqual([]);
-      expect(run.written).toEqual([]);
+  it.skipIf(process.platform === "win32")("undoes the screen's modes after a signal the screen cannot catch, and nothing after its own ends", async () => {
+    const killed = waiterChild("kill -KILL $$");
+    expect(await killed.child.exited).toBe(128 + 9);
+    expect(await killed.out).toBe(LEAVE_ALL);
+    for (const [script, code] of [["exit 0", 0], ["exit 143", 143], ["kill -TERM $$", 143], ["kill -HUP $$", 129]] as const) {
+      const ended = waiterChild(script);
+      expect(await ended.child.exited).toBe(code);
+      expect(await ended.out).toBe("");
     }
   });
+
+  it.skipIf(process.platform === "win32")("on a real terminal writes the settings it read back after a SIGKILL, and leaves them after the screen's own end", async () => {
+    // the settings as stty lists them, without PENDIN: macOS's kernel sets that flag by itself when a terminal leaves raw mode
+    const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+    for (const [screen, settings, code] of [["stty raw -echo; kill -KILL $$", "same", 137], ["stty raw -echo; exit 0", "changed", 0]] as const) {
+      const waiter = waiterCommand(["/bin/sh", "-c", screen], { PATH: "/usr/bin:/bin" }).map(quote).join(" ");
+      const run = runOnPty({ command: ["/bin/sh", "-c", `s() { stty -a | sed "s/-*pendin//g"; }; before=$(s); ${waiter}; code=$?; [ "$before" = "$(s)" ] && w=same || w=changed; echo "END $w $code"`], env: { PATH: "/usr/bin:/bin" }, cols: 80, rows: 24, deadlineMs: 20_000 });
+      await run.until(/END \w+ \d+/);
+      expect(/END (\w+) (\d+)/.exec(run.output())!.slice(1)).toEqual([settings, String(code)]);
+      expect(run.output().includes(LEAVE_ALL)).toBe(code !== 0);
+      await run.exited;
+    }
+  }, 30_000);
+
+  it.skipIf(process.platform === "win32")("passes a SIGTERM or SIGHUP sent to it alone on to the screen at once, also right behind a SIGINT, which ends nothing", async () => {
+    // the system's own /bin/sh (dash on Linux, bash 3.2 on macOS), twenty times each with no gap between the two signals
+    for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+      for (let round = 0; round < 20; round++) {
+        const child = Bun.spawn(waiterCommand(["/bin/sh", "-c", "echo up; exec sleep 30"], {}), { env: { PATH: "/usr/bin:/bin" }, cwd: scratch, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+        // the screen said it is up: the waiter set its traps before it started the screen
+        const first = await child.stdout.getReader().read();
+        expect(new TextDecoder().decode(first.value)).toBe("up\n");
+        child.kill("SIGINT");
+        child.kill(signal);
+        expect([round, await child.exited]).toEqual([round, code]);
+      }
+    }
+  }, 30_000);
 });
 
 describe("the shell's environment", () => {
@@ -457,7 +473,7 @@ describe.skipIf(process.platform === "win32")("a recording stand-in hc", () => {
     writeFileSync(recorder, "await Bun.write(`${process.env.CANARY_OUT}/screen.json`, JSON.stringify(process.env));\n");
     const driver = join(scratch, "driver.ts");
     writeFileSync(driver, `import { renameSync } from "node:fs";
-import { callerEnv, kernelEnv, launchTui, systemParts } from ${JSON.stringify(join(ROOT, "scripts", "plugin-tui.ts"))};
+import { callerEnv, kernelEnv, launchTui, systemParts, waiterCommand } from ${JSON.stringify(join(ROOT, "scripts", "plugin-tui.ts"))};
 const out = process.env.CANARY_OUT;
 for (const path of ["kernel", "fallback"]) {
   const kernel = path === "kernel" ? kernelEnv() : null;
@@ -468,7 +484,9 @@ for (const path of ["kernel", "fallback"]) {
   const code = await launchTui([], {
     ...systemParts(caller, caller.HOME), isTty: true, probe: async () => ({ kind: probes++ === 0 ? "none" : "core" }), discard: () => true, ask: async () => "y",
     screen: { command: [process.execPath, "--no-env-file", ${JSON.stringify(recorder)}], cwd: out, file: null },
-    terminal: { save: () => null, restore() {}, write() {} }, on: () => () => {}, wait: async () => {},
+    // the real waiter as a child: the system's handOver would replace this driver
+    handOver: (command, options) => Bun.spawn(waiterCommand(command, options.env), { env: { PATH: "/usr/bin:/bin" }, cwd: options.cwd, stdin: "ignore", stdout: "ignore", stderr: "inherit" }).exited,
+    wait: async () => {},
   });
   renameSync(out + "/screen.json", out + "/screen-" + path + ".json");
   renameSync(out + "/hc.env", out + "/hc-" + path + ".env");
@@ -505,7 +523,7 @@ for (const path of ["kernel", "fallback"]) {
     writeFileSync(recorder, `await Bun.write(${JSON.stringify(screenRecord)}, [process.env.OVIS_TOKEN, process.env.CANARY_GENERIC].join(","));\n`);
     const caller = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, HC_SOCKET: join(scratch, "hc.sock") };
     const start = screenStart(false, folder);
-    const run = fake({ over: { caller, screen: { command: [...start.command.slice(0, -1), recorder], cwd: start.cwd, file: recorder }, run: systemParts(caller, scratch).run } });
+    const run = fake({ over: { caller, screen: { command: [...start.command.slice(0, -1), recorder], cwd: start.cwd, file: recorder }, handOver: waiterRun } });
     expect(await launchTui([], run.parts)).toBe(0);
     expect(readFileSync(screenRecord, "utf8")).toBe(",");
   }, 30_000);
@@ -542,4 +560,160 @@ describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)("ovis 
     for (const word of ["help", "-h"]) expect(await run(word)).toMatchObject({ err: "", code: 0 });
     expect(listing(scratch)).toEqual(before);
   }, 30_000);
+});
+
+describe("a bare ovis: when it opens the screen", () => {
+  const SCREEN = true;
+  const STATUS = false;
+  const rows: [name: string, argv: string[], over: Partial<LaunchParts>, hc: string | null, opens: boolean, finds: boolean][] = [
+    ["no argument at a terminal, hc found: the screen", [], {}, "/bin/hc", SCREEN, true],
+    ["on macOS too", [], { platform: "darwin" }, "/bin/hc", SCREEN, true],
+    ["--session NAME at a terminal: the screen on that session", ["--session", "work"], {}, "/bin/hc", SCREEN, true],
+    ["--session=NAME too", ["--session=work"], {}, "/bin/hc", SCREEN, true],
+    ["--session with no value: the screen's entry answers it", ["--session"], {}, "/bin/hc", SCREEN, true],
+    ["no hc program on this PC: status", [], {}, null, STATUS, true],
+    ["--session NAME and no hc program: as before", ["--session", "work"], {}, null, STATUS, true],
+    ["a pipe or a script (stdin or stdout not a terminal): status, hc not even looked for", [], { isTty: false }, "/bin/hc", STATUS, false],
+    ["--session NAME on a pipe: as before", ["--session", "work"], { isTty: false }, "/bin/hc", STATUS, false],
+    ["win32: status, hc not looked for", [], { platform: "win32" }, "/bin/hc", STATUS, false],
+    ["an empty word is a command word", [""], {}, "/bin/hc", STATUS, false],
+    ["status stays explicit", ["status"], {}, "/bin/hc", STATUS, false],
+    ["tui stays explicit", ["tui"], {}, "/bin/hc", STATUS, false],
+    ["a flag that is not --session is no bare call", ["--bogus"], {}, "/bin/hc", STATUS, false],
+    ["a word that only starts like --session is no bare call", ["--sessions"], {}, "/bin/hc", STATUS, false],
+  ];
+
+  it.each(rows)("%s", async (_, argv, over, hc, opens, finds) => {
+    const run = fake({ hc, over: { settings: { OVIS_HC_BIN: "/from/settings" }, ...over } });
+    expect(await opensScreen(argv, run.parts)).toBe(opens);
+    expect(run.calls).toEqual(finds ? ["find"] : []);
+  });
+
+  it("looks for hc in the caller's environment with the settings' on top, as the launcher does", async () => {
+    let seen: Record<string, string | undefined> = {};
+    const run = fake({ over: { caller: { PATH: "/usr/bin", OVIS_HC_BIN: "/caller", KEEP: "1" }, settings: { OVIS_HC_BIN: "/settings" }, findHc: async (env) => { seen = { ...env }; return "/bin/hc"; } } });
+    expect(await opensScreen([], run.parts)).toBe(true);
+    expect(seen).toEqual({ PATH: "/usr/bin", OVIS_HC_BIN: "/settings", KEEP: "1" });
+  });
+
+  it("isBare: no word, or a first word that is --session or --session=", () => {
+    expect([[], ["--session"], ["--session", "a"], ["--session=a"], ["--session="]].map((argv) => isBare(argv))).toEqual([true, true, true, true, true]);
+    expect([[""], ["status"], ["-h"], ["--sessionx"], ["a", "--session"]].map((argv) => isBare(argv))).toEqual([false, false, false, false, false]);
+  });
+});
+
+/**
+ * Whether the finder gets an hc from the folders it always looks in (/usr/local/bin, /opt/homebrew/bin) whatever the PATH:
+ * on such a PC a case that needs one with no hc cannot be built.
+ */
+const SYSTEM_HC = (await findHc({ env: { PATH: "/nonexistent" }, home: "/nonexistent-home", loginShellPath: async () => null })) !== null;
+
+describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a bare ovis through scripts/plugin.ts", () => {
+  const PLUGIN = join(ROOT, "scripts", "plugin.ts");
+  afterEach(stopAllPtyRuns);
+
+  /**
+   * The shell's environment: everything that could name a core, a config or a program lies in the scratch folder: its
+   * home and XDG folders (a `--session` flag discards HC_SOCKET and the core is then looked for under XDG_RUNTIME_DIR),
+   * a PATH of one empty folder of its own, a core's socket nobody listens on, and a server port nothing answers on.
+   */
+  function env(hc: string | null): Record<string, string> {
+    mkdirSync(join(scratch, "path"), { recursive: true });
+    return {
+      PATH: join(scratch, "path"), HOME: scratch, TERM: "xterm-256color", TMPDIR: process.env["TMPDIR"] ?? tmpdir(),
+      XDG_RUNTIME_DIR: join(scratch, "run"), XDG_CONFIG_HOME: join(scratch, ".config"), XDG_STATE_HOME: join(scratch, ".local", "state"),
+      HC_SOCKET: join(scratch, "run", "hc.sock"), PORT: "1", HERDR_PLUGIN_STATE_DIR: join(scratch, "state"), HERDR_PLUGIN_CONFIG_DIR: join(scratch, "cfg"),
+      OVIS_HC_BIN: hc ?? join(scratch, "no-such-hc"),
+    };
+  }
+  /** what `status` prints on this port with no server: the content a silenced program would lack, so no comparison passes on two empty outputs */
+  const expectStatus = (text: string) => {
+    expect(text).toStartWith("down http://127.0.0.1:1\n");
+    expect(text).toContain("config: none (settings go in ");
+  };
+  /** an hc that answers --version and records any other call */
+  function standIn(): { bin: string; record: string } {
+    const bin = join(scratch, "bin", "hc");
+    const record = join(scratch, "hc-called");
+    mkdirSync(join(scratch, "bin"), { recursive: true });
+    writeFileSync(bin, `#!/bin/sh\ncase "$1" in\n  --version) echo "hc 0.1.18" ;;\n  *) echo "$@" >> '${record}' ;;\nesac\n`);
+    chmodSync(bin, 0o755);
+    return { bin, record };
+  }
+  /** the command on pipes (stdin and stdout are no terminal) */
+  async function piped(args: string[], hc: string | null, stdin: "ignore" | "pipe" = "ignore") {
+    const child = Bun.spawn([process.execPath, PLUGIN, ...args], { cwd: ROOT, env: env(hc), stdin, stdout: "pipe", stderr: "pipe" });
+    if (stdin === "pipe") child.stdin!.end();
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { out, err, code };
+  }
+  /** the command on a pseudo-terminal, from the root of the checkout; `shell` is what runs there */
+  const onPty = (shell: string, hc: string | null) => runOnPty({ command: ["/bin/sh", "-c", `cd '${ROOT}' && ${shell}`], env: env(hc), cols: 100, rows: 30, deadlineMs: 50_000 });
+
+  it("on pipes prints the status text byte for byte and exits as `status` does, hc or not", async () => {
+    const { bin, record } = standIn();
+    const status = await piped(["status"], bin);
+    expectStatus(status.out);
+    for (const hc of [bin, null]) for (const stdin of ["ignore", "pipe"] as const) expect(await piped([], hc, stdin)).toEqual(status);
+    expect(existsSync(record)).toBe(false);
+  }, 60_000);
+
+  it("with stdout a pipe but stdin a terminal, prints the status text, no escape byte, and asks nothing", async () => {
+    const { bin, record } = standIn();
+    const status = await piped(["status"], bin);
+    const run = onPty(`'${process.execPath}' scripts/plugin.ts | /bin/cat`, bin);
+    expect(await run.exited).toBe(0);
+    expectStatus(run.output().replaceAll("\r\n", "\n"));
+    expect(run.output().replaceAll("\r\n", "\n")).toBe(status.out);
+    expect(run.output()).not.toContain("\x1b");
+    expect(existsSync(record)).toBe(false);
+  }, 60_000);
+
+  it.skipIf(SYSTEM_HC)("at a terminal with no hc program prints the status text as before (not run on a PC with hc in a system folder)", async () => {
+    const status = await piped(["status"], null);
+    const run = onPty(`'${process.execPath}' scripts/plugin.ts`, null);
+    expect(await run.exited).toBe(0);
+    expectStatus(run.output().replaceAll("\r\n", "\n"));
+    expect(run.output().replaceAll("\r\n", "\n")).toBe(status.out);
+  }, 60_000);
+
+  it("with stdin not a terminal and stdout a terminal prints the status text, asks nothing and starts nothing", async () => {
+    const { bin, record } = standIn();
+    const status = await piped(["status"], bin);
+    const run = onPty(`'${process.execPath}' scripts/plugin.ts </dev/null`, bin);
+    expect(await run.exited).toBe(0);
+    expectStatus(run.output().replaceAll("\r\n", "\n"));
+    expect(run.output().replaceAll("\r\n", "\n")).toBe(status.out);
+    expect(run.output()).not.toContain("[Y/n]");
+    expect(existsSync(record)).toBe(false);
+  }, 60_000);
+
+  it("at a terminal with hc and no core opens the launcher: the question, and n prints the start command and starts nothing", async () => {
+    const { bin, record } = standIn();
+    const run = onPty(`'${process.execPath}' scripts/plugin.ts`, bin);
+    await run.until("[Y/n]", "the question");
+    run.type("n\r");
+    await run.until(`HC_SOCKET=${join(scratch, "run", "hc.sock")} hc server start`, "the start command");
+    expect(await run.exited).toBe(1);
+    expect(existsSync(record)).toBe(false);
+  }, 60_000);
+
+  it("--session NAME at a terminal reaches the launcher with that session", async () => {
+    const { bin, record } = standIn();
+    const run = onPty(`'${process.execPath}' scripts/plugin.ts --session work`, bin);
+    await run.until("[Y/n]", "the question");
+    run.type("n\r");
+    // the flag discards HC_SOCKET: the core is looked for under the scratch XDG_RUNTIME_DIR, never the user's runtime folder
+    await run.until(`not running at ${join(scratch, "run", "herdr-core", "work.sock")};`, "the socket of the session, in the scratch folder");
+    await run.until("HC_SESSION=work hc server start", "the start command for the session");
+    expect(await run.exited).toBe(1);
+    expect(existsSync(record)).toBe(false);
+  }, 60_000);
+
+  it("--session NAME on pipes is no bare call: the usage, exit 2, as before", async () => {
+    const run = await piped(["--session", "work"], null);
+    expect(run.code).toBe(2);
+    expect(run.err).toStartWith("usage: bun scripts/plugin.ts");
+    expect(run.out).toBe("");
+  }, 60_000);
 });

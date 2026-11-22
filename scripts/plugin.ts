@@ -38,10 +38,10 @@ import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 // install was cut off, so a server that runs from it can be stopped.
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
-import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
+import { canServe, FALLBACK_PORTS, freePort, originOf, savedPort, settledPort } from "./plugin-port.ts";
 import type { WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript, COMMAND_ALIASES } from "./plugin-runtime.ts";
-import { runFront, usage } from "./plugin-tui.ts";
+import { runBare, runFront, usage } from "./plugin-tui.ts";
 import { discardTyped } from "./libc.ts";
 import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
@@ -53,6 +53,12 @@ import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server
 // state and config dirs, asks herdr for its config dir, or copies an old install's settings (adoptLegacyConfig)
 const first = process.argv[2];
 if (first === "tui" || first === "help" || first === "-h" || first === "--help" || first === "--version" || first === "-V") process.exit(await runFront(process.argv.slice(2)));
+// A bare `ovis` at a terminal opens the screen too; anywhere else, or with no hc program, it goes on as `status`. Only when
+// this file is the run's own entry: an import (a test's) never opens a screen
+if (import.meta.main || COMPILED) {
+  const opened = await runBare(process.argv.slice(2));
+  if (opened !== null) process.exit(opened);
+}
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
 const DEFAULT_STATE_DIR = ownDir(join(homedir(), ".local", "state"));
@@ -155,11 +161,10 @@ const PATH_KEY = platform() === "win32" ? Object.keys(env).sort().find(key => ke
 const APP_STATE_DIR = defaultStateDir(env);
 const PORT_FILE = join(APP_STATE_DIR, "plugin-port");
 const portSet = (env["PORT"] ?? "") !== "";
-let port = portSet ? Number(env["PORT"]) : savedPort(PORT_FILE) ?? DEFAULT_PORT;
+let port = settledPort(env, PORT_FILE);
 const host = env["HOST"] ?? "127.0.0.1";
 const ipv6Loopback = env["OVIS_IPV6_LOOPBACK"] === "1";
-const originOf = (value: number): string => `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${value}`;
-let origin = originOf(port);
+let origin = originOf(host, port);
 
 const machineProfile = fleetPreview(env) && env["OVIS_PROFILE"] === "machine";
 const RECORD_MAX_BYTES = 4096;
@@ -517,7 +522,7 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
     const kept = portSet ? port : savedPort(PORT_FILE) ?? DEFAULT_PORT;
     if (kept !== port) {
       port = kept;
-      origin = originOf(port);
+      origin = originOf(host, port);
     }
     if (await health()) return "running";
     await Bun.sleep(250);
@@ -547,7 +552,7 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
   }
   process.stdout.write(`${blocked} Using port ${free} instead; to choose one yourself, put PORT=<port> in ${settings}\n`);
   port = free;
-  origin = originOf(port);
+  origin = originOf(host, port);
   return "ready";
 }
 
@@ -577,7 +582,7 @@ async function startInTurn(): Promise<number> {
     const kept = savedPort(PORT_FILE) ?? DEFAULT_PORT;
     if (kept !== port) {
       port = kept;
-      origin = originOf(port);
+      origin = originOf(host, port);
     }
   }
   if (await health()) {

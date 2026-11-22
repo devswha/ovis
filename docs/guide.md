@@ -155,10 +155,13 @@ Its terminals are its own. The app starts a herdr-core of its own (the session `
 **The `ovis` command:** the installer puts it in `~/.local/bin`. It runs the installed Ovis's own command line (`scripts/plugin.ts`), which it finds each time it runs, so it keeps working after an update or a reinstall:
 
 ```bash
+ovis           # at a terminal on a PC with herdr-core: its terminals, as herdr shows them
 ovis add       # add this PC to your Ovis account
 ovis pair      # a pairing code
 ovis status    # whether the app runs, and where
 ```
+
+Plain `ovis` opens the [terminal screen](tui.md), as `ovis tui` does. From a script, a pipe or a PC without herdr-core it prints exactly what `ovis status` prints, with the same exit code.
 
 An `ovis` of your own that is already in `~/.local/bin` is left as it is, and the installer says so. So is another `ovis` elsewhere on your PATH: where `~/.local/bin` comes before it, the installer writes no command, since that would take its name; where it comes first, the installer writes the command and says to call it by its path. That other `ovis` keeps the name only until `~/.local/bin` comes before it on your PATH (a shell profile that puts `~/.local/bin` first does that at the next login), and from then on `ovis` is the installer's command. Without the command (an install from before it, until the installer is run again; Windows; a checkout), run the script itself, `bun scripts/plugin.ts <command>`, in the folder that holds Ovis: a checkout, or the plugin's own folder:
 

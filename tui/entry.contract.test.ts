@@ -3,12 +3,13 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildBinary } from "../scripts/server-artifact.ts";
-import { coreFolder } from "../scripts/test-hc.ts";
+import { coreFolder, IsolatedCore, stoppedCleanly } from "../scripts/test-hc.ts";
 import { FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL } from "../server/herdr-core/snapshot.ts";
 import { DETACH, entryEnv, entryPty, fresh, RESTORE, SOURCE_OVIS, visibleGrid } from "./testing/entry-pty.ts";
 import { stopAllPtyRuns, type SupervisedRun } from "./testing/pty.ts";
 
+const bin = process.env["OVIS_TEST_HC_BIN"];
 const evidence = process.env["OVIS_TEST_ENTRY_GRIDS"] === "1";
 const unsupported = process.platform === "win32" || (process.arch !== "x64" && process.arch !== "arm64");
 const labels = { [SPACE_LABEL]: "entry", [TAB_LABEL]: "one" };
@@ -105,6 +106,25 @@ exit 3
       await show(run, `${build} no core n: ${command().join(" ")}`, 80, 24);
       await run.exited;
       await clean();
+    }, WAIT_MS);
+
+    if (bin) it(`${build}: bare ovis asks before y starts a real core, and detaches without stopping it`, async () => {
+      const core = new IsolatedCore(bin);
+      const clean = async () => { await core.adopt(); expect(stoppedCleanly(await core.stop())).toBe(true); };
+      cleanup.push(clean);
+      const run = entryPty(command([]), entryEnv(core, bin), 80, 24);
+      await run.until("[Y/n]");
+      expect(existsSync(core.socket)).toBe(false);
+      run.type("y\r");
+      // the started core is empty: the screen opens its first workspace, ~, as herdr's server does
+      for (let grid = await visibleGrid(run, 80, 24); !grid.split("\n").some((line) => line.startsWith(" · ~ ")); grid = await visibleGrid(run, 80, 24)) {
+        await run.until(new RegExp(`^[\\s\\S]{${run.output().length + 1}}`), `the first workspace in the sidebar; the screen shows:\n${grid}`);
+      }
+      expect(existsSync(core.socket)).toBe(true);
+      await show(run, `${build} no core y: ${command([]).join(" ")}`, 80, 24);
+      run.type(DETACH);
+      await expectRestored(run, 0);
+      expect(existsSync(core.socket)).toBe(true);
     }, WAIT_MS);
 
     for (const cols of [45, 60, 64, 65]) it(`${build}: ${cols} columns projects the saved split without writing layout`, async () => {

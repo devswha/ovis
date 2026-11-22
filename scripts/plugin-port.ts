@@ -1,4 +1,7 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { DEFAULT_PORT } from "../shared/protocol.ts";
+import { defaultStateDir } from "../server/update-state.ts";
 
 /** Tried in order after the default: far apart, so one reserved range cannot hold them all. */
 export const FALLBACK_PORTS = [17317, 27317, 37317, 47317];
@@ -8,6 +11,21 @@ export function savedPort(file: string): number | null {
   try { text = readFileSync(file, "utf8"); } catch { return null; }
   const port = Number(text.trim());
   return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+}
+
+/** The port the app listens on as the plugin settles it: PORT, else the one a start kept (`plugin-port` in its state folder), else the default. */
+export function settledPort(env: Readonly<Record<string, string | undefined>>, portFile = join(defaultStateDir(env), "plugin-port")): number {
+  return (env["PORT"] ?? "") !== "" ? Number(env["PORT"]) : savedPort(portFile) ?? DEFAULT_PORT;
+}
+
+/** The app's address on `host` (HOST, else loopback; a bind to every address is reached on loopback). */
+export function originOf(host: string, port: number): string {
+  return `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
+}
+
+/** Where the app answers for these settings, as `ovis status` reaches it over TCP. */
+export function appOrigin(env: Readonly<Record<string, string | undefined>>): string {
+  return originOf(env["HOST"] ?? "127.0.0.1", settledPort(env));
 }
 
 /** A port inside a range Windows reserves (Hyper-V, WSL2, Docker) fails although nothing listens on it. */

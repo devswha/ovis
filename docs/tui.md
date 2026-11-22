@@ -21,6 +21,11 @@ ovis tui --session work     # another herdr-core session
 In a checkout, run `bun scripts/plugin.ts tui`. `ovis tui -h` prints the usage and `-V` the
 version.
 
+Plain `ovis` opens the same screen (`ovis --session work` too) when you type it at a terminal on a
+PC with herdr-core. Anywhere else, from a script, a pipe or a PC without herdr-core, plain `ovis`
+prints exactly what `ovis status` prints and exits with its code, so nothing that already calls
+`ovis` breaks.
+
 It joins the core that `--session NAME` names, else the one `HC_SOCKET` or `HC_SESSION` names in
 your environment, else the one Ovis's settings file names (the installer writes it there), else
 hc's `default` session. A session name is letters, digits, `_`, `.` and `-`.
@@ -147,8 +152,10 @@ splits, zooms or closes it; **Send right-clicks to pane** lets the program in it
 clicks (Shift still opens the menu). A tab's menu makes a tab, renames or closes it; a workspace's
 renames or closes it. A workspace in a git checkout adds **Open worktree...**, which lists the
 repository's checkouts from git's own files and opens one (grouped under the repository); a
-repository's workspace with worktrees under it adds **Close group** and **Collapse**. herdr's
-**New worktree** and **Delete worktree checkout...** are not there: they run git.
+repository's workspace with worktrees under it adds **Close group** and **Collapse**.
+**New worktree** (on a git workspace or a repository's group) and **Delete worktree checkout...**
+(on a worktree grouped under its repository) are done by the Ovis server, as in the browser: start
+it with `ovis start`, and `ovis tui` tells the screen where it is. With no server, the entry says so.
 
 ### Copying
 
