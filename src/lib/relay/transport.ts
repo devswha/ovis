@@ -359,8 +359,22 @@ export class RelayTransport implements Transport {
   private async openDirect(offer: RelayOffer, options: RelayChannelOptions & { readonly signal: AbortSignal }, ended: AbortSignal, proven = false): Promise<RelayChannel | undefined> {
     const socket = this.options.directSocket;
     if (!socket) return undefined;
+    // the direct budget counts from here: reading the saved route spends it too, so a store that never answers ends
+    // with no direct carrier and leaves the outcome to the relay
+    const ends = performance.now() + DIRECT_BUDGET_MS;
     if (this.directCarriers === undefined) {
-      const saved = (await (this.options.store ?? indexedDeviceStore).get(offer.server_id).catch(() => undefined))?.direct ?? [];
+      const read = (this.options.store ?? indexedDeviceStore).get(offer.server_id);
+      const signal = AbortSignal.any([options.signal, ended]);
+      let gaveUp = (): void => {};
+      // null: the read did not answer in time (a later attempt reads again); a failed read is an answer with no route
+      const saved = await new Promise<readonly string[] | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), DIRECT_BUDGET_MS);
+        const aborted = (): void => resolve(null);
+        signal.addEventListener("abort", aborted, { once: true });
+        gaveUp = () => { clearTimeout(timer); signal.removeEventListener("abort", aborted); };
+        read.then((device) => resolve(device?.direct ?? []), () => resolve([]));
+      }).finally(() => gaveUp());
+      if (saved === null) return undefined;
       this.directCarriers ??= saved;
     }
     const carriers = [...new Set(this.directCarriers)];
@@ -370,7 +384,6 @@ export class RelayTransport implements Transport {
     // the race, and the Tailscale one keeps its whole budget (away from home it is the slow one); a lane alone has both.
     const lanes = [carriers.filter((carrier) => isTailnetCarrier(carrier)), carriers.filter((carrier) => !isTailnetCarrier(carrier))]
       .map((queue) => ({ queue, running: 0 }));
-    const ends = performance.now() + DIRECT_BUDGET_MS;
     let kept: string | undefined;
     let settled = false;
     const attempts = new Map<string, AbortController>();
