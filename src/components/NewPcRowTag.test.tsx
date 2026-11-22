@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { setPcNewness } from "../lib/relay/newPcHere.ts";
+import { pcHeld, setPcNewness } from "../lib/relay/newPcHere.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { NewPcRowTag } from "./NewPcRowTag.tsx";
 
@@ -25,4 +25,10 @@ it("#16, C3 pin 2: the page's own PC row carries the New PC tag and the one-tap 
   expect(render()).toBe("");
   setPcNewness(null);
   expect(render()).toBe("");
+});
+
+it("#29: a PC added before this device joined gets no row in the sidebar, and stays held all the same", () => {
+  setPcNewness({ until: Date.now() + 3_600_000, beforeYou: true });
+  expect(render()).toBe("");
+  expect(pcHeld()).toBe(true);
 });

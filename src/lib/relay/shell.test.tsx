@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
-import type { ReactElement } from "react";
+import { createElement, type ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
+import { NewPcRowTag } from "../../components/NewPcRowTag.tsx";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
+import { SettingsProvider } from "../settings.ts";
 import { memoryAccountStore, newKey } from "../account/store.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, ShellDeviceStore } from "./device.ts";
@@ -254,6 +257,39 @@ describe("the hosted shell's front page", () => {
       directory.resolve(Response.json({ pcs: [{ server_id, label: "Mac", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date().toISOString(), public_key: null, relay: null, new_until: new Date(Date.now() + newFor).toISOString(), admitted_at: new Date(Date.now() - 3_600_000).toISOString() }] }));
       for (let round = 0; round < 50 && pcHeld() !== held; round++) await settleSigned();
       expect(pcHeld()).toBe(held);
+    } finally { setPcNewness(null); }
+  });
+
+  it("#29: a PC added before this device joined opens held but with no New PC row in the sidebar, as read and as kept for the next load", async () => {
+    const { server_id, server_public_key } = keyFor();
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const saved: RelayDevice = { server_id, server_public_key, relay: AP, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" };
+    class Admitted extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+    }
+    let apps = 0;
+    const row = () => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(NewPcRowTag, { serverId: server_id }) }));
+    const app = { open: async (offer: Parameters<NonNullable<RelayShellMount["open"]>>[0]) => new Admitted(offer), renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} } };
+    setPcNewness(null);
+    localStorage.removeItem(`ovis-new-pc:${server_id}`);
+    try {
+      await mountRelayShell(mountFor({
+        entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore([saved]), shellVersion: "1.0.0", ...app,
+        ...await registeredSignIn(),
+        accountFetch: async (input) => new URL(String(input)).pathname === "/v1/pcs"
+          ? Response.json({ pcs: [{ server_id, label: "Mac", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date().toISOString(), public_key: null, relay: null, new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date(Date.now() - 3_600_000).toISOString(), admitted_before_you: true }] })
+          : new Response(null, { status: 404 }),
+      }));
+      await until(() => apps === 1, "the app");
+      // the account's PCs were read once the window is kept here
+      for (let round = 0; round < 50 && localStorage.getItem(`ovis-new-pc:${server_id}`) === null; round++) await settleSigned();
+      expect(localStorage.getItem(`ovis-new-pc:${server_id}`)).not.toBeNull();
+      expect([pcHeld(), row()]).toEqual([true, ""]);
+      // the next load opens it from the window kept in this browser, before any read
+      setPcNewness(null);
+      await mountRelayShell(mountFor({ entryUrl: `https://app.ovis.sh/s/${server_id}/`, store: deviceStore([saved]), shellVersion: "1.0.0", ...app }));
+      await until(() => apps === 2, "the app again");
+      expect([pcHeld(), row()]).toEqual([true, ""]);
     } finally { setPcNewness(null); }
   });
 

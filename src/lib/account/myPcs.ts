@@ -50,8 +50,9 @@ export interface MyPc {
   readonly new_until?: string | null;
   /** the directory gave a new window that does not parse: it may still be inside it */
   readonly new_until_unreadable?: true;
-  /** a PC this device is not paired with: when it was added in one press, and whether that was before this device joined */
+  /** a PC this device is not paired with: when it was added in one press */
   readonly admitted_at?: string;
+  /** added before this device joined, paired here or not (#29: told once in the main area, never tagged in the sidebar) */
   readonly admitted_before_you?: true;
   readonly listed: boolean;
   /** this device holds an admitted key for it, so it can open; whatever its state says */
@@ -87,7 +88,7 @@ export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayD
     listed.delete(device.server_id);
     const lastSeen = entry?.last_seen_at ?? null;
     const enrollment = enrollmentOf(device, options.account);
-    rows.push({ server_id: device.server_id, name: device.name ?? device.server_id.slice(0, 8), state: stateOf(device.server_id, true, lastSeen), last_seen_at: lastSeen, added_at: entry?.added_at ?? null, ...(entry === undefined ? {} : { new_until: entry.new_until, ...(entry.new_until_unreadable ? { new_until_unreadable: true as const } : {}) }), listed: entry !== undefined, paired: true, linked: enrollment !== "pending" && enrollment !== "failed" && entry !== undefined && device.public_spki === options.accountKey && device.account !== undefined && device.account === (options.account ?? device.account), ...(enrollment ? { enrollment } : {}) });
+    rows.push({ server_id: device.server_id, name: device.name ?? device.server_id.slice(0, 8), state: stateOf(device.server_id, true, lastSeen), last_seen_at: lastSeen, added_at: entry?.added_at ?? null, ...(entry === undefined ? {} : { new_until: entry.new_until, ...(entry.new_until_unreadable ? { new_until_unreadable: true as const } : {}), ...(entry.admitted_before_you ? { admitted_before_you: true as const } : {}) }), listed: entry !== undefined, paired: true, linked: enrollment !== "pending" && enrollment !== "failed" && entry !== undefined && device.public_spki === options.accountKey && device.account !== undefined && device.account === (options.account ?? device.account), ...(enrollment ? { enrollment } : {}) });
   }
   for (const pc of listed.values()) {
     const join = joinRoute(pc);

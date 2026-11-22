@@ -5,6 +5,7 @@ import { newPcNoticeClosed, newPcNoticeKey } from "../lib/account/newPcNotice.ts
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutError, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
+import { deviceOs } from "../lib/phone.ts";
 import { usePcRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
@@ -158,22 +159,45 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
       setSending(false);
     }
   };
+  /** told once on this device, per PC and admission: closed, or answered Yes */
+  const close = () => {
+    setHidden(true);
+    try { localStorage.setItem(dismissalKey, "1"); }
+    catch (error) { if (!(error instanceof DOMException)) throw error; }
+  };
+  const failure = failed && <span className="account-error" role="alert">{t("The PC could not be removed. Try again.")}</span>;
+  if (pc.admitted_before_you) {
+    // #29: added before this device joined, asked once in the main area by name; never a row in the sidebar
+    const os = deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0);
+    const phone = os === "android" || os === "ios";
+    return (
+      <div className="update-notice is-paired device-notice" role="status" data-before-you-pc={pc.server_id}>
+        <Monitor aria-hidden="true" />
+        <span className="device-notice-text">
+          <span>{phone ? t("{name} was added to your account before this phone joined. Did you add it?", { name: pc.label })
+            : t("{name} was added to your account before this device joined. Did you add it?", { name: pc.label })}</span>
+          {failure}
+          {removal.prompt}
+        </span>
+        <div className="device-paired-actions">
+          <button type="button" className="btn" disabled={sending} onClick={close}>{t("Yes|account pc")}</button>
+          <button type="button" className="btn" disabled={sending} onClick={remove}>{t("No (remove)|account pc")}</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="update-notice is-paired device-notice" role="status">
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
         <span>{t("New PC added to your account: {name}", { name: pc.label })}</span>
         <span className="settings-hint">{t("If you did not add it, remove it.")}</span>
-        {failed && <span className="account-error" role="alert">{t("The PC could not be removed. Try again.")}</span>}
+        {failure}
         {removal.prompt}
       </span>
       <div className="device-paired-actions">
         <button type="button" className="btn" disabled={sending} onClick={remove}>{t("I didn't add this")}</button>
-        <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Close")} title={t("Close")} onClick={() => {
-          setHidden(true);
-          try { localStorage.setItem(dismissalKey, "1"); }
-          catch (error) { if (!(error instanceof DOMException)) throw error; }
-        }}><X aria-hidden="true" /></button>
+        <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Close")} title={t("Close")} onClick={close}><X aria-hidden="true" /></button>
       </div>
     </div>
   );

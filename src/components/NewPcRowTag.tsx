@@ -8,8 +8,8 @@ import { usePcRemoval } from "./usePcRemoval.tsx";
 
 /**
  * C3 pin 2 (#16): on the hosted app's own PC row, while that PC is inside its 24 hours in the account, the New PC tag and
- * the one-tap removal from the account, until the window passes or the PC is removed (newPcHere.ts). The admitted-before-you
- * notice (NewPcNotices) still shows where it applies.
+ * the one-tap removal from the account, until the window passes or the PC is removed (newPcHere.ts). A PC added before this
+ * device joined gets no row here (#29): its one notice is the main area's card (NewPcNotices).
  */
 export function NewPcRowTag({ serverId }: { readonly serverId: string | undefined }) {
   const t = useT();

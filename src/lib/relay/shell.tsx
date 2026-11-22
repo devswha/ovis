@@ -82,14 +82,20 @@ function launchJoinFor(serverId: string): boolean {
 
 /**
  * A PC's new window (new_until, in ms) as this browser last read it from the account's PCs, by PC: a load that opens the PC
- * before it reads them (a launch reopening it) still holds its sessions from any selection made without a tap (#16, C3).
+ * before it reads them (a launch reopening it) still holds its sessions from any selection made without a tap (#16, C3),
+ * with `:before-you` for one added before this device joined (#29: no New PC row for it in the sidebar).
  */
 const NEW_PC = "ovis-new-pc:";
-function keepNewPc(serverId: string, until: number | null): void {
-  try { if (until === null) localStorage.removeItem(NEW_PC + serverId); else localStorage.setItem(NEW_PC + serverId, String(until)); } catch { /* the account's next read says it again */ }
+const BEFORE_YOU = ":before-you";
+function keepNewPc(serverId: string, known: { readonly until: number; readonly beforeYou?: true } | null): void {
+  try { if (known === null) localStorage.removeItem(NEW_PC + serverId); else localStorage.setItem(NEW_PC + serverId, `${known.until}${known.beforeYou ? BEFORE_YOU : ""}`); } catch { /* the account's next read says it again */ }
 }
-function keptNewPc(serverId: string): number | null {
-  try { const kept = Number(localStorage.getItem(NEW_PC + serverId) ?? Number.NaN); return Number.isFinite(kept) ? kept : null; } catch { return null; }
+function keptNewPc(serverId: string): { readonly until: number; readonly beforeYou?: true } | null {
+  try {
+    const kept = localStorage.getItem(NEW_PC + serverId) ?? "";
+    const until = Number(kept.endsWith(BEFORE_YOU) ? kept.slice(0, -BEFORE_YOU.length) : kept || Number.NaN);
+    return Number.isFinite(until) ? { until, ...(kept.endsWith(BEFORE_YOU) ? { beforeYou: true as const } : {}) } : null;
+  } catch { return null; }
 }
 
 /**
@@ -843,14 +849,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // only a read that answered says how new it is: the rows a failed read keeps carry no window
     if (view?.kind === "signed-in" && view.pcs !== null && view.error === null) {
       const row = view.pcs.find((pc) => pc.server_id === serverId);
-      const known: { readonly until: number } | null = row === undefined || !isNewAccountPc(row, Date.now()) ? null
+      const known: { readonly until: number; readonly beforeYou?: true } | null = row === undefined || !isNewAccountPc(row, Date.now()) ? null
         // a window that does not parse may still be open: held for the longest a window lasts
-        : { until: row.new_until_unreadable === true ? Date.now() + 86_400_000 : Date.parse(row.new_until ?? "") };
-      keepNewPc(serverId, known === null ? null : known.until);
+        : { until: row.new_until_unreadable === true ? Date.now() + 86_400_000 : Date.parse(row.new_until ?? ""), ...(row.admitted_before_you === true ? { beforeYou: true as const } : {}) };
+      keepNewPc(serverId, known);
       return known;
     }
-    const until = keptNewPc(serverId);
-    return until !== null && until > Date.now() ? { until } : null;
+    const kept = keptNewPc(serverId);
+    return kept !== null && kept.until > Date.now() ? kept : null;
   };
   /**
    * What the opened PC's page holds (C3 pin 1, #16): its new window as read or kept, and "unknown" while a sign-in's PCs are
