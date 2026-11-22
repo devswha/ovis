@@ -221,15 +221,13 @@ const nameKey = (name: string): string => name.toLowerCase().replace(/[^\p{L}\p{
  * session title (herdr-app defaults/mods/tabs/main.js): no name of its own here either. The app's program
  * names are its own ("Copilot", "oh-my-pi"), so the agent's id and catalog name are read without case
  * or punctuation. Only the app's names: one given through Ovis (`ovis.tab`) is a name someone gave, an
- * agent's name typed as one included.
+ * agent's name typed as one included. As in the app, only the tab's first agent counts, known as a pane's is.
  */
-function namedAfterAgent(name: string, terminals: readonly HcTerminal[]): boolean {
-  return terminals.some((terminal) => {
-    const agent = agentOfStatus(terminal.status);
-    if (agent === null) return false;
-    const entry = AGENT_CATALOG.find((candidate) => candidate.id === agent);
-    return [agent, entry?.name].some((said) => said !== undefined && nameKey(said) === nameKey(name));
-  });
+function namedAfterAgent(name: string, terminals: readonly HcTerminal[], host: CoreHost): boolean {
+  const agent = terminals.map((terminal) => agentOf(terminal, host)).find((found) => found !== null);
+  if (agent === undefined) return false;
+  const entry = AGENT_CATALOG.find((candidate) => candidate.id === agent);
+  return [agent, entry?.name].some((said) => said !== undefined && nameKey(said) === nameKey(name));
 }
 interface Group { id: string; label: string; folder?: string; tabs: ShownTab[] }
 
@@ -246,7 +244,7 @@ function whereOf(terminal: HcTerminal): string[] | undefined {
 }
 
 // the Herdr app labels its terminals `where`: `<space> / <tab>`
-function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
+function groups(terminals: readonly HcTerminal[], layout: unknown, host: CoreHost = coreHost(false)): Group[] {
   const own = layout === null || layout === undefined;
   const live = new Map(terminals.filter((terminal) => terminal.state === "live" && !onOtherMachine(terminal.address)).map((terminal) => [terminal.address, terminal]));
   const placed = new Set<string>();
@@ -318,7 +316,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       group.tabs.push({ id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || "", terminals: [terminal], root: null, kept: own && tabId === labeled, appNamed: Boolean(where?.[1]) });
     }
   }
-  for (const group of result) for (const tab of group.tabs) if (tab.appNamed && namedAfterAgent(tab.label, tab.terminals)) tab.label = "";
+  for (const group of result) for (const tab of group.tabs) if (tab.appNamed && namedAfterAgent(tab.label, tab.terminals, host)) tab.label = "";
   const tabOf = new Map<string, { group: Group; tab: Group["tabs"][number] }>();
   for (const group of result) for (const tab of group.tabs) for (const terminal of tab.terminals) tabOf.set(terminal.address, { group, tab });
   const under = new Map<Group["tabs"][number], Group["tabs"][number]>();
@@ -475,7 +473,7 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
   const panes: PaneInfo[] = [];
   const layouts: PaneLayoutSnapshot[] = [];
   const own = layout === null || layout === undefined;
-  const grouped = groups(terminals, layout);
+  const grouped = groups(terminals, layout, host);
   const { groups: placed, zoomed } = own ? arranged(grouped, ovisDoc) : { groups: grouped, zoomed: new Map<string, string>() };
   const shown = new Set(placed.flatMap((group) => group.tabs.flatMap((tab) => tab.terminals.map((terminal) => terminal.address))));
   for (const [index, group] of placed.entries()) {

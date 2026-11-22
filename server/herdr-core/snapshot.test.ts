@@ -109,6 +109,25 @@ describe("buildSnapshot", () => {
     expect(buildSnapshot([terminal("t3"), ...given], layout, "0.1.14").tabs.map((t) => t.label)).toEqual(["1", "Claude Code", "claude"]);
   });
 
+  it("reads a tab of several agents as named after its program by its first agent's only, as the app does", () => {
+    const agent = (address: string, app: string) => terminal(address, { status: { app, state: "idle" } });
+    const both = (first: string, second: string) => ({ type: "row", id: `r-${first}`, children: [block(first), block(second)] });
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [
+      { id: "s1t1", name: "Claude Code", root: both("t1", "t2") },
+      { id: "s1t2", name: "Codex", root: both("t3", "t4") },
+      { id: "s1t3", name: "Claude Code", root: both("t5", "t6") },
+    ] }] };
+    const snapshot = buildSnapshot([agent("t1", "codex"), agent("t2", "claude-code"), agent("t3", "codex"), agent("t4", "claude-code"), terminal("t5"), agent("t6", "claude-code")], layout, "0.1.14");
+    expect(snapshot.tabs.map((t) => t.label)).toEqual(["Claude Code", "2", "3"]);
+  });
+
+  it("knows a tab's agent by its process as well as by its report", () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "Codex", root: block("t1") }] }] };
+    const snapshot = buildSnapshot([terminal("t1", { foreground: { pid: 7, name: "codex", argv: ["codex"] } })], layout, "0.1.14");
+    expect(snapshot.panes[0]!.agent).toBe("codex");
+    expect(snapshot.tabs[0]!.label).toBe("1");
+  });
+
   const named = (cwd: string, folder?: string) => buildSnapshot([terminal("t1", { cwd })], {
     spaces: [{ id: "s1", name: "", ...(folder === undefined ? {} : { folder }), tabs: [{ id: "s1t1", name: "", root: block("t1") }] }],
   }, "0.1.17").workspaces[0]!.label;
