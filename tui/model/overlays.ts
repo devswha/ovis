@@ -157,8 +157,11 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: (overlay) => overlay.target,
     input: (overlay, input) => fieldInput(overlay, input, (name) => {
       if (overlay.purpose === "new_tab") return { overlay: null, effects: [run("new_tab", overlay.target, name)] };
-      // herdr sends a rename only when the name changed
-      return { overlay: null, effects: name === overlay.field.original ? [] : [run(overlay.purpose, overlay.target, name)] };
+      // herdr sends a rename only when the name changed; a name past the field's bounds shows cut, and that cut value
+      // accepted as shown is no change either: Enter never shortens a name nobody edited
+      const { original } = overlay.field;
+      const unchanged = name === original || name === field(original).graphemes.join("");
+      return { overlay: null, effects: unchanged ? [] : [run(overlay.purpose, overlay.target, name)] };
     }),
   },
   confirm: {

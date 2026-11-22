@@ -241,6 +241,18 @@ describe("hangul once", () => {
     expect([shown(nearly).length, shown(typed), shown(after(nearly, paste("e\u0301")))]).toEqual([1, [...shown(nearly), "e"], [...shown(nearly), "e"]]);
     expect(shown(after(typed, text("z")))).toEqual(shown(typed));
   });
+
+  it("in a rename field, Enter on a name past the field's bound left as shown renames nothing; an edit renames", () => {
+    // one grapheme longer than the code-point budget: the field shows it cut
+    const long = `e${"\u0301".repeat(2 * TEXT_FIELD_MAX_CODE_POINTS)}`;
+    const named = reduce(initialState(undefined), { type: "world", world: { workspaces: [{ id: "w1", name: "one", tabs: [{ id: "t1", name: "a", panes: [{ id: "p1", name: long }] }] }] }, at: 0 }).state;
+    const renaming = after(named, prefix(), key("P"));
+    const enter = (state: ModelState) => reduce(state, { type: "key", key: "ENTER", mods: {}, action: "press", at: AT });
+    const kept = enter(renaming);
+    expect([kept.effects, kept.state.overlays]).toEqual([[], []]);
+    const edited = enter(after(renaming, text("x")));
+    expect(edited.effects).toEqual([{ type: "run", action: "rename_pane", target: { kind: "pane", id: "p1" }, index: null, name: "x" }]);
+  });
 });
 
 describe("overlay close keys", () => {
