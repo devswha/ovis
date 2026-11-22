@@ -673,11 +673,12 @@ describe.skipIf(process.platform === "win32" || standInRun === undefined)("the c
     old!({ value: { tag: "old" }, version: 1 });
     // answered after the re-read on the same line: the re-read has settled once this call has
     await link.call("machine.list", {}).catch(() => {});
+    // a refresh asked while the resync still reads settles only once the resync's layout is told
+    held = false;
+    const refreshed = link.refreshLayout().then((ok) => ({ ok, toldBefore: layouts() }));
     app!({ value: null, version: 0 });
     current!({ value: { tag: "current" }, version: 2 });
-    await until("the resync's layout told", () => layouts().includes(2));
-    held = false;
-    expect(await link.refreshLayout()).toBe(true);
+    expect(await refreshed).toEqual({ ok: true, toldBefore: [0, 2] });
     expect(layouts()).toEqual([0, 2]);
     expect(notices.filter((notice) => notice.type === "doc" && notice.name === "ovis-layout").at(-1)).toMatchObject({ doc: { version: 2, value: { tag: "current" } } });
   });
