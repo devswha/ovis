@@ -185,6 +185,7 @@ export class RelayTransport implements Transport {
   private upgradeAbort: AbortController | undefined;
   private switching: RelayChannel | undefined;
   private switchingDirect = false;
+  private found: "pc" | "relay" | undefined;
   private readonly stopResources: () => void;
   private readonly wake = (): void => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -238,6 +239,7 @@ export class RelayTransport implements Transport {
     const options: RelayChannelOptions & { readonly signal: AbortSignal } = {
       ...this.options, signal: AbortSignal.any([this.abort.signal, attempt.abort.signal]),
       ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
+      onAssigned: () => { if (generation === this.generation && !this.channel) this.unreachedNow("pc"); },
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
         const switching = this.switching !== undefined && this.switching === this.channel;
@@ -267,6 +269,7 @@ export class RelayTransport implements Transport {
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;
+    this.found = undefined;
     this.routeChanged();
     channel.mux.onStreamAvailable = () => {
       for (const pending of this.waitingHttp) if (!pending.run()) break;
@@ -474,6 +477,18 @@ export class RelayTransport implements Transport {
 
   get route(): "relay" | "direct" | undefined { return this.channel ? this.channel.direct === undefined ? "relay" : "direct" : undefined; }
 
+  /**
+   * While no carrier is up, what reconnecting has found so far: `pc`, the relay took the socket and has nobody for the
+   * PC; `relay`, no relay was reached. Told through onRouteChange.
+   */
+  get unreached(): "pc" | "relay" | undefined { return this.channel ? undefined : this.found; }
+
+  private unreachedNow(found: "pc" | "relay"): void {
+    if (this.found === found) return;
+    this.found = found;
+    this.routeChanged();
+  }
+
   private readonly routeListeners = new Set<() => void>();
 
   onRouteChange(listener: () => void): () => void {
@@ -502,6 +517,7 @@ export class RelayTransport implements Transport {
       // between such waits, so a PC back from a restart is reached within a second
       // (a hidden page keeps the growing pause: showing it again reconnects at once, through wake)
       if (error instanceof RelayPcOfflineError && globalThis.document?.visibilityState !== "hidden") this.delay = 1000;
+      this.unreachedNow(error instanceof RelayPcOfflineError ? "pc" : "relay");
       this.retry();
       if (error instanceof RelayPcOfflineError) this.options.onPcAway?.();
       return;

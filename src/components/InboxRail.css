@@ -121,13 +121,15 @@
   pointer-events: none;
 }
 
-.inbox-rail-dot.is-reconnecting {
+.inbox-rail-dot.is-reconnecting,
+.inbox-rail-dot.is-failed {
   background: var(--status-reconnecting);
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .inbox-rail-dot.is-reconnecting {
+  .inbox-rail-dot.is-reconnecting,
+  .inbox-rail-dot.is-failed {
     animation: none;
   }
 }

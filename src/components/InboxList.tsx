@@ -7,7 +7,7 @@ import type { AgentStatus } from "../../shared/protocol.ts";
 import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxSinceAt, inboxStatus, inboxWords, plainWords, type InboxFilter } from "../lib/agentInbox.ts";
 import { agentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stateSince } from "../lib/agentStateSince.ts";
-import type { HeaderConnection } from "../lib/headerConnection.ts";
+import { connectionWord as wordFor, type HeaderConnection } from "../lib/headerConnection.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { inboxAsks, inboxRowLine, inboxStateWord } from "../lib/inboxRow.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
@@ -260,7 +260,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
       <ListFilter aria-hidden="true" />
     </button>
   );
-  const connectionWord = useAnnouncedText(connection === null ? null : t(connection === "connected" ? "Connected" : "Reconnecting…"));
+  const connectionWord = useAnnouncedText(connection === null ? null : wordFor(connection, t));
   const connectionLine = <p className={connectionWord === null ? "visually-hidden" : "inbox-connection"} role="status">{connectionWord}</p>;
   const moreButton = more && (
     <button type="button" className="icon-button inbox-round inbox-more" aria-label={more.label} title={more.label}

@@ -115,6 +115,8 @@ export interface RelayChannelOptions {
   readonly signal?: AbortSignal;
   readonly onClose?: (error: Error) => void;
   readonly pcAnswerMs?: number;
+  /** the relay took the socket and waits for the PC: from here, no answer is the PC away, not the network */
+  readonly onAssigned?: () => void;
   readonly carrier?: string;
   readonly requestTimeoutMs?: MuxOptions["requestTimeoutMs"];
   /**
@@ -454,7 +456,10 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         }
         connectionId = assigned.connection_id;
         phase = "welcome";
-        if (!heardPc) expect(options.pcAnswerMs ?? PC_ANSWER_MS, () => new RelayPcOfflineError());
+        if (!heardPc) {
+          if (direct === undefined) options.onAssigned?.();
+          expect(options.pcAnswerMs ?? PC_ANSWER_MS, () => new RelayPcOfflineError());
+        }
         const opened = Promise.withResolvers<void>();
         secure = await openClientSecureChannel(transport, {
           daemonPublicKeyB64: offer.server_public_key,

@@ -1,7 +1,7 @@
 import { tally, usageCounters } from "../lib/usageCounters.ts";
 import { Bell, BellOff, CircleHelp, Inbox, Monitor, Settings } from "lucide-react";
 
-import type { HeaderConnection } from "../lib/headerConnection.ts";
+import { connectionWord, type HeaderConnection } from "../lib/headerConnection.ts";
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import "./InboxRail.css";
@@ -23,9 +23,9 @@ export function InboxRail({ onExit, onInbox, waiting, alerts, onSettings, connec
   // The same word is announced from a line that is in the document before it (lib/useAnnouncedText.ts):
   // a button's name is not read out when it changes.
   const dot = saidByThread ? null : connection;
-  const announced = useAnnouncedText(dot === null ? null : t(dot === "connected" ? "Connected" : "Reconnecting…"));
+  const announced = useAnnouncedText(dot === null ? null : connectionWord(dot, t));
   // the monitor stands for the main view's PCs: while their stream is lost its name says so, as its dot draws it
-  const mainLabel = connection === "reconnecting" ? `${t("Back to main view")} · ${t("Reconnecting…")}` : t("Back to main view");
+  const mainLabel = connection === "reconnecting" || connection === "failed" ? `${t("Back to main view")} · ${connectionWord(connection, t)}` : t("Back to main view");
   return (
     <nav className="inbox-rail" aria-label={t("Inbox mode")}>
       <div className="inbox-rail-group is-top">

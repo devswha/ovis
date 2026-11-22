@@ -4,7 +4,7 @@ import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { inboxStatus } from "../lib/agentInbox.ts";
 import { agentGroup, agentRoster } from "../lib/agentRoster.ts";
-import type { HeaderConnection } from "../lib/headerConnection.ts";
+import { connectionWord, type HeaderConnection } from "../lib/headerConnection.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { inboxStateWord } from "../lib/inboxRow.ts";
 import { agentName } from "../lib/runtimeMove.ts";
@@ -33,7 +33,7 @@ function threadFacts({ machines, activity, machineId, pane, connection, watching
     .find((candidate) => candidate.machine.id === machineId && candidate.entry.pane.pane_id === pane.pane_id);
   const state = machine !== undefined && machine.state !== "connected" ? t("Offline")
     : row ? inboxStateWord(agentGroup(inboxStatus(row, activity)), t) : t("Terminal");
-  const said = connection !== null ? t(connection === "connected" ? "Connected" : "Reconnecting…")
+  const said = connection !== null ? connectionWord(connection, t)
     : [watching ? t("View only") : null, severalPcs && machine ? machine.name : null, state].filter((part) => part !== null).join(" · ");
   return {
     name: row ? agentRowTitle(row, false).title : displayPaneTitle(pane),

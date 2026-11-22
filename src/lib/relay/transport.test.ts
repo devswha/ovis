@@ -34,7 +34,9 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
   const attempts = { count: 0, failures: 0, offline: 0, away: 0, unreachable, refusal: null as Error | null,
     pcAnswerMs: [] as (number | undefined)[], relays: [] as string[], offered: [] as string[],
     /** attempts whose socket stays CONNECTING until aborted or failed through `stuck` (a page frozen mid-connect) */
-    hang: 0, stuck: [] as ((error: Error) => void)[] };
+    hang: 0, stuck: [] as ((error: Error) => void)[],
+    /** a hanging attempt's socket the relay took, waiting for the PC (the channel's `assigned`) */
+    heldAtRelay: false, held: deferred<void>() };
   const fatal: Error[] = [];
   const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef",
     server_public_key: "", relay };
@@ -49,6 +51,8 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
       attempts.offered.push(channelOffer.relay);
       if (attempts.hang > 0) {
         attempts.hang--;
+        if (attempts.heldAtRelay) config.onAssigned?.();
+        attempts.held.resolve();
         return new Promise<never>((_, reject) => {
           attempts.stuck.push(reject);
           config.signal?.addEventListener("abort", () => reject(new DOMException("Relay connection aborted", "AbortError")), { once: true });
@@ -544,6 +548,28 @@ it("tries again a second after each attempt the relay held waiting for a PC that
   expect(f.attempts.pcAnswerMs).toEqual([undefined, ...Array<number>(7).fill(RECONNECT_PC_ANSWER_MS)]);
   expect(await (await f.transport.fetch("/api/back")).json()).toEqual({ ok: true });
   expect(f.fatal).toEqual([]);
+});
+
+it("says what a reconnect has found so far: the relay waiting for a PC that is away, or no relay reached", async () => {
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  expect(f.transport.unreached).toBeUndefined();
+  f.attempts.failures = 1;
+  await f.drop();
+  f.clock.advance(1000);
+  await expect(f.transport.connect()).rejects.toBeInstanceOf(TypeError);
+  expect(f.transport.unreached).toBe("relay");
+  f.attempts.hang = 1;
+  f.attempts.heldAtRelay = true;
+  f.clock.advance(2000);
+  const held = f.transport.connect();
+  await bounded(f.attempts.held.promise);
+  expect(f.transport.unreached).toBe("pc");
+  f.attempts.stuck[0]!(new RelayPcOfflineError());
+  await expect(held).rejects.toBeInstanceOf(RelayPcOfflineError);
+  expect(f.transport.unreached).toBe("pc");
+  f.clock.advance(1000);
+  await f.transport.connect();
+  expect(f.transport.unreached).toBeUndefined();
 });
 
 it("tells the shell each time a reconnect finds nobody for the PC at the relay, and only then, and goes on reconnecting", async () => {
