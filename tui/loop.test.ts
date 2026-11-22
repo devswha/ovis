@@ -460,6 +460,20 @@ describe("the loop", () => {
     expect([dropped(full), ended]).toEqual([["full"], true]);
   }, TEST_MS);
 
+  it("a key's own text counts against the bytes that wait: a paste at the bound fits, a kitty key with text after it does not", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    // every read before the close's write could be answered; the kitty key reports the text it typed (CSI code;mods;text u)
+    run.type("\x02x");
+    run.type(`\x1b[200~${"a".repeat(BEHIND_WRITE_BYTES)}\x1b[201~`);
+    run.type("\x1b[98;1;98u");
+    await settled(run);
+    const sent = sentTo(run, "t2");
+    expect([sent.length / 2, sent.endsWith(Buffer.from("b").toString("hex")), run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"])])
+      .toEqual([BEHIND_WRITE_BYTES, false, ["full"]]);
+  }, TEST_MS);
+
   it("a queue that fills with the prefix last leaves no prefix armed: a focus loss past the bound still disarms, and q after the release is typed", async () => {
     // the focus loss dropped past the bound, or the key meant for the prefix dropped past it
     for (const after of ["\x1b[O", "z"]) {

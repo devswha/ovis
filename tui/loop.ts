@@ -353,7 +353,8 @@ export function startLoop(options: LoopOptions): Loop {
       pieces.push({ type: "consumed", overlay: step.state.overlays.length < before.overlays.length, mode: before.mode.name !== "terminal" && step.state.mode.name === "terminal", at: next.at });
     }
     if (behindWrite.full) return;
-    const bytes = pieces.reduce((sum, piece) => sum + (piece.type === "text" || piece.type === "paste" ? Buffer.byteLength(piece.text) : 0), 0);
+    // the text a key typed (a kitty key reports it) costs its bytes too, as the same text read as text does
+    const bytes = pieces.reduce((sum, piece) => sum + (piece.type === "text" || piece.type === "paste" || piece.type === "key" ? Buffer.byteLength(piece.text ?? "") : 0), 0);
     if (behindWrite.events.length + pieces.length > BEHIND_WRITE_EVENTS || behindWrite.bytes + bytes > BEHIND_WRITE_BYTES) {
       // nothing more waits, so what goes through later keeps its order and no paste is cut; a detach still leaves above
       behindWrite.full = true;
