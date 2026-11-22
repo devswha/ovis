@@ -9,13 +9,15 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { accountDeviceId, exportAccountKey } from "../../shared/account-records.ts";
-import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
+import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
+import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { handleRequest, type ServerContext } from "../dispatch.ts";
 import { createServer } from "../index.ts";
-import { ask, linkRecord, memberRow, pairingPc, phone, provingDevice, sendLink, setUpFor, vouchFor, type Pc } from "./pairing.test-helpers.ts";
+import { ask, firstPairingRead, linkRecord, memberRow, pairingPc, phone, provingDevice, sendLink, setUpFor, signedInWith, vouchFor, type Pc, type Phone } from "./pairing.test-helpers.ts";
 import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
-import { ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
+import { ACCOUNT_OPENS_ALL_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
+import { STALE_READ_MS } from "./account-devices.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { pressOnce } from "./one-press.ts";
 
@@ -307,7 +309,7 @@ async function restartedFrom(f: Pc, options: { legacy?: boolean; receipt?: boole
   cpSync(f.stateDir, stateDir, { recursive: true });
   const path = join(stateDir, "account-pc.json");
   const state = JSON.parse(readFileSync(path, "utf8"));
-  const { listing_id: listing, ...binding } = state.binding;
+  const { listing_id: listing, ...binding } = state.binding ?? {};
   if (options.legacy) writeFileSync(path, JSON.stringify({ ...state, binding }));
   if (options.receipt) writeFileSync(join(stateDir, "account-completion.json"), JSON.stringify({ account: binding.account, listing_id: listing }));
   const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false,
@@ -428,6 +430,8 @@ test("upgrade: an admission another device made for a replacement listing pins n
 test.each([
   ["an empty completed_at", { completed_at: "" }],
   ["a completed_at that is no time", { completed_at: "soon" }],
+  ["a completed_at that only parses", { completed_at: "0" }],
+  ["a completed_at on a day that does not exist", { completed_at: "2026-02-30T00:00:00.000Z" }],
   ["no completed_at", {}],
   ["a null body", null],
 ] as const)("listing confirmation: a completion answered 200 with %s confirms nothing", async (_case, body) => {
@@ -565,6 +569,216 @@ test("listing confirmation: a later check that fails ends a warm answer", async 
   offline = true;
   clock.advance(1_000);
   expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false });
+  expect(await signIn(f, serverId, device)).toBe("account_unreachable");
+});
+
+/** The link a signed-in app sends for its own row: the row keeps its key and becomes a member of `account`. */
+const linkOf = (serverId: string, id: string, account: string, key: Phone) => signAccountRecord({ v: 1, kind: "link", account, key: key.spki, server_id: serverId,
+  device_id: id, old_key: key.spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: key.spki }, key.keys.privateKey);
+
+/** A one-press PC with an account-only device and a phone paired at the PC that linked itself into the account, as a signed-in app does on its first open. */
+async function pcWithLocalPhone(options: Parameters<typeof pc>[0] = {}) {
+  const f = await pc(options);
+  const made = await firstPcWithPhone(f);
+  const local = await phone();
+  const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
+  const mine = { id: paired.id, keys: local.keys, publicKey: local.spki };
+  const reopen = async (from: Parameters<typeof relayConnection>[0] = f) => {
+    const link = await relayConnection(from, { serverId: made.serverId });
+    await link.auth(mine);
+    return link;
+  };
+  const link = () => linkOf(made.serverId, paired.id, "acct_1", local);
+  expect((await sendLink(await reopen(), await link())).status).toBe(200);
+  expect(f.stored().find(row => row.id === paired.id)?.account).toBe("acct_1");
+  const puts = () => f.account.requests.filter(path => path === `PUT /v1/pcs/${made.serverId}`).length;
+  return { f, ...made, local, paired, mine, reopen, link, puts };
+}
+
+test("removed PC: a signed-in phone paired at the PC that reopens its saved connection does not put the PC back", async () => {
+  const { f, device, serverId, remove, relist, reopen, link, mine } = await pcWithLocalPhone();
+  // "I didn't add this" on another device of the account
+  await remove();
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(f.devices.account()).toBeNull();
+  // the phone's page reloads: its enrollment reads the PC's status, and a PC in no account used to get its link
+  const again = await reopen();
+  const refused = await sendLink(again, await link());
+  expect([refused.status, refused.body.error?.code]).toEqual([409, "account_mismatch"]);
+  expect(bindingOf(f.stateDir)).toBeNull();
+  expect((await ask(again, "/api/account/status")).body).toMatchObject({ account: null, pc_add_required: true });
+  expect(f.stored().find(row => row.id === mine.id)?.account).toBeUndefined();
+  // an app from before this rule lists the PC again all the same: the PC stays out, and the account's other device with it
+  await relist();
+  expect(await f.app.context.services.accountMailbox.pull()).toBe(0);
+  expect(f.devices.account()).toBeNull();
+  expect(await signIn(f, serverId, device)).toBe("auth_failed");
+
+  const now = await restartedFrom(f);
+  expect(bindingOf(now.stateDir)).toBeNull();
+  const reopened = await reopen(now);
+  expect((await ask(reopened, "/api/account/status")).body).toMatchObject({ account: null, pc_add_required: true });
+  expect((await sendLink(reopened, await link())).status).toBe(409);
+  expect(bindingOf(now.stateDir)).toBeNull();
+  expect(await signIn(now, serverId, device)).toBe("auth_failed");
+});
+
+test.each([
+  ["a code this PC issued itself", true],
+  ["a code a paired device asked for", false],
+] as const)("removed PC: %s brings it into the account again: %p", async (_case, atPc) => {
+  const { f, remove, reopen, link, local, paired } = await pcWithLocalPhone();
+  await remove();
+  await f.app.context.services.accountMailbox.readSnapshot();
+  expect(f.devices.account()).toBeNull();
+  f.devices.pairingForNoAccount(atPc ? null : paired.id, Date.now(), "acct_1");
+  await vouchFor(f, "acct_1", local);
+  const answer = await sendLink(await reopen(), await link());
+  expect(answer.status).toBe(atPc ? 200 : 409);
+  expect(f.devices.account()).toBe(atPc ? "acct_1" : null);
+  expect((await f.status()).pc_add_required).toBe(atPc ? undefined : true);
+});
+
+/** A device asks to join by comparing digits, and the account member on `approver` approves it: "admitted", or the code the PC ended it with. */
+async function remoteJoin(f: Pc, serverId: string, approver: Awaited<ReturnType<typeof relayConnection>>, key: Phone): Promise<string> {
+  f.app.context.services.relay.approvals.openWindow();
+  const joiner = await relayConnection(f, { serverId });
+  await joiner.hello([PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT]);
+  const binding = channelBinding(joiner.channel);
+  if (!binding) throw new Error("Missing SAS binding");
+  const nonce = randomPairNonce();
+  const challenge = Promise.withResolvers<string>();
+  const outcome = Promise.withResolvers<string>();
+  joiner.onFrame = frame => {
+    if (frame.type === FrameType.PAIR_CHALLENGE) challenge.resolve(frame.payload.nonce);
+    if (frame.type === FrameType.AUTH_OK) outcome.resolve("admitted");
+    if (frame.type === FrameType.SESSION_ERROR) outcome.resolve(frame.payload.code);
+  };
+  joiner.mux.sendSession({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0, payload: { label: "Tablet", public_key: key.spki, commitment: toBase64Url(pairCommitment(binding, key.spki, nonce)) } });
+  const digits = pairDigits(binding, key.spki, nonce, fromBase64Url(await bounded(challenge.promise)));
+  const request = Promise.withResolvers<string>();
+  const unsubscribe = f.app.context.services.relay.approvals.subscribeRemote(list => {
+    const prompt = list.find(entry => entry.key === key.spki);
+    if (prompt) request.resolve(prompt.id);
+  });
+  joiner.mux.sendSession({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(nonce) } });
+  const id = await bounded(request.promise).finally(unsubscribe);
+  expect((await ask(approver, "/api/relay/pairing", { method: "POST", body: { id, decision: "approve", digits } })).status).toBe(200);
+  joiner.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  return bounded(outcome.promise);
+}
+
+test("T56: the hour without a whole read keeps a phone that paired with this PC's own code and linked with the same key, and suspends what it may do for the account", async () => {
+  const f = await pc();
+  const clock = new TestClock();
+  f.devices.useClock(clock);
+  await setUpFor(f, "acct_1");
+  const key = await phone();
+  const paired = await signedInWith(f, await f.tabCode(), key);
+  await vouchFor(f, "acct_1", key);
+  expect((await sendLink(paired.session, await linkRecord(paired.id, "acct_1", key))).status).toBe(200);
+  expect(f.stored().find(row => row.id === paired.id)).toMatchObject({ account: "acct_1", origin: { from: "remote", how: "link" } });
+  await firstPairingRead(f);
+  const open = await relayConnection(f);
+  await open.auth({ id: paired.id, keys: key.keys, publicKey: key.spki });
+  expect(f.devices.isAccountApprover(paired.id)).toBe(true);
+  f.account.opensAll = false;
+  clock.advance(STALE_READ_MS);
+  expect(f.devices.isAccountApprover(paired.id)).toBe(false);
+  expect((await ask(open, "/api/health")).status).toBe(200);
+  const again = await relayConnection(f);
+  expect(await again.auth({ id: paired.id, keys: key.keys, publicKey: key.spki })).toMatchObject({ role: "drive" });
+  f.account.opensAll = true;
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  expect(f.devices.isAccountApprover(paired.id)).toBe(true);
+});
+
+test("listing confirmation: a join a member approves from afar makes no device while the listing cannot be confirmed", async () => {
+  let offline = false;
+  const { f, serverId, clock, reopen } = await pcWithLocalPhone({ accountFetch: async (req, svc) => offline && pathOf(req) === "/v1/pc/complete" ? new Response(null, { status: 503 }) : svc.fetch(req) });
+  clock.advance(LISTING_CONFIRMED_MS);
+  offline = true;
+  const tablet = await phone();
+  // a comparison offers no account codes: the outage is an error of the PC's, not a decline
+  expect(await remoteJoin(f, serverId, await reopen(), tablet)).toBe("internal_error");
+  expect(f.stored().some(row => row.relay_public_key === tablet.spki)).toBe(false);
+  offline = false;
+  expect(await remoteJoin(f, serverId, await reopen(), tablet)).toBe("admitted");
+});
+
+test("a snapshot whose listing cannot be confirmed still applies its blocks, and releases nothing", async () => {
+  let offline = false;
+  const f = await pc({ accountFetch: async (req, svc) => offline && pathOf(req) === "/v1/pc/complete" ? new Response(null, { status: 503 }) : svc.fetch(req) });
+  const { device, serverId } = await firstPcWithPhone(f);
+  const target = await phone();
+  f.account.registerDevice("acct_1", target.spki, "Target");
+  const late = await phone();
+  f.account.registerDevice("acct_1", late.spki, "Late");
+  const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 2,
+    signer: device.publicKey, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, device.keys.privateKey);
+  const filed = await f.account.fetch(new Request("https://account.test/v1/safety-records", { method: "POST", headers: { authorization: `Bearer ${f.account.issueToken("acct_1")}` }, body: JSON.stringify({ record: block }) }));
+  expect(filed.status).toBeLessThan(300);
+  offline = true;
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false, denials: 1 });
+  expect(f.app.context.services.safetyLog?.inForce.blocks.map(entry => entry.record.id)).toContain(block.id);
+  expect(f.devices.has(accountDeviceId(serverId, late.spki))).toBe(false);
+});
+
+test("upgrade: a last page that does not parse says nothing for a binding with nothing to ask about", async () => {
+  const f = await pc();
+  await firstPcWithPhone(f);
+  let garbled = true;
+  const now = await updated(f, { fetch: async req => garbled && pathOf(req) === "/v1/pc/snapshot" ? Response.json({ last: true }) : f.account.fetch(req) });
+  expect(bindingOf(now.stateDir)).toEqual({ account: "acct_1", bind_id: now.bindId, service: true });
+  garbled = false;
+  await now.app.context.services.accountMailbox.pull();
+  expect(bindingOf(now.stateDir)).toBeNull();
+});
+
+test("listing confirmation: after a restart whose reads fail while the listing is confirmed, a device from before the account codes keeps its key", async () => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  const now = await restartedFrom(f, { fetch: async req => pathOf(req) === "/v1/pc/snapshot" ? new Response(null, { status: 503 }) : f.account.fetch(req) });
+  expect(await signIn(now, serverId, device, [])).toBe("internal_error");
+  expect(await signIn(now, serverId, device, [ACCOUNT_OPENS_ALL_FEATURE])).toBe("held");
+});
+
+test("listing confirmation: a sign-in whose row starts to wait for a read while its listing is asked about is held, not refused", async () => {
+  let atAsk: (() => void) | null = null;
+  const f = await pc({ accountFetch: async (req, svc) => {
+    if (atAsk !== null && pathOf(req) === "/v1/pc/complete") { const run = atAsk; atAsk = null; run(); }
+    return svc.fetch(req);
+  } });
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  clock.advance(STALE_READ_MS - 1_000);
+  // the hour since the last whole read ends while the service is asked
+  atAsk = () => clock.advance(1_000);
+  expect(await signIn(f, serverId, device, [ACCOUNT_OPENS_ALL_FEATURE, ACCOUNT_LISTING_ERRORS])).toBe("held");
+  expect(atAsk).toBeNull();
+  expect(await signIn(f, serverId, device, [])).toBe("internal_error");
+});
+
+test("listing confirmation: a yes that arrives after a later check failed is not kept", async () => {
+  let held: { promise: Promise<void> } | null = null;
+  const reached = Promise.withResolvers<void>();
+  let offline = false;
+  const f = await pc({ accountFetch: async (req, svc) => {
+    if (pathOf(req) !== "/v1/pc/complete") return svc.fetch(req);
+    if (offline) return new Response(null, { status: 503 });
+    const answer = await svc.fetch(req);
+    if (held !== null) { const wait = held; held = null; offline = true; reached.resolve(); await wait.promise; }
+    return answer;
+  } });
+  const { device, serverId, clock } = await firstPcWithPhone(f);
+  clock.advance(LISTING_CONFIRMED_MS);
+  const release = Promise.withResolvers<void>();
+  held = release;
+  const first = signIn(f, serverId, device);
+  await bounded(reached.promise);
+  // the service said yes to the sign-in's check; a read that began after it gets no answer
+  expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false });
+  release.resolve();
+  expect(await first).toBe("account_unreachable");
   expect(await signIn(f, serverId, device)).toBe("account_unreachable");
 });
 

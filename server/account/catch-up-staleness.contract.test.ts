@@ -8,7 +8,7 @@ import { ask, phone } from "./pairing.test-helpers.ts";
 import { DeviceJournal } from "./device-journal.ts";
 import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import type { WsStream } from "../../shared/relay-mux-engine.ts";
-import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
+import { accountDeviceId, newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { privateStateFs } from "../private-state.ts";
 
 const closes: (() => void)[] = [];
@@ -92,6 +92,16 @@ test("T56: a failed service past one hour also ends an account member kept in de
   // a pairing made at this PC is no account access: it stays
   const local = await relayConnection(pc.fixture, { serverId: pc.serverId });
   await local.auth(pc.member);
+  // a row a member approves after the hour (one paired on this PC's screen still may) waits like the rest
+  const late = await phone();
+  const lateId = accountDeviceId(pc.serverId, late.spki);
+  const approves = spyOn(devices, "isAccountApprover").mockReturnValue(true);
+  try { expect(devices.pairRelayApproved("Late", late.spki, { path: "account", addedBy: pc.member.id, id: lateId })?.device.id).toBe(lateId); }
+  finally { approves.mockRestore(); }
+  expect(devices.sessionRow(lateId)).toBeNull();
+  const waits = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  void waits.auth({ id: lateId, keys: late.keys, publicKey: late.spki }, [ACCOUNT_OPENS_ALL_FEATURE]).catch(() => undefined);
+  expect(await bounded(waits.serverError)).toBe("held");
 
   pc.service.opensAll = true;
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
