@@ -1231,6 +1231,41 @@ describe("the hosted shell's front page", () => {
       expect([went, browser.sessionStore.has("ovis-launch-account")]).toEqual([[], false]);
     });
 
+    // the PC left its account, and this device was the account's there: the PC says so, and the key is kept for the day it is added again
+    it.each([["a reload of its page", false], ["a cold start's launch", true]] as const)("keeps the saved key and says to add the PC again when it answers account_readd_required to %s", async (_when, launched) => {
+      const { server_id, server_public_key } = keyFor();
+      const [saved] = await pcs(server_id);
+      const store = deviceStore([{ ...saved!, server_public_key, name: "Desk" }]);
+      const went: string[] = [];
+      if (launched) browser.sessionStore.set("ovis-launched-pc", server_id);
+      await mountRelayShell(mountFor({ entryUrl: `https://app.ovis.sh/s/${server_id}/`, store, navigate: (path) => { went.push(path); },
+        open: async () => { throw new MuxProtocolError("account_readd_required", "the PC left its account"); } }));
+      await until(() => rendered.length > 0 && last().state.kind === "failed", "the PC's failure card");
+      expect(last().state).toMatchObject({ kind: "failed", failure: "account-readd", name: "Desk" });
+      expect([went, (await store.get(server_id))?.device_id]).toEqual([[], "paired"]);
+    });
+
+    it("keeps the saved key and says to add the PC again when the sign-in of a page that was open is refused account_readd_required", async () => {
+      const { server_id, server_public_key } = keyFor();
+      const [saved] = await pcs(server_id);
+      const store = deviceStore([{ ...saved!, server_public_key, name: "Desk" }]);
+      class Admitted extends RelayTransport {
+        override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+      }
+      let fatal: ((error: Error) => void) | undefined, apps = 0;
+      const opened: RelayTransport[] = [];
+      await mountRelayShell(mountFor({ entryUrl: `https://app.ovis.sh/s/${server_id}/`, store, shellVersion: "1.0.0", navigate() {},
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+        open: async (offer, options = {}) => { fatal = options.onFatal; const transport = new Admitted(offer); opened.push(transport); return transport; } }));
+      await until(() => apps === 1, "the app");
+      // the transport signed in again after the PC ended the session, and that sign-in was refused
+      fatal!(new MuxProtocolError("account_readd_required", "the PC left its account"));
+      await until(() => last().state.kind === "failed", "the reason");
+      expect(last().state).toMatchObject({ kind: "failed", failure: "account-readd" });
+      expect((await store.get(server_id))?.device_id).toBe("paired");
+      for (const transport of opened) transport.close();
+    });
+
     it("drops a launch's mark on a front page that comes back first, so a PC opened by a person later keeps its card", async () => {
       browser.sessionStore.set("ovis-launched-pc", "a".repeat(32));
       await mountRelayShell(mountFor({ store: deviceStore([]), navigate: () => {} }));
