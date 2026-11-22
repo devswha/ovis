@@ -4,7 +4,7 @@
  * A new overlay is one entry here and one variant of `Overlay`.
  */
 import { parseHerdrBinding } from "../../shared/herdr-keys.ts";
-import { TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
+import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import type { KeyInput, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
@@ -39,8 +39,22 @@ export function graphemes(text: string): string[] {
   return [...segmenter.segment(text)].map(({ segment }) => segment);
 }
 
+/** How many code points `text` holds. */
+function codePoints(text: string): number {
+  let count = 0;
+  for (let at = 0; at < text.length; at += text.codePointAt(at)! > 0xffff ? 2 : 1) count++;
+  return count;
+}
+
+/** The first `count` code points of `text`. */
+function firstCodePoints(text: string, count: number): string {
+  let at = 0;
+  for (let n = 0; n < count && at < text.length; n++) at += text.codePointAt(at)! > 0xffff ? 2 : 1;
+  return text.slice(0, at);
+}
+
 export function field(text: string): Field {
-  const all = graphemes(text).slice(0, TEXT_FIELD_MAX_GRAPHEMES);
+  const all = graphemes(firstCodePoints(text, TEXT_FIELD_MAX_CODE_POINTS)).slice(0, TEXT_FIELD_MAX_GRAPHEMES);
   return { graphemes: all, cursor: all.length, fresh: all.length > 0, original: text };
 }
 
@@ -53,7 +67,11 @@ function insert(current: Field, text: string): Field {
   const head = base.graphemes.slice(0, base.cursor - (before === "" ? 0 : 1));
   const tail = base.graphemes.slice(base.cursor);
   const room = TEXT_FIELD_MAX_GRAPHEMES - head.length - tail.length;
-  const added = graphemes(before + text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
+  // cut to the code-point budget before it is segmented: a grapheme that never ends (a letter and endless marks, read
+  // apart or at once) costs no more than the budget, and the graphemes the field holds already stay whole; the code
+  // points past it are refused, as when they are read one at a time (a text run reaches a field one code point at a time)
+  const points = TEXT_FIELD_MAX_CODE_POINTS - codePoints(head.join("")) - codePoints(before) - codePoints(tail.join(""));
+  const added = graphemes(before + firstCodePoints(text, Math.max(0, points)).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
   return { ...base, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length, fresh: false };
 }
 

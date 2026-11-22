@@ -85,6 +85,11 @@ export const CONFIG_TEXT_MAX_CHARS = 80;
 export const REFUSALS_SHOWN = 20;
 /** The most graphemes a one-line text field (rename, new tab name, goto) holds; typing or pasting past it is cut. */
 export const TEXT_FIELD_MAX_GRAPHEMES = 256;
+/**
+ * The most code points such a field holds, whatever its graphemes: a letter with endless marks after it is one
+ * grapheme, and its marks past this are refused. Room for every grapheme to carry three more (an emoji sequence).
+ */
+export const TEXT_FIELD_MAX_CODE_POINTS = 4 * TEXT_FIELD_MAX_GRAPHEMES;
 
 /**
  * A pane's first paint normally ends at hc's mark. Without one it counts as complete once the stream
