@@ -169,3 +169,19 @@ it("sends to a working pi whose pi-powerline-footer box is empty, the spinner tu
   await submit();
   expect(prompted()).toBeTrue();
 });
+
+it("sends to a working plain pi as before, though its stock box is misread under a rule of earlier output", async () => {
+  // pi 1.5's own editor draws the turn's status in its upper border, not indented; with a full-width rule printed just
+  // above it (the end of /hotkeys) and a theme that leaves `Working` in the terminal's colour, the stock reading takes
+  // the rows between that rule and the editor's lower one for a typed draft. Its spinner turning keeps the reads apart.
+  pane = { agent: "pi", argv: ["pi"], status: "working" };
+  const rule = (cols: number): string => `\u001b[38;2;111;164;201m${"─".repeat(cols)}\u001b[0m`;
+  const visible = [
+    ...Array<string>(12).fill(""), " the last answer", rule(60),
+    `\u001b[38;2;111;164;201m── ⠸\u001b[0m Working \u001b[38;2;111;164;201m${"─".repeat(47)}\u001b[0m`,
+    "\u001b[7m \u001b[0m", rule(60), "\u001b[38;5;244m~/project (main)\u001b[0m", "\u001b[38;5;244m0.0%/200k  claude-opus\u001b[0m",
+  ].join("\n");
+  screens = { visible, live: turned(visible) };
+  await submit();
+  expect(prompted()).toBeTrue();
+});
