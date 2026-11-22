@@ -180,4 +180,39 @@ describe("kimi usage provider", () => {
     expect(report.providers).toEqual([]);
     expect(requests).toEqual([]);
   });
+
+  it("honors the Retry-After of a 429 from the profile endpoint", async () => {
+    signInKimi(join(home, ".kimi-code"), "kimi-code", NOW / 1000 + 2 * HOUR / 1000);
+    replies.set(KIMI_USAGE, usageReply());
+    replies.set(KIMI_ME, { status: 429, headers: { "retry-after": "3600" } });
+    const service = new UsageService(context(), [kimiUsage]);
+    const first = await service.report();
+    expect(first.providers).toMatchObject([{ id: "kimi", problem: "rate_limited", windows: [] }]);
+    expect(requests.map((request) => request.url)).toEqual([KIMI_USAGE, KIMI_ME]);
+    // five minutes on, the reading is no longer fresh, but the backoff still stands
+    now += 5 * 60_000;
+    const again = await service.report();
+    expect(again.providers[0]!.problem).toBe("rate_limited");
+    expect(requests).toHaveLength(2);
+    // once the hour is over, the profile is asked again and names the account
+    now += HOUR;
+    replies.set(KIMI_ME, { body: { user_id: "u-1", nickname: "Kimi Fan" } });
+    const recovered = await service.report();
+    expect(recovered.providers).toMatchObject([{ id: "kimi", key: "kimi:u-1", account: "Kimi Fan", problem: null }]);
+    expect(recovered.providers[0]!.windows).toHaveLength(4);
+  });
+
+  it("keeps the account's identity and last numbers when the profile request fails transiently", async () => {
+    signInKimi();
+    replies.set(KIMI_USAGE, usageReply());
+    replies.set(KIMI_ME, { body: { user_id: "u-1", nickname: "Kimi Fan" } });
+    const service = new UsageService(context(), [kimiUsage]);
+    const first = await service.report();
+    expect(first.providers[0]).toMatchObject({ key: "kimi:u-1", account: "Kimi Fan", problem: null });
+    now += 6 * 60_000; // past FRESH_MS: the sign-in is read anew
+    replies.set(KIMI_ME, { status: 500 });
+    const degraded = await service.report();
+    expect(degraded.providers).toMatchObject([{ id: "kimi", key: "kimi:u-1", account: "Kimi Fan", problem: "failed" }]);
+    expect(degraded.providers[0]!.windows).toHaveLength(4);
+  });
 });

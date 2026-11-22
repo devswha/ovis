@@ -188,13 +188,19 @@ export const kimiUsage: UsageProvider = {
       // the monthly share the code surface used, which the CLI shows as the monthly breakdown (usage-format.ts:71-77)
       limit(usages["limit_month_code"], "month", "Code"),
     ].filter((entry): entry is UsageWindow => entry !== null);
-    // The profile names the account; the limits stand without it (managed-userinfo.ts:55-78).
+    // The profile names the account; the limits stand without it when the endpoint does not
+    // answer at all (managed-userinfo.ts:55-78). A failure that may pass - a 429 with its
+    // Retry-After, a 5xx, the request itself - is raised instead: the service keeps the last
+    // reading and the account it names, and honors the backoff, rather than listing the same
+    // account a second time under the place's key.
     let account = null;
     try {
       const me = await requestJson(ctx, `${baseUrl}/me`, { headers });
       const id = text(me["user_id"]);
       if (id !== null) account = { id, label: text(me["nickname"]) ?? text(me["email"]) ?? text(me["username"]) };
-    } catch {}
+    } catch (error) {
+      if (!(error instanceof UsageHttpError) || error.status === 429 || error.status >= 500) throw error;
+    }
     return { plan: null, windows, credits: kimiCredits(body["boosterWallet"]), account };
   },
 };
