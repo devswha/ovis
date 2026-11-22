@@ -14,15 +14,16 @@ beforeAll(async () => { if (!noBrowser) browser = await chromium.launch({ execut
 afterEach(async () => { await page?.close(); });
 afterAll(async () => { await browser?.close(); });
 
-async function chooser(saved: string[], account = true) {
-  page = await browser.newPage({ locale: "en-US" });
-  await page.addInitScript((saved) => {
+async function chooser(saved: string[], account = true, state: Record<string, unknown> = {}, locale = "en-US") {
+  page = await browser.newPage({ locale });
+  await page.addInitScript(({ saved, state }) => {
     Object.assign(window, { Capacitor: { getPlatform: () => "ios", nativePromise: async (_plugin: string, method: string, args: { url?: string }) => {
-      if (method === "getState") return { saved, names: {} };
+      if (method === "getState") return { saved, names: {}, ...state };
       if (method === "open") console.info(`open:${args.url}`);
+      if (method === "goHome" || method === "backToCurrent") console.info(`asked:${method}`);
       return {};
     } } });
-  }, saved);
+  }, { saved, state });
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.hostname !== "chooser.test") return route.fulfill({ json: { providers: [], device: [] } });
@@ -44,4 +45,48 @@ test.skipIf(noBrowser)("a broken saved address does not prevent opening a later 
   });
   await page.getByRole("button", { name: "Open desk.example.org:7317", exact: true }).click();
   expect(await outcome).toBe(`open:${pc}/`);
+});
+
+/** What the page asks of the app (the stub's `asked:` lines) when `press` is done. */
+async function asked(press: () => Promise<void>): Promise<string> {
+  const outcome = new Promise<string>((resolve) => {
+    page.once("pageerror", (error) => resolve(error.message));
+    page.on("console", (message) => { if (message.text().startsWith("asked:")) resolve(message.text()); });
+  });
+  await press();
+  return await outcome;
+}
+
+test.skipIf(noBrowser)("standing in for the hosted screen that did not load, it says so in one line, and Try again asks for that screen", async () => {
+  await chooser([], true, { fallback: true });
+  const line = page.locator("#offline");
+  await line.waitFor({ state: "visible", timeout: 5_000 });
+  expect(await line.locator("span").textContent()).toBe("Can't connect to the internet");
+  // above the screen's title, and nothing else of the page changes: its tabs are all there
+  expect(await page.evaluate(() => (document.getElementById("offline")!.compareDocumentPosition(document.querySelector("h1")!) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)).toBe(true);
+  expect(await page.locator('[role="tab"]:visible').count()).toBe(3);
+  expect(await asked(() => page.getByRole("button", { name: "Try again", exact: true }).click())).toBe("asked:goHome");
+});
+
+test.skipIf(noBrowser)("the line is in Korean on a Korean phone", async () => {
+  await chooser([], true, { fallback: true }, "ko-KR");
+  await page.locator("#offline").waitFor({ state: "visible", timeout: 5_000 });
+  expect(await page.locator("#offline span").textContent()).toBe("인터넷에 연결할 수 없어요");
+  expect(await page.locator("#try-home").textContent()).toBe("다시 시도");
+});
+
+test.skipIf(noBrowser)("as the app's first screen, or opened to choose another PC, it has no such line", async () => {
+  await chooser(["https://desk.example.ts.net"], true, { current: "https://desk.example.ts.net", choosing: true, back: "current" });
+  await page.locator("#back-to-pc").waitFor({ state: "visible", timeout: 5_000 });
+  expect(await page.locator("#offline").isVisible()).toBe(false);
+  expect(await asked(() => page.locator("#back-to-pc").click())).toBe("asked:backToCurrent");
+});
+
+test.skipIf(noBrowser)("opened by the hosted screen for what only it can take, its back control leads to that screen", async () => {
+  await chooser([], true, { back: "home" });
+  const back = page.locator("#back-to-pc");
+  await back.waitFor({ state: "visible", timeout: 5_000 });
+  expect(await back.getAttribute("aria-label")).toBe("Back to Connect a PC");
+  expect(await page.locator("#offline").isVisible()).toBe(false);
+  expect(await asked(() => back.click())).toBe("asked:goHome");
 });

@@ -1,6 +1,7 @@
 import UIKit
 import WebKit
 import Capacitor
+import OvisHomeCore
 import OvisSshCore
 
 /// The PCs this app knows, kept in UserDefaults. The WebView's cookies (a paired device's
@@ -64,6 +65,41 @@ enum PCStore {
     /// The SSH login a page asked the connect screen to open with (HerdrShell openSshSetup), taken once. In memory only.
     static var sshSetup: String?
 
+    /// Whether the app's first screen is the hosted Connect a PC screen (Home): OvisAppHome in Info.plist, the build's
+    /// (hosted-origin.xcconfig), `bundled` in a build made with OVIS_APP_HOME=bundled, which keeps the app's own page.
+    static let homeHosted = appOrigin != nil && (Bundle.main.object(forInfoDictionaryKey: "OvisAppHome") as? String) != "bundled"
+
+    /// The hosted Connect a PC screen did not load, so the app's own page stands in for it, until the person tries it
+    /// again there (Try again) or a PC's page has loaded since: never by itself. In memory only: an app started again
+    /// tries the hosted screen.
+    static var homeFailed = false
+
+    /// The bundled demo was asked for (HerdrShell openDemo) and is up until it is left. In memory only.
+    static var demo = false
+
+    /// Whether something waits that only the app's own Connect a PC page takes: an SSH setup, or an SSH PC whose
+    /// address another app holds, which that page says.
+    static var bundledAsked: Bool { sshSetup != nil || failureKind == "ssh-port" }
+
+    /// The hosted screen is to be tried again (Try again on the fallback, the back control of the app's own page):
+    /// nothing is left that would keep the app's own page up.
+    static func goHome() {
+        homeFailed = false
+        demo = false
+        sshSetup = nil
+        if failureKind == "ssh-port" { failure = nil }
+    }
+
+    /// A relay PC's page came up in the hosted screen (Home.Event.relayPc), which the app is not asked to open: the
+    /// hosted app at `appOrigin` is the current PC from here on, as it is after a sign-in from the app's own page, so
+    /// the next start is that PC's.
+    static func keepHosted(_ appOrigin: String) {
+        choosing = false
+        current = appOrigin
+        last = appOrigin
+        if names[appOrigin] == nil { names[appOrigin] = "Ovis" }
+    }
+
     /// Opens the SSH PC `origin` the setup screen just added or set up again.
     /// Saved at once (not only once its page loads, as other PCs are), so a first load that fails never leaves it to
     /// be forgotten with its host key and keys (OvisSshPlugin.forgetRemoved).
@@ -72,6 +108,7 @@ enum PCStore {
         current = origin
         last = origin
         choosing = false
+        demo = false
         pendingStart = nil
         failure = nil
         redirects = 0
@@ -428,16 +465,107 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         """
     private var firstPageDone = false
     private static let answerSeconds = 20
+    private static let demoPage = "demo/index.html"
+
+    /// What this view controller opens as its first page (Home.screen), decided as it is made, and the key of what it
+    /// opens: the PC's, or the hosted app's origin for the hosted Connect a PC screen, which opens as a PC's first page
+    /// does without being made the current PC.
+    private let screen: Home.Screen
+    private let opened: String?
+
+    /// Where the hosted screen is, in a view controller that opened it (Home.Phase); nil in any other. Its failures
+    /// give way to the app's own page, never to error.html, and a relay PC's page coming up in it makes the hosted app
+    /// the current PC.
+    private var phase: Home.Phase?
+
+    /// How long the hosted screen has been loading with the app in front, and when that was last counted (tick).
+    private var homeWaited: TimeInterval = 0
+    private var homeSeenAt: TimeInterval = 0
+    private var urlWatch: NSKeyValueObservation?
+    private var openingChange: UIButton?
+
+    /// What to open now, from what the app holds (PCStore).
+    private static func start() -> (screen: Home.Screen, opened: String?) {
+        let pc = PCStore.shown.flatMap { key in URL(string: key)?.host == nil ? nil : key }
+        let screen = Home.screen(hosted: PCStore.homeHosted, pc: pc != nil, demo: PCStore.demo, asked: PCStore.bundledAsked, failed: PCStore.homeFailed)
+        switch screen {
+        case .pc: return (screen, pc)
+        case .home: return (screen, PCStore.appOrigin.flatMap { PCStore.origin(of: $0) })
+        case .bundled, .demo: return (screen, nil)
+        }
+    }
+
+    init() {
+        (screen, opened) = Self.start()
+        phase = screen == .home ? .loading : nil
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    /// Main.storyboard names this class too.
+    required init?(coder: NSCoder) {
+        (screen, opened) = Self.start()
+        phase = screen == .home ? .loading : nil
+        super.init(coder: coder)
+    }
+
+    /// Whether the hosted Connect a PC screen is what this view controller shows or is opening.
+    var atHome: Bool { phase == .loading || phase == .shown }
+
+    /// Whether this view controller shows the app's own page in place of the hosted screen, which did not load.
+    var fallback: Bool { screen == .bundled && PCStore.homeHosted && PCStore.homeFailed }
+
+    /// For the page's own back control (HerdrShell getState `back`): "current", "home" or "".
+    var backWay: String {
+        let choosing = PCStore.choosing && PCStore.current != nil
+        switch Home.back(screen: phase == .pc ? .pc : screen, hosted: PCStore.homeHosted, failed: PCStore.homeFailed, choosing: choosing, pageHasBack: false) {
+        case .current: return "current"
+        case .home: return "home"
+        case .page, .leave: return ""
+        }
+    }
+
+    /// Something happened to the hosted screen: what Home decides is carried out here, and nowhere else.
+    private func home(_ event: Home.Event) {
+        guard let phase else { return }
+        let action = Home.on(phase, event)
+        self.phase = Home.after(phase, event)
+        switch action {
+        case .liftCover:
+            hideOpening()
+        case .fallBack:
+            // this view controller goes with its web view, so a load that still finishes cannot bring the hosted
+            // screen back over what the person types on the app's own page
+            PCStore.homeFailed = true
+            ticker?.invalidate()
+            webView?.stopLoading()
+            HerdrBridgeViewController.reopen()
+        case .keepHosted:
+            if let opened { PCStore.keepHosted(opened) }
+            // a cover still up is a PC's from here on, with its Change PC
+            openingChange?.isHidden = false
+        case .none:
+            break
+        }
+    }
+
+    private func arrived(_ webView: WKWebView) {
+        if Home.relayPc(webView.url, appOrigin: PCStore.appOrigin) { home(.relayPc) }
+    }
 
     override func instanceDescriptor() -> InstanceDescriptor {
         let descriptor = super.instanceDescriptor()
-        if let origin = PCStore.shown, let host = URL(string: origin)?.host {
+        if let origin = opened, let host = URL(string: origin)?.host {
             // what server.url sets; the pairing link until a PC page has loaded, the PC's first page
-            // after it (a relay PC's scope keeps a pairing offer's `#offer=` fragment through here)
-            descriptor.serverURL = PCStore.pendingStart ?? PCStore.firstPage(origin)
+            // after it (a relay PC's scope keeps a pairing offer's `#offer=` fragment through here).
+            // The hosted screen is the hosted app's front page as the app's own way there (#pcs), not a
+            // launch that goes on to the PC opened last
+            descriptor.serverURL = screen == .home ? origin + "/#pcs" : PCStore.pendingStart ?? PCStore.firstPage(origin)
             // the whole PC is the app: its own links stay in the WebView, others go to Safari. For a
             // relay PC that host is the hosted shell's (app.ovis.sh), the one the app then allows
             descriptor.allowedNavigationHostnames = descriptor.allowedNavigationHostnames + [host]
+        } else if screen == .demo, FileManager.default.fileExists(atPath: descriptor.appLocation.appendingPathComponent(Self.demoPage).path) {
+            // the bundled demo as the first page (HerdrShell openDemo); Capacitor ends the app on a start page that is missing
+            descriptor.appStartPath = Self.demoPage
         }
         return descriptor
     }
@@ -471,14 +599,17 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     override func viewDidLoad() {
         // before super, which starts the first load
-        if let webView = webView, PCStore.shown != nil {
+        if let webView = webView, opened != nil {
             let proxy = NavigationFailureProxy(inner: webView.navigationDelegate) { [weak self] webView, reason in
                 self?.showFailure(in: webView, reason: reason)
             }
             proxy.onAnswer = { [weak self] in self?.watch?.answer(at: ProcessInfo.processInfo.systemUptime) }
-            proxy.onLoaded = { [weak self] in
-                self?.firstPageDone = true
-                self?.askPage()
+            proxy.onLoaded = { [weak self, weak webView] in
+                guard let self else { return }
+                self.firstPageDone = true
+                // a PC's page is up: the next Connect a PC tries the hosted screen again
+                if !self.atHome, let url = webView?.url, let current = PCStore.current, PCStore.belongs(url, to: current) { PCStore.homeFailed = false }
+                self.askPage()
             }
             // a first page that broke off after it started: the error page; one cancelled on purpose
             // leaves the cover up, which the timeout turns into Try again. Only the PC's answer or a
@@ -491,19 +622,34 @@ class HerdrBridgeViewController: CAPBridgeViewController {
                       ["http", "https"].contains(webView.url?.scheme?.lowercased() ?? "") else { return }
                 self.showFailure(in: webView, reason: reason)
             }
+            proxy.opened = opened
+            proxy.atHome = { [weak self] in self?.atHome ?? false }
+            // a PC's row on the hosted screen is the page's own link, which the app is not asked to open: the page
+            // that committed says when one came up, and so does the web view's address for a step within the page
+            // (while a load is under way that address is the one being tried, which may still fail)
+            if phase != nil {
+                proxy.onCommitted = { [weak self] webView in self?.arrived(webView) }
+                urlWatch = webView.observe(\.url) { [weak self] webView, _ in
+                    if !webView.isLoading { self?.arrived(webView) }
+                }
+            }
             failureProxy = proxy
             webView.navigationDelegate = proxy
         }
         super.viewDidLoad()
-        if webView != nil, let origin = PCStore.shown {
-            showOpening(origin)
-            watch = OpeningWatch(now: ProcessInfo.processInfo.systemUptime, answerLimit: TimeInterval(Self.answerSeconds))
+        if webView != nil, let origin = opened {
+            showOpening(origin, home: phase != nil)
+            homeSeenAt = ProcessInfo.processInfo.systemUptime
+            watch = OpeningWatch(now: homeSeenAt, answerLimit: TimeInterval(Self.answerSeconds))
             // often enough that the cover lifts within a fifth of a second of the client's first frame
             ticker = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.tick(origin) }
         }
     }
 
-    deinit { ticker?.invalidate() }
+    deinit {
+        ticker?.invalidate()
+        urlWatch?.invalidate()
+    }
 
     private func tick(_ origin: String) {
         guard let webView, openingView != nil, !gaveUp, var watch else { return }
@@ -512,7 +658,16 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         let stage = watch.stage(at: now)
         let shown = watch.shownProgress()
         self.watch = watch
-        if stage == .noAnswer {
+        if phase == .loading {
+            // only time in front counts, a second at most for each look: a page that came up while the app was away
+            // is asked (askPage) before the time it was away could count against it
+            homeWaited += min(now - homeSeenAt, 1)
+            homeSeenAt = now
+            if Home.timedOut(elapsed: homeWaited, answered: watch.answered) {
+                home(.timedOut)
+                return
+            }
+        } else if stage == .noAnswer {
             // said on the cover itself: while the PC's connection hangs, WebKit did not show the
             // error page either (it stayed unpainted), in this web view or a new one
             gaveUp = true
@@ -526,12 +681,15 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     private func askPage() {
         guard let webView, openingView != nil, !gaveUp else { return }
-        guard let url = webView.url, let current = PCStore.current, PCStore.belongs(url, to: current) else {
-            if firstPageDone { hideOpening() }
+        // the hosted screen is no current PC: its own key says which pages are its
+        guard let url = webView.url, let key = phase == nil ? PCStore.current : opened, PCStore.belongs(url, to: key) else {
+            // the hosted screen's cover lifts over the hosted screen alone
+            if firstPageDone, phase == nil || phase == .pc { hideOpening() }
             return
         }
         webView.evaluateJavaScript(Self.clientUpScript) { [weak self] up, _ in
-            if (up as? Bool) == true { self?.hideOpening() }
+            guard let self, (up as? Bool) == true else { return }
+            if self.phase == nil || self.phase == .pc { self.hideOpening() } else { self.home(.loaded) }
         }
     }
 
@@ -551,8 +709,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     private static var korean: Bool { Locale.preferredLanguages.first?.lowercased().hasPrefix("ko") ?? false }
 
-    private func showOpening(_ origin: String) {
-        let host = PCStore.names[origin] ?? URL(string: origin)?.host ?? origin
+    /// The cover until the first page shows. `home`: over the hosted screen, which is no PC: "Opening Ovis…", and no Change PC.
+    private func showOpening(_ origin: String, home: Bool) {
+        let host = home ? "Ovis" : PCStore.names[origin] ?? URL(string: origin)?.host ?? origin
         let cover = UIView(frame: view.bounds)
         cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         cover.backgroundColor = UIColor(red: 0x12 / 255, green: 0x10 / 255, blue: 0x0e / 255, alpha: 1)
@@ -573,6 +732,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         })
         change.tintColor = .white
         change.titleLabel?.font = .preferredFont(forTextStyle: .body)
+        change.isHidden = home
         let retry = UIButton(type: .system, primaryAction: UIAction(title: Self.korean ? "다시 시도" : "Try again") { _ in
             PCStore.failure = nil
             HerdrBridgeViewController.reopen()
@@ -619,6 +779,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         openingSpinner = spinner
         openingLabel = label
         openingRetry = retry
+        openingChange = change
         openingBar = bar
         openingName = host
     }
@@ -666,6 +827,11 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     /// `reason` nil keeps the reason an SSH PC's tunnel gave (its 503 says less).
     private func showFailure(in webView: WKWebView, reason: String?) {
+        // the hosted screen's failure gives way to the app's own page, never to the error page of a PC
+        if phase != nil, phase != .pc {
+            home(.failed)
+            return
+        }
         guard let local = bridge?.config.localURL else { return }
         // the timeout stays armed: if WebKit does not get the error page up either, the cover says it
         if let reason { PCStore.fail(reason, kind: nil) }
@@ -745,6 +911,11 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     var onAnswer: (() -> Void)?
     var onLoaded: (() -> Void)?
     var onPageFailed: ((WKWebView, String?) -> Void)?
+    var onCommitted: ((WKWebView) -> Void)?
+    /// The key of what the view controller opened: a PC's, or the hosted app's origin for the hosted Connect a PC screen.
+    var opened: String?
+    /// Whether that is the hosted screen, still no PC (HerdrBridgeViewController.atHome).
+    var atHome: (() -> Bool)?
 
     /// Whether a failed load was cancelled or handed off on purpose: a new navigation, WebKit's
     /// "frame load interrupted" (102) or "plug-in handled load" (204).
@@ -801,10 +972,12 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
             return
         }
         if !pageShown, provisional, navigationAction.targetFrame?.isMainFrame == true,
-           let current = PCStore.shown, let url = navigationAction.request.url,
+           let current = opened, let url = navigationAction.request.url,
            let next = PCStore.origin(of: url), next != PCStore.origin(ofKey: current) {
             decisionHandler(.cancel)
-            follow(url, from: current, in: webView)
+            // the hosted screen led elsewhere (a network's sign-in page): it is not up, and no other origin becomes
+            // the PC in its place
+            if atHome?() == true { onFailure(webView, nil) } else { follow(url, from: current, in: webView) }
             return
         }
         if let capacitor = inner as? WebViewDelegationHandler {
@@ -853,6 +1026,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
         pageShown = true
         NotificationCenter.default.post(name: .ovisPageCommitted, object: nil)
         inner?.webView?(webView, didCommit: navigation)
+        onCommitted?(webView)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appOrigin, writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
+import { appHome, appOrigin, writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
 import { APP_ORIGIN, homeHost, knownLogins, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, sshOrAddress, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
@@ -339,13 +339,55 @@ describe("the hosted origin a build gives the native apps", () => {
     }
   });
 
+  it("takes OVIS_APP_HOME as the first screen: the hosted one unless it says bundled, or the build has no account", () => {
+    expect(appHome(undefined, true)).toBe("hosted");
+    expect(appHome("", true)).toBe("hosted");
+    expect(appHome("hosted", true)).toBe("hosted");
+    expect(appHome("bundled", true)).toBe("bundled");
+    // OVIS_APP_ACCOUNT=0: no account, so no hosted screen to open first, unless the build asks for it by name
+    expect(appHome(undefined, false)).toBe("bundled");
+    expect(appHome("hosted", false)).toBe("hosted");
+    for (const text of ["Bundled", "local", "0", "true"]) expect(() => appHome(text, true)).toThrow("OVIS_APP_HOME must be hosted or bundled");
+  });
+
+  it("writes the first screen beside the origin, and nothing for a build that takes both defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hosted-home-"));
+    try {
+      mkdirSync(join(dir, "android/app"), { recursive: true });
+      mkdirSync(join(dir, "ios"), { recursive: true });
+      writeNativeOrigin(dir, preview, "bundled");
+      expect(readFileSync(join(dir, "android/app/hosted-origin.properties"), "utf8")).toBe(`appOrigin=${preview}\nappHome=bundled\n`);
+      expect(readFileSync(join(dir, "ios/hosted-origin.generated.xcconfig"), "utf8")).toBe("OVIS_APP_ORIGIN = https:/$()/relay-0510.ovis-app.pages.dev\nOVIS_APP_HOME = bundled\n");
+      writeNativeOrigin(dir, null, "bundled");
+      expect(readFileSync(join(dir, "android/app/hosted-origin.properties"), "utf8")).toBe("appHome=bundled\n");
+      expect(readFileSync(join(dir, "ios/hosted-origin.generated.xcconfig"), "utf8")).toBe("OVIS_APP_HOME = bundled\n");
+      writeNativeOrigin(dir, preview, "hosted");
+      expect(readFileSync(join(dir, "android/app/hosted-origin.properties"), "utf8")).toBe(`appOrigin=${preview}\n`);
+      writeNativeOrigin(dir, null, "hosted");
+      expect(existsSync(join(dir, "android/app/hosted-origin.properties"))).toBe(false);
+      expect(existsSync(join(dir, "ios/hosted-origin.generated.xcconfig"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is the hosted screen in the native builds unless the build says bundled", () => {
+    const gradle = readFileSync(join(app, "android/app/build.gradle"), "utf8");
+    expect(gradle).toContain('getProperty("appHome", "hosted") != "bundled"');
+    expect(gradle).toContain('buildConfigField "boolean", "HOME_HOSTED", "${homeHosted}"');
+    const xcconfig = readFileSync(join(app, "ios/hosted-origin.xcconfig"), "utf8");
+    expect(xcconfig).toMatch(/^OVIS_APP_HOME = hosted\n#include\? "hosted-origin\.generated\.xcconfig"/m);
+    expect(readFileSync(join(app, "ios/App/App/Info.plist"), "utf8")).toMatch(/<key>OvisAppHome<\/key>\s*<string>\$\(OVIS_APP_HOME\)<\/string>/);
+  });
+
   it("is what the native builds read, each with the pages' own default", () => {
     expect(APP_ORIGIN).toBe("https://app.ovis.sh");
     const gradle = readFileSync(join(app, "android/app/build.gradle"), "utf8");
     expect(gradle).toContain('file("hosted-origin.properties")');
     expect(gradle).toContain('getProperty("appOrigin", "https://app.ovis.sh")');
     const xcconfig = readFileSync(join(app, "ios/hosted-origin.xcconfig"), "utf8");
-    expect(xcconfig).toContain("OVIS_APP_ORIGIN = https:/$()/app.ovis.sh\n#include? \"hosted-origin.generated.xcconfig\"");
+    expect(xcconfig).toContain("OVIS_APP_ORIGIN = https:/$()/app.ovis.sh\n");
+    expect(xcconfig).toContain("\n#include? \"hosted-origin.generated.xcconfig\"");
     expect(readFileSync(join(app, "ios/App/App/Info.plist"), "utf8")).toMatch(/<key>OvisAppOrigin<\/key>\s*<string>\$\(OVIS_APP_ORIGIN\)<\/string>/);
     // the App target's Debug and Release configurations both build on it
     const project = readFileSync(join(app, "ios/App/App.xcodeproj/project.pbxproj"), "utf8");

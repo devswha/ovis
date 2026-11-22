@@ -484,19 +484,43 @@ function managePanel(origin, label) {
   return panel;
 }
 
-/** Opened from a PC to choose another way (HerdrShell chooseAnother): that PC stays open until another is picked, and this goes back to it. */
-function showBackToPc(state) {
+/** Where the back control leads: the PC this screen was opened from (backToCurrent), or the hosted screen (goHome). */
+let backTo = "backToCurrent";
+
+/**
+ * The way back from this screen. Opened from a PC to choose another way (HerdrShell chooseAnother): that PC stays open
+ * until another is picked, and this goes back to it. Opened by the hosted Connect a PC screen for what only this page
+ * takes (getState's `back` is "home": an SSH setup, a pairing link): back to that screen, as the phone's Back goes.
+ */
+function showBack(state) {
   const back = document.getElementById("back-to-pc");
-  back.hidden = state.choosing !== true;
+  const home = state.choosing !== true && state.back === "home";
+  back.hidden = state.choosing !== true && !home;
   if (back.hidden) return;
-  const name = savedPcLabel(state.current, state.names ?? {}, sshPcs);
+  backTo = home ? "goHome" : "backToCurrent";
+  const name = home ? t("Back", "뒤로") : savedPcLabel(state.current, state.names ?? {}, sshPcs);
   back.textContent = `‹ ${name}`;
-  back.setAttribute("aria-label", t(`Back to ${name}`, `${name} 화면으로 돌아가기`));
+  back.setAttribute("aria-label", home ? t("Back to Connect a PC", "PC 연결로 돌아가기") : t(`Back to ${name}`, `${name} 화면으로 돌아가기`));
 }
 
 document.getElementById("back-to-pc").addEventListener("click", async () => {
   error.textContent = "";
-  try { await shell("backToCurrent"); }
+  try { await shell(backTo); }
+  catch (err) { error.textContent = String(err?.message ?? err); }
+});
+
+/**
+ * This page standing in for the hosted Connect a PC screen, which did not load (getState's `fallback`): one line says
+ * so, and its Try again asks the app for that screen again. Nothing else here goes back to it, so a phone that stays
+ * offline stays on this page, with all of it working.
+ */
+function showFallback(state) {
+  document.getElementById("offline").hidden = state.fallback !== true;
+}
+
+document.getElementById("try-home").addEventListener("click", async () => {
+  error.textContent = "";
+  try { await shell("goHome"); }
   catch (err) { error.textContent = String(err?.message ?? err); }
 });
 
@@ -508,7 +532,8 @@ async function load() {
     try { for (const pc of (await ssh("list")).pcs ?? []) sshPcs[pc.origin] = pc; }
     catch { /* an app without the plugin lists its PCs as before */ }
   }
-  showBackToPc(state);
+  showBack(state);
+  showFallback(state);
   renderPcs("relay", document.getElementById("relay-pcs"), document.getElementById("relay-section"), state);
   const tailnet = renderPcs("tailscale", document.getElementById("tailnet"), document.getElementById("tailnet-section"), state);
   document.getElementById("tailnet-none").hidden = tailnet > 0;

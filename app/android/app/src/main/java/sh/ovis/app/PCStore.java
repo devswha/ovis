@@ -54,6 +54,41 @@ final class PCStore {
     /** The SSH login a page asked the connect screen to open on its SSH tab with (HerdrShellPlugin.openSshSetup), until it takes it. In memory only. */
     static volatile String sshSetup;
 
+    /**
+     * The hosted Connect a PC screen (Home) did not load, so the app's own page stands in for it, until the person
+     * tries it again there (Try again) or a PC's page has loaded since: never by itself. In memory only: an app started
+     * again tries the hosted screen.
+     */
+    static volatile boolean homeFailed;
+
+    /** The bundled demo was asked for (HerdrShell openDemo) and is up until it is left. In memory only. */
+    static volatile boolean demo;
+
+    /** Whether something waits that only the app's own Connect a PC page takes: a pairing link, an SSH setup, or an SSH PC whose address another app holds, which that page says. */
+    static boolean bundledAsked() {
+        return link != null || sshSetup != null || "ssh-port".equals(failureKind);
+    }
+
+    /** The hosted screen is to be tried again (Try again on the fallback, Back from the app's own page or the demo): nothing is left that would keep the app's own page up. */
+    static void goHome() {
+        homeFailed = false;
+        demo = false;
+        link = null;
+        sshSetup = null;
+        if ("ssh-port".equals(failureKind)) fail(null, null);
+    }
+
+    /**
+     * A relay PC's page came up in the hosted screen (Home.Event.RELAY_PC), which the app is not asked to open: the
+     * hosted app at `appOrigin` is the current PC from here on, as it is after a sign-in from the app's own page, so
+     * Back and the next start are that PC's.
+     */
+    static void keepHosted(Context context, String appOrigin) {
+        choosing = false;
+        prefs(context).edit().putString("current", appOrigin).putString("last", appOrigin).apply();
+        if (names(context).optString(appOrigin, "").isEmpty()) setName(context, appOrigin, "Ovis");
+    }
+
     private static final Pattern PC_SCOPE = Pattern.compile("/s/([0-9a-f]{32})/?");
 
     /**
@@ -304,6 +339,7 @@ final class PCStore {
 
     static void setCurrent(Context context, String origin) {
         choosing = false;
+        demo = false;
         prefs(context).edit().putString("current", origin).apply();
     }
 
@@ -313,6 +349,7 @@ final class PCStore {
 
     static void open(Context context, String key, String start) {
         choosing = false;
+        demo = false;
         prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }

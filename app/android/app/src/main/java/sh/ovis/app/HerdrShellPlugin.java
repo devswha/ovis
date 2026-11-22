@@ -25,6 +25,14 @@ public class HerdrShellPlugin extends Plugin {
         state.put("current", current == null ? "" : current);
         state.put("last", last == null ? "" : last);
         state.put("choosing", PCStore.choosing && current != null);
+        MainActivity activity = (MainActivity) getActivity();
+        // the page asking is the hosted Connect a PC screen, opened without being the current PC (Home)
+        state.put("home", activity != null && activity.atHome());
+        // the page asking is the app's own, standing in for the hosted screen that did not load: Try again is goHome
+        state.put("fallback", activity != null && activity.fallback());
+        // where the page's own way back leads, as the phone's Back does with nothing behind the page: "current"
+        // (backToCurrent), "home" (goHome) or nowhere
+        state.put("back", activity == null ? "" : activity.backWay());
         state.put("failure", PCStore.failure == null ? "" : PCStore.failure);
         state.put("kind", PCStore.failureKind == null ? "" : PCStore.failureKind);
         state.put("command", PCStore.failureCommand == null ? "" : PCStore.failureCommand);
@@ -35,6 +43,11 @@ public class HerdrShellPlugin extends Plugin {
     @PluginMethod
     public void open(PluginCall call) {
         String text = call.getString("url");
+        // the word "demo" as the hosted screen's address field sends it: the bundled demo, as on the app's own page
+        if (Home.demoAddress(text)) {
+            openDemo(call);
+            return;
+        }
         String key = text == null ? null : PCStore.origin(text);
         if (key == null) {
             call.reject("That is not an http or https address.");
@@ -191,7 +204,8 @@ public class HerdrShellPlugin extends Plugin {
             return;
         }
         PCStore.sshSetup = target;
-        PCStore.setCurrent(getContext(), null);
+        // asked while choosing another way: the PC it was opened from stays the one to go back to, as on the app's own page
+        if (!(PCStore.choosing && PCStore.current(getContext()) != null)) PCStore.setCurrent(getContext(), null);
         call.resolve();
         reopen();
     }
@@ -232,7 +246,9 @@ public class HerdrShellPlugin extends Plugin {
 
     @PluginMethod
     public void disconnect(PluginCall call) {
-        PCStore.setCurrent(getContext(), null);
+        // Change PC in the demo the app opened (openDemo) leaves the demo alone: the PC it was opened over stays current
+        if (PCStore.demo) PCStore.demo = false;
+        else PCStore.setCurrent(getContext(), null);
         call.resolve();
         reopen();
     }
@@ -249,6 +265,20 @@ public class HerdrShellPlugin extends Plugin {
     public void backToCurrent(PluginCall call) {
         call.resolve();
         getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).backToCurrent());
+    }
+
+    /** The hosted Connect a PC screen again: Try again on the app's own page standing in for it (getState's `fallback`). */
+    @PluginMethod
+    public void goHome(PluginCall call) {
+        call.resolve();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).goHome());
+    }
+
+    /** The bundled demo, which only the app can open: a page of another origin cannot reach the app's own files. */
+    @PluginMethod
+    public void openDemo(PluginCall call) {
+        call.resolve();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).openDemo());
     }
 
     @PluginMethod

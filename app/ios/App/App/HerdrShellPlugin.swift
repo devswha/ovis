@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import OvisHomeCore
 import OvisSshCore
 
 @objc(HerdrShellPlugin)
@@ -14,17 +15,26 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "chooseAnother", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "backToCurrent", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "retry", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "goHome", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openDemo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openSshSetup", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "takeSshSetup", returnType: CAPPluginReturnPromise)
     ]
 
     @objc func getState(_ call: CAPPluginCall) {
+        let shown = bridge?.viewController as? HerdrBridgeViewController
         call.resolve([
             "saved": PCStore.saved,
             "names": PCStore.names,
             "current": PCStore.current ?? "",
             "last": PCStore.last ?? "",
             "choosing": PCStore.choosing && PCStore.current != nil,
+            // the page asking is the hosted Connect a PC screen, opened without being the current PC (Home)
+            "home": shown?.atHome ?? false,
+            // the page asking is the app's own, standing in for the hosted screen that did not load: Try again is goHome
+            "fallback": shown?.fallback ?? false,
+            // where the page's own way back leads: "current" (backToCurrent), "home" (goHome) or nowhere
+            "back": shown?.backWay ?? "",
             "name": PCStore.last.flatMap { PCStore.names[$0] } ?? "",
             "failure": PCStore.failure ?? "",
             "kind": PCStore.failureKind ?? "",
@@ -35,6 +45,11 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     /// `url`: an http or https address; the address itself (a pairing link's code or a relay pairing
     /// offer's fragment included) is the first page.
     @objc func open(_ call: CAPPluginCall) {
+        // the word "demo" as the hosted screen's address field sends it: the bundled demo, as on the app's own page
+        if Home.demoAddress(call.getString("url")) {
+            openDemo(call)
+            return
+        }
         guard let text = call.getString("url"), let url = URL(string: text), let origin = PCStore.origin(of: url) else {
             call.reject("That is not an http or https address.")
             return
@@ -55,6 +70,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         PCStore.current = key
         PCStore.last = key
         PCStore.choosing = false
+        PCStore.demo = false
         PCStore.pendingStart = text
         PCStore.failure = nil
         PCStore.redirects = 0
@@ -89,8 +105,12 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         PCStore.sshSetup = target
-        PCStore.current = nil
-        PCStore.choosing = false
+        // asked while choosing another way: the PC it was opened from stays the one to go back to, as on the app's own page
+        if !(PCStore.choosing && PCStore.current != nil) {
+            PCStore.current = nil
+            PCStore.choosing = false
+        }
+        PCStore.demo = false
         call.resolve()
         DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
     }
@@ -106,8 +126,13 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func disconnect(_ call: CAPPluginCall) {
-        PCStore.current = nil
-        PCStore.choosing = false
+        // Change PC in the demo the app opened (openDemo) leaves the demo alone: the PC it was opened over stays current
+        if PCStore.demo {
+            PCStore.demo = false
+        } else {
+            PCStore.current = nil
+            PCStore.choosing = false
+        }
         call.resolve()
         DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
     }
@@ -115,6 +140,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     /// A PC page's Connect a PC: the connect screen, the current PC kept until another opens (PCStore.choosing).
     @objc func chooseAnother(_ call: CAPPluginCall) {
         PCStore.choosing = true
+        PCStore.demo = false
         call.resolve()
         DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
     }
@@ -122,6 +148,23 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     /// The connect screen's way back to the PC it was opened from to choose another way.
     @objc func backToCurrent(_ call: CAPPluginCall) {
         PCStore.choosing = false
+        PCStore.demo = false
+        call.resolve()
+        DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
+    }
+
+    /// The hosted Connect a PC screen again: Try again on the app's own page standing in for it (getState's `fallback`),
+    /// and that page's way back to it (`back` is "home").
+    @objc func goHome(_ call: CAPPluginCall) {
+        PCStore.goHome()
+        call.resolve()
+        DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
+    }
+
+    /// The bundled demo, which only the app can open: a page of another origin cannot reach the app's own files. Its
+    /// own Change PC (disconnect) leaves it.
+    @objc func openDemo(_ call: CAPPluginCall) {
+        PCStore.demo = true
         call.resolve()
         DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
     }
