@@ -326,7 +326,10 @@ interface Parent {
   echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
   /** the session's last entry of its own is the answer that ended its turn (endsTurn), with no request or prompt after it */
   answered: boolean;
-  /** the session has written a Stop hooks' summary: it runs Stop hooks, and an answer of its is no rest until theirs */
+  /**
+   * The last turn of the session to end ran Stop hooks: it wrote their summary after its answer. Its next answer is
+   * then no rest until their summary too. One that ended with none (a /goal's hook gone with its goal) ends that.
+   */
   hooked: boolean;
 }
 interface Start { end: number; at: number | null; turn: boolean }
@@ -508,7 +511,11 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
     parent.echo = null;
     try {
       const entry = row(JSON.parse(line));
-      if (entry?.["type"] === "system" && entry["isSidechain"] !== true) rests(parent, stamp(entry["timestamp"]), end);
+      if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
+        if (parent.answered) parent.hooked = false;
+        parent.answered = false;
+        rests(parent, stamp(entry["timestamp"]), end);
+      }
     } catch {}
   } else if (line.includes('"subtype":"stop_hook_summary"')) {
     // a hook that blocked the stop wrote its feedback as a prompt before this summary, which took the answer back, and
@@ -517,10 +524,10 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         const context = entry["hookAdditionalContext"];
-        const goesOn = Array.isArray(context) && context.length > 0 && entry["preventedContinuation"] !== true;
+        const stopped = entry["preventedContinuation"] === true;
         parent.hooked = true;
-        if (goesOn) parent.restAt = null;
-        else if (parent.answered) rests(parent, stamp(entry["timestamp"]), end);
+        if (!stopped && Array.isArray(context) && context.length > 0) parent.restAt = null;
+        else if (parent.answered || stopped) rests(parent, stamp(entry["timestamp"]), end);
         parent.answered = false;
       }
     } catch {}
@@ -530,7 +537,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system") {
         const written = stamp(entry["timestamp"]);
-        if (entry["isSidechain"] !== true) { parent.loopAt = end; parent.loopTime = written; }
+        if (entry["isSidechain"] !== true) { parent.loopAt = end; parent.loopTime = written; parent.answered = false; }
         if (entry["taskKind"] === "loop") {
           parent.echo = null;
           parent.restAt = null;
@@ -552,15 +559,21 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
     const written = stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]);
     openTurn(parent, end, written);
     if (user && SELF_RESUMED_RE.test(line)) selfResumed(parent, line, end);
+    // a request or a prompt after an answer with no summary between them: that turn ran no Stop hook. A hook's
+    // feedback is a meta prompt written before its summary
+    if (parent.answered && (line.includes('"type":"api-request"') || (user && !line.includes('"isMeta":true')))) parent.hooked = false;
     parent.answered = endsTurn(line);
     if (parent.answered && !parent.hooked) rests(parent, written, end);
   } else if (line.includes('"queued_command"') && !line.includes('"isSidechain":true')) {
     try {
       const entry = row(JSON.parse(line));
-      if (entry?.["type"] === "attachment" && row(entry["attachment"])?.["type"] === "queued_command") {
+      const attachment = row(entry?.["attachment"]);
+      if (entry?.["type"] === "attachment" && attachment?.["type"] === "queued_command") {
         addStart(parent, { end, at: stamp(entry["timestamp"]), turn: false });
         parent.echo = null;
         parent.answered = false;
+        // a prompt taken into the turn after its answer: that turn goes on with it (claudeTurnEnd)
+        if (attachment["commandMode"] === "prompt") parent.restAt = null;
       }
     } catch {}
   }
@@ -1490,6 +1503,18 @@ export class ClaudeSubagentStatus {
 
   loopTold(paneId: string): boolean {
     return this.panes.get(paneId)?.looping ?? false;
+  }
+
+  /**
+   * restsOn, with the session's transcript read again first: a turn begun since the last poll (a teammate's message,
+   * a prompt typed in the terminal) ends the rest the queue goes by before its keys go.
+   */
+  restsOnNow(paneId: string): boolean {
+    const tracked = this.panes.get(paneId);
+    const turns = !this.stopped && tracked?.path != null && tracked.live && tracked.turns?.path === tracked.path ? tracked.turns : undefined;
+    const parent = turns ? scanParent(turns.path) : null;
+    if (tracked?.resting && parent && (parent.id !== turns!.id || parent.restAt === null)) this.poll(paneId);
+    return this.restsOn(paneId);
   }
 
   loopHoldsNow(paneId: string): boolean {

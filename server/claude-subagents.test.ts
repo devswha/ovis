@@ -3490,6 +3490,103 @@ describe("ClaudeSubagentStatus, a turn Claude Code ends with no turn_duration wh
     }
   });
 
+  it("rests at the summary of a hook that stopped the turn outright, though another one's feedback came before it", async () => {
+    const s = session();
+    s.prompt(1);
+    teammate(s);
+    const status = await tracked(s);
+    try {
+      answer(s, 2);
+      s.parent({ type: "user", isSidechain: false, isMeta: true, timestamp: at(2), message: { role: "user", content: "Stop hook feedback:\n[node stop-hook.mjs]: keep going" } });
+      hooksRan(s, 2, { hookErrors: ["keep going"], preventedContinuation: true, stopReason: "stopped by the other hook" });
+      status.poll();
+      expect(status.restsOn("p1")).toBe(true);
+    } finally { status.stop(); }
+  });
+
+  it("takes no summary written after a /loop fire as the rest: the fire's turn begins", async () => {
+    const s = session();
+    s.prompt(1);
+    teammate(s);
+    answer(s, 1);
+    hooksRan(s, 1);
+    s.prompt(2);
+    const status = await tracked(s);
+    try {
+      answer(s, 3);
+      s.parent({ type: "system", subtype: "scheduled_task_fire", timestamp: at(3), taskKind: "loop", taskId: "591b6f5a" });
+      hooksRan(s, 3);
+      status.poll();
+      expect([status.restsOn("p1"), status.loopHolds("p1")]).toEqual([false, true]);
+    } finally { status.stop(); }
+  });
+
+  it("is at work again once a prompt sent during the turn is taken into it after its answer", async () => {
+    const s = session();
+    s.prompt(1);
+    teammate(s);
+    const status = await tracked(s);
+    try {
+      answer(s, 2);
+      s.parent({ type: "attachment", isSidechain: false, timestamp: at(2), attachment: { type: "queued_command", commandMode: "prompt", prompt: "and the tests" } });
+      status.poll();
+      expect(status.restsOn("p1")).toBe(false);
+    } finally { status.stop(); }
+  });
+
+  it("takes an answer as the rest again once a turn of a session that ran Stop hooks ended with no summary (a /goal's hook is gone)", async () => {
+    const s = session();
+    s.prompt(1);
+    answer(s, 1);
+    hooksRan(s, 1);
+    s.prompt(2);
+    teammate(s);
+    const status = await tracked(s);
+    try {
+      answer(s, 3);
+      status.poll();
+      expect(status.restsOn("p1")).toBe(false);
+      s.parent({ type: "user", isSidechain: false, turnPosition: { promptIndex: 2, turnIndex: 4 }, timestamp: at(4), message: { role: "user", content: "Another Claude session sent a message: done" } });
+      s.parent({ type: "api-request", timestamp: at(4) });
+      answer(s, 4);
+      status.poll();
+      expect(status.restsOn("p1")).toBe(true);
+    } finally { status.stop(); }
+  });
+
+  it("ends a /loop turn's hold on the queue at its answer in a session that runs no Stop hook", async () => {
+    const s = session();
+    s.prompt(1);
+    teammate(s);
+    answer(s, 1);
+    const status = await tracked(s);
+    try {
+      s.parent({ type: "system", subtype: "scheduled_task_fire", timestamp: at(2), taskKind: "loop", taskId: "591b6f5a" });
+      s.parent({ type: "user", isMeta: true, isSidechain: false, permissionMode: "auto", turnOrigin: "scheduled", wakeupSource: "loop_wakeup", timestamp: at(2), message: { role: "user", content: "check the deploy" } });
+      status.poll();
+      expect([status.loopHolds("p1"), status.restsOn("p1")]).toEqual([true, false]);
+      answer(s, 3);
+      status.poll();
+      expect([status.loopHolds("p1"), status.restsOn("p1")]).toEqual([false, true]);
+    } finally { status.stop(); }
+  });
+
+  it("reads a turn begun since the last poll when a send asks whether the pane still rests", async () => {
+    const s = session();
+    s.prompt(1);
+    teammate(s);
+    answer(s, 1);
+    hooksRan(s, 1);
+    const status = await tracked(s);
+    try {
+      expect([status.restsOn("p1"), status.restsOnNow("p1")]).toEqual([true, true]);
+      s.parent({ type: "user", isSidechain: false, turnPosition: { promptIndex: 1, turnIndex: 2 }, timestamp: at(2), message: { role: "user", content: "Another Claude session sent a message: done" } });
+      expect(status.restsOn("p1")).toBe(true);
+      expect(status.restsOnNow("p1")).toBe(false);
+      expect(status.restsOn("p1")).toBe(false);
+    } finally { status.stop(); }
+  });
+
   it("rests at the summary of hooks one of which stopped the turn outright, whatever context another gave", async () => {
     const s = session();
     s.prompt(1);

@@ -969,10 +969,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up
-   * to a poll old, with every test still passing.
+   * to a poll old, with every test still passing. Read fresh, a rest the queue has on the transcript's word alone,
+   * herdr reading the pane at work (restingClaude), ends with a turn begun since the last read.
    */
   const queueHeld = (paneId: string, fresh: boolean): boolean =>
-    fresh ? agentNow.get(paneId) === "claude" && claudeAgents.loopHoldsNow(paneId) : queueStatus(paneId, "idle") === "working";
+    fresh ? agentNow.get(paneId) === "claude" && (claudeAgents.loopHoldsNow(paneId) || (restingClaude(paneId, "claude", "working") !== "working" && !claudeAgents.restsOnNow(paneId)))
+      : queueStatus(paneId, "idle") === "working";
   /** A socket file alone proves nothing: a herdr that died can leave its file behind. */
   const currentHerdrLifetime = (): string | undefined => {
     const identity = finishes.herdrIdentity();

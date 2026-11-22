@@ -2597,6 +2597,7 @@ describe("a Claude turn at rest while its teammate works, with no turn_duration 
     writeFileSync(join(dir, "agent-asleeper-1.meta.json"), JSON.stringify({ agentType: "sleeper", name: "sleeper", description: "Sleep teammate", spawnDepth: 0, requestShape: "background", taskKind: "in_process_teammate", teamName: `session-${id.slice(0, 8)}` }));
     writeFileSync(join(dir, "agent-asleeper-1.jsonl"), line({ isSidechain: true, sessionId: id, agentId: "asleeper-1", type: "user", timestamp: ts(0), message: { role: "user", content: "sleep" } }));
     const writes: string[] = [];
+    const on: { keys?: () => void } = {};
     const client: Client = { data: connectionData({ readOnly: false, deviceId: undefined }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: () => 1, close: () => {} };
     let lane: Promise<unknown> = Promise.resolve();
     const serialize = <T>(_paneId: string, task: () => T | Promise<T>): Promise<T> => { const next = lane.catch(() => undefined).then(task); lane = next; return next; };
@@ -2618,15 +2619,22 @@ describe("a Claude turn at rest while its teammate works, with no turn_duration 
     spies.push(
       spyOn(herdr, "paneRead").mockResolvedValue({ text: "" } as never),
       spyOn(herdr, "paneProcessInfo").mockResolvedValue({ foreground_processes: [], shell_pid: null } as never),
-      spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text) => { writes.push(`paste ${text}`); }),
-      spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, keys) => { writes.push(`keys ${keys.join(",")}`); }),
+      spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text, _socket, guard) => {
+        if (guard && !guard()) throw new herdr.HerdrError("cancelled", "herdr pane.send_text was not sent: the sender may no longer send");
+        writes.push(`paste ${text}`);
+      }),
+      spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, keys, _socket, guard) => {
+        on.keys?.();
+        if (guard && !guard()) throw new herdr.HerdrError("cancelled", "herdr pane.send_keys was not sent: the sender may no longer send");
+        writes.push(`keys ${keys.join(",")}`);
+      }),
     );
     const flush = async () => {
       for (let seen: unknown = null; seen !== lane;) { seen = lane; await lane.catch(() => undefined); await new Promise((resolve) => setTimeout(resolve, 0)); }
     };
     const submit = (id: number, text: string) => delivery.pendingFrames.submit(client, { type: "submit", id, pane_id: pane.pane_id, text, payload: text, delivery: "queue" } as never);
     const waiting = () => delivery.pending.list(client, pane.pane_id).map((message) => message.state);
-    return { ...h, path, pane, delivery, writes, submit, flush, waiting };
+    return { ...h, path, pane, delivery, writes, submit, flush, waiting, on };
   }
 
   it("tells the pane and its queue at rest once the session's own turn answered and its Stop hooks ran, though herdr still reads working", async () => {
@@ -2642,7 +2650,7 @@ describe("a Claude turn at rest while its teammate works, with no turn_duration 
     expect((await h.snapshot()).panes[0]).toMatchObject({ agent_status: "done", background_tasks: 1 });
   });
 
-  it("types a queued Chat message at that rest, and the next one only after the turn the first began has answered", async () => {
+  it("types a queued Chat message at that rest, and the next one only once a turn after the first's Enter has answered and its hooks ran", async () => {
     const h = await teammateAtWork();
     await h.submit(1, "first");
     await h.submit(2, "second");
@@ -2672,4 +2680,21 @@ describe("a Claude turn at rest while its teammate works, with no turn_duration 
     expect(h.writes).toEqual(["paste \u001b[200~first\u001b[201~", "keys Enter", "paste \u001b[200~second\u001b[201~", "keys Enter"]);
     expect(h.waiting()).toEqual([]);
   });
+
+  it("sends no Enter when a teammate's message begins a turn after the reads before the Enter, and leaves the paste uncommitted", async () => {
+    const h = await teammateAtWork();
+    await h.submit(1, "pasted");
+    await h.flush();
+    h.on.keys = () => {
+      delete h.on.keys;
+      appendFileSync(h.path, line({ type: "user", isSidechain: false, turnPosition: { promptIndex: 1, turnIndex: 2 }, timestamp: ts(400), message: { role: "user", content: "Another Claude session sent a message: done" } }));
+    };
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+    expect(h.waiting()).toEqual(["uncertain"]);
+  });
+
 });
