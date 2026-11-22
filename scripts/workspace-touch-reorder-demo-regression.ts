@@ -742,17 +742,20 @@ try {
       await touch(cdp, "touchStart", burstFrom);
       await page.locator(".workspace.is-lifted").waitFor({ timeout: 5_000 });
       const rowCount = await page.locator(".machine-workspaces .workspace-group[data-workspace]").count();
-      await page.evaluate(() => { (window as unknown as { __rowBoxReads: number }).__rowBoxReads = 0; });
-      await page.evaluate(({ x, y }) => {
+      const burst = await page.evaluate(({ x, y }) => new Promise<{ during: number; frame: number }>((resolve) => {
+        const counter = window as unknown as { __rowBoxReads: number };
+        counter.__rowBoxReads = 0;
         const target = document.elementFromPoint(x, y) ?? document.body;
-        const touch = new Touch({ identifier: 1, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y });
         for (let i = 0; i < 8; i += 1) {
+          const at = y + i * 4;
+          const touch = new Touch({ identifier: 1, target, clientX: x, clientY: at, pageX: x, pageY: at, screenX: x, screenY: at });
           target.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
         }
-      }, { x: burstFrom.x, y: burstFrom.y + 40 });
-      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
-      const reads = await page.evaluate(() => (window as unknown as { __rowBoxReads: number }).__rowBoxReads);
-      assert.ok(reads > 0 && reads <= rowCount, `a burst of 8 touchmoves measures the rows once per frame: ${reads} reads for ${rowCount} rows`);
+        const during = counter.__rowBoxReads;
+        requestAnimationFrame(() => resolve({ during, frame: counter.__rowBoxReads }));
+      }), { x: burstFrom.x, y: burstFrom.y + 12 });
+      assert.equal(burst.during, 0, `a burst of 8 touchmoves at 8 heights measures no row while it is dispatched: ${burst.during} reads`);
+      assert.ok(burst.frame > 0 && burst.frame <= rowCount, `the next frame measures the rows once: ${burst.frame} reads for ${rowCount} rows`);
       await touch(cdp, "touchCancel");
       console.log("PASS a burst of touchmoves measures the rows once per frame, not once per event");
 
