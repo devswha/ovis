@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { InputEvent } from "../input/decode.ts";
 import { CATALOGUE } from "../model/catalogue.ts";
+import { FRAME_PASS_MS } from "../model/deadlines.ts";
 import type { World } from "../model/focus.ts";
 import type { MenuEntry } from "../model/menu.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
 import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
+import { place } from "../testing/fixtures/fixture.ts";
 import { Run } from "../testing/run.ts";
 
 const TEST_MS = 120_000;
@@ -22,6 +24,8 @@ async function shown(cols: number, rows = 30): Promise<Run> {
   return run;
 }
 
+/** A left click's press and release at 0-based `col`, `row`, as one read (SGR mouse reports). */
+const click = (col: number, row: number): string => `\x1b[<0;${col + 1};${row + 1}M\x1b[<0;${col + 1};${row + 1}m`;
 const attached = (run: Run) => run.loop.panes.views().map((view) => view.terminal).sort();
 const docSets = (run: Run) => run.core.calls().filter((call) => call.method === "doc.set").length;
 
@@ -100,6 +104,51 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(run.grid()[0]).toBe("·1:ovis 2/2:logs hc:default            [menu]");
     expect(attached(run)).toEqual(["t3"]);
   }, TEST_MS);
+  it("a click chooses the entry its line showed, though the world changed the menu before the next paint", async () => {
+    const run = await shown(45, 80);
+    await run.keys("ctrl+b,enter");
+    await run.advance(FRAME_PASS_MS);
+    const menu = () => run.loop.model().overlays.at(-1) as { kind: string; entries: readonly MenuEntry[] };
+    const zoom = menu().entries.find((entry) => entry.kind === "action" && entry.action === "zoom")!;
+    const painted = run.grid();
+    // a menu line starts with the frame, the cursor's mark and the entry's key
+    const row = painted.findIndex((line) => line.startsWith(`| ${zoom.label} `));
+    expect(row).toBeGreaterThan(0);
+    // a workspace made elsewhere: every entry below the workspaces moves down one, and zoom's index now holds close_pane
+    place(run.core, { space: "w-new", spaceName: "new", tab: "t-new", tabName: "new" }, "$ ");
+    await run.settle();
+    expect(menu().entries.some((entry) => entry.kind === "workspace" && entry.id === "w-new")).toBe(true);
+    expect(run.grid()).toEqual(painted);
+    run.type(click(10, row));
+    await run.settle();
+    await run.advance(200);
+    expect(run.loop.report().actions.filter((code) => code.startsWith("run:"))).toEqual(["run:zoom"]);
+    expect([run.loop.report().mode.overlays, run.core.calls().filter((call) => call.method.startsWith("terminal.") && !call.method.startsWith("terminal.attach") && call.method !== "terminal.list")]).toEqual([[], []]);
+  }, TEST_MS);
+
+  it("a click on the line of a place gone since the paint chooses nothing, and the menu stays open", async () => {
+    const run = await shown(45, 80);
+    await run.keys("ctrl+b,enter");
+    await run.advance(FRAME_PASS_MS);
+    const painted = run.grid();
+    const row = painted.findIndex((line) => line.startsWith("| 4 "));
+    expect(painted[row]).toContain("2:logs");
+    const where = () => {
+      const { focus } = run.loop.model();
+      const tab = focus.tabs[focus.workspace!]!;
+      return [focus.workspace, tab, focus.panes[tab]];
+    };
+    const before = where();
+    // the tab 2:logs ends: its index now holds the first pane of the shown tab
+    run.core.remove("t3");
+    await run.settle();
+    expect(run.grid()).toEqual(painted);
+    run.type(click(10, row));
+    await run.settle();
+    await run.advance(200);
+    expect([run.loop.report().mode.overlays, where()]).toEqual([["menu"], before]);
+  }, TEST_MS);
+
   it("the narrow header counts the agents that need the user elsewhere, and not the one it shows", async () => {
     const run = await Run.start({ fixture: agents, cols: 45, rows: 30 });
     runs.push(run);

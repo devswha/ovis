@@ -49,8 +49,8 @@ export interface PointerScene {
 export type PointerAct =
   | { readonly kind: "select"; readonly target: Target }
   | { readonly kind: "action"; readonly action: "toggle_sidebar" | "new_workspace" | "menu" }
-  /** the top overlay's entry with this index was clicked */
-  | { readonly kind: "choose"; readonly entry: number }
+  /** the top overlay's entry with this key (the menu's `entryKey`, as painted) was clicked */
+  | { readonly kind: "choose"; readonly entry: string }
   /** to the focused pane's program, in its grid's cells */
   | { readonly kind: "forward"; readonly pane: string; readonly event: MouseInput }
   /** show the pane's screen this many rows above its newest rows */
@@ -107,7 +107,7 @@ export class Pointer {
       if (!hit || !("part" in hit) || !hit.part.startsWith("overlay:")) return [];
       if (hit.id === "close") return [{ kind: "close_overlay" }];
       const [kind, entry] = splitId(hit.id);
-      return kind === "menu" && /^\d+$/.test(entry) ? [{ kind: "choose", entry: Number(entry) }] : [];
+      return kind === "menu" && entry !== "" ? [{ kind: "choose", entry }] : [];
     }
     if (isWheel(event)) return this.wheel(event, scene);
     if (event.action === "press") return this.press(event, scene);

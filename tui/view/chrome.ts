@@ -17,7 +17,7 @@ import type { ColorDepth } from "../host/index.ts";
 import { focused } from "../model/focus.ts";
 import { helpRows, modeBar, shownRefusals } from "../model/hints.ts";
 import type { KeymapNote } from "../model/keymap.ts";
-import type { MenuEntry } from "../model/menu.ts";
+import { entryKey, type MenuEntry } from "../model/menu.ts";
 import { type Field, type Overlay, OVERLAYS } from "../model/overlays.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
@@ -747,7 +747,8 @@ function menuPart(width: number, height: number, menu: Extract<Overlay, { kind: 
         const room = end - col > keysWidth + 8 ? end - col - keysWidth : end - col;
         col = printFit(canvas, col, y, line.text, room, text, true);
         if (keys && end - col >= keysWidth) printFit(canvas, end - keysWidth, y, keys, keysWidth, canvas.style({ fg: colors.textDim, bg }));
-        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${index}`);
+        // the entry's key, not its index: a world update before the next paint shifts the indices under the click
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${entryKey(menu.entries[index]!)}`);
       });
     },
   };

@@ -14,7 +14,7 @@ import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KE
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
-import { keptCursor, menuEntries } from "./menu.ts";
+import { entryKey, keptCursor, menuEntries } from "./menu.ts";
 import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -73,8 +73,11 @@ export type ScreenEvent =
   | { readonly type: "notice"; readonly code: string; readonly data?: Readonly<Record<string, string | number>>; readonly calm?: boolean; readonly at: number }
   /** focus the target once the world shows it (outside tab `away`): what a layout write made or moved; any other focus move drops it */
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null; readonly at: number }
-  /** the top overlay's entry `entry` was clicked: the menu chooses it as Enter on it would */
-  | { readonly type: "choose"; readonly entry: number; readonly at: number }
+  /**
+   * the top overlay's entry with key `entry` (`entryKey`, as its line was painted) was clicked: the menu chooses it as
+   * Enter on it would; an entry gone from the menu since that paint chooses nothing
+   */
+  | { readonly type: "choose"; readonly entry: string; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
   | { readonly type: "restore"; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number };
 
@@ -163,7 +166,8 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       break;
     case "choose": {
       const top = acc.s.overlays.at(-1);
-      if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
+      const at = top?.kind === "menu" ? top.entries.findIndex((entry) => entryKey(entry) === event.entry) : -1;
+      if (top?.kind === "menu" && at >= 0) answerOverlay(acc, menuChoice(top, at), event.at);
       break;
     }
     case "restore":

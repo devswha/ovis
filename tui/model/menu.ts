@@ -39,7 +39,8 @@ export function menuEntries(world: World, focus: Focus): MenuEntry[] {
   ];
 }
 
-const entryKey = (entry: MenuEntry): string => entry.kind === "action" ? `action:${entry.action}` : `${entry.kind}:${entry.id}`;
+/** An entry's identity, the same across world updates: what a click on its painted line names (never its index, which a world update shifts). */
+export const entryKey = (entry: MenuEntry): string => entry.kind === "action" ? `action:${entry.action}` : `${entry.kind}:${entry.id}`;
 
 /** The cursor's place among `next` for the entry it was on in `before`: the same entry, else the same index, kept in range. */
 export function keptCursor(before: readonly MenuEntry[], cursor: number, next: readonly MenuEntry[]): number {
