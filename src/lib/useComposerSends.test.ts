@@ -45,11 +45,12 @@ function sends(pane: string, answer: SubmitResult, shown: string[], extra: Parti
   return actions;
 }
 
-it.each([true, false])("uncertain display dismissal connected=%p sends no pending action, submit or draft restore", async (connected) => {
+it("an offline uncertain display dismissal sends no pending action, submit or draft restore", async () => {
+  const connected = false;
   const saved = savedStorage();
   const pane = `dismiss-${connected}`, owner = paneStorageId("local", pane);
   const wire: unknown[] = [], shown: string[] = [];
-  const socket = { connected, pendingAction: (...args: unknown[]) => { wire.push(args); throw new Error("display dismissal must never call the backend"); } } as unknown as HerdrSocket;
+  const socket = { connected, pendingAction: (...args: unknown[]) => { wire.push(args); throw new Error("an offline dismissal must never call the backend"); } } as unknown as HerdrSocket;
   const key = `ovis:composer-draft:${owner}`;
   composerDrafts.set(key, "keep my existing draft");
   const pending = { id: `display-${connected}`, request_id: 7, text: "/thinking high", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
@@ -65,6 +66,41 @@ it.each([true, false])("uncertain display dismissal connected=%p sends no pendin
     expect(pendingMessages.read(owner)).toEqual([]);
     expect(new PendingMessageStore(() => saved.storage).read(owner)).toEqual([]);
   } finally { composerDrafts.set(key, ""); saved.restore(); }
+});
+
+it("a live owner's uncertain dismissal asks the bridge to dismiss it, never as a withdrawal, a submit or a draft restore", async () => {
+  const saved = savedStorage(), pane = "dismiss-live", owner = paneStorageId("local", pane), key = `ovis:composer-draft:${owner}`;
+  const wire: unknown[] = [], shown: string[] = [];
+  const pending = { id: "live-uncertain", request_id: 9, text: "/thinking high", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
+  composerDrafts.set(key, "keep my existing draft");
+  pendingMessages.accept(owner, pending, "scope");
+  // The bridge's discard of an uncertain record is its "dismissed" outcome, which also frees the pane's queue.
+  const socket = { connected: true, on: () => () => {}, pendingAction: (...args: unknown[]) => {
+    wire.push(args);
+    pendingMessages.publish(owner, [], [{ id: pending.id, outcome: "dismissed" }], "scope");
+    return Promise.resolve({ ok: true });
+  } } as unknown as HerdrSocket;
+  try {
+    const actions = sends(pane, { ok: true }, shown, { socketRef: { current: socket }, submitComposerMessage: (...args) => { wire.push(args); return Promise.resolve({ ok: true }); } });
+    await actions.actOnPending(pending.id, "dismiss");
+    expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]); expect(shown).toEqual([]);
+    expect(composerDrafts.read(key).text).toBe("keep my existing draft");
+    expect(pendingMessages.read(owner)).toEqual([]);
+  } finally { composerDrafts.set(key, ""); saved.restore(); }
+});
+
+it.each(["pending_uncertain", "pending_not_found"])("a live owner's dismissal the bridge refuses with %s hides only this page's copy", async (code) => {
+  const saved = savedStorage(), pane = `dismiss-refused-${code}`, owner = paneStorageId("local", pane), wire: unknown[] = [];
+  const pending = { id: `refused-${code}`, request_id: 10, text: "question", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
+  pendingMessages.accept(owner, pending, "scope");
+  const socket = { connected: true, on: () => () => {}, pendingAction: (...args: unknown[]) => { wire.push(args); return Promise.resolve({ ok: false, code, message: "refused" }); } } as unknown as HerdrSocket;
+  try {
+    await sends(pane, { ok: true }, [], { socketRef: { current: socket } }).actOnPending(pending.id, "dismiss");
+    expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]);
+    expect(pendingMessages.read(owner)).toEqual([]);
+    pendingMessages.publish(owner, [pending], [], "scope");
+    expect(pendingMessages.read(owner)).toEqual([]);
+  } finally { saved.restore(); }
 });
 
 it("display-only intent never turns into a queue discard after an uncertain row changes", async () => {
