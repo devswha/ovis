@@ -320,6 +320,8 @@ export function startLoop(options: LoopOptions): Loop {
       if (state !== before) return;
     }
     shape = layOut(size.cols, size.rows, tab ? view.tabs.get(tab.id) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
+    // a pane that left the shown tab keeps no grid: shown again, it is drawn anew from its new attach
+    for (const pane of grids.keys()) if (!shape.spots.some((spot) => spot.pane === pane)) grids.delete(pane);
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
     const key = JSON.stringify(shown);
     if (painter && key !== shownKey) {

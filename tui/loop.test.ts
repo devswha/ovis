@@ -427,6 +427,20 @@ describe("the loop", () => {
     expect([moved.focus.panes["t-main"], moved.received[0], moved.received[1]]).toEqual(["t2", "", Buffer.from("zy\r").toString("hex")]);
   }, TEST_MS);
 
+  it("bounded memory: tabs visited at one host size leave no grid behind, only the shown tab's panes have one", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    const visits: [tab: string, panes: string[]][] = [["t-logs", ["t3"]], ["t-notes", ["t4"]], ["t-main", ["t1", "t2"]], ["t-notes", ["t4"]]];
+    for (const [tab, panes] of visits) {
+      run.loop.dispatch({ type: "select", target: { kind: "tab", id: tab }, at: run.clock.current });
+      await run.advance(100);
+      await run.live();
+      await run.advance(FRAME_PASS_MS);
+      expect([tab, run.loop.report().grids.map((grid) => grid.pane).sort()]).toEqual([tab, panes]);
+    }
+    expect(run.loop.report().actions).not.toContain("painter_rebuilt");
+  }, TEST_MS);
+
   it("scale: 200 terminals in 50 workspaces draw a frame, and only the shown tab's 16 panes are attached", async () => {
     const run = await start({ fixture: scale });
     await run.live(20_000);
