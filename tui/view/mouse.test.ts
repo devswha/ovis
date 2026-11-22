@@ -219,6 +219,18 @@ describe("the pointer", () => {
     expect(pointer.typed("a", lookA(false))).toEqual([]);
   });
 
+  it("a drag whose pane got a new emulator or switched screens before its release selects and copies nothing", () => {
+    for (const changed of [{ ...lookA(false), emulator: {} }, { ...lookA(false), altScreen: true }]) {
+      const pointer = new Pointer();
+      expect(pointer.mouse("screen", ev(["press", "left", 1, 1]), sceneOf("a", lookA(false)))).toEqual([]);
+      expect(pointer.mouse("screen", ev(["motion", "left", 3, 2]), sceneOf("a", lookA(false)))).toEqual([{ kind: "redraw" }]);
+      expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), sceneOf("a", changed))).toEqual([{ kind: "redraw" }]);
+      expect(pointer.shown("a", "a", changed)).toBeNull();
+      // the grab is gone with it: a later drag extends nothing
+      expect(pointer.mouse("screen", ev(["motion", "left", 5, 2]), sceneOf("a", changed))).toEqual([]);
+    }
+  });
+
   it("the selection is drawn in the grid's rows, and dropped when its pane loses the focus, gets a new emulator or switches screens", () => {
     const select = () => {
       const pointer = new Pointer();
@@ -556,6 +568,23 @@ describe("mouse on the whole screen", () => {
     await run.settle();
     expect(run.host.output().slice(from)).not.toContain("]52;");
     expect(run.loop.model().notices.find((notice) => notice.code === "copy_refused")?.data).toMatchObject({ reason: "too_large" });
+  }, TEST_MS);
+
+  it("a drag whose pane switches to its alternate screen before the release copies nothing", async () => {
+    const run = await demo120();
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("echo");
+    // the program switches to its alternate screen, with text where the selection's cells were
+    run.core.program("t1").output("\x1b[?1049h\x1b[H\x1b[2JALTSCREEN-TEXT");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 38)).toBe("ALTSCREEN-TEXT");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
   }, TEST_MS);
 
   it("a click on a pane without focus focuses it and is not forwarded; a click on a tab or a sidebar row selects it", async () => {
