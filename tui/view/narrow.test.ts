@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { InputEvent } from "../input/decode.ts";
 import { CATALOGUE } from "../model/catalogue.ts";
-import { FRAME_PASS_MS } from "../model/deadlines.ts";
+import { FRAME_PASS_MS, NOTICE_SHOW_MS } from "../model/deadlines.ts";
+import { modeBar } from "../model/hints.ts";
+import { STRINGS } from "../strings.ts";
 import type { World } from "../model/focus.ts";
 import type { MenuEntry } from "../model/menu.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
@@ -40,6 +42,29 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(grid[29]).toBe(" TERMINAL  ctrl+b prefix prefix+enter menu");
     expect(run.loop.screen()!.cols).toBe(45);
     expect(attached(run)).toEqual(["t1"]);
+  }, TEST_MS);
+
+  it("a notice takes the hint line's right end: every hint left of it is whole or gone, and they come back when it goes", async () => {
+    for (const cols of [45, 64, 120]) {
+      const run = await shown(cols);
+      const plain = run.grid()[29]!;
+      // where each whole hint ends in the line without a notice: after the badge, then after each ` keys label`
+      const hints = modeBar(run.loop.model()).hints.map((hint) => ` ${hint.keys.join("/")} ${STRINGS.actions[hint.action] ?? hint.action.replaceAll("_", " ")}`);
+      const ends = [plain.indexOf(hints[0]!)];
+      for (const hint of hints) if (plain.startsWith(hint, ends.at(-1)!)) ends.push(ends.at(-1)! + hint.length);
+      expect({ cols, first: ends[0]! > 0, shown: ends.length > 1 }).toEqual({ cols, first: true, shown: true });
+      // a notice of an unknown code shows as the code alone, between blanks: its width is the code's and 2
+      for (const length of [3, 10, 14, 20, 27, 40, 70, 100]) {
+        run.loop.dispatch({ type: "notice", code: "x".repeat(length), calm: true, at: run.clock.current });
+        await run.advance(FRAME_PASS_MS);
+        const row = run.grid()[29]!;
+        const end = cols - Math.min(length + 2, Math.floor(cols * 0.65));
+        const whole = Math.max(...ends.filter((at) => at <= end));
+        expect({ cols, length, before: row.slice(0, end).trimEnd(), notice: row.slice(end, end + 2) }).toEqual({ cols, length, before: plain.slice(0, whole).trimEnd(), notice: " x" });
+      }
+      await run.advance(NOTICE_SHOW_MS);
+      expect({ cols, row: run.grid()[29] }).toEqual({ cols, row: plain });
+    }
   }, TEST_MS);
 
   it("at 60 columns: the same one terminal across the whole width", async () => {
