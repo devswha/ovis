@@ -341,12 +341,16 @@ describe("the loop", () => {
   }, TEST_MS);
 
   it("a refused layout action's keys are taken, not replayed: with two panes, close twice, then Enter reaches the survivor", async () => {
-    // the second press in the same read as the first, and in a read of its own
-    for (const reads of [["\x02x\x02x"], ["\x02x", "\x02x"]]) {
+    // the second press in the same read as the first, and in a read of its own; the core telling of the close before
+    // it answers, or answering first
+    for (const [reads, answerFirst] of [[["\x02x\x02x"], false], [["\x02x", "\x02x"], false], [["\x02x\x02x"], true], [["\x02x", "\x02x"], true]] as const) {
       const run = await start({ core: oneTab(2) });
       await run.live();
       await run.advance(1);
+      run.core.holdingEvents = answerFirst;
       for (const read of reads) run.type(read);
+      await settled(run);
+      run.core.releaseEvents();
       await settled(run);
       // once t1 is gone, the same keys replayed would open the close-workspace dialog, and Enter would end t2
       run.type("\r");
@@ -354,6 +358,23 @@ describe("the loop", () => {
       expect([reads, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), run.loop.report().mode.overlays, sentTo(run, "t2")])
         .toEqual([reads, ["t1"], [], Buffer.from("\r").toString("hex")]);
       expect(run.loop.model().notices.map(({ code }) => code)).toContain("layout_busy");
+    }
+  }, TEST_MS);
+
+  it("a refused layout action's keys leave its dialog or mode as they did: Enter or a letter after them reaches the survivor", async () => {
+    // the close-workspace dialog answered yes, and navigate mode's move-pane key, each read behind a close
+    for (const [label, keys] of [["dialog", ["\x02D", "y"]], ["navigate", ["\x02w", "m"]]] as const) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      run.type("\x02x");
+      for (const key of keys) run.type(key);
+      await settled(run);
+      expect([label, run.loop.report().mode.overlays, run.loop.model().mode.name]).toEqual([label, [], "terminal"]);
+      run.type("\r");
+      await settled(run);
+      expect([label, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), sentTo(run, "t2")])
+        .toEqual([label, ["t1"], Buffer.from("\r").toString("hex")]);
     }
   }, TEST_MS);
 
