@@ -310,7 +310,13 @@ export function startLoop(options: LoopOptions): Loop {
   function reshow(): void {
     const size = host.size();
     const view = world.view();
-    const tab = focused(state.world, state.focus).tab;
+    const { tab, pane } = focused(state.world, state.focus);
+    // the focus moves before the layout: a pane that a zoom is about to cover still tells its program the focus left (a
+    // covered pane is silent), and one the zoom uncovers hears it come once it shows
+    if ((pane?.id ?? null) !== paneFocus) {
+      paneFocus = pane?.id ?? null;
+      panes.focus(paneFocus);
+    }
     shape = layOut(size.cols, size.rows, tab ? view.tabs.get(tab.id) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
     // a pane that left the shown tab keeps no grid: shown again, it is drawn anew from its new attach
     for (const pane of grids.keys()) if (!shape.spots.some((spot) => spot.pane === pane)) grids.delete(pane);
@@ -319,11 +325,6 @@ export function startLoop(options: LoopOptions): Loop {
     if (painter && key !== shownKey) {
       shownKey = key;
       panes.show(shown);
-    }
-    const pane = focused(state.world, state.focus).pane?.id ?? null;
-    if (pane !== paneFocus) {
-      paneFocus = pane;
-      panes.focus(pane);
     }
   }
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
+import { FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_RESIZE, HcConnection } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
@@ -387,6 +387,30 @@ describe("the loop", () => {
     const received = ["", Buffer.from("k").toString("hex")];
     expect(await outcome(["\x02yk"])).toEqual({ reads: ["\x02yk"], received });
     expect(await outcome(["\x02y", "k"])).toEqual({ reads: ["\x02y", "k"], received });
+  }, TEST_MS);
+
+  it("zoom: a program that asked for focus reports hears the focus leave when a zoom covers its pane and come back when it ends, and keeps its size", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    for (const terminal of ["t1", "t2"]) run.core.program(terminal).output("\x1b[?1004h");
+    await run.advance(50);
+    const heard = { t1: run.core.program("t1").receivedHex().length, t2: run.core.program("t2").receivedHex().length };
+    const since = (terminal: "t1" | "t2") => run.core.program(terminal).receivedHex().slice(heard[terminal]);
+    const channel = channelOf(run, "t1");
+    const size = run.core.size("t1");
+    const sent = run.sent.length;
+    const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+    const zoom = async (zoomed: string | null, version: number) => {
+      await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed }] }] }, version });
+      await run.advance(1_000);
+      await run.live();
+    };
+    await zoom("t2", 0);
+    expect([since("t1"), since("t2")]).toEqual(["1b5b4f", "1b5b49"]);
+    // t2 attached again at the zoom's rectangle, and the fake's first paint does not replay its mode 1004: only t1 is followed
+    await zoom(null, 1);
+    expect(since("t1")).toBe("1b5b4f1b5b49");
+    expect([channelOf(run, "t1"), run.core.size("t1"), framesOf(run, FRAME_RESIZE, sent).filter((frame) => frame.channel === channel)]).toEqual([channel, size, []]);
   }, TEST_MS);
 
   it("a size no emulator takes fails that pane alone: drawn as failed, no grid at the refused size, the other pane still typed into", async () => {
