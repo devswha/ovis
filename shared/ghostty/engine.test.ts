@@ -589,22 +589,25 @@ describe("shared/ghostty engine", () => {
       // saved on the main screen, set, then restored: the restore moves back to the main screen and counts
       engine.write(bytesOf("\x1b[?47s\x1b[?47h"));
       expect(state()).toEqual([true, 1]);
+      // restored and set again in one write: on the alternate screen before and after it, two switches
+      engine.write(bytesOf("\x1b[?47r\x1b[?47h"));
+      expect(state()).toEqual([true, 3]);
       engine.write(bytesOf("\x1b[?47r"));
-      expect(state()).toEqual([false, 2]);
+      expect(state()).toEqual([false, 4]);
       // set and restored in one write: two switches
       engine.write(bytesOf("\x1b[?47hY\x1b[?47r"));
-      expect(state()).toEqual([false, 4]);
+      expect(state()).toEqual([false, 6]);
       engine.reset();
-      expect(state()).toEqual([false, 5]);
+      expect(state()).toEqual([false, 7]);
       // left and entered again in one write: the same alternate screen, two switches
       engine.write(bytesOf("\x1b[?1049h\x1b[?1049l\x1b[?1049hX"));
-      expect(state()).toEqual([true, 8]);
+      expect(state()).toEqual([true, 10]);
       engine.write(bytesOf("\x1b[?10"));
       engine.write(bytesOf("47l"));
-      expect(state()).toEqual([false, 9]);
+      expect(state()).toEqual([false, 11]);
       // a full reset counts on the main screen too; a CSI that is not private switches nothing
       engine.write(bytesOf("\x1b[?1;47h\x1b[?25l\x1b[47h\x1bc"));
-      expect(state()).toEqual([false, 11]);
+      expect(state()).toEqual([false, 13]);
     } finally {
       engine.dispose();
     }
