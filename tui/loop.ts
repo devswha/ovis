@@ -27,7 +27,7 @@ import { Framer } from "./input/framer.ts";
 import type { TuiThemeMode } from "./theme.generated.ts";
 import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
-import { type Deadlines, earliest, FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
+import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
 import { focused } from "./model/focus.ts";
 import { type Following, initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
@@ -289,9 +289,16 @@ export function startLoop(options: LoopOptions): Loop {
    * `ahead` is the state core as if what waits had gone through: to see a detach in it, which never waits, and a layout
    * action, which is refused as busy when it is read, against the layout the user saw. `awaiting`: the write is done
    * and made or moved a pane, which the screen does not show yet: what waits goes there once focus follows it, and is
-   * refused if it does not by `until`, never sent to the pane focused before.
+   * refused if it does not by `until`, never sent to the pane focused before. `bytes`: the text and pastes among what
+   * waits; `full`: what waits reached BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
    */
-  let behindWrite: { readonly events: ModelEvent[]; ahead: ModelState; awaiting: { readonly following: Following; readonly until: number } | null } | null = null;
+  let behindWrite: {
+    readonly events: ModelEvent[];
+    ahead: ModelState;
+    awaiting: { readonly following: Following; readonly until: number } | null;
+    bytes: number;
+    full: boolean;
+  } | null = null;
   /** what waited behind a write is going through: a layout action in it was refused when it was read */
   let replaying = false;
 
@@ -323,7 +330,16 @@ export function startLoop(options: LoopOptions): Loop {
         if (effect.type === "run" && layout.writes(effect)) busy(effect.action);
       }
     }
+    if (behindWrite.full) return;
+    const bytes = event.type === "text" || event.type === "paste" ? Buffer.byteLength(event.text) : 0;
+    if (behindWrite.events.length >= BEHIND_WRITE_EVENTS || behindWrite.bytes + bytes > BEHIND_WRITE_BYTES) {
+      // nothing more waits, so what goes through later keeps its order and no paste is cut; a detach still leaves above
+      behindWrite.full = true;
+      dispatch({ type: "notice", code: "input_dropped", data: { reason: "full" }, at: clock.now() });
+      return;
+    }
     behindWrite.events.push(event);
+    behindWrite.bytes += bytes;
   }
 
   /** A layout action chosen while a write, or what waits behind it, is under way: one notice, nothing written. */
@@ -336,7 +352,7 @@ export function startLoop(options: LoopOptions): Loop {
    * focus to follow a pane the screen does not show yet, once focus followed it.
    */
   function holdUntil(writing: Promise<void>): void {
-    behindWrite ??= { events: [], ahead: state, awaiting: null };
+    behindWrite ??= { events: [], ahead: state, awaiting: null, bytes: 0, full: false };
     const before = state.following;
     void writing.then(() => {
       guard(() => {

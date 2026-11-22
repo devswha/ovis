@@ -118,6 +118,10 @@ export const QUIT_BOUND_MS = 2_000;
  * the screen to show that pane and focus to follow it; past it that input is refused, never sent to the pane before.
  */
 export const FOLLOW_WAIT_MS = 2_000;
+/** The most input events that wait behind a layout write; past it nothing more waits until the write is done. */
+export const BEHIND_WRITE_EVENTS = 4_096;
+/** The most bytes of typed and pasted text that wait behind a layout write: one paste at its limit. */
+export const BEHIND_WRITE_BYTES = PASTE_LIMIT_BYTES;
 /** A program's synchronized-output hold is ended this long after it began, if the program did not end it. */
 export const HOLD_RELEASE_MS = 1_000;
 /**

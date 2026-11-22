@@ -6,7 +6,7 @@ import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnect
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
-import { FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
+import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FOLLOW_WAIT_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
 import { SCALE_LARGEST_TAB, SCALE_TERMINALS, SCALE_WORKSPACES, scale } from "./testing/fixtures/scale.ts";
@@ -358,6 +358,43 @@ describe("the loop", () => {
       expect([shown, focusOf(run), sentTo(run, "t1"), sentTo(run, "t5"), notices(run)])
         .toEqual([shown, "t5", "", "", [shown ? ["input_refused", "opening"] : ["input_dropped", "not_shown"]]]);
     }
+  }, TEST_MS);
+
+  it("what waits behind a layout write is bounded: past its bytes or events nothing more waits, no paste is cut, and a detach still leaves", async () => {
+    const hex = (text: string) => Buffer.from(text).toString("hex");
+    const dropped = (run: Run) => run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"]);
+    // bytes: a paste that would pass the bound is refused whole, and what follows it waits no more
+    const bytes = await start({ fixture: demo });
+    await bytes.live();
+    await bytes.advance(1);
+    // every read before the close's write could be answered
+    bytes.type("\x02x");
+    bytes.type("xyz");
+    bytes.type(`\x1b[200~${"a".repeat(BEHIND_WRITE_BYTES - 2)}\x1b[201~`);
+    bytes.type("b");
+    await settled(bytes);
+    expect([sentTo(bytes, "t1"), sentTo(bytes, "t2"), dropped(bytes)]).toEqual(["", hex("xyz"), ["full"]]);
+    // events: the one past the bound and all after it go nowhere
+    const events = await start({ fixture: demo });
+    await events.live();
+    await events.advance(1);
+    events.type("\x02x");
+    for (let n = 0; n < BEHIND_WRITE_EVENTS; n++) events.type("a");
+    events.type("c");
+    await settled(events);
+    expect([sentTo(events, "t1"), sentTo(events, "t2") === hex("a".repeat(BEHIND_WRITE_EVENTS)), dropped(events)]).toEqual(["", true, ["full"]]);
+    // full, with a core that never answers: the prefix and q still leave at once
+    const full = await start({ fixture: demo });
+    await full.live();
+    await full.advance(1);
+    full.muted = true;
+    let ended = false;
+    void full.loop.done.then(() => { ended = true; });
+    full.type("\x02x");
+    for (let n = 0; n <= BEHIND_WRITE_EVENTS; n++) full.type("a");
+    full.type("\x02q");
+    await full.advance(QUIT_BOUND_MS + 100);
+    expect([dropped(full), ended]).toEqual([["full"], true]);
   }, TEST_MS);
 
   it("a focus loss behind a layout write disarms the prefix in order: q after it is typed, not a detach; without it, q detaches", async () => {
