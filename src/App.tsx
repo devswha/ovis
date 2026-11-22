@@ -129,7 +129,7 @@ import { fileViewerKey, useFilePanels } from "./lib/useFilePanels.ts";
 import { usePaneCoverage } from "./lib/usePaneCoverage.ts";
 import { useT } from "./lib/i18n.ts";
 import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionChip.ts";
-import { useHeaderConnection, type HeaderConnection } from "./lib/headerConnection.ts";
+import { connectionWord, useHeaderConnection, type HeaderConnection } from "./lib/headerConnection.ts";
 import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
 import { LensToggle } from "./components/LensToggle.tsx";
@@ -223,7 +223,7 @@ function DrawerHeadTitle({ machine, workspace, connection, watching }: { machine
       <div className="context-title"><span className="context-title-text">{machine}</span></div>
       <div className={`context-sub${connection === null ? "" : ` context-connection is-${connection}`}`}>
         {watching && <><span className="context-watch">{t("View only")}</span><span className="context-sep" aria-hidden="true">·</span></>}
-        <span>{connection === null ? workspace : t(connection === "connected" ? "Connected" : "Reconnecting…")}</span>
+        <span>{connection === null ? workspace : connectionWord(connection, t)}</span>
       </div>
     </div>
   );
@@ -1038,7 +1038,7 @@ export function App() {
                 }} />
             </PanePressContext.Provider>
             </RenderBoundary>
-            {phoneTabRow && headerConnection !== null && <span className={`header-tabs-connection is-${headerConnection}`}>{t(headerConnection === "connected" ? "Connected" : "Reconnecting…")}</span>}
+            {phoneTabRow && headerConnection !== null && <span className={`header-tabs-connection is-${headerConnection}`}>{connectionWord(headerConnection, t)}</span>}
             {phoneTabRow && viewOnly(selectedMachineId) && <span className="header-tabs-watch" title={t("View only")}><Eye aria-hidden="true" /><span className="visually-hidden">{t("View only")}</span></span>}
             {phoneTabRow && <button type="button" className="icon-button header-tabs-sheet" aria-label={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })}
               title={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })} aria-haspopup="dialog" aria-expanded={tabSheet !== null} onClick={(event) => toggleTabSheet(event.currentTarget)}>
@@ -1066,7 +1066,7 @@ export function App() {
             </div>
             <div className={`context-sub${headerConnection === null ? "" : ` context-connection is-${headerConnection}`}`}>
               {viewOnly(selectedMachineId) && !statusBarShown && <><span className="context-watch">{t("View only")}</span><span className="context-sep" aria-hidden="true">·</span></>}
-              {headerConnection !== null ? <span>{t(headerConnection === "connected" ? "Connected" : "Reconnecting…")}</span> : <>
+              {headerConnection !== null ? <span>{connectionWord(headerConnection, t)}</span> : <>
                 {crumb.showMachine && <><span className="machine-context-name">{crumb.machine}</span><span className="context-sep" aria-hidden="true">›</span></>}
                 <span>{crumb.workspace}</span>
                 {crumb.folder !== null && (
@@ -1117,7 +1117,7 @@ export function App() {
           {!guideShown && !inbox.shown && <ConnectionChip
             connected={chipConnected}
             word={connWord}
-            quiet={(headerConnection === "reconnecting" && note === null && ((crumb !== null && !stripInHeader) || (phoneTabRow && stripInHeader))) || statusBarShown}
+            quiet={((headerConnection === "reconnecting" || headerConnection === "failed") && note === null && ((crumb !== null && !stripInHeader) || (phoneTabRow && stripInHeader))) || statusBarShown}
             title={[chipConnected ? null : connWord, shownHerdr ? (shownHerdr.runtime === "herdr-core" ? t("herdr-core {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol })) : null].filter((part) => part !== null).join(" · ") || undefined}
           />}
           {selectedMachineId !== "local"
@@ -1377,7 +1377,7 @@ export function App() {
           watching={viewOnly(selectedMachineId)}
           waiting={sessionTally.waiting} onNextWaiting={nextWaiting === null ? null : openNextWaiting}
           connection={headerConnection ?? (chipConnected ? "live" : "lost")}
-          connectionWord={headerConnection === "reconnecting" ? t("Reconnecting…") : chipConnected ? t("Connected") : connWord} />}
+          connectionWord={headerConnection === "reconnecting" || headerConnection === "failed" ? connectionWord(headerConnection, t) : chipConnected ? t("Connected") : connWord} />}
         </div>
         </WebPanelContext.Provider>
         </OpenFileContext.Provider>

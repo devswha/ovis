@@ -1,19 +1,24 @@
-import { describe, expect, it } from "bun:test";
-import { headerConnection, NO_TRACK, stepConnection, type ConnectionFacts, type ConnectionTrack } from "./headerConnection.ts";
+import { afterEach, describe, expect, it } from "bun:test";
+import { connectionWord, headerConnection, NO_TRACK, stepConnection, type ConnectionFacts, type ConnectionTrack } from "./headerConnection.ts";
+import { nativeTransport, setTransport } from "./transport.ts";
 
 const live: ConnectionFacts = { scope: "a:local", reportedBy: "a:local", connected: true, connectedBefore: true, outputStopped: false };
 
-/** `"1s"` is the reconnect lasting RECONNECTING_SHOWN_AFTER_MS: the hook's timer marks the loss shown */
-function lines(sequence: (ConnectionFacts | "1s")[]): (string | null)[] {
+/**
+ * `"1s"` is the reconnect lasting RECONNECTING_SHOWN_AFTER_MS: the hook's timer marks the loss shown; `"10s"` is it lasting
+ * RECONNECT_FAILED_AFTER_MS, which marks it failed
+ */
+function lines(sequence: (ConnectionFacts | "1s" | "10s")[]): (string | null)[] {
   let track: ConnectionTrack = NO_TRACK;
   let facts = live;
   return sequence.map((step) => {
     if (step === "1s") track = track.lostOn === null ? track : { ...track, shown: true };
+    else if (step === "10s") track = track.lostOn === null ? track : { ...track, shown: true, failed: true };
     else { facts = step; track = stepConnection(track, facts); }
     return headerConnection(facts, track);
   });
 }
-const shownLoss = (scope = "a:local"): ConnectionTrack => ({ lostOn: scope, recoveredOn: null, shown: true });
+const shownLoss = (scope = "a:local"): ConnectionTrack => ({ lostOn: scope, recoveredOn: null, shown: true, failed: false });
 
 describe("headerConnection", () => {
   it("says nothing while the PC is connected: the crumb has the line", () => {
@@ -34,12 +39,28 @@ describe("headerConnection", () => {
   });
 
   it("says Connected while the scope it came back on is the one shown", () => {
-    expect(headerConnection(live, { lostOn: null, recoveredOn: "a:local", shown: false })).toBe("connected");
-    expect(headerConnection({ ...live, connected: false }, { lostOn: null, recoveredOn: "a:local", shown: false })).toBeNull();
+    expect(headerConnection(live, { lostOn: null, recoveredOn: "a:local", shown: false, failed: false })).toBe("connected");
+    expect(headerConnection({ ...live, connected: false }, { lostOn: null, recoveredOn: "a:local", shown: false, failed: false })).toBeNull();
   });
 
   it("keeps each PC's recovery to that PC", () => {
-    expect(headerConnection({ ...live, scope: "a:devbox", reportedBy: "a:devbox" }, { lostOn: null, recoveredOn: "a:local", shown: false })).toBeNull();
+    expect(headerConnection({ ...live, scope: "a:devbox", reportedBy: "a:devbox" }, { lostOn: null, recoveredOn: "a:local", shown: false, failed: false })).toBeNull();
+  });
+});
+
+describe("connectionWord", () => {
+  afterEach(() => setTransport(nativeTransport));
+  const t = (text: string): string => text;
+
+  it("says the PC is off once the relay has waited for it, and that it can't be reached when no relay answered", () => {
+    setTransport({ ...nativeTransport, unreached: "pc" });
+    expect(connectionWord("failed", t)).toBe("Turn on Ovis on the PC");
+    setTransport({ ...nativeTransport, unreached: "relay" });
+    expect(connectionWord("failed", t)).toBe("Can't reach the PC");
+    setTransport(nativeTransport);
+    expect(connectionWord("failed", t)).toBe("Can't reach the PC");
+    expect(connectionWord("reconnecting", t)).toBe("Reconnecting…");
+    expect(connectionWord("connected", t)).toBe("Connected");
   });
 });
 
@@ -50,6 +71,11 @@ describe("the line over time", () => {
 
   it("names nothing for a reconnect over within a second, neither the loss nor its return", () => {
     expect(lines([live, { ...live, connected: false }, live])).toEqual([null, null, null]);
+  });
+
+  it("stops promising a reconnect ten seconds into a loss, and still says Connected when it comes back", () => {
+    const lostHere = { ...live, connected: false };
+    expect(lines([live, lostHere, "1s", lostHere, "10s", lostHere, live])).toEqual([null, null, "reconnecting", "reconnecting", "failed", "failed", "connected"]);
   });
 
   it("keeps the loss's second running while it stays lost", () => {

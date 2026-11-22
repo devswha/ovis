@@ -34,7 +34,9 @@ export interface Transport {
   resourceUrl(path: string, signal?: AbortSignal): string | Promise<string>;
   /** The carrier a relay transport has up now; undefined while it reconnects. */
   readonly route?: "relay" | "direct" | undefined;
-  /** Calls `listener` each time the carrier goes up, down or changes. */
+  /** While a relay transport reconnects: `pc`, the relay has nobody for the PC; `relay`, no relay was reached. */
+  readonly unreached?: "pc" | "relay" | undefined;
+  /** Calls `listener` each time the carrier goes up, down or changes, and when `unreached` changes. */
   onRouteChange?(listener: () => void): () => void;
 }
 
