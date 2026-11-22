@@ -396,6 +396,7 @@ const BASE: Record<string, string> = {
   "It changed on the PC": "电脑上的内容已更改",
   "The PC took too long": "电脑响应太慢",
   "Can't reach the PC": "无法连接到电脑",
+  "Turn on Ovis on the PC": "请在 PC 上打开 Ovis",
   "PC disk is full": "电脑磁盘已满",
   "No permission on the PC": "电脑上没有权限",
   "Pair it again in Settings → Devices and PCs.": "请在设置 → 设备和电脑中重新配对。",

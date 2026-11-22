@@ -390,6 +390,7 @@ const BASE: Record<string, string> = {
   "It changed on the PC": "PC에서 내용이 바뀜",
   "The PC took too long": "PC 응답이 너무 늦음",
   "Can't reach the PC": "PC에 연결할 수 없음",
+  "Turn on Ovis on the PC": "PC에서 Ovis를 켜세요",
   "PC disk is full": "PC 디스크가 가득 참",
   "No permission on the PC": "PC에서 권한 없음",
   "Pair it again in Settings → Devices and PCs.": "설정 → 기기와 PC에서 다시 페어링하세요.",
