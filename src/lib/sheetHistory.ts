@@ -176,6 +176,28 @@ function tellTraversalOver(): void {
   for (const listener of [...traversalOver]) listener();
 }
 
+/** The page a sheet's item leaves for (leavePageFromSheet), loaded once no step of a closing sheet is to come or on its way. */
+let departure: string | null = null;
+
+function depart(): void {
+  if (departure === null || stepping !== null || leaving.size > 0) return;
+  const url = departure;
+  departure = null;
+  window.location.assign(url);
+}
+
+/**
+ * Leaves this page for `url` from an item of a sheet that closes as it runs (RowMenu closes the sheet first): the new page
+ * starts loading once the sheet's step off its entry has landed, from the entry under the sheet, so Back from it lands
+ * on the page the sheet was over. Started at once, the load loses to that step whenever the new page answers later than
+ * the step lands, as over a phone's network: Chromium cancels the load, and Android's WebView lands the step after the
+ * new page, which brings this one back. With no sheet's entry here, nor a step on its way, it loads at once.
+ */
+export function leavePageFromSheet(url: string): void {
+  departure = url;
+  if (!owned(window.history.state)) depart();
+}
+
 function stepBack(): void {
   const api = (window as unknown as { navigation?: NavigationApi }).navigation;
   const at = api?.currentEntry;
@@ -292,7 +314,7 @@ export function leaveSheet(id: string): void {
     heirs.delete(id);
     const key = entryKeys.get(id);
     entryKeys.delete(id);
-    if (sheetOf(window.history.state) !== id) return;
+    if (sheetOf(window.history.state) !== id) { depart(); return; }
     if (window.location.href !== address) { window.history.replaceState(ordinary(window.history.state, true), ""); seen = null; }
     else if (heir !== undefined && open.has(heir) && covered.delete(heir)) {
       window.history.replaceState({ ...(window.history.state as Record<string, unknown>), [KEY]: heir }, "");
@@ -305,6 +327,7 @@ export function leaveSheet(id: string): void {
       // its entry: the step leaves this entry too, and a second one would land under the entry it names
       stepBack();
     }
+    depart();
   }, 0));
 }
 
@@ -500,6 +523,7 @@ if (typeof window !== "undefined") {
     else if (!own && step === null && was !== null && here !== null && here.index === was.index - 1) ahead = was.key;
   };
   window.addEventListener("popstate", hear);
+  window.addEventListener("popstate", depart);
   sheetStep.holds = (event) => { hear(event as PopStateEvent); return holding; };
   if (sheetOf(window.history.state) !== null) window.history.replaceState(ordinary(window.history.state, true), "");
 }

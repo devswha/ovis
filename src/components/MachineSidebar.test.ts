@@ -24,7 +24,7 @@ describe("where a phone's More → Add a PC leads", () => {
     const store = new Map<string, string>();
     const went: string[] = [];
     Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { pathname: pcPage, assign: (url: string) => { went.push(url); } } } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { history: { state: null }, location: { pathname: pcPage, assign: (url: string) => { went.push(url); } } } });
     try {
       openAddPc("shell");
       expect(went).toEqual(["/#add"]);
