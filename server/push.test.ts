@@ -1486,6 +1486,23 @@ describe("the shared pane mute (shared/preferences.ts muted_panes)", () => {
     return { push, list };
   }
 
+  it("a moved agent pane keeps its parent and friend for the alert still waiting, so muting sub-agents still catches it", async () => {
+    let helpersMuted = false;
+    const asked: string[] = [];
+    const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 10_000, long: 10_000, longTurn: 0 },
+      friendOf: (machineId, paneId) => { asked.push(`${machineId}:${paneId}`); return "kuma"; },
+      muted: (_machineId, _paneId, known) => helpersMuted && known?.parent_pane_id !== undefined && known.parent_pane_id !== null });
+    push.subscribe(fake.subscription, { input: true, done: "always" });
+    push.seed([{ ...pane("w1:p1", "working", "claude"), agent: "claude" }, { ...pane("w1:p2", "working", "helper"), agent: "claude", parent_pane_id: "w1:p1" }]);
+    await push.onStatus("w1:p2", "blocked");
+    push.moved("w1:p2", "w2:p2");
+    helpersMuted = true;
+    push.mutesChanged();
+    await push.settled();
+    expect(fake.received).toHaveLength(0);
+    expect(asked).not.toContain("local:w1:p2");
+  });
+
   it("mute cancels delayed push", async () => {
     const { push, list } = mutable({ short: 10_000, long: 10_000, longTurn: 0 });
     push.seed([pane("w1:p1", "working", "claude")]);

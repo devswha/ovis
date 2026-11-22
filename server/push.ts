@@ -1068,6 +1068,9 @@ export function createPushService(options: PushServiceOptions): PushService {
         state.set(after, state.get(before));
         state.delete(before);
       }
+      // the fork's own pane state goes with it too: whether it is an agent (its friend) and what is known of its parent
+      if (agentPanes.delete(before)) agentPanes.add(after);
+      friends.moved(machineId, from, to);
       // its alert reads the pane it is for when it goes out: under way already, it goes out under the new ID too
       for (const entry of unsent) {
         if (entry.key !== before) continue;
