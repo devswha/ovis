@@ -14,7 +14,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { handleRequest, type ServerContext } from "../dispatch.ts";
 import { createServer } from "../index.ts";
 import { ask, linkRecord, memberRow, pairingPc, phone, provingDevice, sendLink, setUpFor, vouchFor, type Pc } from "./pairing.test-helpers.ts";
-import { bounded, relayConnection } from "../relay/test-helpers.ts";
+import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
 import { FrameType } from "../../shared/relay-mux.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 
@@ -147,6 +147,86 @@ test("removed PC: new account-only grants wait for the service, not the next per
     await remove();
   } finally { resume.resolve(); }
   expect(await bounded(verdict)).toBe("auth_failed");
+});
+
+const listingFeatures = ["account-listing-errors-1"];
+test("listing confirmation: an outage explains account refusal but cannot interrupt a local pairing", async () => {
+  let offline = false;
+  const f = await pc({ accountFetch: async (req, svc) => offline ? new Response(null, { status: 503 }) : svc.fetch(req) });
+  const { device, serverId } = await firstPcWithPhone(f);
+  const local = await phone();
+  const paired = f.devices.pairRelay(f.devices.startPairing().code, "Local", local.spki)!.device;
+  offline = true;
+  const own = await relayConnection(f, { serverId });
+  expect(await own.auth({ id: paired.id, keys: local.keys, publicKey: local.spki })).toMatchObject({ role: paired.role });
+  for (const [features, code] of [[[], "auth_failed"], [listingFeatures, "account_unreachable"]] as const) {
+    const link = await relayConnection(f, { serverId });
+    await expect(link.auth(device, features)).rejects.toThrow("Relay closed before admission");
+    expect(await link.serverError).toBe(code);
+  }
+  offline = false;
+  const retry = await relayConnection(f, { serverId });
+  expect(await retry.auth(device, listingFeatures)).toMatchObject({ role: "drive" });
+});
+
+test("listing confirmation: a reconnect burst shares one check until exactly 60 monotonic seconds", async () => {
+  const f = await pc();
+  const { device, serverId } = await firstPcWithPhone(f);
+  const clock = new TestClock();
+  f.devices.useClock(clock);
+  const checks = () => f.account.requests.filter(path => path === "POST /v1/pc/complete").length;
+  const start = checks();
+  const open = async () => (await relayConnection(f, { serverId })).auth(device, listingFeatures);
+  await Promise.all([open(), open(), open()]);
+  expect(checks() - start).toBe(1);
+  clock.advance(59_999);
+  await open();
+  expect(checks() - start).toBe(1);
+  clock.advance(1);
+  await open();
+  expect(checks() - start).toBe(2);
+});
+
+test.each(["unbind", "listing_changed", "identity_reset"] as const)("listing confirmation: %s supersedes a warm grant", async why => {
+  const f = await pc();
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
+  const open = await relayConnection(f, { serverId });
+  expect(await open.auth(device, listingFeatures)).toMatchObject({ role: "drive" });
+  if (why === "unbind") f.devices.clearAccountBinding("unlisted", "account");
+  else if (why === "identity_reset") await f.app.context.services.relay.resetIdentity();
+  else {
+    await remove();
+    await relist();
+    await f.app.context.services.accountMailbox.readSnapshot();
+  }
+  expect(f.devices.serviceBinding()).toBeNull();
+  const next = await relayConnection(f, { serverId });
+  await expect(next.auth(device, listingFeatures)).rejects.toThrow("Relay closed before admission");
+  expect(await next.serverError).toBe("auth_failed");
+});
+
+test.each(["completed", "relisted"])("listing confirmation: cold 0.5.9 binding with %s directory entry and expired admission needs re-add", async listing => {
+  const f = await pc();
+  const { device, serverId, remove, relist } = await firstPcWithPhone(f);
+  await f.app.stop();
+  if (listing === "relisted") { await remove(); await relist(); }
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-upgrade-listing-"));
+  cpSync(f.stateDir, stateDir, { recursive: true });
+  const path = join(stateDir, "account-pc.json");
+  const state = JSON.parse(readFileSync(path, "utf8"));
+  delete state.binding.listing_id;
+  writeFileSync(path, JSON.stringify(state));
+  const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false,
+    accountOpensAll: true, accountService: { url: "https://account.test", fetch: async req => new URL(req.url).pathname === "/v1/pc/admission"
+      ? Response.json({ error: { code: "no_admission" } }, { status: 404 }) : f.account.fetch(req) } });
+  const closes: (() => void)[] = [];
+  try {
+    await app.context.services.accountMailbox.pull();
+    const link = await relayConnection({ stateDir, app, closes, close() {} }, { serverId });
+    await expect(link.auth(device, listingFeatures)).rejects.toThrow("Relay closed before admission");
+    expect(await link.serverError).toBe("account_readd_required");
+    expect(app.context.services.devices.serviceListing()).toBeUndefined();
+  } finally { for (const end of closes) end(); await app.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 });
 
 test.each([true, false])("removed PC: restarting after a bare relist cannot release the old phone row (listing ID: %p)", async completions => {

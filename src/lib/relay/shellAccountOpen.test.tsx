@@ -196,6 +196,17 @@ it("P18: an account service without the release only receives the challenge prob
 const refused = (code: string, hold?: HoldState) =>
   Object.assign(new MuxProtocolError("protocol_error", "PC refused"), { code, ...(hold === undefined ? {} : { hold }) });
 
+it.each([
+  ["account_unreachable", "The account service cannot be reached: PCs added through your account open again when it is back; devices paired with this PC still work."],
+  ["account_readd_required", "Add this PC to your account again"],
+])("listing confirmation: %s shows the reason on the PC page without starting pairing", async (code, copy) => {
+  const run = await accountPc({ open: async () => { throw refused(code); } });
+  await run.openPage();
+  const screen = renderToStaticMarkup(createElement(SettingsProvider, null, createElement(RelayShell, run.current())));
+  expect(screen).toContain(copy);
+  expect(run.navigations).toEqual([]);
+});
+
 it("P18, T34: reloading after a lost registration reply opens the PC with the same sign-in key", async () => {
   const run = await accountPc({ loseRegistrationReply: true, open: async (offer) => new class extends RelayTransport {
     override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
