@@ -1,6 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { drainTail } from "./drain.ts";
-import { closedBoxes, runBounded, shutdownOwned, terminate } from "./entry-pty.ts";
+import { closeOwnedServer, closedBoxes, runBounded, shutdownOwned, terminate } from "./entry-pty.ts";
 
 const ENV = { PATH: "/usr/bin:/bin" };
 const TEST_MS = 20_000;
@@ -52,18 +55,100 @@ describe("shutdownOwned", () => {
 describe("an exit that never shows", () => {
   const unreapable = () => {
     const signals: string[] = [];
-    return { signals, child: { exitCode: null, signalCode: null, exited: new Promise<number>(() => {}), kill: (signal?: string | number) => { signals.push(String(signal)); } } };
+    let unrefs = 0;
+    return { signals, unrefs: () => unrefs, child: { exitCode: null, signalCode: null, exited: new Promise<number>(() => {}), kill: (signal?: string | number) => { signals.push(String(signal)); }, unref: () => { unrefs++; } } };
   };
 
   it("terminate gives up on the reap after SIGKILL and reports it unconfirmed", async () => {
-    const { child, signals } = unreapable();
+    const { child, signals, unrefs } = unreapable();
     expect(await terminate(child, 100)).toBe("unconfirmed");
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(unrefs()).toBe(1);
   }, TEST_MS);
 
   it("shutdownOwned reports the forced signal and the unconfirmed exit", async () => {
     const { child } = unreapable();
     expect(await shutdownOwned(child, async () => {}, 100)).toEqual({ forced: "SIGKILL", unconfirmed: true, askError: undefined });
+  }, TEST_MS);
+});
+
+const scratch = mkdtempSync(join(realpathSync(tmpdir()), "entry-pty-"));
+afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
+
+describe("a child that stays alive after SIGKILL", () => {
+  it("lets the parent process exit once terminate gave up on it", async () => {
+    // the stand-in outlives every signal it is sent here; it ends when its stdin closes, i.e. with this helper
+    const script = `
+      import { terminate } from ${JSON.stringify(join(import.meta.dir, "entry-pty.ts"))};
+      const real = Bun.spawn(["sh", "-c", "read line"], { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+      const stuck = { exitCode: null, signalCode: null, exited: real.exited, kill: () => {}, unref: () => real.unref() };
+      console.log(await terminate(stuck, 100));
+    `;
+    const helper = Bun.spawn([process.execPath, "-e", script], { env: ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const deadline = setTimeout(() => helper.kill("SIGKILL"), 10_000);
+    try {
+      const [out, err, code] = await Promise.all([new Response(helper.stdout).text(), new Response(helper.stderr).text(), helper.exited]);
+      expect({ out: out.trim(), code, err }).toEqual({ out: "unconfirmed", code: 0, err: "" });
+    } finally {
+      clearTimeout(deadline);
+    }
+  }, TEST_MS);
+});
+
+describe("closeOwnedServer", () => {
+  const openStream = () => new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("boot")); } });
+  const closedStream = () => new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } });
+  const sockets = (...present: boolean[]) => present.map((here, at) => {
+    const path = join(scratch, `sock-${crypto.randomUUID()}-${at}`);
+    if (here) writeFileSync(path, "");
+    return path;
+  });
+  const reports = () => {
+    const lines: string[] = [];
+    return { lines, report: { warn: (line: string) => lines.push(`warn ${line}`), info: (line: string) => lines.push(`info ${line}`) } };
+  };
+  const stuck = () => ({ exitCode: null, signalCode: null, exited: new Promise<number>(() => {}), kill: () => {}, unref: () => {} });
+  const exits = () => Bun.spawn(["sleep", "30"], { env: ENV, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+
+  it("succeeds, and says so, for a server that exits when asked, with its pipe closed and no sockets", async () => {
+    const child = exits();
+    const { lines, report } = reports();
+    await closeOwnedServer({ child, ask: async () => { child.kill("SIGTERM"); }, graceMs: 2000, stderr: drainTail(closedStream(), 64), sockets: sockets(false, false), report });
+    expect(lines).toEqual(["info herdr cleanup: owned server exited; both scratch sockets removed"]);
+  }, TEST_MS);
+
+  it("succeeds with a warning for a server that exits only after the deadline passed, with its pipe held open", async () => {
+    const child = exits();
+    const { lines, report } = reports();
+    await closeOwnedServer({ child, ask: async () => {}, graceMs: 200, stderr: drainTail(openStream(), 64), sockets: sockets(false), report });
+    expect(lines.some((line) => line.includes("ended with SIGTERM"))).toBe(true);
+    expect(lines.some((line) => line.includes("reader was cancelled"))).toBe(true);
+    expect(lines.some((line) => line.startsWith("info"))).toBe(true);
+  }, TEST_MS);
+
+  it("fails for an unconfirmed exit even when both sockets are absent, and prints no success", async () => {
+    const { lines, report } = reports();
+    await expect(closeOwnedServer({ child: stuck(), ask: async () => {}, graceMs: 100, stderr: drainTail(closedStream(), 64), sockets: sockets(false, false), report })).rejects.toThrow(/exit was not confirmed within 100 ms after SIGKILL/);
+    expect(lines.some((line) => line.startsWith("info"))).toBe(false);
+  }, TEST_MS);
+
+  it("fails for an unconfirmed exit with the pipe held open, after cancelling the drain", async () => {
+    const { lines, report } = reports();
+    await expect(closeOwnedServer({ child: stuck(), ask: async () => {}, graceMs: 100, stderr: drainTail(openStream(), 64), sockets: sockets(false), report })).rejects.toThrow(/not confirmed/);
+    expect(lines.some((line) => line.includes("reader was cancelled"))).toBe(true);
+  }, TEST_MS);
+
+  it("fails for a confirmed exit that left a socket", async () => {
+    const child = exits();
+    const [gone, left] = sockets(false, true);
+    const { lines, report } = reports();
+    await expect(closeOwnedServer({ child, ask: async () => { child.kill("SIGTERM"); }, graceMs: 2000, stderr: drainTail(closedStream(), 64), sockets: [gone!, left!], report })).rejects.toThrow(`isolated herdr left ${left}`);
+    expect(lines.some((line) => line.startsWith("info"))).toBe(false);
+  }, TEST_MS);
+
+  it("reports both problems at once for an unconfirmed exit with a socket left", async () => {
+    const { report } = reports();
+    await expect(closeOwnedServer({ child: stuck(), ask: async () => {}, graceMs: 100, stderr: drainTail(closedStream(), 64), sockets: sockets(true), report })).rejects.toThrow(/not confirmed.*; isolated herdr left/);
   }, TEST_MS);
 });
 

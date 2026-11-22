@@ -7,7 +7,7 @@ import type { Subprocess } from "bun";
 import { constants, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { isolatedHcEnv } from "../../scripts/test-hc.ts";
-import { DETACH, anyFresh, closedBoxes, entryEnv, entryPty, fresh, runBounded, shutdownOwned, visibleGrid } from "./entry-pty.ts";
+import { DETACH, anyFresh, closeOwnedServer, closedBoxes, entryEnv, entryPty, fresh, runBounded, visibleGrid } from "./entry-pty.ts";
 import { drainTail } from "./drain.ts";
 import { stopAllPtyRuns } from "./pty.ts";
 
@@ -76,16 +76,14 @@ try {
   }
   active.push(async () => {
     // the server is this code's own child: it is asked to stop, then ended through its handle
-    const ended = await shutdownOwned(server, async () => {
-      if (existsSync(apiPath) && existsSync(clientPath)) await call("server", "stop");
-      else server.kill("SIGTERM");
-    }, STOP_GRACE_MS);
-    if (ended.forced) console.warn(`herdr cleanup: the server did not stop by itself, ended with ${ended.forced}`);
-    if (ended.askError) console.warn(`herdr cleanup: server stop failed: ${ended.askError instanceof Error ? ended.askError.message : String(ended.askError)}`);
-    if (ended.unconfirmed) console.warn(`herdr cleanup: SIGKILL was sent but the server's exit was not confirmed within ${STOP_GRACE_MS} ms`);
-    if (await serverErr.finish(STOP_GRACE_MS) === "cancelled") console.warn(`herdr cleanup: the server's stderr stayed open ${STOP_GRACE_MS} ms after its exit; the reader was cancelled`);
-    if (existsSync(apiPath) || existsSync(clientPath)) throw new Error(`isolated herdr left a socket at ${root}`);
-    console.log("herdr cleanup: owned server exited; both scratch sockets removed");
+    await closeOwnedServer({
+      child: server, graceMs: STOP_GRACE_MS, stderr: serverErr, sockets: [apiPath, clientPath],
+      ask: async () => {
+        if (existsSync(apiPath) && existsSync(clientPath)) await call("server", "stop");
+        else server.kill("SIGTERM");
+      },
+      report: { warn: (line) => console.warn(line), info: (line) => console.log(line) },
+    });
   });
   const limit = performance.now() + 5_000;
   while (!existsSync(apiPath) || !existsSync(clientPath)) {

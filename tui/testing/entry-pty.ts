@@ -1,6 +1,7 @@
 import type { Subprocess } from "bun";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { settledWithin } from "./drain.ts";
+import { settledWithin, type Tail } from "./drain.ts";
 import { answerQueries, gridText, runSupervised, screenOutput, type PtyRun, type SupervisedRun } from "./pty.ts";
 
 export const SOURCE_OVIS = [process.execPath, join(import.meta.dir, "../../scripts/plugin.ts")] as const;
@@ -46,18 +47,21 @@ export function fresh(run: PtyRun, from: number, text: string): Promise<void> {
 }
 
 /** A child this code spawned, through its own handle: the only thing the helpers below ever signal. */
-type Owned = Pick<Subprocess, "kill" | "exited" | "exitCode" | "signalCode">;
+type Owned = Pick<Subprocess, "kill" | "exited" | "exitCode" | "signalCode" | "unref">;
 
 /**
  * SIGTERM, then SIGKILL after `graceMs`, on a child this code spawned; says how far it had to go. After
- * SIGKILL the reap is bounded too: a child whose exit does not show within `graceMs` is `"unconfirmed"`.
+ * SIGKILL the reap is bounded too: a child whose exit does not show within `graceMs` is `"unconfirmed"`,
+ * and its handle is unref'd so that a child which stays alive cannot keep this process from exiting.
  */
 export async function terminate(child: Owned, graceMs: number): Promise<"exited" | "SIGTERM" | "SIGKILL" | "unconfirmed"> {
   if (child.exitCode !== null || child.signalCode !== null) return "exited";
   child.kill("SIGTERM");
   if (await settledWithin(child.exited, graceMs)) return "SIGTERM";
   child.kill("SIGKILL");
-  return (await settledWithin(child.exited, graceMs)) ? "SIGKILL" : "unconfirmed";
+  if (await settledWithin(child.exited, graceMs)) return "SIGKILL";
+  child.unref();
+  return "unconfirmed";
 }
 
 async function readCapped(stream: ReadableStream<Uint8Array>, maxBytes: number, stop: AbortSignal): Promise<string> {
@@ -131,6 +135,32 @@ export async function shutdownOwned(child: Owned, ask: () => Promise<unknown>, g
   if (await settledWithin(child.exited, graceMs)) return { forced: null, unconfirmed: false, askError };
   const ended = await terminate(child, graceMs);
   return { forced: ended === "exited" ? null : ended === "unconfirmed" ? "SIGKILL" : ended, unconfirmed: ended === "unconfirmed", askError };
+}
+
+/**
+ * Ends the server this code spawned and checks what it must leave behind, within bounds. The cleanup
+ * fails, and the success line is not printed, when the exit is still unconfirmed after SIGKILL or a
+ * socket is left: a missing socket proves nothing about the process.
+ */
+export async function closeOwnedServer(options: {
+  readonly child: Owned;
+  readonly ask: () => Promise<unknown>;
+  readonly graceMs: number;
+  readonly stderr: Tail;
+  readonly sockets: readonly string[];
+  readonly report: { warn(line: string): void; info(line: string): void };
+}): Promise<void> {
+  const { report, graceMs } = options;
+  const ended = await shutdownOwned(options.child, options.ask, graceMs);
+  const problems: string[] = [];
+  if (ended.forced) report.warn(`herdr cleanup: the server did not stop by itself, ended with ${ended.forced}`);
+  if (ended.askError) report.warn(`herdr cleanup: server stop failed: ${ended.askError instanceof Error ? ended.askError.message : String(ended.askError)}`);
+  if (ended.unconfirmed) problems.push(`the server's exit was not confirmed within ${graceMs} ms after SIGKILL`);
+  if (await options.stderr.finish(graceMs) === "cancelled") report.warn(`herdr cleanup: the server's stderr stayed open ${graceMs} ms; the reader was cancelled`);
+  const left = options.sockets.filter((path) => existsSync(path));
+  if (left.length > 0) problems.push(`isolated herdr left ${left.join(", ")}`);
+  if (problems.length > 0) throw new Error(problems.join("; "));
+  report.info("herdr cleanup: owned server exited; both scratch sockets removed");
 }
 
 /** Wait for any output past byte `from`: the first sign that the program reacted. */
