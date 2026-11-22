@@ -188,5 +188,8 @@ describe("showsLive", () => {
     // plain pi's own working border (not indented) is compared as drawn: no box is read under it, so a turned spinner
     // taken for the same screen only ever lets a misreading through
     expect(showsLive("── ⠸ Working ──────────", "── ⠴ Working ──────────")).toBeFalse();
+    // that border where its status leaves few dashes, or where the editor scrolls, is the same screen too
+    expect(showsLive(" ── ⠸ Working ───────\n > how", " ── ⠴ Working ───────\n > how")).toBeTrue();
+    expect(showsLive(" ── ⠸ Working ──── ↑ 2 more ─────\n > how", " ── ⠴ Working ──── ↑ 2 more ─────\n > how")).toBeTrue();
   });
 });
