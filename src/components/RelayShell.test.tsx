@@ -6,7 +6,11 @@ import type { MyPc } from "../lib/account/myPcs.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { signInLink } from "./ConnectPhoneDialog.tsx";
 import { keyIdGroups } from "./KeyId.tsx";
+import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
+import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
+import { NewPcNotices } from "./NewPcNotices.tsx";
 import { leaveAddEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
+import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 
 const EXPECTED = "0123456789abcdef0123456789abcdef";
 const RECEIVED = "01234567ffffcdef0123456789abeeee";
@@ -36,80 +40,99 @@ describe("the front page's account part", () => {
   });
 
   const saved = (server_id: string, name: string) => ({ server_id, server_public_key: "k", relay: "wss://relay.example", name, device_id: "0".repeat(16), label: "Phone" }) as unknown as Extract<RelayShellProps["state"], { kind: "list" }>["devices"][number];
-  const signInAlternatives = (html: string) => [...html.matchAll(/<button type="button" class="btn btn-ghost account-link[^"]*"[^>]*>([^<]+)</g)].map(([, label]) => label);
 
   const tabsOf = (html: string) => [...html.matchAll(/<button type="button" aria-pressed="(true|false)" data-tab="(\w+)">([^<]+)</g)].map(([, pressed, tab, label]) => [tab, label, pressed]);
   const panelOf = (html: string, tab: string): string => /<div class="connect-start-panel" data-tab-panel="(\w+)">/.exec(html)?.[1] === tab ? html.slice(html.indexOf(`data-tab-panel="${tab}"`)) : "";
+  const viewOf = (html: string): string | null => /data-view="([\w-]+)"/.exec(html)?.[1] ?? null;
+  const titleOf = (html: string): string | undefined => html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1];
+  // each row of My PCs: where it leads and its words (name, way, state), its Forget left out
+  const rowsOf = (html: string) => [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
+  const ways = (html: string) => [...html.matchAll(/<button type="button" class="relay-add-way" data-action="([\w-]+)"/g)].map(([, action]) => action);
 
-  it("opens signed out on the three connect tabs, Ovis relay chosen, with the sign-in inside it and no sign-in screen first", () => {
+  it("opens signed out with no PC saved here on Connect a PC: the three tabs, Ovis relay chosen, the sign-in inside it and no list", () => {
     const html = render({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, accountProviders: ["github", "apple"] });
     expect(html).toContain('data-account-state="signed-out"');
-    expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
+    expect(viewOf(html)).toBe("add-pc");
+    expect(titleOf(html)).toBe("Connect a PC");
     expect(html.match(/<h1/g)).toHaveLength(1);
+    // the front page itself: nothing to go back to
+    expect(html).not.toContain('aria-label="Back"');
     expect(tabsOf(html)).toEqual([["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["ssh", "SSH", "false"]]);
     const relay = panelOf(html, "relay");
     const buttons = [...relay.matchAll(/<button type="button" class="([^"]+)"[^>]*>(?:<svg[\s\S]*?<\/svg>)?(Continue with [^<]+)</g)].map(([, kind, label]) => [kind, label]);
     expect(buttons).toEqual([["btn account-provider", "Continue with GitHub"], ["btn account-provider", "Continue with Apple"]]);
     expect(relay.indexOf("Continue with Apple")).toBeLessThan(relay.indexOf("First time? Your account is made right away."));
-    expect(signInAlternatives(relay)).toEqual(["Pair with a code"]);
+    // a browser has no scanner: the code instead
+    expect(ways(relay)).toEqual(["add-code"]);
     expect(html).not.toContain("Your PCs, anywhere.");
     expect(html).not.toContain("Sign in to your Ovis account");
     expect(html).not.toContain("Start without signing in");
     expect(html).not.toContain("relay-shell-pc");
+    expect(html).not.toContain("relay-add-saved");
     expect(html).not.toContain("acct_");
   });
 
-  it("lists this device's own pairings under the tabs, signed out, by their pages", () => {
+  it("opens signed out on My PCs once this device saved a PC, its pairings by their pages and Add PC under them, the sign-in behind it", () => {
     const two = render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-    expect(two).toContain("Continue with GitHub");
-    expect([...two.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">/g)].map(([, href]) => href)).toEqual([`/s/${"a".repeat(32)}/`, `/s/${"b".repeat(32)}/`]);
+    expect(viewOf(two)).toBe("my-pcs");
+    expect(titleOf(two)).toBe("Your PCs");
+    expect(rowsOf(two)).toEqual([[`/s/${"a".repeat(32)}/`, "p620 Relay"], [`/s/${"b".repeat(32)}/`, "nuc Relay"]]);
+    expect(two).not.toContain("Continue with GitHub");
+    expect(two).not.toContain("data-tab=");
+    expect(two).toMatch(/<div class="my-pcs-add"><button type="button" class="btn btn-primary" data-action="add-pc">(<svg[\s\S]*?<\/svg>)?Add PC<\/button><\/div><\/div>/);
     expect(two).not.toContain("<details");
-    expect(render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620")] }), scoped: false })).toContain(`href="/s/${"a".repeat(32)}/"`);
+    // a sign-in that ended says so here too, where the list is
+    const ended = render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620")], account: { kind: "signed-out", error: "Your sign-in ended." } }), scoped: false, onSignIn: none });
+    expect(ended).toContain('role="alert">Your sign-in ended.');
+    // with no account service, the list of this device's pairings stays as it was
+    const accountless = render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620")] }), scoped: false });
+    expect(accountless).toContain(`href="/s/${"a".repeat(32)}/"`);
+    expect(viewOf(accountless)).toBeNull();
   });
 
-  it("returns to the connect tabs after sign-out, the relay tab's sign-in up", () => {
+  it("returns to Connect a PC after sign-out when nothing is saved here, and stays on My PCs when something is", () => {
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
     const signedIn = render({ ...props({ kind: "list", devices, account: { kind: "signed-in", provider: "github", error: null, pcs: [pc("a".repeat(32), "p620", "paired")] } }), scoped: false, onSignIn: none });
-    expect(panelOf(signedIn, "relay")).not.toContain("Continue with GitHub");
+    expect(viewOf(signedIn)).toBe("my-pcs");
+    expect(signedIn).not.toContain("Continue with GitHub");
     const after = render({ ...props({ kind: "list", devices, account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-    expect(tabsOf(after).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["ssh", "false"]]);
-    expect(panelOf(after, "relay")).toContain("Continue with GitHub");
+    expect(viewOf(after)).toBe("my-pcs");
     expect(after).not.toContain("Sign out");
-    expect(after).not.toContain("relay-shell-pc");
+    const none_ = render({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+    expect(tabsOf(none_).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["ssh", "false"]]);
+    expect(panelOf(none_, "relay")).toContain("Continue with GitHub");
   });
 
-  it("opens signed in with no PC on the same three connect tabs, the relay tab saying what to do on the PC", () => {
+  it("opens signed in with no PC on My PCs with nothing listed, saying what to do on the PC, and Add PC", () => {
     const html = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false });
     expect(html).toContain('data-account-state="signed-in"');
-    expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
+    expect(viewOf(html)).toBe("my-pcs");
+    expect(titleOf(html)).toBe("Your PCs");
     expect(html.match(/<h1/g)).toHaveLength(1);
-    expect(tabsOf(html)).toEqual([["relay", "Ovis relay", "true"], ["tailscale", "Tailscale", "false"], ["ssh", "SSH", "false"]]);
-    const relay = panelOf(html, "relay");
-    expect(relay).toContain("Turn on Ovis on the PC and sign in with the same account.");
-    // a browser has no scanner: the code pairs a PC that is in no account
-    expect(signInAlternatives(relay)).toEqual(["Pair with a code"]);
-    expect(relay).not.toContain("Continue with");
-    expect(html).not.toContain("Add a PC");
-    expect(html).not.toContain('data-action="add-qr"');
-    expect(html).not.toContain("relay-add-manage");
+    expect(html).not.toContain("data-tab=");
+    expect(html).toContain("Turn on Ovis on the PC and sign in with the same account.");
+    expect(rowsOf(html)).toEqual([]);
+    expect(html).toContain('data-action="add-pc"');
+    expect(html).not.toContain("Continue with");
   });
 
-  it("opens a signed-in front page on the connect tabs, the relay tab listing this device's own PCs and then the account's it can open, each once, whatever the address", () => {
+  it("lists on My PCs this device's own PCs and then the account's it can open, each once, by way and state, whatever the address", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
-    const pcStatus = new Map([["b".repeat(32), { kind: "offline", reason: "pc" }]] as const);
+    const pcStatus = new Map([["a".repeat(32), { kind: "answered", route: "relay", rttMs: 40 }], ["b".repeat(32), { kind: "offline", reason: "pc" }]] as const);
     const join = { server_public_key: "k", relay: "wss://relay.example" };
     // a row with no way to join (no key or relay in the directory) is no link: its page would open on nothing
-    const account = { kind: "signed-in" as const, provider: "github" as const, error: null, pcs: [pc("a".repeat(32), "p620", "paired"), { ...pc("c".repeat(32), "desk", "needs-approval"), join }, { ...pc("d".repeat(32), "attic", "offline"), join }, pc("e".repeat(32), "keyless", "needs-approval")] };
+    const account = { kind: "signed-in" as const, provider: "github" as const, error: null, pcs: [pc("a".repeat(32), "p620", "paired"), { ...pc("c".repeat(32), "desk", "needs-approval"), join }, { ...pc("d".repeat(32), "attic", "offline"), join }, { ...pc("f".repeat(32), "old-box", "needs-update"), join }, pc("e".repeat(32), "keyless", "needs-approval")] };
     const html = render({ ...props({ kind: "list", devices, account }), scoped: false, onSignIn: none, pcStatus });
     expect(html).not.toContain("keyless");
     const failed = render({ ...props({ kind: "list", devices, account: { ...account, error: "The account service did not answer." } }), scoped: false, onSignIn: none, onRefreshAccount: none });
     expect(failed).toMatch(/role="alert">The account service did not answer\. <button[^>]*>Try again<\/button>/);
     expect(html).toContain('data-account-state="signed-in"');
-    expect(tabsOf(html).map(([tab, , pressed]) => [tab, pressed])).toEqual([["relay", "true"], ["tailscale", "false"], ["ssh", "false"]]);
-    expect(html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1]).toBe("Connect a PC");
-    const rows = [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
-    expect(rows).toEqual([[`/s/${"a".repeat(32)}/`, "p620 Relay"], [`/s/${"b".repeat(32)}/`, "nuc Relay Off"], [`/s/${"c".repeat(32)}/`, "desk Relay"], [`/s/${"d".repeat(32)}/`, "attic Relay Off"]]);
+    expect(viewOf(html)).toBe("my-pcs");
+    expect(titleOf(html)).toBe("Your PCs");
+    expect(html).not.toContain("data-tab=");
+    expect(rowsOf(html)).toEqual([[`/s/${"a".repeat(32)}/`, "p620 Relay On"], [`/s/${"b".repeat(32)}/`, "nuc Relay Off"], [`/s/${"c".repeat(32)}/`, "desk Relay On"], [`/s/${"d".repeat(32)}/`, "attic Relay Off"], [`/s/${"f".repeat(32)}/`, "old-box Relay Update needed"]]);
+    // a PC this device is not let into yet is on or off like any other: its own page asks for the approval
     expect(html).not.toContain("Needs approval");
     // the old control page's address is the same front page
     (window.location as { hash: string }).hash = "#pcs";
@@ -177,10 +200,12 @@ describe("the hosted front page", () => {
     const node = () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {}, pauseAnimations() {}, unpauseAnimations() {} });
 
     beforeEach(() => {
-      for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IntersectionObserver", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IntersectionObserver", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
       const events = new EventTarget();
       const store = new Map<string, string>();
       const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
+      const tab = new Map<string, string>();
+      Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => { tab.set(key, value); }, removeItem: (key: string) => { tab.delete(key); }, key: () => null, length: 0, clear: () => tab.clear() } });
       const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
       class HTMLElement { isConnected = true; focus(): void {} }
       class IntersectionObserver { observe(): void {} disconnect(): void {} }
@@ -361,17 +386,50 @@ describe("the hosted front page", () => {
 
     const tab = (way: string) => renderer!.root.find((node) => node.type === "button" && node.props["data-tab"] === way);
     const panel = () => renderer!.root.find((node) => node.type === "div" && typeof node.props["data-tab-panel"] === "string").props["data-tab-panel"] as string;
+    const view = () => renderer!.root.find((node) => node.type === "div" && typeof node.props["data-view"] === "string").props["data-view"] as string;
+    const action = (name: string) => renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === name);
+    const back = () => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back");
+    const title = () => textOf(renderer!.root.findByType("h1"));
+    /** Add PC at the end of My PCs: the connect tabs, with Back to the list */
+    const openAdd = async () => {
+      expect(view()).toBe("my-pcs");
+      await act(async () => { action("add-pc").props.onClick(); });
+      expect(view()).toBe("add-pc");
+      expect(title()).toBe("Add PC");
+    };
+    const rowTexts = () => renderer!.root.findAll((node) => node.type === "li" && typeof node.props["data-pc-way"] === "string").map((node) => [node.props["data-pc-way"], textOf(node)]);
 
     it("opens on the relay tab again after a sign-out that follows another tab and a sign-in", async () => {
-      const signedOut = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none };
+      const signedOut = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none };
       await mount(signedOut);
       await act(async () => { tab("ssh").props.onClick(); });
       expect(panel()).toBe("ssh");
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) })); });
+      expect(view()).toBe("my-pcs");
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedOut) })); });
-      expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
+      expect(title()).toBe("Connect a PC");
       expect(panel()).toBe("relay");
       expect(tab("relay").props["aria-pressed"]).toBe(true);
+    });
+
+    it("opens Add PC from the end of My PCs, its Back returning to the list, and a sign-in made there lands on the list", async () => {
+      const signedOut = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none };
+      await mount(signedOut);
+      expect(title()).toBe("Your PCs");
+      expect(back()).toHaveLength(0);
+      await openAdd();
+      expect(panel()).toBe("relay");
+      expect(buttons("Continue with GitHub")).toHaveLength(1);
+      // no list under the ways to add one
+      expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined)).toHaveLength(0);
+      await act(async () => { back()[0]!.props.onClick(); });
+      expect(view()).toBe("my-pcs");
+      await openAdd();
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...signedOut, state: { kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signing-in", provider: "github" } } }) })); });
+      expect(view()).toBe("add-pc");
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) })); });
+      expect(view()).toBe("my-pcs");
+      expect(rowTexts().map(([way]) => way)).toEqual(["relay", "relay", "relay", "relay"]);
     });
 
     it("opens a typed address from the Tailscale tab's field, and from the SSH tab's behind Add by address, each with Connect", async () => {
@@ -399,7 +457,7 @@ describe("the hosted front page", () => {
       const shown = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
       let started = 0;
       await mount({ ...shown, onCodeStart: () => { started += 1; } });
-      await act(async () => { button("Pair with a code").props.onClick(); });
+      await act(async () => { action("add-code").props.onClick(); });
       expect(started).toBe(1);
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
       expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Pair with a code"]);
@@ -416,18 +474,82 @@ describe("the hosted front page", () => {
       expect(refreshed).toBe(1);
     });
 
-    it("pairs with a code from the relay tab, signed in with no PC, in the pairing dialog", async () => {
+    it("pairs with a code from Add PC's relay tab, signed in with no PC, in the pairing dialog, over the tabs it closes back to", async () => {
       let started = 0;
       const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false, onCodeStart: () => { started += 1; } } satisfies RelayShellProps;
       await mount(shown);
+      await openAdd();
       expect(panel()).toBe("relay");
-      await act(async () => { button("Pair with a code").props.onClick(); });
+      expect(textOf(renderer!.root.find((node) => node.props["data-tab-panel"] === "relay"))).toContain("Turn on Ovis on the PC and sign in with the same account.");
+      await act(async () => { action("add-code").props.onClick(); });
       expect(started).toBe(1);
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
       expect(dialog().props["data-pair-dialog"]).toBe("code");
+      await act(async () => { button("Cancel").props.onClick(); });
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      expect(dialogs()).toHaveLength(0);
+      expect(view()).toBe("add-pc");
     });
 
-    it("scans a PC's QR from the relay tab in the phone app, and lists the phone's tailnet PCs or Open Tailscale under Tailscale", async () => {
+    it("takes the plain screen's Other ways to connect to Add PC, whose Back is My PCs", async () => {
+      await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none });
+      expect(renderer!.root.findAll((node) => node.props["data-approval-wait"] !== undefined)).toHaveLength(1);
+      await act(async () => { action("other-ways").props.onClick(); });
+      expect(view()).toBe("add-pc");
+      await act(async () => { back()[0]!.props.onClick(); });
+      expect(view()).toBe("my-pcs");
+      expect(renderer!.root.findAll((node) => node.props["data-approval-wait"] !== undefined)).toHaveLength(0);
+    });
+
+    it("tells of the account's news on My PCs (a new PC with its one-tap removal, a join request, a PC to confirm), and not on Add PC's tabs", async () => {
+      await mount(signedIn(four()));
+      const notices = () => [NewPcNotices, AccountJoinRequests, UnconfirmedPcNotices].map((type) => renderer!.root.findAllByType(type as never).length);
+      expect(notices()).toEqual([1, 1, 1]);
+      await openAdd();
+      expect(notices()).toEqual([0, 0, 0]);
+    });
+
+    it("never says Needs approval: an account PC this device is not let into yet is On or Off like any other", async () => {
+      await mount(signedIn(four()));
+      expect(rowTexts()).toEqual([["relay", "Desk PCRelay"], ["relay", "MacBookRelay"], ["relay", "Home serverRelayOff"], ["relay", "Mac miniRelayOn"]]);
+      expect(textOf(renderer!.root)).not.toContain("Needs approval");
+    });
+
+    it("lists the phone app's own PCs on My PCs after the relay's, each opened as before, Forget on a Tailscale or address one, and no list on the tabs", async () => {
+      const called: string[] = [];
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell" }],
+        nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+          called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
+          if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317", "http://127.0.0.1:41234"], names: { "https://desk.tail1e211e.ts.net": "Desk", "http://127.0.0.1:41234": "lab-linux" } };
+          return {};
+        },
+      } });
+      try {
+        // nothing saved by the relay and signed out: the app's own PCs alone make My PCs the front page
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        expect(view()).toBe("my-pcs");
+        expect(rowTexts()).toEqual([["tailscale", "DeskTailscaledesk.tail1e211e.ts.netForget"], ["address", "192.168.0.5:7317AddressForget"], ["ssh", "lab-linuxSSH127.0.0.1:41234"]]);
+        const deskRow = renderer!.root.find((node) => node.type === "li" && node.props["data-tailnet-pc"] === "https://desk.tail1e211e.ts.net");
+        await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+        expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
+        await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "btn btn-ghost phone-pc-forget").props.onClick(); });
+        expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
+        expect(called.filter((call) => call === "HerdrShell.getState")).toHaveLength(2);
+        await openAdd();
+        for (const way of ["tailscale", "ssh"]) {
+          await act(async () => { tab(way).props.onClick(); });
+          expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined)).toHaveLength(0);
+        }
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("scans a PC's QR from Add PC's relay tab in the phone app, and has Open Tailscale alone on the Tailscale tab while Tailscale is off", async () => {
       const assigned: string[] = [];
       const called: string[] = [];
       (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { assigned.push(href); };
@@ -447,22 +569,19 @@ describe("the hosted front page", () => {
       try {
         const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false } satisfies RelayShellProps;
         await mount(shown);
-        expect(buttons("Pair with a code")).toHaveLength(0);
-        await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "scan-qr").props.onClick(); });
+        expect(rowTexts().map(([way, text]) => [way, text.replace(/Forget$/, "")])).toEqual([["tailscale", "DeskTailscaledesk.tail1e211e.ts.net"], ["tailscale", "100.101.1.2:7317Tailscale"], ["address", "192.168.0.5:7317Address"]]);
+        await openAdd();
+        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-code")).toHaveLength(0);
+        await act(async () => { action("scan-qr").props.onClick(); });
         expect(assigned).toEqual([`https://app.ovis.sh/s/${ids.mini}/#offer=abc`]);
         await act(async () => { tab("tailscale").props.onClick(); });
-        const tailnet = renderer!.root.findAll((node) => node.type === "li" && node.props["data-tailnet-pc"] !== undefined).map((node) => [node.props["data-tailnet-pc"], textOf(node)]);
-        expect(tailnet).toEqual([["https://desk.tail1e211e.ts.net", "DeskTailscaledesk.tail1e211e.ts.netForget"], ["http://100.101.1.2:7317", "100.101.1.2:7317TailscaleForget"]]);
-        const deskRow = renderer!.root.find((node) => node.type === "li" && node.props["data-tailnet-pc"] === "https://desk.tail1e211e.ts.net");
-        await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
-        expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
-        await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "btn btn-ghost phone-pc-forget").props.onClick(); });
-        expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
+        expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(1);
+        expect(renderer!.root.findAll((node) => node.props["data-tailnet-pc"] !== undefined)).toHaveLength(0);
         await act(async () => { renderer!.unmount(); });
         tailscaleOn = false;
         await mount(shown);
+        await openAdd();
         await act(async () => { tab("tailscale").props.onClick(); });
-        expect(renderer!.root.findAll((node) => node.type === "li" && node.props["data-tailnet-pc"] !== undefined)).toHaveLength(0);
         expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
         await act(async () => { button("Open Tailscale").props.onClick(); });
         expect(called).toContain("HerdrShell.openTailscale");
@@ -484,6 +603,7 @@ describe("the hosted front page", () => {
       } });
       try {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, plainFront: false });
+        await openAdd();
         const scan = async (qr: string): Promise<string> => {
           scanned = qr;
           await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "scan-qr").props.onClick(); });
@@ -519,6 +639,7 @@ describe("the hosted front page", () => {
         await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: typed }) } } }); });
       };
       await mount(shown);
+      await openAdd();
       await act(async () => { tab("ssh").props.onClick(); });
       expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
       expect(button("Add by address").props.className).toBe("connect-address-link");
@@ -534,6 +655,7 @@ describe("the hosted front page", () => {
       } });
       try {
         await mount(shown);
+        await openAdd();
         await act(async () => { tab("ssh").props.onClick(); });
         expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("SSH");
         expect(sshField().props.placeholder).toBe("user@host");
@@ -547,35 +669,52 @@ describe("the hosted front page", () => {
       }
     });
 
-    it("takes Pair with a code from Add a PC opened by its address to the code field alone, signed out", async () => {
+    it("opens My PCs when asked by its address (/#add), and goes from its Add PC to the code field alone signed out, coming back to it after", async () => {
       (window.location as { hash?: string }).hash = "#add";
+      sessionStorage.setItem(ADD_PC_FROM_KEY, `/s/${ids.desk}/`);
       const shown = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, addEntry: true };
       await mount(shown);
-      await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "add-qr").props.onClick(); });
-      await act(async () => { button("Pair with a code").props.onClick(); });
+      expect(title()).toBe("Your PCs");
+      expect(back()).toHaveLength(1);
+      await openAdd();
+      await act(async () => { action("add-code").props.onClick(); });
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
       expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Pair with a code"]);
       expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(1);
+      // Cancel: back on Add PC, whose Back is the list that still goes back to the PC
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      expect(view()).toBe("add-pc");
+      await act(async () => { back()[0]!.props.onClick(); });
+      expect(view()).toBe("my-pcs");
+      expect(back()).toHaveLength(1);
     });
 
-    it("takes Pair with a code from Add a PC opened by its address to the code field, signed in too", async () => {
+    it("takes Pair with a code from /#add's Add PC to the code field, signed in too", async () => {
       (window.location as { hash?: string }).hash = "#add";
       const shown = { ...signedIn(four()), addEntry: true };
       await mount(shown);
-      await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "add-qr").props.onClick(); });
-      await act(async () => { button("Pair with a code").props.onClick(); });
+      await openAdd();
+      await act(async () => { action("add-code").props.onClick(); });
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
       expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(1);
     });
 
-    it("opens on Add a PC when asked by its address, signed in too, and its Back leaves it", async () => {
+    it("marks on /#add the PC it was opened from In use now instead of its state, and its Back goes back to that PC, leaving My PCs without one", async () => {
       (window.location as { hash?: string }).hash = "#add";
+      const went: string[] = [];
+      (window.history as { back: () => void }).back = () => { went.push("back"); };
+      sessionStorage.setItem(ADD_PC_FROM_KEY, `/s/${ids.home}/`);
       await mount({ ...signedIn(four()), addEntry: true });
-      expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
-      await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Back").props.onClick(); });
-      // the front page it leaves for is the connect tabs, with no Back, and never the dashboard
-      expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back")).toHaveLength(0);
-      expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
+      expect(title()).toBe("Your PCs");
+      expect(rowTexts()).toEqual([["relay", "Desk PCRelay"], ["relay", "MacBookRelay"], ["relay", "Home serverRelayIn use now"], ["relay", "Mac miniRelayOn"]]);
+      // the mark serves that one opening alone
+      expect(sessionStorage.getItem(ADD_PC_FROM_KEY)).toBeNull();
+      await act(async () => { back()[0]!.props.onClick(); });
+      expect(went).toEqual(["back"]);
+      // the front page it leaves for is My PCs, with no Back and no mark, and never the dashboard
+      expect(back()).toHaveLength(0);
+      expect(title()).toBe("Your PCs");
+      expect(rowTexts().map(([, text]) => text)).toContain("Home serverRelayOff");
     });
 
   });
@@ -732,9 +871,9 @@ describe("#16 sweep: a signed-in device never lands on the connect tabs by itsel
     expect(html).not.toContain("data-tab=");
   });
 
-  it("13: a front page the person chose (Cancel, Back) is the connect tabs", () => {
+  it("13: a front page the person chose (Cancel, Back) is My PCs", () => {
     expect(plain(front({ kind: "empty", account: signedIn([]) }, { plainFront: false }))).toBeNull();
-    expect(front({ kind: "empty", account: signedIn([]) }, { plainFront: false })).toContain("data-tab=");
+    expect(front({ kind: "empty", account: signedIn([]) }, { plainFront: false })).toContain('data-view="my-pcs"');
   });
 
   it("5, 9: the join a launch asked ends in one line: declined or removed with Ask again, the PC off with Check again", () => {

@@ -5,7 +5,9 @@
 export const RELAY_KO: Record<string, string> = {
   "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis가 카메라를 쓸 수 없어요. 휴대폰 설정의 앱 → Ovis → 권한에서 허용하세요.",
   "Removed|pc state": "빠짐",
-  "PCs this phone is on": "이 폰이 연결한 PC",
+  "On|pc state": "켜짐",
+  "Update needed|pc state": "업데이트 필요",
+  "In use now|pc state": "지금 사용 중",
   "Forget {name}": "{name} 지우기",
   "Forget|this phone's PC": "지우기",
   "Your PCs": "내 PC",
@@ -126,7 +128,6 @@ export const RELAY_KO: Record<string, string> = {
   "Not deleted: you're signed in to another account. Sign in to the account you want to delete.": "다른 계정으로 로그인돼 있어 삭제하지 않았어요. 삭제할 계정으로 다시 로그인하세요.",
   "Scan a QR code": "QR 찍기",
   "The QR on the PC's screen": "PC 화면의 QR",
-  "Enter an address": "주소 입력",
   "Point at the QR code on the PC's screen": "PC 화면의 QR 코드를 비추세요",
   "That is not an http or https address.": "http 또는 https 주소가 아닙니다.",
   "This pairing link is not this app's. Scan the QR code your PC shows.": "이 페어링 링크는 이 앱의 링크가 아닙니다. PC에 표시된 QR 코드를 스캔하세요.",

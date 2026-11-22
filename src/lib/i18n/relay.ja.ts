@@ -5,7 +5,9 @@
 export const RELAY_JA: Record<string, string> = {
   "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis はカメラを使えません。スマホの設定の アプリ → Ovis → 権限 で許可してください。",
   "Removed|pc state": "削除済み",
-  "PCs this phone is on": "このスマホが接続した PC",
+  "On|pc state": "オン",
+  "Update needed|pc state": "更新が必要",
+  "In use now|pc state": "使用中",
   "Forget {name}": "{name} を削除",
   "Forget|this phone's PC": "削除",
   "Your PCs": "あなたのPC",
@@ -126,7 +128,6 @@ export const RELAY_JA: Record<string, string> = {
   "Not deleted: you're signed in to another account. Sign in to the account you want to delete.": "別のアカウントでサインインしているため、削除しませんでした。削除するアカウントでもう一度サインインしてください。",
   "Scan a QR code": "QR を読み取る",
   "The QR on the PC's screen": "PC の画面の QR",
-  "Enter an address": "アドレスを入力",
   "Point at the QR code on the PC's screen": "PC の画面の QR コードに向けてください",
   "That is not an http or https address.": "http または https のアドレスではありません。",
   "This pairing link is not this app's. Scan the QR code your PC shows.": "このペアリングリンクはこのアプリのものではありません。PC に表示された QR コードを読み取ってください。",

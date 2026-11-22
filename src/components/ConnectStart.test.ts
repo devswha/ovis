@@ -6,7 +6,7 @@ import { phoneSavedPcs, relayTabPcs } from "./ConnectStart.tsx";
 const id = (letter: string) => letter.repeat(32);
 const accountPc = (letter: string, patch: Partial<MyPc> = {}) => ({ server_id: id(letter), name: `pc-${letter}`, state: "paired", paired: false, listed: true, linked: false, join: { relay: "wss://relay.ovis.sh" }, ...patch }) as unknown as MyPc;
 
-describe("the relay tab's PCs this phone is on", () => {
+describe("the relay PCs of My PCs", () => {
   it("lists the PCs this phone paired (by a code too) and, signed in, the account's PCs it can open", () => {
     const rows = relayTabPcs([{ server_id: id("a"), name: "code-paired" }], [accountPc("b"), accountPc("c", { state: "offline" })]);
     expect(rows.map((row) => [row.name, row.status ?? "", row.saved])).toEqual([["code-paired", "", true], ["pc-b", "online", false], ["pc-c", "off", false]]);
@@ -18,7 +18,17 @@ describe("the relay tab's PCs this phone is on", () => {
     expect(rows.filter((row) => row.saved).length).toBe(2);
   });
 
-  it("says Removed, with no online dot, for a PC that turned this phone away as removed, and leaves it out once forgotten", () => {
+  it("says On or Off for a PC of the account this phone is not let into yet, never that it waits for an approval", () => {
+    const rows = relayTabPcs([], [accountPc("b", { state: "needs-approval" }), accountPc("d", { state: "offline" })]);
+    expect(rows.map((row) => row.status)).toEqual(["online", "off"]);
+  });
+
+  it("says an update is needed for a PC the account calls too old, this phone's own pairing too, before what its last check found", () => {
+    const rows = relayTabPcs([{ server_id: id("a"), name: "desk", status: "online" }, { server_id: id("e"), name: "attic" }], [accountPc("a", { paired: true, state: "needs-update" }), accountPc("b", { state: "needs-update" }), accountPc("e", { paired: true, state: "offline" })]);
+    expect(rows.map((row) => [row.name, row.status ?? ""])).toEqual([["desk", "update"], ["attic", "off"], ["pc-b", "update"]]);
+  });
+
+  it("says Removed, with no state word, for a PC that turned this phone away as removed, and leaves it out once forgotten", () => {
     const removed = relayTabPcs([], [accountPc("b"), accountPc("c")], { [id("b")]: "removed" });
     expect(removed.map((row) => [row.name, row.status ?? ""])).toEqual([["pc-b", "removed"], ["pc-c", "online"]]);
     expect(relayTabPcs([], [accountPc("b"), accountPc("c")], { [id("b")]: "hidden" }).map((row) => row.name)).toEqual(["pc-c"]);
@@ -33,7 +43,7 @@ describe("the relay tab's PCs this phone is on", () => {
   });
 });
 
-describe("the phone app's PCs on the Tailscale and SSH tabs", () => {
+describe("the phone app's PCs on My PCs", () => {
   it("sorts what the app saved by the way it connects, the app's own pages and an unreadable entry on neither", () => {
     const saved = ["https://desk.tail1e211e.ts.net", "http://100.101.1.2:7317", "http://192.168.0.5:7317", "http://127.0.0.1:41234", `https://app.ovis.sh/s/${id("a")}/`, "not an address"];
     const rows = phoneSavedPcs(saved, { "https://desk.tail1e211e.ts.net": "Desk" }, "https://app.ovis.sh");
