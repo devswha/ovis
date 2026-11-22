@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appOrigin, writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
 import { APP_ORIGIN, homeHost, knownLogins, listedProviders, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, sshOrAddress, savedPcLabel, tabPcs, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
@@ -304,5 +306,51 @@ describe("an SSH PC under Manage", () => {
     const forgotten = sshDetails({ ...pc, hostKeyAlgorithm: "", fingerprint: "" });
     expect(forgotten.confirmed).toBe(false);
     expect(forgotten.hostKey).not.toContain("SHA256:");
+  });
+});
+
+describe("the hosted origin a build gives the native apps", () => {
+  const app = join(import.meta.dir, "../app");
+  const preview = "https://relay-0510.ovis-app.pages.dev";
+
+  it("takes OVIS_APP_URL only as an https origin with no path", () => {
+    expect(appOrigin(undefined)).toBeNull();
+    expect(appOrigin("")).toBeNull();
+    expect(appOrigin(preview)).toBe(preview);
+    expect(appOrigin("https://shell.example.ts.net:8443")).toBe("https://shell.example.ts.net:8443");
+    for (const text of ["http://relay-0510.ovis-app.pages.dev", `${preview}/`, `${preview}/s/`, "https://Relay.example", "https://app.ovis.sh:443", "relay-0510.ovis-app.pages.dev"]) {
+      expect(() => appOrigin(text)).toThrow("OVIS_APP_URL must be an https origin with no path");
+    }
+  });
+
+  it("writes it where the Android and iOS builds read it, and removes it for a build without one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hosted-origin-"));
+    try {
+      mkdirSync(join(dir, "android/app"), { recursive: true });
+      mkdirSync(join(dir, "ios"), { recursive: true });
+      writeNativeOrigin(dir, preview);
+      expect(readFileSync(join(dir, "android/app/hosted-origin.properties"), "utf8")).toBe(`appOrigin=${preview}\n`);
+      expect(readFileSync(join(dir, "ios/hosted-origin.generated.xcconfig"), "utf8")).toBe("OVIS_APP_ORIGIN = https:/$()/relay-0510.ovis-app.pages.dev\n");
+      writeNativeOrigin(dir, null);
+      expect(existsSync(join(dir, "android/app/hosted-origin.properties"))).toBe(false);
+      expect(existsSync(join(dir, "ios/hosted-origin.generated.xcconfig"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is what the native builds read, each with the pages' own default", () => {
+    expect(APP_ORIGIN).toBe("https://app.ovis.sh");
+    const gradle = readFileSync(join(app, "android/app/build.gradle"), "utf8");
+    expect(gradle).toContain('file("hosted-origin.properties")');
+    expect(gradle).toContain('getProperty("appOrigin", "https://app.ovis.sh")');
+    const xcconfig = readFileSync(join(app, "ios/hosted-origin.xcconfig"), "utf8");
+    expect(xcconfig).toContain("OVIS_APP_ORIGIN = https:/$()/app.ovis.sh\n#include? \"hosted-origin.generated.xcconfig\"");
+    expect(readFileSync(join(app, "ios/App/App/Info.plist"), "utf8")).toMatch(/<key>OvisAppOrigin<\/key>\s*<string>\$\(OVIS_APP_ORIGIN\)<\/string>/);
+    // the App target's Debug and Release configurations both build on it
+    const project = readFileSync(join(app, "ios/App/App.xcodeproj/project.pbxproj"), "utf8");
+    const reference = /(\w+) \/\* hosted-origin\.xcconfig \*\/ = \{isa = PBXFileReference;[^}]*path = \.\.\/hosted-origin\.xcconfig;/.exec(project)?.[1];
+    expect(reference).toBeDefined();
+    expect(project.split(`baseConfigurationReference = ${reference} /* hosted-origin.xcconfig */;`).length - 1).toBe(2);
   });
 });

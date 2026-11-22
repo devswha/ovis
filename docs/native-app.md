@@ -226,7 +226,10 @@ What is there:
   `ScopePath.swift` on iOS; on a Mac, `swiftc app/ios/App/App/ScopePath.swift
   app/ios/ScopePathCheck/main.swift -o /tmp/check && /tmp/check` runs its checks).
   `error.html` says when the relay could not be reached. A test build points at another shell
-  with `OVIS_APP_URL=https://<host> bun run build:web`.
+  with `OVIS_APP_URL=https://<host> bun run build:web`. The native code then takes that origin
+  from the same run (`app/scripts/hosted-origin.ts`): Android's `BuildConfig.APP_ORIGIN` and iOS's
+  `OvisAppOrigin` (Info.plist), each `https://app.ovis.sh` otherwise. Android's verified app link
+  stays on `app.ovis.sh`.
 - Both apps allow plain http to any host, as Android cannot limit cleartext to address ranges.
   Before opening plain http to an address outside a tailnet, a home network and the phone (one not
   in the list of PCs yet), the connect screen warns that the pairing code and everything typed
