@@ -290,8 +290,9 @@ export function startLoop(options: LoopOptions): Loop {
    * action, which is refused as busy when it is read, against the layout the user saw. `awaiting`: the write is done
    * and the screen does not show what it did yet: the pane it made or moved (`follow`: what waits goes there once
    * focus follows it), or the panes a close ended still in the world (`gone`: what waits goes through once they left
-   * and focus moved off them). It is refused if that is not so by `until`, never sent to the pane focused before. `bytes`: the text and pastes among what
-   * waits; `full`: what waits reached BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
+   * and focus moved off them). It is refused if that is not so by `until`, never sent to the pane focused before.
+   * `bytes`: the text among what waits (typed, pasted, or carried by a key); `full`: what waits reached
+   * BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
    */
   let behindWrite: {
     readonly events: ModelEvent[];
