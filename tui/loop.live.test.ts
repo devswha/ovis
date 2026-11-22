@@ -134,11 +134,14 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     const { address } = await hc.call("terminal.run", { argv: ["sh", "-c", "echo READY-MARK; exec sh"], labels, cwd: root });
     const stages: [stage: string, signal: "SIGTERM" | "SIGINT" | "SIGHUP", reach: (run: SupervisedRun) => Promise<void>][] = [
       ["the start probe", "SIGTERM", async (run) => { await run.started; await run.until("\x1b[?1049h", "the screen's entry"); }],
-      ["the first attach", "SIGINT", async (run) => { await run.until("\x1b[?1049h", "the screen's entry"); await run.until("\x1b[?25l", "the first frame"); }],
+      // the entry itself writes CSI ?25l (tui/host/guard.ts ENTER), so it says nothing of an attach: the shell's own output does,
+      // drawn from the attach's first paint
+      ["the first attach", "SIGINT", async (run) => { await run.until("\x1b[?1049h", "the screen's entry"); await run.until("READY-MARK", "the attach's first paint"); }],
+      // the typed command is echoed: wait for a line only its output holds (flood-42), never the command's own text
       ["a flood", "SIGHUP", async (run) => {
         await run.until(/READY-MARK[\s\S]*\x1b\[\?25h/, "the live pane");
-        run.type("yes flood-line | head -n 200000\r");
-        await run.until("flood-line", "the flood");
+        run.type("yes flood-$((6*7)) | head -n 200000\r");
+        await run.until("flood-42", "the flood");
       }],
       // the flood scrolled READY-MARK away: a shown cursor alone says the pane is Live
       ["quit", "SIGTERM", async (run) => { await run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, "the live pane"); run.type(DETACH); }],
