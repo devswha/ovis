@@ -2581,7 +2581,8 @@ button {
   outline-offset: var(--ring-inset-offset);
 }
 
-.pane-slot .tab-strip-row:not(.browser-tabs) .tab-strip-tab {
+/* :where keeps the browser-tab exclusion from raising the rule's weight over the is-active padding rules */
+.pane-slot .tab-strip-tab:not(:where(.browser-tabs .tab-strip-tab)) {
   gap: var(--space-1);
   padding: 0 var(--space-2);
 }
