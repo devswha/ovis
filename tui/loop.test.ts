@@ -340,6 +340,23 @@ describe("the loop", () => {
     expect(run.loop.model().notices.map(({ code, data }) => [code, data["action"]])).toEqual([["layout_busy", "close_pane"]]);
   }, TEST_MS);
 
+  it("a refused layout action's keys are taken, not replayed: with two panes, close twice, then Enter reaches the survivor", async () => {
+    // the second press in the same read as the first, and in a read of its own
+    for (const reads of [["\x02x\x02x"], ["\x02x", "\x02x"]]) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      for (const read of reads) run.type(read);
+      await settled(run);
+      // once t1 is gone, the same keys replayed would open the close-workspace dialog, and Enter would end t2
+      run.type("\r");
+      await settled(run);
+      expect([reads, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), run.loop.report().mode.overlays, sentTo(run, "t2")])
+        .toEqual([reads, ["t1"], [], Buffer.from("\r").toString("hex")]);
+      expect(run.loop.model().notices.map(({ code }) => code)).toContain("layout_busy");
+    }
+  }, TEST_MS);
+
   it("input behind a write that makes a pane waits until the screen shows that pane, and never reaches the pane before", async () => {
     const focusOf = (run: Run) => { const state = run.loop.model(); return state.focus.panes[state.focus.tabs[state.focus.workspace!]!]; };
     const notices = (run: Run) => run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]);

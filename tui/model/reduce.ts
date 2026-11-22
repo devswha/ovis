@@ -68,7 +68,13 @@ export type ScreenEvent =
   /** a notice from elsewhere (a failed layout write); `calm` for one that reports no failure */
   | { readonly type: "notice"; readonly code: string; readonly data?: Readonly<Record<string, string | number>>; readonly calm?: boolean; readonly at: number }
   /** focus the target once the world shows it (outside tab `away`): what a layout write made or moved; any other focus move drops it */
-  | { readonly type: "follow"; readonly target: Target; readonly away: string | null; readonly at: number };
+  | { readonly type: "follow"; readonly target: Target; readonly away: string | null; readonly at: number }
+  /**
+   * Input taken without running what it chose (a layout action refused as busy when it was read) or that went nowhere
+   * (input dropped behind a write): an armed prefix returns to Idle, and, as that input left them, the top overlay
+   * closes (`overlay`) and the mode returns to Terminal (`mode`). Nothing else happens: those keys meet no other layout.
+   */
+  | { readonly type: "consumed"; readonly overlay: boolean; readonly mode: boolean; readonly at: number };
 
 export type ModelEvent = InputEvent | ScreenEvent;
 
@@ -152,6 +158,11 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     case "follow":
       acc.s = { ...acc.s, following: { target: event.target, away: event.away } };
       follow(acc);
+      break;
+    case "consumed":
+      disarm(acc);
+      if (event.overlay && acc.s.overlays.length > 0) acc.s = { ...acc.s, overlays: acc.s.overlays.slice(0, -1) };
+      if (event.mode && acc.s.mode.name !== "terminal") setMode(acc, { name: "terminal" });
       break;
     default:
       // an event of a kind the model does not know changes nothing

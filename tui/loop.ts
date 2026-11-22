@@ -315,30 +315,51 @@ export function startLoop(options: LoopOptions): Loop {
       dispatch(event);
       return;
     }
-    // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order
-    const ahead = [event];
-    for (let next = ahead.shift(); next !== undefined; next = ahead.shift()) {
-      const step = reduce(behindWrite.ahead, next);
+    // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order. What waits is
+    // what the read-ahead took in each step (a text run cut where it handed its rest back, as split reads give it), and
+    // a layout action refused here waits as `consumed`: its keys are taken, and never chose anything in another layout
+    const pieces: ModelEvent[] = [];
+    const units = [event];
+    for (let next = units.shift(); next !== undefined; next = units.shift()) {
+      const before = behindWrite.ahead;
+      const step = reduce(before, next);
       behindWrite.ahead = step.state;
+      let rest = "";
+      let refused = false;
       for (const effect of step.effects) {
         if (effect.type === "quit") {
           behindWrite = null;
           perform({ type: "quit" });
           return;
         }
-        if (effect.type === "input") ahead.push(effect.event);
-        if (effect.type === "run" && layout.writes(effect)) busy(effect.action);
+        if (effect.type === "input") {
+          units.push(effect.event);
+          if (effect.event.type === "text") rest = effect.event.text;
+        }
+        if (effect.type === "run" && layout.writes(effect)) {
+          busy(effect.action);
+          refused = true;
+        }
       }
+      const taken = next.type === "text" ? next.text.slice(0, next.text.length - rest.length) : "";
+      if (!refused) {
+        pieces.push(next.type === "text" ? { ...next, text: taken } : next);
+        continue;
+      }
+      // the action was chosen by the last code point taken: what came before it in the run waits as typed
+      const head = [...taken].slice(0, -1).join("");
+      if (head.length > 0 && next.type === "text") pieces.push({ ...next, text: head });
+      pieces.push({ type: "consumed", overlay: step.state.overlays.length < before.overlays.length, mode: before.mode.name !== "terminal" && step.state.mode.name === "terminal", at: next.at });
     }
     if (behindWrite.full) return;
-    const bytes = event.type === "text" || event.type === "paste" ? Buffer.byteLength(event.text) : 0;
-    if (behindWrite.events.length >= BEHIND_WRITE_EVENTS || behindWrite.bytes + bytes > BEHIND_WRITE_BYTES) {
+    const bytes = pieces.reduce((sum, piece) => sum + (piece.type === "text" || piece.type === "paste" ? Buffer.byteLength(piece.text) : 0), 0);
+    if (behindWrite.events.length + pieces.length > BEHIND_WRITE_EVENTS || behindWrite.bytes + bytes > BEHIND_WRITE_BYTES) {
       // nothing more waits, so what goes through later keeps its order and no paste is cut; a detach still leaves above
       behindWrite.full = true;
       dispatch({ type: "notice", code: "input_dropped", data: { reason: "full" }, at: clock.now() });
       return;
     }
-    behindWrite.events.push(event);
+    behindWrite.events.push(...pieces);
     behindWrite.bytes += bytes;
   }
 
