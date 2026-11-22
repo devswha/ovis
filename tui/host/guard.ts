@@ -291,11 +291,13 @@ export function guardedHost(port: TerminalPort): Host {
     drain() {
       if (drainPromise) return drainPromise;
       if (state !== "entered") return Promise.resolve();
-      drainPromise = new Promise<void>((resolve) => {
+      const drained = new Promise<void>((resolve) => {
         drainState = { cancel: port.timer(DRAIN_WAIT_MS, finishDrain), resolve };
       });
+      drainPromise = drained;
+      // what readNow hands on may end the drain at once (a listener that leaves): this call still answers its own promise
       port.readNow();
-      return drainPromise;
+      return drained;
     },
   };
 }

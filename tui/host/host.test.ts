@@ -696,6 +696,18 @@ describe("drain", () => {
     expect(seen).toEqual([]);
   });
 
+  it("answers its promise when what it reads makes a listener leave at once", async () => {
+    const host = new HeadlessHost({ answer: ANSWER });
+    host.enter();
+    await host.probe();
+    host.onInput(() => { host.leave(); });
+    host.queue("typed ahead");
+    let settled = false;
+    host.drain().then(() => { settled = true; });
+    await host.settled();
+    expect([settled, host.log().at(-1)]).toEqual([true, "raw off"]);
+  });
+
   it("settles at once when not entered", async () => {
     const host = new HeadlessHost();
     await host.drain();
