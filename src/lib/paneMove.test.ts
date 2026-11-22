@@ -345,4 +345,6 @@ it("carries the card text another tab stored over this tab's older cached copy, 
   data.delete("ovis:card-text:w15:p1");
   carryPaneState("local", "w15:p1", "w16:p2", drafts, storage);
   expect(data.get("ovis:card-text:w16:p2")).toBeUndefined();
+  expect(getMemoryCardText("w15:p1")).toBeUndefined();
+  expect(getMemoryCardText("w16:p2")).toBeUndefined();
 });

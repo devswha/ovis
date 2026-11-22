@@ -101,8 +101,12 @@ export function moveCardText(before: string, after: string, toPaneId: string, st
     return;
   }
   // nothing stored under the old ID: only this page's own unstored text moves; a copy it merely cached
-  // was cleared by another tab (its prompt answered) and is not written back
-  if (!ownNewest) return;
+  // was cleared by another tab (its prompt answered), so it goes rather than being written back or
+  // offered for recovery once herdr is replaced
+  if (!ownNewest) {
+    cardTexts.delete(before);
+    return;
+  }
   const next = { ...memBefore, paneId: toPaneId };
   cardTexts.delete(before);
   unsaved.delete(before);
