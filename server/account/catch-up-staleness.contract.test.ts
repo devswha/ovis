@@ -10,6 +10,8 @@ import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import type { WsStream } from "../../shared/relay-mux-engine.ts";
 import { accountDeviceId, newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { privateStateFs } from "../private-state.ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { importPublicKey } from "../../shared/relay-e2ee.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -226,4 +228,35 @@ test("T56: a server-originated WebSocket frame also checks elapsed freshness", a
   server.send(JSON.stringify({ type: "pong" }));
   await link.flush();
   expect(socket.messages).toHaveLength(1);
+});
+
+test.each(["removed", "removed and listed again"] as const)("a PC bound by a device's link leaves its account when the account's listing of it is %s, and a pairing made here stays", async (how) => {
+  const pc = await createListedPc(close => closes.push(close));
+  const { devices, accountMailbox, relay } = pc.fixture.app.context.services;
+  const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
+  closes.push(() => wall.mockRestore());
+  expect(devices.serviceBinding()).toBeNull();
+  // the pull names the listing the account's rows are let in under
+  await accountMailbox.pull();
+  const open = async (device: { id: string; keys: CryptoKeyPair; publicKey: string }) => {
+    const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    return link.auth(device, [ACCOUNT_OPENS_ALL_FEATURE]).then(() => "admitted", () => bounded(link.serverError));
+  };
+  expect(await open(pc.device)).toBe("admitted");
+  const identity = relay.currentIdentity()!;
+  const url = `https://account.test/v1/pcs/${pc.serverId}`;
+  const headers = { authorization: `Bearer ${pc.service.issueToken(ACCOUNT)}` };
+  expect((await pc.service.fetch(new Request(url, { method: "DELETE", headers }))).status).toBe(204);
+  if (how === "removed and listed again") {
+    expect((await pc.service.fetch(new Request(url, { method: "PUT", headers, body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.test" }) }))).status).toBe(200);
+  }
+  await accountMailbox.pull();
+  expect(devices.account()).toBeNull();
+  expect(devices.addAtPcRequired()).toBe(true);
+  expect(await open(pc.device)).toBe("auth_failed");
+  expect(await open(pc.member)).toBe("admitted");
+  // nothing a later read finds brings the rows back
+  await accountMailbox.pull();
+  expect(devices.account()).toBeNull();
+  expect(await open(pc.device)).toBe("auth_failed");
 });
