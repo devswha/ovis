@@ -8,6 +8,7 @@ import type { PushPayload } from "../../shared/push.ts";
 import webpush from "web-push";
 import { RELAY_MAX_BODY_BYTES, type PushService } from "../push.ts";
 import { InboxWidget, inboxMessage, inboxOrder, shownWords, type LastWords } from "./inbox-widget.ts";
+import { FriendStore } from "./friends.ts";
 
 const dirs: string[] = [];
 const widgets: InboxWidget[] = [];
@@ -20,7 +21,7 @@ const row = (n: string, s: InboxWidgetRow["s"], t: number): InboxWidgetRow => ({
 const pane = (id: string, status: HerdrPane["agent_status"], extra: Partial<HerdrPane> = {}) =>
   ({ pane_id: id, workspace_id: "w1", agent: "pi", agent_status: status, title: id, ...extra }) as unknown as HerdrPane;
 
-function setup(lastWords?: LastWords) {
+function setup(lastWords?: LastWords, friendOf?: ConstructorParameters<typeof InboxWidget>[1]["friendOf"]) {
   const dir = mkdtempSync(join(tmpdir(), "inbox-widget-"));
   dirs.push(dir);
   const sent: { endpoint: string; message: PushPayload; topic: string }[] = [];
@@ -32,7 +33,7 @@ function setup(lastWords?: LastWords) {
     },
   } as unknown as PushService;
   let now = 1_000_000_000_000;
-  const widget = new InboxWidget(push, { stateDir: dir, now: () => now, ...(lastWords ? { lastWords } : {}) });
+  const widget = new InboxWidget(push, { stateDir: dir, now: () => now, ...(lastWords ? { lastWords } : {}), ...(friendOf ? { friendOf } : {}) });
   widgets.push(widget);
   return { dir, push, sent, widget, tick: (ms: number) => { now += ms; }, goneFor: (endpoint: string) => { gone = new Set([endpoint]); } };
 }
@@ -63,6 +64,22 @@ describe("inbox widget", () => {
     expect(cipherText.byteLength).toBeLessThanOrEqual(RELAY_MAX_BODY_BYTES);
     expect(message.inbox!.rows[0]).toEqual(rows[0]!);
     expect(message.inbox!.rows.length + message.inbox!.more).toBe(rows.length);
+  });
+
+  test("each row wears the friend the inbox shows: its project's, even before a browser listed it", async () => {
+    const friendsDir = mkdtempSync(join(tmpdir(), "inbox-widget-friends-"));
+    dirs.push(friendsDir);
+    let pick = 0;
+    const store = new FriendStore(friendsDir, () => (pick++ % 9) / 9);
+    const { sent, widget } = setup(undefined, store.friendOf.bind(store));
+    widget.panes([pane("p1", "blocked"), pane("p2", "working"), pane("p3", "idle", { workspace_id: "w2" } as Partial<HerdrPane>)]);
+    widget.place("https://relay.example/v1/push/a", true);
+    await flush();
+    const machines = [{ id: "local", snapshot: { panes: [{ pane_id: "p1", workspace_id: "w1" }, { pane_id: "p2", workspace_id: "w1" }, { pane_id: "p3", workspace_id: "w2" }] } }];
+    const inbox = store.see(["local:p1", "local:p2", "local:p3"], ["local"], machines).friends;
+    const shown = Object.fromEntries(sent.at(-1)!.message.inbox!.rows.map((item) => [item.p, item.f]));
+    expect(shown).toEqual({ p1: inbox["local:p1"], p2: inbox["local:p2"], p3: inbox["local:p3"] });
+    expect(shown.p1).toBe(shown.p2);
   });
 
   test("sends only to a placed widget, at once when placed, with helpers left out", async () => {

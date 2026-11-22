@@ -10,7 +10,7 @@ import { jsonResponse } from "../http.ts";
 import type { PaneStores } from "../pane-routes.ts";
 import { writePrivateState } from "../private-state.ts";
 import type { PushService } from "../push.ts";
-import type { FriendLookup } from "./friends.ts";
+import { forkAlertFriends, type FriendLookup } from "./friends.ts";
 
 /**
  * The phone app's home-screen widget (app/android/ovis-widget): the agents of the alerts' own view
@@ -99,6 +99,8 @@ export function inboxMessage(rows: readonly InboxWidgetRow[], endpoint: string, 
 export class InboxWidget {
   private readonly agents = new Map<string, Agent>();
   private readonly endpoints: Set<string>;
+  /** the friend each row wears, looked up with its PC's panes as the alerts do, so it is the inbox's: its project's */
+  private readonly friends: ReturnType<typeof forkAlertFriends>;
   /** each row's last words, with the status and time they were read at */
   private readonly words = new Map<string, { stamp: string; text: string | null }>();
   private timer?: { id: ReturnType<typeof setTimeout>; at: number };
@@ -113,6 +115,7 @@ export class InboxWidget {
   private snapshot: { rows: InboxWidgetRow[]; rendered: string } = { rows: [], rendered: "[]" };
 
   constructor(private readonly push: PushService, private readonly options: { stateDir: string; friendOf?: FriendLookup; serverId?: () => string | undefined; now?: () => number; lastWords?: LastWords }) {
+    this.friends = forkAlertFriends(options.friendOf);
     let saved: unknown = null;
     try { saved = JSON.parse(readFileSync(join(options.stateDir, STATE_FILE), "utf8")); } catch { }
     const list = (saved as { endpoints?: unknown } | null)?.endpoints;
@@ -125,12 +128,13 @@ export class InboxWidget {
 
   /** Every agent pane of one PC, as the alerts see it; a helper folds under its agent, as in the inbox. */
   panes(panes: readonly HerdrPane[], machineId = "local"): void {
+    this.friends.seed(panes, machineId);
     const seen = new Set<string>();
     for (const pane of panes) {
       if (!pane.agent || pane.parent_pane_id) continue;
       const key = `${machineId}\u0000${pane.pane_id}`;
       seen.add(key);
-      const friend = this.options.friendOf?.(machineId, pane.pane_id);
+      const friend = this.friends.friendOf(machineId, pane.pane_id);
       const row: Agent["row"] = { p: pane.pane_id, ...(machineId === "local" ? {} : { m: machineId }), ...(pane.workspace_id ? { w: pane.workspace_id } : {}), n: pushPaneTitle(pane), ...(friend ? { f: friend } : {}), s: short(pane.agent_status) };
       const held = this.agents.get(key);
       this.agents.set(key, { row, at: held && held.row.s === row.s ? held.at : this.now() });
