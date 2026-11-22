@@ -486,6 +486,7 @@ const BASE: Record<string, string> = {
   "Plan limits": "요금제 사용량 표시",
   "Auto": "자동",
   "Hub request failed": "허브 요청에 실패했어요",
+  "Relay request failed": "릴레이 요청이 실패했어요",
   "On this PC": "이 PC",
   "Hub": "허브",
   "Add account": "계정 추가",

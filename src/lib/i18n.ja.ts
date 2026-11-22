@@ -488,6 +488,7 @@ const BASE: Record<string, string> = {
   "Plan limits": "プランの使用量を表示",
   "Auto": "自動",
   "Hub request failed": "ハブのリクエストに失敗しました",
+  "Relay request failed": "リレーのリクエストに失敗しました",
   "On this PC": "このPC",
   "Hub": "ハブ",
   "Add account": "アカウントを追加",

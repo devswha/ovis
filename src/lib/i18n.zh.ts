@@ -493,6 +493,7 @@ const BASE: Record<string, string> = {
   "Plan limits": "显示套餐用量",
   "Auto": "自动",
   "Hub request failed": "中心请求失败",
+  "Relay request failed": "中继请求失败",
   "On this PC": "本机",
   "Hub": "中心",
   "Add account": "添加账号",

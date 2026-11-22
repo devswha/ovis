@@ -5,6 +5,7 @@ import { isTailnetCarrier, MuxProtocolError } from "../../../shared/relay-mux.ts
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
 import { CarrierDownError } from "../transport.ts";
+import { t } from "../i18n.ts";
 import { openRelayChannel, RelayNewSessionsRefusedError, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
 import { AccountOpenUnsupportedError, DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
 import { openRefusalOf } from "../account/openPc.ts";
@@ -554,7 +555,7 @@ export class RelayTransport implements Transport {
             resolve(response);
           } catch (error) {
             if (error instanceof MuxStreamError && error.code === "refused") return false;
-            pending.fail(new TypeError("Relay request failed", { cause: error }));
+            pending.fail(new TypeError(t("Relay request failed"), { cause: error }));
           }
           return true;
         },
@@ -611,7 +612,7 @@ export class RelayTransport implements Transport {
         stream.onDispose = (error) => {
           if (counted) this.openHttp--;
           request.signal.removeEventListener("abort", aborted);
-          if (error) reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay request failed", { cause: error }));
+          if (error) reject(request.signal.aborted ? request.signal.reason : new TypeError(t("Relay request failed"), { cause: error }));
         };
         stream.onHeaders = ({ status, headers }) => {
           if (status < 200) return;
@@ -642,7 +643,7 @@ export class RelayTransport implements Transport {
     try { return open(); }
     catch (error) {
       if (error instanceof MuxStreamError && error.code === "refused") return this.waitForHttp(open, request.signal);
-      throw new TypeError("Relay request failed", { cause: error });
+      throw new TypeError(t("Relay request failed"), { cause: error });
     }
   }
 
