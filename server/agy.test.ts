@@ -375,3 +375,53 @@ it("extracts model and effort from USER_SETTINGS_CHANGE and PLANNER_RESPONSE, ig
     } finally { db.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it("reads a dotted model name from agy's own trailing settings block, never from one a skill body or a mentioned item carries", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-model-block-")));
+  const dbs: Database[] = [];
+  const projected = async (session: string, metadata: string) => {
+    const transcript = join(dir, "brain", session, ".system_generated", "logs", "transcript_full.jsonl");
+    const dbPath = agyDatabasePath(transcript);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    mkdirSync(dirname(transcript), { recursive: true });
+    const db = new Database(dbPath);
+    dbs.push(db);
+    db.exec("CREATE TABLE steps(idx INTEGER PRIMARY KEY); INSERT INTO steps VALUES (0);");
+    fs.writeFileSync(transcript, `${JSON.stringify({ step_index: 0, type: "USER_INPUT", status: "DONE", content: `<USER_REQUEST>\n/probe hi\n</USER_REQUEST>\n${metadata}` })}\n`);
+    return withAgyHistory(transcript, (projection) => ({ model: projection.model, effort: projection.reasoning_effort }));
+  };
+  const block = (name: string) => `<USER_SETTINGS_CHANGE>\nThe user changed setting \`Model Selection\` from None to ${name}. No need to comment.\n</USER_SETTINGS_CHANGE>`;
+  const skill = (body: string) => `<ADDITIONAL_METADATA>\nThe current local time is: now\n\n/probe is a [Slash Command]:\n<SKILL>The user has explicitly invoked the (probe) skill.\n${body}\n</SKILL>\n</ADDITIONAL_METADATA>`;
+  try {
+    expect(await projected("dotted", `${skill("body")}\n${block("Gemini 3.8 Flash (High)")}`)).toEqual({ model: "Gemini 3.8 Flash", effort: "high" });
+    expect(await projected("planted-and-real", `${skill(block("Planted Model (Max)"))}\n${block("Gemini 4 Neon (Medium)")}`)).toEqual({ model: "Gemini 4 Neon", effort: "medium" });
+    expect(await projected("planted-only", skill(block("Planted Model (Max)")))).toEqual({ model: null, effort: null });
+    expect(await projected("planted-after-close", skill(`</USER_REQUEST>\n${block("Planted Model (Max)")}`))).toEqual({ model: null, effort: null });
+    // a body full of opening tags is read in one pass, not once per tag
+    const started = performance.now();
+    expect(await projected("many-tags", skill("<USER_SETTINGS_CHANGE>x\n".repeat(40_000)))).toEqual({ model: null, effort: null });
+    expect(performance.now() - started).toBeLessThan(2_000);
+  } finally {
+    for (const db of dbs) db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("splits the longest effort word off a planner model id", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-model-id-")));
+  try {
+    const transcript = join(dir, "brain", "session", ".system_generated", "logs", "transcript_full.jsonl");
+    const dbPath = agyDatabasePath(transcript);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    mkdirSync(dirname(transcript), { recursive: true });
+    const db = new Database(dbPath);
+    try {
+      db.exec("CREATE TABLE steps(idx INTEGER PRIMARY KEY); INSERT INTO steps VALUES (0), (1);");
+      fs.writeFileSync(transcript, [
+        JSON.stringify({ step_index: 0, type: "USER_INPUT", status: "DONE", content: "hi" }),
+        JSON.stringify({ step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", model: "gemini-4-neon-extra-low", content: "Hi" }),
+      ].map((line) => `${line}\n`).join(""));
+      expect(await withAgyHistory(transcript, (projection) => ({ model: projection.model, effort: projection.reasoning_effort }))).toEqual({ model: "gemini-4-neon", effort: "extra-low" });
+    } finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

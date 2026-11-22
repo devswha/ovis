@@ -2366,11 +2366,12 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
     try { revision = grokProjection(resolved.path, statSync(resolved.path)).revision; } catch {}
     if (revision === null || revision === "0") throw new ConversationUnavailable("transcript_missing");
   }
-  // The ledger never records the selected model. The live status row does, and a switch there
-  // writes no turn, so the answer is marked screen and the chat re-reads it on terminal output.
-  // A scroll or a failed read leaves the name unknown rather than one from an older frame, and is
-  // still marked screen so the next draw can fill it. The row is read before the store check below,
-  // so a pane that moved to another conversation during the read is refused, not given its model.
+  // The ledger records the model only with the next message. The live status row names it at once,
+  // and a switch there writes no turn, so the answer is marked screen and the chat re-reads it on
+  // terminal output. A scroll or a failed read keeps the ledger's model rather than one from an
+  // older frame, and is still marked screen so the next draw can fill it. The row is read before
+  // the store check below, so a pane that moved to another conversation during the read is
+  // refused, not given its model.
   const agyScreen = resolved.source === "agy-transcript" ? await screenMetadata("agy-transcript") : null;
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
   // The screen read waits on herdr. A pane closed or bound to another session meanwhile has not

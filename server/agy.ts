@@ -162,17 +162,28 @@ export async function agyCatalogOffThread(path: string): Promise<Set<number>> {
 }
 
 export interface AgyProjection { segments: { start: number; end: number }[]; promptStarts: number[]; revision: string; indices: number[]; activity: "working" | "idle"; model: string | null; reasoning_effort: string | null }
-const AGY_SETTINGS_MODEL = /<USER_SETTINGS_CHANGE>[\s\S]*?The user changed setting `Model Selection` from [^\n]+? to ([^.\n]+)\./u;
+const SETTINGS_OPEN = "<USER_SETTINGS_CHANGE>";
+const SETTINGS_CLOSE = "</USER_SETTINGS_CHANGE>";
+// display names hold dots (`Gemini 3.8 Flash (High)`): the value ends at the sentence's period
+const AGY_SETTINGS_MODEL = /^The user changed setting `Model Selection` from [^\n]+? to ([^\n]+?)\.(?: |$)/mu;
 const AGY_PAREN_EFFORT = /^(.*\S)\s+\((none|minimal|extra-low|low|medium|high|xhigh|max)\)$/iu;
-const AGY_ID_EFFORT = /^(.+)-(extra-low|minimal|low|medium|high|xhigh|max)$/u;
+const AGY_ID_EFFORT = /^(.+?)-(extra-low|minimal|low|medium|high|xhigh|max)$/u;
 const normalizeModelKey = (name: string): string => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+/** Agy appends its settings block last, after every skill body and mentioned item it expands: a block inside one of those is text. */
+function agySettingsBlock(metadata: string): string | null {
+  const trimmed = metadata.trimEnd();
+  if (!trimmed.endsWith(SETTINGS_CLOSE)) return null;
+  const open = trimmed.lastIndexOf(SETTINGS_OPEN);
+  return open < 0 ? null : trimmed.slice(open + SETTINGS_OPEN.length, -SETTINGS_CLOSE.length);
+}
 
 function stepModel(value: Record<string, unknown>): StepModel | undefined {
   if (value.status !== "DONE") return undefined;
   if (value.type === "USER_INPUT" && typeof value.content === "string") {
     const envelope = agyEnvelope(value.content);
-    const match = envelope === null ? null : AGY_SETTINGS_MODEL.exec(envelope.metadata);
-    const chosen = match?.[1]?.trim() ?? "";
+    const block = envelope === null ? null : agySettingsBlock(envelope.metadata);
+    const chosen = (block === null ? null : AGY_SETTINGS_MODEL.exec(block))?.[1]?.trim() ?? "";
     if (!chosen || chosen === "None") return undefined;
     const paren = AGY_PAREN_EFFORT.exec(chosen);
     return paren
