@@ -82,6 +82,10 @@ async function accountPcs(options: { clock?: () => number; accountOpensAll?: boo
   if (accountOpensAll) expect(await b.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const aState = stateDir();
   const aRelayIdentity = rotateRelayIdentity(aState);
+  // A is a PC of the account as a real one is: the device whose link put it there listed it, and a PC its account
+  // does not list leaves the account at its first read
+  await service.fetch(new Request(`https://account.test/v1/pcs/${aRelayIdentity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ label: "Source PC", public_key: bytesToHex(importPublicKey(aRelayIdentity.public_key)), relay: offer.relay }) }));
   writeFileSync(join(aState, "devices.json"), JSON.stringify({ gate_closed_at: member.created_at, devices: [{ ...member, id: randomBytes(8).toString("hex") }] }), { mode: 0o600 });
   const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local, accountOpensAll, platform: "linux", accountService: { url: "https://account.test", fetch: service.fetch } });
   cleanup.push(() => a.stop());
