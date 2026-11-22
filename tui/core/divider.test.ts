@@ -74,6 +74,34 @@ describe("a divider drag's writes", () => {
     expect(asked.length).toBe(2);
   });
 
+  it("a second divider dragged while the first one's write is held waits for it, and both end at their released ratios", async () => {
+    const { asked, edit } = heldEdits();
+    const writes = new DividerWrites({ edit, refused: () => {} });
+    const A = { first: "a", second: "b", direction: "right" } as const;
+    const B = { first: "b", second: "c", direction: "down" } as const;
+    let root = TREE;
+    let answered = 0;
+    const outstanding = () => asked.length - answered;
+    writes.move(1, "t", A, 0.3, false);
+    // A is released at another ratio while its first write is held, then B is dragged and released
+    writes.move(1, "t", A, 0.6, true);
+    writes.move(2, "t", B, 0.2, false);
+    writes.move(2, "t", B, 0.25, true);
+    expect(outstanding()).toBe(1);
+    // drawn at both local ratios meanwhile
+    expect(writes.shape("t", { root, zoomed: null })?.root).toEqual(right(leaf("a"), down(leaf("b"), leaf("c"), 0.25), 0.6));
+    while (outstanding() > 0) {
+      const next = asked[answered]!;
+      root = next.change(layoutOf(root)).layout!.workspaces[0]!.tabs[0]!.root;
+      answered++;
+      next.answer(null);
+      await turn();
+      expect(outstanding()).toBeLessThanOrEqual(1);
+    }
+    expect(root).toEqual(right(leaf("a"), down(leaf("b"), leaf("c"), 0.25), 0.6));
+    expect(asked.length).toBe(3);
+  });
+
   it("draws the newest ratio while it lasts, and after the release until the shown tree changes", async () => {
     const { asked, edit } = heldEdits();
     const writes = new DividerWrites({ edit, refused: () => {} });
