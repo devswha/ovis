@@ -301,7 +301,8 @@ export function startLoop(options: LoopOptions): Loop {
   function userInput(event: ModelEvent): void {
     // nothing after a detach goes anywhere, from the same read either: the screen is leaving
     if (closing) return;
-    if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse")) {
+    // the host's focus waits in order too: a focus loss returns an armed prefix to Idle, for the read-ahead and the replay alike
+    if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse" || event.type === "focus")) {
       dispatch(event);
       return;
     }

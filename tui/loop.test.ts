@@ -336,6 +336,27 @@ describe("the loop", () => {
     expect(run.loop.model().notices.map(({ code, data }) => [code, data["action"]])).toEqual([["layout_busy", "close_pane"]]);
   }, TEST_MS);
 
+  it("a focus loss behind a layout write disarms the prefix in order: q after it is typed, not a detach; without it, q detaches", async () => {
+    for (const focus of [true, false]) {
+      const run = await start({ fixture: demo });
+      await run.live();
+      await run.advance(1);
+      let ended = false;
+      void run.loop.done.then(() => { ended = true; });
+      // every read before the close's write could be answered
+      run.type("\x02x");
+      run.type("\x02");
+      if (focus) {
+        run.type("\x1b[O");
+        run.type("\x1b[I");
+      }
+      run.type("q");
+      await settled(run);
+      expect([focus, ended]).toEqual([focus, !focus]);
+      if (focus) expect([sentTo(run, "t1"), sentTo(run, "t2")]).toEqual(["", Buffer.from("q").toString("hex")]);
+    }
+  }, TEST_MS);
+
   it("random key sequences route alike read whole, split at every byte, and a byte at a time", async () => {
     // prefix actions (moves, zoom, close, help, the workspace picker, resize mode, rename, a new tab's name, detach), text
     // with combining marks, a ZWJ emoji, CJK and wide characters, and Enter; with the default prefix (a key of its own)
