@@ -67,7 +67,8 @@ export type NoCoreCode = "no_core" | "refused" | "unreachable";
  * - a call the link needs failed while the line stayed: `timeout` (unanswered, while other lines
  *   kept coming), `call_failed` (the core refused it: `events.subscribe`, either `doc.get`, a re-read);
  * - the line stayed but its event stream cannot be read on: `bad_line` (hc closed the stream, or sent
- *   a line that is not JSON or too long, a `missed` without its snapshot, a subscribe answer without one);
+ *   a line that is not JSON or too long, a `missed` without its snapshot, a subscribe answer without one
+ *   or without its channel);
  * - the link's own: `silent` (LINE_SILENCE_MS without a whole line on the event stream, reached by
  *   `fire` before any call's own timeout ended the line), `notify_failed` (the owner's `notify`
  *   threw), `link_closed` (closed by its owner, never retried).
@@ -404,8 +405,13 @@ class Link implements CoreLink {
       return;
     }
     if (line.over) return;
+    const { channel, seq, terminals } = subscribed.result as { channel: unknown; seq: unknown; terminals: unknown };
+    // the connection takes hc's channel as given and routes frames only to a numeric one; channel 0 is JSON-RPC's
+    if (!Number.isInteger(channel) || (channel as number) < 1) {
+      this.lineEnded(line, "bad_line", "herdr-core answered events.subscribe without an event channel");
+      return;
+    }
     line.events = subscribed.channel;
-    const { seq, terminals } = subscribed.result as { seq: unknown; terminals: unknown };
     if (typeof seq !== "number" || !Array.isArray(terminals)) {
       this.lineEnded(line, "bad_line", "herdr-core answered events.subscribe without a snapshot");
       return;
