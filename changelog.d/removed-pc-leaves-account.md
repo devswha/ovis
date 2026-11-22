@@ -15,6 +15,9 @@
   it adds nothing to the account, and the PC joins an account again only when it is added at the PC
   itself.
 
+- When a PC leaves an account, a phone that was paired with the PC's own QR code and then joined the
+  account with the same key keeps its own access to the PC.
+
 ### Changed
 - **Remove** in Manage account now takes the PC out of the account for good, also a PC that was
   added by pairing a device: once it is online again, the account's devices no longer open it, and

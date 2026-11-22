@@ -490,10 +490,19 @@ function pairedHere(device: StoredDevice): boolean {
   return device.added_by === undefined && device.link_moved_key !== true;
 }
 
+/**
+ * A row a first-link code of this PC paired, whose link kept the key that code admitted: it was numbered as it linked
+ * (`link`), by no member, and its key never moved. The credential is this PC's own; its membership is the account's.
+ */
+function keptFirstLinkKey(row: StoredDevice): boolean {
+  const origin = row.origin;
+  return origin?.from === "remote" && origin.how === "link" && origin.by === null && row.link_moved_key === false;
+}
+
 function keepsPairingOnUnlist(row: StoredDevice): boolean {
   const origin = row.origin;
   return !row.imported && !row.invalid_origin && (origin?.from === "pc" || (pairedHere(row) && row.account_add === undefined &&
-    (origin?.from === "legacy" || (origin?.from === "remote" && (origin.how === "code" || origin.how === "digits") && origin.by === null))));
+    (origin?.from === "legacy" || (origin?.from === "remote" && (origin.how === "code" || origin.how === "digits") && origin.by === null) || keptFirstLinkKey(row))));
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -597,6 +606,8 @@ export class DeviceStore {
     this.safety = account.safety ?? null;
     this.handedLifts = new HandedLifts(stateDir);
     this.pc = account.pc ?? null;
+    // a clear from before the add-at-the-PC rule is dated now, before anything this run admits
+    this.pc?.addAtPcSince();
     this.stateDirPath = stateDir;
     this.revokeAllPath = join(stateDir, "revoke-all.json");
     this.evidence = account.removals ?? null;
@@ -1441,6 +1452,8 @@ export class DeviceStore {
 
   serviceListing(): string | undefined { return this.pc?.binding()?.listing_id; }
   pinServiceListing(binding: string, listing: string): void { this.pc?.pinListing(binding, listing); }
+  /** PcAccountState.awaitsFirstListing. */
+  awaitsFirstListing(): boolean { return this.pc?.awaitsFirstListing() === true; }
   /** The id of this PC's binding when a device's link (or the rows it was upgraded from) made it, else null. */
   linkBinding(): string | null { const binding = this.pc?.binding(); return binding && binding.service !== true && binding.pending !== true ? binding.bind_id : null; }
 
@@ -1484,10 +1497,10 @@ export class DeviceStore {
   }
 
   private waitsOnStaleRead(device: StoredDevice, credential: boolean): boolean {
-    if (this.catchUp?.readStale() !== true || !this.accountOnly(device.id)) return false;
-    // its key was paired with a code of this PC and a link kept it: the credential is this PC's, its membership the account's
-    const pairedItsKeyHere = pairedHere(device) && device.account_add === undefined && !device.imported && !device.invalid_origin;
-    return !pairedItsKeyHere || !credential;
+    if (this.catchUp?.readStale() !== true || (device.account === undefined && device.member_approved_in === undefined)) return false;
+    if (!keepsPairingOnUnlist(device)) return true;
+    // the credential is this PC's own and stays; the membership its link gave it is the account's and waits
+    return keptFirstLinkKey(device) && !credential;
   }
 
   /** Whether the row `id` only waits for a whole read: its sign-in is put off, never refused as a removed device's. */

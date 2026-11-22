@@ -943,7 +943,8 @@ once after the update. Before recording the
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
 after an offline restart from either state folder. A pairing by code or digits counts as local
 only when this PC approved the current key; one an account member device started or approved
-does not qualify.
+does not qualify. A phone that paired with this PC's first-link code and linked with the key that
+code admitted counts as local too: it keeps that key and its role, and only its membership ends.
 The sibling's old membership or signed add does not restore the cleared binding. An imported or
 invalid origin does not qualify. Unlisting does not
 lift a lock, block, freeze, Revoke or tombstone.
@@ -1451,12 +1452,17 @@ Clients:
 leaves the account at its next read of the account service: its snapshot is refused `not_listed`,
 or, when a device listed it again meanwhile, its mailbox names another listing than the one its
 account rows were let in under (a PC bound by a device's link keeps that listing's ID from its first
-whole read, and until it has one a missing listing changes nothing: the device that linked it lists
-it only after its link; one bound in one press asks about the listing it was admitted in). Leaving ends the
+whole read; one bound in one press asks about the listing it was admitted in). A device lists the PC
+only after its link is answered, so for ten minutes after a link bound it, or until its listing is
+named, a missing listing is no removal (`listing_due` in the binding). A link-bound PC lets more of
+the account in only when the mailbox call of that same pull, or of that same read, named the listing
+it keeps: with no mailbox answer or none named, the read still denies what its pages deny and widens
+nothing. Leaving ends the
 account's rows and keeps the pairings made at the PC ([Adding a PC](#adding-a-pc)). From then on the PC says so
 (`pc_add_required` in `GET /api/account/status`) and takes a first link only under a code it issued
 itself (its own window, `ovis add`), or from a device whose digits its own screen approved since it
-left; one press at the PC brings it back too. A device it kept paired opens it as before and sends
+left (for a removal recorded by an older version: since this version first read it); one press at
+the PC brings it back too. A device it kept paired opens it as before and sends
 it no link, and a code that device asked for joins it to no account.
 No app lists a PC again by opening it: only the enrollment that brings a PC into the account writes
 its directory entry. A PC the directory does not list gets no [relay pass](relay.md#relay-pass)

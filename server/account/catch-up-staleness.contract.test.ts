@@ -278,8 +278,10 @@ async function linkBoundPc(answer?: (request: Request, service: FakeAccountServi
   const publicKey = await exportAccountKey(keys.publicKey);
   service.registerDevice(ACCOUNT, publicKey, "Laptop");
   const { devices, accountMailbox } = fixture.app.context.services;
-  // a read with no pull beside it names no listing, as every read before the update
+  // as every read before the update: the service is asked for no listing, so none is named
+  service.completions = false;
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  service.completions = true;
   const wall = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
   closes.push(() => wall.mockRestore());
   const open = async (device: { id: string; keys: CryptoKeyPair; publicKey: string }) => {

@@ -865,12 +865,15 @@ async function pcJustLinked() {
   const serverId = f.app.context.services.relay.currentIdentity()!.server_id;
   const key = await phone();
   const paired = f.devices.pairRelay(f.devices.startPairing().code, "Phone", key.spki)!.device;
+  const mine = { id: paired.id, keys: key.keys, publicKey: key.spki };
   const session = await relayConnection(f, { serverId });
-  await session.auth({ id: paired.id, keys: key.keys, publicKey: key.spki });
+  await session.auth(mine);
   expect((await sendLink(session, await linkOf(serverId, paired.id, "acct_1", key))).status).toBe(200);
   expect(bindingOf(f.stateDir)).toMatchObject({ account: "acct_1" });
   const list = () => admitlessListing(f, serverId);
-  return { f, serverId, session, list };
+  // the link ends the session that sent it: the app signs in again, which makes the PC read the account
+  const again = () => signIn(f, serverId, mine, [ACCOUNT_OPENS_ALL_FEATURE]);
+  return { f, serverId, again, list };
 }
 async function admitlessListing(f: Pc, serverId: string): Promise<void> {
   const identity = f.app.context.services.relay.currentIdentity()!;
@@ -880,14 +883,15 @@ async function admitlessListing(f: Pc, serverId: string): Promise<void> {
 }
 
 test("a PC a device's link just brought into the account stays in it while reads find no listing yet, then names its listing", async () => {
-  const { f, session, list } = await pcJustLinked();
-  // the app asks the PC to read its mailbox before it lists it: that read, and the PC's own poll, find no listing
-  expect((await ask(session, "/api/account/status?fresh=1")).body).toMatchObject({ account: "acct_1" });
+  const { f, again, list } = await pcJustLinked();
+  // the app signs in again before it has listed the PC: the read that sign-in starts, and the PC's own poll, find no listing
+  expect(await again()).toBe("held");
   await f.app.context.services.accountMailbox.pull();
   expect(f.devices.account()).toBe("acct_1");
   expect(f.devices.addAtPcRequired()).toBe(false);
   await list();
   await f.app.context.services.accountMailbox.pull();
+  expect(await again()).toBe("admitted");
   expect(bindingOf(f.stateDir)).toMatchObject({ account: "acct_1", listing_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
   expect(bindingOf(f.stateDir).listing_due).toBeUndefined();
 });
@@ -895,7 +899,7 @@ test("a PC a device's link just brought into the account stays in it while reads
 test("a PC a device's link brought into the account that is still not listed ten minutes later leaves it", async () => {
   const { f } = await pcJustLinked();
   const linked = Date.now();
-  const time = spyOn(Date, "now").mockImplementation(() => linked + 10 * 60_000 - 1);
+  const time = spyOn(Date, "now").mockImplementation(() => linked + 10 * 60_000 - 5_000);
   f.closes.push(() => time.mockRestore());
   await f.app.context.services.accountMailbox.pull();
   expect(f.devices.account()).toBe("acct_1");
