@@ -44,9 +44,12 @@ jobs:
       actions: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      browser: ${{ steps.filter.outputs.browser }}
       draft: ${{ steps.filter.outputs.draft }}
       linux: ${{ steps.route.outputs.linux }}
       fast: ${{ steps.route.outputs.fast }}
+      windows: ${{ steps.route.outputs.windows }}
+      rust: ${{ steps.route.outputs.rust }}
       ratchet_base: ${{ steps.ratchet.outputs.base }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,6 +73,14 @@ jobs:
           LINUX_LABELS: ${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
+          # winvm's runner, while it waits for a job (scripts/self-hosted-runner/winvm-runner.sh); in ci.yml's own runs only
+          WINVM_READY: ${{ github.workflow == 'CI' && vars.CI_WINVM_READY || '' }}
+          # a draft's Native Windows install fails at its first step: it must not take winvm's one round
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          # "true" opts the Rust PTY host job in to the Rust runners; unset keeps it hosted (scripts/ci-runner-route.sh)
+          RUST_SELF_HOSTED: ${{ vars.CI_RUST_SELF_HOSTED }}
+          # when scripts/self-hosted-runner/rust-heartbeat.sh last saw a Rust runner online (epoch seconds)
+          RUST_SEEN: ${{ vars.CI_RUST_RUNNER_SEEN }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"
       # A push to main: the latest main commit in this push's history whose CI push run passed (of the last 100), for Fast checks'
@@ -117,11 +128,18 @@ jobs:
           # not skip release validation.
           if [ "$EVENT_NAME" != "pull_request" ] || [ -z "$BASE_SHA" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "browser=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # github.event.pull_request.base.sha is the base branch as the pull request last saw it. Once the base has
+          # moved, this run's merge commit was made on a later one, and a difference from the older base would count
+          # the files of the pull requests merged in between as this one's. The merge commit's first parent is the
+          # base it was made on.
+          if git rev-parse -q --verify 'HEAD^2' > /dev/null; then BASE_SHA=$(git rev-parse 'HEAD^1'); fi
           CHANGED=$(git diff --no-renames --name-only "$BASE_SHA" HEAD || echo "")
           if [ -z "$CHANGED" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "browser=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if grep -q '^server/fixtures/' <<< "$CHANGED" || grep -qvE '^docs/|\.(md|txt)$|^LICENSE$|^\.github/ISSUE_TEMPLATE/' <<< "$CHANGED"; then
@@ -130,11 +148,15 @@ jobs:
             echo "code=false" >> "$GITHUB_OUTPUT"
             echo "Only documentation changes detected, skipping heavy tests"
           fi
+          # Only a pull request may skip the Browser regression jobs, and only when none of its paths can
+          # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name).
+          printf '%s\n' "$CHANGED" | bash scripts/ci-browser-reach.sh >> "$GITHUB_OUTPUT"
   windows-install:
     name: Native Windows install
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: windows-latest
+    # winvm when its runner waits for a job, else windows-latest; forks always windows-latest (scripts/ci-runner-route.sh)
+    runs-on: ${{ inputs.hosted_only && 'windows-latest' || fromJSON(needs.changes.outputs.windows) }}
     timeout-minutes: 10
     env:
       HERDR_TEST_MODE: unit
@@ -199,12 +221,13 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         run: bun test ./scripts/self-hosted-runner.test.ts -t 'job-started hook runs a job from this repository'
   rust-pty-host:
-    # The self-hosted runners have no Rust toolchain, so this job always runs on
-    # GitHub's image, which has one: it builds the host and runs the same checks on it as on Node.
+    # Builds the host and runs the same checks on it as on Node. Only the self-hosted runners whose image has the
+    # Rust toolchain carry the label it asks for; scripts/ci-runner-route.sh keeps forks hosted and sends it to
+    # GitHub's image, which has Rust too, when those runners are busy or gone.
     name: Rust PTY host
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.rust) }}
     timeout-minutes: 10
     env:
       HERDR_TEST_MODE: unit
@@ -216,6 +239,7 @@ jobs:
       - uses: ./.github/actions/setup-ci
         with:
           node: 'true'
+          rust: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
@@ -348,6 +372,12 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ]; then base=$LAST_GREEN; else base=$(git cat-file -p HEAD | awk '/^parent /{print $2; exit}'); fi
           git fetch --no-tags --depth=1 origin "$base"
           echo "RATCHET_BASE=$base" >> "$GITHUB_ENV"
+      - id: upgrade-fixtures
+        name: Fetch the pinned upgrade fixtures
+        run: |
+          git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7
+          git cat-file -e 'c482ad601132ebb80c0013f9d9063d474eac96c1^{commit}'
+          git cat-file -e 'acab7685663bebc0ce2e93c75b4e3c4048d9f0bb^{commit}'
       - run: bun run check fast
       - name: Release guards
         env:
@@ -398,6 +428,12 @@ jobs:
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
+      - name: Fetch the pinned upgrade fixtures
+        if: needs.changes.outputs.draft != 'true'
+        run: |
+          git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7
+          git cat-file -e 'c482ad601132ebb80c0013f9d9063d474eac96c1^{commit}'
+          git cat-file -e 'acab7685663bebc0ce2e93c75b4e3c4048d9f0bb^{commit}'
       - name: Integration tests (updater restart and rollback included)
         if: needs.changes.outputs.draft != 'true'
         env:
@@ -417,7 +453,7 @@ jobs:
   browser-main:
     name: Browser regression (ui-regression)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser != 'false'
     runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}
     # a wait for a slot counts against it
     timeout-minutes: 50
@@ -477,7 +513,7 @@ jobs:
   browser-other:
     name: Browser regression (other scripts${{ strategy.job-total > 1 && format(' {0}/{1}', matrix.shard, strategy.job-total) || '' }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser != 'false'
     runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}
     # A hosted runner has 4 CPUs: one job running every script there took about 28 minutes, and
     # frame-timing checks failed under the load. So hosted runs split the scripts over four jobs
@@ -577,6 +613,7 @@ jobs:
       - name: Check results
         env:
           CODE: ${{ needs.changes.outputs.code }}
+          BROWSER: ${{ needs.changes.outputs.browser }}
           DRAFT: ${{ needs.changes.outputs.draft }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           BROWSER_MAIN_RESULT: ${{ needs.browser-main.result }}
@@ -595,6 +632,16 @@ jobs:
           if [ "$INTEGRATION_RESULT" != "success" ]; then
             echo "Integration tests failed"
             exit 1
+          fi
+          # A change that cannot reach the browser jobs skipped them (Detect changes): only a skip counts
+          # then, never a job that failed or was cancelled.
+          if [ "$BROWSER" = "false" ]; then
+            if [ "$BROWSER_MAIN_RESULT" != "skipped" ] || [ "$BROWSER_OTHER_RESULT" != "skipped" ]; then
+              echo "Browser regression was to be skipped and ended as $BROWSER_MAIN_RESULT and $BROWSER_OTHER_RESULT"
+              exit 1
+            fi
+            echo "Integration tests passed; Browser regression skipped: the change cannot reach it"
+            exit 0
           fi
           if [ "$BROWSER_MAIN_RESULT" != "success" ]; then
             echo "Browser regression (ui-regression) failed"
