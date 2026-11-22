@@ -215,4 +215,19 @@ describe("kimi usage provider", () => {
     expect(degraded.providers).toMatchObject([{ id: "kimi", key: "kimi:u-1", account: "Kimi Fan", problem: "failed" }]);
     expect(degraded.providers[0]!.windows).toHaveLength(4);
   });
+
+  it.each([401, 403, 408])("keeps the account's identity and last numbers when the profile request is refused with %i", async (status) => {
+    signInKimi();
+    replies.set(KIMI_USAGE, usageReply());
+    replies.set(KIMI_ME, { body: { user_id: "u-1", nickname: "Kimi Fan" } });
+    const service = new UsageService(context(), [kimiUsage]);
+    const first = await service.report();
+    expect(first.providers[0]).toMatchObject({ key: "kimi:u-1", account: "Kimi Fan", problem: null });
+    now += 6 * 60_000; // past FRESH_MS: the sign-in is read anew
+    replies.set(KIMI_ME, { status });
+    const degraded = await service.report();
+    // not "expired": /usages just answered, so the sign-in is fine
+    expect(degraded.providers).toMatchObject([{ id: "kimi", key: "kimi:u-1", account: "Kimi Fan", problem: "failed" }]);
+    expect(degraded.providers[0]!.windows).toHaveLength(4);
+  });
 });

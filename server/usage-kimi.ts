@@ -188,18 +188,20 @@ export const kimiUsage: UsageProvider = {
       // the monthly share the code surface used, which the CLI shows as the monthly breakdown (usage-format.ts:71-77)
       limit(usages["limit_month_code"], "month", "Code"),
     ].filter((entry): entry is UsageWindow => entry !== null);
-    // The profile names the account; the limits stand without it when the endpoint does not
-    // answer at all (managed-userinfo.ts:55-78). A failure that may pass - a 429 with its
-    // Retry-After, a 5xx, the request itself - is raised instead: the service keeps the last
-    // reading and the account it names, and honors the backoff, rather than listing the same
-    // account a second time under the place's key.
+    // The profile names the account; the limits stand without it only when the endpoint is not
+    // there (404, managed-userinfo.ts:55-78). Every other failure is raised, so the service keeps
+    // the last reading and the account it names: a 429 unchanged, for its Retry-After backoff; a
+    // 401 or 403 as a plain error - the sign-in is fine, /usages just answered, and a
+    // UsageHttpError of those statuses would be read as an expired sign-in; anything else as is.
     let account = null;
     try {
       const me = await requestJson(ctx, `${baseUrl}/me`, { headers });
       const id = text(me["user_id"]);
       if (id !== null) account = { id, label: text(me["nickname"]) ?? text(me["email"]) ?? text(me["username"]) };
     } catch (error) {
-      if (!(error instanceof UsageHttpError) || error.status === 429 || error.status >= 500) throw error;
+      if (!(error instanceof UsageHttpError)) throw error;
+      if (error.status === 401 || error.status === 403) throw new Error(`HTTP ${error.status}`);
+      if (error.status !== 404) throw error;
     }
     return { plan: null, windows, credits: kimiCredits(body["boosterWallet"]), account };
   },
