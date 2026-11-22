@@ -640,6 +640,16 @@ describe("the pane attach machine under hostile conditions", () => {
     expect([screen.state(flat), screen.asked(flat)]).toEqual(["Failed(emulator)", []]);
   });
 
+  it("a new attach told a larger size before its first paint is complete: the picture drawn keeps its own grid", async () => {
+    const { stage, screen, t } = await scene();
+    await stage.live(screen, [t, 80, 24]);
+    screen.faults.stripMark = true;
+    screen.show([t, 120, 40]);
+    await stage.advance(REATTACH_SETTLE_MS);
+    const view = screen.view(t);
+    expect([screen.state(t), screen.attaches.at(-1)!.reply, view.actual, view.emulator === screen.emulators[0]!.emulator, view.grid]).toEqual(["Painting", "120x40", { cols: 120, rows: 40 }, true, { cols: 80, rows: 24 }]);
+  });
+
   it("a size refused before a new attach's first paint keeps the grid of the picture still shown", async () => {
     const { stage, screen, t } = await scene();
     await stage.live(screen, [t, 80, 24]);

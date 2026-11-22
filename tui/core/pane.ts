@@ -116,6 +116,8 @@ export interface PaneView {
   sizedBy: Size | null;
   /** the picture to draw: the newest attach's once its first paint is complete, until then the one before */
   emulator: Emulator | null;
+  /** the grid `emulator` has, which a frame lays its picture out at (an attach whose first paint is not complete may have another); null with no picture */
+  grid: Size | null;
   /** the first paint is complete: after the frame pass that draws it (and the read of what stdin still holds) the loop calls `live` */
   ready: boolean;
   covered: boolean;
@@ -278,7 +280,7 @@ class Pane {
     const attempt = this.attempt;
     return {
       terminal: this.terminal, state: this.state, gen: this.gen, wanted: this.size.wanted, actual: this.size.actual, advertised: this.size.advertised,
-      sizedBy: sizedBy(this.size), emulator: this.shown, ready: this.state.kind === "Painting" && attempt?.painted === true, covered: this.covered, owed: attempt?.owed ?? 0,
+      sizedBy: sizedBy(this.size), emulator: this.shown, grid: this.shown ? this.shownGrid : null, ready: this.state.kind === "Painting" && attempt?.painted === true, covered: this.covered, owed: attempt?.owed ?? 0,
     };
   }
 

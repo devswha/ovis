@@ -389,7 +389,8 @@ export function startLoop(options: LoopOptions): Loop {
     for (const spot of shape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
-      const actual = view?.actual ?? { cols: spot.cells.cols, rows: spot.cells.rows };
+      // the grid of the picture drawn, never a size a newer attach was told before its first paint: with none, the visible cells
+      const actual = view?.grid ?? { cols: spot.cells.cols, rows: spot.cells.rows };
       let held = grids.get(spot.pane);
       const emulator = view?.emulator ?? null;
       if (!held || held.emulator !== emulator) {
