@@ -4307,7 +4307,7 @@ describe("pairing and identity", () => {
       const tablet = await pair("Tablet");
       if (bound) {
         server.context.services.devices.bindByService(ACCOUNT);
-        expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+        expect(await server.context.services.accountMailbox.readSnapshot(server.context.services.devices.serviceBinding())).toMatchObject({ committed: true });
       }
       const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
       expect([asDevice.status, ((await asDevice.json()) as ApiError).error.code]).toEqual([400, "method_not_allowed"]);

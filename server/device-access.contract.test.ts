@@ -485,7 +485,7 @@ it.each([false, true])("revoking every device closes each paired client's stream
     const driver = { ...guard, ...stranger, cookie: cookieD };
     if (accountOpensAll) {
       server.context.services.devices.bindByService(ACCOUNT);
-      expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      expect(await server.context.services.accountMailbox.readSnapshot(server.context.services.devices.serviceBinding())).toMatchObject({ committed: true });
       const refused = await revokeAll(driver);
       expect(refused.status).toBe(403);
       expect(await refused.json()).toMatchObject({ error: { code: "local_required" } });

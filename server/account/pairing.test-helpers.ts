@@ -49,7 +49,13 @@ export type Pc = Awaited<ReturnType<typeof pairingPc>>;
 /** Establish standing for a bound member before it signs in or signs a record. */
 export async function firstPairingRead(pc: Pc): Promise<void> {
   pc.account.opensAll = true;
-  await registerSnapshotPc(pc.account, pc, pc.app.context.services.relay.currentIdentity());
+  const serverId = await registerSnapshotPc(pc.account, pc, pc.app.context.services.relay.currentIdentity());
+  // a PC bound by the service stands on that service's admission of it, as after one press
+  if (pc.devices.serviceBinding() !== null) {
+    const admitted = await pc.account.fetch(new Request(`https://account.test/v1/pcs/${serverId}/admit`, { method: "POST",
+      headers: { authorization: `Bearer ${pc.account.issueToken(pc.devices.account() ?? "", { twoStep: true })}` }, body: "{}" }));
+    if (!admitted.ok) throw new Error(`The member fixture's PC was not admitted: ${admitted.status}`);
+  }
   const read = await pc.app.context.services.accountMailbox.readSnapshot();
   if (!read?.committed) throw new Error("The member fixture did not commit its first whole read");
 }
