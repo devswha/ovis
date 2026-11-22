@@ -340,6 +340,26 @@ describe("the loop", () => {
     expect(run.loop.model().notices.map((notice) => notice.code)).not.toContain("input_refused");
   }, TEST_MS);
 
+  it("a size no emulator takes fails that pane alone: drawn as failed, no grid at the refused size, the other pane still typed into", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    const drawn = run.loop.report().grids.find((grid) => grid.pane === "t1");
+    expect(drawn).toBeDefined();
+    // another viewer sizes t1 past what an emulator takes (1000 columns)
+    const rival = new HcConnection(() => run.core.transport());
+    await rival.open("terminal.attach", { terminal: "t1", cols: 1200, rows: 50 }, { onData: () => {}, onClose: () => {} });
+    await run.advance(1_000);
+    expect(run.loop.panes.view("t1")?.state).toMatchObject({ kind: "Failed", code: "size" });
+    expect(run.loop.report().grids.find((grid) => grid.pane === "t1")).toEqual(drawn);
+    expect(run.grid().join("\n")).toContain("failed: size");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+    await run.advance(1);
+    await run.keys("k");
+    await run.advance(20);
+    expect([run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()]).toEqual(["", Buffer.from("k").toString("hex")]);
+    rival.close();
+  }, TEST_MS);
+
   it("one read routes as the same bytes split across reads: an action and the text after it in one read", async () => {
     /** the focus, the mode and what every program received after `reads`, each read followed by a turn */
     const outcome = async (reads: string[]) => {
@@ -396,6 +416,8 @@ async function failedPane(): Promise<Resting> {
   const run = await start({ core });
   await run.advance(1_000);
   expect(run.loop.panes.view("t1")?.state).toMatchObject({ kind: "Failed", code: "size" });
+  // it never showed a picture: its grid is its rectangle, never the refused size
+  expect(run.loop.report().grids.filter((grid) => grid.cols > 1_000)).toEqual([]);
   return { run };
 }
 

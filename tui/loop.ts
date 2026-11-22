@@ -80,6 +80,8 @@ export interface LoopReport {
   actions: string[];
   hc: { version: string; features: string[] } | null;
   size: { cols: number; rows: number };
+  /** the pane grids the frame keeps, each at its size */
+  grids: { pane: string; cols: number; rows: number }[];
   mode: { name: string; locked: boolean; armed: boolean; overlays: string[] };
   /** the stable code of the error giving the terminal back at quit failed with, or null */
   leaveError: string | null;
@@ -618,6 +620,7 @@ export function startLoop(options: LoopOptions): Loop {
         leaveError,
         hc: hello ? { version: hello.version, features: [...hello.features] } : null,
         size: entered ? host.size() : { cols: 0, rows: 0 },
+        grids: [...grids].map(([pane, { grid }]) => ({ pane, cols: grid.grid.cols, rows: grid.grid.rows })),
         mode: { name: state.mode.name, locked: state.locked, armed: state.armed, overlays: state.overlays.map((overlay) => overlay.kind) },
         link: { kind: link.state.kind, code: "code" in link.state ? link.state.code : null },
       };

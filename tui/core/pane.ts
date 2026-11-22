@@ -47,7 +47,7 @@ import type { Emulator, EmulatorOptions, EmulatorResult, EngineEvents } from "..
 import type { InputEvent } from "../input/decode.ts";
 import { type Deadlines, NO_DEADLINES, PAINT_QUIET_MS, PANE_REOPEN_LIMIT, setDeadline } from "../model/deadlines.ts";
 import type { CoreLink, LinkNotice } from "./link.ts";
-import { attachSent, attachSize, detached, newPaneSize, overtaken, type PaneSize, reattachDue, reattaching, rectangleChanged, replied, sameSize, type Size, sizedBy, sizeHeard, sizeTold, took } from "./size.ts";
+import { attachSent, attachSize, detached, newPaneSize, overtaken, type PaneSize, reattachDue, reattaching, rectangleChanged, refused, replied, sameSize, type Size, sizedBy, sizeHeard, sizeTold, took } from "./size.ts";
 import type { ProbeResult } from "../host/index.ts";
 import { displayAfter, displayFacts, type Reply } from "../host/probe.ts";
 
@@ -468,8 +468,10 @@ class Pane {
     const { kind, message } = resized.error;
     if (kind === "trapped") this.rebuild(attempt, message);
     else if (kind === "size" || kind === "failed") {
-      // a grid no emulator takes, or one it refused: this terminal cannot be drawn until it has another size
+      // a grid no emulator takes, or one it refused: this terminal cannot be drawn until it has another size. A picture still
+      // shown keeps the last grid this attach's emulator took, which is one an emulator takes
       this.abandon();
+      this.size = refused(this.size, this.shown ? attempt.grid : null);
       this.fail("size", message);
     }
     // busy or disposed: nothing was done, and the next pump asks again
