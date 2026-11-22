@@ -135,6 +135,8 @@ try {
             for (const pane of [id, "w1D:p1", "w1J:p1"]) localStorage.setItem(`ovis:view:${pane}`, "chat");
           }, PANE);
           const opened = await context.newPage();
+          // a loaded CI runner measures the chat's rows late: the same slowness here, so the place is read as CI reads it
+          await (await context.newCDPSession(opened)).send("Emulation.setCPUThrottlingRate", { rate: 4 });
           const errors: string[] = [];
           opened.on("pageerror", (error) => errors.push(error.message));
           await opened.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`);
