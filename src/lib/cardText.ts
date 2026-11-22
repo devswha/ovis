@@ -67,7 +67,8 @@ export function moveCardText(before: string, after: string, toPaneId: string, st
     return;
   }
   if (storedBefore !== null) {
-    const parsed = parseCardText(storedBefore);
+    const memBefore = cardTexts.get(before);
+    const parsed = memBefore ?? parseCardText(storedBefore);
     const updated = parsed ? { ...parsed, paneId: toPaneId } : null;
     const serialized = updated ? JSON.stringify(updated) : storedBefore;
     try {
@@ -76,9 +77,10 @@ export function moveCardText(before: string, after: string, toPaneId: string, st
       return;
     }
     try {
-      storage().removeItem(CARD_TEXT_PREFIX + before);
+      if (storage().getItem(CARD_TEXT_PREFIX + before) === storedBefore) {
+        storage().removeItem(CARD_TEXT_PREFIX + before);
+      }
     } catch {}
-    const memBefore = cardTexts.get(before);
     if (memBefore) {
       cardTexts.delete(before);
       cardTexts.set(after, { ...memBefore, paneId: toPaneId });

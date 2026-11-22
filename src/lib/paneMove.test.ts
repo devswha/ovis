@@ -279,3 +279,38 @@ it("carries unsent card text across pane moves with write-first and keep-on-conf
   expect(JSON.parse(data.get("ovis:card-text:w5:p1")!).text).toBe("keep me");
   expect(data.get("ovis:card-text:w6:p2")).toBeUndefined();
 });
+
+it("prefers fresher cached card text over stale storage and keeps concurrent source edits (#3458)", async () => {
+  const { setCardText } = await import("./cardText.ts");
+  const { data, drafts, storage } = fixture();
+  const payload = (paneId: string, text: string) => JSON.stringify({ machineId: "local", paneId, session: "s1", promptId: "q1", text });
+
+  // failed edit write leaves stale text in storage, fresher text in memory
+  data.set("ovis:card-text:w7:p1", payload("w7:p1", "older stored"));
+  const failSourceWrite = () => ({
+    ...storage(),
+    setItem(key: string, value: string) {
+      if (key === "ovis:card-text:w7:p1") throw new DOMException("Quota exceeded", "QuotaExceededError");
+      storage().setItem(key, value);
+    },
+  });
+  setCardText("w7:p1", { machineId: "local", paneId: "w7:p1", session: "s1", promptId: "q1", text: "newer memory" }, failSourceWrite);
+  carryPaneState("local", "w7:p1", "w8:p2", drafts, storage);
+  expect(data.get("ovis:card-text:w7:p1")).toBeUndefined();
+  expect(JSON.parse(data.get("ovis:card-text:w8:p2")!).text).toBe("newer memory");
+
+  // concurrent source update during destination write is not deleted
+  data.set("ovis:card-text:w9:p1", payload("w9:p1", "before race"));
+  const racingStorage = () => ({
+    ...storage(),
+    setItem(key: string, value: string) {
+      storage().setItem(key, value);
+      if (key === "ovis:card-text:w10:p2") {
+        data.set("ovis:card-text:w9:p1", payload("w9:p1", "written concurrently"));
+      }
+    },
+  });
+  carryPaneState("local", "w9:p1", "w10:p2", new ComposerDraftStore(racingStorage), racingStorage);
+  expect(JSON.parse(data.get("ovis:card-text:w10:p2")!).text).toBe("before race");
+  expect(JSON.parse(data.get("ovis:card-text:w9:p1")!).text).toBe("written concurrently");
+});
