@@ -448,9 +448,11 @@ export class PendingMessageStore {
       const target = this.dismissed.get(to) ?? new Set<string>();
       let changed = false;
       const added = [...hidden].filter((id) => (only === undefined || id === only) && !target.has(id));
-      if (target.size + added.length > MAX_DISMISSED_PENDING_IDS) { this.unsaved.add(to); this.notify(); return; }
-      for (const id of added) { target.add(id); changed = true; }
-      if (changed) { this.dismissed.set(to, target); this.write(to, this.read(to)); }
+      // a full journal there keeps its own marks, and the rows move all the same: none is left at the old ID
+      if (target.size + added.length > MAX_DISMISSED_PENDING_IDS) { this.unsaved.add(to); this.notify(); } else {
+        for (const id of added) { target.add(id); changed = true; }
+        if (changed) { this.dismissed.set(to, target); this.write(to, this.read(to)); }
+      }
     }
     const rows = this.read(from).filter((message) => only === undefined || message.id === only);
     for (const [key, next] of this.afterSend) if (next === from) this.afterSend.set(key, to);

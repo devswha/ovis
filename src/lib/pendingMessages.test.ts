@@ -168,6 +168,18 @@ describe("pending message ownership", () => {
     expect(new PendingMessageStore(() => port).read("p").map(row => row.id)).toEqual(["b", "c"]);
     expect(JSON.parse(port.getItem("ovis:pending:p")!).dismissed).toEqual(["a"]);
   });
+  it("moves a pane's rows when the new pane's dismissal journal is full", () => {
+    const port = storage(), ids = Array.from({ length: MAX_DISMISSED_PENDING_IDS }, (_, i) => `dismissed-${i}`);
+    port.setItem("ovis:pending:to", JSON.stringify({ version: 1, dismissed: ids, messages: [] }));
+    const store = new PendingMessageStore(() => port);
+    store.accept("from", message("gone", "uncertain"), "scope");
+    expect(store.dismissCopy("from", "gone")).toBe(true);
+    store.accept("from", message("kept", "held"), "scope");
+    store.move("from", "to");
+    expect(store.read("from")).toEqual([]);
+    expect(store.read("to").map((row) => row.id)).toEqual(["kept"]);
+    expect(store.isOwned("to", "kept", "scope")).toBe(true);
+  });
   it("carries an exact dismissed ID with its moved pane and keeps late old-pane publications hidden", () => {
     const port = storage(), store = new PendingMessageStore(() => port);
     store.accept("from", message("a", "uncertain"), "scope");
