@@ -154,10 +154,19 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     }
   }, TEST_MS);
 
-  /** The screen's grid once more output arrived than now; the run's own deadline bounds the wait. */
-  const nextGrid = async (run: SupervisedRun): Promise<string> => {
-    await run.until(new RegExp(`^[\\s\\S]{${run.output().length + 1}}`), "more output");
-    return gridText(run.output(), 100, 30);
+  /** The screen's grid as the output so far draws it, and how much output that was. */
+  const shot = async (run: SupervisedRun): Promise<{ grid: string; length: number }> => {
+    const output = run.output();
+    return { grid: await gridText(output, 100, 30), length: output.length };
+  };
+
+  /**
+   * The grid once output arrived past what `seen` was drawn from: at once when it already did (while `seen` was drawn,
+   * or before it was inspected), so no frame is waited past; the run's own deadline bounds the wait.
+   */
+  const nextShot = async (run: SupervisedRun, seen: { length: number }): Promise<{ grid: string; length: number }> => {
+    await run.until(new RegExp(`^[\\s\\S]{${seen.length + 1}}`), "more output");
+    return shot(run);
   };
 
   it("shows a program named like an agent coming to the front as that agent, in its pane's title and the Agents list, with no reconnect", async () => {
@@ -172,8 +181,9 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect([before.includes("[claude]"), before.includes("No agents")]).toEqual([false, true]);
     run.type(`exec ${join(root, "bin", "claude")} -c 'read line'\r`);
     await run.until("[claude]", "the agent in the pane's title");
-    let grid = await gridText(run.output(), 100, 30);
-    while (grid.includes("No agents")) grid = await nextGrid(run);
+    let seen = await shot(run);
+    while (seen.grid.includes("No agents")) seen = await nextShot(run, seen);
+    const { grid } = seen;
     expect(grid.split("\n").filter((line) => line.startsWith(" · front-pane /")).length).toBe(1);
     expect(grid.split("\n")[1]).toContain("front-pane");
     expect(grid.split("\n")[1]).toContain("[claude]");
@@ -192,15 +202,15 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     await run.until("ended (3)", "the ended pane's banner");
     // the banner can arrive in one read and the rest of its frame in the next
     const shown = (grid: string) => [grid.includes("+- stays "), grid.includes("+- ends "), grid.includes("+- ended (3) ")];
-    let ended = await gridText(run.output(), 100, 30);
-    while (shown(ended).includes(false)) ended = await nextGrid(run);
-    expect(shown(ended)).toEqual([true, true, true]);
+    let seen = await shot(run);
+    while (shown(seen.grid).includes(false)) seen = await nextShot(run, seen);
+    expect(shown(seen.grid)).toEqual([true, true, true]);
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("finished");
     await hc.call("terminal.rm", { terminal: address });
-    let grid = ended;
-    // the frame that drops the pane can arrive in two reads too: wait until its banner is gone as well
-    while (grid.includes("+- ends ") || grid.includes("ended (3)")) grid = await nextGrid(run);
-    expect([grid.includes("+- stays "), grid.includes("ended (3)")]).toEqual([true, false]);
+    // the frame that drops the pane can arrive in two reads too: wait until its title and its marker are both gone
+    const dropped = (grid: string) => [grid.includes("+- stays "), grid.includes("+- ends "), grid.includes("END-MARK")];
+    while (dropped(seen.grid).slice(1).includes(true)) seen = await nextShot(run, seen);
+    expect(dropped(seen.grid)).toEqual([true, false, false]);
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
   }, TEST_MS);
