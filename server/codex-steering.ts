@@ -68,7 +68,8 @@ export function agySteeringPending(screen: string, text: string): boolean {
   if (composer < 2 || !/^─+$/.test(lines[composer - 1]!) || !entry) return false;
   const shown = compact(entry[1]!), sent = compact(text);
   const cut = /(?:\.\.\.|…)$/.exec(shown);
-  return !!sent && (shown === sent || (cut !== null && sent.startsWith(shown.slice(0, cut.index))));
+  // a row cut to its dots alone could be any message
+  return !!sent && (shown === sent || (cut !== null && cut.index > 0 && sent.startsWith(shown.slice(0, cut.index))));
 }
 
 // Codex's Escape ends its turn and starts one with the message (`restart`); agy's alt+m adds it to the turn at work
@@ -80,7 +81,7 @@ const SEND_NOW: Record<string, { pending: (screen: string, text: string) => bool
 /** Enter can leave steering pending until a tool boundary. Only Send now may send it at once, and only for `text`. */
 export async function interruptCodexSteering(explicit: boolean, text: string, submitted: CodexSteeringContext, io: SteeringIO): Promise<void> {
   const agent = submitted.agent;
-  const steer = agent === null ? undefined : SEND_NOW[agent];
+  const steer = agent !== null && Object.hasOwn(SEND_NOW, agent) ? SEND_NOW[agent] : undefined;
   if (!explicit || !steer || !submitted.working) return;
   const now = io.now ?? Date.now;
   const wait = io.wait ?? Bun.sleep;
