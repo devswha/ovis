@@ -94,7 +94,6 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
     }
   };
 
-  /** One frame of a drag: scroll the list if the finger is at an edge, then place the row. */
   const dragFrame = (): void => {
     if (lift === null) return;
     lift.frame = 0;
