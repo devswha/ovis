@@ -2223,6 +2223,14 @@ describe("another machine of the core, as its own PC (#2497)", () => {
     expect(execs.every((call) => (call.params["env"] as Record<string, string> | undefined)?.["LC_ALL"] === "C")).toBe(true);
   });
 
+  // only this PC's core reads its terminals' environment (runtime.ts gives another machine's adapter no terminalEnv);
+  // a program run without a terminal through this connection, whoever runs it, runs on that machine
+  it("runs a program without a terminal on that machine, not on this PC's core", async () => {
+    const { hc, cores } = await setup(listed(), { "machine.exec": () => ({ code: 0, timed_out: false, truncated: false, ms: 1, stdout: "", stderr: "" }) }, undefined, "lab");
+    await hc.call("machine.exec", { argv: ["/usr/bin/env", "-0"], timeout: 5 });
+    expect(cores.flatMap((core) => core.calls.filter((call) => call.method === "machine.exec").map((call) => call.params["on"]))).toEqual(["lab-id"]);
+  });
+
   it("asks that machine's git about the folder itself, not a repository its core was started in", async () => {
     const answer = (stdout: string) => ({ code: 0, timed_out: false, truncated: false, stdout: Buffer.from(stdout).toString("base64"), stderr: "" });
     const inherited = { GIT_DIR: "/home/u/.dotfiles", GIT_WORK_TREE: "/home/u" };
