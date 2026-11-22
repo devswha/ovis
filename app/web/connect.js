@@ -138,7 +138,7 @@ function focusField() {
 
 /**
  * One tab at a time, picked rather than stepped to: no entry of the page's history, so the phone's Back leaves the app
- * from any tab (MainActivity.syncBack gives Back to the page only when it has history), as it does on the desktop's
+ * from any tab (MainActivity's pageBack gives Back to the page only when it has history), as it does on the desktop's
  * Add a connection. What an open said goes with the tab it was said on.
  */
 function pick(name, focus = false) {

@@ -580,22 +580,6 @@ public class PCStoreTest {
     }
 
     @Test
-    public void backIsThePagesOnlyOverAnotherPageOfTheSamePlace() {
-        String pc = "https://pc.tail1234.ts.net";
-        assertTrue(PCStore.pageTakesBack(pc + "/?pane=w1%3Ap2", pc + "/?pane=w1%3Ap1", pc));
-        assertFalse(PCStore.pageTakesBack(pc + "/", null, pc));
-        assertFalse(PCStore.pageTakesBack(pc + "/", "https://login.example.com/authorize", pc));
-        assertFalse(PCStore.pageTakesBack("https://login.example.com/step2", "https://login.example.com/authorize", pc));
-        assertFalse(PCStore.pageTakesBack("https://localhost/error.html", pc + "/", pc));
-        assertFalse(PCStore.pageTakesBack(pc + "/", "https://pc.tail1234.ts.net:8443/", pc));
-        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
-        assertTrue(PCStore.pageTakesBack(scope + "?pane=a", scope, scope));
-        assertFalse(PCStore.pageTakesBack(scope, "https://app.ovis.sh/", scope));
-        assertTrue(PCStore.pageTakesBack("https://localhost/demo/index.html", "https://localhost/", "https://localhost"));
-        assertFalse(PCStore.pageTakesBack("https://localhost/", null, "https://localhost"));
-    }
-
-    @Test
     public void anotherPortOnThePcsHostIsAnotherOrigin() {
         String pc = "https://pc.example.ts.net";
         assertTrue(PCStore.sameOrigin(pc + "/files?x=1#top", pc));

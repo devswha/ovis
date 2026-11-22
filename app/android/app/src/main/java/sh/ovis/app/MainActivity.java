@@ -143,11 +143,12 @@ public class MainActivity extends BridgeActivity {
     private boolean checked;
 
     /**
-     * Takes Back for the page while the entry behind the one shown is a page of the same place
-     * (syncBack): the page closes what is open, or shows the pane before. While it is off, Back is
-     * the system's: it leaves the app, and draws its own way out (predictive back).
+     * Back while the page has an entry behind it goes to that entry in the WebView: a pane before, a sheet closing, or the
+     * page a relay PC's More left for the hosted app's Add a PC (`#add`, a new document, BackToPageTest). With nothing
+     * behind it, Back is the system's (leave the app). Always on, so no navigation has to be seen first to turn it on:
+     * Android 15 and 16 left the app when the enabled state lagged a new document.
      */
-    private final OnBackPressedCallback pageBack = new OnBackPressedCallback(false) {
+    private final OnBackPressedCallback pageBack = new OnBackPressedCallback(true) {
         @Override
         public void handleOnBackPressed() {
             WebView view = bridge.getWebView();
@@ -155,8 +156,18 @@ public class MainActivity extends BridgeActivity {
                 view.goBack();
                 return;
             }
+            // Add a PC left its page by script, which Chromium marks skippable for the browser's Back (canGoBack and
+            // goBackOrForward pass over it, with the page still behind): on #add the page itself steps back, which no such
+            // mark skips
+            if (view.copyBackForwardList().getCurrentIndex() > 0 && "add".equals(Uri.parse(String.valueOf(view.getUrl())).getFragment())) {
+                view.evaluateJavascript("history.back()", null);
+                return;
+            }
+            // the system's own Back, once: on Android 12 and later it may only send the app to the background, which
+            // must find this on again when the app comes back
             setEnabled(false);
             getOnBackPressedDispatcher().onBackPressed();
+            setEnabled(true);
         }
     };
 
@@ -219,13 +230,7 @@ public class MainActivity extends BridgeActivity {
         });
         if (host == null) {
             bridge.setWebViewClient(
-                new BridgeWebViewClient(bridge) {
-                    @Override
-                    public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
-                        super.doUpdateVisitedHistory(view, url, isReload);
-                        syncBack(appOrigin);
-                    }
-                }
+                new BridgeWebViewClient(bridge)
             );
         }
         followThemeColor(host == null ? Collections.singleton(appOrigin) : new HashSet<>(Arrays.asList(appOrigin, origin)));
@@ -320,14 +325,6 @@ public class MainActivity extends BridgeActivity {
                             return true;
                         }
                         return super.shouldOverrideUrlLoading(view, request);
-                    }
-
-                    // every entry the page adds or leaves (a sheet's, a pane's) comes through here,
-                    // as a page load does
-                    @Override
-                    public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
-                        super.doUpdateVisitedHistory(view, url, isReload);
-                        syncBack(pc);
                     }
 
                     // WebView does not ask shouldOverrideUrlLoading about a form's POST: a sign-in form
@@ -651,21 +648,7 @@ public class MainActivity extends BridgeActivity {
         super.onDestroy();
     }
 
-    /**
-     * Gives Back to the page or to the system, by where the WebView's history stands: the page's while
-     * the page shown and the entry behind it are pages of `place`, the PC or the app's own origin
-     * (PCStore.pageTakesBack). Told before the next Back, so the system knows which way out to draw.
-     */
-    private void syncBack(String place) {
-        WebView view = bridge.getWebView();
-        WebBackForwardList entries = view.copyBackForwardList();
-        int at = entries.getCurrentIndex();
-        String here = at < 0 ? null : entries.getItemAtIndex(at).getUrl();
-        String before = at < 1 ? null : entries.getItemAtIndex(at - 1).getUrl();
-        pageBack.setEnabled(view.canGoBack() && PCStore.pageTakesBack(here, before, place));
-    }
-
-    private void followThemeColor(Set<String> origins) {
+        private void followThemeColor(Set<String> origins) {
         if (
             !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
             !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)

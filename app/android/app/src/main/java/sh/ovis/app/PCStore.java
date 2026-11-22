@@ -375,10 +375,6 @@ final class PCStore {
         return !scope.isEmpty() && !scope.equals("/");
     }
 
-    static boolean pageTakesBack(String here, String before, String place) {
-        return here != null && before != null && belongs(here, place) && belongs(before, place);
-    }
-
     /**
      * `path` (percent-encoded, as a URL carries it) when a browser loads it as written, else null: no
      * `.` or `..` segment, plain or percent-encoded (once or twice), no encoded `/` and no `\`, which a
