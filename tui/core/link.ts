@@ -406,8 +406,9 @@ class Link implements CoreLink {
     }
     if (line.over) return;
     const { channel, seq, terminals } = subscribed.result as { channel: unknown; seq: unknown; terminals: unknown };
-    // the connection takes hc's channel as given and routes frames only to a numeric one; channel 0 is JSON-RPC's
-    if (!Number.isInteger(channel) || (channel as number) < 1) {
+    // the connection takes hc's channel as given and routes frames only to a numeric one; channel 0 is JSON-RPC's,
+    // and a frame names its channel in 32 bits, so a larger one could never be heard
+    if (!Number.isInteger(channel) || (channel as number) < 1 || (channel as number) > 0xffff_ffff) {
       this.lineEnded(line, "bad_line", "herdr-core answered events.subscribe without an event channel");
       return;
     }
