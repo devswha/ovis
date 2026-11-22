@@ -17,7 +17,7 @@ const WAIT_MS = 5000;
  */
 const standInRun = process.env["OVIS_STANDIN_RUN"];
 /** the cases of the first block: the last block checks that the stand-in run passed every one */
-const LINK_CASES = 30;
+const LINK_CASES = 31;
 /** the cases the plan names (row 22), which the last block finds by name among those that passed */
 const NAMED = ["EOF", "missed", "stale socket", "incompatible names the methods", "a call while offline opens no socket"];
 
@@ -313,6 +313,16 @@ describe.skipIf(process.platform === "win32" || standInRun === undefined)("the c
     link.fire();
     expect(link.state.kind).toBe("Incompatible");
     expect(await failure(link.call("terminal.list", {}))).toBe("offline");
+  });
+
+  it("incompatible without terminal.list, which the layout's reads call", async () => {
+    const path = socket();
+    const core = new FakeHcCore({ methods: ANSWERED.filter((method) => method !== "terminal.list") });
+    await serve(core, path);
+    const link = start(path);
+    await until("the hello's verdict", () => link.state.kind === "Incompatible" || link.state.kind === "Online");
+    expect(link.state).toEqual({ kind: "Incompatible", code: "missing_methods", missing: ["terminal.list"], reason: expect.stringContaining("terminal.list") });
+    expect(callsByLine(core)).toEqual([["hello"]]);
   });
 
   it("a call while offline opens no socket", async () => {

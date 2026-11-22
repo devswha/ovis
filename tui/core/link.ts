@@ -34,10 +34,11 @@ import { type Deadlines, LINE_SILENCE_MS, LINE_STABLE_MS, NO_DEADLINES, RECONNEC
 
 /**
  * The calls the screen makes, which a core's hello must name: the event stream, documents, attach,
- * and reading, labelling, starting and closing terminals. `doc.set` is not among them: a core that
- * writes no documents still shows the screen, without layout edits (layout-ops.ts `layoutCalls`).
+ * and listing, reading, labelling, starting and closing terminals (the layout's reads list them:
+ * layout-ops.ts). `doc.set` is not among them: a core that writes no documents still shows the
+ * screen, without layout edits (layout-ops.ts `layoutCalls`).
  */
-export const SCREEN_METHODS = ["events.subscribe", "doc.get", "terminal.attach", "terminal.get", "terminal.label", "terminal.run", "terminal.kill", "terminal.rm"] as const satisfies readonly HcMethod[];
+export const SCREEN_METHODS = ["events.subscribe", "doc.get", "terminal.attach", "terminal.list", "terminal.get", "terminal.label", "terminal.run", "terminal.kill", "terminal.rm"] as const satisfies readonly HcMethod[];
 
 /** The documents read on every new line and after every `missed`: the Herdr app's layout, then Ovis's own. */
 export const LINK_DOCS = [LAYOUT_DOC, OVIS_LAYOUT_DOC] as const;
