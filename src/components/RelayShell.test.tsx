@@ -704,6 +704,11 @@ describe("#16 sweep: a signed-in device never lands on the connect tabs by itsel
     expect(plain(declined)).toBe("declined");
     expect(declined).toContain("Not allowed. Ask again, then press [Allow] on Mac.");
     expect(declined).toContain('data-action="ask-again"');
+    const unanswered = failed("pair-unanswered");
+    expect(plain(unanswered)).toBe("unanswered");
+    expect(unanswered).toContain("No answer from Mac");
+    expect(unanswered).toContain('data-action="ask-again"');
+    expect(unanswered).not.toContain("Not allowed");
     const removed = failed("revoked");
     expect(plain(removed)).toBe("removed");
     expect(removed).toContain("This device was removed from Mac. Ask again to join it.");

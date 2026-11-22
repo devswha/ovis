@@ -47,7 +47,7 @@ export function keyMismatch(serverId: string, keys: readonly { key: string; from
   return null;
 }
 
-export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "relay-refused" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "pair-unavailable" | "bad-offer"
+export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "relay-refused" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "pair-unanswered" | "pair-unavailable" | "bad-offer"
   /** the relay closed a pairing device 4403: the PC's relay pass allows no new device sessions (account limits) */
   | "new-devices-refused"
   | "not-added-yet"
@@ -166,9 +166,10 @@ export function failureOf(error: unknown, attempt: { code: boolean; paired: bool
   // (pairing paused after failures, three phones already waiting, a serve-only PC)
   if (attempt.codeless && !attempt.code && !attempt.paired && !attempt.compared
     && error instanceof MuxProtocolError && error.code === "auth_failed") return "pair-unavailable";
-  // once digits were shown, the PC answered: a refusal or a deadline there means it was not approved in time
-  if (attempt.compared && (error instanceof RelayAdmissionTimeoutError
-    || error instanceof MuxProtocolError && (error.code === "auth_failed" || error.code === "timeout"))) return "pair-declined";
+  // once digits were shown, only the PC's refusal is a decline; a deadline or a session lost on the way is no answer
+  if (attempt.compared && error instanceof MuxProtocolError && error.code === "auth_failed") return "pair-declined";
+  if (attempt.compared && (error instanceof RelayAdmissionTimeoutError || error instanceof RelayUnreachableError
+    || error instanceof MuxProtocolError && (error.code === "timeout" || error.code === "internal_error"))) return "pair-unanswered";
   if (error instanceof ServerIdentityChangedError) return "identity-changed";
   if (error instanceof RelayRefusedError) return "relay-refused";
   if (error instanceof RelayUnreachableError) return "relay-unreachable";

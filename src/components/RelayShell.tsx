@@ -280,6 +280,7 @@ export function RelayShell(props: RelayShellProps) {
       : state.kind === "confirm" || state.kind === "connecting" ? { reason: "allow" }
       : state.kind === "compare" && state.typed !== true ? { reason: state.approveOn === undefined ? "type" : "allow", digits: state.digits }
       : state.kind === "failed" && (state.failure === "pair-declined" || state.failure === "pair-unavailable") ? { reason: "declined", ask: onRetry }
+      : state.kind === "failed" && state.failure === "pair-unanswered" ? { reason: "unanswered", ask: onRetry }
       : state.kind === "failed" && state.failure === "revoked" ? { reason: "removed", ask: onRetry }
       : state.kind === "failed" && state.failure === "pc-offline" ? { reason: "off", check: onRetry }
       : null;

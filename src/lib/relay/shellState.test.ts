@@ -276,6 +276,15 @@ describe("a link without a code that the PC refused before any digits", () => {
     expect(failureOf(refused, { code: false, paired: true })).toBe("revoked");
     expect(failureOf(refused, { code: false, paired: false, codeless: true, compared: true })).toBe("pair-declined");
   });
+
+  it("preview-qa #16: once the number was shown, only the PC's refusal reads as declined; a timeout or a lost session is no answer", () => {
+    const compared = { code: false, paired: false, codeless: true, compared: true };
+    expect(failureOf(new MuxProtocolError("auth_failed", "declined"), compared)).toBe("pair-declined");
+    expect(failureOf(new MuxProtocolError("timeout", "no approval in time"), compared)).toBe("pair-unanswered");
+    expect(failureOf(new RelayAdmissionTimeoutError("welcome"), compared)).toBe("pair-unanswered");
+    expect(failureOf(new MuxProtocolError("internal_error", "upstream_lost"), compared)).toBe("pair-unanswered");
+    expect(failureOf(new RelayUnreachableError(null), compared)).toBe("pair-unanswered");
+  });
 });
 
 describe("the start screen while the shell loads", () => {

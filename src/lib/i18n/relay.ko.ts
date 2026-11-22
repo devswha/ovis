@@ -147,4 +147,6 @@ export const RELAY_KO: Record<string, string> = {
   "Sign in with the same account on the PC where Ovis runs": "Ovis가 켜진 PC에서 같은 계정으로 로그인하세요",
   "Ask again": "다시 요청",
   "Other ways to connect": "다른 방법으로 연결",
+  "No answer from {name}": "{name}에서 응답이 없어요",
+  "Ask again, then press [Allow] on {name}.": "다시 요청한 뒤 {name}에서 [허용]을 누르세요.",
 };

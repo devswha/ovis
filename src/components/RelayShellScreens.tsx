@@ -21,7 +21,7 @@ import { canScanQr, RelayAddPc } from "./RelayAddPc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
 /** Why the plain screen is up (#16): what the person does next on the PC, or why nothing goes on. */
-export type PlainReason = "allow" | "type" | "off" | "declined" | "removed" | "no-account-pc";
+export type PlainReason = "allow" | "type" | "off" | "declined" | "unanswered" | "removed" | "no-account-pc";
 
 /**
  * #16: the one plain screen a signed-in device shows instead of the connect tabs, app and browser alike: the PC's name,
@@ -40,6 +40,7 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
       case "type": return t("Type this number on {name}", { name: name ?? t("this PC") });
       case "off": return name === null ? t("Turn on Ovis on the PC") : t("{name} is off. Turn on Ovis on it.", { name });
       case "declined": return t("Not allowed. Ask again, then press [Allow] on {name}.", { name: name ?? t("this PC") });
+      case "unanswered": return t("No answer from {name}", { name: name ?? t("this PC") });
       case "removed": return t("This device was removed from {name}. Ask again to join it.", { name: name ?? t("this PC") });
       case "no-account-pc": return t("Sign in with the same account on the PC where Ovis runs");
       default: {
@@ -53,7 +54,7 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
     <div className="relay-shell account-centered relay-approval-wait" data-approval-wait={name === null && reason === "off" ? "no-pc" : reason === "allow" || reason === "type" ? "pc" : reason}>
       {menu !== undefined && <div className="relay-approval-wait-menu">{menu}</div>}
       {name !== null && <h1 className="relay-shell-title">{name}</h1>}
-      <p className={reason === "declined" || reason === "removed" ? "relay-shell-copy add-pc-problem" : "relay-shell-copy"} role={reason === "declined" || reason === "removed" ? "alert" : "status"}>{line}</p>
+      <p className={reason === "declined" || reason === "unanswered" || reason === "removed" ? "relay-shell-copy add-pc-problem" : "relay-shell-copy"} role={reason === "declined" || reason === "unanswered" || reason === "removed" ? "alert" : "status"}>{line}</p>
       {digits !== null && digits !== "" && <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>}
       {waiting && <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /></div>}
       {onAskAgain && <button type="button" className="btn btn-primary" data-action="ask-again" onClick={onAskAgain}>{t("Ask again")}</button>}

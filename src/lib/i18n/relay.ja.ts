@@ -147,4 +147,6 @@ export const RELAY_JA: Record<string, string> = {
   "Sign in with the same account on the PC where Ovis runs": "Ovis を起動した PC で同じアカウントにサインインしてください",
   "Ask again": "もう一度依頼",
   "Other ways to connect": "ほかの方法で接続",
+  "No answer from {name}": "{name} から応答がありません",
+  "Ask again, then press [Allow] on {name}.": "もう一度依頼してから {name} で [許可] を押してください。",
 };
