@@ -134,6 +134,8 @@ export class DividerWrites {
           this.drags = this.drags.filter((one) => one !== drag);
           continue;
         }
+        // the same tree, maybe rebuilt by a refresh of the core's view: the next draw compares this object first
+        drag.over = shape.root;
       } else drag.over = shape.root;
       const path = dividerPath(root, drag.name);
       root = (path && setRatio(root, path, drag.ratio)) ?? root;
