@@ -57,6 +57,19 @@ const approvedAtPc: Decision = async (served) => {
   throw new Error("The PC's own window was shown no join");
 };
 
+/** The PC stopped and started again from a copy of its state folder. */
+async function startedAgain(f: Pc, from: Served): Promise<Served> {
+  await from.app.stop();
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-readd-"));
+  cpSync(from.stateDir, stateDir, { recursive: true });
+  const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false,
+    accountOpensAll: true, accountService: { url: "https://account.test", fetch: f.account.fetch } });
+  const closes: (() => void)[] = [];
+  ends.push(async () => { for (const end of closes) end(); await app.stop(); rmSync(stateDir, { recursive: true, force: true }); });
+  await app.context.services.accountMailbox.pull();
+  return { stateDir, app, closes, close() {} };
+}
+
 async function signIn(served: Served, id: string, key: Phone): Promise<string> {
   const link = await relayConnection(served);
   return link.auth({ id, keys: key.keys, publicKey: key.spki }).then(() => "admitted", () => bounded(link.serverError));
@@ -110,18 +123,7 @@ test.each([
   expect(f.stored().some(row => row.id === id)).toBe(false);
   expect(await signIn(f, paired.id, first)).toBe("admitted");
 
-  let served: Served = f;
-  if (restart) {
-    await f.app.stop();
-    const stateDir = mkdtempSync(join(tmpdir(), "ovis-readd-"));
-    cpSync(f.stateDir, stateDir, { recursive: true });
-    const app = createServer({ stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, registerBridge: false, sidecar: false,
-      accountOpensAll: true, accountService: { url: "https://account.test", fetch: f.account.fetch } });
-    const closes: (() => void)[] = [];
-    ends.push(async () => { for (const end of closes) end(); await app.stop(); rmSync(stateDir, { recursive: true, force: true }); });
-    await app.context.services.accountMailbox.pull();
-    served = { stateDir, app, closes, close() {} };
-  }
+  const served = restart ? await startedAgain(f, f) : f;
   const { devices, relay, accountMailbox } = served.app.context.services;
 
   // the owner adds the PC again at its own window, in one press
@@ -136,4 +138,32 @@ test.each([
   relay.approvals.openWindow(undefined, { localOnly: true });
   expect(await compare(served, second, approvedAtPc)).toBe("admitted");
   expect(await signIn(served, id, second)).toBe("admitted");
+
+  // phone 3 is removed at the PC for good; phone 2's row stays
+  const third = await phone();
+  const gone = devices.pairRelayApproved("Phone 3", third.spki, { path: "code", id: accountDeviceId(SERVER_ID, third.spki) })?.device;
+  if (!gone) throw new Error("The PC approved no third device");
+  expect(devices.revoke(gone.id)).toBe(true);
+  // the PC is started once more: what it admitted again stands, and what it removed stays out
+  const later = await startedAgain(f, served);
+  expect(await signIn(later, id, second)).toBe("admitted");
+  expect(await signIn(later, gone.id, third)).toBe("auth_failed");
+  expect(later.app.context.services.devices.has(gone.id)).toBe(false);
+  // a phone that never heard its approval asks once more: the row it already has lets it in
+  later.app.context.services.relay.approvals.openWindow(undefined, { localOnly: true });
+  expect(await compare(later, second, approvedAtPc)).toBe("admitted");
+});
+
+test("a comparison approved at the PC for a key whose row was written but never answered lets that row in, and a removed key's stays refused", async () => {
+  const f = await pairingPc({ server: { accountOpensAll: true } });
+  ends.push(() => f.close());
+  const key = await phone();
+  const id = accountDeviceId(SERVER_ID, key.spki);
+  // as a PC is left by the fault this file is about: the row is on disk, and its phone was told it was declined
+  expect(f.devices.pairRelayApproved("Phone", key.spki, { path: "code", id })?.device.id).toBe(id);
+  f.app.context.services.relay.approvals.openWindow(undefined, { localOnly: true });
+  expect(await compare(f, key, approvedAtPc)).toBe("admitted");
+  expect(f.stored().filter(row => row.relay_public_key === key.spki)).toHaveLength(1);
+  expect(f.devices.revoke(id)).toBe(true);
+  expect(await signIn(f, id, key)).toBe("auth_failed");
 });
