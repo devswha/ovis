@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandState, installCommand, launcherText, PROFILE_LINE, shellPath, writeLauncher, type CommandHost, type LauncherPlaces } from "./terminalCommand.ts";
+import { launcherProfile, readStagingProfile, writeStagingMarker } from "./stagingProfile.ts";
+import { ADD_USER_PATH, commandState, desktopCommandHost, installCommand, installOnFirstLaunch, launcherText, PROFILE_LINE, removeCommand, REMOVE_USER_PATH, shellPath, writeLauncher, type CommandHost, type LauncherPlaces } from "./terminalCommand.ts";
 
 // these run the launcher with sh and make POSIX links in a real folder: a Windows host has neither, and runs the Windows cases
 const WINDOWS_HOST = process.platform === "win32";
@@ -23,14 +25,14 @@ function fakeServer(dir: string): string {
   mkdirSync(join(dir, "server"), { recursive: true });
   writeFileSync(file, [
     "#!/bin/sh",
-    'for name in PORT OVIS_STATE_DIR HC_SESSION OVIS_DESKTOP_COMMAND HERDR_PLUGIN_CONFIG_DIR HOST OVIS_ACCOUNT_SERVICE_URL HC_SOCKET HERDR_PLUGIN_ROOT; do eval "printf \'%s=%s\\n\' $name \\"\\${$name-<unset>}\\""; done',
+    'for name in PORT OVIS_STATE_DIR HC_SESSION OVIS_DESKTOP_COMMAND HERDR_PLUGIN_CONFIG_DIR HOST OVIS_ACCOUNT_SERVICE_URL HC_SOCKET HERDR_PLUGIN_ROOT HOME OVIS_RELAY_URL; do eval "printf \'%s=%s\\n\' $name \\"\\${$name-<unset>}\\""; done',
     'for word in "$@"; do printf "arg=%s\\n" "$word"; done',
   ].join("\n"), { mode: 0o755 });
   return file;
 }
 
 function places(dir: string, accountService: string | null): LauncherPlaces {
-  return { serverBinary: fakeServer(dir), desktopJson: join(dir, "desktop.json"), stateDir: join(dir, "server state"), configDir: join(dir, "cli-settings"), accountService };
+  return { serverBinary: fakeServer(dir), desktopJson: join(dir, "desktop.json"), stateDir: join(dir, "server state"), configDir: join(dir, "cli-settings"), accountService, profile: {} };
 }
 
 async function runLauncher(file: string, args: string[], env: Record<string, string> = {}): Promise<{ code: number; out: string; err: string }> {
@@ -58,6 +60,8 @@ describe.skipIf(WINDOWS_HOST)("the launcher on a Mac or Linux", () => {
       "OVIS_ACCOUNT_SERVICE_URL=https://account-staging.example",
       "HC_SOCKET=<unset>",
       "HERDR_PLUGIN_ROOT=<unset>",
+      "HOME=<unset>",
+      "OVIS_RELAY_URL=<unset>",
       "arg=plugin",
       "arg=status",
       "arg=two words",
@@ -96,6 +100,7 @@ describe("the launcher on Windows", () => {
     stateDir: "C:\\Users\\Ann\\AppData\\Roaming\\Ovis 100%\\server",
     configDir: "C:\\Users\\Ann\\AppData\\Roaming\\Ovis\\cli-settings",
     accountService: "https://account-staging.example/?a=1&b=2",
+    profile: {},
   };
 
   it("is a .cmd of CRLF lines that sets the app's settings and hands every argument to the server's command line", () => {
@@ -110,6 +115,12 @@ describe("the launcher on Windows", () => {
     expect(lines).toContain('set "OVIS_ACCOUNT_SERVICE_URL=https://account-staging.example/?a=1&b=2"');
     expect(lines).toContain(`"${at.serverBinary}" plugin %*`);
     expect(launcherText("win32", { ...at, accountService: null })).not.toContain("OVIS_ACCOUNT_SERVICE_URL");
+  });
+
+  it("sets a staging profile's settings after its own, so the session is the profile's", () => {
+    const lines = launcherText("win32", { ...at, profile: { HC_SESSION: "ost", USERPROFILE: "C:\\Users\\Ann\\.ost" } }).split("\r\n");
+    expect(lines.indexOf('set "HC_SESSION=ost"')).toBeGreaterThan(lines.indexOf('set "HC_SESSION=ovis"'));
+    expect(lines).toContain('set "USERPROFILE=C:\\Users\\Ann\\.ost"');
   });
 });
 
@@ -128,9 +139,12 @@ function posixHost(platform: "linux" | "darwin", dir: string, path: (home: strin
   const launcher = join(dir, "cli", "ovis");
   mkdirSync(join(dir, "cli"), { recursive: true });
   writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
+  const self = join(dir, "app", "ovis-app");
+  mkdirSync(join(dir, "app"), { recursive: true });
+  writeFileSync(self, "the app\n", { mode: 0o755 });
   const runs: Fake["runs"] = [];
   return {
-    platform, home, launcher, runs, shell: "/bin/zsh",
+    platform, home, launcher, self, runs, shell: "/bin/zsh",
     isFile: (file) => { try { return lstatSync(file).isFile() || lstatSync(file).isSymbolicLink(); } catch { return false; } },
     terminalPath: async () => path(home),
     run: async (program, args, env) => { runs.push({ program, args, env }); return 1; },
@@ -148,16 +162,35 @@ describe.skipIf(WINDOWS_HOST)("adding the command on Linux", () => {
     expect(host.runs).toEqual([]);
   });
 
-  it("says when ~/.local/bin is not on the terminal's PATH, and when another ovis (a .deb's app) comes first", async () => {
+  it("says when ~/.local/bin is not on the terminal's PATH, and when another ovis comes first", async () => {
+    const dir = folder();
+    const otherBin = join(dir, "other-bin");
+    mkdirSync(otherBin);
+    writeFileSync(join(otherBin, "ovis"), "another\n", { mode: 0o755 });
+    const off = posixHost("linux", dir, () => "/nowhere");
+    const at = join(off.home, ".local", "bin", "ovis");
+    expect((await installCommand(off, { profile: false })).note).toEqual({ kind: "off-path", dir: join(off.home, ".local", "bin") });
+    const behind = { ...off, terminalPath: async () => `${otherBin}:${off.home}/.local/bin` };
+    expect(await commandState(behind)).toEqual({ installed: true, at, note: { kind: "shadowed", path: join(otherBin, "ovis") } });
+  });
+
+  it("puts ~/.local/bin on the PATH in the shell's rc file, once", async () => {
+    for (const [shell, rc] of [["/bin/bash", ".bashrc"], ["/usr/bin/zsh", ".zshrc"], ["/usr/bin/fish", ".profile"]] as const) {
+      const dir = folder();
+      const host = { ...posixHost("linux", dir, () => "/usr/bin"), shell };
+      await installCommand(host);
+      await installCommand(host);
+      expect(readFileSync(join(host.home, rc), "utf8")).toBe(`${PROFILE_LINE}\n`);
+    }
+  });
+
+  it("links the command where the app's own ovis (a .deb's /usr/bin/ovis) is on the PATH", async () => {
     const dir = folder();
     const debBin = join(dir, "usr-bin");
     mkdirSync(debBin);
-    writeFileSync(join(debBin, "ovis"), "the app\n", { mode: 0o755 });
-    const off = posixHost("linux", dir, () => "/nowhere");
-    const at = join(off.home, ".local", "bin", "ovis");
-    expect((await installCommand(off)).note).toEqual({ kind: "off-path", dir: join(off.home, ".local", "bin") });
-    const behind = { ...off, terminalPath: async () => `${debBin}:${off.home}/.local/bin` };
-    expect(await commandState(behind)).toEqual({ installed: true, at, note: { kind: "shadowed", path: join(debBin, "ovis") } });
+    const host = posixHost("linux", dir, (home) => `${debBin}:${home}/.local/bin`);
+    symlinkSync(host.self, join(debBin, "ovis"));
+    expect((await installCommand(host)).installed).toBe(true);
   });
 
   it("never replaces an ovis it did not put there (install.sh's launcher), and asks for nothing", async () => {
@@ -179,10 +212,10 @@ describe.skipIf(WINDOWS_HOST)("adding the command on a Mac", () => {
     const profile = join(host.home, ".zprofile");
     writeFileSync(profile, "eval \"$(/opt/homebrew/bin/brew shellenv)\"");
     const at = join(host.home, ".local", "bin", "ovis");
-    expect(await installCommand(host)).toEqual({ installed: true, at, note: { kind: "profile", path: profile } });
+    expect(await installCommand(host)).toEqual({ installed: true, at, note: { kind: "off-path", dir: join(host.home, ".local", "bin") } });
     expect(readlinkSync(at)).toBe(host.launcher);
     expect(host.runs).toEqual([]);
-    expect(await installCommand(host)).toEqual({ installed: true, at, note: { kind: "off-path", dir: join(host.home, ".local", "bin") } });
+    await installCommand(host);
     rmSync(at);
     await installCommand(host);
     expect(readFileSync(profile, "utf8")).toBe(`eval "$(/opt/homebrew/bin/brew shellenv)"\n${PROFILE_LINE}\n`);
@@ -191,7 +224,7 @@ describe.skipIf(WINDOWS_HOST)("adding the command on a Mac", () => {
   it("writes bash's line in ~/.bash_profile", async () => {
     const dir = folder();
     const host = { ...posixHost("darwin", dir, () => "/usr/bin:/bin"), shell: "/bin/bash" };
-    expect((await installCommand(host)).note).toEqual({ kind: "profile", path: join(host.home, ".bash_profile") });
+    await installCommand(host);
     expect(readFileSync(join(host.home, ".bash_profile"), "utf8")).toBe(`${PROFILE_LINE}\n`);
     expect(existsSync(join(host.home, ".zprofile"))).toBe(false);
   });
@@ -222,16 +255,25 @@ describe("adding the command on Windows", () => {
     const runs: Fake["runs"] = [];
     const path = ["C:\\Windows\\system32", ...userPath];
     return {
-      platform: "win32", home: "C:\\Users\\Ann", shell: "", launcher, runs,
+      platform: "win32", home: "C:\\Users\\Ann", shell: "", launcher, self: "C:\\Users\\Ann\\AppData\\Local\\Programs\\Ovis\\Ovis.exe", runs,
       isFile: (file) => files.includes(file) || file === launcher,
       terminalPath: async () => path.join(";"),
       run: async (program, args, env) => {
         runs.push({ program, args, env });
-        path.push(env!["OVIS_COMMAND_DIR"]!);
+        const dir = env!["OVIS_COMMAND_DIR"]!;
+        if (args.at(-1) === ADD_USER_PATH) path.push(dir);
+        if (args.at(-1) === REMOVE_USER_PATH) path.splice(path.indexOf(dir), 1);
         return 0;
       },
     };
   }
+
+  it("takes the launcher's folder off the user's Path again", async () => {
+    const host = windowsHost([], []);
+    await installCommand(host);
+    expect(await removeCommand(host)).toEqual({ installed: false, at: null, note: null });
+    expect(host.runs.map(({ args, env }) => [args.at(-1), env])).toEqual([[ADD_USER_PATH, { OVIS_COMMAND_DIR: "C:\\Users\\Ann\\AppData\\Roaming\\Ovis\\cli" }], [REMOVE_USER_PATH, { OVIS_COMMAND_DIR: "C:\\Users\\Ann\\AppData\\Roaming\\Ovis\\cli" }]]);
+  });
 
   it("adds the launcher's folder to the user's Path, as install.ps1 adds its own", async () => {
     const host = windowsHost([], ["C:\\Users\\Ann\\.local\\bin"]);
