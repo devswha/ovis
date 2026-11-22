@@ -32,7 +32,8 @@ function askingPcs(listed: readonly DirectoryPc[], here: readonly RelayDevice[],
  * deniedElsewhere) and asks again only by a new press. Only an app's own sign-in is offered either. A Decline first reads
  * the directory again and removes the PC only while the listing it shows still asks: a card left open while another
  * device let the PC in (or the PC asked again) is refreshed instead, and a declined card hides that listing only, so the
- * PC's new press is shown.
+ * PC's new press is shown. The removal names that listing (account#67), so one that changes between that read and the
+ * removal is not removed either: the service refuses it and the card is refreshed the same way.
  */
 const pairedHere = (): Promise<readonly RelayDevice[]> => indexedDeviceStore.list();
 const openPcPage = (serverId: string): void => window.location.assign(serverScopePath(serverId));
@@ -104,7 +105,8 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
         window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
         return;
       }
-      await removal.remove(asking.session, pc.server_id);
+      const listingId = listed.find((each) => each.server_id === pc.server_id)?.listing_id;
+      await removal.remove(asking.session, pc.server_id, typeof listingId === "string" ? listingId : undefined);
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       setFailed(pc.server_id);
