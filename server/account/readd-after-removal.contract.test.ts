@@ -10,11 +10,13 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE } from "../../shared/relay-mux.ts";
+import { decodeOffer } from "../../shared/relay-offer.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
+import { readDeviceRegistry } from "../devices.ts";
 import { createServer } from "../index.ts";
 import { bounded, relayConnection } from "../relay/test-helpers.ts";
 import { pressOnce } from "./one-press.ts";
-import { ask, linkRecord, pairingPc, phone, sendLink, SERVER_ID, setUpFor, type Pc, type Phone } from "./pairing.test-helpers.ts";
+import { ask, linkRecord, pairingPc, phone, sendLink, SERVER_ID, setUpFor, vouchFor, type Pc, type Phone } from "./pairing.test-helpers.ts";
 
 const ACCOUNT = "acct_1";
 const ends: (() => Promise<void>)[] = [];
@@ -166,4 +168,107 @@ test("a comparison approved at the PC for a key whose row was written but never 
   expect(f.stored().filter(row => row.relay_public_key === key.spki)).toHaveLength(1);
   expect(f.devices.revoke(id)).toBe(true);
   expect(await signIn(f, id, key)).toBe("auth_failed");
+});
+
+/** A call from the PC's own window. */
+async function own(served: Served, path: string, headers: Record<string, string>, body?: unknown): Promise<{ status: number; body: { url?: string; account?: string | null; pc_add_required?: boolean } }> {
+  const base = `http://127.0.0.1:${served.app.port}`;
+  const response = await fetch(base + path, { method: body === undefined && path === "/api/account/status" ? "GET" : "POST",
+    headers: { origin: base, ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const text = await response.text();
+  return { status: response.status, body: text === "" ? {} : JSON.parse(text) };
+}
+
+function rowsOf(served: Served, key: Phone) {
+  const registry = readDeviceRegistry(join(served.stateDir, "devices.json"));
+  return (registry.kind === "ok" ? registry.devices : []).filter(row => row.relay_public_key === key.spki);
+}
+
+test.each([
+  ["the PC was started again after it left", true],
+  ["the PC kept running", false],
+] as const)("a phone paired at the PC that scans the PC's own QR code after the PC left its account keeps a pairing and puts the PC back in the account (%s)", async (_case, restart) => {
+  const f = await pairingPc({ server: { accountOpensAll: true } });
+  ends.push(() => f.close());
+  f.account.opensAll = true;
+  f.account.completions = true;
+  await setUpFor(f, ACCOUNT);
+  const listed = await listedAndAdmitted(f);
+  expect((await f.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account: ACCOUNT } })).status).toBe(200);
+
+  // the phone: its digits approved at the PC's own window, then in the account by the link its signed-in app sends
+  const key = await phone();
+  f.app.context.services.relay.approvals.openWindow(undefined, { localOnly: true });
+  expect(await compare(f, key, approvedAtPc)).toBe("admitted");
+  const [paired] = rowsOf(f, key);
+  if (!paired) throw new Error("The PC wrote no row for the phone");
+  const session = await relayConnection(f);
+  await session.auth({ id: paired.id, keys: key.keys, publicKey: key.spki });
+  expect((await sendLink(session, await linkRecord(paired.id, ACCOUNT, key))).status).toBe(200);
+  expect(rowsOf(f, key)).toMatchObject([{ id: paired.id, account: ACCOUNT }]);
+
+  // "I didn't add this": the PC leaves the account, and the phone keeps the pairing it made at the PC
+  expect((await f.account.fetch(new Request(`https://account.test/v1/pcs/${listed}`, { method: "DELETE", headers: { authorization: `Bearer ${f.account.issueToken(ACCOUNT)}` } }))).status).toBe(204);
+  await f.app.context.services.accountMailbox.pull();
+  expect(f.devices.account()).toBeNull();
+  expect(await signIn(f, paired.id, key)).toBe("admitted");
+
+  const served = restart ? await startedAgain(f, f) : f;
+  const { devices } = served.app.context.services;
+  expect((await own(served, "/api/account/status", {})).body).toMatchObject({ account: null, pc_add_required: true });
+
+  // the PC's own window: Add a connection names the account and shows the QR code
+  expect((await own(served, "/api/account/relay-account", { "x-herdr-machine": "1" }, { account: ACCOUNT })).status).toBe(204);
+  if (restart) expect((await own(served, "/api/relay/start", { "x-herdr-update": "1" })).status).toBe(200);
+  const offer = await own(served, "/api/relay/offer", { "x-herdr-update": "1", "x-ovis-no-account-only": "1" });
+  const code = decodeOffer(offer.body.url ?? "")?.code;
+  if (code === undefined) throw new Error(`The PC showed no QR code: ${offer.status}`);
+
+  // a page the phone still has open on the PC, under the pairing it made there
+  const open = await relayConnection(served);
+  await open.auth({ id: paired.id, keys: key.keys, publicKey: key.spki });
+  const removed: string[] = [];
+  devices.onRemoved(event => removed.push(event.device_id));
+
+  // the phone scans it: its signed-in app lists the PC, posts its admission, pairs with the code and links
+  await vouchFor(f, ACCOUNT, key, { server: served.app.context.services.relay.currentIdentity()! });
+  const scan = await relayConnection(served);
+  const made = await scan.pair(code, key.spki);
+  const fresh = await relayConnection(served);
+  await fresh.auth({ id: made.device_id, keys: key.keys, publicKey: key.spki });
+  const linked = await sendLink(fresh, await linkRecord(made.device_id, ACCOUNT, key));
+  expect([linked.status, linked.body.error?.code]).toEqual([200, undefined]);
+
+  // the scan was the add at the PC: it is in the account again, and the latch is lifted
+  expect(devices.account()).toBe(ACCOUNT);
+  expect((await own(served, "/api/account/status", {})).body).toMatchObject({ account: ACCOUNT });
+  // the record the phone's app holds after the scan signs in, and the PC has this phone once, as a member
+  expect(await signIn(served, made.device_id, key)).toBe("admitted");
+  expect(rowsOf(served, key)).toMatchObject([{ id: made.device_id, account: ACCOUNT }]);
+  // the pairing it took the place of is no row of its own any more: its page signs in again, and nobody is told of a removal
+  expect(await bounded(open.serverError)).toBe("auth_changed");
+  expect(await signIn(served, paired.id, key)).toBe("auth_failed");
+  expect(removed).toEqual([]);
+  // and so after another start
+  const later = await startedAgain(f, served);
+  expect(await signIn(later, made.device_id, key)).toBe("admitted");
+  expect(later.app.context.services.devices.account()).toBe(ACCOUNT);
+});
+
+test("a device that pairs again with the PC's QR code takes the place of no row that only watches: its link is refused, and that row stays", async () => {
+  const f = await pairingPc({ server: { accountOpensAll: true } });
+  ends.push(() => f.close());
+  const key = await phone();
+  const watching = f.devices.pairRelayApproved("Other PC", key.spki, { path: "vouched" })?.device;
+  expect(watching?.role).toBe("watch");
+  await setUpFor(f, ACCOUNT);
+  const code = await f.tabCode();
+  await vouchFor(f, ACCOUNT, key);
+  const made = await (await relayConnection(f)).pair(code, key.spki);
+  const fresh = await relayConnection(f);
+  await fresh.auth({ id: made.device_id, keys: key.keys, publicKey: key.spki });
+  const linked = await sendLink(fresh, await linkRecord(made.device_id, ACCOUNT, key));
+  expect([linked.status, linked.body.error?.code]).toEqual([409, "key_in_use"]);
+  expect(f.devices.account()).toBeNull();
+  expect(rowsOf(f, key)).toMatchObject([{ id: watching!.id, role: "watch" }]);
 });
