@@ -394,7 +394,7 @@ export function startLoop(options: LoopOptions): Loop {
     const modes = emulator.modes();
     const history = emulator.history();
     if (!modes.ok || !history.ok) return null;
-    return { rect: scene.rect, top: scene.view?.row ?? 0, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, emulator, history: history.value };
+    return { rect: scene.rect, top: scene.view?.row ?? 0, grid: view.actual, programMouse: modes.value.mouse !== "none", screen: modes.value.screens, emulator, history: history.value };
   }
 
   function pointerScene(): PointerScene {

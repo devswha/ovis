@@ -20,7 +20,7 @@ const TEST_MS = 120_000;
 const EMULATOR = {};
 /** pane a: screen cells x 0-8, y 1-5, drawn from grid row 2 of its 9x8 grid; 20 rows of history above, at the bottom */
 const lookA = (programMouse: boolean, history = { scrollback: 20, total: 28, viewportTop: 20 }): PaneLook => ({
-  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, altScreen: false, emulator: EMULATOR, history,
+  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, screen: 0, emulator: EMULATOR, history,
 });
 const HITS = new HitMap([
   { rect: { x: 0, y: 0, width: 20, height: 1 }, target: { part: "tabs", id: "" } },
@@ -220,7 +220,7 @@ describe("the pointer", () => {
   });
 
   it("a drag whose pane got a new emulator or switched screens before its release selects and copies nothing", () => {
-    for (const changed of [{ ...lookA(false), emulator: {} }, { ...lookA(false), altScreen: true }]) {
+    for (const changed of [{ ...lookA(false), emulator: {} }, { ...lookA(false), screen: 1 }]) {
       const pointer = new Pointer();
       expect(pointer.mouse("screen", ev(["press", "left", 1, 1]), sceneOf("a", lookA(false)))).toEqual([]);
       expect(pointer.mouse("screen", ev(["motion", "left", 3, 2]), sceneOf("a", lookA(false)))).toEqual([{ kind: "redraw" }]);
@@ -248,7 +248,7 @@ describe("the pointer", () => {
     pointer = select();
     expect(pointer.shown("a", "a", { ...lookA(false), emulator: {} })).toBeNull();
     pointer = select();
-    expect(pointer.shown("a", "a", { ...lookA(false), altScreen: true })).toBeNull();
+    expect(pointer.shown("a", "a", { ...lookA(false), screen: 1 })).toBeNull();
   });
 });
 
@@ -601,6 +601,26 @@ describe("mouse on the whole screen", () => {
     await run.advance(20);
     expect((await hostScreen(run)).text(2, 25, 30)).toBe("$ echo");
     program.output("\x1b[?1049h\x1b[H\x1b[2JALT-TWO-TEXT");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 36)).toBe("ALT-TWO-TEXT");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
+  }, TEST_MS);
+
+  it("a drag on the alternate screen whose program leaves it and enters a new one in one output copies nothing at the release", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output("\x1b[?1049h\x1b[H\x1b[2JALT-ONE-TEXT");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("T-ON");
+    // one write: the main screen is never drawn, and the pane is on its alternate screen before and after it
+    program.output("\x1b[?1049l\x1b[?1049h\x1b[H\x1b[2JALT-TWO-TEXT");
     await run.advance(20);
     expect((await hostScreen(run)).text(2, 25, 36)).toBe("ALT-TWO-TEXT");
     await run.keys("release@30:2");

@@ -29,7 +29,8 @@ export interface PaneLook {
   readonly grid: { readonly cols: number; readonly rows: number };
   /** the program asked for a mouse mode */
   readonly programMouse: boolean;
-  readonly altScreen: boolean;
+  /** the emulator's count of screen switches (EngineModes `screens`): a new number once its screen may have changed */
+  readonly screen: number;
   /** the emulator drawn: a new one (a new attach) holds none of the old one's selection */
   readonly emulator: object;
   readonly history: EngineHistory;
@@ -65,10 +66,10 @@ type Grab =
   | { readonly kind: "none" }
   | { readonly kind: "forward"; readonly pane: string }
   /** bound to the emulator and the screen (main or alternate) it was pressed on: the anchor means nothing on another */
-  | { readonly kind: "select"; readonly pane: string; readonly anchor: ScreenPoint; readonly emulator: object; readonly altScreen: boolean }
+  | { readonly kind: "select"; readonly pane: string; readonly anchor: ScreenPoint; readonly emulator: object; readonly screen: number }
   | { readonly kind: "divider"; readonly id: number; readonly tab: string; readonly name: DividerName; readonly rect: Rect; readonly direction: SplitDirection; readonly offset: number; moved: number | null };
 
-interface Selection { readonly pane: string; readonly start: ScreenPoint; readonly end: ScreenPoint; readonly emulator: object; readonly altScreen: boolean }
+interface Selection { readonly pane: string; readonly start: ScreenPoint; readonly end: ScreenPoint; readonly emulator: object; readonly screen: number }
 
 const NONE: Grab = { kind: "none" };
 const isWheel = (event: MouseInput): boolean => event.button !== undefined && event.button.startsWith("wheel");
@@ -152,10 +153,10 @@ export class Pointer {
    */
   shown(pane: string, focus: string | null, look: PaneLook | null): { start: GridCell; end: GridCell } | null {
     const grab = this.grab;
-    if (grab.kind === "select" && grab.pane === pane && look && (look.emulator !== grab.emulator || look.altScreen !== grab.altScreen)) this.grab = NONE;
+    if (grab.kind === "select" && grab.pane === pane && look && (look.emulator !== grab.emulator || look.screen !== grab.screen)) this.grab = NONE;
     const selection = this.selection;
     if (!selection || selection.pane !== pane) return null;
-    if (pane !== focus || !look || look.emulator !== selection.emulator || look.altScreen !== selection.altScreen) {
+    if (pane !== focus || !look || look.emulator !== selection.emulator || look.screen !== selection.screen) {
       this.selection = null;
       return null;
     }
@@ -177,7 +178,7 @@ export class Pointer {
         this.grab = { kind: "forward", pane: hit.pane };
         return [...dropped, { kind: "forward", pane: hit.pane, event: inGrid(event, look) }];
       }
-      if (event.button === "left") this.grab = { kind: "select", pane: hit.pane, anchor: pointOf(event, look), emulator: look.emulator, altScreen: look.altScreen };
+      if (event.button === "left") this.grab = { kind: "select", pane: hit.pane, anchor: pointOf(event, look), emulator: look.emulator, screen: look.screen };
       return dropped;
     }
     if (event.button !== "left") return dropped;
@@ -215,7 +216,7 @@ export class Pointer {
   private extend(grab: Extract<Grab, { kind: "select" }>, event: MouseInput, scene: PointerScene): PointerAct[] {
     const look = scene.look(grab.pane);
     if (!look) return [];
-    if (look.emulator !== grab.emulator || look.altScreen !== grab.altScreen) {
+    if (look.emulator !== grab.emulator || look.screen !== grab.screen) {
       // the pane's screen changed under the drag: nothing of it is selected or copied
       this.grab = NONE;
       const shown = this.selection !== null;
@@ -224,7 +225,7 @@ export class Pointer {
     }
     const end = pointOf(event, look);
     const moved = this.selection !== null || end.x !== grab.anchor.x || end.y !== grab.anchor.y;
-    if (moved) this.selection = { pane: grab.pane, start: grab.anchor, end, emulator: grab.emulator, altScreen: grab.altScreen };
+    if (moved) this.selection = { pane: grab.pane, start: grab.anchor, end, emulator: grab.emulator, screen: grab.screen };
     const acts: PointerAct[] = moved ? [{ kind: "redraw" }] : [];
     if (event.action === "release" && this.selection) acts.push({ kind: "copy", pane: grab.pane, range: ordered(this.selection) });
     return acts;

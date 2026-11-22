@@ -254,6 +254,13 @@ export interface EngineModes {
   altScroll: boolean;
   /** win32-input-mode (DEC 9001): the module does not keep it, so a screen's engine watches the written bytes for it; false on the browser's */
   win32Input: boolean;
+  /**
+   * How many times the written bytes may have switched screens (a `CSI ? 47|1047|1049 h|l` or a full reset), counted
+   * by a screen's engine from its written bytes: a new number even when one write leaves the alternate screen and
+   * enters it again, which `altScreen` alone cannot show. The browser's, which does not watch its bytes, counts
+   * only its resets.
+   */
+  screens: number;
 }
 
 export interface EngineMods { shift?: boolean; ctrl?: boolean; alt?: boolean; super?: boolean }
@@ -350,6 +357,8 @@ const MODE = {
 const WIN32_INPUT_MODE = 9001;
 /** DECCOLM: a program switches the grid to 80 or 132 columns with it */
 const DECCOLM = 3;
+/** the modes that switch between the main and the alternate screen */
+const SCREEN_SWITCHES: readonly number[] = [47, 1047, 1049];
 
 const MOUSE_BUTTONS = { left: "LEFT", middle: "MIDDLE", right: "RIGHT", wheelUp: "FOUR", wheelDown: "FIVE", wheelLeft: "SIX", wheelRight: "SEVEN" } as const;
 const KEY_ACTIONS = { press: "PRESS", repeat: "REPEAT", release: "RELEASE" } as const;
@@ -563,11 +572,13 @@ export class GhosttyEngine {
   /** since the last resize the program switched its columns (DECCOLM), or the terminal was reset: the grid may not be the size the engine was given */
   private gridTouched = false;
   private win32Input = false;
+  private screens = 0;
   /** where the written bytes stand in a `CSI ? Pm h|l` that may name 9001, carried from one write to the next */
   private scan: "ground" | "esc" | "csi" | "private" = "ground";
   private scanParam = 0;
   private scanNames9001 = false;
   private scanNamesColumns = false;
+  private scanNamesScreen = false;
   /** an error a callback of the caller threw while the module ran: kept out of the wasm frames and thrown after them */
   private callbackError: unknown = null;
   private keyEncoder = 0;
@@ -766,7 +777,7 @@ export class GhosttyEngine {
 
   /**
    * Follows `CSI ? Pm h` and `CSI ? Pm l` naming 9001 (win32-input-mode), which the module parses but does not
-   * keep, or 3 (DECCOLM, which changes the grid's columns), and a full reset (ESC c), across writes. Only the byte after an ESC and the inside of a `CSI ?`
+   * keep, 3 (DECCOLM, which changes the grid's columns) or a screen switch, and a full reset (ESC c), across writes. Only the byte after an ESC and the inside of a `CSI ?`
    * are looked at: any other sequence is skipped to the next ESC, so plain and styled output costs one
    * indexOf per escape sequence.
    */
@@ -787,6 +798,7 @@ export class GhosttyEngine {
           if (byte === 0x63) {
             this.win32Input = false;
             this.gridTouched = true;
+            this.screens++;
           }
           this.scan = byte === 0x5b ? "csi" : "ground";
           continue;
@@ -795,16 +807,19 @@ export class GhosttyEngine {
           this.scanParam = 0;
           this.scanNames9001 = false;
           this.scanNamesColumns = false;
+          this.scanNamesScreen = false;
           continue;
         case "private":
           if (byte >= 0x30 && byte <= 0x39) this.scanParam = Math.min(this.scanParam * 10 + byte - 0x30, 1e6);
           else if (byte === 0x3b) {
             if (this.scanParam === WIN32_INPUT_MODE) this.scanNames9001 = true;
             if (this.scanParam === DECCOLM) this.scanNamesColumns = true;
+            if (SCREEN_SWITCHES.includes(this.scanParam)) this.scanNamesScreen = true;
             this.scanParam = 0;
           } else if (byte >= 0x40 && byte <= 0x7e) {
             if ((byte === 0x68 || byte === 0x6c) && (this.scanNames9001 || this.scanParam === WIN32_INPUT_MODE)) this.win32Input = byte === 0x68;
             if ((byte === 0x68 || byte === 0x6c) && (this.scanNamesColumns || this.scanParam === DECCOLM)) this.gridTouched = true;
+            if ((byte === 0x68 || byte === 0x6c) && (this.scanNamesScreen || SCREEN_SWITCHES.includes(this.scanParam))) this.screens++;
             this.scan = "ground";
           }
       }
@@ -873,7 +888,7 @@ export class GhosttyEngine {
         altScreen: this.getU32(data.ACTIVE_SCREEN) === this.e.GhosttyTerminalScreen.ALTERNATE,
         mouse, mouseFormat, bracketedPaste: on(MODE.bracketedPaste), kittyFlags, focusReports: on(MODE.focus),
         syncOutput: on(MODE.syncOutput), appCursor: on(MODE.appCursor), appKeypad: on(MODE.appKeypad), altScroll: on(MODE.altScroll),
-        win32Input: this.win32Input,
+        win32Input: this.win32Input, screens: this.screens,
       };
     });
   }
@@ -917,6 +932,7 @@ export class GhosttyEngine {
       this.x.ghostty_terminal_reset(this.terminal);
       this.placementsGeneration = -1;
       this.win32Input = false;
+      this.screens++;
     });
   }
 

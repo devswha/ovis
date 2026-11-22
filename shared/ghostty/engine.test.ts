@@ -203,7 +203,7 @@ describe("shared/ghostty engine", () => {
       expect(engine.cursorState()).toEqual({ visible: true, x: 1, y: 1, style: "bar", blinking: true, wideTail: true });
       expect(engine.modes()).toEqual({
         altScreen: false, mouse: "button", mouseFormat: "sgr", bracketedPaste: true, kittyFlags: 1, focusReports: false,
-        syncOutput: false, appCursor: false, appKeypad: false, altScroll: true, win32Input: true,
+        syncOutput: false, appCursor: false, appKeypad: false, altScroll: true, win32Input: true, screens: 0,
       });
     } finally {
       engine.dispose();
@@ -574,6 +574,26 @@ describe("shared/ghostty engine", () => {
     } finally {
       off.engine.dispose();
       on.engine.dispose();
+    }
+  });
+
+  it("a screen's engine counts the screen switches its written bytes make, also two in one write and one split across writes", () => {
+    const { engine } = screenEngine(20, 4);
+    const screens = () => engine.modes().screens;
+    try {
+      expect(screens()).toBe(0);
+      // left and entered again in one write: the same alternate screen, two switches
+      engine.write(bytesOf("\x1b[?1049h\x1b[?1049l\x1b[?1049hX"));
+      expect([engine.modes().altScreen, screens()]).toEqual([true, 3]);
+      engine.write(bytesOf("\x1b[?10"));
+      engine.write(bytesOf("47l"));
+      expect(screens()).toBe(4);
+      engine.write(bytesOf("\x1b[?1;47h\x1b[?25l\x1b[47h\x1bc"));
+      expect(screens()).toBe(6);
+      engine.reset();
+      expect(screens()).toBe(7);
+    } finally {
+      engine.dispose();
     }
   });
 
