@@ -7,6 +7,7 @@ type AccessEvent =
   | { event: "relay.session.accepted"; origin: "local-pairing" | "account"; role: DeviceRole; device_no: number | null }
   | { event: "relay.session.closed"; reason: SessionError }
   | { event: "account.snapshot.refused"; status: 403; reason: "not_listed" }
+  | { event: "account.listing.replaced" }
   | { event: "account.binding.cleared"; reason: ClearReason }
   | { event: "account.sessions.closed"; count: number };
 

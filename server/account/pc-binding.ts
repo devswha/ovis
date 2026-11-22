@@ -21,7 +21,8 @@ export type ClearReason = "revoke_all" | "identity_reset" | "unlisted";
 /** Who made an `unlisted` clear when the PC did it itself: its older one-press binding named no listing the account service still confirms. */
 export const UNPINNED_CLEAR = "unpinned";
 // A receipt written by an older version still invalidates its bind_id; new clears cannot emit that reason.
-export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string }
+/** `admits`: this PC's next admission number when it cleared, so what it admitted since can be told from what it kept. */
+export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string; readonly admits?: number }
 export interface AccountBinding {
   readonly account: string;
   readonly bind_id: string;
@@ -29,6 +30,11 @@ export interface AccountBinding {
   readonly pending?: true;
   /** bound in one press, on the account service's word for the account this PC's owner named; no row made it */
   readonly service?: true;
+  /**
+   * The account's listing this PC stands on. Bound in one press: the listing it was admitted in, asked about by its
+   * scoped receipt. Bound by a device's link: the listing its account rows were first let in under, compared with the
+   * one the account names at each pull.
+   */
   readonly listing_id?: string;
 }
 
@@ -70,8 +76,9 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   }
   const binding = doc.binding;
   if (binding !== null && !(typeof binding === "object" && binding !== undefined && typeof binding.account === "string" && ACCOUNT.test(binding.account) && typeof binding.bind_id === "string" && ID.test(binding.bind_id) && (binding.pending === undefined || binding.pending === true) && (binding.service === undefined || (binding.service === true && binding.pending === undefined)))) return "invalid binding";
-  if (binding?.listing_id !== undefined && (binding.service !== true || typeof binding.listing_id !== "string" || !ID.test(binding.listing_id))) return "invalid listing";
-  if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string")) return "invalid clears";
+  if (binding?.listing_id !== undefined && (binding.pending === true || typeof binding.listing_id !== "string" || !ID.test(binding.listing_id))) return "invalid listing";
+  if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string"
+    && (clear.admits === undefined || (Number.isSafeInteger(clear.admits) && clear.admits >= 0)))) return "invalid clears";
   if (binding !== null && doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "a cleared binding stands";
   const first = doc.first;
   if (first !== null && !(typeof first === "object" && first !== undefined && typeof first.key === "string" && (first.list_key === null || typeof first.list_key === "string"))) return "invalid first";
@@ -285,9 +292,12 @@ export class PcAccountState {
   /**
    * The account stopped listing this PC (or its listing was replaced), and it is in none since: only an add a person
    * makes at this PC brings it into one again. It stands on the kept clear, so a restart keeps it, and ends with the
-   * next binding.
+   * next binding. The number: the first admission made since that clear (0 for a clear from before they were kept).
    */
-  addAtPcRequired(): boolean { return this.doc.binding === null && this.doc.clears.at(-1)?.reason === "unlisted"; }
+  addAtPcSince(): number | null {
+    const last = this.doc.clears.at(-1);
+    return this.doc.binding === null && last?.reason === "unlisted" ? last.admits ?? 0 : null;
+  }
 
   gen(): number { return this.doc.gen; }
 
@@ -342,7 +352,7 @@ export class PcAccountState {
 
   pinListing(bindId: string, listingId: string): void {
     const binding = this.doc.binding;
-    if (binding?.service && binding.bind_id === bindId && binding.listing_id === undefined) {
+    if (binding !== null && binding.pending !== true && binding.bind_id === bindId && binding.listing_id === undefined) {
       this.write({ ...this.doc, binding: { ...binding, listing_id: listingId } });
     }
   }
@@ -352,7 +362,7 @@ export class PcAccountState {
     const binding = this.doc.binding;
     // a PC already strict writes nothing: what it was told to clear waits for its repair, and it serves nobody meanwhile
     if (binding === null || this.problem !== null) return false;
-    this.write({ ...this.doc, binding: null, clears: [...this.doc.clears, { bind_id: binding.bind_id, reason, by }], gen: this.doc.gen + 1 });
+    this.write({ ...this.doc, binding: null, clears: [...this.doc.clears, { bind_id: binding.bind_id, reason, by, admits: this.doc.next_admit }], gen: this.doc.gen + 1 });
     logAccess({ event: "account.binding.cleared", reason });
     return true;
   }

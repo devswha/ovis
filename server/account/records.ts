@@ -262,9 +262,10 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   if (arrival.provisional && !waits) return { refused: "link_required" };
   const account = store.account();
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
-  // A PC its account stopped listing joins one again only by an add made at the PC: its own press, or a code it issued
-  // itself. A device it kept paired, or a code such a device asked for, brings it into none
-  if (account === null && store.addAtPcRequired() && !(arrival.pinned !== null && store.issuedAtPc(arrival.pinned))) {
+  // A PC its account stopped listing joins one again only by an add made at the PC: its own press, a code it issued
+  // itself, or digits its own screen approved since. A device it kept paired, or a code such a device asked for,
+  // brings it into none
+  if (account === null && store.addAtPcRequired() && !(arrival.pinned !== null && store.issuedAtPc(arrival.pinned)) && !store.approvedAtPcSinceClear(deviceId)) {
     if (waits) store.turnAway(deviceId, "account_mismatch", link.account);
     return { refused: "account_mismatch", message: ADD_AT_PC };
   }

@@ -904,8 +904,10 @@ removal refuses new sign-ins within a minute. A failed or negative answer is nev
 check that brings no yes ends an earlier yes for the same listing. A sign-in's `AUTH_OK` is
 committed only while the answer it was let in by still stands; one that waited longer in the queue
 ends with `timeout`, and the device asks again. A snapshot read asks for itself once its last page
-is here, the first read after one press included, and commits only while that answer stands. Only a
-completion answer that names a time counts as a yes. With no new sign-in, the PC checks at its normal
+is here and checked and its blocks are applied, the first read after one press included, and commits
+only while that answer stands; a read it refuses has still denied what its pages denied. Only a
+completion answer that names a strict UTC time counts as a yes, and one asked for before a later
+check failed is not kept. With no new sign-in, the PC checks at its normal
 five-minute mailbox poll, which is also when sessions already open end. An unavailable service, or
 one that has not answered a sign-in within 4 seconds, cannot authorize a new account-only connection
 and clears nothing: the device is refused with `account_unreachable` and says that the PC could not
@@ -916,8 +918,14 @@ while its row waits for a first read the service cannot give.
 While no whole read can be applied (an outage, or a listing the service does not confirm), the
 binding stays, and after one hour without one every row that stands on the account alone waits for
 the next read, its sessions closed: the account's listed rows, and the account's members kept in
-`devices.json` (a signed `add`, a member's remote approval). A pairing made at this PC is no such
-row and keeps working.
+`devices.json` (a signed `add`, a member's remote approval), those made after the hour ended too. A
+pairing made at this PC is no such row and keeps working.
+
+A sign-in whose row only waits for a read (after a start, or once the hour has ended) is put off,
+never refused as a removed device's: `held` with `catching_up`, or `internal_error` to a client from
+before the account codes. A join a member approves from afar is asked about like a sign-in before
+any device is written. A member in `devices.json` that paired its key with a code of this PC and
+kept it through its link keeps its access through the hour; what it may do for the account waits.
 
 One press binds only when the admission names its listing (502 `listing_unnamed` otherwise). A
 binding made before 0.5.10 names none. It pins one only on evidence of its own bind: the completion
@@ -1439,14 +1447,23 @@ Clients:
 | `POST /v1/signout` | | `204`: ends this sign-in's tokens |
 | `POST /v1/signout/all` | `{}` | `204`: ends every sign-in of the account, this one and device codes' included, and the codes not yet redeemed; rings the account's other clients. The PCs and registered device keys stay. 403 `reauth_required` unless this sign-in was made in the last 10 minutes; 403 `web_sign_in_required` for a device code's sign-in. Manage account offers it as **Sign out every device**: on `reauth_required` the phone app signs in again in place and goes on, and a browser signs in again by redirect, whose return goes on for the same account only |
 
-`DELETE /v1/pcs/{server_id}` is no lasting removal for a PC in use: a member device lists the PC
-again on its next connection to it (`enrollOwned`), and so does the PC's own waiting Add this PC
-screen. A PC the directory does not list gets no [relay pass](relay.md#relay-pass) (`not_listed`)
-and none of the account's later records. So the apps offer it only in Settings → Devices
-and PCs → Manage account, as **Remove**, and only for a PC the directory has not heard from for
+`DELETE /v1/pcs/{server_id}` removes the PC from the account for good, however it was added. The PC
+leaves the account at its next read of the account service: its snapshot is refused `not_listed`,
+or, when a device listed it again meanwhile, its mailbox names another listing than the one its
+account rows were let in under (a PC bound by a device's link keeps that listing's ID from its first
+whole read; one bound in one press asks about the listing it was admitted in). Leaving ends the
+account's rows and keeps the pairings made at the PC ([Adding a PC](#adding-a-pc)). From then on the PC says so
+(`pc_add_required` in `GET /api/account/status`) and takes a first link only under a code it issued
+itself (its own window, `ovis add`), or from a device whose digits its own screen approved since it
+left; one press at the PC brings it back too. A device it kept paired opens it as before and sends
+it no link, and a code that device asked for joins it to no account.
+No app lists a PC again by opening it: only the enrollment that brings a PC into the account writes
+its directory entry. A PC the directory does not list gets no [relay pass](relay.md#relay-pass)
+(`not_listed`) and none of the account's later records. The apps offer the removal in Settings →
+Devices and PCs → Manage account, as **Remove**, only for a PC the directory has not heard from for
 15 minutes (`offlinePc` in [`src/components/AccountManage.tsx`](../src/components/AccountManage.tsx)),
 on any page that has the sheet: a PC's own page, the hosted app and the phone apps. A confirm says
-it revokes nothing and that the PC is listed again if it is used again.
+the PC leaves the account once it is online again and is added again at the PC.
 
 Push (the doorbell), per signed-in device:
 

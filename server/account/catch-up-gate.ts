@@ -14,7 +14,7 @@ export interface GatedRow {
 
 /** A key approved on this PC's own screen by code, digits or QR (P7 (b)); a confirm (T68) or a link moves no row out. */
 const SCREEN_PAIRED: readonly string[] = ["code", "digits", "qr"];
-export const pairedAtPc = (origin: AdmissionOrigin | undefined): boolean => origin?.from === "pc" && SCREEN_PAIRED.includes(origin.how);
+const pairedAtPc = (origin: AdmissionOrigin | undefined): boolean => origin?.from === "pc" && SCREEN_PAIRED.includes(origin.how);
 
 export class CatchUpGate {
   /** The binding the last whole read was for: a new binding waits for a read of its own (T59). */

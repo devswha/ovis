@@ -217,6 +217,8 @@ export class AccountMailbox {
   private completion: CompletionScope | null;
 
   private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number; readonly seq: number } | null = null;
+  /** What the last pull's mailbox said of this PC's listing in its account; null when it said nothing, or failed. */
+  private listedAs: { readonly scope: string; readonly listing: string | null } | null = null;
   /** The newest check that brought no yes: a yes asked for before it is not kept. */
   private listingFailed: { readonly key: string; readonly seq: number } | null = null;
   private listingChecks = 0;
@@ -354,6 +356,13 @@ export class AccountMailbox {
     return verdict;
   }
 
+  /** The listing the last pull's mailbox named for this PC in `account`, while its relay identity is the one that asked. */
+  private namedListing(account: string): string | null | undefined {
+    let identity: RelayIdentity | undefined;
+    try { identity = this.options.identity(); } catch { return undefined; }
+    return identity && this.listedAs?.scope === scope(account, identity.server_id, "") ? this.listedAs.listing : undefined;
+  }
+
   private listingKey(binding: string): string | null {
     const { devices } = this.options;
     const account = devices.account();
@@ -430,6 +439,15 @@ export class AccountMailbox {
     const used = snapshot.used?.();
     // the binding this read is for: a refusal answers for it alone, never for one made after it to the same account
     const binding = this.options.devices.serviceBinding();
+    // A PC a device's link bound lets the account's rows in under the listing the account named at their first read.
+    // Another listing since is another add of this PC, made with no word of it: it leaves, as when it is not listed
+    const linked = this.options.devices.linkBinding();
+    const named = this.namedListing(account);
+    if (linked !== null && typeof named === "string" && (this.options.devices.serviceListing() ?? named) !== named) {
+      logAccess({ event: "account.listing.replaced" });
+      this.options.devices.clearAccountBinding("unlisted", "account");
+      return empty;
+    }
     let unlisted = false;
     let step2Off = false;
     try {
@@ -468,8 +486,10 @@ export class AccountMailbox {
         return committedLifts;
       } });
       if (step2Off && !this.stopped) ports.step2Off?.();
-      // a PC bound in one press stands on the account's listing alone: once the account stops listing it, it leaves
-      if (unlisted && binding !== null && this.options.devices.serviceBinding() === binding) this.options.devices.clearAccountBinding("unlisted", "account");
+      const devices = this.options.devices;
+      // a PC stands in its account on the account's listing of it: once the account stops listing it, it leaves
+      if (unlisted && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked))) devices.clearAccountBinding("unlisted", "account");
+      else if (outcome.committed && linked !== null && devices.linkBinding() === linked && typeof named === "string" && this.namedListing(account) === named) devices.pinServiceListing(linked, named);
       return { outcome, adds };
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
@@ -832,11 +852,13 @@ export class AccountMailbox {
     };
     let complete = false;
     this.drainedAt = null;
+    this.listedAs = null;
     try {
       const admissions = new Map<string, number>();
       await retry();
       for (let page = 0; ; page++) {
-        const { entries, waiting } = await this.page(identity, account, ack);
+        const { entries, waiting, listing } = await this.page(identity, account, ack);
+        if (page === 0) this.listedAs = listing === undefined ? null : { scope: scope(account, identity.server_id, ""), listing };
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
         if (page === MAX_PAGES) break;
@@ -957,8 +979,8 @@ export class AccountMailbox {
     return page === null ? { snapshot_gone: true } : { page };
   }
 
-  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[] }> {
-    const mailbox = (await this.proved(identity, "/v1/pc/mailbox", { account, ack }))!;
+  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[]; listing: string | null | undefined }> {
+    const mailbox = (await this.proved(identity, "/v1/pc/mailbox", { account, ack, with_listing_id: true }))!;
     const records = mailbox.records;
     if (!Array.isArray(records) || !records.every((entry) => typeof entry === "object" && entry !== null && Number.isSafeInteger((entry as { seq?: unknown }).seq))) {
       throw new Error("The account service sent a malformed mailbox");
@@ -966,6 +988,8 @@ export class AccountMailbox {
     const admissions = Array.isArray(mailbox.admissions) ? mailbox.admissions : [];
     const waiting = admissions.filter((a): a is { key: string; at: string } => typeof a === "object" && a !== null
       && isAccountKeyEncoding((a as { key?: unknown }).key) && typeof (a as { at?: unknown }).at === "string" && !Number.isNaN(Date.parse((a as { at: string }).at)));
-    return { entries: records as { seq: number; record: unknown }[], waiting };
+    // the listing the account holds this PC under now: null for none it confirms, undefined from a service that does not say
+    const listing = typeof mailbox.listing_id === "string" && LISTING_ID.test(mailbox.listing_id) ? mailbox.listing_id : mailbox.listing_id === null ? null : undefined;
+    return { entries: records as { seq: number; record: unknown }[], waiting, listing };
   }
 }

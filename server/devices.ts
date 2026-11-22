@@ -24,7 +24,7 @@ import type { DeviceJournal, JournalEntry, JournalInput } from "./account/device
 import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
-import { pairedAtPc, type CatchUpGate } from "./account/catch-up-gate.ts";
+import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import { accountOpensAll, type DeviceNotice, type NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isDeviceSafetyRecord, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceLiftRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import { PromotedHolds } from "./account/promoted-holds.ts";
@@ -1441,9 +1441,21 @@ export class DeviceStore {
 
   serviceListing(): string | undefined { return this.pc?.binding()?.listing_id; }
   pinServiceListing(binding: string, listing: string): void { this.pc?.pinListing(binding, listing); }
+  /** The id of this PC's binding when a device's link (or the rows it was upgraded from) made it, else null. */
+  linkBinding(): string | null { const binding = this.pc?.binding(); return binding && binding.service !== true && binding.pending !== true ? binding.bind_id : null; }
 
-  /** PcAccountState.addAtPcRequired: a link joins this PC to an account only under a code it issued itself (issuedAtPc). */
-  addAtPcRequired(): boolean { return this.pc?.addAtPcRequired() === true; }
+  /**
+   * PcAccountState.addAtPcSince: a link joins this PC to an account only under a code it issued itself (issuedAtPc), or
+   * from a device whose digits this PC's own screen approved since it left (approvedHereSince).
+   */
+  addAtPcRequired(): boolean { return this.pc?.addAtPcSince() != null; }
+
+  /** Whether the row `id` was let in by digits approved on this PC's own screen, by no member, after its account stopped listing it. */
+  approvedAtPcSinceClear(id: string): boolean {
+    const since = this.pc?.addAtPcSince();
+    const origin = this.devices.find(row => row.id === id)?.origin;
+    return since != null && origin !== undefined && origin.admit_no >= since && origin.by === null && (origin.from === "pc" || (origin.from === "remote" && origin.how === "digits"));
+  }
 
   /** Whether the code `pinned` (pinnedCode) was started at this PC itself, by its own window or command, and is still the code pending. */
   issuedAtPc(pinned: object): boolean { return this.pending === pinned && this.pending.atPc === true; }
@@ -1462,9 +1474,9 @@ export class DeviceStore {
   }
 
   /**
-   * T56 for devices.json: the last whole read is an hour old, so until the next one every member that never paired its
-   * key with this PC waits, its sessions closed, as the account's listed rows do, and so does one made meanwhile. A
-   * member that paired its key here keeps its access and only what it may do for the account waits (waitsOnStaleRead).
+   * T56 for devices.json: the last whole read is an hour old, so until the next one every row that stands on the
+   * account alone (accountOnly) waits, its sessions closed, as the account's listed rows do, and so does one made
+   * meanwhile. One of them that paired its key here keeps its access; what it may do for the account waits.
    */
   staleAccountMembers(): void {
     this.catchUp?.staleRead();
@@ -1472,7 +1484,8 @@ export class DeviceStore {
   }
 
   private waitsOnStaleRead(device: StoredDevice, credential: boolean): boolean {
-    if (this.catchUp?.readStale() !== true || (device.account === undefined && device.member_approved_in === undefined) || pairedAtPc(device.origin)) return false;
+    if (this.catchUp?.readStale() !== true || !this.accountOnly(device.id)) return false;
+    // its key was paired with a code of this PC and a link kept it: the credential is this PC's, its membership the account's
     const pairedItsKeyHere = pairedHere(device) && device.account_add === undefined && !device.imported && !device.invalid_origin;
     return !pairedItsKeyHere || !credential;
   }
