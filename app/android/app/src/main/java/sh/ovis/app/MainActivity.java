@@ -152,7 +152,20 @@ public class MainActivity extends BridgeActivity {
         @Override
         public void handleOnBackPressed() {
             WebView view = bridge.getWebView();
+            long now = SystemClock.uptimeMillis();
+            // a press while the step back an earlier press took is still landing is that same press (BackRacesTest): a
+            // second step would pass the page meant, or, landing on a first page still loading, leave the app
+            if (stepAt >= 0 && (now - stepAt < STEP_COALESCE_MS || (!stepLanded && now - stepAt < STEP_WAIT_MS))) return;
+            // a press while the page goes elsewhere (Add a PC opening) and before that has an entry: stays on the page,
+            // whose entry is often the first, with nothing behind it that would keep Back in the app. Only once a page
+            // is on screen: a freshly launched page still leaves the app on Back
+            if (pageShown && navigatingAt >= 0 && now - navigatingAt < NAVIGATION_WAIT_MS) {
+                navigatingAt = -1;
+                view.stopLoading();
+                return;
+            }
             if (view.canGoBack()) {
+                stepped(now);
                 view.goBack();
                 return;
             }
@@ -160,6 +173,7 @@ public class MainActivity extends BridgeActivity {
             // goBackOrForward pass over it, with the page still behind): on #add the page itself steps back, which no such
             // mark skips
             if (view.copyBackForwardList().getCurrentIndex() > 0 && "add".equals(Uri.parse(String.valueOf(view.getUrl())).getFragment())) {
+                stepped(now);
                 view.evaluateJavascript("history.back()", null);
                 return;
             }
@@ -170,6 +184,30 @@ public class MainActivity extends BridgeActivity {
             setEnabled(true);
         }
     };
+
+    /** Presses this soon after a step back are that step's, whether or not it has landed yet. */
+    private static final long STEP_COALESCE_MS = 300;
+    /** How long an unlanded step holds later presses at most, so a step whose landing is never reported cannot hold Back. */
+    private static final long STEP_WAIT_MS = 1_000;
+    /** How long a navigation the page started counts as going on at most, for one that ends with no report (a download). */
+    private static final long NAVIGATION_WAIT_MS = 15_000;
+    /** When Back last stepped back in the WebView (uptime), or -1. */
+    private long stepAt = -1;
+    /** Whether the WebView reported the entry that step landed on (landed). */
+    private boolean stepLanded = true;
+    /** When the page started a navigation that has no entry yet (uptime), or -1. */
+    private long navigatingAt = -1;
+
+    private void stepped(long now) {
+        stepAt = now;
+        stepLanded = false;
+    }
+
+    /** The WebView reported its current entry (doUpdateVisitedHistory, onPageCommitVisible): a step or navigation landed. */
+    private void landed() {
+        stepLanded = true;
+        navigatingAt = -1;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -230,7 +268,13 @@ public class MainActivity extends BridgeActivity {
         });
         if (host == null) {
             bridge.setWebViewClient(
-                new BridgeWebViewClient(bridge)
+                new BridgeWebViewClient(bridge) {
+                    @Override
+                    public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                        super.doUpdateVisitedHistory(view, url, isReload);
+                        landed();
+                    }
+                }
             );
         }
         followThemeColor(host == null ? Collections.singleton(appOrigin) : new HashSet<>(Arrays.asList(appOrigin, origin)));
@@ -324,7 +368,17 @@ public class MainActivity extends BridgeActivity {
                             }
                             return true;
                         }
-                        return super.shouldOverrideUrlLoading(view, request);
+                        boolean taken = super.shouldOverrideUrlLoading(view, request);
+                        // a page of the PC's the WebView goes on to: going on until its entry is reported (landed)
+                        if (!taken && request.isForMainFrame() && !request.isRedirect()) navigatingAt = SystemClock.uptimeMillis();
+                        return taken;
+                    }
+
+                    // every entry the page adds or leaves (a sheet's, a pane's, Add a PC's) comes through here
+                    @Override
+                    public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                        super.doUpdateVisitedHistory(view, url, isReload);
+                        landed();
                     }
 
                     // WebView does not ask shouldOverrideUrlLoading about a form's POST: a sign-in form
@@ -399,6 +453,7 @@ public class MainActivity extends BridgeActivity {
                         // its bar, until the client is up (watchOpening): until then it shows only its
                         // loading spinner, for minutes on a slow link
                         pageShown = true;
+                        landed();
                         if (url == null || !PCStore.belongs(url, pc)) hideOpening();
                         else answerTimer.post(MainActivity.this::pollPage);
                     }
