@@ -2219,6 +2219,24 @@ describe("another machine of the core, as its own PC (#2497)", () => {
     const execs = cores[0]!.calls.filter((call) => call.method === "machine.exec");
     expect(execs.length).toBeGreaterThan(0);
     expect(execs.every((call) => call.params["on"] === "lab-id")).toBe(true);
+    // in git's own words, as this PC's git runs: an older git's refused -z is told by its English message
+    expect(execs.every((call) => (call.params["env"] as Record<string, string> | undefined)?.["LC_ALL"] === "C")).toBe(true);
+  });
+
+  it("lists that machine's checkouts by line when its git is older than 2.36, whatever its language", async () => {
+    const answer = (stdout: string, code = 0, stderr = "") => ({ code, timed_out: false, stdout: Buffer.from(stdout).toString("base64"), stderr: Buffer.from(stderr).toString("base64") });
+    const { socket } = await setup([terminal("lab/t1", { cwd: "/srv/lab/wt" })], {
+      "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }),
+      "machine.exec": (params) => {
+        const argv = params["argv"] as string[];
+        const english = (params["env"] as Record<string, string> | undefined)?.["LC_ALL"] === "C";
+        if (argv.includes("rev-parse")) return answer("/srv/lab/wt\n/srv/lab/.git\n/srv/lab/.git/worktrees/wt\n");
+        // git 2.34 (Ubuntu 22.04) in that machine's language unless told otherwise
+        if (argv.includes("-z")) return answer("", 129, english ? "error: unknown switch \x60z'\n" : "Fehler: Unbekannter Schalter \x60z'\n");
+        return answer("worktree /srv/lab\nHEAD abc\nbranch refs/heads/main\n\nworktree /srv/lab/wt\nHEAD def\nbranch refs/heads/fix\n\n");
+      },
+    }, undefined, "lab");
+    expect((await sessionSnapshot(socket)).workspaces[0]!.worktree).toEqual({ repo_key: "/srv/lab/.git", repo_name: "lab", repo_root: "/srv/lab", checkout_path: "/srv/lab/wt", is_linked_worktree: true });
   });
 
   it("reaches each terminal by its address on the core, and starts a new one there", async () => {

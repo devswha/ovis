@@ -473,9 +473,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     return found;
   };
 
-  /** git run on the machine whose terminals these are, by the core (`hc exec --on`): read-only lookups of its checkouts */
+  /**
+   * git run on the machine whose terminals these are, by the core (`hc exec --on`): read-only lookups of its checkouts,
+   * in English as this PC's git (worktrees.ts gitEnvironment): an older git's refused -z is told by its message
+   */
   const gitOnMachine: typeof git = async (cwd, args) => {
-    const ran = await hc.call("machine.exec", { argv: ["/usr/bin/git", "-C", cwd, ...args], timeout: 8 });
+    const ran = await hc.call("machine.exec", { argv: ["/usr/bin/git", "-C", cwd, ...args], env: { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }, timeout: 8 });
     const text = (base64: string) => Buffer.from(base64, "base64").toString("utf8");
     return { ok: ran.code === 0 && !ran.timed_out, stdout: text(ran.stdout), stderr: text(ran.stderr).trim() };
   };
