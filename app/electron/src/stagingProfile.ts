@@ -1,6 +1,6 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 type Env = Record<string, string | undefined>;
 
@@ -44,11 +44,12 @@ export function readStagingProfile({ resources, env, user }: {
   }
 
   const { homedir, uid } = user ?? userInfo();
-  const preferred = join(homedir, ".ost");
+  // The profile only ever opens on a Mac, so its paths are POSIX ones on whatever host builds or tests this.
+  const preferred = posix.join(homedir, ".ost");
   const session = resolved["HC_SESSION"]?.trim() || "ovis";
   const socketLength = Buffer.byteLength(preferred) + Buffer.byteLength(session) + CORE_SOCKET_OVERHEAD;
   const stagingHome = socketLength > CORE_SOCKET_LIMIT ? `/tmp/ost-${uid}` : preferred;
   if (env["HOME"] === undefined || env["HOME"] === homedir) resolved["HOME"] = stagingHome;
   resolved["CFFIXED_USER_HOME"] ??= stagingHome;
-  return { env: resolved, userData: join(stagingHome, "app") };
+  return { env: resolved, userData: posix.join(stagingHome, "app") };
 }
