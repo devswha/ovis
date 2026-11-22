@@ -17,6 +17,7 @@ test("a failure of the relay pass setup never keeps Add this PC from its pairing
   const answer = async (input: RequestInfo | URL): Promise<Response> => {
     const path = new URL(String(input), "http://localhost").pathname;
     asked.push(path);
+    if (path === "/api/account/status") return Response.json({ account: null });
     if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
     return Response.json({ error: { code: "internal", message: "relay/account.json is not writable" } }, { status: 500 });
   };
@@ -40,6 +41,7 @@ test("a pass setup that never answers does not hold Add this PC either", async (
   const answer = async (input: RequestInfo | URL): Promise<Response> => {
     const path = new URL(String(input), "http://localhost").pathname;
     asked.push(path);
+    if (path === "/api/account/status") return Response.json({ account: null });
     if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
     return new Promise<Response>(() => {});
   };
@@ -61,7 +63,7 @@ test("reopening the add window asks the link route alone, for an approve-here wi
   setTransport({ ...nativeTransport, fetch: answer });
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
   try {
-    expect(await reopenAddWindow()).toBeNull();
+    expect((await reopenAddWindow()).serverId).toBeNull();
     expect(asked).toEqual([{ path: "/api/relay/link", localOnly: "1" }]);
   } finally { fetchSpy.mockRestore(); }
 });
@@ -72,7 +74,7 @@ test("reopening the add window says which PC opened it", async () => {
   const answer = async (_input: RequestInfo | URL): Promise<Response> => Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
   setTransport({ ...nativeTransport, fetch: answer });
   const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
-  try { expect(await reopenAddWindow()).toBe(serverId); } finally { fetchSpy.mockRestore(); }
+  try { expect((await reopenAddWindow()).serverId).toBe(serverId); } finally { fetchSpy.mockRestore(); }
 });
 
 function listing(signedIn: { account: string | null }) {
@@ -95,6 +97,7 @@ function listing(signedIn: { account: string | null }) {
     const mine = (): void => { if (bound !== undefined && signedIn.account !== bound) throw new Error("another sign-in is stored"); };
     return {
       listPcs: async () => { mine(); for (const read of reads) read(); return [{ server_id: serverId, added_at: new Date(0).toISOString() }]; },
+      refreshPc: async () => { mine(); return "legacy"; },
       putPc: async () => { mine(); calls.push(`putPc as ${signedIn.account}`); },
       deletePc: async () => { mine(); calls.push(`deletePc as ${signedIn.account}`); },
       session: async () => signedIn.account === null ? undefined : { account: signedIn.account },
@@ -238,7 +241,7 @@ const PC_ID = "0123456789abcdef0123456789abcdef";
 test("one press: the service admits the PC as the stored sign-in, then the PC is named that account and takes the press for it", async () => {
   const f = onePress();
   try {
-    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(true);
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe("added");
     expect(f.calls).toEqual([`admit ${PC_ID} as acct_1`, '/api/account/relay-account {"account":"acct_1"}', '/api/account/one-press {"account":"acct_1"}']);
   } finally { f.restore(); }
 });
@@ -247,9 +250,9 @@ test("one press asks nothing when the stored sign-in is not the account it was f
   const f = onePress();
   try {
     f.signedIn.account = "acct_2";
-    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false);
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe("refused");
     f.signedIn.account = "acct_1";
-    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => false, true)).toBe(false);
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => false, true)).toBe("refused");
     expect(f.calls).toEqual([]);
   } finally { f.restore(); }
 });
@@ -257,7 +260,7 @@ test("one press asks nothing when the stored sign-in is not the account it was f
 test("a refusal of the account service (no two-step, a stale sign-in, the daily cap, an older service) leaves the PC unasked", async () => {
   const f = onePress({ admit: () => Promise.reject(new AccountServiceError(403, "two_step_required", "Set up two-step sign-in first")) });
   try {
-    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false);
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe("sign-in-again");
     expect(f.calls).toEqual([`admit ${PC_ID} as acct_1`]);
   } finally { f.restore(); }
 });
@@ -265,7 +268,7 @@ test("a refusal of the account service (no two-step, a stale sign-in, the daily 
 test("a PC that refuses the press, or has no such route, is no one-press add", async () => {
   for (const status of [404, 409, 502, 503]) {
     const f = onePress({ pc: (path) => path === "/api/account/one-press" ? Response.json({ error: { code: "x", message: "x" } }, { status }) : new Response(null, { status: 204 }) });
-    try { expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false); }
+    try { expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe("refused"); }
     finally { f.restore(); }
   }
 });
@@ -273,7 +276,7 @@ test("a PC that refuses the press, or has no such route, is no one-press add", a
 test("one press asks the account service nothing for a PC whose step-2 switch is off: no cap is spent and nobody is rung", async () => {
   const f = onePress();
   try {
-    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, false)).toBe(false);
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, false)).toBe("refused");
     expect(f.calls).toEqual([]);
   } finally { f.restore(); }
 });
@@ -292,14 +295,14 @@ test("the PC's own window, as the server judges it: its owner socket, or the acc
 test("a PC that cannot be reached after the account service admitted it is no one press: the digit wait comes, nothing is thrown", async () => {
   const f = onePress({ pc: () => { throw new TypeError("Disconnected"); } });
   try {
-    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false);
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe("refused");
   } finally { f.restore(); }
 });
 
 test("one press names this PC for nobody when another tab signed in to another account while the service answered", async () => {
   const f = onePress({ admit: async () => { f.signedIn.account = "acct_2"; return { account: "acct_1", new_until: "x" }; } });
   try {
-    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe(false);
+    expect(await addInOnePress(f.service, PC_ID, "acct_1", () => true, true)).toBe("refused");
     expect(f.calls).toEqual([`admit ${PC_ID} as acct_1`]);
   } finally { f.restore(); }
 });
