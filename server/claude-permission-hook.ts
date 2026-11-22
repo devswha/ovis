@@ -1,20 +1,24 @@
 /**
  * Claude Code's command approvals through its own PermissionRequest hook, for a Claude Ovis starts on this PC.
  *
- * Such a Claude gets an HTTP hook (its `--settings`, in a 0600 file: the token is never on a command line) that posts
- * each Bash permission request to a listener here, on loopback only, with a token that names the pane it was started
- * in. The request is held open while the card shows it: the card reads the whole command from it rather than from the
+ * Such a Claude gets a command hook (its `--settings`, in a 0600 file) that runs `ovis-server claude-hook`
+ * (server/claude-hook-relay.ts) for each Bash permission request. The relay posts it to a socket in a 0700 folder of
+ * this server's state, which no other account can open, with a token that names the pane the Claude was started in. A
+ * loopback port would not do: once this server stopped, another account could take the port and answer for it. The
+ * socket's path stays the same across restarts, and a request for a token a restarted server does not know gets no
+ * decision. Windows has no such socket here, so a Claude there keeps the keys, as pi-ask does. The request is held open while the card shows it: the card reads the whole command from it rather than from the
  * screen, and a Yes or No from the card is the hook's answer, not keys. Measured on Claude Code 2.1.330:
  * - the terminal draws its own dialog while the hook waits, and whichever answers first wins;
  * - answered in the terminal, the hook's request stays open and a later answer to it is ignored, so a request the
  *   screen no longer shows is released here (answered with no decision);
- * - a hook that cannot connect, or gets a 401, leaves the terminal's dialog as it is, at once.
+ * - a hook that ends with no decision leaves the terminal's dialog as it is, at once.
  * So every card still has its keys: the hook is only how a Yes or No goes when it holds the very request on screen.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { readdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { settingsFile } from "./claude-settings-file.ts";
+import { entryCommand } from "./entries.ts";
 import { jsonResponse } from "./http.ts";
 
 export type PermissionDecision = "allow" | "deny";
@@ -33,8 +37,10 @@ const PATH = "/claude/permission";
 const BODY_MAX = 256 * 1024;
 /** A read of the screen just before Claude draws its dialog must not release the hook it sent with it. */
 const GRACE_MS = 3_000;
-/** Claude Code's own default for an HTTP hook: past it Claude has stopped waiting on the request. */
+/** Claude Code's own default for a command hook: past it Claude has stopped waiting on the request. */
 const HELD_MS = 600_000;
+/** Under the shortest limit on a socket's path (104 bytes on macOS), with room for its terminating byte. */
+const SOCKET_PATH_MAX = 100;
 const PANES_MAX = 256;
 const COMMAND_MAX = 16_000;
 
@@ -52,19 +58,42 @@ export class ClaudePermissionHooks {
   private readonly panes = new Map<string, string>();
   private readonly pending = new Map<string, Pending[]>();
 
-  constructor(private readonly dir: string, private readonly options: { now?: () => number; heldMs?: number; onHeld?: (paneId: string) => void } = {}) {}
+  private readonly socket: string;
+
+  constructor(private readonly dir: string, private readonly options: {
+    now?: () => number; heldMs?: number; onHeld?: (paneId: string) => void; onSettled?: (paneId: string) => void; platform?: string;
+    /** what the hook runs, before its own arguments */
+    relay?: readonly string[];
+  } = {}) {
+    this.socket = join(dir, "hub.sock");
+  }
 
   private now(): number {
     return (this.options.now ?? Date.now)();
   }
 
-  private listening(): ReturnType<typeof Bun.serve> {
-    if (this.listener !== null) return this.listener;
-    // a settings file names a token of an earlier run of this server, which nothing here answers any more
-    try { for (const name of readdirSync(this.dir)) if (name.endsWith(".json")) rmSync(join(this.dir, name), { force: true }); } catch {}
-    // no idle cut (Bun's default is 10 s): a request waits as long as its card does
-    this.listener = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, fetch: (request) => this.receive(request) });
-    return this.listener;
+  private listen(): void {
+    if (this.listener !== null) return;
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    chmodSync(this.dir, 0o700);
+    // a settings file names a token of an earlier run of this server, which nothing here answers any more, and the
+    // socket of that run is in the way of this one's
+    for (const name of readdirSync(this.dir)) if (name.endsWith(".json") || name === "hub.sock") rmSync(join(this.dir, name), { force: true });
+    // Bun gives a socket the umask's mode, as for the machine profile's owner socket (server/index.ts)
+    const umask = process.umask(0o077);
+    try {
+      this.listener = Bun.serve({
+        unix: this.socket,
+        fetch: (request, server) => {
+          // no idle cut (Bun's default is 10 s): a request waits as long as its card does
+          server.timeout(request, 0);
+          return this.receive(request);
+        },
+      });
+      chmodSync(this.socket, 0o600);
+    } finally {
+      process.umask(umask);
+    }
   }
 
   /**
@@ -73,6 +102,7 @@ export class ClaudePermissionHooks {
    * not be merged, and leaves `args` as they are.
    */
   launchArgs(paneId: string, args: readonly string[] | undefined): string[] | undefined {
+    if ((this.options.platform ?? process.platform) === "win32" || Buffer.byteLength(this.socket) > SOCKET_PATH_MAX) return args === undefined ? undefined : [...args];
     const given = args ?? [];
     const end = given.indexOf("--");
     const flags = end < 0 ? given : given.slice(0, end);
@@ -95,7 +125,13 @@ export class ClaudePermissionHooks {
       replaced = { from: index, to: index + (inline ? 2 : 1) };
     }
     const token = randomBytes(32).toString("base64url");
-    const port = this.listening().port;
+    try {
+      this.listen();
+    } catch (error) {
+      console.error(`claude permission hook: ${error instanceof Error ? error.message : String(error)}`);
+      return args === undefined ? undefined : [...given];
+    }
+    const [command, ...relay] = this.options.relay ?? entryCommand("claude-hook");
     const hooks = typeof settings["hooks"] === "object" && settings["hooks"] !== null && !Array.isArray(settings["hooks"])
       ? { ...(settings["hooks"] as Record<string, unknown>) } : {};
     const theirs = Array.isArray(hooks["PermissionRequest"]) ? hooks["PermissionRequest"] as unknown[] : [];
@@ -103,7 +139,8 @@ export class ClaudePermissionHooks {
     // ignores (its hooks reference, 2.1.314 on); matched by name it comes as itself, and is left to the terminal here
     hooks["PermissionRequest"] = [...theirs, {
       matcher: "Bash|Monitor",
-      hooks: [{ type: "http", url: `http://127.0.0.1:${port}${PATH}`, headers: { Authorization: `Bearer ${token}` } }],
+      // exec form: no shell between Claude and the relay, on any platform
+      hooks: [{ type: "command", command, args: [...relay, "--socket", this.socket, "--launch", token] }],
     }];
     let path: string;
     try {
@@ -146,14 +183,18 @@ export class ClaudePermissionHooks {
     const decision = await new Promise<PermissionDecision | null>((resolve) => {
       const list = this.pending.get(paneId) ?? [];
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let done = false;
       const entry: Pending = {
         command, description, at: this.now(),
         settle: (decision) => {
+          if (done) return;
+          done = true;
           clearTimeout(timer);
           const left = (this.pending.get(paneId) ?? []).filter((other) => other !== entry);
           if (left.length) this.pending.set(paneId, left);
           else this.pending.delete(paneId);
           resolve(decision);
+          this.options.onSettled?.(paneId);
         },
       };
       list.push(entry);
@@ -207,8 +248,11 @@ export class ClaudePermissionHooks {
   stop(): void {
     // each held request gets its answer (no decision, so the terminal's dialog stands) before the listener closes
     for (const list of [...this.pending.values()]) for (const entry of list) entry.settle(null);
-    void this.listener?.stop();
+    if (this.listener === null) return;
+    void this.listener.stop();
     this.listener = null;
+    // a relay that finds no socket gives no decision at once, rather than waiting on one nothing answers
+    rmSync(this.socket, { force: true });
   }
 }
 
