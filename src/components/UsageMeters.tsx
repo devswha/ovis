@@ -188,7 +188,7 @@ export function UsageMeters({ machines, onLocalLogin, watching = false }: { read
   });
 
   const count = settings.usageCount;
-  if (!drawn) return null;
+  if (!drawn && !following) return null;
   const fits = room ?? { all: FALLBACK_CHIPS, folding: FALLBACK_CHIPS - 1 };
   const chips = shown.length > fits.all ? shown.slice(0, fits.folding) : shown;
   const folded = shown.length - chips.length;
@@ -200,34 +200,38 @@ export function UsageMeters({ machines, onLocalLogin, watching = false }: { read
   }).join(", ");
 
   return (
-    <div className="usage" ref={rootRef} onKeyDown={onKeyDown} onBlur={onBlur}>
-      <button
-        ref={stripRef}
-        type="button"
-        className="usage-strip"
-        aria-expanded={open}
-        aria-label={`${t("Subscription usage")}: ${summary}`}
-        title={summary}
-        onClick={() => setOpen(!open)}
-      >
-        {chips.map((usage) => <Chip key={usage.key} usage={usage} count={count} glance={settings.usageGlance} />)}
-        {folded > 0 && <span className="usage-more">+{folded}</span>}
-      </button>
-      {open && (
-        <div className="usage-popover" role="dialog" aria-label={t("Subscription usage")}>
-          <header className="usage-popover-head">
-            <span>{t("Subscription usage")}</span>
-            {/* busy, not disabled: a disabled button drops focus, and Escape with it */}
-            <button type="button" className="icon-button" aria-label={t("Refresh")} title={t("Refresh")} aria-busy={loading} onClick={() => { if (!loading) refresh(); }}>
-              <RefreshCw aria-hidden="true" className={loading ? "is-spinning" : undefined} />
-            </button>
-          </header>
-          {shown.map((usage) => <Provider key={usage.key} usage={usage} now={now} count={count} watching={watching} onLocalLogin={onLocalLogin && ((paneId) => { setOpen(false); onLocalLogin(paneId); })}
-            onFollow={(request) => { setOpen(false); setFollowing(request); }} />)}
+    <>
+      {drawn && (
+        <div className="usage" ref={rootRef} onKeyDown={onKeyDown} onBlur={onBlur}>
+          <button
+            ref={stripRef}
+            type="button"
+            className="usage-strip"
+            aria-expanded={open}
+            aria-label={`${t("Subscription usage")}: ${summary}`}
+            title={summary}
+            onClick={() => setOpen(!open)}
+          >
+            {chips.map((usage) => <Chip key={usage.key} usage={usage} count={count} glance={settings.usageGlance} />)}
+            {folded > 0 && <span className="usage-more">+{folded}</span>}
+          </button>
+          {open && (
+            <div className="usage-popover" role="dialog" aria-label={t("Subscription usage")}>
+              <header className="usage-popover-head">
+                <span>{t("Subscription usage")}</span>
+                {/* busy, not disabled: a disabled button drops focus, and Escape with it */}
+                <button type="button" className="icon-button" aria-label={t("Refresh")} title={t("Refresh")} aria-busy={loading} onClick={() => { if (!loading) refresh(); }}>
+                  <RefreshCw aria-hidden="true" className={loading ? "is-spinning" : undefined} />
+                </button>
+              </header>
+              {shown.map((usage) => <Provider key={usage.key} usage={usage} now={now} count={count} watching={watching} onLocalLogin={onLocalLogin && ((paneId) => { setOpen(false); onLocalLogin(paneId); })}
+                onFollow={(request) => { setOpen(false); setFollowing(request); }} />)}
+            </div>
+          )}
         </div>
       )}
       {following && onLocalLogin && <UsageSignInDialog request={following} onOpenTerminal={(paneId) => { setFollowing(null); onLocalLogin(paneId); }}
         onSignedIn={refresh} onClose={() => { setFollowing(null); stripRef.current?.focus(); }} />}
-    </div>
+    </>
   );
 }
