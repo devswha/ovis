@@ -12,7 +12,7 @@ const recorded = (path: string): string => readFileSync(join(FIXTURES, path), "u
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
-let pane: { agent: string; argv: string[] };
+let pane: { agent: string; argv: string[]; status?: string };
 let screens: { visible: string; live?: string };
 let next: typeof screens | undefined;
 let reads: number;
@@ -38,7 +38,7 @@ beforeEach(() => {
         calls.push({ method: request.method, params: request.params ?? {} });
         const result = request.method === "pane.get" ? { pane: {
           pane_id: "w:p1", workspace_id: "w", tab_id: "w:t1", terminal_id: "t1", cwd: root, focused: false, revision: 0,
-          agent: pane.agent, agent_status: "idle",
+          agent: pane.agent, agent_status: pane.status ?? "idle",
         } }
           : request.method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: 2147483646, argv: pane.argv, cwd: root }] } }
           : request.method === "pane.read" ? { read: { text: shownBy(request.params?.["source"]) } }
@@ -145,6 +145,27 @@ it("takes the viewport for the live screen when the live read only holds a row m
 it("takes nothing from a read without colour, where a placeholder looks typed", async () => {
   pane = { agent: "pi", argv: ["pi"] };
   screens.visible = stripVTControlCharacters(recorded("pi/draft-typed-119.ansi"));
+  await submit();
+  expect(prompted()).toBeTrue();
+});
+
+// pi-powerline-footer 0.22.0 draws a working pi's spinner in the editor's upper border, and it turns between the
+// viewport's read and the live one (#4332)
+const working = recorded("pi/powerline-working-typed-200.ansi");
+const turned = (screen: string): string => stripVTControlCharacters(screen).replace("⠸", "⠴");
+
+it("refuses a send to a working pi over text typed in its pi-powerline-footer box, though the spinner turned between the reads", async () => {
+  pane = { agent: "pi", argv: ["pi"], status: "working" };
+  screens = { visible: working, live: turned(working) };
+  expect((await refused()).code).toBe("input_draft");
+  expect(prompted()).toBeFalse();
+});
+
+it("sends to a working pi whose pi-powerline-footer box is empty, the spinner turning between the reads", async () => {
+  pane = { agent: "pi", argv: ["pi"], status: "working" };
+  const empty = working.replace(">\u001b[0m how\u001b[0m", ">\u001b[0m\u001b[0m");
+  expect(empty).not.toBe(working);
+  screens = { visible: empty, live: turned(empty) };
   await submit();
   expect(prompted()).toBeTrue();
 });
