@@ -178,6 +178,8 @@ describe("signing in on a PC's own page", () => {
   });
 
   it.each([true, false])("retrying a stale listing uses the local binding at write time (bound: %s)", async (bound) => {
+    // an account service from before listings had IDs: a stale invitation is renewed by listing the PC again
+    fake.completions = false;
     await mount();
     await until(() => buttons().includes("Sign in and add this PC"));
     await press("Sign in and add this PC");

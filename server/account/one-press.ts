@@ -35,17 +35,22 @@ export async function pressOnce(services: PressServices, account: string): Promi
   if (admitted === null) return refuse("no_admission", "The account service did not admit this PC in one press", 404);
   // the service's word counts only for the account named here (G1)
   if (admitted.account !== account) return refuse("account_mismatch", "The account service answered for another account", 502);
+  // the listing is what this PC's place in the account is checked by from now on: an add that names none gives it no standing
+  const listing = admitted.listing_id;
+  if (listing === undefined) return refuse("listing_unnamed", "The account service named no listing for this add", 502);
   // what the PC was named for, or its account, may have changed while the service answered: decided again now
   if (relay.savedRelayAccount() !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
   if (devices.account() !== null) return refuse("in_account", "This PC is already in an account", 409);
   if ((relay.currentIdentity()?.server_id ?? null) !== identity) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
   if (devices.gen() !== generation) return refuse("revoked", "Every device was revoked on this PC while it was being added. Add it again.", 409);
-  devices.bindByService(account);
+  devices.bindByService(account, listing);
+  const binding = devices.serviceBinding();
   await accountMailbox.readSnapshot();
   // the account may have stopped listing this PC during that first read: then it is in no account, and says so
-  if (devices.account() !== account) return refuse("not_listed", "The account removed this PC while it was being added", 409);
+  if (devices.serviceBinding() !== binding) return refuse("not_listed", "The account removed this PC while it was being added", 409);
   // bound: the add is complete, on this PC's own scoped word (account#57), so the account never shows it only listed
-  if (admitted.listing_id !== undefined) await accountMailbox.complete(account, admitted.listing_id);
+  await accountMailbox.complete(account, listing);
+  if (devices.serviceBinding() !== binding) return refuse("not_listed", "The account removed this PC while it was being added", 409);
   return { account };
 }
 

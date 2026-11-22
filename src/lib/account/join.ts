@@ -57,6 +57,8 @@ export interface PcAccountStatus {
   readonly blockedAll?: boolean;
   /** it waits for its first member's enrollment; absent from an Ovis from before enrollments */
   readonly enrolling?: boolean;
+  /** its account stopped listing it: only an add made at the PC brings it into one again, so a device sends it no link */
+  readonly pcAddRequired?: true;
 }
 
 /** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
@@ -75,6 +77,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     ...(options.fresh && "fresh" in body ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
     ...(typeof (body as { enrolling?: unknown }).enrolling === "boolean" ? { enrolling: (body as { enrolling: boolean }).enrolling } : {}),
+    ...((body as { pc_add_required?: unknown }).pc_add_required === true ? { pcAddRequired: true as const } : {}),
   };
 }
 

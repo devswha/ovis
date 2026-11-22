@@ -871,13 +871,16 @@ app's own sign-in, so a press there still ends in that wait; it adds the PC in o
 page signs in on its own window.
 
 **Sign in again from the wait.** When the service refuses the press for the sign-in itself
-(`two_step_required`, `session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
-(the desktop app, the PC's own window), the wait offers **Sign in again** once. It signs in afresh
+(`session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
+(the desktop app, the PC's own window), the wait offers **Sign in again** once. A sign-in without
+two-step (`two_step_required`) gets no such offer, since the same sign-in again is refused again:
+the wait says so, and that the PC is added from another device of the account (which shows a number
+to approve at the PC) or by scanning the PC's QR code, or in one press once two-step is on. It signs in afresh
 with the stored provider; the new sign-in is kept only for the same account and only while the wait
 still runs (Stop waiting in any window of the PC ends it). The press is then made again inside that
 wait: for the PC the wait listed (the PC's address must still answer for it, and nothing is listed
 again), with exactly the sign-in just made, never one another tab stored meanwhile. A second refusal
-leaves the plain wait, with no offer: the wait offers it once.
+leaves the wait with no offer (it offers it once) and says why that press added nothing.
 
 The account's other devices are told: the service sends them its usual push, and at the top of the
 opened Ovis a notice names the new PC (only on a device that first signed in to the account before the
@@ -894,12 +897,77 @@ asked, so a press the PC then refuses (it restarted, was put in another account 
 not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
 not in that account (in none, or in another one it joined meanwhile), and the page waits for the
 digits as before, and its notice says what to do if nobody added it. A PC bound this way leaves the
-account as soon as a snapshot read finds the account no longer lists it. Before recording the
+account as soon as a snapshot read finds the account no longer lists it, or its scoped completion
+receipt says the admitted listing was replaced. A bare relisting is not a new admission. The PC
+keeps the admission's `listing_id` in its binding and checks it with the service before a snapshot
+can release account rows and before granting a new account-only relay session. A positive answer
+stands for 60 seconds from when it was asked for, on a clock that only moves forward and on the PC's
+wall clock (either one outside the 60 seconds ends it), so a burst of sign-ins asks once and a
+removal refuses new sign-ins within a minute. A failed or negative answer is never kept, and a later
+check that brings no yes ends an earlier yes for the same listing. A sign-in's `AUTH_OK` is
+committed only while the answer it was let in by still stands; one that waited longer in the queue
+ends with `timeout`, and the device asks again. A snapshot read asks for itself once its last page
+is here and checked and its blocks are applied, the first read after one press included, and commits
+only while that answer stands; a read it refuses has still denied what its pages denied. Only a
+completion answer that names a strict UTC time counts as a yes, and one asked for before a later
+check failed is not kept. With no new sign-in, the PC checks at its normal
+five-minute mailbox poll, which is also when sessions already open end. An unavailable service, or
+one that has not answered a sign-in within 4 seconds, cannot authorize a new account-only connection
+and clears nothing: the device is refused with `account_unreachable` and says that the PC could not
+reach the account service. A client that did not offer `account-listing-errors-1` in HELLO gets
+`internal_error` instead, which forgets no key; so does one that knows none of the account codes
+while its row waits for a first read the service cannot give.
+
+While no whole read can be applied (an outage, or a listing the service does not confirm), the
+binding stays, and after one hour without one every row that stands on the account alone waits for
+the next read, its sessions closed: the account's listed rows, and the account's members kept in
+`devices.json` (a signed `add`, a member's remote approval), those made after the hour ended too. A
+pairing made at this PC is no such row and keeps working.
+
+After a start, every `devices.json` row whose key was not approved on this PC's screen waits for
+the first whole read, since a block may have been signed while the PC was off. A read that reached
+its last page with every block applied, but could let nothing more in because the listing was not
+confirmed, ends that wait for a pairing that is this PC's own (the ones a PC keeps when it leaves
+its account) and that nothing holds back; what such a row may do for the account, and every other
+row, waits on for a read that commits. With no read reaching its last page (the service down), they
+wait as before.
+
+A sign-in whose row only waits for a read (after a start, or once the hour has ended) is put off,
+never refused as a removed device's: `held` with `catching_up`, or `internal_error` to a client from
+before the account codes. A join a member approves from afar is asked about like a sign-in before
+any device is written. A member in `devices.json` that paired its key with a code of this PC and
+kept it through its link keeps its access through the hour; what it may do for the account waits.
+
+One press binds only when the admission names its listing (502 `listing_unnamed` otherwise). A
+binding made before 0.5.10 names none, and pins one from one of two sources. The completion receipt
+the PC kept from its bind, when the service still confirms that listing; the receipt is kept until
+the service takes it or answers 409 `listing_changed`. With no receipt, the service's own word: a
+mailbox answer asked `with_listing_id` says beside `listing_id` whether that listing stands on a
+one-press admission this PC took (`listing_admitted`). `true` beside a well-formed listing pins it,
+and it is then confirmed through `/v1/pc/complete` as every pinned listing is, so a PC added in one
+press on 0.5.9 stays in its account after the update with no add. `false`, beside a listing (a
+device listed the PC again with no press at the PC) or beside none, or a receipt the service
+refuses: the PC leaves the account as for an unlisting. Anything else says nothing and is never a
+no: the field missing (an account service from before it), a call that fails, an answer that does
+not parse, `true` beside no listing. Then the binding neither pins nor clears and is asked about
+again at the next sign-in or pull; meanwhile a device that stands on the account alone is refused
+`account_unreachable`, and a pairing made at this PC opens it. An admission as such is no evidence,
+since a device of the account can list the PC again and admit it with no press at the PC; nor is
+the account's current listing, which the PC's own mailbox pull would let it complete. While a PC
+that left this way, or that
+its account stopped listing, is owed its add at the PC (`pc_add_required`), a device that proves a
+key the PC knew as that account's is refused with `account_readd_required` (when it offered the
+feature) and keeps its key: **Add this PC to your account again**. That key is one a whole read
+numbered, for the row the account's list made of it, or the key of a `devices.json` row that left
+with the account (the journal's last entry of that row, `remove` with `unlisted`), and never one
+removed here or by the account. It is read when the sign-in is answered, so the device whose own
+sign-in made the PC ask and leave hears it too. Nobody else is told why. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
 after an offline restart from either state folder. A pairing by code or digits counts as local
 only when this PC approved the current key; one an account member device started or approved
-does not qualify.
+does not qualify. A phone that paired with this PC's first-link code and linked with the key that
+code admitted counts as local too: it keeps that key and its role, and only its membership ends.
 The sibling's old membership or signed add does not restore the cleared binding. An imported or
 invalid origin does not qualify. Unlisting does not
 lift a lock, block, freeze, Revoke or tombstone.
@@ -1403,14 +1471,35 @@ Clients:
 | `POST /v1/signout` | | `204`: ends this sign-in's tokens |
 | `POST /v1/signout/all` | `{}` | `204`: ends every sign-in of the account, this one and device codes' included, and the codes not yet redeemed; rings the account's other clients. The PCs and registered device keys stay. 403 `reauth_required` unless this sign-in was made in the last 10 minutes; 403 `web_sign_in_required` for a device code's sign-in. Manage account offers it as **Sign out every device**: on `reauth_required` the phone app signs in again in place and goes on, and a browser signs in again by redirect, whose return goes on for the same account only |
 
-`DELETE /v1/pcs/{server_id}` is no lasting removal for a PC in use: a member device lists the PC
-again on its next connection to it (`enrollOwned`), and so does the PC's own waiting Add this PC
-screen. A PC the directory does not list gets no [relay pass](relay.md#relay-pass) (`not_listed`)
-and none of the account's later records. So the apps offer it only in Settings → Devices
-and PCs → Manage account, as **Remove**, and only for a PC the directory has not heard from for
+`DELETE /v1/pcs/{server_id}` removes the PC from the account for good, however it was added. The PC
+leaves the account at its next read of the account service: its snapshot is refused `not_listed`,
+or, when a device listed it again meanwhile, its mailbox names another listing than the one its
+account rows were let in under (a PC bound by a device's link keeps that listing's ID from its first
+whole read; one bound in one press asks about the listing it was admitted in). A device lists the PC
+only after its link is answered, so for ten minutes after a link bound it, or until its listing is
+named, a missing listing is no removal (`listing_due` in the binding). A link-bound PC lets more of
+the account in only when the mailbox call of that same pull, or of that same read, named the listing
+it keeps: with no mailbox answer or none named, the read still denies what its pages deny, drops the
+listed devices its snapshot names as removed, and widens nothing. An answer counts only for the
+binding and account it was asked for. Leaving ends the
+account's rows and keeps the pairings made at the PC ([Adding a PC](#adding-a-pc)). From then on the PC says so
+(`pc_add_required` in `GET /api/account/status`) and takes a first link only under a code it issued
+itself (its own window, `ovis add`), or from a device whose digits its own screen approved since it
+left (for a removal recorded by an older version: since this version first read it); one press at
+the PC brings it back too. A device it kept paired opens it as before and sends
+it no link, and a code that device asked for joins it to no account. When that device scans the
+code the PC issued itself, it pairs again with the key it already has there: its link brings the PC
+into the account, and the new row takes the place of the pairing it had (same key, a row that
+drives and is in no account), whose sessions end `auth_changed` with no removal told. An app whose
+new row the PC ends before its link passed opens the PC again with the record it had before the
+scan.
+No app lists a PC again by opening it: only the enrollment that brings a PC into the account writes
+its directory entry. A PC the directory does not list gets no [relay pass](relay.md#relay-pass)
+(`not_listed`) and none of the account's later records. The apps offer the removal in Settings →
+Devices and PCs → Manage account, as **Remove**, only for a PC the directory has not heard from for
 15 minutes (`offlinePc` in [`src/components/AccountManage.tsx`](../src/components/AccountManage.tsx)),
 on any page that has the sheet: a PC's own page, the hosted app and the phone apps. A confirm says
-it revokes nothing and that the PC is listed again if it is used again.
+the PC leaves the account once it is online again and is added again at the PC.
 
 Push (the doorbell), per signed-in device:
 
@@ -1434,7 +1523,7 @@ The PC, by server proof:
 | request | body | answer |
 |---|---|---|
 | `POST /v1/pc/challenge` | `{ "server_id", "public_key" }` | `{ "challenge_id", "frame" }` |
-| `POST /v1/pc/mailbox` | `{ "server_id", "challenge_id", "proof", "account", "ack" }` | `{ "records": [{ "seq", "record" }], "more", "admissions": [{ "key", "label", "at" }] }`: `admissions` lists that account's admissions for this PC made in the last 10 minutes, on every pull until they age out |
+| `POST /v1/pc/mailbox` | `{ "server_id", "challenge_id", "proof", "account", "ack" }` | `{ "records": [{ "seq", "record" }], "more", "admissions": [{ "key", "label", "at" }] }`: `admissions` lists that account's admissions for this PC made in the last 10 minutes, on every pull until they age out. Asked `with_listing_id: true`, it also answers `listing_id` (the listing it holds this PC under, null for none it confirms) and `listing_admitted` (whether that listing stands on a one-press admission this PC took; a service from before the field omits it) |
 
 `public_key` is the PC's relay key (64 hex); the service refuses it unless it gives `server_id`
 (`deriveServerId`). `frame` is a `server_challenge` (`serverChallenge` in
@@ -1501,7 +1590,7 @@ with "continue only if you started this on your own PC".
 | `tombstoned` | — | the key was removed through the account; only this PC can let it back in (a record outcome) |
 | `link_not_owner` | 403 | a link for another device, another PC, or a key that is not the row's |
 | `link_required` | 403 | the device paired with a code made for a PC in no account and has not linked itself into an account: it reads its own account status and sends its link, and gets nothing else |
-| `key_in_use` | 409 | a link to a key another row already has |
+| `key_in_use` | 409 | a link to a key another row already has; not the first link of a device that paired again with a code made for a PC in no account and kept its key, which replaces the row it had |
 | `introduction_unknown_key` | 404 | an introduction for a key no account member added on this PC |
 | `introduction_invalid` | 400 | an introduction's PC list does not parse, or a `server_id` does not derive from its key |
 | `introduction_none` | 404 | no introduction waits for this device |

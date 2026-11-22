@@ -37,7 +37,7 @@ describe("account enrollment ownership", () => {
     setCurrentLanguage("en");
   });
 
-  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly heldAccount?: string;
+  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly planned?: false; readonly addAtPc?: true; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly heldAccount?: string;
     readonly accountAnswer?: (route: string, sent: number, init?: RequestInit) => Response | Error | undefined | Promise<Response | Error | undefined>;
     readonly viewActive?: boolean } = {}) {
     const identity = generateKeyPair();
@@ -59,7 +59,7 @@ describe("account enrollment ownership", () => {
       await rememberDevice(accountStore, record);
       records.push(record);
     }
-    await planEnroll(accountStore, offer.server_id, "account");
+    if (options.planned !== false) await planEnroll(accountStore, offer.server_id, "account");
     const requested = Promise.withResolvers<void>();
     const response = Promise.withResolvers<Response>();
     const renewalRequested = Promise.withResolvers<void>();
@@ -74,10 +74,11 @@ describe("account enrollment ownership", () => {
     let accountHeld = false;
     let linked = !options.linking;
     let introductions = 0;
+    let links = 0;
     const answer = (path: string): Response => {
       switch (path) {
-        case "/api/account/status": return Response.json({ account: linked ? "account" : null, unlinked: [], removals: [], enrolling: true });
-        case "/api/account/link": linked = true; return Response.json({});
+        case "/api/account/status": return Response.json({ account: linked ? "account" : null, unlinked: [], removals: [], enrolling: options.planned !== false, ...(options.addAtPc ? { pc_add_required: true } : {}) });
+        case "/api/account/link": links++; linked = true; return Response.json({});
         case "/api/account/enroll": return Response.json({ results: records.map((record, index) => ({ id: record.id, outcome: index < (options.admitted ?? 2) ? "applied" : "refused", code: "key_held" })) });
         case "/api/account/introduction": introductions++; return Response.json({ pcs: [] });
         default: throw new TypeError("Unexpected PC request: " + path);
@@ -116,7 +117,7 @@ describe("account enrollment ownership", () => {
       },
     }, { active: () => options.viewActive === true, changed: async () => { viewChanged.resolve(); }, outdated: () => new Set() });
     return {
-      controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked,
+      controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, links: () => links, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked,
       accountRequested, accountRelease, signOutAsked, viewChanged: viewChanged.promise, introductions: () => introductions,
       /** the times, from the first, that `route` went to the account service */
       sent: (route: string) => sends.filter((sent) => sent.route === route).map((sent, _index, all) => sent.at - (all[0]?.at ?? 0)),
@@ -137,6 +138,29 @@ describe("account enrollment ownership", () => {
     if (first === undefined) throw new TypeError("Missing sign-in");
     return { first, later: { ...first, access_token: run.service.issueToken("account"), refresh_token: "later", sign_in_id: "later" } };
   };
+
+  it("opening a saved pairing of a PC that is in the account writes nothing to the account's directory", async () => {
+    // the account may have removed the PC a moment ago, before the PC noticed: opening it must not put it back
+    const run = await fixture("unused", { planned: false });
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, false)).toMatchObject({ state: "complete" });
+    expect({ puts: run.putPcs, links: run.links() }).toEqual({ puts: [], links: 0 });
+  });
+
+  it("a saved pairing of a PC that left its account and waits to be added at the PC sends it no link and lists nothing", async () => {
+    const run = await fixture("unused", { linking: true, planned: false, addAtPc: true });
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, false)).toBe("local");
+    expect({ puts: run.putPcs, links: run.links() }).toEqual({ puts: [], links: 0 });
+    // the pairing is this device's own again: nothing here says the PC is in the account
+    expect((await run.store.get(run.original.server_id))?.account).toBeUndefined();
+    expect(enrollmentOf((await run.store.get(run.original.server_id))!)).toBeUndefined();
+  });
+
+  it("a new pairing with such a PC still sends its link: only the PC knows whether its own code was used", async () => {
+    const run = await fixture("unused", { linking: true, addAtPc: true });
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true)).toMatchObject({ state: "complete" });
+    expect(run.links()).toBe(1);
+    expect(run.putPcs).toEqual(["put"]);
+  });
 
   it("does not list a pairing after Forget releases a held renewal", async () => {
     const run = await fixture("unused", { linking: true, holdRenewal: true });

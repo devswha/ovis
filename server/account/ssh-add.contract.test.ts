@@ -65,7 +65,8 @@ test.skipIf(process.platform === "win32")("a PC in another account binds nothing
 });
 
 test("a bound PC's completion receipt the service did not take is sent again after its next pull, and the directory then shows it completed", async () => {
-  let refuse = 1;
+  // the first read asks about the listing, then the receipt is sent: both fail once the service is down
+  let refuse = 2;
   const b = await pairingPc({ server: { accountOpensAll: true }, accountFetch: async (request, service) => {
     if (new URL(request.url).pathname === "/v1/pc/complete" && refuse-- > 0) return Response.json({ error: { code: "unavailable", message: "down" } }, { status: 503 });
     return await service.fetch(request);

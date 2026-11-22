@@ -168,7 +168,7 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
       {removal.prompt !== null && <p className="settings-condition">{removal.prompt}</p>}
       {asked !== null && (
         <ConfirmDialog title={t("Remove {name} from your account?", { name: asked.label })}
-          body={t("{name} leaves your account's PCs on every device. It revokes nothing on {name}; if it comes back online, add it again.", { name: asked.label })}
+          body={t("{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.", { name: asked.label })}
           confirmLabel={t("Remove")} onClose={() => setAsked(null)}
           onConfirm={async () => {
             // a removal that wants a fresh sign-in first closes the question: its Sign in again, below the list, removes it
