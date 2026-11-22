@@ -21,6 +21,7 @@ import { checkTerminalInput } from "./terminal-input-regression.ts";
 import { checkSafariIme } from "./terminal-safari-ime-regression.ts";
 import { checkIpadIme } from "./terminal-ipad-ime-regression.ts";
 import { checkLinuxIme } from "./terminal-linux-ime-regression.ts";
+import { checkTextareaDrafts } from "./textarea-draft-regression.ts";
 import { checkHeldDraftPaneSwitch } from "./terminal-draft-regression.ts";
 import { checkCommandBackspace } from "./terminal-command-backspace-regression.ts";
 import { checkCtrlEnter } from "./terminal-ctrl-enter-regression.ts";
@@ -1064,6 +1065,9 @@ try {
       }
       return { x: Math.round(card.x), width: Math.round(card.width), pane: Math.round(pane.width) };
     };
+    // Pane A has no conversation to show: its first answer takes the empty list's .chat-transcript out of the page and
+    // puts the notice's own in. A box read between the two is null, the removed element's (#4026).
+    await page.locator(".chat-unavailable-reason").waitFor();
     const floor = await laneColumn();
     assert.ok(floor.pane < 1148, "71% of this pane is under the lane's floor");
     assert.equal(floor.width, 820);
@@ -2394,6 +2398,7 @@ try {
   }
 
   if (part === "ime") {
+    await checkTextareaDrafts(browser, origin, paneA, paneB);
     await checkSafariIme(browser, origin, paneA, paneB);
     await checkIpadIme(browser, origin, paneA, paneB);
     await checkLinuxIme(browser, origin, paneA);
