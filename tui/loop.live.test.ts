@@ -212,9 +212,12 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect(shown(ended)).toEqual([true, true, true]);
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("finished");
     await hc.call("terminal.rm", { terminal: address });
+    // one frame can arrive in several reads: the removed pane's title may be gone from a grid whose banner row is not
+    // redrawn yet, so the wait holds for all three on the same grid
+    const removed = ({ text }: Shown) => [text.includes("+- stays "), text.includes("+- ends "), text.includes("ended (3)")];
     let grid = ended;
-    while (grid.text.includes("+- ends ")) grid = await nextGrid(run, grid);
-    expect([grid.text.includes("+- stays "), grid.text.includes("ended (3)")]).toEqual([true, false]);
+    while (removed(grid).join() !== [true, false, false].join()) grid = await nextGrid(run, grid);
+    expect(removed(grid)).toEqual([true, false, false]);
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
   }, TEST_MS);
