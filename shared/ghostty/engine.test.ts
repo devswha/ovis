@@ -363,6 +363,12 @@ describe("shared/ghostty engine", () => {
     const big = "x".repeat(2 << 20);
     tight.engine.write(bytesOf("hello"));
     expect(message(() => tight.engine.write(bytesOf(big)))).toBe(`ghostty-vt: no memory for a write (${2 << 20} bytes)`);
+    const rejected = bytesOf(`\x1b[?47h${big}\x1b[?9001h`);
+    const refusal = message(() => tight.engine.write(rejected));
+    const { altScreen, screens, win32Input } = tight.engine.modes();
+    expect({ refusal, altScreen, screens, win32Input, row: rowText(screenRows(tight.engine).get(0)!) }).toEqual({
+      refusal: `ghostty-vt: no memory for a write (${rejected.length} bytes)`, altScreen: false, screens: 0, win32Input: false, row: "hello",
+    });
     // the input buffer the engine has (64 kB) is still its own
     expect(freed).not.toContain(64 * 1024);
     expect(message(() => tight.engine.encodePaste(big))).toBe(`ghostty-vt: no memory for a paste (${2 << 20} bytes)`);

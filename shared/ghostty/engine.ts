@@ -751,6 +751,7 @@ export class GhosttyEngine {
     // the browser's loader writes in many small pieces: its engines feed the module directly, as they always did
     if (!this.events) return this.feed(bytes);
     this.guard(() => {
+      this.reserveInput(bytes.length);
       // fed up to the end of each sequence that may switch screens, with the active screen read around each piece:
       // a switch counts where it took effect (a restored mode too), two in one write count twice, a redundant one
       // not at all
@@ -774,9 +775,9 @@ export class GhosttyEngine {
     return this.getU32(this.e.GhosttyTerminalData.ACTIVE_SCREEN) === this.e.GhosttyTerminalScreen.ALTERNATE;
   }
 
-  private feed(bytes: Uint8Array): void {
-    if (bytes.length > this.inputCap) {
-      const cap = Math.max(bytes.length, 64 * 1024);
+  private reserveInput(length: number): void {
+    if (length > this.inputCap) {
+      const cap = Math.max(length, 64 * 1024);
       if (this.events) {
         // a screen's: allocated before the old one is freed, so a refused write keeps it
         const next = this.allocate(cap, "a write");
@@ -791,6 +792,10 @@ export class GhosttyEngine {
         this.input = this.allocate(cap, "a write");
       }
     }
+  }
+
+  private feed(bytes: Uint8Array): void {
+    this.reserveInput(bytes.length);
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
     this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
   }
