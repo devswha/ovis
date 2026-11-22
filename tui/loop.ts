@@ -349,9 +349,9 @@ export function startLoop(options: LoopOptions): Loop {
         continue;
       }
       // the action was chosen by the last code point taken: what came before it in the run waits as typed
-      const head = [...taken].slice(0, -1).join("");
-      if (head.length > 0 && next.type === "text") pieces.push({ ...next, text: head });
-      pieces.push({ type: "consumed", overlay: step.state.overlays.length < before.overlays.length, mode: before.mode.name !== "terminal" && step.state.mode.name === "terminal", at: next.at });
+      if (next.type === "text" && step.textAction && step.textAction.offset > 0) pieces.push({ ...next, text: next.text.slice(0, step.textAction.offset) });
+      const source = step.textAction?.before ?? before;
+      pieces.push({ type: "consumed", overlay: step.state.overlays.length < source.overlays.length, mode: source.mode.name !== "terminal" && step.state.mode.name === "terminal", at: next.at });
     }
     if (behindWrite.full) return;
     // the text a key typed (a kitty key reports it) costs its bytes too, as the same text read as text does

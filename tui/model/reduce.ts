@@ -81,7 +81,13 @@ export type ModelEvent = InputEvent | ScreenEvent;
 export type Level = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 /** The next state, the effects in order, and the ladder levels that took the event (a split text run: one per part). */
-export interface Step { readonly state: ModelState; readonly effects: readonly Effect[]; readonly levels: readonly Level[] }
+export interface Step {
+  readonly state: ModelState;
+  readonly effects: readonly Effect[];
+  readonly levels: readonly Level[];
+  /** Where the character that chose an external action began, in the read and in the input ladder. */
+  readonly textAction?: { readonly offset: number; readonly before: ModelState };
+}
 
 export function initialState(keys: unknown): ModelState {
   return {
@@ -127,9 +133,11 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
         notice(acc, "paste_refused", { length: event.text.length }, event.at);
       }
       break;
-    case "text":
-      ladderText(acc, event);
+    case "text": {
+      const textAction = ladderText(acc, event);
+      if (textAction) return { textAction, state: acc.s, effects: acc.effects, levels: acc.levels };
       break;
+    }
     case "mouse":
       mouse(acc, event);
       break;
@@ -251,7 +259,7 @@ function prefixIndex(text: string, keymap: Keymap): number {
 }
 
 /** A text run down the ladder: whole to the pane where nothing above takes a code point, else one code point at a time. */
-function ladderText(acc: Acc, event: TextInput): void {
+function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
   let rest = event.text;
   while (rest.length > 0) {
     const s = acc.s;
@@ -267,7 +275,7 @@ function ladderText(acc: Acc, event: TextInput): void {
       acc.levels.push(2);
       const from = acc.effects.length;
       toOverlay(acc, { kind: "text", event: { type: "text", text: first, at: event.at } });
-      if (handBack(acc, from, after, event.at)) return;
+      if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length, before: s };
       rest = after;
       continue;
     }
@@ -276,7 +284,7 @@ function ladderText(acc: Acc, event: TextInput): void {
       const bound = boundIn(s.keymap.modeKeys[s.mode.name], charChords(first, false));
       const from = acc.effects.length;
       if (bound !== undefined) runAction(acc, bound.action, bound.index, event.at);
-      if (handBack(acc, from, after, event.at)) return;
+      if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length, before: s };
       rest = after;
       continue;
     }
@@ -290,7 +298,7 @@ function ladderText(acc: Acc, event: TextInput): void {
         const from = acc.effects.length;
         if (bound !== undefined) runAction(acc, bound.action, bound.index, event.at);
         else if (HANGUL.test(first)) notice(acc, "ime_prefix", {}, event.at);
-        if (handBack(acc, from, after, event.at)) return;
+        if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length, before: s };
       }
       rest = after;
       continue;

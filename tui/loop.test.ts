@@ -363,18 +363,25 @@ describe("the loop", () => {
 
   it("a refused layout action's keys leave its dialog or mode as they did: Enter or a letter after them reaches the survivor", async () => {
     // the close-workspace dialog answered yes, and navigate mode's move-pane key, each read behind a close
-    for (const [label, keys] of [["dialog", ["\x02D", "y"]], ["navigate", ["\x02w", "m"]]] as const) {
-      const run = await start({ core: oneTab(2) });
-      await run.live();
-      await run.advance(1);
-      run.type("\x02x");
-      for (const key of keys) run.type(key);
-      await settled(run);
-      expect([label, run.loop.report().mode.overlays, run.loop.model().mode.name]).toEqual([label, [], "terminal"]);
-      run.type("\r");
-      await settled(run);
-      expect([label, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), sentTo(run, "t2")])
-        .toEqual([label, ["t1"], Buffer.from("\r").toString("hex")]);
+    for (const keys of [["\x02Dy"], ["\x02D", "y"], ["\x02wm"], ["\x02w", "m"]]) {
+      for (const answerFirst of [false, true]) {
+        const label = { keys, answerFirst };
+        const run = await start({ core: oneTab(2) });
+        await run.live();
+        await run.advance(1);
+        run.core.holdingEvents = answerFirst;
+        run.type("\x02x");
+        for (const key of keys) run.type(key);
+        await settled(run);
+        run.core.releaseEvents();
+        await settled(run);
+        expect([label, run.loop.report().mode.overlays, run.loop.model().mode.name]).toEqual([label, [], "terminal"]);
+        run.type("\r");
+        await settled(run);
+        expect([label, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), sentTo(run, "t2")])
+          .toEqual([label, ["t1"], Buffer.from("\r").toString("hex")]);
+        await run.close();
+      }
     }
   }, TEST_MS);
 
