@@ -105,6 +105,13 @@ const RULES: [name: string, focus: string, programMouse: boolean, events: Ev[], 
       [{ kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.3, done: true }],
     ]],
   ["a divider pressed and released without a move writes nothing", "a", false, [["press", "left", 9, 3], ["release", "left", 9, 3]], [[], []]],
+  ["a new press while a divider is held ends its drag at the last ratio it moved to", "a", false,
+    [["press", "left", 10, 3], ["motion", "left", 4, 3], ["press", "right", 16, 0], ["release", "left", 6, 3]], [
+      [],
+      [{ kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.2, done: false }],
+      [{ kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.2, done: true }],
+      [],
+    ]],
 ];
 
 describe("the pointer", () => {
@@ -132,6 +139,13 @@ describe("the pointer", () => {
     expect(select.mouse("screen", ev(["press", "left", 1, 1]), plain)).toEqual([]);
     expect(select.mouse("overlay", ev(["release", "left", 3, 1]), plain)).toEqual([]);
     expect(select.mouse("screen", ev(["motion", "left", 4, 1]), plain)).toEqual([]);
+    // a divider drag ends at the last ratio it moved to, so its ratio is not drawn over later layouts
+    const divider = new Pointer();
+    expect(divider.mouse("screen", ev(["press", "left", 10, 3]), plain)).toEqual([]);
+    const move = { kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.2 } as const;
+    expect(divider.mouse("screen", ev(["motion", "left", 4, 3]), plain)).toEqual([{ ...move, done: false }]);
+    expect(divider.mouse("overlay", ev(["release", "left", 8, 3]), plain)).toEqual([{ ...move, done: true }]);
+    expect(divider.mouse("screen", ev(["motion", "left", 6, 3]), plain)).toEqual([]);
   });
 
   it("an open overlay takes the mouse: nothing reaches a pane or the chrome; a left press on its close control closes it", () => {
@@ -694,6 +708,24 @@ describe("mouse on the whole screen", () => {
       await run.advance(20);
       expect({ keys, rows: await rows() }).toEqual({ keys, rows: shown(bottom) });
     }
+  }, TEST_MS);
+
+  it("a divider drag released over the help draws the core's ratio once another writer changes it", async () => {
+    const run = await demo120();
+    await run.keys("press@71:10,drag@60:10");
+    await run.advance(20);
+    // drawn ahead: t1's box ends at x 60, t2's starts at x 61
+    expect((await hostScreen(run)).text(10, 59, 62)).toBe(" || ");
+    await run.keys("ctrl+b,?");
+    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["help"]);
+    await run.keys("release@60:10");
+    await run.advance(20);
+    await run.keys("click@100:2");
+    expect(run.loop.model().overlays).toEqual([]);
+    await rivalWrites(run.core, (value) => ({ ...value, workspaces: value.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.map((tab) => tab.id === "t-main" ? { ...tab, root: { ...(tab.root as object), ratio: 0.75 } } : tab) })) }));
+    await run.advance(20);
+    // the core's 72 of 96 columns: t1's box ends at x 95, t2's starts at x 96
+    expect((await hostScreen(run)).text(10, 94, 97)).toBe(" || ");
   }, TEST_MS);
 
   it("divider drag is stale after a foreign edit", async () => {

@@ -92,17 +92,20 @@ export class Pointer {
     if (over === "overlay") {
       // an open overlay owns the mouse: nothing reaches the chrome or a pane under it; its close control closes it.
       // A gesture that began before it opened ends at its release: a program that got the press gets that release,
-      // and a selection or divider grab is dropped, so nothing of it goes on once the overlay closes.
+      // a divider drag ends at the last ratio it moved to, and a selection is dropped, so nothing of it goes on once
+      // the overlay closes.
       if (event.action === "release") {
         const grab = this.grab;
         this.grab = NONE;
+        if (grab.kind === "divider") return finished(grab);
         const look = grab.kind === "forward" && grab.pane === scene.focus ? scene.look(grab.pane) : null;
         return grab.kind === "forward" && look ? [{ kind: "forward", pane: grab.pane, event: inGrid(event, look) }] : [];
       }
       if (event.action !== "press") return [];
+      const dropped = finished(this.grab);
       this.grab = NONE;
       const hit = event.button === "left" ? scene.hits?.at(event.col, event.row) : null;
-      return hit && "part" in hit && hit.part.startsWith("overlay:") && hit.id === "close" ? [{ kind: "close_overlay" }] : [];
+      return hit && "part" in hit && hit.part.startsWith("overlay:") && hit.id === "close" ? [...dropped, { kind: "close_overlay" }] : dropped;
     }
     if (isWheel(event)) return this.wheel(event, scene);
     if (event.action === "press") return this.press(event, scene);
@@ -155,8 +158,8 @@ export class Pointer {
   }
 
   private press(event: MouseInput, scene: PointerScene): PointerAct[] {
+    const dropped: PointerAct[] = [...finished(this.grab), ...(this.selection ? [{ kind: "redraw" } as const] : [])];
     this.grab = NONE;
-    const dropped: PointerAct[] = this.selection ? [{ kind: "redraw" }] : [];
     this.selection = null;
     const hit = scene.hits?.at(event.col, event.row) ?? null;
     if (hit === null) return dropped;
@@ -219,10 +222,15 @@ export class Pointer {
     const extent = across ? grab.rect.width : grab.rect.height;
     const first = (across ? event.col - grab.rect.x : event.row - grab.rect.y) + 1 + grab.offset;
     const ratio = extent > 0 ? first / extent : 0.5;
-    if (event.action === "motion") grab.moved = ratio;
-    else if (grab.moved === null) return [];
-    return [{ kind: "divider", grab: grab.id, tab: grab.tab, name: grab.name, ratio: event.action === "motion" ? ratio : grab.moved, done: event.action === "release" }];
+    if (event.action !== "motion") return finished(grab);
+    grab.moved = ratio;
+    return [{ kind: "divider", grab: grab.id, tab: grab.tab, name: grab.name, ratio, done: false }];
   }
+}
+
+/** The end of a divider drag that moved, at the last ratio it moved to: at its release, or when its grab is dropped. */
+function finished(grab: Grab): PointerAct[] {
+  return grab.kind === "divider" && grab.moved !== null ? [{ kind: "divider", grab: grab.id, tab: grab.tab, name: grab.name, ratio: grab.moved, done: true }] : [];
 }
 
 /** `tab:<id>` and its kin: the kind and the id; anything else: the whole id as the kind. */
