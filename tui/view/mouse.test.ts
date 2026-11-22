@@ -587,6 +587,29 @@ describe("mouse on the whole screen", () => {
     expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
   }, TEST_MS);
 
+  it("a drag on the alternate screen, drawn on the main screen and then on a new alternate screen before the release, copies nothing", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output("\x1b[?1049h\x1b[H\x1b[2JALT-ONE-TEXT");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("T-ON");
+    // back on the main screen, drawn; then a new alternate screen with other text where the selection was
+    program.output("\x1b[?1049l");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 30)).toBe("$ echo");
+    program.output("\x1b[?1049h\x1b[H\x1b[2JALT-TWO-TEXT");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 36)).toBe("ALT-TWO-TEXT");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
+  }, TEST_MS);
+
   it("a click on a pane without focus focuses it and is not forwarded; a click on a tab or a sidebar row selects it", async () => {
     const run = await demo120();
     run.core.program("t2").output("\x1b[?1002h\x1b[?1006h");

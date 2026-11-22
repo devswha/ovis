@@ -146,9 +146,13 @@ export class Pointer {
 
   /**
    * The selection to draw in `pane`, in its grid's cells; null when there is none there. A selection whose pane lost
-   * the focus, got a new emulator or switched its alternate screen is dropped here.
+   * the focus, got a new emulator or switched its alternate screen is dropped here; a selection drag on a pane drawn
+   * with another emulator or screen than its press is cancelled too, so its release copies nothing even after the
+   * pane switched back. A drag whose pane only lost the focus keeps its anchor.
    */
   shown(pane: string, focus: string | null, look: PaneLook | null): { start: GridCell; end: GridCell } | null {
+    const grab = this.grab;
+    if (grab.kind === "select" && grab.pane === pane && look && (look.emulator !== grab.emulator || look.altScreen !== grab.altScreen)) this.grab = NONE;
     const selection = this.selection;
     if (!selection || selection.pane !== pane) return null;
     if (pane !== focus || !look || look.emulator !== selection.emulator || look.altScreen !== selection.altScreen) {
