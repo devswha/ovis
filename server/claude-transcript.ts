@@ -8,9 +8,17 @@ import { trimOutput } from "./tool-output.ts";
 import { base64Size, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
 import { POLL_TOOL, REPL_TOOL, replDeliveries, replDispatched, replOutput, virtualCallOutput, type ReplOutput } from "./claude-code-mode.ts";
 
+/**
+ * Claude Code's mark of a stop (Esc), which it records in the person's seat: "for tool use" after the call it refused,
+ * plainly when it stopped an answer. Nobody typed it, and it starts no turn; the chat shows it as a quiet "Stopped" line.
+ */
+export function claudeStopMark(text: string): boolean {
+  return /^\[Request interrupted by user( for tool use)?\]$/.test(text.trim());
+}
+
 export function isCommandEntry(text: string, entry: { origin?: unknown; permissionMode?: unknown }): boolean {
   if (claudeCommandEcho(text)) return false;
-  return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
+  return claudeStopMark(text) || text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
     || (!("origin" in entry) && !("permissionMode" in entry) && text.trimStart().startsWith("<bash-std") && taggedStreams(text, "bash") !== null);
 }
 
@@ -505,6 +513,11 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     part.state = part.error === true ? "error" : "ok";
   };
   const noticeAt = (): number => state.atWork && turns.at(-1)?.role === "assistant" ? turns.length - 1 : turns.length;
+  /** a stop ends the turn it cut short and stands as one notice where it was */
+  const stopped = (ts: string | null): void => {
+    state.atWork = false;
+    turns.push({ role: "user", ts, parts: [{ kind: "notice", text: "Stopped", source: "stopped" }] });
+  };
   const notified = (block: string, ts: string | null): boolean => {
     const notice = taskNotification(block);
     if (notice === null) return false;
@@ -641,6 +654,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     }
 
     if (entry.type === "user" && typeof content === "string") {
+      if (claudeStopMark(content)) { stopped(entry.timestamp ?? null); return; }
       if (notified(content, entry.timestamp ?? null)) return;
       const invocation = claudeCommandEcho(content);
       if (invocation) {
@@ -758,6 +772,8 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         const pictures = Array.isArray(result.content) ? claudeImages(entry.uuid, result.content, index) : [];
         if (pictures.length > 0) tool.images = pictures;
       }
+      if (blocks.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text"
+        && typeof (block as { text?: unknown }).text === "string" && claudeStopMark((block as { text: string }).text))) stopped(entry.timestamp ?? null);
       const images = claudeImages(entry.uuid, blocks).map((image) => ({ kind: "image" as const, ...image }));
       if (prompt.trim() || images.length > 0) pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [...images, ...(prompt.trim() ? [{ kind: "text" as const, text: unwrapPastes(prompt) }] : []), ...invocations] }, entry);
       return;
