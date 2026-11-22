@@ -288,7 +288,8 @@ export class Run {
   async close(): Promise<LoopEnd> {
     let end: LoopEnd | null = null;
     void this.loop.done.then((how) => { end = how; });
-    let failed = false;
+    /** the first error of the detach, the line's cut and the folder's removal: each is tried, and this one is thrown */
+    let first: { error: unknown } | null = null;
     try {
       await this.settle();
       if (!end) {
@@ -296,18 +297,19 @@ export class Run {
         for (let waited = 0; !end && waited < 3_000; waited += 100) await this.advance(100);
       }
     } catch (error) {
-      failed = true;
-      throw error;
-    } finally {
-      // the listener and the folder go whatever the detach met; an error of their own is thrown only when none came before
-      try {
-        await this.cutLine();
-      } catch (error) {
-        if (!failed) throw error;
-      } finally {
-        rmSync(this.folder, { recursive: true, force: true });
-      }
+      first = { error };
     }
+    try {
+      await this.cutLine();
+    } catch (error) {
+      first ??= { error };
+    }
+    try {
+      rmSync(this.folder, { recursive: true, force: true });
+    } catch (error) {
+      first ??= { error };
+    }
+    if (first) throw first.error;
     return end ?? { kind: "crashed", error: new Error("the screen did not end") };
   }
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { place } from "./fixtures/fixture.ts";
 import { Run } from "./run.ts";
@@ -46,5 +46,23 @@ describe("the test run", () => {
     run.settle = () => Promise.reject(new Error("the run did not settle"));
     await expect(run.close()).rejects.toThrow("the run did not settle");
     expect([listeners.map((listener) => listener.closed), existsSync(run.folder)]).toEqual([[true], false]);
+  });
+
+  it("a close whose settling and folder removal both fail throws the settling error, and still closes the listener", async () => {
+    const { core, listeners } = watchedCore();
+    const run = await Run.start({ core });
+    // a file in a folder that cannot be written: the run's folder cannot be removed
+    const locked = join(run.folder, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "kept"), "");
+    chmodSync(locked, 0o500);
+    run.settle = () => Promise.reject(new Error("the run did not settle"));
+    try {
+      await expect(run.close()).rejects.toThrow("the run did not settle");
+      expect([listeners.map((listener) => listener.closed), existsSync(join(locked, "kept"))]).toEqual([[true], true]);
+    } finally {
+      chmodSync(locked, 0o700);
+      rmSync(run.folder, { recursive: true, force: true });
+    }
   });
 });
