@@ -5157,7 +5157,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it has no account overview page. My PCs is one list of every such PC, each row its name, a small way tag (Relay,
   Tailscale, SSH, Address) and, for a relay PC, On, Off or Update needed (never Needs approval: a PC this device is not
   let into yet asks for that on its own page), Forget where this phone can forget it, and **Add PC** pinned at the
-  bottom while the list scrolls, as the Claude app keeps New chat in reach over its list. Add PC (and Connect a PC, the
+  bottom while the list scrolls, as the Claude app keeps New chat in reach over its list. With no PC on it is the same
+  list, the rows Off under No PC is online and Check again; with none in the account yet, the list says to sign in with
+  the same account on the PC where Ovis runs, over Add PC (#16 drew both as a page of their own). Add PC (and Connect a PC, the
   same screen as the front page) is the desktop's Add a connection tabs holding only the ways in: the sign-in signed out,
   the PC's QR (its code in a browser), a Tailscale address, user@host. A PC page's More → Connect a PC opens My PCs
   (`/#add`) with Back to that PC and its row marked In use now. A launch opens the PC this device opened last unless its

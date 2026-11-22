@@ -20,17 +20,17 @@ import { canScanQr } from "./RelayAddPc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
 /** Why the plain screen is up (#16): what the person does next on the PC, or why nothing goes on. */
-export type PlainReason = "allow" | "type" | "off" | "declined" | "unanswered" | "removed" | "no-account-pc";
+export type PlainReason = "allow" | "type" | "off" | "declined" | "unanswered" | "removed";
 
 /**
- * #16: the one plain screen a signed-in device shows instead of My PCs, app and browser alike: the PC's name,
- * one line with what to do there (press Allow, type this number, turn Ovis on, ask again after a decline or a removal,
- * sign in on a PC), the number when the join shows one, and under it the PC screen's QR way in (a code in a browser) and
- * the other ways to connect. No tabs, no banner, no list.
+ * #16: the one plain screen a signed-in device waits on while the join a launch asked by itself goes on, or after this
+ * device was removed from a PC, app and browser alike: the PC's name, one line with what to do there (press Allow, type
+ * this number, turn Ovis on, ask again after a decline or a removal), the number when the join shows one, and under it
+ * the PC screen's QR way in (a code in a browser). No tabs, no banner, no list.
  */
-export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onCheck, onAskAgain, onOtherWays }: {
-  readonly reason: PlainReason; readonly name: string | null; readonly digits?: string | null; readonly menu?: ReactNode;
-  readonly onQr: () => void; readonly onCheck?: (() => void) | undefined; readonly onAskAgain?: (() => void) | undefined; readonly onOtherWays?: (() => void) | undefined;
+export function PcApprovalWait({ reason, name, digits = null, onQr, onCheck, onAskAgain }: {
+  readonly reason: PlainReason; readonly name: string | null; readonly digits?: string | null;
+  readonly onQr: () => void; readonly onCheck?: (() => void) | undefined; readonly onAskAgain?: (() => void) | undefined;
 }) {
   const t = useT();
   const line = (() => {
@@ -41,7 +41,6 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
       case "declined": return t("Not allowed. Ask again, then press [Allow] on {name}.", { name: name ?? t("this PC") });
       case "unanswered": return t("No answer from {name}", { name: name ?? t("this PC") });
       case "removed": return t("This device was removed from {name}. Ask again to join it.", { name: name ?? t("this PC") });
-      case "no-account-pc": return t("Sign in with the same account on the PC where Ovis runs");
       default: {
         const exhaustive: never = reason;
         return exhaustive;
@@ -51,7 +50,6 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
   const waiting = reason === "allow" || reason === "type";
   return (
     <div className="relay-shell account-centered relay-approval-wait" data-approval-wait={name === null && reason === "off" ? "no-pc" : reason === "allow" || reason === "type" ? "pc" : reason}>
-      {menu !== undefined && <div className="relay-approval-wait-menu">{menu}</div>}
       {name !== null && <h1 className="relay-shell-title">{name}</h1>}
       <p className={reason === "declined" || reason === "unanswered" || reason === "removed" ? "relay-shell-copy add-pc-problem" : "relay-shell-copy"} role={reason === "declined" || reason === "unanswered" || reason === "removed" ? "alert" : "status"}>{line}</p>
       {digits !== null && digits !== "" && <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>}
@@ -59,7 +57,6 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
       {onAskAgain && <button type="button" className="btn btn-primary" data-action="ask-again" onClick={onAskAgain}>{t("Ask again")}</button>}
       {onCheck && <button type="button" className="btn" data-action="check-again" onClick={onCheck}>{t("Check again")}</button>}
       <button type="button" className="btn btn-ghost account-link" data-action="approval-wait-qr" onClick={onQr}>{canScanQr() ? t("Or scan the QR on the PC's screen") : t("Or pair with a code")}</button>
-      {onOtherWays && <button type="button" className="btn btn-ghost account-link" data-action="other-ways" onClick={onOtherWays}>{t("Other ways to connect")}</button>}
     </div>
   );
 }

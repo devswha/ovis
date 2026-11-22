@@ -425,7 +425,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       state, scoped, iosTab, addEntry: !scoped && entryHash === "#add", pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onFindPc: () => void findPc(), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onForgetSaved: forgetSaved,
       onUpdate: updates.update, onMatch: match, onJoinInstead: joinInstead, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc,
       sheetJoin, launchJoin: entry.serverId !== null && launchJoinFor(entry.serverId), onWaitAgain: () => void waitAgain(),
-      plainFront: !frontChosen(), signedIn: account.state?.kind === "signed-in", onAskAgain: askAgain,
+      signedIn: account.state?.kind === "signed-in", onAskAgain: askAgain,
       ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : unpaired !== null ? signInForPc : account.signIn, accountProviders: offered ?? account.providers, onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };

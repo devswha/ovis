@@ -146,7 +146,6 @@ export const RELAY_ZH: Record<string, string> = {
   "This device was removed from {name}. Ask again to join it.": "此设备已从 {name} 移除 - 请重新请求",
   "Sign in with the same account on the PC where Ovis runs": "请在运行 Ovis 的 PC 上登录同一个账户",
   "Ask again": "重新请求",
-  "Other ways to connect": "其他连接方式",
   "No answer from {name}": "{name} 没有响应",
   "Ask again, then press [Allow] on {name}.": "请重新请求，然后在 {name} 上点按 [允许]。",
   "{name} could not reach your Ovis account": "{name} 无法连接你的 Ovis 账号",

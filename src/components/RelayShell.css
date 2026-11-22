@@ -548,13 +548,6 @@
 }
 
 
-/* #16: the plain line a signed-in device shows instead of My PCs, its account menu at the top end */
-.relay-approval-wait-menu {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
-}
-
 /* Add by address on the SSH tab: a text link, its field behind it */
 .connect-start-panel .connect-address-link {
   align-self: flex-start;

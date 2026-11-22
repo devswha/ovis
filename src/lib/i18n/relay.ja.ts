@@ -146,7 +146,6 @@ export const RELAY_JA: Record<string, string> = {
   "This device was removed from {name}. Ask again to join it.": "この端末は {name} から削除されました - もう一度依頼してください",
   "Sign in with the same account on the PC where Ovis runs": "Ovis を起動した PC で同じアカウントにサインインしてください",
   "Ask again": "もう一度依頼",
-  "Other ways to connect": "ほかの方法で接続",
   "No answer from {name}": "{name} から応答がありません",
   "Ask again, then press [Allow] on {name}.": "もう一度依頼してから {name} で [許可] を押してください。",
   "{name} could not reach your Ovis account": "{name} から Ovis アカウントに接続できませんでした",
