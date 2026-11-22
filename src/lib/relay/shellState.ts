@@ -355,6 +355,27 @@ export function takeConfirmedPc(): string | null {
  * place, or the PC is forgotten: a load that is itself reloaded or interrupted while it connects leaves it for the
  * next one, which would otherwise open the PC as whoever is signed in by then.
  */
+/**
+ * A PC that turned this device away as removed (a revoked sign-in: its pairing is forgotten), by id, until this device
+ * opens it again: the front page's list says Removed rather than on ("removed"), and its Forget leaves it out
+ * ("hidden"). Kept across loads; a damaged store reads as none.
+ */
+export type RemovedPcMark = "removed" | "hidden";
+const REMOVED_PCS_KEY = "ovis-removed-pcs";
+export function removedPcs(): Readonly<Record<string, RemovedPcMark>> {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(REMOVED_PCS_KEY) ?? "{}");
+    if (stored === null || typeof stored !== "object" || Array.isArray(stored)) return {};
+    return Object.fromEntries(Object.entries(stored).filter((entry): entry is [string, RemovedPcMark] => entry[1] === "removed" || entry[1] === "hidden"));
+  } catch { return {}; }
+}
+export function markRemovedPc(serverId: string, mark: RemovedPcMark | null): void {
+  const next: Record<string, RemovedPcMark> = { ...removedPcs() };
+  if (mark === null) delete next[serverId]; else next[serverId] = mark;
+  try { localStorage.setItem(REMOVED_PCS_KEY, JSON.stringify(next)); }
+  catch { /* no storage: the row reads as the account lists it */ }
+}
+
 export function keepDeviceOnlyPc(serverId: string | null): void {
   try { if (serverId === null) sessionStorage.removeItem("ovis-device-only-pc"); else sessionStorage.setItem("ovis-device-only-pc", serverId); }
   catch { /* the choice cannot cross the load: the reloaded page opens the PC as a saved one */ }

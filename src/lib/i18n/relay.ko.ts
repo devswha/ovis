@@ -3,6 +3,7 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const RELAY_KO: Record<string, string> = {
+  "Removed|pc state": "빠짐",
   "PCs this phone is on": "이 폰이 연결한 PC",
   "Forget {name}": "{name} 지우기",
   "Forget|this phone's PC": "지우기",

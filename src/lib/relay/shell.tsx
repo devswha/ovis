@@ -22,7 +22,7 @@ import { takeEntryUrl, watchNavigation } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { holdWaitMs } from "./joinHold.ts";
-import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, oldDashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
+import { signInEntry, failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, oldDashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn, markRemovedPc, keepPairingReturn, takePairingReturn, offerDigest } from "./shellState.ts";
 import { setPcNewness, type PcNewness } from "./newPcHere.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
@@ -713,6 +713,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the attempt's own row only, read and deleted in one write: a Forget or a newer pairing made since stands
     const rowEnded = restored === "none" && refused instanceof AccountPcError && refusalOf(refused) !== null;
     if (forgetsDevice(failure) || rowEnded) await forgetRow(attempt).catch(() => undefined);
+    // removed by the PC: the front page's list says so until this device opens it again, never on
+    if (forgetsDevice(failure)) markRemovedPc(attempt.offer.server_id, "removed");
     if (last !== attempt) return;
     refusedLinks.delete(attempt.offer.server_id);
     const mismatch = error instanceof ServerIdentityChangedError && error.saved !== undefined && error.offered !== undefined
@@ -818,6 +820,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     attempt.row = opened.deviceId ?? null;
     opening = null;
     comparison = null;
+    markRemovedPc(attempt.offer.server_id, null);
     // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;

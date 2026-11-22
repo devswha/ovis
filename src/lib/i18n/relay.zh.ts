@@ -3,6 +3,7 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const RELAY_ZH: Record<string, string> = {
+  "Removed|pc state": "已移除",
   "PCs this phone is on": "这部手机连接过的电脑",
   "Forget {name}": "移除 {name}",
   "Forget|this phone's PC": "移除",

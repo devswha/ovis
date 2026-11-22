@@ -7,6 +7,7 @@ import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { markRemovedPc, removedPcs, type RemovedPcMark } from "../lib/relay/shellState.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
@@ -40,17 +41,19 @@ export function phoneSavedPcs(saved: readonly string[], names: Readonly<Record<s
 }
 
 /** A relay PC of the relay tab's list: this phone's own pairing (`saved`, by a QR or a code), or one of the account's. */
-export interface RelayTabPc { readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | undefined; readonly saved: boolean }
+export interface RelayTabPc { readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | "removed" | undefined; readonly saved: boolean }
 
 /**
  * The relay tab's PCs this phone is on: its own pairings, then, signed in, the account's PCs it can open (one its own
  * page can join) that are not among them, so a PC both paired here and in the account is listed once, as this phone's.
- * An account PC is online unless the directory says it is off; a pairing as its last check found it.
+ * An account PC is online unless the directory says it is off; a pairing as its last check found it. One that turned
+ * this phone away as removed (`removed`, shellState removedPcs) says so, never on, until this phone opens it again, and
+ * is left out once forgotten from the list.
  */
-export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[] | null): RelayTabPc[] {
+export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[] | null, removed: Readonly<Record<string, RemovedPcMark>> = {}): RelayTabPc[] {
   const own = devices.map((device): RelayTabPc => ({ server_id: device.server_id, name: device.name, status: device.status, saved: true }));
-  const more = (account ?? []).filter((pc) => !pc.paired && pc.join !== undefined && !own.some((row) => row.server_id === pc.server_id))
-    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: pc.state === "offline" ? "off" : "online", saved: false }));
+  const more = (account ?? []).filter((pc) => !pc.paired && pc.join !== undefined && !own.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
+    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "offline" ? "off" : "online", saved: false }));
   return [...own, ...more];
 }
 
@@ -59,7 +62,7 @@ interface PhonePc {
   readonly key: string;
   readonly name: string;
   readonly tag: string;
-  readonly status?: "online" | "off" | undefined;
+  readonly status?: "online" | "off" | "removed" | undefined;
   readonly address?: string | undefined;
   /** a relay PC's own page, or what opening it does */
   readonly href?: string;
@@ -84,6 +87,7 @@ function PhonePcs({ pcs }: { readonly pcs: readonly PhonePc[] }) {
                 <span className="phone-pc-tag">{pc.tag}</span>
                 {pc.status === "online" && <span className="phone-pc-dot" role="img" aria-label={t("Online")} />}
                 {pc.status === "off" && <span className="relay-add-saved-note">{t("Off|pc state")}</span>}
+                {pc.status === "removed" && <span className="relay-add-saved-note">{t("Removed|pc state")}</span>}
                 {pc.address !== undefined && pc.address !== pc.name && <span className="relay-add-saved-note">{pc.address}</span>}
               </span>
             </>
@@ -237,6 +241,8 @@ export function ConnectStart({ relay, devices, accountPcs = null, onForget, menu
   const t = useT();
   const [way, setWay] = useState<ConnectWay>("relay");
   const label: Record<ConnectWay, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", ssh: "SSH" };
+  // the PCs that turned this phone away as removed (relayTabPcs), read again once one is forgotten from the list
+  const [removed, setRemoved] = useState(removedPcs);
   const title = <h1 className="relay-shell-title connect-start-title">{t("Connect a PC")}</h1>;
   return (
     <>
@@ -247,9 +253,10 @@ export function ConnectStart({ relay, devices, accountPcs = null, onForget, menu
       {way === "relay" && (
         <div className="connect-start-panel" data-tab-panel="relay">
           {relay}
-          <PhonePcs pcs={relayTabPcs(devices, accountPcs).map((pc) => ({
+          <PhonePcs pcs={relayTabPcs(devices, accountPcs, removed).map((pc) => ({
             key: pc.server_id, name: pc.name ?? t("Unnamed PC"), tag: t("Relay"), status: pc.status, href: serverScopePath(pc.server_id),
-            forget: pc.saved && onForget ? () => onForget(pc.server_id) : undefined,
+            forget: pc.status === "removed" ? () => { markRemovedPc(pc.server_id, "hidden"); setRemoved(removedPcs()); }
+              : pc.saved && onForget ? () => onForget(pc.server_id) : undefined,
           }))} />
         </div>
       )}

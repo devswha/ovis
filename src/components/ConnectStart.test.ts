@@ -18,6 +18,14 @@ describe("the relay tab's PCs this phone is on", () => {
     expect(rows.filter((row) => row.saved).length).toBe(2);
   });
 
+  it("says Removed, with no online dot, for a PC that turned this phone away as removed, and leaves it out once forgotten", () => {
+    const removed = relayTabPcs([], [accountPc("b"), accountPc("c")], { [id("b")]: "removed" });
+    expect(removed.map((row) => [row.name, row.status ?? ""])).toEqual([["pc-b", "removed"], ["pc-c", "online"]]);
+    expect(relayTabPcs([], [accountPc("b"), accountPc("c")], { [id("b")]: "hidden" }).map((row) => row.name)).toEqual(["pc-c"]);
+    // paired again since (a saved pairing): its own row, as its last check found it
+    expect(relayTabPcs([{ server_id: id("b"), name: "desk", status: "online" }], [], { [id("b")]: "removed" }).map((row) => row.status)).toEqual(["online"]);
+  });
+
   it("lists none of the account's PCs signed out, nor one it cannot open", () => {
     expect(relayTabPcs([{ server_id: id("a") }], null).length).toBe(1);
     const unopenable = accountPc("b");

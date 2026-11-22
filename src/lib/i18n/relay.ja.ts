@@ -3,6 +3,7 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const RELAY_JA: Record<string, string> = {
+  "Removed|pc state": "削除済み",
   "PCs this phone is on": "このスマホが接続した PC",
   "Forget {name}": "{name} を削除",
   "Forget|this phone's PC": "削除",
