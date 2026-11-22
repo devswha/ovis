@@ -554,10 +554,12 @@ describe("Pi delivery transcript matching", () => {
     const anchor = capturePiDeliveryAnchor(path)!;
     // the first send's text never reaches the transcript as sent (a character Pi's editor reads otherwise)
     appendFileSync(path, entry("u1", "a0", "user", "first, changed") + entry("a1", "u1", "assistant", "ok"));
-    expect(matchPiDeliveries(path, [candidate("r1", "first", anchor), candidate("r2", "second", anchor)]))
+    const consumed = new Set<string>();
+    expect(matchPiDeliveries(path, [candidate("r1", "first", anchor), candidate("r2", "second", anchor)], consumed))
       .toEqual({ consumed: ["r1"], changed: [], retry: false });
+    expect(matchPiDeliveries(path, [candidate("r2", "second", anchor)], consumed)).toEqual({ consumed: [], changed: [], retry: false });
     appendFileSync(path, entry("u2", "a1", "user", "second"));
-    expect(matchPiDeliveries(path, [candidate("r2", "second", anchor)])).toEqual({ consumed: ["r2"], changed: [], retry: false });
+    expect(matchPiDeliveries(path, [candidate("r2", "second", anchor)], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
   });
 
   it("lets a changed send take a copy of a later send's text when Pi recorded more copies than later sends need", () => {
