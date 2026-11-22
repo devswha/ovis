@@ -219,7 +219,7 @@ describe("herdr-core adapter", () => {
     ]);
   });
 
-  it("tells agy's plan review at rest in its status events as in the snapshot, done on the turn that counts it, and its question blocked", async () => {
+  it("tells agy's plan review at rest in its status events as in the snapshot, done on the turn that counts it with nothing new to draw, and its question blocked", async () => {
     let channel = 0;
     const working = { app: "antigravity", state: "working" };
     const { socket, cores } = await setup([terminal("t1"), terminal("t2")], {
@@ -231,7 +231,7 @@ describe("herdr-core adapter", () => {
     const frames: EventFrame[] = [];
     const started = Promise.withResolvers<void>();
     const told = Promise.withResolvers<void>();
-    const subscription = subscribeEvents([{ type: "pane.agent_status_changed", pane_id: "t1" }, { type: "pane.agent_status_changed", pane_id: "t2" }], {
+    const subscription = subscribeEvents([{ type: "pane.updated" }, { type: "pane.agent_status_changed", pane_id: "t1" }, { type: "pane.agent_status_changed", pane_id: "t2" }], {
       // the reply that starts the next turn is the last event: what came before it is all told by then
       onEvent: (frame) => { frames.push(frame); if (frame.data?.["pane_id"] === "t1" && frame.data["agent_status"] === "working") told.resolve(); },
       onStarted: () => started.resolve(),
@@ -247,7 +247,10 @@ describe("herdr-core adapter", () => {
     core.notify(channel, "event", { seq: 6, type: "status", terminal: "t1", data: { status: working } });
     await told.promise;
     const shown = (pane: string, status: string) => ({ event: "pane.agent_status_changed", data: { pane_id: pane, agent_status: status, agent: "agy" } });
-    expect(frames).toEqual([shown("t1", "done"), shown("t1", "idle"), shown("t2", "blocked"), shown("t1", "working")]);
+    // the plan review's kind and message are not drawn, so neither it nor the reply after it asks for a fresh snapshot
+    const updated = (pane: string) => ({ event: "pane.updated", data: { type: "pane_updated", pane_id: pane } });
+    const layout = { event: "layout.updated", data: { type: "layout_updated" } };
+    expect(frames).toEqual([shown("t1", "done"), shown("t1", "idle"), layout, updated("t2"), shown("t2", "blocked"), shown("t1", "working")]);
   });
 
   it("types send_text into an attach at the terminal's own grid, and answers once hc took the attach's close", async () => {

@@ -64,12 +64,14 @@ const STATUS_EVENT = "pane.agent_status_changed";
 const NOT_STRUCTURE = new Set([STATUS_EVENT, "pane.focused", "pane.output_matched"]);
 /**
  * What of a status the rows draw beyond its state, as `coreModel` compares reports: the kind and
- * message of a blocked agent, and its progress, which the rows print as its exact percent.
+ * message of a blocked agent, and its progress, which the rows print as its exact percent. Read with
+ * its app, as the snapshot reads them: agy's plan review draws none (snapshot.ts `agyPlanReview`).
  */
 function shownFacts(report: unknown): string {
   if (!isRecord(report) || typeof report["state"] !== "string") return NO_FACTS;
   const facts = reportedFacts({
     state: report["state"],
+    ...(typeof report["app"] === "string" ? { app: report["app"] } : {}),
     ...(typeof report["kind"] === "string" ? { kind: report["kind"] } : {}),
     ...(typeof report["msg"] === "string" ? { msg: report["msg"] } : {}),
     ...(typeof report["progress"] === "number" ? { progress: report["progress"] } : {}),
