@@ -119,6 +119,21 @@ describe("a divider drag's writes", () => {
     expect(writes.shape("t", shown)).toBe(shown);
   });
 
+  it("a release whose write is held keeps the tree drawn at the release: a rival's ratio seen first after the answer is drawn at once", async () => {
+    const { asked, edit } = heldEdits();
+    const writes = new DividerWrites({ edit, refused: () => {} });
+    const shown = { root: right(leaf("a"), leaf("b")), zoomed: null };
+    writes.move(1, "t", NAME, 0.3, false);
+    writes.move(1, "t", NAME, 0.3, true);
+    // drawn at the release, its write still held
+    expect(writes.shape("t", shown)?.root).toEqual(right(leaf("a"), leaf("b"), 0.3));
+    asked[0]!.answer(null);
+    await turn();
+    // another writer's ratio landed after this one's: the first tree drawn after the answer already holds it
+    const rival = { root: right(leaf("a"), leaf("b"), 0.75), zoomed: null };
+    expect(writes.shape("t", rival)).toBe(rival);
+  });
+
   it("a divider gone from the fresh document: stale, the local ratio dropped, and the same grab writes nothing more", async () => {
     const { asked, edit } = heldEdits();
     const refusals: DividerRefusal[] = [];

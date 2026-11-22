@@ -76,7 +76,10 @@ interface Drag {
   sent: number | null;
   /** the button was released */
   done: boolean;
-  /** once released and answered: the shown tree it was drawn over, kept until that tree changes */
+  /**
+   * The core's tree it was last drawn over before its newest ratio was answered (at the release at the latest): once
+   * released and answered, the local ratio is drawn until the core's tree differs from it
+   */
   over: string | null;
 }
 
@@ -126,7 +129,7 @@ export class DividerWrites {
           this.drags = this.drags.filter((one) => one !== drag);
           continue;
         }
-      }
+      } else drag.over = seen;
       const path = dividerPath(root, drag.name);
       root = (path && setRatio(root, path, drag.ratio)) ?? root;
     }
