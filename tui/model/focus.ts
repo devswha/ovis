@@ -66,7 +66,8 @@ export function exists(world: World, target: Target): boolean {
 
 /**
  * Focus moved to `target` (a workspace shows its remembered tab and pane), or null when it does not exist.
- * When the shown pane changes, the one left becomes `previous`.
+ * When the shown pane changes, the one left becomes `previous`; a pane a zoom keeps covered is remembered, never shown, so
+ * selecting it changes nothing there.
  */
 export function focusOn(world: World, focus: Focus, target: Target): Focus | null {
   const path = pathOf(world, target);
@@ -74,13 +75,15 @@ export function focusOn(world: World, focus: Focus, target: Target): Focus | nul
   const { workspace } = path;
   const tab = path.tab ?? find(workspace.tabs, own(focus.tabs, workspace.id)) ?? workspace.tabs[0] ?? null;
   const pane = path.pane ?? (tab === null ? null : find(tab.panes, own(focus.panes, tab.id)) ?? tab.panes[0] ?? null);
-  const before = focused(world, focus).pane?.id ?? null;
-  return {
+  const next: Focus = {
     workspace: workspace.id,
     tabs: tab === null ? focus.tabs : { ...focus.tabs, [workspace.id]: tab.id },
     panes: tab === null || pane === null ? focus.panes : { ...focus.panes, [tab.id]: pane.id },
-    previous: before !== null && pane !== null && pane.id !== before ? before : focus.previous,
+    previous: focus.previous,
   };
+  const before = focused(world, focus).pane?.id ?? null;
+  const shown = focused(world, next).pane?.id ?? null;
+  return before !== null && shown !== null && shown !== before ? { ...next, previous: before } : next;
 }
 
 /** One of `after` for a focus that was `current`: it if it is still there, else `preferred`, else the next one in `before` that is still there, else the first. */
