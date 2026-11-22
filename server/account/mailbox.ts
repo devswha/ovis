@@ -164,6 +164,15 @@ function namedListing(mailbox: Record<string, unknown> | null): string | null | 
   return typeof listing === "string" && LISTING_ID.test(listing) ? listing : listing === null ? null : undefined;
 }
 
+/**
+ * Whether a mailbox answer says the listing it names stands on a one-press admission this PC took; undefined when it
+ * does not say, as a service from before the field.
+ */
+function listingAdmitted(mailbox: Record<string, unknown> | null): boolean | undefined {
+  const said = mailbox?.listing_admitted;
+  return typeof said === "boolean" ? said : undefined;
+}
+
 /** A completion the service took: its answer names when, as the service writes a time. */
 function completed(answer: Record<string, unknown> | null): boolean {
   return isIsoTime(answer?.completed_at);
@@ -351,15 +360,14 @@ export class AccountMailbox {
 
   /**
    * The same question, asked now: a read that releases account rows never rests on an answer from before its pages.
-   * `reached`: the account service just answered this PC for this account, so a binding it can say nothing for is settled.
    */
-  private checkListing(binding: string, reached = false): Promise<ListingVerdict> {
+  private checkListing(binding: string): Promise<ListingVerdict> {
     const key = this.listingKey(binding);
     if (key === null) return Promise.resolve("refused");
     const at = this.options.devices.waitClock().now();
     const wallAt = Date.now();
     const seq = ++this.listingChecks;
-    const verdict = this.askListing(binding, reached).then((answer) => {
+    const verdict = this.askListing(binding).then((answer) => {
       const kept = this.listingConfirmed;
       if (answer !== "confirmed") {
         // a later check that brought no yes ends an earlier yes for the same listing, also one still on its way
@@ -400,7 +408,7 @@ export class AccountMailbox {
     return age >= 0 && age < LISTING_CONFIRMED_MS && wallAge >= 0 && wallAge < LISTING_CONFIRMED_MS;
   }
 
-  private async askListing(binding: string, reached: boolean): Promise<ListingVerdict> {
+  private async askListing(binding: string): Promise<ListingVerdict> {
     const { devices } = this.options;
     const account = devices.account();
     let identity: RelayIdentity | undefined;
@@ -418,9 +426,9 @@ export class AccountMailbox {
       }
       const pinned = await this.pinOldBinding(identity, binding, account, current);
       if (pinned === "confirmed") return bound() && devices.serviceListing() !== undefined ? "confirmed" : "refused";
+      // the service did not say, or what it pinned is not confirmed yet: nothing is decided, and the binding stays
+      if (pinned === "unreachable") return bound() ? "unreachable" : "refused";
       if (!current()) return "refused";
-      // with nothing to ask about, only a service that answers this PC settles it: an outage clears nothing
-      if (pinned === "unreachable" || (pinned === "unevidenced" && !reached)) return "unreachable";
       devices.clearAccountBinding("unlisted", UNPINNED_CLEAR);
       return "readd";
     } catch { return bound() ? "unreachable" : "refused"; }
@@ -432,19 +440,34 @@ export class AccountMailbox {
   }
 
   /**
-   * The one place that says whether a binding from before listings were kept (0.5.9) may name one, and pins it. Only
-   * evidence of its own bind counts: the completion receipt this PC kept from it, when the service still confirms
-   * that listing. An admission is none: a device of the account can list the PC again and admit it with no press
-   * here. Nor is the account's current listing, which this PC's own mailbox pull would let it complete.
-   * `unpinnable`: the service refused the receipt; `unevidenced`: this PC holds nothing to ask about. What becomes of
-   * such a binding is the caller's.
+   * The one place that says whether a binding from before listings were kept (0.5.9) may name one, and pins it. Two
+   * sources count. The completion receipt this PC kept from its bind, when the service still confirms that listing.
+   * With no receipt, the service's own word (`listing_admitted` beside `listing_id` in a mailbox answer) that the
+   * listing it holds this PC under stands on a one-press admission this PC took: that listing is pinned, then
+   * confirmed as every pinned one is. An admission as such is no evidence (a device of the account can list the PC
+   * again and admit it with no press here), nor is the account's current listing, which this PC's own mailbox pull
+   * would let it complete.
+   * `unpinnable`: the service refused the receipt, or said the listing stands on no such admission, or that there is
+   * none. `unreachable`: it did not say (no answer, a malformed one, or a service from before the field), which is
+   * never a no. What becomes of the binding is the caller's.
    */
-  private async pinOldBinding(identity: RelayIdentity, binding: string, account: string, current: () => boolean): Promise<"confirmed" | "unreachable" | "unpinnable" | "unevidenced"> {
+  private async pinOldBinding(identity: RelayIdentity, binding: string, account: string, current: () => boolean): Promise<"confirmed" | "unreachable" | "unpinnable"> {
     const receipt = this.completion;
-    if (receipt === null || receipt.account !== account) return "unevidenced";
-    const kept = await this.listingCompleted(identity, receipt);
-    if (kept === "confirmed" && current()) this.options.devices.pinServiceListing(binding, receipt.listing_id);
-    return kept === "changed" ? "unpinnable" : kept;
+    if (receipt !== null && receipt.account === account) {
+      const kept = await this.listingCompleted(identity, receipt);
+      if (kept === "confirmed" && current()) this.options.devices.pinServiceListing(binding, receipt.listing_id);
+      return kept === "changed" ? "unpinnable" : kept;
+    }
+    // asked as a pull asks, acknowledging nothing: an answer a pull would reject says nothing
+    const said = await this.page(identity, account, null).catch(() => null);
+    if (said === null || said.admitted === undefined || said.listing === undefined || (said.listing === null && said.admitted)) return "unreachable";
+    if (said.listing === null || !said.admitted) return "unpinnable";
+    // the answer is for the binding and account it was asked for
+    if (!current()) return "unreachable";
+    this.options.devices.pinServiceListing(binding, said.listing);
+    // pinned from here on: a listing that changed since the answer is refused as any pinned one's, by the caller
+    const now = await this.listingCompleted(identity, { account, listing_id: said.listing });
+    return now === "changed" ? "unpinnable" : now;
   }
 
   /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */
@@ -489,7 +512,7 @@ export class AccountMailbox {
       }, { ...ports, scope: () => this.stopped ? null : ports.scope(),
         // the snapshot is whole and checked, so the service answered this PC: the listing's answer is the newest thing the commit rests on
         // one a link bound lets more in only under the listing its rows were let in under, named by this read's own mailbox
-        widen: async () => binding !== null ? await this.checkListing(binding, true) === "confirmed" && this.listingFresh(binding) : pinned === undefined || named === pinned,
+        widen: async () => binding !== null ? await this.checkListing(binding) === "confirmed" && this.listingFresh(binding) : pinned === undefined || named === pinned,
         narrow: (snapshot) => this.options.devices.dropListedRemoved(snapshot.removed.map((row) => row.key)),
         commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
@@ -1005,7 +1028,7 @@ export class AccountMailbox {
     return page === null ? { snapshot_gone: true } : { page };
   }
 
-  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[]; listing: string | null | undefined }> {
+  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[]; listing: string | null | undefined; admitted: boolean | undefined }> {
     const mailbox = (await this.proved(identity, "/v1/pc/mailbox", { account, ack, with_listing_id: true }))!;
     const records = mailbox.records;
     if (!Array.isArray(records) || !records.every((entry) => typeof entry === "object" && entry !== null && Number.isSafeInteger((entry as { seq?: unknown }).seq))) {
@@ -1014,6 +1037,6 @@ export class AccountMailbox {
     const admissions = Array.isArray(mailbox.admissions) ? mailbox.admissions : [];
     const waiting = admissions.filter((a): a is { key: string; at: string } => typeof a === "object" && a !== null
       && isAccountKeyEncoding((a as { key?: unknown }).key) && typeof (a as { at?: unknown }).at === "string" && !Number.isNaN(Date.parse((a as { at: string }).at)));
-    return { entries: records as { seq: number; record: unknown }[], waiting, listing: namedListing(mailbox) };
+    return { entries: records as { seq: number; record: unknown }[], waiting, listing: namedListing(mailbox), admitted: listingAdmitted(mailbox) };
   }
 }

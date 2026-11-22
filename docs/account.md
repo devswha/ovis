@@ -931,14 +931,22 @@ any device is written. A member in `devices.json` that paired its key with a cod
 kept it through its link keeps its access through the hour; what it may do for the account waits.
 
 One press binds only when the admission names its listing (502 `listing_unnamed` otherwise). A
-binding made before 0.5.10 names none. It pins one only on evidence of its own bind: the completion
-receipt the PC kept from it, when the service still confirms that listing. The receipt is kept until
-the service takes it or answers 409 `listing_changed`. An admission is no such evidence, since a
-device of the account can list the PC again and admit it with no press at the PC; nor is the
-account's current listing, which the PC's own mailbox pull would let it complete. When the service
-refuses the receipt, or the PC holds none and a snapshot read reached its last page (the service
-answers, so an outage clears nothing), the PC leaves the account as for an unlisting. So a PC added
-in one press on 0.5.9 is added again once after the update. While a PC that left this way, or that
+binding made before 0.5.10 names none, and pins one from one of two sources. The completion receipt
+the PC kept from its bind, when the service still confirms that listing; the receipt is kept until
+the service takes it or answers 409 `listing_changed`. With no receipt, the service's own word: a
+mailbox answer asked `with_listing_id` says beside `listing_id` whether that listing stands on a
+one-press admission this PC took (`listing_admitted`). `true` beside a well-formed listing pins it,
+and it is then confirmed through `/v1/pc/complete` as every pinned listing is, so a PC added in one
+press on 0.5.9 stays in its account after the update with no add. `false`, beside a listing (a
+device listed the PC again with no press at the PC) or beside none, or a receipt the service
+refuses: the PC leaves the account as for an unlisting. Anything else says nothing and is never a
+no: the field missing (an account service from before it), a call that fails, an answer that does
+not parse, `true` beside no listing. Then the binding neither pins nor clears and is asked about
+again at the next sign-in or pull; meanwhile a device that stands on the account alone is refused
+`account_unreachable`, and a pairing made at this PC opens it. An admission as such is no evidence,
+since a device of the account can list the PC again and admit it with no press at the PC; nor is
+the account's current listing, which the PC's own mailbox pull would let it complete. While a PC
+that left this way, or that
 its account stopped listing, is owed its add at the PC (`pc_add_required`), a device that proves a
 key the PC knew as that account's is refused with `account_readd_required` (when it offered the
 feature) and keeps its key: **Add this PC to your account again**. That key is one a whole read
@@ -1507,7 +1515,7 @@ The PC, by server proof:
 | request | body | answer |
 |---|---|---|
 | `POST /v1/pc/challenge` | `{ "server_id", "public_key" }` | `{ "challenge_id", "frame" }` |
-| `POST /v1/pc/mailbox` | `{ "server_id", "challenge_id", "proof", "account", "ack" }` | `{ "records": [{ "seq", "record" }], "more", "admissions": [{ "key", "label", "at" }] }`: `admissions` lists that account's admissions for this PC made in the last 10 minutes, on every pull until they age out |
+| `POST /v1/pc/mailbox` | `{ "server_id", "challenge_id", "proof", "account", "ack" }` | `{ "records": [{ "seq", "record" }], "more", "admissions": [{ "key", "label", "at" }] }`: `admissions` lists that account's admissions for this PC made in the last 10 minutes, on every pull until they age out. Asked `with_listing_id: true`, it also answers `listing_id` (the listing it holds this PC under, null for none it confirms) and `listing_admitted` (whether that listing stands on a one-press admission this PC took; a service from before the field omits it) |
 
 `public_key` is the PC's relay key (64 hex); the service refuses it unless it gives `server_id`
 (`deriveServerId`). `frame` is a `server_challenge` (`serverChallenge` in

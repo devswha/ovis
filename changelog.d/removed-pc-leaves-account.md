@@ -32,6 +32,8 @@
 - **Remove** in Manage account now takes the PC out of the account for good, also a PC that was
   added by pairing a device: once it is online again, the account's devices no longer open it, and
   devices paired with the PC itself still do.
-- A PC that was added to an account in one press before this release is added again once after the
-  update: the account's devices show **Add this PC to your account again** for it. Devices paired
-  with the PC itself keep working.
+- A PC that was added to an account in one press before this release stays in that account after
+  the update, once the account service confirms that add. Until the service answers, the account's
+  devices are told the PC could not reach the account, and devices paired with the PC itself keep
+  working. Only a PC the account had removed, or that a device merely listed again, is added again
+  at the PC: the account's devices show **Add this PC to your account again** for it.
