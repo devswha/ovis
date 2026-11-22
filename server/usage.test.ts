@@ -834,6 +834,16 @@ describe("providers", () => {
     expect(requests).toHaveLength(0);
   });
 
+  it("reads Antigravity's token file over a locked Linux keyring, without searching the keyring", async () => {
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), { token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() } });
+    commands.set("secret-tool search service gemini username antigravity", "[/9]\nlabel = \nschema = org.freedesktop.Secret.Generic");
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { body: { response: { groups: [] } } });
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.providers).toMatchObject([{ id: "antigravity", problem: null }]);
+    expect((requests[0]!.init.headers as Record<string, string>)["authorization"]).toBe("Bearer ya29-file");
+    expect(commandCalls.filter(([command]) => command === "secret-tool")).toEqual([["secret-tool", "lookup", "service", "gemini", "username", "antigravity"]]);
+  });
+
   it("treats a listed item whose secret the search itself reads as no sign-in, not a locked keyring", async () => {
     commands.set("secret-tool search service gemini username antigravity", "[/9]\nlabel = \nschema = org.freedesktop.Secret.Generic\nattribute.service = gemini\nsecret = not-empty");
     const report = await new UsageService(context("linux"), only("antigravity")).report();
