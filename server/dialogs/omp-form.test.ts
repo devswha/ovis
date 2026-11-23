@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
+import { ompFormPrompt } from "../omp-ask.ts";
 import { KEY, parsedByPublicPrompt } from "./shared.ts";
 
 // omp 19.1.0's Ask form (HtmlFormDialog), recorded in an isolated omp home with a fake model provider whose `ask`
@@ -69,6 +70,9 @@ describe("omp 19 Ask form", () => {
     expect(keys("checkbox-100", { option_indices: [0], custom_text: "Watch" })).toEqual([KEY.down, KEY.down, KEY.down, "ctrl+k", "ctrl+u", PASTE("Watch"), KEY.enter]);
     expect(card("lone-100")).toMatchObject({ question: "Ship it today", multi_select: true, options: [{ label: "Ship it today" }], custom_option_index: null });
     expect(keys("lone-100", { option_indices: [0] })).toEqual([KEY.space, KEY.enter]);
+    // Other holds text, so it is ticked: an answer without it empties the text, which unticks it (Space would type)
+    expect(card("checkbox-other-100")).toMatchObject({ default_option_indices: [0], default_custom_text: "Watch" });
+    expect(keys("checkbox-other-100", { option_indices: [1] })).toEqual([KEY.up, KEY.up, KEY.up, KEY.space, KEY.down, KEY.space, KEY.down, KEY.down, "ctrl+k", "ctrl+u", KEY.enter]);
   });
 
   it("keeps a dropdown's value with Enter or opens its list, whose card picks any option", () => {
@@ -79,6 +83,9 @@ describe("omp 19 Ask form", () => {
       question: "Region", default_option_index: 0, options: [{ label: "Europe" }, { label: "United States" }, { label: "Asia Pacific" }],
     });
     expect(keys("dropdown-open-60", { option_index: 2 })).toEqual([KEY.down, KEY.down, KEY.enter]);
+    // a label of wide characters takes two columns each, and a covered row's text shows past the list's border
+    const wide = form("dropdown-open-60").replace("│ ❯ Europe        ✓ │  ", "│ ❯ 東京          ✓ │ x");
+    expect(parseInteractivePrompt("omp", wide)?.options.map((option) => option.label)).toEqual(["東京", "United States", "Asia Pacific"]);
   });
 
   it("replaces a text field's value with the typed answer", () => {
@@ -106,6 +113,21 @@ describe("omp 19 Ask form", () => {
     expect(keys("submit-60", { option_index: 0 })).toEqual([KEY.enter]);
     // at 46 columns (a phone's pane) the chosen Other pill is past the pane's edge: answered, its answer cut
     expect(card("submit-46").answers?.[0]).toEqual({ question: "Where should sessions persist?", answer: "…" });
+  });
+
+  it("answers only under the session's one open form call, when the session is known", () => {
+    const radio = card("radio-100");
+    const formCall = [{ id: "call-1", wait: true, args: { html: "<form></form>" } }];
+    const bound = ompFormPrompt(radio, formCall, "/s.jsonl");
+    expect(bound.unverified).toBeUndefined();
+    expect(parsedByPublicPrompt.get(bound.prompt)?.ompCall).toBe(JSON.stringify(["/s.jsonl", "call-1"]));
+    expect(bound.prompt.id).toBe(radio.id);
+    // no call open, two of them, or one asked as 18.x questions: shown, but no key goes out
+    expect(ompFormPrompt(radio, [], "/s.jsonl").unverified).toBe(true);
+    expect(ompFormPrompt(radio, [...formCall, { ...formCall[0]!, id: "call-2" }], "/s.jsonl").unverified).toBe(true);
+    expect(ompFormPrompt(radio, [{ id: "call-1", wait: true, args: { questions: [] } }], "/s.jsonl").unverified).toBe(true);
+    // a pane whose runtime names no session: the screen alone, as for omp 18.x
+    expect(ompFormPrompt(radio, [], "").unverified).toBeUndefined();
   });
 
   it("reads no card while the form does not hold the keys, or once it is answered", () => {

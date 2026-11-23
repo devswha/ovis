@@ -191,13 +191,27 @@ function choiceField(rows: readonly string[], at: number, block: Block, context:
       menuLabels: [...choices.map((option) => option.label), ...(otherIndex === null ? [] : ["Other"])], selectedIndex: cursor,
       checkedOptionIndices: checked.flatMap((ticked, index) => ticked ? [index] : []), customMenuIndex: otherIndex, rejectWithEscapeIndex: null,
       ...(otherIndex === null ? {} : { customSteps: typedOther }),
-      // Space ticks, and Enter leaves the group once something is ticked (it would tick the focused box of an empty one)
+      // Space ticks, and Enter leaves the group once something is ticked (it would tick the focused box of an empty one).
+      // Other is ticked while it holds text, and Space there would type one: emptying its text unticks it
       ...(multi ? { multiSteps: (picked: number[]) => {
-        const { keys } = toggleKeys(checked, new Set(picked), cursor);
-        return keySteps([...keys, KEY.enter]);
+        const { keys, cursor: from } = toggleKeys(checked, new Set(picked), cursor);
+        const untick = otherIndex !== null && options.at(-1)!.checked ? [...navigationKeys(otherIndex - from), "ctrl+k", "ctrl+u"] : [];
+        return keySteps([...keys, ...untick, KEY.enter]);
       } } : {}),
     },
   };
+}
+
+/** The characters of `row` from display column `start`, `width` columns long. */
+function columns(row: string, start: number, width: number): string {
+  let column = 0;
+  let cell = "";
+  for (const { segment } of new Intl.Segmenter().segment(row)) {
+    if (column >= start + width) break;
+    if (column >= start) cell += segment;
+    column += Bun.stringWidth(segment);
+  }
+  return cell;
 }
 
 function dropdownField(rows: readonly string[], at: number, block: Block, context: string | null, label: string, value: RegExpExecArray, valueRow: number): Field | null {
@@ -225,8 +239,8 @@ function dropdownField(rows: readonly string[], at: number, block: Block, contex
   const width = rows[top]!.trim().length;
   const options: { label: string; highlight: boolean; current: boolean }[] = [];
   for (let index = top + 1; index < bottom; index += 1) {
-    // the box covers the rows under it, whose right-hand part still shows
-    const cell = rows[index]!.slice(left, left + width);
+    // the box covers the rows under it, whose right-hand part still shows; a wide character before it takes two columns
+    const cell = columns(rows[index]!, left, width);
     const item = /^[│|] (?:([❯>\uf054]) | {2})(.*?)( ✓)? *[│|]$/u.exec(cell);
     if (!item) return null;
     options.push({ label: item[2]!.replace(NOTE_MARK_RE, "").trim(), highlight: item[1] !== undefined, current: item[3] !== undefined });

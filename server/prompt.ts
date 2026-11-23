@@ -913,7 +913,8 @@ async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractiveP
     }
   }
   if (parsed?.responder === "omp-form") {
-    return { prompt: ompFormPrompt(prompt, open, path), unverified, rebind: (card) => ompFormPrompt(card, open, path) };
+    const form = ompFormPrompt(prompt, open, path);
+    return { prompt: form.prompt, unverified: unverified ?? form.unverified, rebind: (card) => ompFormPrompt(card, open, path).prompt };
   }
   const called = ompCallPrompt(prompt, open, path);
   const bound = ompStepPrompt(called.prompt, open, path);
