@@ -79,6 +79,10 @@ describe("saved theme migration", () => {
       putOld({ voiceInput });
       expect(loadSettings().voiceInput).toBe(voiceInput);
     }
+    putOld({ voiceInput: false });
+    expect(loadSettings().voiceInput).toBe("auto");
+    putOld({ voiceInput: true });
+    expect(loadSettings().voiceInput).toBe("on");
     // an earlier version saved its whole record, its default Auto included, on any change
     records.clear();
     oldSaveSettings({ ...oldSanitizeSettings({}), terminalFontSize: 18 });
@@ -1141,7 +1145,7 @@ describe("microphone button", () => {
     expect(sanitizeSettings({}).voiceInput).toBe("off");
     for (const voiceInput of VOICE_BUTTONS) expect(sanitizeSettings({ voiceInput }).voiceInput).toBe(voiceInput);
     expect(sanitizeSettings({ voiceInput: true }).voiceInput).toBe("on");
-    expect(sanitizeSettings({ voiceInput: false }).voiceInput).toBe("off");
+    expect(sanitizeSettings({ voiceInput: false }).voiceInput).toBe("auto");
     for (const voiceInput of [null, 1, "yes", "ON"]) expect(sanitizeSettings({ voiceInput }).voiceInput).toBe("off");
   });
 
@@ -1160,6 +1164,9 @@ describe("microphone button", () => {
   });
 
   it("is asked for in the chat off a phone on auto, everywhere when on and nowhere when off", () => {
+    for (const mode of ["chat", "terminal"] as const) for (const phone of [false, true]) expect(wantsVoiceInput(sanitizeSettings({}).voiceInput, mode, phone)).toBe(false);
+    expect(wantsVoiceInput(sanitizeSettings({ voiceInput: "auto" }).voiceInput, "chat", false)).toBe(true);
+    expect(wantsVoiceInput(sanitizeSettings({ voiceInput: false }).voiceInput, "chat", false)).toBe(true);
     expect(wantsVoiceInput("auto", "chat", false)).toBe(true);
     expect(wantsVoiceInput("auto", "chat", true)).toBe(false);
     expect(wantsVoiceInput("auto", "terminal", false)).toBe(false);

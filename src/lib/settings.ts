@@ -446,6 +446,8 @@ export const QUICK_REPLY_MAX_CHARS = 200;
 
 function voiceButton(value: unknown): VoiceButton {
   if (value === true) return "on";
+  // a saved switch from before the three places: off was the switch's default, and Auto took its place (#559)
+  if (value === false) return "auto";
   return VOICE_BUTTONS.includes(value as VoiceButton) ? value as VoiceButton : DEFAULT_SETTINGS.voiceInput;
 }
 
