@@ -407,11 +407,15 @@ export function ReachablePcList({ found: { rows, failed, withheld, rowState, ret
   const t = useT();
   const id = useId();
   const [typed, setTyped] = useState("");
+  // another PC's https address is no SSH address: the add over SSH cannot take it (the SSH tab's Add by address can)
+  const [notSsh, setNotSsh] = useState(false);
   const host = typed.trim();
   const way: Record<ReachablePc["way"], string> = { tailscale: "Tailscale", ssh_config: t("SSH config") };
   const add = (event: FormEvent) => {
     event.preventDefault();
-    if (host !== "") onAddPc({ destination: host });
+    if (host === "") return;
+    if (OVIS_ADDRESS.test(host)) { setNotSsh(true); return; }
+    onAddPc({ destination: host });
   };
   return (
     <section className="connect-reachable">
@@ -438,9 +442,10 @@ export function ReachablePcList({ found: { rows, failed, withheld, rowState, ret
       <form className="connect-ssh-form" onSubmit={add}>
         <label className="settings-label" htmlFor={`${id}-host`}>{t("A PC not in the list")}</label>
         <div className="connect-ssh-field">
-          <input id={`${id}-host`} className="input" type="text" value={typed} placeholder="user@host" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => setTyped(event.target.value)} />
+          <input id={`${id}-host`} className="input" type="text" value={typed} placeholder="user@host" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-invalid={notSsh || undefined} aria-describedby={notSsh ? `${id}-not-ssh` : undefined} onChange={(event) => { setNotSsh(false); setTyped(event.target.value); }} />
           <button type="submit" className="btn" disabled={host === ""}>{t("Add")}</button>
         </div>
+        {notSsh && <p className="settings-hint" id={`${id}-not-ssh`} role="alert">{t("Enter an SSH address, such as user@host.")}</p>}
       </form>
     </section>
   );

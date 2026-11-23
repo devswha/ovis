@@ -349,4 +349,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "SSH config": "SSH 配置",
   "A PC not in the list": "不在列表中的电脑",
   "user@host or address": "user@host 或地址",
+  "Enter an SSH address, such as user@host.": "请输入 SSH 地址，例如 user@host。",
 };

@@ -66,8 +66,7 @@ import { useHostedSignIn } from "../lib/account/hostedSignIn.ts";
 import { AccountPcRows, NoAccountPcHint } from "./AccountPcs.tsx";
 import { removablePc, STATE_WORD } from "./MachineSidebar.tsx";
 import { AccountPcError, pcAccountStatus, type PcAccountStatus } from "../lib/account/join.ts";
-import { ownWindowHere } from "../lib/account/addThisPc.ts";
-import { sshAddOffered } from "../lib/account/sshAdd.ts";
+import { sshAddListed } from "../lib/account/sshAdd.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { closedBySignIn, ConnectPhoneDialog, relayOffered, relayPending } from "./ConnectPhoneDialog.tsx";
@@ -1286,7 +1285,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   }, [account.account, connecting]);
   const joinBySignIn = account.account !== null && pcAccount === account.account && relay.status?.phase === "online";
   // where Add PC over SSH adds the PC to the account (MachineDialog asks the same), the relay tab lists the PCs to add
-  const addsOverSsh = pcAddFromAccount === true && sshAddOffered({ ownWindow: ownWindowHere(auth), signedInAccount: account.signedIn ? account.account : null, pcAccount });
+  const addsOverSsh = sshAddListed({ pcAddFromAccount, auth, signedInAccount: account.signedIn ? account.account : null, pcAccount });
   const accountPcs = useMemo(() => account.pcs?.filter((pc) => pc.listed).map((pc) => pc.server_id) ?? [], [account.pcs]);
   const openAccount = useCallback(() => {
     setConnecting(false);

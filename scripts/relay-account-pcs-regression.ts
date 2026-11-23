@@ -128,7 +128,7 @@ function remotePrompt(): Promise<RemotePairingRequest> {
   return bounded(found.promise, 30_000).finally(stop);
 }
 
-async function accountWindow(browser: Browser, pageErrors: string[], relation: "mine" | "other" | "signed-out" = "mine"): Promise<{ context: BrowserContext; page: Page }> {
+async function accountWindow(browser: Browser, pageErrors: string[], relation: "mine" | "elsewhere" | "other" | "signed-out" = "mine"): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   cleanup.push(() => context.close());
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
@@ -138,6 +138,12 @@ async function accountWindow(browser: Browser, pageErrors: string[], relation: "
     const response = await route.fetch();
     const { own_window: _own, ...body } = await response.json() as Record<string, unknown>;
     await route.fulfill({ response, json: body });
+  });
+  // signed in to this PC's own account, but not this PC's own window: a device that reaches it over Tailscale
+  if (relation === "elsewhere") await context.route("**/api/health*", async (route) => {
+    const response = await route.fetch();
+    const { own_window: _own, ...body } = await response.json() as { auth?: Record<string, unknown> } & Record<string, unknown>;
+    await route.fulfill({ response, json: { ...body, ...(body.auth ? { auth: { ...body.auth, via: "tailscale" } } : {}) } });
   });
   await context.route("**/api/account/status*", (route) => route.fulfill({ json: { account: relation === "other" ? "acct_other_pc" : ACCOUNT, pc_add_from_account: true,
     members: 1, unlinked: [], removals: [], adds: [], blocked: [], enrolling: false, mailbox: { last_pull_at: null, error: null } } }));
@@ -247,6 +253,15 @@ try {
   assert.ok(qrBottom <= await reachable.evaluate((list) => list.getBoundingClientRect().top), "the PCs to add come under the phone's QR code");
   await shot(connecting.page, "relay-tab");
 
+  // the same account in a window that is not this PC's own: the tab as before, no relay pairing QR code, no PCs to add
+  const elsewhere = await accountWindow(browser, pageErrors, "elsewhere");
+  const theirs = await openRelayTab(elsewhere.page);
+  await theirs.getByText("This PC is in your account.", { exact: true }).waitFor();
+  await theirs.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).waitFor();
+  assert.equal(await theirs.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "another window gets no relay pairing QR code");
+  assert.equal(await theirs.locator(".connect-reachable").count(), 0, "nor the PCs to add over SSH");
+  await elsewhere.context.close();
+
   for (const relation of ["other", "signed-out"] as const) {
     const { page } = await accountWindow(browser, pageErrors, relation);
     // a window signed out of this PC's account gets the sign-in alone, not the Add from account prompt
@@ -296,7 +311,7 @@ try {
     if (!strict) await shot(page, "unavailable");
   }
   assert.deepEqual(pageErrors, [], "no page error");
-  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, marks offline PCs and automatically asks a member to pair a ready PC; it opens in the sidebar with no SSH setup dialog; a sign-in on this PC, already in the account, closes Add a connection and leaves Settings open with the account and its PCs; Add a connection → Ovis relay, in this PC's own window signed in to its account, opens on the relay's pairing QR code, then the signed-in line and the PCs to add over SSH, with no list of the account's PCs");
+  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, marks offline PCs and automatically asks a member to pair a ready PC; it opens in the sidebar with no SSH setup dialog; a sign-in on this PC, already in the account, closes Add a connection and leaves Settings open with the account and its PCs; Add a connection → Ovis relay, in this PC's own window signed in to its account, opens on the relay's pairing QR code, then the signed-in line and the PCs to add over SSH, with no list of the account's PCs; the same account in another window keeps the QR code that opens this PC, with no PCs to add");
 } catch (error) {
   code = 1;
   console.error("FAIL relay account PCs:", error);

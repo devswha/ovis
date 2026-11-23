@@ -919,7 +919,8 @@ describe("Connect a phone on a phone", () => {
     await flushReads();
     const row = renderer!.root.findAll((node) => node.props.className === "connect-found-row").find((node) => text(node).includes("old-desktop"))!;
     expect(text(row.findByProps({ className: "connect-found-name" }))).toBe("old-desktop");
-    expect(text(row.findByProps({ className: "connect-found-detail" }))).toBe("old-desktop.tail.ts.net");
+    // what Connect opens, the IP alias, before the press
+    expect(text(row.findByProps({ className: "connect-found-detail" }))).toBe("100.123.228.51 · old-desktop.tail.ts.net");
     await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect old-desktop" }).props.onClick(); });
     expect(added).toEqual([{ destination: "100.123.228.51", name: "old-desktop" }]);
   });
@@ -959,8 +960,8 @@ describe("Connect a phone on a phone", () => {
   it("lists one row per Tailscale PC: the config aliases the server resolved to it go under its machine name, Connect opening the first", async () => {
     tailnetOutdated = false;
     extraCandidates = [
-      { name: "mymac", destination: "mymac", detail: "me@100.64.0.7", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
-      { name: "macbook", destination: "macbook", detail: "me@macbookpro.tail.ts.net", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
+      { name: "mymac", destination: "mymac", detail: "me@100.64.0.7", source: "ssh_config", tailnet: "macbookpro.tail.ts.net", user: "me" },
+      { name: "macbook", destination: "macbook", detail: "me@macbookpro.tail.ts.net", source: "ssh_config", tailnet: "macbookpro.tail.ts.net", user: "me" },
     ];
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
@@ -997,8 +998,8 @@ describe("Connect a phone on a phone", () => {
     tailnetOutdated = false;
     tailnetServerId = "srv_winvm";
     extraCandidates = [
-      { name: "mymac", destination: "mymac", detail: "me@100.64.0.7", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
-      { name: "macbook", destination: "macbook", detail: "me@macbookpro.tail.ts.net", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
+      { name: "mymac", destination: "mymac", detail: "me@100.64.0.7", source: "ssh_config", tailnet: "macbookpro.tail.ts.net", user: "me" },
+      { name: "macbook", destination: "macbook", detail: "me@macbookpro.tail.ts.net", source: "ssh_config", tailnet: "macbookpro.tail.ts.net", user: "me" },
     ];
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Reachable machines={[]} accountPcs={new Set(["srv_winvm"])} onAddPc={(preset) => { added.push(preset); }} />);
@@ -1008,7 +1009,7 @@ describe("Connect a phone on a phone", () => {
     expect(rows.map((row) => [cell(row, "connect-found-name"), cell(row, "connect-found-detail")])).toEqual([
       ["nuc12", "SSH config · rise@100.127.218.1"],
       ["winvm", "Tailscale · winvm.tail.ts.net"],
-      ["macbookpro", "Tailscale · macbookpro.tail.ts.net"],
+      ["macbookpro", "Tailscale · mymac · me@macbookpro.tail.ts.net"],
     ]);
     // a PC whose relay ID is the account's is in it: nothing to add
     expect(text(rows[1]!)).toContain("In your account");
@@ -1022,6 +1023,26 @@ describe("Connect a phone on a phone", () => {
     await act(async () => { field.props.onChange({ target: { value: "root@hosthatch " } }); });
     await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
     expect(added.at(-1)).toEqual({ destination: "root@hosthatch" });
+    // another PC's https address is no SSH address: it is not sent on as one, and the field says what it takes
+    await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "https://desk.tail.ts.net:7317" } }); });
+    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    expect(added).toHaveLength(3);
+    expect(text(renderer!.root.findByProps({ role: "alert" }))).toBe("Enter an SSH address, such as user@host.");
+    await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "me@desk" } }); });
+    expect(renderer!.root.findAllByProps({ role: "alert" })).toHaveLength(0);
+  });
+
+  it("in the relay tab's list, keeps an alias on another port of a Tailscale PC a row of its own: Add on the PC opens the PC", async () => {
+    tailnetOutdated = false;
+    extraCandidates = [{ name: "winvm-wsl", destination: "winvm-wsl", detail: "rise@winvm.tail.ts.net", source: "ssh_config", tailnet: "winvm.tail.ts.net", user: "rise", port: 2222 }];
+    const added: (AddPcPreset | undefined)[] = [];
+    await mount(<Reachable machines={[]} accountPcs={new Set()} onAddPc={(preset) => { added.push(preset); }} />);
+    await flushReads();
+    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
+    expect(rows.map((row) => text(row.findByProps({ className: "connect-found-detail" })))).toEqual(["SSH config · rise@100.127.218.1", "Tailscale · winvm.tail.ts.net", "Tailscale · rise@winvm.tail.ts.net:2222"]);
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add winvm" }).props.onClick(); });
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add winvm-wsl" }).props.onClick(); });
+    expect(added).toEqual([{ destination: "winvm.tail.ts.net", name: "winvm" }, { destination: "winvm-wsl", name: "winvm-wsl" }]);
   });
 
   it("in the relay tab's list, says what keeps a PC from being added: here already, or an older Ovis", async () => {

@@ -5098,10 +5098,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
   typed address close Settings and open the PC setup dialog with the address filled in. **Tailscale**
   lists its login's PCs one row a machine, as Tailscale's own machine list does (the model: one row per
-  machine, by its machine name): the ssh config aliases the server resolved to one of them are that
-  row, under Tailscale's machine name with its MagicDNS name dim, and **Connect** opens the first alias
-  (`lib/reachablePcs.ts`, never merged by name: two hosts of one HostName stay two, as Port or
-  ProxyJump may part them). Under the list, **A PC not in the list** takes user@host or another PC's
+  machine, by its machine name): the ssh config aliases the server resolved to one of them fold into
+  that row only when they reach it the same way (the same User, ssh's port), under Tailscale's machine
+  name when that PC is reached only one such way. The dim text is what the row opens, before the
+  press: the alias when the name is not it, the user and the MagicDNS name. **Connect** opens the alias
+  named as the machine, else the first in config order. An alias on another port (an sshd in WSL or
+  a container), as another user, or whose User a Match may set is a row of its own, by its alias,
+  with its port in the dim text, and only the PC's own plain row takes that PC's Tailscale answer
+  (Added, In your account, the update line). Nothing merges by name: two hosts of one HostName stay
+  two (`lib/reachablePcs.ts`). Under the list, **A PC not in the list** takes user@host or another PC's
   https address and connects it as the SSH tab's field does. **Phones and
   devices** stacks, under a hairline each, the Tailscale address and QR code, the six-digit pairing
   code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
@@ -5126,12 +5131,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   approve the key it proved. The phone part is followed, behind a hairline (`.connect-reachable`), by
   the PCs this PC can reach: one line of
   what Add does, then the Tailscale tab's rows and the ssh config's other hosts in one list, each the
-  name, then dim its way and address (**Tailscale · old-desktop.tail….ts.net**, **SSH config ·
-  root@hosthatch**), then **Add**, which opens the PC setup dialog with that host filled in and **Add
+  name, then dim its way and what it opens (**Tailscale · mymac · devswha@macbookpro.tail….ts.net**,
+  **SSH config · root@hosthatch**), then **Add**, which opens the PC setup dialog with that host filled in and **Add
   it to my account** ticked, whose Connect runs the add over SSH (docs/account.md); or in words why
   not: **In your account** in the done green (its relay ID, as that PC's Tailscale answer or this
   app's PC at that address gives it, is one of the account's PCs), **Added** (this app has it), or
-  the older Ovis's update line. Last, **A PC not in the list** with a user@host field and **Add**.
+  the older Ovis's update line. Last, **A PC not in the list** with a user@host field and **Add**,
+  which takes an SSH address only (another PC's https address gets one line saying so).
   Signed out, on a PC in no account and on any other device (a phone, a PC through the relay) the tab
   is as above, with no list. The
   relay's own switch is in More settings, and on this tab only while a PC in the account has its

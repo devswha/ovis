@@ -7,6 +7,7 @@
  * itself admits nobody, and no account membership comes from it.
  */
 import { HTTPS_PORTS, tailscaleBinary } from "./tailscale.ts";
+import { SERVER_ID_PATTERN } from "../shared/relay-id.ts";
 import { TargetAccountPcError } from "../shared/relay-channel.ts";
 
 const PROBE_MS = 2500;
@@ -108,6 +109,12 @@ export class TailnetPcs {
     return health.auth?.authenticated === true && health.auth.via === "tailscale" && health.auth.role === "drive";
   }
 
+  /** the relay ID that PC names, only when it is shaped as one: its health is that PC's word, whatever it sends */
+  private static relayId(health: Health): string | null {
+    const id: unknown = health.web_ui?.server_id;
+    return typeof id === "string" && SERVER_ID_PATTERN.test(id) ? id : null;
+  }
+
   /**
    * An Ovis before typed codes: its health names no relay ID while its relay is online. Both came in the same
    * release (0.4.23), and an online relay always has its ID, so a current Ovis never looks like this.
@@ -137,7 +144,7 @@ export class TailnetPcs {
         const url = this.origin(dnsName, port);
         const health = await this.probe(url);
         return health !== null && TailnetPcs.drivable(health)
-          ? { name, dnsName, url, relay: health.relay?.phase ?? null, outdated: TailnetPcs.outdated(health), server_id: health.web_ui?.server_id ?? null } : null;
+          ? { name, dnsName, url, relay: health.relay?.phase ?? null, outdated: TailnetPcs.outdated(health), server_id: TailnetPcs.relayId(health) } : null;
       }));
       const found = answers.filter((answer) => answer !== null);
       return found.find((answer) => answer.server_id !== null && answer.relay === "online") ?? found.find((answer) => answer.server_id !== null)

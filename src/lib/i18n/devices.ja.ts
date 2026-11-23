@@ -349,4 +349,5 @@ export const DEVICES_JA: Record<string, string> = {
   "SSH config": "SSH 設定",
   "A PC not in the list": "一覧にない PC",
   "user@host or address": "user@host またはアドレス",
+  "Enter an SSH address, such as user@host.": "user@host のような SSH アドレスを入力してください。",
 };

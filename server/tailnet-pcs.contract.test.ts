@@ -200,7 +200,7 @@ it("does not list a PC that does not let this PC's login drive it", async () => 
  * A PC whose Ovis predates typed codes (0.4.22 and before), answering as that release does: its health names no
  * relay ID, and it refuses `POST /api/relay/code` as an unknown relay action.
  */
-function olderOvis(options: { serverId?: string; phase?: string; refusal?: { status: number; code: string } } = {}) {
+function olderOvis(options: { serverId?: unknown; phase?: string; refusal?: { status: number; code: string } } = {}) {
   const asked: string[] = [];
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
     const { pathname } = new URL(request.url);
@@ -229,9 +229,17 @@ it("lists a PC with an older Ovis as one to update, and asks it for no code", as
 
 it("lists the current Ovis of a PC that also runs an older one on another port", async () => {
   const old = olderOvis();
-  const current = olderOvis({ serverId: "a".repeat(43) });
+  const current = olderOvis({ serverId: "a".repeat(32) });
   const pcs = new TailnetPcs({ readStatus: onePeer, ports: [443, 8443], origin: (_dnsName, port) => port === 443 ? old.url : current.url });
-  expect(await pcs.list()).toEqual([{ name: "pc-b", url: current.url, relay: "online", outdated: false, server_id: "a".repeat(43) }]);
+  expect(await pcs.list()).toEqual([{ name: "pc-b", url: current.url, relay: "online", outdated: false, server_id: "a".repeat(32) }]);
+});
+
+it("passes on only a relay ID shaped as one, whatever that PC's health sends", async () => {
+  for (const serverId of [42, "A".repeat(32), "a".repeat(43), "../x", { id: "a".repeat(32) }]) {
+    const odd = olderOvis({ serverId });
+    const pcs = new TailnetPcs({ readStatus: onePeer, ports: [443], origin: () => odd.url });
+    expect((await pcs.list()).map((pc) => pc.server_id)).toEqual([null]);
+  }
 });
 
 it("lists an Ovis whose relay is off, which may be a current one, over an older one", async () => {
@@ -251,7 +259,7 @@ it("tells each refusal of the code request in its own failure, never with that P
     [{ status: 500, code: "internal" }, "no_code"],
   ];
   for (const [refusal, expected] of cases) {
-    const refusing = olderOvis({ serverId: "a".repeat(43), refusal });
+    const refusing = olderOvis({ serverId: "a".repeat(32), refusal });
     const pcs = new TailnetPcs({ readStatus: onePeer, ports: [443], origin: () => refusing.url });
     await pcs.list();
     const failure = await pcs.code(refusing.url, new Set()).catch((error: unknown) => error) as TailnetPcError;

@@ -349,4 +349,5 @@ export const DEVICES_KO: Record<string, string> = {
   "SSH config": "SSH 설정",
   "A PC not in the list": "목록에 없는 PC",
   "user@host or address": "user@host 또는 주소",
+  "Enter an SSH address, such as user@host.": "user@host 같은 SSH 주소를 입력하세요.",
 };

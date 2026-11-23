@@ -1519,6 +1519,8 @@ export async function askMachineRetry(id: string): Promise<void> {
 export interface SshCandidate {
   readonly name: string; readonly destination: string; readonly detail: string | null; readonly source: "ssh_config" | "tailscale";
   readonly tailnet?: string;
+  /** the User the config sets (absent: none, so ssh uses the server account's name; null: a Match may set one) and its Port */
+  readonly user?: string | null; readonly port?: number;
 }
 export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("/ssh-candidates");
 /**
