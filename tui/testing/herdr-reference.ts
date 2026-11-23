@@ -42,7 +42,12 @@ const stop = () => (cleaning ??= (async () => {
   }
   if (failures.length > 0) throw failures[0];
 })());
-for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => {
+// The listeners stay installed until exit: the first signal starts the cleanup, a later one leaves it
+// running (with `once`, a second signal would get the default disposition and end the capture mid-cleanup).
+let signalled = false;
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => {
+  if (signalled) return;
+  signalled = true;
   void stop().finally(() => process.exit(128 + constants.signals[signal]));
 });
 
