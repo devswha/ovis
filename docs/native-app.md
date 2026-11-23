@@ -210,7 +210,11 @@ What is there:
   `tailscale serve` while Ovis is stopped), with the reason, Try again and Change PC, in the same look; it stands alone
   on Android, so `build-web.ts` puts `shell.css` and the sheep into it. Every page sets its `theme-color` (Android's
   system bars) and, on iOS, SystemBars' style to its own colours, light or dark (`barsFor` in `shell.js`, copied into
-  `error.html`); a PC still opens on light icons. Both are in English and Korean, the Korean in 해요체 and in the
+  `error.html`); a PC still opens on light icons. The native parts around them take the same colours, light or dark
+  as the phone is: the covers ("Opening…", Try again, Change PC: `MainActivity.showOpening` with `res/values*/colors.xml`,
+  `HerdrBridgeViewController.showOpening`), the web view before a page paints (Android's window background,
+  iOS's `instanceDescriptor().backgroundColor`), Android 12's launch screen and the SSH setup screen
+  (`SshSetupActivity`, `SshSetupView`). The iOS launch image (`Splash.imageset`) is unchanged. Both are in English and Korean, the Korean in 해요체 and in the
   hosted page's words for the same things: an element's `data-ko` attribute holds its Korean text, put in when the
   phone's first language is Korean (`localize()` in `shell.js`; `error.html` carries its own copy, as it stands alone
   on Android). The iOS app lists `ko` in `CFBundleLocalizations`, without which its web view reports English to every
@@ -640,8 +644,10 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
 - The status and navigation bars take the page's `theme-color` (the client keeps it at its top
   bar's color), with icons that stand out on it: a document-start script sends it to an
   `OvisBars` listener open to the app's and the PC's origins. Until then, and on a WebView without
-  those features, they sit on the app's dark background (`colors.xml`), as does Android 12's own
-  launch screen (`windowSplashScreenBackground`).
+  those features, they sit on the app's own page's colour (`ovis_page` in `colors.xml`, white, or
+  `#181818` in `values-night`), as do the web view before a page paints, Android 12's own launch
+  screen (`windowSplashScreenBackground`) and the native cover; while the cover is up the bars keep
+  its colour, and the page's `theme-color` takes over once it lifts.
 - With 3-button navigation the page stays clear of the buttons, at the bottom or, on a phone in
   landscape, at the side. On a WebView that gives the page its safe areas itself (140 and later),
   Capacitor's SystemBars lets the page draw under the system bars and leaves the room to the CSS,
@@ -650,7 +656,7 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   pads its sides for a side bar itself. `MainActivity` keeps the WebView clear of the bars'
   tappable part (`WindowInsetsCompat.Type.tappableElement()`, which a pinned taskbar on a large
   screen has too), and the strip beside it shows the window's background: the page's
-  `theme-color` once the page has sent it, the app's dark background before. A gesture bar has no
+  `theme-color` once the page has sent it, the app's own page's colour before. A gesture bar has no
   tappable part, so the page still draws under it. A docked keyboard covers a bottom bar, and
   SystemBars keeps the page above both. A floating keyboard takes no bottom inset, so on WebView
   144 and later the bar is kept clear under it; before 144 SystemBars passes the page no bottom
