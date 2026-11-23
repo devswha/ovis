@@ -305,7 +305,18 @@ token: without one, any local OS account counts as this PC's own window and coul
 A first join (a PC added in one press, its owner's first phone) has nobody else to approve it: this PC's
 own window alone shows it, as a card with the digits to compare and Allow / Decline (`POST /api/relay/join`
 with a `decision`), and no member that joins meanwhile may decide it. Its `PAIR_CHALLENGE` carries
-`approve_on` (`mac`, `windows`, `linux` or `pc`), so the phone says which PC to press Allow on. A PC vouched
+`approve_on` (`mac`, `windows`, `linux` or `pc`), so the phone says which PC to press Allow on. On a PC
+with no screen, its terminal stands in for that window: `ovis approve` lists a first join with the device's
+name, the account its admission came from and when it asked, never with its digits, and lets it in only
+when the six digits the device shows are typed there (`POST /api/relay/join` with `digits`, compared as
+for a members join: one wrong entry ends that join, and the device may ask again). `ovis add` asks the same
+way right after it added the PC ([A PC with no screen](relay.md#a-pc-with-no-screen)). That is the
+authority of the own window's Allow, not a new one: the request comes from a shell on this PC that reaches
+its loopback, unforwarded, as the owner (with the access token where there is one), which is what makes a
+window this PC's own, and it carries the digits only the asking device shows. The terminal asks for them
+typed where the window asks for a tap: nothing is approved there without them, an input that is not a
+terminal approves nothing, and no flag takes them. The asking device still needs a fresh admission in
+this PC's account (condition 2 above), so nobody away from this PC gains anything. A PC vouched
 for still needs a member. A key that a QR or code pairing waits with on this PC's screen shows in the same place in
 the PC's own window, with its fingerprint and one button, Confirm on this PC (`POST /api/account/confirm-page`, own
 window only): the server opens the local confirm page in a browser on this PC's desktop, as `ovis confirm` does, so
@@ -920,7 +931,18 @@ device paired with it by hand (then **Open** is the person's own tap). A PC adde
 exception is told, once, to the first devices that join the account after it (`admitted_before_you`
 on its directory entry), however much later. For 24 hours (`new_until` on its directory entry) the
 PC is marked new on them: it is never selected or opened by itself and no device signs in to it on
-its own, while a press on it opens it as usual. The account service admits the PC before the PC is
+its own. A load or a reload of its own page (where a tap on its row in My PCs leads) only puts up
+its join sheet. So does a launch that picks it, asking it nothing, when this device may sign in to
+it by the account's key; otherwise the launch asks to join it at once, as before. The press on that
+sheet (**Ask to join**) signs in with this device's registered key first, as a load does once the
+24 hours are over, so a PC that already let this device in from the account's list opens at once; a
+press made before the page has read the account's PCs waits for that read. When that is refused or cannot be tried (no key
+registered here, a PC that does not list this key or no longer admits it, one from before that way
+in), the same press sends the join request once, with no second press, and the join's screens
+follow as before; nothing tries the account's way again by itself. That join is the one a press
+sent before: the PC judges it as any other, so a key the account removed is never let back in, and
+a key the PC revoked comes back only when someone approves it on the PC's own window. A hold the PC
+answers is waited out, as for any such sign-in. The account service admits the PC before the PC is
 asked, so a press the PC then refuses (it restarted, was put in another account meanwhile, or was
 not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
 not in that account (in none, or in another one it joined meanwhile), and the page waits for the
