@@ -15,6 +15,7 @@ import { ClaudeSubagentStatus, plain } from "../claude-subagents.ts";
 import { claudeLastTurnEnd, claudeTranscriptStart, type ClaudeTurnEnd } from "../claude-transcript.ts";
 import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
+import type { TurnEvent } from "../approvals/hub.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
 import { listHcMachines, startMachineBridge } from "../herdr-core/machine-bridge.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
@@ -220,11 +221,26 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * is rest, by an event or a read: each told only by the newest word on the pane (agentRead)
    */
   const restedOnTranscript = new Set<string>();
-  /** Claude keeps its busy title up while a background subagent works after its turn ended, and herdr reads `working` (#2069). */
+  /**
+   * Claude panes whose turn the Stop hook of a Claude this server started told ended (server/approvals/claude.ts), herdr
+   * still reading them at work: at rest on the hook's word until herdr reads the rest, or a working it tells anew, or
+   * the UserPromptSubmit hook tells a turn began.
+   */
+  const stoppedOnHook = new Set<string>();
+  /**
+   * The prompts each Claude pane's UserPromptSubmit hook told of whose turn no Stop has ended yet, since herdr last read
+   * it at rest: Claude tells a prompt typed under a turn as it is queued, before that turn's Stop (2.1.330), and a turn
+   * may take it in and end once for both. Only a Stop that leaves none open is the rest.
+   */
+  const hookPrompts = new Map<string, number>();
+  /**
+   * Claude keeps its busy title up while a background subagent works after its turn ended, and herdr reads `working` (#2069).
+   * Nor is a turn its Stop hook ended still at work.
+   */
   function restingClaude(paneId: string, agent: string | null | undefined, status: AgentStatus): AgentStatus {
     if (agent !== "claude" || agentNow.get(paneId) !== "claude") return status;
     if (status !== "working" || omo.runs(paneId) || gjc.runs(paneId)) return status;
-    return claudeAgents.restsOn(paneId) ? "idle" : status;
+    return claudeAgents.restsOn(paneId) || stoppedOnHook.has(paneId) ? "idle" : status;
   }
   /**
    * Its working event may be a turn the transcript does not show yet (ClaudeSubagentStatus.busy), even with no
@@ -232,6 +248,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    */
   function hearClaude(paneId: string, agent: string | null | undefined, status: AgentStatus, event: boolean): void {
     if (agent !== "claude" || status !== "working") restedOnTranscript.delete(paneId);
+    if (agent !== "claude" || status !== "working" || event) stoppedOnHook.delete(paneId);
+    if (agent !== "claude" || status !== "working") hookPrompts.delete(paneId);
     if (agent !== "claude") { heard.delete(paneId); return; }
     const before = heard.get(paneId);
     heard.set(paneId, status);
@@ -445,6 +463,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       eventAgent.delete(paneId);
       heard.delete(paneId);
       restedOnTranscript.delete(paneId);
+      stoppedOnHook.delete(paneId);
+      hookPrompts.delete(paneId);
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
@@ -559,7 +579,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const held = claudeFailHeld.get(paneId);
     if (held !== undefined && promptAt !== null && (held === null || promptAt > held)) claudeFailHeld.delete(paneId);
     if (paneId === settling) return;
-    if (agent === "claude" && agentNow.get(paneId) === "claude" && !gjc.runs(paneId) && heard.get(paneId) === "working" && (completions.current(paneId) === "working") === claudeAgents.restsOn(paneId)) {
+    if (agent === "claude" && agentNow.get(paneId) === "claude" && !gjc.runs(paneId) && heard.get(paneId) === "working" && (completions.current(paneId) === "working") === (restingClaude(paneId, agent, "working") !== "working")) {
       reportStatus(paneId, restingClaude(paneId, agent, "working"), agent);
       return;
     }
@@ -744,6 +764,27 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (tracker === taskAgents && taskAgents.stale(paneId)) void paneGet(paneId).then((pane) => taskAgents.track(pane)).catch(() => undefined);
   }
 
+  /**
+   * A turn of an agent this server started, as its hook told (server/approvals/hub.ts): Claude's Stop is its finish,
+   * told before herdr reads it from the screen, and the same as herdr's rest from then on (the transcript still says
+   * whether it failed), once no prompt it told of is left open (hookPrompts). A Stop after herdr's rest tells nothing
+   * new. Claude's UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
+   */
+  function hookTurn(paneId: string, kind: string, turn: TurnEvent): void {
+    if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
+    const open = hookPrompts.get(paneId) ?? 0;
+    if (turn === "began") {
+      hookPrompts.set(paneId, open + 1);
+      if (stoppedOnHook.delete(paneId) && heard.get(paneId) === "working") reportStatus(paneId, restingClaude(paneId, "claude", "working"), "claude");
+      return;
+    }
+    if (open > 1) { hookPrompts.set(paneId, open - 1); return; }
+    hookPrompts.delete(paneId);
+    if (completions.current(paneId) !== "working") return;
+    stoppedOnHook.add(paneId);
+    reportStatus(paneId, "idle", "claude");
+  }
+
   function codexRest(paneId: string, snapshot?: SessionSnapshot): Promise<void> {
     const known = codexLooked.get(paneId);
     const turn = codexTurns.get(paneId) ?? 0;
@@ -819,6 +860,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     completions.forget(paneId);
     heard.delete(paneId);
     restedOnTranscript.delete(paneId);
+    stoppedOnHook.delete(paneId);
+    hookPrompts.delete(paneId);
     agentNow.delete(paneId);
     agentRead.set(paneId, opencodeAgents.beginRead());
     agentExited.delete(paneId);
@@ -907,6 +950,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (codexFailed.delete(from)) codexFailed.add(to);
       if (claudeLooked.has(from)) { claudeLooked.set(to, claudeLooked.get(from)!); claudeLooked.delete(from); }
       if (claudeFailed.delete(from)) claudeFailed.add(to);
+      if (stoppedOnHook.delete(from)) stoppedOnHook.add(to);
+      if (hookPrompts.has(from)) { hookPrompts.set(to, hookPrompts.get(from)!); hookPrompts.delete(from); }
       if (claudeFailHeld.has(from)) { claudeFailHeld.set(to, claudeFailHeld.get(from) ?? null); claudeFailHeld.delete(from); }
       if (claudeRested.has(from)) { claudeRested.set(to, claudeRested.get(from)!); claudeRested.delete(from); }
       try { options.seenMoved?.(from, to, renumber); }
@@ -998,5 +1043,5 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     return identity === null || identity !== liveHerdr ? undefined : herdrLifetime(identity);
   };
-  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer };
+  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn };
 }

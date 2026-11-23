@@ -345,3 +345,77 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([]);
   });
 });
+
+// Claude's Stop hook, told through the approval hub (server/approvals/claude.ts), finishes the turn before herdr reads it
+describe("a Claude pane whose Stop hook told its turn ended", () => {
+  it("is DONE at the hook's word while herdr still reads it at work, and stays DONE when herdr's rest follows", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done"]);
+    expect(h.pending.current(h.pane.pane_id)).toBe("done");
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts.filter((alert) => alert !== "done")).toEqual(["working"]);
+  });
+
+  it("tells nothing for a Stop after herdr's rest, or for an agent the pane no longer runs", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    const told = h.alerts.length;
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.alerts).toHaveLength(told);
+    handlers.onStatus(h.pane.pane_id, "working", "codex");
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.last().status).toBe("working");
+  });
+
+  it("reads herdr's working again once a prompt begins the next turn, or herdr tells working anew", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.last().status).toBe("done");
+    h.status.hookTurn(h.pane.pane_id, "claude", "began");
+    expect(h.last().status).toBe("working");
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("working");
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.last().status).toBe("done");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    expect(h.last().status).toBe("working");
+  });
+
+  // live, 2.1.330: a prompt typed under a turn is told as it is queued, before that turn's Stop
+  it("stays at work through the Stop of a turn whose queued prompt was told, and rests at the queued turn's Stop", async () => {
+    const h = await claudeHub("");
+    h.status.hookTurn(h.pane.pane_id, "claude", "began");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    h.status.hookTurn(h.pane.pane_id, "claude", "began");
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.last().status).toBe("working");
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("working");
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.last().status).toBe("done");
+  });
+
+  it("forgets the prompts it was told once herdr reads the pane at rest: a turn that took a queued prompt in ends once", async () => {
+    const h = await claudeHub("");
+    h.status.hookTurn(h.pane.pane_id, "claude", "began");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.status.hookTurn(h.pane.pane_id, "claude", "began");
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    h.status.hookTurn(h.pane.pane_id, "claude", "began");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.status.hookTurn(h.pane.pane_id, "claude", "ended");
+    expect(h.last().status).toBe("done");
+  });
+});
