@@ -98,8 +98,6 @@ beforeEach(async () => {
   now = Date.now();
   fake = new FakeAccountService(() => now);
   fake.opensAll = true;
-  // the account service admits a PC without asking the sign-in for two-step (as since 2026-11-23)
-  fake.admitAsksTwoStep = false;
   fake.signInAs("github", ACCOUNT);
   store = memoryAccountStore();
   service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock(), now: () => now });
@@ -123,7 +121,7 @@ describe("a PC the account lists unconfirmed", () => {
     await mount();
     expect(text()).toContain(`Name the PC gave itself: "${LABEL}"`);
     expect(text()).toContain("A PC was added to your account with a sign-in code at ");
-    expect(text()).toContain("Add it only if you typed that code on that PC's own screen a moment ago.");
+    expect(text()).toContain("Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.");
     // the label is never said as a fact: only inside its quotes
     expect(text().split(`"${LABEL}"`).join("")).not.toContain(LABEL);
     expect(buttons()).toEqual(["Add", "No"]);

@@ -182,10 +182,10 @@ export class FakeAccountService {
    */
   saysListingAdmitted = true;
   /**
-   * The one-press admit asks a used account's sign-in for two-step (`two_step_required`). The service stopped asking on
-   * 2026-11-23 and logs such an admit as exempt instead; off is that service.
+   * The one-press admit asks a used account's sign-in for two-step (`two_step_required`), as the service did until
+   * 2026-11-23. Off, the service since: such an admit is logged as exempt instead.
    */
-  admitAsksTwoStep = true;
+  admitAsksTwoStep = false;
   private seq = 0;
   readonly requests: string[] = [];
 

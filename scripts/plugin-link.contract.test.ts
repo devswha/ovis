@@ -175,12 +175,11 @@ test("ovis add shows a code of its own when another run made a code for the same
   expect(add.pc.devices.activePairing()).toBeNull();
 });
 
-test("ovis add without --qr: this PC takes the admission of a device of the account that pressed Add, on its own proof, from the command", async () => {
+test("ovis add --account, as a script or an agent runs it with no terminal: this PC takes the admission of a device of that account that pressed Add, on its own proof", async () => {
   const made = await pairingPc();
   pcs.push(made);
   const service = made.account;
   service.opensAll = true;
-  service.admitAsksTwoStep = false;
   const origin = `http://127.0.0.1:${made.app.port}`;
   const out: string[] = [];
   const asked: number[] = [];
@@ -195,9 +194,9 @@ test("ovis add without --qr: this PC takes the admission of a device of the acco
     if (path === "/api/account/one-press") asked.push(response.status);
     return response;
   };
-  const code = await bounded(link([], {
+  const code = await bounded(link(["--account", OWNER], {
     origin, headers: {}, fetch, accountService: "https://account.test", serviceFetch: service.fetch, signal: new AbortController().signal,
-    lines: { next: () => new Promise(() => {}) }, terminal: true, isTty: true,
+    lines: { next: () => new Promise(() => {}) }, terminal: false, isTty: false,
     // the waits between asks end at once, until the device pressed Add
     wait: (_ms, signal) => new Promise((resolve, reject) => { if (signal.aborted) reject(signal.reason); else setTimeout(resolve, 0); }),
     out: (text) => {
@@ -214,7 +213,8 @@ test("ovis add without --qr: this PC takes the admission of a device of the acco
   }));
   expect((await pressed!)?.status).toBe(200);
   expect(code).toBe(0);
-  expect(out.join("")).toContain(`Signed in to Ovis account ${OWNER}`);
+  expect(out.join("")).toContain(`as Ovis account ${OWNER.slice(0, 12)}, which has no PCs yet. It is the account --account names.`);
+  expect(out.join("")).not.toContain("\x1b");
   expect(out.join("")).toContain("Added. Open ");
   // the first ask, with no account, only asked whether this PC takes such an add; every ask after it but the last found no admission yet
   expect(asked[0]).toBe(400);

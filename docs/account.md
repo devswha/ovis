@@ -187,11 +187,15 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   code to cannot pair after it is gone. A device revoked while its request for a code is on its
   way starts none and is handed none (`401 unauthorized`). A code the PC itself started is held
   by no device.
-- **`bun scripts/plugin.ts add` shows no code.** It names the account its sign-in signed in to, and
-  waits for a device of that account, signed in with a sign-in of its own made in the last 10 minutes,
-  to press **Add** on the PC's card: the account's one-press admission
-  ([In one press](#adding-a-pc)), which the PC takes on its own key's proof. So the account decides,
-  not whoever reads the terminal, and only an admission by the account that signed in binds the PC.
+- **`bun scripts/plugin.ts add` shows no code that admits a device, but its sign-in code names the
+  account.** Whoever signs in with that code (or its QR code) first names the account the PC may join,
+  until that sign-in ends. So before anything is listed the command names the account that signed
+  in (its provider, the start of its id, its PCs) and the person at the PC types yes, or the command
+  checks it against `--account`, which is the only way where no one can type at it. Only then does
+  it list the PC, and a device of that account, signed in with a sign-in of its own made in the last
+  10 minutes, adds it by pressing **Add** on the PC's card: the account's one-press admission
+  ([In one press](#adding-a-pc)), which the PC takes on its own key's proof. An admission by any other
+  account never binds it ([A PC with no screen](relay.md#a-pc-with-no-screen)).
 - **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
   `bun scripts/plugin.ts add --qr` ends in one QR code, and a signed-in device that scans it links
   itself as the PC's first member, so the PC joins that device's account. The code is therefore
