@@ -3,7 +3,8 @@ import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
 import type { World } from "./focus.ts";
 import { pickerMatches, pickerPlaces } from "./picker.ts";
-import { initialState, type ModelEvent, type ModelState, reduce } from "./reduce.ts";
+import { FRAME_PASS_MS } from "./deadlines.ts";
+import { initialState, type ModelEvent, type ModelState, pickerShown, reduce } from "./reduce.ts";
 
 const TEST_MS = 120_000;
 const AT = 1;
@@ -81,6 +82,44 @@ describe("the picker overlay", () => {
     const grown: World = { workspaces: [{ id: "w0", name: "new", tabs: [{ id: "t0", name: "a", panes: [{ id: "p0", name: "x" }] }] }, ...world.workspaces] };
     expect(chosen(after(onTail, { type: "world", world: grown, at: AT }))).toBe("p3");
   });
+
+  it("keeps a chosen workspace heading through a change elsewhere, and Enter goes to that workspace", () => {
+    const onDocs = after(open, ...Array.from({ length: 3 }, () => key("ARROW_DOWN")));
+    expect(chosen(onDocs)).toBe("heading:w2");
+    // a pane of the other workspace renamed: every row is where it was
+    const renamed: World = { workspaces: world.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.map((tab) => ({ ...tab, panes: tab.panes.map((pane) => pane.id === "p2" ? { ...pane, name: "renamed" } : pane) })) })) };
+    const kept = after(onDocs, { type: "world", world: renamed, at: AT });
+    expect([chosen(kept), (kept.overlays.at(-1) as { unshown?: true }).unshown]).toEqual(["heading:w2", undefined]);
+    const entered = reduce(kept, key("ENTER")).state;
+    expect([entered.overlays, entered.focus.workspace]).toEqual([[], "w2"]);
+    // the first terminal, chosen by default after a search, is kept as that terminal when another comes before it
+    const searched = after(open, text("/sh"), key("ENTER"));
+    expect(chosen(searched)).toBeNull();
+    const before: World = { workspaces: [{ id: "w0", name: "shells", tabs: [{ id: "t0", name: "a", panes: [{ id: "p0", name: "sh" }] }] }, ...world.workspaces] };
+    expect(chosen(after(searched, { type: "world", world: before, at: AT }))).toBe("p2");
+  });
+
+  it("when the world takes the chosen row, the first terminal stands in and nothing acts on it until a frame showed it", () => {
+    const onTail = after(open, key("ARROW_DOWN"), key("ARROW_DOWN"));
+    const gone: World = { workspaces: world.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.filter((tab) => tab.id !== "t2") })) };
+    const stoodIn = after(onTail, { type: "world", world: gone, at: AT });
+    expect(stoodIn.overlays.at(-1)).toMatchObject({ kind: "goto", chosen: null, unshown: true });
+    // Enter, a row down and a workspace across leave it as it is: the row a person saw chosen is gone, and no other was shown
+    for (const event of [key("ENTER"), key("ARROW_DOWN"), text("j"), key("ARROW_RIGHT")]) {
+      const step = reduce(stoodIn, event);
+      expect([step.state.overlays, step.state.focus, step.effects]).toEqual([stoodIn.overlays, stoodIn.focus, []]);
+    }
+    // a heading whose workspace left is the same
+    const onDocs = after(open, ...Array.from({ length: 3 }, () => key("ARROW_DOWN")));
+    expect(after(onDocs, { type: "world", world: { workspaces: [world.workspaces[0]!] }, at: AT }).overlays.at(-1)).toMatchObject({ chosen: null, unshown: true });
+    // a search is the user's own choice of rows, and a frame that showed the stand-in makes it the chosen row
+    expect((after(stoodIn, text("/s")).overlays.at(-1) as { unshown?: true }).unshown).toBeUndefined();
+    expect(pickerShown(stoodIn, onTail.overlays.at(-1))).toBe(stoodIn);
+    const shown = pickerShown(stoodIn, stoodIn.overlays.at(-1));
+    expect((shown.overlays.at(-1) as { unshown?: true }).unshown).toBeUndefined();
+    const entered = reduce(shown, key("ENTER")).state;
+    expect([entered.overlays, entered.focus.panes["t1"]]).toEqual([[], "p1"]);
+  });
 });
 
 describe("the picker on screen", () => {
@@ -100,5 +139,58 @@ describe("the picker on screen", () => {
     await run.keys(`click@10:${row}`);
     await run.advance(10);
     expect([run.loop.model().overlays, run.loop.model().focus.tabs["w-ovis"]]).toEqual([[], "t-logs"]);
+  }, TEST_MS);
+
+  const received = (run: Run) => Object.fromEntries(["t1", "t2", "t4"].map((id) => [id, run.core.program(id).receivedHex()]).filter(([, hex]) => hex !== ""));
+  const picker = (run: Run) => run.loop.model().overlays.at(-1) as { kind: string; chosen: string | null } | undefined;
+
+  it("a workspace heading the pointer chose stays chosen when a pane elsewhere is renamed: Enter goes to that workspace, and what is typed next to its pane", async () => {
+    const run = await Run.start({ fixture: demo, cols: 120, rows: 40 });
+    runs.push(run);
+    await run.live();
+    run.type("\x02g");
+    await run.advance(FRAME_PASS_MS);
+    const grid = run.grid();
+    const terminal = grid.findIndex((line) => line.includes("└─") && line.includes("notes"));
+    expect(terminal).toBeGreaterThan(1);
+    // the heading is the row above its first terminal
+    run.type(`\x1b[<35;${grid[terminal - 1]!.search(/\S/u) + 4};${terminal}M`);
+    await run.advance(FRAME_PASS_MS);
+    expect(picker(run)?.chosen).toBe("heading:w-docs");
+    const shownGrid = run.grid();
+    await run.loop.link.call("terminal.label", { terminal: "t2", labels: { "herdr.pane_name": "renamed elsewhere" } });
+    await run.settle();
+    expect([run.grid(), picker(run)?.chosen]).toEqual([shownGrid, "heading:w-docs"]);
+    run.type("\r");
+    await run.settle();
+    expect([run.loop.report().mode.overlays, run.loop.model().focus.workspace]).toEqual([[], "w-docs"]);
+    // the pane that came to the front takes input once its picture is drawn
+    await run.live();
+    await run.advance(FRAME_PASS_MS);
+    run.type("S");
+    await run.settle();
+    expect(received(run)).toEqual({ t4: "53" });
+  }, TEST_MS);
+
+  it("Enter read before a frame shows the row standing in for an ended terminal chooses nothing; after that frame it chooses the row shown", async () => {
+    const run = await Run.start({ fixture: demo, cols: 120, rows: 40 });
+    runs.push(run);
+    await run.live();
+    run.type("\x02g");
+    await run.advance(FRAME_PASS_MS);
+    run.type("\x1b[B\x1b[B");
+    await run.advance(FRAME_PASS_MS);
+    expect(picker(run)?.chosen).toBe("t3");
+    const shownGrid = run.grid();
+    run.core.remove("t3");
+    await run.settle();
+    expect(run.grid()).toEqual(shownGrid);
+    run.type("\rS");
+    await run.settle();
+    expect([run.loop.report().mode.overlays, run.loop.model().focus.panes["t-main"], received(run)]).toEqual([["goto"], "t1", {}]);
+    await run.advance(FRAME_PASS_MS);
+    run.type("\rS");
+    await run.settle();
+    expect([run.loop.report().mode.overlays, run.loop.model().focus.panes["t-main"], received(run)]).toEqual([[], "t1", { t1: "53" }]);
   }, TEST_MS);
 });

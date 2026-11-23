@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "bun:test";
+import { editLayout, passthroughEdit } from "../../server/herdr-core/layout-ops.ts";
 import { PANE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
 import { BEHIND_WRITE_EVENTS, FRAME_PASS_MS, QUIT_BOUND_MS } from "../model/deadlines.ts";
 import { STRINGS } from "../strings.ts";
@@ -17,13 +18,14 @@ const hex = (text: string) => Buffer.from(text).toString("hex");
 /**
  * The demo with a rename of its first pane written and not yet answered: every read from here meets the hold. `mouse`:
  * the pane's program asked for the mouse and got a middle press at its cell (5, 3), still held (a right press would open
- * the pane's menu instead).
+ * the pane's menu instead). `prepare`: what the test sets up before the rename is written.
  */
-async function heldRename(mouse = false, cols = 120) {
+async function heldRename(mouse = false, cols = 120, prepare?: (run: Run) => Promise<void>) {
   const run = await Run.start({ fixture: demo, cols, rows: 80 });
   runs.push(run);
   await run.live();
   await run.advance(1);
+  await prepare?.(run);
   if (mouse) {
     run.core.program("t1").output("\x1b[?1002h\x1b[?1006h");
     await run.advance(20);
@@ -153,6 +155,58 @@ it.each([120, 60])("a refusal is on the screen once, in the notices' box, howeve
   expect(busy(run)).toHaveLength(1);
   expect(run.grid().join("\n").split("layout_busy").length - 1).toBe(1);
   expect(run.loop.report().mode.overlays).toEqual([]);
+}, 60_000);
+
+/** a right press and its release in the first pane's text, where its box's menu opens */
+const RIGHT_CLICK = "\x1b[<2;33;6M\x1b[<2;33;6m";
+
+it("a right-click that opens a menu, read during a write, is refused once and opens nothing after it", async () => {
+  const { run, answer } = await heldRename();
+  run.type(RIGHT_CLICK);
+  await run.settle();
+  expect([run.loop.report().mode.overlays, busy(run).map((notice) => notice.data)]).toEqual([[], [{ action: "context" }]]);
+  // a tab's and a workspace's row are the same, and say nothing more
+  const grid = run.grid();
+  const row = grid.findIndex((line) => line.includes("문서"));
+  expect(row).toBeGreaterThan(0);
+  run.type(`\x1b[<2;${grid[row]!.indexOf("문서") + 1};${row + 1}M\x1b[<2;${grid[row]!.indexOf("문서") + 1};${row + 1}m`);
+  run.type(RIGHT_CLICK);
+  await run.settle();
+  expect([run.loop.report().mode.overlays, busy(run)]).toEqual([[], busy(run).slice(0, 1)]);
+  answer();
+  await run.advance(200);
+  expect([run.loop.report().mode.overlays, run.loop.report().actions.filter((action) => action.startsWith("context:")), bytes(run)]).toEqual([[], [], ["", ""]]);
+  // the write is done and its frame taken: the same press opens the pane's menu
+  run.type(RIGHT_CLICK);
+  await run.settle();
+  expect(run.loop.report().mode.overlays).toEqual(["context"]);
+}, 60_000);
+
+it("a refused right-click takes no place among what waits: all the text read around it arrives", async () => {
+  const { run, answer } = await heldRename();
+  for (let index = 0; index < BEHIND_WRITE_EVENTS - 2; index++) run.type("x");
+  run.type(RIGHT_CLICK);
+  run.type("Y");
+  await run.settle();
+  expect(run.loop.model().notices.map((notice) => notice.code)).toEqual(["layout_busy"]);
+  answer();
+  await run.advance(200);
+  expect(bytes(run)).toEqual([hex("x".repeat(BEHIND_WRITE_EVENTS - 2) + "Y"), ""]);
+  expect(run.loop.report().mode.overlays).toEqual([]);
+}, 60_000);
+
+it("a right-click for a program that takes right presses still waits behind the write and reaches it, with no notice", async () => {
+  const { run, answer } = await heldRename(false, 120, async (run) => {
+    run.core.program("t1").output("\x1b[?1002h\x1b[?1006h");
+    await editLayout(run.loop.link, passthroughEdit("t1", true));
+    await run.advance(20);
+  });
+  run.type(RIGHT_CLICK);
+  await run.settle();
+  expect([run.loop.report().mode.overlays, busy(run), bytes(run)]).toEqual([[], [], ["", ""]]);
+  answer();
+  await run.advance(200);
+  expect([run.loop.report().mode.overlays, busy(run), bytes(run)]).toEqual([[], [], [hex("\x1b[<2;6;4M\x1b[<2;6;4m"), ""]]);
 }, 60_000);
 
 it("refused overlay input never occupies the bounded pane-input queue", async () => {

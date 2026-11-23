@@ -216,6 +216,15 @@ export class Pointer {
     };
   }
 
+  /**
+   * Where a right press at the event's cell goes, read without touching the grab: a program, a menu, or nowhere. A hold
+   * reads it when the press is read: a press that opens a menu is refused then, never performed after the write.
+   */
+  rightPressGoes(event: MouseInput, scene: PointerScene): "program" | "menu" | "nowhere" {
+    const site = rightSite(event, scene, scene.hits?.at(event.col, event.row) ?? null);
+    return site === null ? "nowhere" : site.kind === "forward" ? "program" : "menu";
+  }
+
   /** A stale report must not start or continue a grab. Close out only effects already delivered. */
   cancel(scene: PointerScene, at: number): PointerAct[] {
     const grab = this.grab;
@@ -367,29 +376,15 @@ export class Pointer {
     return dropped;
   }
 
-  /**
-   * herdr's right press (R1, R8): a menu on a pane's box (any of its cells), a tab or a workspace's row of the expanded
-   * sidebar, opened where it was pressed, with no focus change; nothing anywhere else. A pane set to pass right presses
-   * on hands one in its text to a program that asked for the mouse, unless shift is held, and is focused.
-   */
+  /** herdr's right press, performed where `rightSite` says it goes: to the pane's program, which is focused, or as a menu at the pressed cell. */
   private rightPress(event: MouseInput, scene: PointerScene, hit: ReturnType<HitMap["at"]> | null): PointerAct[] {
-    const cell = { x: event.col, y: event.row };
-    const inText = hit !== null && "pane" in hit ? hit.pane : null;
-    if (inText !== null && scene.passthrough(inText) && !event.mods.shift) {
-      const look = scene.look(inText);
-      if (look?.programMouse) {
-        const press = inGrid(event, look);
-        this.grab = { kind: "forward", pane: inText, button: event.button, attachment: this.identity(look.emulator), screen: look.screen, last: press };
-        return [...(inText !== scene.focus ? [{ kind: "select", target: { kind: "pane", id: inText } } as const] : []), { kind: "forward", pane: inText, event: press }];
-      }
-    }
-    const pane = inText ?? scene.boxAt(event.col, event.row);
-    if (pane !== null) return [{ kind: "context", target: { kind: "pane", id: pane }, cell }];
-    if (hit === null || "pane" in hit) return [];
-    const [kind, id] = splitId(hit.id);
-    if (kind === "tab") return [{ kind: "context", target: { kind: "tab", id }, cell }];
-    if (kind === "workspace" && !scene.sidebarCollapsed) return [{ kind: "context", target: { kind: "workspace", id }, cell }];
-    return [];
+    const site = rightSite(event, scene, hit);
+    if (site === null) return [];
+    if (site.kind === "context") return [{ kind: "context", target: site.target, cell: { x: event.col, y: event.row } }];
+    const { pane, look } = site;
+    const press = inGrid(event, look);
+    this.grab = { kind: "forward", pane, button: event.button, attachment: this.identity(look.emulator), screen: look.screen, last: press };
+    return [...(pane !== scene.focus ? [{ kind: "select", target: { kind: "pane", id: pane } } as const] : []), { kind: "forward", pane, event: press }];
   }
 
   private wheel(event: MouseInput, scene: PointerScene): PointerAct[] {
@@ -451,6 +446,26 @@ export class Pointer {
     grab.moved = ratio;
     return [{ kind: "divider", grab: grab.id, tab: grab.tab, name: grab.name, ratio, done: false }];
   }
+}
+
+/**
+ * Where herdr's right press goes (R1, R8): a menu on a pane's box (any of its cells), a tab or a workspace's row of the
+ * expanded sidebar, with no focus change; nowhere else (null). A pane set to pass right presses on hands one in its text
+ * to a program that asked for the mouse, unless shift is held.
+ */
+function rightSite(event: MouseInput, scene: PointerScene, hit: ReturnType<HitMap["at"]> | null): { readonly kind: "forward"; readonly pane: string; readonly look: PaneLook } | { readonly kind: "context"; readonly target: Target } | null {
+  const inText = hit !== null && "pane" in hit ? hit.pane : null;
+  if (inText !== null && scene.passthrough(inText) && !event.mods.shift) {
+    const look = scene.look(inText);
+    if (look?.programMouse) return { kind: "forward", pane: inText, look };
+  }
+  const pane = inText ?? scene.boxAt(event.col, event.row);
+  if (pane !== null) return { kind: "context", target: { kind: "pane", id: pane } };
+  if (hit === null || "pane" in hit) return null;
+  const [kind, id] = splitId(hit.id);
+  if (kind === "tab") return { kind: "context", target: { kind: "tab", id } };
+  if (kind === "workspace" && !scene.sidebarCollapsed) return { kind: "context", target: { kind: "workspace", id } };
+  return null;
 }
 
 function namedSplit(id: string, scene: PointerScene) {

@@ -21,8 +21,8 @@ import { HELP_PAGE_ROWS, helpLines, helpNotes, helpSize, helpWindow } from "./he
 import { switcherEntries, switcherStart } from "./switcher.ts";
 import { NARROW_COLUMNS } from "./screen-size.ts";
 import { MENU_ENTRIES } from "./menu.ts";
-import { type CheckoutRow, contextChoice, field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice, pickerList, worktreeChoice } from "./overlays.ts";
-import { pickerPlaces } from "./picker.ts";
+import { type CheckoutRow, contextChoice, field, HELP_OPEN, menuChoice, switcherPick, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice, pickerChosen, pickerList, pickerShownChoice, worktreeChoice } from "./overlays.ts";
+import { pickerPlaces, pickerRows } from "./picker.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
 export type ModeState =
@@ -219,7 +219,7 @@ export function reduce(state: ModelState, event: ModelEvent, holding = false): S
       } else if (top?.kind === "goto") {
         const place = pickerList(top)[event.entry];
         const chosen = place === undefined ? null : event.heading ? `heading:${place.workspace}` : place.id;
-        if (chosen !== null && chosen !== top.chosen) replace({ ...top, chosen });
+        if (chosen !== null && chosen !== top.chosen) replace(pickerChosen(top, chosen));
       }
       break;
     }
@@ -661,7 +661,11 @@ function openSwitcher(s: ModelState): Overlay {
   return { kind: "switcher", cursor: switcherStart(s.world, s.focus), entries: switcherEntries(s.world, s.focus) };
 }
 
-/** An open picker or switcher lists what exists now: the picker's choice kept while it exists, the switcher's cursor on its entry. */
+/**
+ * An open picker or switcher lists what exists now: the switcher's cursor stays on its entry, and the picker's chosen row
+ * is kept by what it is (a terminal's pane or a workspace's heading), wherever its row went. When the world took that row,
+ * the first terminal stands in, `unshown` until a frame the host took shows it chosen.
+ */
 function refreshPicker(acc: Acc): void {
   const { world, focus, overlays } = acc.s;
   if (!overlays.some((overlay) => overlay.kind === "goto" || overlay.kind === "switcher")) return;
@@ -675,10 +679,23 @@ function refreshPicker(acc: Acc): void {
         return { ...overlay, entries, cursor: same >= 0 ? same : Math.max(0, Math.min(overlay.cursor, entries.length - 1)) };
       }
       if (overlay.kind !== "goto") return overlay;
-      const places = pickerPlaces(world);
-      return { ...overlay, places, chosen: places.some((place) => place.id === overlay.chosen) ? overlay.chosen : null };
+      const next = { ...overlay, places: pickerPlaces(world) };
+      const was = pickerShownChoice(overlay);
+      if (was !== null && pickerRows(pickerList(next)).includes(was)) return { ...next, chosen: was };
+      return pickerShownChoice({ ...next, chosen: null }) === was ? { ...next, chosen: null } : { ...next, chosen: null, unshown: true as const };
     }),
   };
+}
+
+/**
+ * A frame the host took showed `frame` on top. A picker in it whose chosen row only stood in for one the world took
+ * (`unshown`) has been seen now: Enter and the keys act on that row from here on. Any other state is answered as it is.
+ */
+export function pickerShown(state: ModelState, frame: Overlay | undefined): ModelState {
+  const top = state.overlays.at(-1);
+  if (top === undefined || top !== frame || top.kind !== "goto" || !top.unshown) return state;
+  const { unshown: _seen, ...shown } = top;
+  return { ...state, overlays: [...state.overlays.slice(0, -1), shown] };
 }
 
 /** The id of the tab holding pane `id`, or null. */

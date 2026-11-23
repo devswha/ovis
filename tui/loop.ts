@@ -33,7 +33,7 @@ import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-v
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect, MouseInput } from "./model/effects.ts";
 import { exists, focused } from "./model/focus.ts";
-import { type Following, initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
+import { type Following, initialState, type ModelEvent, type ModelState, pickerShown, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { CopyView } from "./view/copy.ts";
 import { type DeferredMouse, type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
@@ -161,7 +161,21 @@ export function startLoop(options: LoopOptions): Loop {
   let inputAhead = false;
   /** how many times the user's input changed the model: a frame clears `inputAhead` only when none came during its write */
   let inputMoves = 0;
-  /** what the pointer meets for the model `of`, kept until the model or the layout changes again or a frame is taken */
+  /**
+   * A change the user did not make (the core's word, an answer that came later, the clock) reached the model or the layout
+   * since the frame the host last took. Until a frame shows it, the pointer meets nothing newer than what stood before it:
+   * `ahead` as the user's own moves had left it, else that frame. A row the world moved under the pointer is then never
+   * taken for the row a person saw.
+   */
+  let foreignAhead = false;
+  /** how many such changes came: a frame clears `foreignAhead` only when none came during its write */
+  let foreignMoves = 0;
+  /** how deep the loop is in the user's own input (a read, what waited behind a write): a change made there is no foreign one */
+  let owning = 0;
+  /**
+   * what the pointer meets for the model `of`, kept until the user's input or the layout changes it again or a frame is
+   * taken; once `foreignAhead`, kept as it is
+   */
   let ahead: (Met & { readonly of: ModelState }) | null = null;
   /** What the last frame the host took showed a person: the pane drawn focused, and whether an overlay lay over the panes. */
   let presented: { readonly pane: string | null; readonly overlay: boolean } = { pane: null, overlay: false };
@@ -275,6 +289,8 @@ export function startLoop(options: LoopOptions): Loop {
   });
 
   function onLinkNotice(notice: LinkNotice): void {
+    // before the world takes the core's word in: what the pointer meets is composed from the world the user's moves met
+    keepAhead();
     panes.notice(notice);
     if (notice.type === "state") {
       act(`link:${notice.state.kind}${"code" in notice.state ? `:${notice.state.code}` : ""}`);
@@ -356,6 +372,7 @@ export function startLoop(options: LoopOptions): Loop {
     if (!read) return;
     const answered = (terminals: readonly unknown[] | null) => {
       guard(() => {
+        keepAhead();
         if (world.answer(read, terminals)) worldChanged();
         readCore();
       });
@@ -372,7 +389,10 @@ export function startLoop(options: LoopOptions): Loop {
     }
     if (notice.type === "gone") grids.delete(notice.terminal);
     // a program that enters or leaves the alternate screen gives its pane's scrollbar gutter back or takes it again
-    if (altScreens() !== altShown) reshow();
+    if (altScreens() !== altShown) {
+      foreignChange();
+      reshow();
+    }
     if (notice.type === "effect" && !closing) {
       const bytes = effectBytes(notice.effect, notice.terminal === paneFocus);
       if (bytes && !host.write(bytes)) painter?.invalidate();
@@ -401,6 +421,8 @@ export function startLoop(options: LoopOptions): Loop {
     /** Only a prefix begun in terminal context may survive release; overlay prefixes recognize held detach only. */
     terminalArmed: boolean;
     readonly mouse: ReturnType<Pointer["defer"]>;
+    /** the buttons whose press was refused when it was read: their drag and their release go with it, and wait for nothing */
+    readonly refused: Set<MouseInput["button"]>;
     /** Only the owning write's success can supply a recipient for input read without a pane. */
     inputTarget: string | null;
     awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone } | { readonly kind: "zoom"; readonly read: AbortController }) & { readonly until: number } | null;
@@ -437,19 +459,39 @@ export function startLoop(options: LoopOptions): Loop {
       const scene = pointerScene();
       const continuation = behindWrite.mouse.continuation(event);
       if (!continuation) {
+        const { refused } = behindWrite;
+        if (event.action !== "press") {
+          // what follows a press refused here is refused with it, and takes no place among what waits
+          if (refused.has(event.button)) {
+            if (event.action === "release") refused.delete(event.button);
+            return;
+          }
+        } else refused.delete(event.button);
         const blocked = state.overlays.length > 0 || state.mode.name !== "terminal";
         // the last accepted frame's overlay owns its cells even once the model closed it
         const hit = hits?.at(event.col, event.row);
         if (blocked || (hit && "part" in hit && (hit.part.startsWith("overlay:") || hit.id === "menu"))) {
           // only a press asks for something: the release of the click that chose a menu's entry (and started this very
           // write), or the pointer passing over the menu, is refused without a word
-          if (event.action === "press") busy(state.overlays.at(-1)?.kind ?? (blocked ? state.mode.name : "menu"));
+          if (event.action === "press") {
+            refused.add(event.button);
+            busy(state.overlays.at(-1)?.kind ?? (blocked ? state.mode.name : "menu"));
+          }
+          return;
+        }
+        // a right press goes to a program or opens a menu on what it meets when it is read. A menu is refused now, as
+        // the key that opens an overlay is; a press that goes nowhere waits for nothing
+        const right = event.action === "press" && event.button === "right" ? pointer.rightPressGoes(event, scene) : null;
+        if (right === "menu" || right === "nowhere") {
+          refused.add(event.button);
+          if (right === "menu") busy("context");
           return;
         }
         const route = behindWrite.mouse.bind(event, scene);
         const owner = overlayGeneration;
         pieces.push({ type: "held_mouse", input: event, continuation: false,
-          route: (over, now) => owner === overlayGeneration && paintedOverlay === state.overlays.at(-1)
+          // a right press that waited goes to the program it was read for, or nowhere: it opens no menu after the write
+          route: (over, now) => owner === overlayGeneration && paintedOverlay === state.overlays.at(-1) && (right === null || pointer.rightPressGoes(event, now) === "program")
             ? route(over, now) : pointer.cancel(now, event.at) });
       } else pieces.push({ type: "held_mouse", input: event, continuation: true, route: behindWrite.mouse.bind(event, scene) });
     }
@@ -505,7 +547,7 @@ export function startLoop(options: LoopOptions): Loop {
    */
   function holdUntil(writing: Promise<LayoutDone>, zoom?: { tab: string; pane: string; from: string | null }): void {
     if (behindWrite === null) {
-      behindWrite = { events: [], armed: state.armed, terminalArmed: state.armed, mouse: pointer.defer(), inputTarget: null, awaiting: null, bytes: 0, full: false, ready: false };
+      behindWrite = { events: [], armed: state.armed, terminalArmed: state.armed, mouse: pointer.defer(), refused: new Set(), inputTarget: null, awaiting: null, bytes: 0, full: false, ready: false };
       busyReported = false;
     }
     const held = behindWrite;
@@ -566,6 +608,7 @@ export function startLoop(options: LoopOptions): Loop {
     const inputTarget = behindWrite?.inputTarget ?? null;
     behindWrite = null;
     replaying = true;
+    owning++;
     try {
       let unassigned = 0;
       for (const event of waited) {
@@ -585,6 +628,7 @@ export function startLoop(options: LoopOptions): Loop {
       dispatch({ type: "armed", armed: armed && !full, at: clock.now() });
     } finally {
       replaying = false;
+      owning--;
     }
   }
 
@@ -647,12 +691,20 @@ export function startLoop(options: LoopOptions): Loop {
   function dispatch(event: ModelEvent, route?: DeferredMouse): void {
     const before = state;
     const step = reduce(state, event);
-    state = step.state;
-    if (state !== before && USER_EVENTS.has(event.type)) {
-      inputAhead = true;
-      inputMoves++;
+    const user = USER_EVENTS.has(event.type);
+    if (step.state !== before) {
+      if (user) {
+        inputAhead = true;
+        inputMoves++;
+      } else if (owning === 0) foreignChange();
     }
-    for (const effect of step.effects) perform(effect, route);
+    state = step.state;
+    if (user) owning++;
+    try {
+      for (const effect of step.effects) perform(effect, route);
+    } finally {
+      if (user) owning--;
+    }
     if (state !== before) {
       keepView();
       reshow();
@@ -660,6 +712,18 @@ export function startLoop(options: LoopOptions): Loop {
       owePass();
     }
     onceShown();
+  }
+
+  /** What the pointer meets for the model as it is, worked out now if the user's own input is ahead of the last frame: what comes next is not theirs. */
+  function keepAhead(): void {
+    if (inputAhead && !foreignAhead) met();
+  }
+
+  /** A change the user did not make is about to reach the model or the layout (`foreignAhead`). */
+  function foreignChange(): void {
+    keepAhead();
+    foreignAhead = true;
+    foreignMoves++;
   }
 
   /** The view written to this core's file when it changed; a failed write said once. */
@@ -855,11 +919,16 @@ export function startLoop(options: LoopOptions): Loop {
    * What the pointer meets: the last frame the host took (its cells, its layout and the overlay it showed), which is what
    * a person saw. Only when the user's own input moved the model past that frame (`inputAhead`: a right-click opened a
    * menu and the click on its entry came in the same read) does it meet what the next frame will show, composed for the
-   * model as it is now and measured without drawing, so the reads' cut changes nothing. A pane's picture (the rows and
-   * columns of its grid a cell maps to) is the taken frame's either way (`drawn`).
+   * model as it is now and measured without drawing, so the reads' cut changes nothing. That holds only while every
+   * change since that frame is the user's own: after one that is not (`foreignAhead`: the core ended a terminal and the
+   * rows moved) it meets what the user's moves alone had made, or the frame, and an overlay changed since is not the one
+   * it shows (`overlayShown`). A pane's picture (the rows and columns of its grid a cell maps to) is the taken frame's
+   * either way (`drawn`).
    */
   function met(): Met {
-    if (!inputAhead || !painter || !shape) return { hits, layout: paintedLayout, spots: paintedSpots, overlay: paintedOverlay };
+    const taken = { hits, layout: paintedLayout, spots: paintedSpots, overlay: paintedOverlay };
+    if (!inputAhead || !painter || !shape) return taken;
+    if (foreignAhead) return ahead ?? taken;
     if (ahead?.of === state && ahead.spots === shape.spots) return ahead;
     const size = host.size();
     const open = shape.spots.filter((spot) => !spot.covered);
@@ -954,21 +1023,26 @@ export function startLoop(options: LoopOptions): Loop {
     const events: InputEvent[] = framer.feed(bytes, clock.now());
     // only a refused paste whose end mark has not come yet is waited for: a paste begun after its end is framed as any paste
     pasteAt = framer.discarding() ? clock.now() + PASTE_ABANDON_MS : null;
-    for (const event of events) {
-      // the rest of a read that detached goes nowhere, as a later read would not
-      if (closing) break;
-      act(`read:${event.type}`);
-      seen.input(event);
-      if (event.type === "reply") {
-        if (event.kind === "scheme") host.refreshDisplay();
-        else panes.displayReply(event);
+    owning++;
+    try {
+      for (const event of events) {
+        // the rest of a read that detached goes nowhere, as a later read would not
+        if (closing) break;
+        act(`read:${event.type}`);
+        seen.input(event);
+        if (event.type === "reply") {
+          if (event.kind === "scheme") host.refreshDisplay();
+          else panes.displayReply(event);
+        }
+        if (event.type === "focus") {
+          panes.hostFocus(event.focused);
+          // the host lost its screen meanwhile, or redrew it: the next frame writes every cell
+          if (event.focused) painter?.invalidate();
+        }
+        userInput(event);
       }
-      if (event.type === "focus") {
-        panes.hostFocus(event.focused);
-        // the host lost its screen meanwhile, or redrew it: the next frame writes every cell
-        if (event.focused) painter?.invalidate();
-      }
-      userInput(event);
+    } finally {
+      owning--;
     }
   }
 
@@ -981,7 +1055,12 @@ export function startLoop(options: LoopOptions): Loop {
     }
     // what a write did never showed in time: what waited for it is refused, not sent elsewhere
     if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop(behindWrite.awaiting.kind === "gone" ? behindWrite.awaiting.done.dropInput ?? "not_closed" : "not_shown");
-    for (const event of framer.tick(now)) userInput(event);
+    owning++;
+    try {
+      for (const event of framer.tick(now)) userInput(event);
+    } finally {
+      owning--;
+    }
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
       framer.reset();
@@ -1049,6 +1128,7 @@ export function startLoop(options: LoopOptions): Loop {
     const frameShape = shape;
     const nextLayout = layoutOf(frameShape);
     const frameMoves = inputMoves;
+    const frameForeign = foreignMoves;
     passOwed = false;
     lastPass = now;
     passes++;
@@ -1105,8 +1185,15 @@ export function startLoop(options: LoopOptions): Loop {
       paintedOverlay = frameMenu;
       overlayGeneration++;
     }
+    // a picker's row that stood in for one the world took is in a frame now: the same overlay, seen
+    const shownPicker = pickerShown(state, frameMenu);
+    if (shownPicker !== state) {
+      state = shownPicker;
+      paintedOverlay = state.overlays.at(-1);
+    }
     // this frame shows what the user's input did up to its composition; input read during its write is past it again
     if (inputMoves === frameMoves) inputAhead = false;
+    if (foreignMoves === frameForeign) foreignAhead = false;
     ahead = null;
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
@@ -1249,6 +1336,10 @@ export function startLoop(options: LoopOptions): Loop {
     host.onResize((size) => {
       guard(() => {
         act("resize");
+        // nothing measured for the old size is met again, and none is measured before the layout follows the new one
+        ahead = null;
+        foreignAhead = true;
+        foreignMoves++;
         rebuildPainter();
         dispatch({ type: "resize", cols: size.cols, rows: size.rows, at: clock.now() });
         reshow();

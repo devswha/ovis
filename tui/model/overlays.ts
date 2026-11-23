@@ -11,7 +11,7 @@ import { charChords, chordId, keyChords } from "./keymap.ts";
 import { type ContextAction, contextCursor } from "./context.ts";
 import { MENU_ENTRIES, movedCursor } from "./menu.ts";
 import { type SwitcherEntry, switcherChoice } from "./switcher.ts";
-import { chosenAt, chosenHeading, type Place, pickerMatches, placeTarget, workspaceStep } from "./picker.ts";
+import { chosenAt, chosenHeading, type Place, pickerMatches, pickerRows, placeTarget, workspaceStep } from "./picker.ts";
 
 /** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text; `edited`: a key changed the text since. */
 export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly edited: boolean; readonly original: string }
@@ -38,8 +38,12 @@ export type Overlay =
   | { readonly kind: "context"; readonly target: Target; readonly entries: readonly ContextAction[]; readonly cursor: number; readonly at: { readonly x: number; readonly y: number }; readonly epoch: number; readonly created?: number }
   /** herdr's Open worktree...: a repository's checkouts (its workspace is `target`), a filter, the chosen one */
   | { readonly kind: "worktrees"; readonly target: Target; readonly checkouts: readonly CheckoutRow[]; readonly field: Field; readonly searching: boolean; readonly cursor: number }
-  /** the picker: the terminals it lists, its search, whether keys go to the search now, and the chosen one's pane (null: the first) */
-  | { readonly kind: "goto"; readonly field: Field; readonly searching: boolean; readonly places: readonly Place[]; readonly chosen: string | null }
+  /**
+   * the picker: the terminals it lists, its search, whether keys go to the search now, and the chosen row (picker.ts
+   * `pickerRows`; null: the first terminal). `unshown`: the world took the chosen row, and the row standing in for it has
+   * been in no frame yet: Enter and the keys that move from it wait until one shows it (reduce.ts `pickerShown`)
+   */
+  | { readonly kind: "goto"; readonly field: Field; readonly searching: boolean; readonly places: readonly Place[]; readonly chosen: string | null; readonly unshown?: true }
   /** herdr's menu (menu.ts `MENU_ENTRIES`); `cursor`: the index of the entry Enter chooses */
   | { readonly kind: "menu"; readonly cursor: number }
   /** herdr's switcher on a narrow screen (switcher.ts): the cursor over its entries, the world's places when it was last given them */
@@ -189,6 +193,16 @@ export function pickerList(overlay: Picker): Place[] {
   return pickerMatches(overlay.places, overlay.field.graphemes.join(""));
 }
 
+/** The picker with `chosen` as the user's own choice (a key, the pointer, a search): that row is theirs, whatever stood in before. */
+export function pickerChosen({ unshown: _stoodIn, ...picker }: Picker, chosen: string | null): Picker {
+  return { ...picker, chosen };
+}
+
+/** The row the picker shows chosen: the kept one, else the first terminal; null when nothing matches. */
+export function pickerShownChoice(overlay: Picker): string | null {
+  return overlay.chosen ?? pickerList(overlay)[0]?.id ?? null;
+}
+
 /** The picker's answer to choosing its match `at`: closed, with focus moving there; kept open when there is no such match. */
 export function pickerChoice(overlay: Picker, at: number): OverlayAnswer {
   const place = pickerList(overlay)[at];
@@ -205,36 +219,38 @@ function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
   const at = chosenAt(matches, overlay.chosen);
   if (overlay.searching) {
     if (isEnter(input)) return { overlay: { ...overlay, searching: false }, effects: [] };
-    if (input.kind === "key" && input.event.key === "ESCAPE" && Object.keys(input.event.mods).length === 0) return { overlay: { ...overlay, searching: false, field: field(""), chosen: null }, effects: [] };
+    if (input.kind === "key" && input.event.key === "ESCAPE" && Object.keys(input.event.mods).length === 0) return { overlay: { ...pickerChosen(overlay, null), searching: false, field: field("") }, effects: [] };
     const next = editField(overlay.field, input);
-    return { overlay: next === overlay.field ? overlay : { ...overlay, field: next, chosen: null }, effects: [] };
+    return { overlay: next === overlay.field ? overlay : { ...pickerChosen(overlay, null), field: next }, effects: [] };
   }
+  const chord = inputChords(input).find((one) => !one.ctrl && !one.alt && !one.meta);
+  if (chord?.key === "/") {
+    const rest = input.kind === "text" ? input.event.text.slice(1) : "";
+    return { overlay: { ...(rest === "" ? overlay : { ...pickerChosen(overlay, null), field: editField(overlay.field, { kind: "text", event: { ...input.event, text: rest } as TextInput }) }), searching: true }, effects: [] };
+  }
+  // the row shown chosen is not the one in the frame a person last saw: nothing acts on it until a frame shows it
+  if (overlay.unshown) return { overlay, effects: [] };
   const heading = chosenHeading(overlay.chosen);
   // a heading the pointer chose: Enter goes to that workspace, a key moves on from its first terminal
   if (heading !== null && isEnter(input)) return { overlay: null, effects: [], choice: { kind: "select", target: { kind: "workspace", id: heading } } };
   if (isEnter(input)) return pickerChoice(overlay, at);
-  const chord = inputChords(input).find((one) => !one.ctrl && !one.alt && !one.meta);
-  if (chord?.key === "/") {
-    const rest = input.kind === "text" ? input.event.text.slice(1) : "";
-    return { overlay: { ...overlay, searching: true, ...(rest === "" ? {} : { field: editField(overlay.field, { kind: "text", event: { ...input.event, text: rest } as TextInput }), chosen: null }) }, effects: [] };
-  }
   const key = input.kind === "key" && Object.keys(input.event.mods).length === 0 ? input.event.key : "";
   const row = key === "ARROW_DOWN" || chord?.key === "j" ? 1 : key === "ARROW_UP" || chord?.key === "k" ? -1 : 0;
   const side = key === "ARROW_RIGHT" ? 1 : key === "ARROW_LEFT" ? -1 : 0;
   if (row !== 0) {
     // as herdr's: the rows are each workspace's heading then its terminals, and the arrows visit every one of them
-    const rows = matches.flatMap((place, index) => [...(index === 0 || matches[index - 1]!.workspace !== place.workspace ? [`heading:${place.workspace}`] : []), place.id]);
+    const rows = pickerRows(matches);
     const here = rows.indexOf(heading !== null ? `heading:${heading}` : matches[at]?.id ?? "");
     // herdr's stop at both ends
     const next = here + row;
     if (here < 0 || next < 0 || next >= rows.length) return { overlay, effects: [] };
-    return { overlay: { ...overlay, chosen: rows[next]! }, effects: [] };
+    return { overlay: pickerChosen(overlay, rows[next]!), effects: [] };
   }
   // left and right: the previous or next workspace's first terminal, from its heading as from its terminals; none past the ends
   const from = heading !== null ? matches.findIndex((place) => place.workspace === heading) : at;
   if (from < 0 || side === 0) return { overlay, effects: [] };
   const next = workspaceStep(matches, from, side);
-  return next < 0 ? { overlay, effects: [] } : { overlay: { ...overlay, chosen: matches[next]!.id }, effects: [] };
+  return next < 0 ? { overlay, effects: [] } : { overlay: pickerChosen(overlay, matches[next]!.id), effects: [] };
 }
 
 /** The switcher's answer to choosing entry `at`: closed, going there or running it. */

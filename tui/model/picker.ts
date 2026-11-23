@@ -33,10 +33,18 @@ export function pickerMatches(places: readonly Place[], query: string): Place[] 
   return wanted.length === 0 ? [...places] : places.filter((place) => holds(place.text, wanted));
 }
 
-/** The index of the chosen terminal among `matches`: the one kept by `chosen`, else the first; -1 when nothing matches. */
 /** A workspace's heading row chosen in the picker (herdr's pointer chooses headings too): its id, else null. */
 export const chosenHeading = (chosen: string | null): string | null => (chosen?.startsWith("heading:") ? chosen.slice("heading:".length) : null);
 
+/**
+ * The picker's rows for `matches`, each by what it is: a workspace's heading (`heading:<workspace>`) before the first of
+ * its terminals, then each terminal's pane. What is chosen is kept as one of these, wherever the world moves its row.
+ */
+export function pickerRows(matches: readonly Place[]): string[] {
+  return matches.flatMap((place, index) => [...(index === 0 || matches[index - 1]!.workspace !== place.workspace ? [`heading:${place.workspace}`] : []), place.id]);
+}
+
+/** The index of the chosen terminal among `matches`: the one kept by `chosen`, else the first; -1 when nothing matches or a heading is chosen. */
 export function chosenAt(matches: readonly Place[], chosen: string | null): number {
   if (matches.length === 0 || chosenHeading(chosen) !== null) return -1;
   const at = chosen === null ? -1 : matches.findIndex((place) => place.id === chosen);
