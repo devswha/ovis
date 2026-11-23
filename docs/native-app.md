@@ -484,6 +484,16 @@ app's own page (the released front page does), bring the SSH setup up over home 
 SSH](#pcs-over-ssh)): Back or Cancel there is home again as it was, and the current PC is untouched. A pairing link tapped outside the app (Android) still waits for the app's own page, which
 checks it and opens its PC.
 
+`HerdrShell.identify` (both platforms) lets a PC's own page say which PC it is: its relay ID, as its own
+`/api/health` gives it to that page (`web_ui.server_id`, authenticated only), and its name. The app keeps them
+(`ids`, and the name only where it keeps none) for the saved PC it shows, and only when the page loaded now is on
+that PC's own address (`Home.identifiedKey`): never for a relay PC's scope or the hosted app, never for another
+saved PC. `getState` hands `ids` to the app's own pages alone (the hosted app's origin and the bundled page,
+`Home.ownPage`), so home's My PCs lists a PC saved by the relay and by its Tailscale address, over SSH or at another
+address as one row, opening by the way whose page loaded last (the saved list's order). A PC's page reads no other
+PC's ID. A saved PC gains its ID the next time its page loads in an app with `identify`; an older entry has none
+until then and stays a row of its own.
+
 Known limits: the bridge's reach is what it is for every PC's page (on iOS by host and into subframes;
 on an Android WebView without `WEB_MESSAGE_LISTENER` every frame), and home adds no new kind of caller. On
 iOS the hosted page has to draw the way back from home while choosing (`backToCurrent`); a hosted page

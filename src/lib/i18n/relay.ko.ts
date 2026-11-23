@@ -179,4 +179,6 @@ export const RELAY_KO: Record<string, string> = {
   "Remove it in Manage account": "계정 관리에서 뺄 수 있어요",
   "SSH PC": "SSH로 추가한 PC",
   "Not removed here": "여기서는 못 지워요",
+  "This is the PC in use now. Forget every way it is saved ({ways})?": "지금 쓰는 PC예요. 저장된 방법({ways})을 모두 지울까요?",
+  "Forget every way this PC is saved ({ways})?": "이 PC의 저장된 방법({ways})을 모두 지울까요?",
 };

@@ -179,4 +179,6 @@ export const RELAY_ZH: Record<string, string> = {
   "Remove it in Manage account": "可在管理账号中移除",
   "SSH PC": "SSH 电脑",
   "Not removed here": "无法在此移除",
+  "This is the PC in use now. Forget every way it is saved ({ways})?": "这是正在使用的电脑。要移除它保存的所有连接方式（{ways}）吗？",
+  "Forget every way this PC is saved ({ways})?": "要移除这台电脑保存的所有连接方式（{ways}）吗？",
 };

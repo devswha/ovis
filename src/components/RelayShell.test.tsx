@@ -1708,6 +1708,37 @@ describe("the hosted front page", () => {
       expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay"]]);
     });
 
+    it("lists a PC saved by the relay and by its Tailscale address as one row, both ways tagged, opening by the way that loaded last, and forgets every way after one question", async () => {
+      await withApp(async () => {
+        const tail = "https://macbookpro.tail1e211e.ts.net:17317", scope = `https://app.ovis.sh/s/${ids.mac}/`, desk = "https://desk.tail1e211e.ts.net";
+        let saved = [tail, scope, desk];
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
+          method === "getState" ? { saved, names: { [desk]: "hasang-uui-MacBookPro" }, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        const forgot: string[] = [];
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
+        // the Mac once, its Tailscale address on its row; a PC saved with no ID stays its own row, whatever its name
+        expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscalemacbookpro.tail1e211e.ts.net:17317"], ["tailscale", "hasang-uui-MacBookProTailscaledesk.tail1e211e.ts.net"]]);
+        // its Tailscale page loaded last in the app: the row opens it there
+        await act(async () => { openers()[0]!.props.onClick(); });
+        await act(async () => { await Promise.resolve(); });
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
+        await act(async () => { renderer!.unmount(); });
+        // its relay page loaded last: the row is that page
+        saved = [scope, tail, desk];
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
+        expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+
+        await forgetPcs();
+        const ask = () => renderer!.root.findAll((node) => node.props["data-forget-ask"] !== undefined && shown(node));
+        await act(async () => { forgets()[0]!.props.onClick(); });
+        expect(ask().map(textOf)).toEqual(["Forget every way this PC is saved (Relay · Tailscale)?ForgetCancel"]);
+        expect(forgot).toEqual([]);
+        await act(async () => { ask()[0]!.findAll((node) => node.type === "button").find((node) => textOf(node) === "Forget")!.props.onClick(); });
+        expect(forgot).toEqual([ids.mac]);
+        expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
+      });
+    });
+
     it("offers Forget PCs in the signed-in menu too", async () => {
       await mount({ ...signedIn(four()), onForgetSaved: none });
       await forgetPcs();

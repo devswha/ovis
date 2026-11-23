@@ -179,4 +179,6 @@ export const RELAY_JA: Record<string, string> = {
   "Remove it in Manage account": "アカウント管理で外せます",
   "SSH PC": "SSH の PC",
   "Not removed here": "ここでは削除できません",
+  "This is the PC in use now. Forget every way it is saved ({ways})?": "いま使っているPCです。保存された接続方法（{ways}）をすべて削除しますか？",
+  "Forget every way this PC is saved ({ways})?": "このPCの保存された接続方法（{ways}）をすべて削除しますか？",
 };

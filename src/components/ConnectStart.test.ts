@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
-import { pcsShown, phoneShellState, phoneSavedPcs, relayTabPcs } from "./ConnectStart.tsx";
+import { onePcRows, openWay, pcsShown, phoneShellState, phoneSavedPcs, relayTabPcs } from "./ConnectStart.tsx";
 
 const id = (letter: string) => letter.repeat(32);
 const accountPc = (letter: string, patch: Partial<MyPc> = {}) => ({ server_id: id(letter), name: `pc-${letter}`, state: "paired", paired: false, listed: true, linked: false, join: { relay: "wss://relay.ovis.sh" }, ...patch }) as unknown as MyPc;
@@ -78,6 +78,44 @@ describe("the phone app's PCs on My PCs", () => {
     const rows = phoneSavedPcs(["http://192.168.0.5:7317"], { "http://192.168.0.5:7317": "home-nas" }, "https://app.ovis.sh");
     expect(rows.map((row) => [row.name, row.host, row.way])).toEqual([["home-nas", "192.168.0.5:7317", "address"]]);
   });
+
+  it("knows a saved PC's relay ID only where its own page said one the app kept for it", () => {
+    const saved = ["https://mac.tail1e211e.ts.net:17317", "http://192.168.0.5:7317", "http://127.0.0.1:47317"];
+    const rows = phoneSavedPcs(saved, {}, "https://app.ovis.sh", { [saved[0]!]: id("a"), [saved[1]!]: "not-an-id", "https://other.example": id("b") });
+    expect(rows.map((row) => row.serverId)).toEqual([id("a"), undefined, undefined]);
+  });
+});
+
+describe("one PC, one row", () => {
+  const relay = (letter: string, name: string) => ({ server_id: id(letter), name, saved: false });
+  const saved = (origin: string, way: "tailscale" | "ssh" | "address", serverId?: string) => ({ origin, host: new URL(origin).host, name: new URL(origin).hostname.split(".")[0]!, way, ...(serverId ? { serverId } : {}) });
+  const tailscale = saved("https://macbookpro.tail1e211e.ts.net:17317", "tailscale", id("a"));
+
+  it("puts a way the app saved with the relay row of the ID its own page said, and the ways of one ID together", () => {
+    const ssh = saved("http://127.0.0.1:47317", "ssh", id("c")), lan = saved("http://192.168.0.5:7317", "address", id("c"));
+    const groups = onePcRows([relay("a", "hasang-uui-MacBookPro"), relay("b", "nuc")], [tailscale, ssh, lan]);
+    expect(groups.map((group) => [group.relay?.name ?? null, group.phones.map((pc) => pc.way)])).toEqual([["hasang-uui-MacBookPro", ["tailscale"]], ["nuc", []], [null, ["ssh", "address"]]]);
+  });
+
+  it("never by name: a way with no ID, or another ID, stays a row of its own", () => {
+    const same = { ...saved("https://hasang-uui-macbookpro.tail1e211e.ts.net", "tailscale"), name: "hasang-uui-MacBookPro" };
+    const other = saved("https://desk.tail1e211e.ts.net", "tailscale", id("d"));
+    const groups = onePcRows([relay("a", "hasang-uui-MacBookPro")], [same, other]);
+    expect(groups.map((group) => [group.relay?.server_id ?? null, group.phones.map((pc) => pc.origin)])).toEqual([[id("a"), []], [null, [same.origin]], [null, [other.origin]]]);
+  });
+
+  it("opens by the way whose page loaded in the app last, else by the relay", () => {
+    const app = "https://app.ovis.sh";
+    const group = { relay: relay("a", "mac"), phones: [tailscale] };
+    const scope = `${app}/s/${id("a")}/`;
+    expect(openWay(group, [tailscale.origin, scope], app)).toBe(tailscale);
+    expect(openWay(group, [scope, tailscale.origin], app)).toBeNull();
+    expect(openWay(group, [], app)).toBeNull();
+    // with no relay row, the saved way that loaded last, else the first
+    const ssh = saved("http://127.0.0.1:47317", "ssh", id("c")), lan = saved("http://192.168.0.5:7317", "address", id("c"));
+    expect(openWay({ phones: [ssh, lan] }, [lan.origin, ssh.origin], app)).toBe(lan);
+    expect(openWay({ phones: [ssh, lan] }, [], app)).toBe(ssh);
+  });
 });
 
 describe("finding a PC on a long My PCs", () => {
@@ -108,6 +146,11 @@ describe("the phone app's own word on what is open", () => {
     expect(phoneShellState({ saved: [], choosing: false, current: "https://desk.tail1e211e.ts.net" }, app).current).toBeNull();
     expect(phoneShellState({ saved: [], choosing: true, current: "" }, app).current).toBeNull();
     expect(phoneShellState({ saved: [], choosing: true, current: `${app}/` }, app).current).toBeNull();
+  });
+
+  it("keeps the app's saved list in its order, the newest first, for the way a PC opens by", () => {
+    expect(phoneShellState({ saved: ["https://b.example", `${app}/s/${id("a")}/`] }, app).recent).toEqual(["https://b.example", `${app}/s/${id("a")}/`]);
+    expect(phoneShellState({}, app).recent).toEqual([]);
   });
 
   it("passes on an SSH PC whose address on the phone another app took", () => {

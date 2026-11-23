@@ -5191,7 +5191,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Tailscale is off shows Open Tailscale instead of trying it; an SSH PC whose address another app on the phone
   took says so above the list; and while the app keeps a PC open as the person chooses another, My PCs marks it In use
   now and its Back goes back to it (backToCurrent), the app's own connect page's ‹ PC; the In use now row goes back too,
-  rather than load that PC again. With no network on the device (the browser's online state: only an explicit offline
+  rather than load that PC again. One PC is one row: in the phone app a PC saved by several ways (the relay, its
+  Tailscale address, SSH, another address) is listed once, with each way's tag (Relay · Tailscale), when the page of
+  each saved way told the app that PC's relay ID (never by name: a way with no ID stays a row of its own); its name and
+  word are the relay's, it opens by the way whose page loaded last in the app, else the relay, and its Forget asks once
+  before it forgets every way this screen can. A browser has only the relay's rows, so nothing there is put together.
+  With no network on the device (the browser's online state: only an explicit offline
   counts), My PCs says so in one line with Try again (this phone in the app, this device in a browser), in place of No
   PC is online and the account service's failure, as Slack and WhatsApp say it over a list they keep; it still lists
   every PC this device knows, the account's ones from its last read that answered (kept on the device for that account

@@ -21,16 +21,21 @@ const CONNECT_WAYS: readonly ConnectWay[] = ["relay", "tailscale", "ssh"];
 /** The phone app's shell plugin (app/android HerdrShellPlugin): the PCs this phone opened, and whether Tailscale is on. */
 export const SHELL = "HerdrShell";
 
-/** A PC the phone app saved, by the way it connects: at a Tailscale address, added over SSH (a loopback address on the phone), or at any other address. */
-export interface PhoneSavedPc { readonly origin: string; readonly host: string; readonly name: string; readonly way: "tailscale" | "ssh" | "address" }
+/**
+ * A PC the phone app saved, by the way it connects: at a Tailscale address, added over SSH (a loopback address on the
+ * phone), or at any other address; `serverId`, the relay ID its own page told the app (HerdrShell identify), where it did.
+ */
+export interface PhoneSavedPc { readonly origin: string; readonly host: string; readonly name: string; readonly way: "tailscale" | "ssh" | "address"; readonly serverId?: string }
+
+const SERVER_ID = /^[0-9a-f]{32}$/;
 
 /**
  * The PCs the phone app opened (app/web/shell.js `tabPcs`, the app's own lists), each by the way it connects, for My
  * PCs: a phone has no list of its tailnet's machines, only the ones opened here. A page of the app's origin
- * (`appOrigin`: the relay's, listed by the relay) and an unreadable entry are on neither. `saved` and `names` as
+ * (`appOrigin`: the relay's, listed by the relay) and an unreadable entry are on neither. `saved`, `names` and `ids` as
  * HerdrShell's getState gives them; a MagicDNS name goes by its first label, an address by itself.
  */
-export function phoneSavedPcs(saved: readonly string[], names: Readonly<Record<string, string>>, appOrigin: string): PhoneSavedPc[] {
+export function phoneSavedPcs(saved: readonly string[], names: Readonly<Record<string, string>>, appOrigin: string, ids: Readonly<Record<string, string>> = {}): PhoneSavedPc[] {
   return saved.flatMap((origin) => {
     let url: URL;
     try { url = new URL(origin); } catch { return []; }
@@ -38,8 +43,46 @@ export function phoneSavedPcs(saved: readonly string[], names: Readonly<Record<s
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const way = tailnetHost(host) ? "tailscale" : isLoopbackHost(host) ? "ssh" : "address";
     const short = host.toLowerCase().endsWith(".ts.net") ? host.split(".")[0]! : url.host;
-    return [{ origin, host: url.host, name: names[origin] || short, way }];
+    const serverId = Object.hasOwn(ids, origin) && SERVER_ID.test(ids[origin]!) ? ids[origin]! : undefined;
+    return [{ origin, host: url.host, name: names[origin] || short, way, ...(serverId === undefined ? {} : { serverId }) }];
   });
+}
+
+/** One PC of My PCs: its relay row, and the ways the phone app saved it by whose own page said that PC's relay ID. */
+export interface PcGroup { readonly relay?: RelayTabPc | undefined; readonly phones: readonly PhoneSavedPc[] }
+
+/**
+ * One row per PC: a way the phone app saved whose own page said its relay ID (PhoneSavedPc `serverId`) goes with the
+ * relay row of that ID, else with the other saved ways of the same ID. A way with no ID is a row of its own, never put
+ * with another by its name. The relay rows first, in their order, then the rest in the app's.
+ */
+export function onePcRows(relay: readonly RelayTabPc[], phones: readonly PhoneSavedPc[]): PcGroup[] {
+  const groups: { relay?: RelayTabPc; phones: PhoneSavedPc[] }[] = relay.map((row) => ({ relay: row, phones: [] }));
+  const byId = new Map(groups.map((group) => [group.relay!.server_id, group]));
+  for (const pc of phones) {
+    const same = pc.serverId === undefined ? undefined : byId.get(pc.serverId);
+    if (same) { same.phones.push(pc); continue; }
+    const own = { phones: [pc] };
+    groups.push(own);
+    if (pc.serverId !== undefined) byId.set(pc.serverId, own);
+  }
+  return groups;
+}
+
+/**
+ * The way a PC saved by several opens by: the one whose page loaded in the app last (`recent`, the app's saved list,
+ * newest first, which moves an entry to the front each time its page loads, a relay PC's by its scope on `appOrigin`),
+ * else the relay; null is the relay. With no relay row, the first saved way when none loaded yet.
+ */
+export function openWay(group: PcGroup, recent: readonly string[], appOrigin: string): PhoneSavedPc | null {
+  const rank = (key: string): number => { const at = recent.indexOf(key); return at < 0 ? Infinity : at; };
+  let best: PhoneSavedPc | null = null;
+  let bestRank = group.relay ? rank(appOrigin + serverScopePath(group.relay.server_id)) : Infinity;
+  for (const pc of group.phones) {
+    const at = rank(pc.origin);
+    if (at < bestRank) { best = pc; bestRank = at; }
+  }
+  return best ?? (group.relay ? null : group.phones[0] ?? null);
 }
 
 /** what this device's own check last found of a PC, where it settled it: it answered, or the relay found it off */
@@ -79,11 +122,17 @@ type PcWord = "online" | "off" | "update" | "removed" | "in-use";
 
 const WORD_DOT: Partial<Record<PcWord, StatusDotState>> = { online: "ready", off: "offline", update: "needs-you" };
 
+type PcWay = "relay" | "tailscale" | "ssh" | "address";
+
 /** One row of My PCs: one row component fed by the relay's PCs and the phone app's. */
 interface PhonePc {
   readonly key: string;
   readonly name: string;
-  readonly way: "relay" | "tailscale" | "ssh" | "address";
+  readonly way: PcWay;
+  /** a PC saved by several ways: each, the first `way` */
+  readonly ways?: readonly PcWay[];
+  /** the ways its Forget forgets, where more than one: it asks once first */
+  readonly forgets?: readonly PcWay[];
   readonly word?: PcWord | undefined;
   readonly address?: string | undefined;
   /** a relay PC's own page, or what opening it does */
@@ -103,7 +152,13 @@ interface PhonePc {
  */
 function PcRow({ pc, editing = false, asking = false, onAsk, onKeep }: { readonly pc: PhonePc; readonly editing?: boolean; readonly asking?: boolean; readonly onAsk: () => void; readonly onKeep: () => void }) {
   const t = useT();
-  const tag = { relay: t("Relay"), tailscale: "Tailscale", ssh: "SSH", address: t("Address") }[pc.way];
+  const tagOf = (way: PcWay): string => ({ relay: t("Relay"), tailscale: "Tailscale", ssh: "SSH", address: t("Address") }[way]);
+  const tag = (pc.ways ?? [pc.way]).map(tagOf).join(" · ");
+  // the PC in use, or one whose Forget forgets several ways, asks once more in the row first
+  const several = (pc.forgets?.length ?? 0) > 1 ? (pc.forgets ?? []).map(tagOf).join(" · ") : null;
+  const asks = pc.word === "in-use" || several !== null;
+  const question = several === null ? t("This is the PC in use now. Forget it?")
+    : pc.word === "in-use" ? t("This is the PC in use now. Forget every way it is saved ({ways})?", { ways: several }) : t("Forget every way this PC is saved ({ways})?", { ways: several });
   const word = pc.word === undefined ? null : { online: t("On|pc state"), off: t("Off|pc state"), update: t("Update needed|pc state"), removed: t("Removed|pc state"), "in-use": t("In use now|pc state") }[pc.word];
   const dot = pc.word === undefined ? undefined : WORD_DOT[pc.word];
   const inside = (
@@ -127,10 +182,10 @@ function PcRow({ pc, editing = false, asking = false, onAsk, onKeep }: { readonl
         : pc.href !== undefined ? <a className="relay-add-saved-pc" href={pc.href} onClick={pc.onLink}>{inside}</a>
         : <button type="button" className="relay-add-saved-pc" onClick={pc.open}>{inside}</button>}
       {kept !== undefined && <p className="my-pc-kept" data-kept={kept}>{kept === "account" ? `${t("Account PC")} · ${t("Remove it in Manage account")}` : `${t("SSH PC")} · ${t("Not removed here")}`}</p>}
-      {forget && <button type="button" className="btn btn-ghost phone-pc-forget" data-action="forget-pc" aria-label={t("Forget {name}", { name: pc.name })} aria-expanded={pc.word === "in-use" ? asking : undefined} onClick={pc.word === "in-use" ? onAsk : forget}>{t("Forget|this phone's PC")}</button>}
+      {forget && <button type="button" className="btn btn-ghost phone-pc-forget" data-action="forget-pc" aria-label={t("Forget {name}", { name: pc.name })} aria-expanded={asks ? asking : undefined} onClick={asks ? onAsk : forget}>{t("Forget|this phone's PC")}</button>}
       {forget && asking && (
         <div className="my-pc-ask" role="group" aria-label={pc.name} data-forget-ask="">
-          <p className="relay-shell-copy">{t("This is the PC in use now. Forget it?")}</p>
+          <p className="relay-shell-copy">{question}</p>
           <button type="button" className="btn btn-danger" onClick={forget}>{t("Forget|this phone's PC")}</button>
           <button type="button" className="btn" onClick={onKeep}>{t("Cancel")}</button>
         </div>
@@ -140,7 +195,7 @@ function PcRow({ pc, editing = false, asking = false, onAsk, onKeep }: { readonl
 }
 
 /** HerdrShell getState as the phone app answers it (app/android HerdrShellPlugin, app/ios HerdrShellPlugin.swift). */
-interface ShellAnswer { readonly saved?: string[]; readonly names?: Record<string, string>; readonly choosing?: boolean; readonly current?: string; readonly kind?: string; readonly failure?: string }
+interface ShellAnswer { readonly saved?: string[]; readonly names?: Record<string, string>; readonly ids?: Record<string, string>; readonly choosing?: boolean; readonly current?: string; readonly kind?: string; readonly failure?: string }
 
 /**
  * The PC the phone app still has open while the person chooses another: a relay PC of this app by its id, any other by
@@ -152,12 +207,13 @@ export type CurrentPc = { readonly serverId: string } | { readonly origin: strin
 const READ_WAIT_MS = 1_500;
 
 /**
- * What the phone app says it has: the PCs it saved (phoneSavedPcs); `current`, the PC it keeps open while the person
+ * What the phone app says it has: the PCs it saved (phoneSavedPcs), and `recent`, its whole saved list in its order (the
+ * way a PC opens by, openWay); `current`, the PC it keeps open while the person
  * chooses another (HerdrShell chooseAnother: `choosing` with `current`, app/web/connect.js showBackToPc), a relay PC by
  * its page on this app's origin and any other by its address; and `sshPort`, the address an SSH PC opens on that another
  * app on the phone took first, so the app did not open it (OvisSshPlugin.listen, getState `kind` "ssh-port").
  */
-export function phoneShellState(state: ShellAnswer, appOrigin: string): { readonly pcs: PhoneSavedPc[]; readonly current: CurrentPc | null; readonly sshPort: string | null } {
+export function phoneShellState(state: ShellAnswer, appOrigin: string): { readonly pcs: PhoneSavedPc[]; readonly recent: readonly string[]; readonly current: CurrentPc | null; readonly sshPort: string | null } {
   let current: CurrentPc | null = null;
   if (state.choosing === true && state.current) {
     try {
@@ -166,7 +222,7 @@ export function phoneShellState(state: ShellAnswer, appOrigin: string): { readon
       current = url.origin !== appOrigin ? { origin: url.origin, scope: serverIdOfPath(url.pathname) } : serverId === null ? null : { serverId };
     } catch { current = null; }
   }
-  return { pcs: phoneSavedPcs(state.saved ?? [], state.names ?? {}, appOrigin), current, sshPort: state.kind === "ssh-port" && state.failure ? state.failure : null };
+  return { pcs: phoneSavedPcs(state.saved ?? [], state.names ?? {}, appOrigin, state.ids ?? {}), recent: state.saved ?? [], current, sshPort: state.kind === "ssh-port" && state.failure ? state.failure : null };
 }
 
 /**
@@ -177,7 +233,7 @@ export function phoneShellState(state: ShellAnswer, appOrigin: string): { readon
  */
 export function usePhoneSaved(native: boolean): ReturnType<typeof phoneShellState> & { readonly read: boolean; readonly reread: () => void } {
   const asks = native && hasNativeMethod(SHELL, "getState");
-  const [shell, setShell] = useState<ReturnType<typeof phoneShellState>>({ pcs: [], current: null, sshPort: null });
+  const [shell, setShell] = useState<ReturnType<typeof phoneShellState>>({ pcs: [], recent: [], current: null, sshPort: null });
   const [read, setRead] = useState(!asks);
   const [round, setRound] = useState(0);
   useEffect(() => {
@@ -322,20 +378,41 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
     forget: pc.way === "ssh" ? undefined : forgetSaved(pc),
     ...(pc.way === "ssh" ? { kept: "ssh" as const } : {}),
   });
-  const rows: PhonePc[] = [
-    ...relayTabPcs(devices, accountPcs, removed, checked, { known: knownPcs, unread: accountUnread }).map((pc): PhonePc => {
-      const used = pc.server_id === inUse || (current !== null && "serverId" in current && current.serverId === pc.server_id);
-      return {
-        key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
-        word: used ? "in-use" : pc.status,
-        forget: pc.status === "removed" ? () => { markRemovedPc(pc.server_id, "hidden"); setRemoved(removedPcs()); }
-          : pc.saved && onForget ? () => onForget(pc.server_id) : undefined,
-        ...(pc.saved || pc.status === "removed" ? {} : { kept: "account" as const }),
-      };
-    }),
-    ...phone.pcs.filter((pc) => pc.way === "tailscale").map(fromPhone),
-    ...phone.pcs.filter((pc) => pc.way !== "tailscale").map(fromPhone),
-  ];
+  const relayUsed = (pc: RelayTabPc): boolean => pc.server_id === inUse || (current !== null && "serverId" in current && current.serverId === pc.server_id);
+  const forgetRelay = (pc: RelayTabPc): (() => void) | undefined => pc.status === "removed" ? () => { markRemovedPc(pc.server_id, "hidden"); setRemoved(removedPcs()); }
+    : pc.saved && onForget ? () => onForget(pc.server_id) : undefined;
+  const fromRelay = (pc: RelayTabPc): PhonePc => {
+    const used = relayUsed(pc);
+    return {
+      key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
+      word: used ? "in-use" : pc.status, forget: forgetRelay(pc), ...(pc.saved || pc.status === "removed" ? {} : { kept: "account" as const }),
+    };
+  };
+  // one PC saved by several ways (onePcRows): its relay row's name and word, every way's tag, the address of a saved way,
+  // and it opens by the way that loaded last (openWay); Forget forgets each way this screen can (an SSH PC's goes from
+  // the app's own screen, with its keys), asking once first when that is more than one
+  const together = (group: PcGroup): PhonePc => {
+    const { relay, phones } = group;
+    const used = (relay !== undefined && relayUsed(relay)) || phones.some((pc) => isCurrent(pc.origin, current));
+    const by = openWay(group, phone.recent, window.location.origin);
+    const parts = [...(relay === undefined ? [] : [[forgetRelay(relay), "relay"] as const]), ...phones.map((pc) => [pc.way === "ssh" ? undefined : forgetSaved(pc), pc.way] as const)]
+      .flatMap(([forget, way]) => forget === undefined ? [] : [{ forget, way }]);
+    const ways = [...new Set<PcWay>([...(relay === undefined ? [] : ["relay" as const]), ...phones.map((pc) => pc.way)])];
+    const tailnet = phones.find((pc) => pc.way === "tailscale");
+    return {
+      key: relay?.server_id ?? phones[0]!.serverId ?? phones[0]!.origin, name: relay?.name ?? phones[0]!.name, way: ways[0]!, ways, address: (by ?? phones[0])?.host,
+      word: used ? "in-use" : relay?.status,
+      ...(used && goBack ? { open: goBack } : by === null ? { href: serverScopePath(relay!.server_id), onLink: offlineLink } : { open: () => open.take(new URL(by.origin), { askTailscale: by.way === "tailscale" }) }),
+      forget: parts.length === 0 ? undefined : () => { for (const part of parts) part.forget(); },
+      // nothing here to forget: an account PC's row says so, else an SSH PC's
+      ...(parts.length > 0 ? {} : relay !== undefined && !relay.saved && relay.status !== "removed" ? { kept: "account" as const } : phones.some((pc) => pc.way === "ssh") ? { kept: "ssh" as const } : {}),
+      forgets: [...new Set(parts.map((part) => part.way))],
+      data: { "data-pc-ways": ways.join(" "), ...(tailnet ? { "data-tailnet-pc": tailnet.origin } : {}) },
+    };
+  };
+  const tailscaleFirst = [...phone.pcs.filter((pc) => pc.way === "tailscale"), ...phone.pcs.filter((pc) => pc.way !== "tailscale")];
+  const rows: PhonePc[] = onePcRows(relayTabPcs(devices, accountPcs, removed, checked, { known: knownPcs, unread: accountUnread }), tailscaleFirst).map((group) =>
+    group.phones.length === 0 && group.relay ? fromRelay(group.relay) : group.relay === undefined && group.phones.length === 1 ? fromPhone(group.phones[0]!) : together(group));
   const forgettable = rows.some((row) => row.forget !== undefined);
   if (editing && !forgettable) setEditing(false);
   if (asking !== null && !rows.some((row) => row.key === asking && row.forget !== undefined)) setAsking(null);

@@ -17,7 +17,8 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "retry", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "goHome", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openDemo", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "openSshSetup", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "openSshSetup", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "identify", returnType: CAPPluginReturnPromise)
     ]
 
     /// The view controller whose page asks.
@@ -34,7 +35,11 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func getState(_ call: CAPPluginCall) {
+        // the relay ID each saved PC's own page said it has, for My PCs to list a PC saved by several ways once: only to
+        // the app's own pages, never to a PC's page, which has this bridge too
+        let ids: [String: String] = Home.ownPage(bridge?.webView?.url, appOrigin: PCStore.appOrigin) ? PCStore.ids : [:]
         call.resolve([
+            "ids": ids,
             "saved": PCStore.saved,
             "names": PCStore.names,
             "current": PCStore.current ?? "",
@@ -95,6 +100,21 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
             if let name { PCStore.names[key] = name }
             PCStore.open(key, start: text)
         }
+    }
+
+    /// A PC's own page says which PC it is: `server_id`, its relay ID as its own /api/health gave it to that page, and
+    /// `name`. Kept only for the saved PC the app shows when the page loaded now is on that PC's own address
+    /// (Home.identifiedKey), so a page speaks for its own PC alone, never for another saved one; My PCs then lists that
+    /// PC once with the relay row of the same ID.
+    @objc func identify(_ call: CAPPluginCall) {
+        guard let key = Home.identifiedKey(bridge?.webView?.url, current: PCStore.current, appOrigin: PCStore.appOrigin) else {
+            call.reject("Only a saved PC's own page says which PC it is.")
+            return
+        }
+        let kept = Home.identified(ids: PCStore.ids, names: PCStore.names, key: key, serverId: call.getString("server_id"), name: call.getString("name"))
+        PCStore.ids = kept.ids
+        PCStore.names = kept.names
+        call.resolve()
     }
 
     @objc func forget(_ call: CAPPluginCall) {
