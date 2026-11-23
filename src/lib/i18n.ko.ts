@@ -405,6 +405,7 @@ const BASE: Record<string, string> = {
 
   "Loading…": "불러오는 중…",
   "Done": "완료",
+  "Forget PCs": "PC 지우기",
   "Name": "이름",
   "Recent": "최근",
   "Needs you": "응답 필요",

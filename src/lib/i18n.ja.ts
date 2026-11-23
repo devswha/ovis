@@ -407,6 +407,7 @@ const BASE: Record<string, string> = {
 
   "Loading…": "読み込んでいます…",
   "Done": "完了",
+  "Forget PCs": "PC を削除",
   "Name": "名前",
   "Recent": "最近",
   "Needs you": "応答待ち",

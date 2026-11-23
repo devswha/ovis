@@ -412,6 +412,7 @@ const BASE: Record<string, string> = {
 
   "Loading…": "正在加载…",
   "Done": "完成",
+  "Forget PCs": "移除电脑",
   "Name": "名称",
   "Recent": "最近",
   "Needs you": "需回应",

@@ -292,8 +292,9 @@ export class PaneLifetimes {
    * The app is replacing this page (PAGE_LEAVING_EVENT): the pane state it keeps in memory alone waits
    * in storage for the next page of this address (takeCarried), with any an earlier page left there.
    * Nothing of it is sent. Storage that refuses it leaves it with this page, as before. Two pages of one
-   * origin would overwrite each other's carry for the same pane: the Android app, the only one to send
-   * the event, shows one page at a time.
+   * origin would overwrite each other's carry for the same pane: the page that sends the event is being
+   * replaced (the Android app leaving it, a PC page moving to another PC, a page the phone app restored
+   * loading again), one page at a time.
    */
   carry(): void {
     if (this.memory.size === 0) return;
