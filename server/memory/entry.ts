@@ -95,10 +95,12 @@ const text = (value: unknown): value is string => typeof value === "string";
 const textOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
 const time = (value: unknown): value is string => typeof value === "string" && !Number.isNaN(Date.parse(value));
 
+const ORIGIN_FIELDS = new Set(["by", "surface", "harness", "harness_version", "drive", "machine", "run", "session", "turn", "exposure", "at"]);
+
 function originProblem(origin: unknown): boolean {
   if (typeof origin !== "object" || origin === null || Array.isArray(origin)) return true;
   const { by, at, surface, drive, exposure, turn, session } = origin as Record<string, unknown>;
-  return (by !== "human" && by !== "agent") || !time(at)
+  return Object.keys(origin).some((name) => !ORIGIN_FIELDS.has(name)) || (by !== "human" && by !== "agent") || !time(at)
     || (surface !== undefined && surface !== "screen" && surface !== "cli")
     || (drive !== undefined && drive !== "terminal" && drive !== "acp")
     || (exposure !== undefined && exposure !== "web" && exposure !== "none")
@@ -120,7 +122,7 @@ function entryProblem(entry: MemoryEntry): string | null {
   if (!text(entry.title) || !text(entry.body)) return "text";
   const problem = textProblem(entry.title, entry.body);
   if (problem !== null) return problem;
-  if (typeof entry.verified !== "boolean" || !textOrNull(entry.verified_at) || !textOrNull(entry.verified_by)) return "verified";
+  if (typeof entry.verified !== "boolean" || (entry.verified_at !== null && !time(entry.verified_at)) || !textOrNull(entry.verified_by)) return "verified";
   if (entry.expires !== null && (!text(entry.expires) || !DATE.test(entry.expires))) return "expires";
   if (!Number.isSafeInteger(entry.rev) || entry.rev < 1 || !time(entry.updated_at) || !text(entry.updated_on)) return "revision";
   if (!textOrNull(entry.source_ref) || (entry.replaces !== null && !isEntryId(entry.replaces))) return "reference";

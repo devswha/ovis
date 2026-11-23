@@ -202,6 +202,37 @@ describe("MemoryStore", () => {
     expect((await shown(added.id)).state).toBe("confirmed");
   });
 
+  it("takes a ledger with a broken proof as damaged: every note waits, and nothing is written", async () => {
+    const added = store.add(draft(), "local");
+    writeFileSync(join(dir, "verified.json"), JSON.stringify({ v: 1, notes: { [added.id]: null } }));
+    expect((await shown(added.id)).state).toBe("changed");
+    expect(refusal(() => store.add(draft({ title: "Another" }), "local"))).toBe("memory_too_new");
+  });
+
+  it("withholds a note with a secret in any returned field, reads none with a provenance field it does not know, and edits no withheld note", async () => {
+    const added = store.add(draft(), "local");
+    const path = join(dir, "account", `${added.id}.md`);
+    writeFileSync(path, readFileSync(path, "utf8").replace(/^source_ref: null$/m, `source_ref: "token=${"q".repeat(12)}"`));
+    const withheld = await shown(added.id);
+    expect(withheld).toMatchObject({ withheld: "secret_assignment", source_ref: null, title: "" });
+    expect(refusal(() => store.edit({ ...draft(), id: added.id, rev: withheld.rev, digest: withheld.digest }, "local"))).toBe("secret_found");
+    inboxNote({ origin: { by: "agent", at: new Date(now).toISOString(), note: "anything" } as never });
+    inboxNote({ verified_at: `password: ${"z".repeat(12)}` });
+    expect((await items()).map((item) => item.id)).toEqual([added.id]);
+  });
+
+  it.skipIf(process.platform === "win32")("creates no folder through a linked one", () => {
+    const outside = mkdtempSync(join(tmpdir(), "ovis-memory-outside-"));
+    try {
+      mkdirSync(dir, { recursive: true });
+      symlinkSync(outside, join(dir, "project"));
+      expect(refusal(() => store.add(draft({ scope: "project", project: PROJECT }), "local"))).toBe("memory_too_new");
+      expect(readdirSync(outside)).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a key unique in the scope a note moves to", () => {
     store.add(draft({ title: "Answer in Korean." }), "local");
     const other = store.add(draft({ scope: "machine", title: "Answer in Korean." }), "local");

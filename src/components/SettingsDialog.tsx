@@ -299,7 +299,7 @@ function pageNote(t: Translate, page: SettingsPage): string | null {
     case "terminal": return t("How terminal panes look and take input.");
     case "alerts": return t("When this device alerts you, and where else alerts go.");
     case "agents": return t("Coding agents on this PC, their accounts and plan limits.");
-    case "memory": return t("Notes your agents get for reference. Only notes you confirmed go to them.");
+    case "memory": return t("Notes kept for your agents. Agents do not get them yet; later they get only notes you confirmed.");
     case "shortcuts": return t("Keyboard shortcuts, and herdr's prefix keys.");
     case "experimental": return t("Features still being shaped; they may change.");
     default: return null;

@@ -27,6 +27,7 @@ let items: MemoryItem[] = [
   note("01KA81B6YH3D0V7KQ2MZT4NP13", "Meeting notes go in notes/, one file per date.", { scope: "machine", project: null, kind: "fact", state: "unconfirmed", verified_at: null, verified_by: null, expires: "2027-02-21", origin: { by: "human", surface: "cli", machine: MACHINE, at: at("2026-11-23T00:40") } }),
 ];
 
+let added = 0;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 
 function view(): MemoryView {
@@ -43,7 +44,7 @@ export function memoryRoute(path: string, method: string, init: RequestInit | un
   switch (path.slice("/api/memory/".length)) {
     case "add": {
       const draft = body as MemoryDraft;
-      const item = confirmed(note(`01KA81B6YH3D0V7KQ2MZT4N${String(items.length + 100)}`, draft.title, { ...draft, body: draft.body, origin: { by: "human", surface: "screen", machine: MACHINE, at: now } }));
+      const item = confirmed(note(`01KA81B6YH3D0V7KQ2MZT4N${String((added += 1) + 100)}`, draft.title, { ...draft, body: draft.body, origin: { by: "human", surface: "screen", machine: MACHINE, at: now } }));
       items = [item, ...items];
       return json(item);
     }

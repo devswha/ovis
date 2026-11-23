@@ -1,4 +1,4 @@
-import { useContext, useState, type ReactNode } from "react";
+import { useContext, useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { defaultExpiryDays, expiryDate, MEMORY_TITLE_MAX, projectLabel, type MemoryDraft, type MemoryFlag, type MemoryItem, type MemoryKind, type MemoryOrigin, type MemoryScope, type MemoryView } from "../../shared/memory.ts";
@@ -90,12 +90,16 @@ function useAct(reload: () => Promise<void>) {
       await reload();
     } catch (error) {
       if (error instanceof ApiError && error.code === "secret_suspected") setFailure({ message: t("It holds a random-looking string. Keep it only if that is not a secret."), ask: () => act(run, after, true) });
-      else setFailure({ message: failureText(t, error), ask: null });
+      else {
+        setFailure({ message: failureText(t, error), ask: null });
+        // a note that changed since it was listed is listed again, so the next try uses what is there now
+        if (error instanceof ApiError && error.code === "memory_conflict") await reload();
+      }
     } finally {
       setBusy(false);
     }
   };
-  return { busy, failure, act, ask: () => void failure?.ask?.() };
+  return { busy, failure, act, ask: () => void failure?.ask?.(), clear: () => setFailure(null) };
 }
 
 function NoteRow({ item, view, watching, onOpen, onRemove }: { item: MemoryItem; view: MemoryView; watching: boolean; onOpen: () => void; onRemove: () => void }) {
@@ -172,7 +176,7 @@ function Inbox({ view, watching, reload }: { view: MemoryView; watching: boolean
   }
   const machine = (item: MemoryItem) => item.origin.machine === undefined || item.origin.machine === view.machine.id ? view.machine.name : t("another PC");
   return <>
-    <p className="settings-description memory-lead">{t("Confirmed notes are given to agents. Unconfirmed ones go away by themselves after 14 days.")}</p>
+    <p className="settings-description memory-lead">{t("Agents will get only notes you confirm. Unconfirmed ones go away by themselves after 14 days.")}</p>
     <FailureLine failure={failure} onAsk={ask} />
     {waiting.length === 0 && <p className="memory-empty">{t("Nothing waits for you.")}</p>}
     {[...groups].map(([group, items]) => {
@@ -215,7 +219,7 @@ const EXPIRY_CHOICES = [null, 90, 180, 365] as const;
 
 function NoteForm({ view, item, scope: startScope, project, watching, onDone, reload }: { view: MemoryView; item: MemoryItem | null; scope: MemoryScope; project: string | null; watching: boolean; onDone: () => void; reload: () => Promise<void> }) {
   const t = useT();
-  const { busy, failure, act, ask } = useAct(reload);
+  const { busy, failure, act, ask, clear } = useAct(reload);
   const [title, setTitle] = useState(item?.title ?? "");
   const [body, setBody] = useState(item?.body ?? "");
   const [scope, setScope] = useState<MemoryScope>(item?.scope ?? startScope);
@@ -224,6 +228,8 @@ function NoteForm({ view, item, scope: startScope, project, watching, onDone, re
   const keep = item === null ? null : item.expires;
   const [expiry, setExpiry] = useState<string>(item === null ? "default" : "keep");
   const [removing, setRemoving] = useState(false);
+  // "it is not a secret" answers for the draft that was sent: a change to the draft asks for Save again
+  useEffect(clear, [title, body, scope, noteProject, kind, expiry]);
   const fallback = defaultExpiryDays(kind, scope);
   const expires = expiry === "keep" ? keep : expiry === "never" ? null
     : expiry === "default" ? (fallback === null ? null : expiryDate(Date.now(), fallback)) : expiryDate(Date.now(), Number(expiry));
@@ -291,21 +297,25 @@ export function MemorySettings({ view, loadError, reload, watching }: MemorySett
     );
   }
   if (view === null) return <p className="memory-empty" role={loadError === null ? undefined : "alert"}>{loadError ?? t("Loading…")}</p>;
-  const project = chosenProject ?? view.here?.key ?? view.projects[0]?.key ?? null;
+  const chosen = chosenProject !== null && view.projects.some((candidate) => candidate.key === chosenProject) ? chosenProject : null;
+  const project = chosen ?? view.here?.key ?? view.projects[0]?.key ?? null;
+  const stale = loadError !== null && <p className="memory-failure" role="alert">{t("The list could not be refreshed, so it may be out of date.")}<button type="button" className="btn" onClick={() => void reload()}>{t("Retry")}</button></p>;
   // the scope picked stays picked while a note or the inbox is open
   const shownScope = scope ?? (view.here !== null ? "project" : "account");
   const back = () => setMode({ at: "list" });
   const waiting = waitingNotes(view).length;
   switch (mode.at) {
-    case "inbox": return <div className="memory-page"><Crumb title={t("Waiting for you {count}", { count: waiting })} onBack={back} /><Inbox view={view} watching={watching} reload={reload} /></div>;
+    case "inbox": return <div className="memory-page">{stale}<Crumb title={t("Waiting for you {count}", { count: waiting })} onBack={back} /><Inbox view={view} watching={watching} reload={reload} /></div>;
     case "note": return (
       <div className="memory-page">
+        {stale}
         <Crumb title={mode.item === null ? t("New note") : t("Note")} onBack={back} />
         <NoteForm view={view} item={mode.item} scope={shownScope} project={project} watching={watching} onDone={back} reload={reload} />
       </div>
     );
     default: return (
       <div className="memory-page">
+        {stale}
         <NoteList view={view} scope={shownScope} setScope={setScope} onProject={project} projectChosen={setChosenProject} watching={watching} reload={reload}
           onInbox={() => setMode({ at: "inbox" })} onOpen={(item) => setMode({ at: "note", item })} />
       </div>

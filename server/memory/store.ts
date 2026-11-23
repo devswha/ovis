@@ -85,7 +85,7 @@ function flagsOf(entry: MemoryEntry): MemoryFlag[] {
 
 function metaText(entry: MemoryEntry): string {
   const { origin } = entry;
-  return [entry.key, entry.project, entry.source_ref, entry.replaces, entry.verified_by, entry.updated_on, origin.harness, origin.harness_version, origin.machine, origin.run, origin.session]
+  return [entry.key, entry.project, entry.source_ref, entry.replaces, entry.verified_at, entry.verified_by, entry.updated_at, entry.updated_on, entry.expires, ...Object.values(origin)]
     .filter((value): value is string => typeof value === "string").join("\n");
 }
 
@@ -118,7 +118,9 @@ export class MemoryStore {
     if (!existsSync(path)) return { v: LEDGER_VERSION, notes: {} };
     try {
       const ledger = JSON.parse(readFileSync(path, "utf8")) as Ledger;
-      return ledger.v === LEDGER_VERSION && typeof ledger.notes === "object" && ledger.notes !== null ? ledger : null;
+      if (ledger.v !== LEDGER_VERSION || typeof ledger.notes !== "object" || ledger.notes === null || Array.isArray(ledger.notes)) return null;
+      const proofs = Object.values(ledger.notes as Record<string, unknown>);
+      return proofs.every((proof) => typeof proof === "object" && proof !== null && Number.isSafeInteger((proof as { rev?: unknown }).rev) && /^[0-9a-f]{64}$/.test(String((proof as { hash?: unknown }).hash))) ? ledger : null;
     } catch {
       return null;
     }
@@ -133,9 +135,13 @@ export class MemoryStore {
 
 /** a folder of the store: under its root, made 0700 when missing, and a real folder all the way down (never a link) */
   private folder(...parts: string[]): string {
-    const path = join(this.dir, ...parts);
-    mkdirSync(path, { recursive: true, mode: 0o700 });
-    if (!this.contained(path)) throw new MemoryError("memory_too_new", 409, "The memory folder holds a link or a file where a folder belongs; nothing was changed");
+    // each step is checked before the next is made, so nothing is ever created through a link
+    let path = this.dir;
+    for (const part of ["", ...parts]) {
+      path = part === "" ? path : join(path, part);
+      if (lstatSync(path, { throwIfNoEntry: false }) === undefined) mkdirSync(path, { mode: 0o700, recursive: part === "" });
+      if (!this.contained(path)) throw new MemoryError("memory_too_new", 409, "The memory folder holds a link or a file where a folder belongs; nothing was changed");
+    }
     return path;
   }
 
@@ -239,8 +245,14 @@ export class MemoryStore {
     writeFileSync(staged, text, { mode: 0o600, flag: "wx" });
     // the file first, its proof after: a failure in between leaves the old note as it was, or the new one waiting for a person
     try { renameSync(staged, path); } catch (error) { rmSync(staged, { force: true }); throw error; }
-    writePrivateState(join(this.dir, "verified.json"), { v: LEDGER_VERSION, notes: { ...ledger.notes, [entry.id]: { rev: entry.rev, hash: sha256(text) } } } satisfies Ledger);
-    if (replacing !== null && replacing !== path) rmSync(replacing, { force: true });
+    const moving = replacing !== null && replacing !== path;
+    try { writePrivateState(join(this.dir, "verified.json"), { v: LEDGER_VERSION, notes: { ...ledger.notes, [entry.id]: { rev: entry.rev, hash: sha256(text) } } } satisfies Ledger); }
+    catch (error) {
+      // a note moving to another scope stays where it was, so the same id is never in two folders
+      if (moving) rmSync(path, { force: true });
+      throw error;
+    }
+    if (moving) rmSync(replacing, { force: true });
     return this.item({ entry, path, inbox: false, proven: true, digest: sha256(text), withheld: null });
   }
 
@@ -319,6 +331,7 @@ export class MemoryStore {
     const notes = this.notes();
     const note = this.find(edit.id, notes.filter((candidate) => !candidate.inbox));
     if (note.entry.rev !== edit.rev || note.digest !== edit.digest) throw new MemoryError("memory_conflict", 409, "The note changed since it was opened. Open it again.");
+    if (note.withheld !== null) throw new MemoryError("secret_found", 422, "This note looks like it holds a secret, so it cannot be edited. Remove it.", note.withheld);
     if (note.entry.scope !== edit.scope || note.entry.project !== edit.project) this.roomIn(edit.scope, edit.project, notes, note.entry.id);
     const at = new Date(this.options.now()).toISOString();
     return this.write({
