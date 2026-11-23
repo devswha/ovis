@@ -61,10 +61,11 @@ describe("uploadableImage", () => {
       new File([STILL_HEIC], "IMG_0002.heic", { type: "" }),
       new File([STILL_HEIC], "IMG_0003.HEIC", { type: "application/octet-stream" }),
       new File([STILL_HEIF], "photo.heif", { type: "image/heif" }),
+      new File([STILL_HEIC], ".heic", { type: "image/heic" }),
     ];
     const converted = await Promise.all(cases.map((file) => uploadableImage(file, jpeg)));
     expect(converted.map((file) => [file.name, file.type])).toEqual([
-      ["IMG_0001.jpg", "image/jpeg"], ["IMG_0002.jpg", "image/jpeg"], ["IMG_0003.jpg", "image/jpeg"], ["photo.jpg", "image/jpeg"],
+      ["IMG_0001.jpg", "image/jpeg"], ["IMG_0002.jpg", "image/jpeg"], ["IMG_0003.jpg", "image/jpeg"], ["photo.jpg", "image/jpeg"], ["photo.jpg", "image/jpeg"],
     ]);
     expect(converted[0]!.lastModified).toBe(7);
     expect(await converted[0]!.text()).toBe("jpeg bytes");
@@ -116,6 +117,19 @@ describe("uploadableImage", () => {
     const photo = new File([STILL_HEIC], "IMG_0001.HEIC", { type: "image/heic" });
     expect(await uploadableImage(photo, async () => null)).toBe(photo);
     expect(await uploadableImage(photo, async () => { throw new Error("EncodingError"); })).toBe(photo);
+  });
+
+  test("sends every JPEG photo redrawn, which drops its camera metadata, even when that is no smaller", async () => {
+    const photo = new File(["x".repeat(4096)], "IMG_3718.jpeg", { type: "image/jpeg", lastModified: 7 });
+    const smaller = await uploadableImage(photo, jpeg);
+    expect([smaller.name, smaller.type, smaller.lastModified, await smaller.text()]).toEqual(["IMG_3718.jpg", "image/jpeg", 7, "jpeg bytes"]);
+
+    const small = new File(["tiny"], "IMG_3719.jpg", { type: "image/jpeg" });
+    expect(await (await uploadableImage(small, jpeg)).text()).toBe("jpeg bytes");
+    expect(await uploadableImage(photo, async () => null)).toBe(photo);
+
+    const names = await Promise.all(["photo.jfif", "photo.JPE", "photo.JPG"].map(async (name) => (await uploadableImage(new File(["x"], name, { type: "image/jpeg" }), jpeg)).name));
+    expect(names).toEqual(["photo.jpg", "photo.jpg", "photo.jpg"]);
   });
 
   test("leaves non-HEIF payloads and other files alone without decoding them", async () => {

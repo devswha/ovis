@@ -27,9 +27,16 @@ const HEIC_NAME = /\.(heic|heif)$/i;
 const HEIF_STILL_BRANDS: ReadonlySet<string> = new Set(["heic", "heix", "mif1", "heif"]);
 const HEIF_EXCLUDED_BRANDS: ReadonlySet<string> = new Set(["msf1", "hevc", "hevx", "hevs", "avis", "avif"]);
 const MAX_FTYP_INSPECT_BYTES = 4096;
-/** A 48 MP iPhone photo is a 190 MB canvas, near iOS's 8192 by 8192 limit; 4096 a side keeps it at 64 MB.
- *  https://github.com/WebKit/WebKit/blob/09c9c87594bc34ed7d62db836b29091798073eb8/Source/WebCore/html/CanvasBase.cpp#L119-L131 */
-const MAX_JPEG_SIDE = 4096;
+/**
+ * A photo is drawn at most 2048 px a side, about 1 MB as JPEG, so it uploads fast on mobile data.
+ * An agent may read more: OpenAI's newest models a phone photo whole at their default, `gpt-5.5` up
+ * to 6000 px and its older ones 2048 (https://developers.openai.com/api/docs/guides/images-vision),
+ * Claude 2576 on its newest models and 1568 on the rest
+ * (https://platform.claude.com/docs/en/build-with-claude/vision). It also keeps a 48 MP photo's
+ * canvas far under iOS's 8192 by 8192 limit.
+ * https://github.com/WebKit/WebKit/blob/09c9c87594bc34ed7d62db836b29091798073eb8/Source/WebCore/html/CanvasBase.cpp#L127-L128
+ */
+const MAX_PHOTO_SIDE = 2048;
 
 function brandAt(bytes: Uint8Array, offset: number): string {
   return String.fromCharCode(bytes[offset]!, bytes[offset + 1]!, bytes[offset + 2]!, bytes[offset + 3]!);
@@ -76,14 +83,14 @@ async function canvasJpeg(image: Blob): Promise<Blob | null> {
     await element.decode();
     if (element.naturalWidth <= 0 || element.naturalHeight <= 0) return null;
 
-    const scale = Math.min(1, MAX_JPEG_SIDE / Math.max(element.naturalWidth, element.naturalHeight));
+    const scale = Math.min(1, MAX_PHOTO_SIDE / Math.max(element.naturalWidth, element.naturalHeight));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(element.naturalWidth * scale));
     canvas.height = Math.max(1, Math.round(element.naturalHeight * scale));
     const context = canvas.getContext("2d");
     if (context === null) return null;
     context.drawImage(element, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
     return blob !== null && blob.size > 0 && blob.type === "image/jpeg" ? blob : null;
   } finally {
     URL.revokeObjectURL(url);
@@ -91,23 +98,27 @@ async function canvasJpeg(image: Blob): Promise<Blob | null> {
 }
 
 /**
- * An iPhone's HEIC or HEIF photo as a JPEG, since the agents read only PNG, JPEG, GIF and WebP
- * (https://platform.claude.com/docs/en/build-with-claude/vision); any other file, or one this browser
- * cannot decode, as it is. Animated HEIC/HEIF sequences, non-HEIF payloads, and explicit non-HEIC MIME types stay untouched.
+ * A photo as a JPEG of at most `MAX_PHOTO_SIDE` a side: a still HEIC or HEIF one always, since the
+ * agents read only PNG, JPEG, GIF and WebP
+ * (https://platform.claude.com/docs/en/build-with-claude/vision), and a JPEG one too, which drops
+ * its camera metadata. Any other file (a screenshot's PNG, an animated HEIC sequence, a file that is
+ * not HEIF inside), or one this browser cannot decode, as it is.
  */
 export async function uploadableImage<T extends Blob>(file: T, toJpeg: (image: Blob) => Promise<Blob | null> = canvasJpeg): Promise<T | File> {
   const name = file instanceof File ? file.name : "";
   const normalizedType = file.type.toLowerCase().split(";", 1)[0]!.trim();
   const heicCandidate = HEIC_TYPES.has(normalizedType)
     || ((normalizedType === "" || normalizedType === "application/octet-stream") && HEIC_NAME.test(name));
-  if (!heicCandidate) return file;
+  if (!heicCandidate && normalizedType !== "image/jpeg") return file;
 
-  const header = new Uint8Array(await file.slice(0, MAX_FTYP_INSPECT_BYTES).arrayBuffer());
-  if (!isStillHeifContainer(header)) return file;
+  if (heicCandidate) {
+    const header = new Uint8Array(await file.slice(0, MAX_FTYP_INSPECT_BYTES).arrayBuffer());
+    if (!isStillHeifContainer(header)) return file;
+  }
 
   const jpeg = await toJpeg(file).catch(() => null);
   if (jpeg === null) return file;
 
-  const base = HEIC_NAME.test(name) ? name.replace(HEIC_NAME, "") : name || "photo";
+  const base = name.replace(/\.(heic|heif|jpe?g|jpe|jfif)$/i, "") || "photo";
   return new File([jpeg], `${base}.jpg`, { type: "image/jpeg", lastModified: file instanceof File ? file.lastModified : Date.now() });
 }
