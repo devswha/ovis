@@ -406,7 +406,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultView: "auto",
   usageOrder: [],
   usageHidden: [],
-  voiceInput: "auto",
+  voiceInput: "off",
   voiceLanguage: "auto",
   voiceEngine: "auto",
   voicePolishChat: true,
