@@ -24,6 +24,9 @@
  *   16. a display manager enabled, the line again with herdr running: the unit goes, herdr runs on;
  *   17. after a reboot, the line in an SSH login: no unit, herdr started once, said as this PC having a desktop.
  *
+ * The containers are pinned to CPUs 112-127, as the repository's other container tests are (scripts/join): a host without
+ * them names its own with OVIS_HEAVY_CPUS.
+ *
  *   bun scripts/install-service-docker.ts      KEEP=1 leaves the containers behind
  */
 import assert from "node:assert/strict";
@@ -87,9 +90,10 @@ async function pc(label: string) {
   const remove = () => process.env["KEEP"] === "1" ? (console.log(`container kept: docker exec -it ${name} su -l alice`), Promise.resolve()) : docker(["rm", "-f", name]).then(() => {});
   // systemd as PID 1 makes cgroups for the user manager and its units: under docker that takes --privileged, the
   // host's cgroup namespace and /sys/fs/cgroup mounted writable; systemd keeps to the cgroup docker gives the container
-  const started = await docker(["run", "-d", "--name", name, "--label", "ovis-install-qa", "--cpuset-cpus", process.env["OVIS_HEAVY_CPUS"] ?? "112-127",
+  const cpus = process.env["OVIS_HEAVY_CPUS"] ?? "112-127";
+  const started = await docker(["run", "-d", "--name", name, "--label", "ovis-install-qa", "--cpuset-cpus", cpus,
     "--privileged", "--cgroupns=host", "--tmpfs", "/run", "--tmpfs", "/run/lock", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", IMAGE]);
-  assert.equal(started.code, 0, started.out);
+  assert.equal(started.code, 0, `docker run failed on CPUs ${cpus} (OVIS_HEAVY_CPUS names others on a host without them): ${started.out}`);
   try {
     await booted();
     assert.equal((await docker(["cp", join(ROOT, "install.sh"), `${name}:/opt/install.sh`])).code, 0);
@@ -200,13 +204,14 @@ try {
   await until("Ovis answers", HEALTH, 60);
 
   await step("8. --add --account with no terminal, on a release whose add does not take --account: no add, a non-zero exit", async () => {
-    const added = await install("--add --account acct_000000000000");
+    // told before the add runs: on a release that takes --account it would sign in and wait for the account service
     const release = /installed Ovis (\d+\.\d+\.\d+)|Ovis (\d+\.\d+\.\d+)/.exec(fresh.out);
     const version = (release?.[1] ?? release?.[2] ?? "0.0.0").split(".").map(Number);
     if (version[0]! > 0 || version[1]! > 5 || (version[1] === 5 && version[2]! >= 10)) {
       console.log(`  skipped: the release installed (${version.join(".")}) takes --account, and its add needs the account service`);
       return;
     }
+    const added = await install("--add --account acct_000000000000");
     assert.match(added.out, /exit=1/, added.out.slice(-2000));
     assert.match(added.out, /this Ovis release does not check the account --account names, so the installer does not add this PC with it/, added.out.slice(-2000));
     // the add never started: it would have turned the relay on and shown the account sign-in page

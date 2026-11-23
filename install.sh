@@ -552,12 +552,14 @@ add_command() {
 }
 
 # Whether the add step that would run checks the account --account names: one from before it would not check it, so
-# it is not started for --account.
+# it is not started for --account. From source that is the release that runs, as add_reads_answers reads it: the
+# checkout's script hands the add on to it (scripts/plugin.ts, linkCommand), and Settings → Updates may have made it
+# newer, or the checkout newer than it.
 add_takes_account() {
   if [ "${binary:-0}" = 1 ]; then
     at_least "$ACCOUNT_SINCE" "$version"
   else
-    grep -qs '"--account"' "$add_code/scripts/plugin-link.ts"
+    grep -qs '"--account"' "${code:-$root}/scripts/plugin-link.ts"
   fi
 }
 

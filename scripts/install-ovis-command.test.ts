@@ -147,7 +147,7 @@ class Pc {
     if (run.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`);
     return run.stdout.toString().trim();
   }
-  release(root: string, knows: "add" | "link" | "neither", options: { port?: number | string; state?: string; label?: string; checkout?: string; reader?: "new" | "old"; tui?: boolean } = {}): string {
+  release(root: string, knows: "add" | "link" | "neither", options: { port?: number | string; state?: string; label?: string; checkout?: string; reader?: "new" | "old" | "before-account"; tui?: boolean } = {}): string {
     const state = options.state ?? join(this.scratch, ".config", "ovis");
     const updates = join(state, "updates", createHash("sha256").update(`${options.checkout ?? root}:${options.port ?? 7317}`).digest("hex").slice(0, 16));
     const release = join(updates, "release-1");
@@ -679,6 +679,23 @@ describe.skipIf(platform() === "win32")("the ovis launcher install.sh writes", (
     // the word in a comment is not the function
     expect(readerScript("old")).toContain("answerOf");
     expect(readFileSync(join(ROOT, "scripts", "plugin-link.ts"), "utf8")).toContain("\nexport function answerOf(");
+  });
+
+  // the checkout's script hands the add on to the release that runs, which Settings → Updates may have moved either way
+  it("gates --account on the release that runs, not the checkout's: the checkout's script hands the add on to it", () => {
+    const takes = (pc: Pc, root: string, code: string) => pc.sh(`binary=0; root='${root}'; code='${code}'; find_add_name; if add_takes_account; then echo takes; else echo not; fi`).out.trim();
+    const updated = new Pc().flag("running");
+    const first = updated.checkout("plugin", "link");
+    writeFileSync(join(first, "scripts", "plugin-link.ts"), readerScript("before-account"));
+    expect(takes(updated, first, updated.release(first, "add"))).toBe("takes");
+    const stale = new Pc().flag("running");
+    const root = stale.checkout("plugin", "link");
+    const release = stale.release(root, "link", { reader: "before-account" });
+    expect(takes(stale, root, release)).toBe("not");
+    const said = stale.sh(`add=1; account=${ACCOUNT}; terminal=0; launcher_ours=0; original_path=$PATH; root='${root}'; code='${release}'; add_pc; echo "result=$add_result old=$add_old"; closing_lines`).out;
+    expect(said).toContain("result=none old=1");
+    expect(said).toContain(NO_ACCOUNT_CHECK_LINE);
+    expect(stale.addCalls()).toEqual([]);
   });
 
   it("prints commands that run from a home directory with a space in its name", async () => {
