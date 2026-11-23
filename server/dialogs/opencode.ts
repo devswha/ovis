@@ -1,6 +1,6 @@
 import type { OpenCodePermissionDecision, OpenCodePermissionRequest } from "../opencode-service.ts";
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, type AnswerStep, type CardWords, KEY, editorRowsMatch, finishPrompt, keySteps, own, type ParsedPrompt, type TypedEditorAnswer } from "./shared.ts";
+import { ANSI_RE, type AnswerStep, CARD_BODY_MAX, type CardWords, KEY, editorRowsMatch, finishPrompt, keySteps, own, type ParsedPrompt, type TypedEditorAnswer } from "./shared.ts";
 
 /**
  * OpenCode v2's questions are forms its service holds (GET /api/session/{id}/form), read for the
@@ -48,8 +48,13 @@ function permissionWords({ action, resources, metadata }: OpenCodePermissionRequ
   return { question: own("Use the tool {tool}", { tool: action }), body: input === undefined ? listed.join("\n") || null : JSON.stringify(input, null, 2) };
 }
 
-export function openCodePermissionPrompt(request: OpenCodePermissionRequest): ParsedPrompt {
+/**
+ * The card for a pending request, or null for one whose command, patch or input is longer than a card shows: a cut
+ * body would have its user allow what they never saw, so the terminal answers it.
+ */
+export function openCodePermissionPrompt(request: OpenCodePermissionRequest): ParsedPrompt | null {
   const { question, body } = permissionWords(request);
+  if (body !== null && body.length > CARD_BODY_MAX) return null;
   const save = request.save ?? [];
   const choices: { label: CardWords; description: CardWords | null; decision: OpenCodePermissionDecision }[] = [
     { label: own("Allow once"), description: null, decision: "once" },

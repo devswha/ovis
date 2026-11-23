@@ -536,13 +536,14 @@ describe("OpenCode permission card", () => {
     });
   });
 
-  it.each(["version", "shape", "session"] as const)("leaves the request to the terminal for an unknown %s", async (kind) => {
+  it.each(["version", "shape", "session", "size"] as const)("leaves the request to the fallback card: %s not read", async (kind) => {
     await fixture(async (f) => {
       f.forms = [];
       f.permissions = [asked("shell")];
       if (kind === "version") f.version = "3.0.0";
       if (kind === "shape") f.permissions = [{ ...asked("shell"), resources: "ls -la ." }];
       if (kind === "session") f.permissions = [{ ...asked("shell"), sessionID: "ses_other" }];
+      if (kind === "size") f.permissions = [{ ...asked("shell"), resources: ["echo " + "x".repeat(12_000)] }];
       expect((await f.read()).fallback).toBe(true);
     });
   });

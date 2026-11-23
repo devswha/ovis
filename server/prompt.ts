@@ -944,9 +944,13 @@ async function readKnownPrompt(
         }
       }
     }
-    // a pending permission is the card before a form
+    // a pending permission is the card before a form; one too long for a card is left to the fallback card
     const permission = permissions?.[0];
-    if (permission) return { prompt: publicPrompt(openCodePermissionPrompt(permission)) };
+    if (permission) {
+      const card = openCodePermissionPrompt(permission);
+      if (!card) break native;
+      return { prompt: publicPrompt(card) };
+    }
     const form = state.listed;
     if (!form || form.fields.length === 0) break native;
 
