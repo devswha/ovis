@@ -39,16 +39,17 @@ interface Spec {
 const LOGIN: Spec = {
   command: "link",
   summary: "Add this PC to your Ovis account (also: add)",
-  usage: "ovis login [--no-browser] [--approve] [--print] [--github | --google]",
+  usage: "ovis login [--no-browser] [--qr [--print]] [--approve] [--github | --google]",
   flags: [
     ["--no-browser", "Show the address and code to type instead of opening a browser (the default without a desktop)"],
+    ["--qr", "After signing in, show a QR code for a device of your account to scan, instead of waiting for Add"],
+    ["--print", "With --qr: write the QR code even where the output is not a terminal"],
     ["--approve", "After signing in, approve here the device that adds this PC, comparing six digits"],
-    ["--print", "Write the QR code even where the output is not a terminal"],
     ["--github, --google", "Sign in at GitHub's or Google's own device page"],
   ],
   // `link --code` is `pair --relay`; `--device-auth` is codex's name for --no-browser
   hidden: ["--github", "--google", "--code", "--device-auth"],
-  more: "Sign in with a code, then scan the QR code it shows with a device signed in to the same account: this PC joins\nthe account, with nothing to approve. The sign-in ends with the command; nothing of it is kept on this PC.",
+  more: "Sign in with a code, then press Add for this PC in Ovis on your phone or another device signed in to the same\naccount: this PC joins the account. The sign-in ends with the command; nothing of it is kept on this PC.",
 };
 
 const SPECS: Readonly<Record<string, Spec>> = {

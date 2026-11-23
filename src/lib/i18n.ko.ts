@@ -265,6 +265,7 @@ const BASE: Record<string, string> = {
   "The PC could not be added. Try again.": "PC를 추가하지 못했어요. 다시 시도하세요.",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "로그인한 지 10분이 지나서 추가할 수 없어요. 다시 로그인하세요.",
   "Sign in on this device to add it.": "이 기기에서 직접 로그인해야 추가할 수 있어요.",
+  "This account has added as many PCs as it can today. Try again later.": "오늘은 이 계정에 PC를 더 추가할 수 없어요. 나중에 다시 시도하세요.",
   "Sign in again to remove it: your sign-in is more than ten minutes old.": "로그인한 지 10분이 지나서 뺄 수 없어요. 다시 로그인하세요.",
   "Sign in on this device to remove it.": "이 기기에서 직접 로그인해야 뺄 수 있어요.",
   "This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.": "이 계정은 2단계 로그인 정보가 없어 여기서 바로 추가할 수 없어요. PC 화면에서 숫자로 추가하세요.",

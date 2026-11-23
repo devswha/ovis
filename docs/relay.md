@@ -318,7 +318,8 @@ terminal, with the same two ways its Settings page offers and the same rules. Th
 `bun scripts/plugin.ts` takes its place:
 
 ```bash
-ovis login              # sign in to your account, then scan this PC's QR code with a device of the account
+ovis login              # sign in to your account, then press Add for this PC on a device of the account
+ovis login --qr         # the same sign-in, then scan this PC's QR code with a device of the account
 ovis login --approve    # the same sign-in, then approve here the device that adds this PC
 ovis login --google     # either, at Google's own device page (--github: GitHub's)
 ovis login --no-browser # show the address and code only (the default over SSH or without a desktop)
@@ -333,16 +334,51 @@ prints the command instead. On a PC where it has just installed herdr the app is
 herdr, then run `ovis add`, as its last lines say.
 
 `login`, `add` and `link` are one command under three names. On a desktop, `login` opens the sign-in
-page in the browser itself, as `codex login` does; the address and code stay on screen for another device. Both ways turn the relay on first when
-it is off, and wait until it is online.
+page in the browser itself, as `codex login` does; the address and code stay on screen for another device. Every way turns the relay on first when
+it is off. `add` waits for it to come online once this PC is in the account; `--qr` and `--approve` wait
+for it before they show or ask anything.
 
 - **`add`** signs in the way a PC's own page does: it prints the Ovis sign-in page
   (`https://account.ovis.sh/link`), a code and a QR code of the page with the code filled in. On any
   device, open it, check the code, choose **Continue with GitHub** or **Continue with Google**, sign
   in, and confirm. An account service without that page, or `--github` / `--google`, uses the
   provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists
-  this PC in your account ([Adding a PC](account.md#adding-a-pc)) and, once the relay is online,
-  shows **one QR code** with a code to type and this PC's ID. A device signed in to the same
+  this PC in your account ([Adding a PC](account.md#adding-a-pc)), names the account that signed in
+  (the start of its id and the provider it signed in with; the service gives it no e-mail), and
+  waits: **Open Ovis on your phone or another PC and press Add for (this PC)**. Every device signed in
+  to that account with a sign-in of its own shows this PC's card, **Add this PC to your account?**,
+  with the name the PC gave itself and when it was listed. **Add** there is the account's one-press
+  admission of this PC (`POST /v1/pcs/{server_id}/admit`, [In one press](account.md#adding-a-pc)): the
+  account service takes it from a sign-in made in that app within the last 10 minutes (an older one
+  gets **Sign in again**, and the add goes on after it), within the account's daily cap of such
+  adds, and tells the account's other devices. The command asks this PC every 6 seconds (every 15
+  after the account service did not answer it) to take that admission (`POST /api/account/one-press`
+  with the account that signed in): the PC asks the account service itself, with its relay key's
+  proof, so only an admission by that account, made for this PC's listing, binds it. Then the PC
+  names that account for its relay pass again, which asks for the pass the account now gives it,
+  and the command ends with **Added. Open (this PC) from My PCs.** once the relay is online (when it
+  is not within 30 seconds, it says so: the PC is in the account all the same). Nothing it shows lets
+  anyone in, and the approve-here window that listing the PC opens is closed at once (`POST
+  /api/relay/link/close`): this way takes no digits. The wait lasts as long as the card offers
+  **Add**: 10 minutes from when this PC was listed, so less for a listing an earlier run left, and
+  none for one listed more than 10 minutes ago, which the card offers to remove only (the command
+  says so). A PC the account lists as its own already (an **Add** pressed for an earlier run) shows
+  no card: the command takes that admission while it lasts, and after its 10 minutes says to run
+  `add --approve` instead. When the run ends without the add (the 10 minutes, Ctrl+C, a SIGTERM, the terminal
+  closing, a refusal at the PC), it takes this PC off the account's list, which its sign-in may do
+  only while nobody admitted it, and says where the PC is: off the list and in no account; no
+  longer listed, since a device chose **No**; still listed, as a device pressed **Add** just then
+  (run `add` again within the 10 minutes to finish) or an earlier run listed it; or not known. As the
+  10 minutes end and the listing is still there, it asks this PC once more first. A PC that joined
+  another account meanwhile is reported with both ids and **Revoke all**, as below. An Ovis that
+  takes no one-press add from this terminal (its Step 2 is off, or it is older) answers the command's
+  first ask, made with no account, otherwise than `400 invalid_account`: `add` then says so and goes
+  the `--qr` way.
+- **`add --qr`** (also `--print`) signs in and lists this PC the same way and, once the relay is
+  online, shows **one QR code** with a code to type and this PC's ID. Ovis's own account service gives a
+  PC listed by such a sign-in no relay pass until a device of the account pressed **Add** for it, so
+  there the relay does not come online and `--qr` stops after its 30 seconds unless that was done; plain
+  `add` is the way there. A device signed in to the same
   account that scans it (or types the code at app.ovis.sh, **Pair with a code**) is paired, puts
   this PC in the account and brings in the account's other devices: there is no **Add** to press,
   no digits to compare and nothing to answer in the terminal. The code is made for that account
@@ -462,7 +498,9 @@ it is off, and wait until it is online.
   signs in to nothing; when that account's other devices are still being brought in, it waits for
   them, up to 30 minutes, and fails if they are not in by then. With
   `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
-- **`add --approve`** signs in and lists the PC the same way, shows no code, and waits. On a device
+- **`add --approve`** signs in and lists the PC the same way, shows no code, and waits. Like `--qr`, it
+  waits for the relay first, which Ovis's own account service lets come online for such a listing only
+  once a device of the account pressed **Add** on its card. On a device
   already signed in to this account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the
   terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456. Type 456 to

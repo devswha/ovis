@@ -187,8 +187,13 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   code to cannot pair after it is gone. A device revoked while its request for a code is on its
   way starts none and is handed none (`401 unauthorized`). A code the PC itself started is held
   by no device.
+- **`bun scripts/plugin.ts add` shows no code.** It names the account its sign-in signed in to, and
+  waits for a device of that account, signed in with a sign-in of its own made in the last 10 minutes,
+  to press **Add** on the PC's card: the account's one-press admission
+  ([In one press](#adding-a-pc)), which the PC takes on its own key's proof. So the account decides,
+  not whoever reads the terminal, and only an admission by the account that signed in binds the PC.
 - **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
-  `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
+  `bun scripts/plugin.ts add --qr` ends in one QR code, and a signed-in device that scans it links
   itself as the PC's first member, so the PC joins that device's account. The code is therefore
   made only by that command, shown only on a terminal and cleared from it (`--print` writes it
   as plain lines that stay, wherever the output goes), kept for 30 minutes at most, and the
@@ -848,13 +853,15 @@ until someone signs in on it; the steps below are then the way.
 The account service's Step 2 switch must also be on. **Add this PC to my account** then adds the PC
 with no other device and no digits, when the account service admits it: the browser on the PC's own page lists the PC
 (`PUT /v1/pcs`, as above), then asks `POST /v1/pcs/{server_id}/admit`. The service admits only a
-sign-in made in an app itself within the last 10 minutes with two-step sign-in set (unknown, as
-for a Google sign-in that does not say, is not enough), within a daily cap of PC adds per account,
-and writes who added it in the account's safety log. The one exception is an account's first PC:
-an account never used (no PC listed, added or removed before, and no device key ever registered,
-removed ones included, apart from one the admitting sign-in registered itself) admits its first PC in one press under any sign-in, since no other device
-exists to protect or tell. The PC's own page registers no device key, so a new user's first press
-meets it. The page then names the account it is signed
+sign-in made in an app itself within the last 10 minutes (403 `session_not_fresh` for an older one,
+`own_sign_in_required` for a device code's), within a daily cap of PC adds per account (429
+`pc_add_cap`), and writes who added it in the account's safety log. It no longer asks for two-step
+sign-in, which most providers' sign-ins never say: an admission by a sign-in without it is kept as
+exempt, and a device that joins the account later is told of it (`admitted_before_you`). An account
+service from before that answers 403 `two_step_required` for a used account (one with a PC listed,
+added or removed before, or a device key ever registered, apart from one the admitting sign-in
+registered itself).
+The page then names the account it is signed
 in to for the PC (`POST /api/account/relay-account`) and presses `POST /api/account/one-press`
 `{ "account" }`. The PC takes it only from its owner here (a device through the relay gets
 `owner_only`, as does a Portal visitor or an open LAN window, and a watching one `read_only`), only for
@@ -869,6 +876,17 @@ before this has no route), leaves the page on the wait above, unchanged. In this
 own Settings signs in with a code typed on another device, which the service does not count as an
 app's own sign-in, so a press there still ends in that wait; it adds the PC in one press once the PC
 page signs in on its own window.
+
+**Add on another device.** The admit also confirms a listing a device code made (unconfirmed until
+then), so the same admission adds a PC that signed in on the link page. Every device of the account
+whose sign-in is its own shows such a PC's card, **Add this PC to your account?**, with the name the
+PC gave itself and when it was listed, for the 10 minutes after the listing; **Add** there reads the
+listing again (the admit names none, so one that replaced the listing on the card is not admitted)
+and asks `POST /v1/pcs/{server_id}/admit`, with **Sign in again** for `session_not_fresh` and
+`own_sign_in_required`, after which the add goes on. **No** removes the listing. `ovis add` on that
+PC waits for that admission and takes it as above ([A PC with no screen](relay.md#a-pc-with-no-screen)).
+A PC's own page that signed in on the link page does not take it: its digit wait goes on, and the
+admission ends unused after its 10 minutes (the listing stays confirmed).
 
 **Sign in again from the wait.** When the service refuses the press for the sign-in itself
 (`session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
