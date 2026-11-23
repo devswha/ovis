@@ -417,6 +417,9 @@ export interface OpenCodePermissionRequest {
 
 export type OpenCodePermissionDecision = "once" | "always" | "reject";
 
+/** The permission routes are experimental in OpenCode 2's OpenAPI: only a verified 2.x.y service is asked, or answered. */
+export const openCodePermissionsRead = (version: string): boolean => /^2\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version);
+
 /**
  * GET /api/session/{id}/permission: the requests the session waits on, oldest first. The route is experimental in
  * OpenCode's OpenAPI, so a list holding anything of another shape, or of another session, is no answer (null): those

@@ -19,7 +19,7 @@ import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
 import { heldBody, permissionDecision, type ClaudePermissionHooks } from "./claude-permission-hook.ts";
-import { listPendingPermissions, listPendingQuestionForms, openCodeService, replyOpenCodeForm, replyOpenCodePermission } from "./opencode-service.ts";
+import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "./dialogs/registry.ts";
 import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
@@ -926,14 +926,14 @@ async function readKnownPrompt(
     const config = service?.config ?? null;
     const revision = state.revision;
     const issued = ++state.issued;
-    // the permission routes are experimental in OpenCode 2's OpenAPI: another major's are not read
     const [forms, permissions] = config ? await Promise.all([
       listPendingQuestionForms(config, sessionID, signal),
-      service!.version.startsWith("2.") ? listPendingPermissions(config, sessionID, signal) : null,
+      openCodePermissionsRead(service!.version) ? listPendingPermissions(config, sessionID, signal) : null,
     ]) : [null, null];
     if (signal?.aborted || openCodeState.entries.get(paneId) !== state) return { prompt: null, stale: true };
     if (state.revision === revision && issued >= state.applied) {
       state.applied = issued;
+      state.permissions = permissions;
       state.available = forms !== null;
       if (forms !== null) {
         state.listed = forms[0] ?? null;
@@ -944,8 +944,9 @@ async function readKnownPrompt(
         }
       }
     }
-    // a pending permission is the card before a form; one too long for a card is left to the fallback card
-    const permission = permissions?.[0];
+    // a pending permission is the card before a form, as the latest read listed it; one a card cannot show whole is
+    // left to the fallback card
+    const permission = state.permissions?.[0];
     if (permission) {
       const card = openCodePermissionPrompt(permission);
       if (!card) break native;
@@ -1610,10 +1611,12 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const decision = Number.isInteger(body.option_index) ? decisions[body.option_index!] : undefined;
         if (decision === undefined || body.option_indices !== undefined || body.custom_text !== undefined || body.step_back !== undefined
           || body.step_index !== undefined || body.draft !== undefined) return badRequest("invalid_answer", "A valid option index is required.");
-        const config = (await openCodeService(options.openCodeStateDir, deadline, { onWindows: true }))?.config ?? null;
-        if (!config) return jsonResponse({ error: { code: "service_unavailable", message: "OpenCode service is not available. Your answer has not been sent." } }, 502);
         const asking = askings.get(body.pane_id);
         if (!(await openCodePaneOn(body.pane_id, sessionID, openCodeState, deadlineAt)) || deadline.aborted) return promptChanged();
+        // the service as it is right before the reply: still the one service.json names, and still a 2.x one
+        const service = await openCodeService(options.openCodeStateDir, deadline, { onWindows: true });
+        const config = service && openCodePermissionsRead(service.version) ? service.config : null;
+        if (!config) return jsonResponse({ error: { code: "service_unavailable", message: "OpenCode service is not available. Your answer has not been sent." } }, 502);
         const replied = await replyOpenCodePermission(config, sessionID, requestID, decision, deadline);
         if (replied.ok) {
           delivered = true;
@@ -1622,6 +1625,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           formsAnswered.set(body.pane_id, Date.now());
           if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
           if (askings.get(body.pane_id) === asking) askingEnded(body.pane_id);
+          // answered: no read listing it from before the reply shows it again
+          const entry = openCodeState.entries.get(body.pane_id);
+          if (entry?.sessionID === sessionID && entry.permissions) entry.permissions = entry.permissions.filter((request) => request.id !== requestID);
           return jsonResponse({ ok: true });
         }
         if (replied.status === 0) return jsonResponse({ error: { code: "reply_unconfirmed", message: "OpenCode may have received your answer, but its reply did not arrive. Check the request before sending again." } }, 504);

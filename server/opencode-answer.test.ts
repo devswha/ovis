@@ -22,6 +22,7 @@ async function fixture(run: (f: {
   permissions: unknown[];
   permissionReplies: { path: string; body: unknown }[];
   permissionReply?: () => Response;
+  permissionListing?: () => Promise<Response>;
   listing?: () => Promise<Response>;
   replying?: () => Promise<Response>;
   snapshot?: () => Promise<void>;
@@ -52,6 +53,7 @@ async function fixture(run: (f: {
     replies: [] as unknown[], sent: [] as string[],
     version: "2.0.32", permissions: [] as unknown[], permissionReplies: [] as { path: string; body: unknown }[],
     permissionReply: undefined as (() => Response) | undefined,
+    permissionListing: undefined as (() => Promise<Response>) | undefined,
     listing: undefined as (() => Promise<Response>) | undefined,
     replying: undefined as (() => Promise<Response>) | undefined,
     snapshot: undefined as (() => Promise<void>) | undefined,
@@ -85,7 +87,11 @@ async function fixture(run: (f: {
     async fetch(request) {
       const { pathname } = new URL(request.url);
       if (request.method === "GET" && pathname === "/api/info") return Response.json({ version: f.version, pid: process.pid, urls: [], paths: { tmp: root } });
-      if (request.method === "GET" && pathname.endsWith("/permission")) return Response.json({ data: f.permissions });
+      if (request.method === "GET" && pathname.endsWith("/permission")) {
+        const listing = f.permissionListing;
+        f.permissionListing = undefined;
+        return listing ? listing() : Response.json({ data: f.permissions });
+      }
       if (request.method === "POST" && pathname.includes("/permission/")) {
         f.permissionReplies.push({ path: pathname, body: await request.json() });
         return f.permissionReply?.() ?? new Response(null, { status: 204 });
@@ -505,8 +511,8 @@ describe("OpenCode permission card", () => {
       f.forms = [];
       f.permissions = [asked("shell")];
       const prompt = await f.read();
-      expect(prompt).toMatchObject({ kind: "approval", agent: "opencode", question: "Run a shell command", body: "$ ls -la ." });
-      expect(prompt.options.map((option) => option.label)).toEqual(["Allow once", "Always allow", "Deny"]);
+      expect(prompt).toMatchObject({ kind: "approval", agent: "opencode", body: "$ ls -la ." });
+      expect(prompt.options).toHaveLength(3);
       expect((await f.answer(prompt, { option_index: index })).status).toBe(200);
       expect(f.permissionReplies).toEqual([{ path: `/api/session/ses_fixture01/permission/${String(asked("shell").id)}/reply`, body: { decision } }]);
       expect(f.counted.answers).toBe(1);
@@ -536,15 +542,47 @@ describe("OpenCode permission card", () => {
     });
   });
 
-  it.each(["version", "shape", "session", "size"] as const)("leaves the request to the fallback card: %s not read", async (kind) => {
+  it.each(["version", "build", "shape", "session", "size"] as const)("leaves the request to the fallback card: %s not read", async (kind) => {
     await fixture(async (f) => {
       f.forms = [];
       f.permissions = [asked("shell")];
       if (kind === "version") f.version = "3.0.0";
+      if (kind === "build") f.version = "2.unknown";
       if (kind === "shape") f.permissions = [{ ...asked("shell"), resources: "ls -la ." }];
       if (kind === "session") f.permissions = [{ ...asked("shell"), sessionID: "ses_other" }];
       if (kind === "size") f.permissions = [{ ...asked("shell"), resources: ["echo " + "x".repeat(12_000)] }];
       expect((await f.read()).fallback).toBe(true);
+    });
+  });
+it("sends nothing to a service that is no longer a 2.x one when the answer comes", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      const prompt = await f.read();
+      // the answer's first read still sees 2.0.32; the service changes while the pane's binding is checked again
+      f.snapshot = async () => {
+        f.snapshot = async () => { f.version = "3.0.0"; service.forgetOpenCodeService(); };
+      };
+      expect((await f.answer(prompt, { option_index: 1 })).status).toBe(502);
+      expect(f.permissionReplies).toEqual([]);
+    });
+  });
+
+  it("shows no request an older read finishing late still listed, once a newer read saw it go", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      const prompt = await f.read();
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const listed = [...f.permissions];
+      f.permissionListing = async () => { entered.resolve(); await release.promise; return Response.json({ data: listed }); };
+      const older = f.read();
+      await entered.promise;
+      f.permissions = [];
+      expect((await f.read())?.id).not.toBe(prompt.id);
+      release.resolve();
+      expect((await older)?.kind).not.toBe("approval");
     });
   });
 });

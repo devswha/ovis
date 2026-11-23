@@ -1,6 +1,6 @@
 import { type CardText, type InteractivePrompt, type InteractivePromptOption, type InteractivePromptStep } from "../../shared/protocol.ts";
 import { type CardTextKey } from "../../shared/card-text.ts";
-import { type OpenCodeFormFieldOption, type OpenCodeFormInfo, type OpenCodePermissionDecision } from "../opencode-service.ts";
+import { type OpenCodeFormFieldOption, type OpenCodeFormInfo, type OpenCodePermissionDecision, type OpenCodePermissionRequest } from "../opencode-service.ts";
 import { createHash } from "node:crypto";
 import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
@@ -590,6 +590,8 @@ export interface OpenCodePromptEntry {
   form: string | null;
   listed: OpenCodeFormInfo | null;
   available: boolean;
+  /** the permission requests the latest read listed (null: none read), so an older read finishing later shows none it no longer lists */
+  permissions?: OpenCodePermissionRequest[] | null;
   draft?: OpenCodeFormDraft;
   revision: number;
   issued: number;

@@ -33,13 +33,15 @@ export const nativePermissionReader: DialogReader = {
 };
 
 /** What the request asks for, as OpenCode's TUI presents it (tui/src/util/permission.ts at 2.2.2): the command, the patch, the URL, the tool's input. */
-function permissionWords({ action, resources, metadata }: OpenCodePermissionRequest): { question: CardWords; body: string | null } {
+function permissionWords({ action, resources, metadata }: OpenCodePermissionRequest): { question: CardWords; body: string | null } | null {
   const listed = resources.filter((resource) => resource !== "*");
   if (action === "shell") return { question: own("Run a shell command"), body: listed.map((command) => `$ ${command}`).join("\n") || null };
   if (action === "edit") {
+    // every file's patch, or no card: a card showing some of an edit would have its user allow the rest unseen
     const files = Array.isArray(metadata?.files) ? metadata.files as unknown[] : [];
     const patches = files.flatMap((file) => typeof file === "object" && file !== null && typeof (file as Record<string, unknown>).patch === "string" ? [(file as Record<string, string>).patch!] : []);
-    return { question: own("Edit {file}", { file: listed.join(", ") }), body: patches.join("\n") || null };
+    if (files.length === 0 || patches.length !== files.length) return null;
+    return { question: own("Edit {file}", { file: listed.join(", ") }), body: patches.join("\n") };
   }
   if (action === "webfetch") return { question: own("Fetch {url}", { url: typeof metadata?.url === "string" ? metadata.url : listed.join(", ") }), body: null };
   if (action === "external_directory") return { question: own("Access a folder outside the project"), body: listed.join("\n") || null };
@@ -49,12 +51,14 @@ function permissionWords({ action, resources, metadata }: OpenCodePermissionRequ
 }
 
 /**
- * The card for a pending request, or null for one whose command, patch or input is longer than a card shows: a cut
- * body would have its user allow what they never saw, so the terminal answers it.
+ * The card for a pending request, or null for one it cannot show whole (an edit without each file's patch, a command,
+ * patch or input longer than a card shows): the card would have its user allow what they never saw, so the terminal
+ * answers it.
  */
 export function openCodePermissionPrompt(request: OpenCodePermissionRequest): ParsedPrompt | null {
-  const { question, body } = permissionWords(request);
-  if (body !== null && body.length > CARD_BODY_MAX) return null;
+  const words = permissionWords(request);
+  if (!words || (words.body !== null && words.body.length > CARD_BODY_MAX)) return null;
+  const { question, body } = words;
   const save = request.save ?? [];
   const choices: { label: CardWords; description: CardWords | null; decision: OpenCodePermissionDecision }[] = [
     { label: own("Allow once"), description: null, decision: "once" },
