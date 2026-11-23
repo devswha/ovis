@@ -36,6 +36,8 @@ interface Options {
   readonly ssh?: readonly Record<string, unknown>[];
   /** what HerdrShell answers to the methods named (takeSshSetup, tailscale, …) */
   readonly answers?: Record<string, unknown>;
+  /** what OvisSsh answers to the methods named (remove, …) */
+  readonly sshAnswers?: Record<string, unknown>;
 }
 
 /**
@@ -43,10 +45,10 @@ interface Options {
  * makes is kept in `window.calls` as `<plugin>.<method> <args>`.
  */
 async function chooser(saved: string[], options: Options = {}) {
-  const { home = "hosted", account = true, state = {}, locale = "en-US", platform = "ios", ssh, answers = {} } = options;
+  const { home = "hosted", account = true, state = {}, locale = "en-US", platform = "ios", ssh, answers = {}, sshAnswers = {} } = options;
   page = await browser.newPage({ locale });
   page.on("pageerror", (error) => thrown.push(error.message));
-  await page.addInitScript(({ saved, state, platform, ssh, answers }) => {
+  await page.addInitScript(({ saved, state, platform, ssh, answers, sshAnswers }) => {
     const headers = [{ name: "HerdrShell", methods: [] }, ...(ssh ? [{ name: "OvisSsh", methods: [] }] : [])];
     const calls: string[] = [];
     Object.assign(window, { calls, Capacitor: { PluginHeaders: headers, getPlatform: () => platform, nativePromise: async (plugin: string, method: string, args: Record<string, unknown> = {}) => {
@@ -54,10 +56,11 @@ async function chooser(saved: string[], options: Options = {}) {
       if (plugin === "HerdrShell" && method === "getState") return { saved, names: {}, ...state };
       if (plugin === "HerdrShell" && method in answers) return answers[method];
       if (plugin === "OvisSsh" && method === "list") return { pcs: ssh ?? [] };
+      if (plugin === "OvisSsh" && method in sshAnswers) return sshAnswers[method];
       if (plugin === "OvisSsh" && method === "known") throw new Error("no answer");
       return {};
     } } });
-  }, { saved, state, platform, ssh, answers });
+  }, { saved, state, platform, ssh, answers, sshAnswers });
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     // the account service names its sign-ins (GET /v1/providers): two of the three
@@ -179,6 +182,27 @@ describe("standing in for the hosted screen (a hosted-home build)", () => {
     expect(await page.locator("#back-to-pc").isVisible()).toBe(true);
   });
 
+  test.skipIf(noBrowser)("says under the list, where Manage is, that a removed SSH PC kept this phone's key", async () => {
+    // many PCs above it, so the list is far from the address field at the top
+    const others = Array.from({ length: 12 }, (_, n) => `http://192.168.0.${n + 10}:7421`);
+    await chooser([...others, SSH_PC.origin], { state: { manage: true, back: "home", last: SSH_PC.origin }, ssh: [SSH_PC], sshAnswers: { remove: { remote: "failed", reason: "no route" } } });
+    const panel = page.locator(".manage");
+    await panel.waitFor({ state: "visible", timeout: 5_000 });
+    await panel.getByRole("button", { name: "Remove", exact: true }).click();
+    await panel.getByRole("button", { name: "Remove", exact: true }).last().click();
+    const error = page.locator("#error");
+    await error.filter({ hasText: "could not be taken out of the PC" }).waitFor({ timeout: 5_000 });
+    expect(await page.evaluate(() => document.getElementById("pcs-section")!.nextElementSibling?.id)).toBe("feedback");
+    expect(await error.isVisible()).toBe(true);
+  });
+
+  test.skipIf(noBrowser)("keeps its live regions in the page while they are empty, so what they say later is announced", async () => {
+    await chooser([SSH_PC.origin], { state: { manage: true, back: "home", last: SSH_PC.origin }, ssh: [SSH_PC] });
+    await page.locator(".manage").waitFor({ state: "visible", timeout: 5_000 });
+    const shown = await page.evaluate(() => ["#feedback", ".status", "#status-text", ".manage .said"].map((selector) => [selector, getComputedStyle(document.querySelector(selector)!).display]));
+    for (const [selector, display] of shown) expect([selector, display]).not.toEqual([selector, "none"]);
+  });
+
   test.skipIf(noBrowser)("opened to choose another PC, goes back to it and marks it in use now", async () => {
     const pc = "https://desk.example.ts.net";
     await chooser([pc], { state: { fallback: true, current: pc, choosing: true, back: "current" } });
@@ -240,6 +264,18 @@ describe("standing in for the hosted screen (a hosted-home build)", () => {
     const row = page.getByRole("button", { name: "Open desk.example.org:7317", exact: true });
     await row.waitFor({ timeout: 5_000 });
     expect(await called("HerdrShell.open", () => row.click())).toContain(`"url":"${pc}/"`);
+  });
+});
+
+describe("a build without the account that still opens the hosted screen first", () => {
+  test.skipIf(noBrowser)("keeps the tabs, without the relay tab, and says it cannot reach the internet with Try again", async () => {
+    await chooser([], { account: false, state: { fallback: true } });
+    const line = page.locator("#offline");
+    await line.waitFor({ state: "visible", timeout: 5_000 });
+    expect(await page.locator('[role="tab"]:visible').count()).toBe(2);
+    expect(await page.locator("#tab-tailscale").getAttribute("aria-selected")).toBe("true");
+    expect(await page.locator("#offline-title").textContent()).toBe("Can't connect to the internet");
+    expect(await asked(() => page.locator("#try-home").click())).toBe("asked:goHome");
   });
 });
 

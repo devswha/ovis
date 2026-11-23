@@ -567,6 +567,8 @@ function managePanel(origin, label) {
       try {
         const { remote, reason } = await ssh("remove", { origin, cleanRemote: box.checked });
         await load();
+        // said under the list the PC was in, where the person is, not under the address field at the top
+        feedbackAt(document.getElementById("pcs-section"));
         if (remote === "failed") error.textContent = t(`${label} was removed from this phone, but its key could not be taken out of the PC (${reason}). Remove the line whose comment starts with ovis-phone: from ~/.ssh/authorized_keys there yourself.`, `이 PC(${label})를 이 휴대폰에서 지웠지만 PC에서 키를 빼지 못했어요(${reason}). 그쪽 ~/.ssh/authorized_keys에서 주석이 ovis-phone:으로 시작하는 줄을 직접 지우세요.`);
       } catch (err) { fail(err); }
     }, "primary");
