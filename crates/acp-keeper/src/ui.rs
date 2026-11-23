@@ -42,11 +42,23 @@ struct View {
     slash: usize,
     card_key: String,
     card_choice: usize,
+    /// What the frame being drawn shows, and what the last frame that reached the terminal showed:
+    /// keys act only on the latter.
+    staged: Shown,
+    shown: Shown,
     card_scroll: usize,
     card_hidden: bool,
     closed_elsewhere: Option<std::time::Instant>,
     flash: Option<String>,
     cache: Option<(u64, u16, bool, Vec<Line<'static>>)>,
+}
+
+/// The approval card on screen (its key, the highlighted choice, how many choices are visible) and
+/// the highlighted picker option.
+#[derive(Default, Clone)]
+struct Shown {
+    card: Option<(String, usize, usize)>,
+    picker: Option<String>,
 }
 
 pub struct Screen {
@@ -59,8 +71,8 @@ const HISTORY: usize = 200;
 /// The card a key answers: the one last drawn, while it is still pending. A card that came (or moved
 /// up because another side answered the one on screen) after the last frame is not answerable until
 /// it has been drawn, so a key never answers an approval nobody saw.
-fn shown_card<'m>(model: &'m Model, drawn: &str) -> Option<&'m Pending> {
-    model.pending.first().filter(|p| p.key == drawn)
+fn shown_card<'m>(model: &'m Model, drawn: Option<&str>) -> Option<&'m Pending> {
+    model.pending.first().filter(|p| Some(p.key.as_str()) == drawn)
 }
 
 pub fn restore_terminal() {
@@ -100,7 +112,8 @@ fn wrap(parts: &[(String, Style)], width: u16, first: &str, rest: &str, prefix_s
     wrap_with(parts, width, first, rest, prefix_style, false)
 }
 
-/// With `mark_break_space`, a space that lands at the end of a wrapped row is drawn as `␣`, so it cannot pass for padding.
+/// With `mark_break_space` (literal text: an approval's command), a space that lands at the end of a
+/// wrapped row is drawn as `␣` and a tab as `⇥`, so neither can pass for padding or plain spaces.
 fn wrap_with(parts: &[(String, Style)], width: u16, first: &str, rest: &str, prefix_style: Style, mark_break_space: bool) -> Vec<Line<'static>> {
     let width = (width as usize).max(first.chars().map(width_of).sum::<usize>() + 2);
     let mut rows = vec![];
@@ -108,7 +121,8 @@ fn wrap_with(parts: &[(String, Style)], width: u16, first: &str, rest: &str, pre
     let mut used: usize = first.chars().map(width_of).sum();
     for (text, style) in parts {
         let mut buf = String::new();
-        for c in clean(text).chars() {
+        let text = if mark_break_space { text.replace('\t', "\u{21e5}") } else { text.clone() };
+        for c in clean(&text).chars() {
             let w = width_of(c);
             if used + w > width && used > 0 {
                 if mark_break_space && buf.ends_with(' ') {
@@ -351,7 +365,9 @@ impl Screen {
 
     pub fn draw(&mut self, model: &Model) {
         let view = &mut self.view;
-        let _ = self.term.draw(|f| render(f, model, view));
+        view.staged = Shown::default();
+        let drawn = self.term.draw(|f| render(f, model, view)).is_ok();
+        self.view.shown = if drawn { std::mem::take(&mut self.view.staged) } else { Shown::default() };
     }
 
     pub fn redraw_all(&mut self) {
@@ -407,7 +423,7 @@ impl Screen {
             return self.popup_key(popup, key, model);
         }
         if !model.pending.is_empty() && !self.view.card_hidden {
-            let Some(p) = shown_card(model, &self.view.card_key) else {
+            let Some(p) = shown_card(model, self.view.shown.card.as_ref().map(|(key, _, _)| key.as_str())) else {
                 self.view.flash = Some("새 승인 카드가 왔습니다. 카드를 보고 답하세요".into());
                 return vec![];
             };
@@ -570,7 +586,11 @@ impl Screen {
     fn card_key(&mut self, p: &Pending, key: KeyEvent) -> Vec<Action> {
         let v = &mut self.view;
         let count = p.options.len().max(1);
+        let (shown_choice, visible) = v.shown.card.as_ref().map(|(_, choice, visible)| (*choice, *visible)).unwrap_or((usize::MAX, 0));
         let pick = |index: usize| -> Vec<Action> {
+            if index >= visible {
+                return vec![];
+            }
             if p.options.is_empty() {
                 vec![Action::Answer { key: p.key.clone(), option: None }]
             } else {
@@ -600,7 +620,7 @@ impl Screen {
             }
             KeyCode::Up => v.card_choice = (v.card_choice + count - 1) % count,
             KeyCode::Down => v.card_choice = (v.card_choice + 1) % count,
-            KeyCode::Enter => return pick(v.card_choice.min(count - 1)),
+            KeyCode::Enter if v.card_choice == shown_choice => return pick(v.card_choice.min(count - 1)),
             KeyCode::PageUp => v.card_scroll = v.card_scroll.saturating_sub(5),
             KeyCode::PageDown => v.card_scroll += 5,
             KeyCode::Esc => {
@@ -623,7 +643,8 @@ impl Screen {
                     KeyCode::Up => (at + count - 1) % count,
                     KeyCode::Down => (at + 1) % count,
                     KeyCode::Enter => {
-                        let Some((id, _)) = selector.as_ref().and_then(|s| s.options.get(at)).cloned() else {
+                        let Some((id, _)) = selector.as_ref().and_then(|s| s.options.get(at)).cloned().filter(|(id, _)| self.view.shown.picker.as_ref() == Some(id)) else {
+                            self.view.popup = Some(popup);
                             return vec![];
                         };
                         return vec![if is_mode { Action::SetMode(id) } else { Action::SetModel(id) }];
@@ -816,6 +837,10 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
         let inner_height = r.height.saturating_sub(2) as usize;
         let content_height = inner_height.saturating_sub(options.len() + 2).max(1);
         v.card_scroll = v.card_scroll.min(lines.len().saturating_sub(content_height));
+        let visible = inner_height.saturating_sub(content_height + 1).min(options.len());
+        if v.popup.is_none() {
+            v.staged.card = Some((p.key.clone(), v.card_choice, visible));
+        }
         let more = lines.len() > v.card_scroll + content_height;
         let mut all: Vec<Line> = lines.into_iter().skip(v.card_scroll).take(content_height).collect();
         while all.len() < content_height {
@@ -871,6 +896,9 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
                             .map(|(i, (id, label))| {
                                 let mark = if *id == s.current { "● " } else { "  " };
                                 let style = if i == *at { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+                                if i == *at {
+                                    v.staged.picker = Some(id.clone());
+                                }
                                 (format!("{mark}{label} ({id})"), style)
                             })
                             .collect()
@@ -961,11 +989,11 @@ mod tests {
         for id in [1, 2] {
             model.request(id.to_string(), serde_json::json!(id), id, ask(id).as_object().unwrap());
         }
-        assert!(shown_card(&model, "").is_none(), "a card answered before it was drawn");
-        assert_eq!(shown_card(&model, "1").map(|p| p.key.as_str()), Some("1"));
+        assert!(shown_card(&model, None).is_none(), "a card answered before it was drawn");
+        assert_eq!(shown_card(&model, Some("1")).map(|p| p.key.as_str()), Some("1"));
         model.resolve("1");
-        assert!(shown_card(&model, "1").is_none(), "the next card took a key meant for the one answered elsewhere");
-        assert_eq!(shown_card(&model, "2").map(|p| p.key.as_str()), Some("2"));
+        assert!(shown_card(&model, Some("1")).is_none(), "the next card took a key meant for the one answered elsewhere");
+        assert_eq!(shown_card(&model, Some("2")).map(|p| p.key.as_str()), Some("2"));
     }
 
     #[test]

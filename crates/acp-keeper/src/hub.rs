@@ -66,6 +66,22 @@ struct Route {
     change: Option<Change>,
 }
 
+/// Why an answer to a permission request is not one (the request stays pending), or None. An error
+/// answer, a cancellation and a selection of one of the offered options are answers.
+fn invalid_answer(pending: &crate::model::Pending, answer: &Value) -> Option<&'static str> {
+    if pending.method != "session/request_permission" || answer.get("error").is_some() {
+        return None;
+    }
+    match answer.pointer("/result/outcome/outcome").and_then(Value::as_str) {
+        Some("cancelled") => None,
+        Some("selected") => {
+            let option = answer.pointer("/result/outcome/optionId").and_then(Value::as_str);
+            (!pending.options.iter().any(|o| Some(o.id.as_str()) == option)).then_some("not one of the offered options")
+        }
+        _ => Some("not a permission outcome"),
+    }
+}
+
 pub fn note(archive: &Archive, method: &str, params: Value) {
     archive.append("keeper", &json!({"jsonrpc": "2.0", "method": method, "params": params}).to_string());
 }
@@ -91,6 +107,9 @@ pub struct Hub {
 impl Hub {
     /// `resumed`: the session to load came from the archive, so a failed load opens a new one.
     pub fn new(archive: Arc<Archive>, agent: UnboundedSender<Vec<u8>>, screen: Option<Screen>, opts: Opts, resumed: bool, started: Instant) -> Hub {
+        // Ids the keeper makes up (`keeper-N`, `client-C-N`, `agent-N`) count on from the archive's
+        // last row, so no id of an earlier run in the same ROOT is ever given out again.
+        let next = archive.replay_from(1).map(|(_, _, last)| last).unwrap_or(0);
         Hub {
             archive,
             agent: Some(agent),
@@ -98,7 +117,7 @@ impl Hub {
             screen,
             opts,
             resumed,
-            next: 0,
+            next,
             own: HashMap::new(),
             routes: HashMap::new(),
             agent_ids: HashMap::new(),
@@ -121,6 +140,19 @@ impl Hub {
             bytes.push(b'\n');
             let _ = agent.send(bytes);
         }
+    }
+
+    /// The agent is gone: every client request still waiting for it gets an error, and requests
+    /// sent from now on are answered the same way instead of waiting forever.
+    pub fn agent_gone(&mut self) {
+        self.agent = None;
+        let routes: Vec<Route> = self.routes.drain().map(|(_, route)| route).collect();
+        for route in routes {
+            self.client_ids.remove(&(route.conn, key_of(&route.id)));
+            self.reply(route.conn, &json!({"jsonrpc": "2.0", "id": route.id, "error": {"code": -32603, "message": "the agent has exited"}}));
+        }
+        self.prompts.clear();
+        self.model.working = false;
     }
 
     fn reply(&self, conn: u64, msg: &Value) {
@@ -337,6 +369,10 @@ impl Hub {
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.answer(&key_of(&id), &line, &by),
             (Some(method), Some(id)) => {
+                if self.agent.is_none() {
+                    self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the agent has exited"}}));
+                    return;
+                }
                 if !self.client_ids.insert((conn, key_of(&id))) {
                     self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "id already in flight"}));
                     self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32600, "message": "id already in flight"}}));
@@ -377,12 +413,16 @@ impl Hub {
     /// The resolved note is archived before the answer goes out: a keeper killed between the two
     /// leaves an approval noted as answered, never one the agent got and the archive calls unanswered.
     fn answer(&mut self, key: &str, raw: &str, by: &str) {
+        let mut answer: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+        let id: Value = serde_json::from_str(key).unwrap_or(Value::Null);
+        if let Some(reason) = self.model.pending.iter().find(|p| p.key == key).and_then(|p| invalid_answer(p, &answer)) {
+            self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": reason}));
+            return;
+        }
         let Some(pending) = self.model.resolve(key) else {
-            let id: Value = serde_json::from_str(key).unwrap_or(Value::Null);
             self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": "not pending (already answered or unknown)"}));
             return;
         };
-        let mut answer: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
         let option = answer.pointer("/result/outcome/optionId").and_then(Value::as_str).map(str::to_string);
         let outcome = answer.pointer("/result/outcome/outcome").and_then(Value::as_str).map(str::to_string);
         self.note_row("_keeper/resolved", json!({"id": pending.id, "by": by, "optionId": option, "outcome": outcome, "seq": pending.seq}));
@@ -492,6 +532,29 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let opts = crate::parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
         (Hub::new(Arc::new(archive), tx, None, opts, false, Instant::now()), rx)
+    }
+
+    #[test]
+    fn requests_waiting_on_an_exited_agent_get_an_error() {
+        let dir = std::env::temp_dir().join(format!("ak-unit-{}-gone", std::process::id()));
+        let (mut hub, _sent) = hub(&dir);
+        hub.model.session = Some("s".into());
+        let prompt = |id: u64| json!({"jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": {"sessionId": "s", "prompt": []}}).to_string();
+        hub.handle(Ev::Client { conn: 1, line: prompt(1) });
+        hub.agent_gone();
+        hub.handle(Ev::Client { conn: 1, line: prompt(2) });
+        let archive = std::fs::read_to_string(dir.join("archive.jsonl")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let errors: Vec<Value> = archive
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|r| r["dir"] == "to-client")
+            .map(|r| serde_json::from_str::<Value>(r["raw"].as_str().unwrap()).unwrap())
+            .filter(|m| m["error"].is_object())
+            .map(|m| m["id"].clone())
+            .collect();
+        assert_eq!(errors, vec![json!(1), json!(2)]);
+        assert!(!hub.model.working);
     }
 
     #[test]

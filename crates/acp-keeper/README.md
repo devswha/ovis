@@ -21,17 +21,29 @@ ROOT is a directory private to the user (0700). The keeper keeps there:
 | `agent.stderr` | the agent's stderr, appended across restarts |
 
 A client sends `{"replay":N}` and gets rows N.. from the file, a
-`{"through":seq,"pid":pid,"client":conn}` watermark, then live rows. Its requests reach the agent
-under an id of the keeper's own, and the answer comes back as a `to-client` row for that `client`
-with the client's own id: clients that count ids alike never get each other's answers (client
-numbers go on across restarts of the keeper in the same ROOT, so no row in the archive is
-addressed to an earlier client of the same number), and one
-client reusing an id still in flight gets error -32600. An agent request (an approval) is archived
-under a keeper id too (`agent-N`; `fs/*` and `terminal/*` requests, answered by the keeper
-itself, keep the agent's id), so an answer meant for one approval never resolves a later one the
-agent asks under the same id. It waits for the first answer from the screen or any client; that
-answer alone goes to the agent, under the agent's own id. The screen answers only the card it has
-drawn: a key that arrives before a new card is on screen is not taken as an answer to it.
+`{"through":seq,"pid":pid,"client":conn}` watermark, then live rows. Every client sees every row:
+`acp.sock` is one shared log for the user's own clients (ROOT is private to the user), not a
+per-client channel.
+
+A client's requests reach the agent under an id of the keeper's own, and the answer comes back as
+a `to-client` row addressed to that `client`, with the client's own id. A client reads the rows
+addressed to its number, so clients that count ids alike never take each other's answers. Client
+numbers and every id the keeper makes up count on across restarts in the same ROOT, so no row of
+an earlier run looks like this run's. A client reusing an id still in flight gets error -32600. Once
+the agent has exited, every request still waiting for it, and every new one, gets error -32603.
+
+An agent request (an approval) is archived under a keeper id too (`agent-N`; `fs/*` and
+`terminal/*` requests, answered by the keeper itself, keep the agent's id). An answer meant for one
+approval therefore never resolves a later one the agent asks under the same id. The request waits
+for the first answer from the screen or any client. That answer alone goes to the agent, under the
+agent's own id. An answer to a permission request that is no outcome, or that selects an option the
+agent did not offer, is dropped with a note, and the request stays pending.
+
+The screen answers only what the last frame that reached the terminal showed: a card not yet
+drawn, or covered by a popup, takes no answer. Enter takes no answer while the highlighted choice
+is not yet on screen, and choices cut off a short pane cannot be picked. The same goes for the mode
+and model pickers. A command on a card shows tabs as `⇥` and argv arguments quoted where a space
+would hide their boundaries.
 
 ## Notes in the archive
 
@@ -62,7 +74,9 @@ Started again in the same ROOT, the keeper numbers on from the last whole row (a
 dropped), notes `_keeper/expired` for each approval nobody answered, and loads the last session it
 noted, unless `--load` names another one. When the agent cannot load the noted session it gets a
 new one; when it cannot load the one `--load` names, the screen says so and there is no session.
-Nothing restarts a keeper by itself yet.
+Nothing restarts a keeper by itself yet. A keeper that cannot write its archive (a full disk) stops
+at once and takes the agent with it, rather than going on without a record; the row it was writing
+is dropped on the next start.
 
 ## Screen
 

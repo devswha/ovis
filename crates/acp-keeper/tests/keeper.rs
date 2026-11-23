@@ -262,3 +262,24 @@ fn client_numbers_go_on_without_answers() {
     let mut client = Client::connect(&root);
     assert!(client.number() > before, "the restarted keeper numbered its first client like the last run's");
 }
+
+#[test]
+fn an_answer_that_is_no_permission_outcome_leaves_the_approval_pending() {
+    let root = Root::new("invalid-answer");
+    let _keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, "ask"));
+    let ask = client.wait("the approval request", |r| r["dir"] == "from-agent" && method(r) == Some("session/request_permission"));
+    let id = ask["msg"]["id"].clone();
+    client.send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+    let dropped = client.wait("the invalid answer's note", |r| matches!(method(r), Some("_keeper/dropped" | "_keeper/resolved")));
+    assert_eq!(method(&dropped), Some("_keeper/dropped"), "an empty result resolved the approval");
+    client.send(&json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "selected", "optionId": "nope"}}}));
+    let dropped = client.wait("the unknown option's note", |r| {
+        matches!(method(r), Some("_keeper/dropped" | "_keeper/resolved")) && r["seq"].as_u64() > dropped["seq"].as_u64()
+    });
+    assert_eq!(method(&dropped), Some("_keeper/dropped"), "an option the agent did not offer resolved the approval");
+    client.send(&json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}}));
+    client.wait("the agent's word on the approval", |r| chunk_text(r) == Some("answered allow"));
+}

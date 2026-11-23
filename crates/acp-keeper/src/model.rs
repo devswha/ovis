@@ -70,7 +70,9 @@ impl Entry {
     fn bytes(&self) -> usize {
         match self {
             Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) | Entry::Note(s) | Entry::Error(s) => s.len(),
-            Entry::Tool(tool) => tool.title.len() + tool.text.len() + tool.raw_bytes + tool.locations.iter().map(String::len).sum::<usize>() + tool.diffs.iter().map(|d| d.path.len()).sum::<usize>(),
+            Entry::Tool(tool) => {
+                tool.id.len() + tool.title.len() + tool.text.len() + tool.raw_bytes + tool.locations.iter().map(String::len).sum::<usize>() + tool.diffs.iter().map(|d| d.path.len()).sum::<usize>()
+            }
             Entry::Plan(items) => items.iter().map(|(c, s)| c.len() + s.len()).sum(),
         }
     }
@@ -94,9 +96,16 @@ fn keep_tail(text: &mut String) {
     }
 }
 
-fn keep_head(mut text: String) -> String {
-    if text.len() > ENTRY_BYTES {
-        let mut cut = ENTRY_BYTES;
+const PLAN_ITEMS: usize = 200;
+const PLAN_ITEM_BYTES: usize = 4 << 10;
+
+fn keep_head(text: String) -> String {
+    short_text(text, ENTRY_BYTES)
+}
+
+fn short_text(mut text: String, max: usize) -> String {
+    if text.len() > max {
+        let mut cut = max;
         while !text.is_char_boundary(cut) {
             cut -= 1;
         }
@@ -132,7 +141,8 @@ pub struct Model {
     pub clients: usize,
     pub agent_gone: Option<String>,
     pub revision: u64,
-    echo: Option<(String, String)>,
+    /// The prompt just sent and how many of its bytes the agent has echoed back so far.
+    echo: Option<(String, usize)>,
 }
 
 pub fn text_of(block: &Value) -> String {
@@ -158,12 +168,21 @@ pub fn command_of(raw: &Value) -> Option<String> {
         match raw.get(key) {
             Some(Value::String(s)) => return Some(s.clone()),
             Some(Value::Array(parts)) if parts.iter().all(Value::is_string) => {
-                return Some(parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "));
+                return Some(parts.iter().filter_map(Value::as_str).map(quote_arg).collect::<Vec<_>>().join(" "));
             }
             _ => {}
         }
     }
     None
+}
+
+/// An argument of an argv-style command, quoted when a space or a quote would hide where it ends,
+/// so `["a b"]` and `["a", "b"]` never look the same on an approval card.
+fn quote_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.chars().any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\')) {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 fn paths_of(raw: &Value) -> Vec<String> {
@@ -174,8 +193,15 @@ fn paths_of(raw: &Value) -> Vec<String> {
 }
 
 /// Lines added and removed, by longest common subsequence on whole lines; past 4M cells it counts
-/// lines that appear on one side only, which can undercount moved lines.
+/// lines that appear on one side only, which can undercount moved lines, and past DIFF_LINES lines
+/// on a side it reports every line as changed, without building line tables.
 pub fn line_changes(old: &str, new: &str) -> (usize, usize) {
+    const DIFF_LINES: usize = 100_000;
+    let count = |text: &str| if text.is_empty() { 0 } else { text.lines().count() };
+    let (old_lines, new_lines) = (count(old), count(new));
+    if old_lines == 0 || new_lines == 0 || old_lines.max(new_lines) > DIFF_LINES {
+        return (new_lines, old_lines);
+    }
     let a: Vec<&str> = if old.is_empty() { vec![] } else { old.lines().collect() };
     let b: Vec<&str> = if new.is_empty() { vec![] } else { new.lines().collect() };
     if a.len().saturating_mul(b.len()) > 4_000_000 {
@@ -308,18 +334,16 @@ impl Model {
 
     pub fn user(&mut self, text: &str, sent: &str) {
         self.push(Entry::User(keep_head(text.to_string())));
-        self.echo = Some((sent.to_string(), String::new()));
+        self.echo = Some((sent.to_string(), 0));
         self.touch();
     }
 
     /// Agents that echo the prompt back as user_message_chunk would draw it twice; the echo of what was just sent is dropped.
     fn swallow_echo(&mut self, chunk: &str) -> bool {
         let Some((sent, seen)) = self.echo.as_mut() else { return false };
-        let mut next = seen.clone();
-        next.push_str(chunk);
-        if sent.starts_with(&next) {
-            *seen = next;
-            if seen.len() == sent.len() {
+        if sent[*seen..].starts_with(chunk) {
+            *seen += chunk.len();
+            if *seen == sent.len() {
                 self.echo = None;
             }
             return true;
@@ -350,7 +374,7 @@ impl Model {
                 let id = str_field(update, "toolCallId").unwrap_or_default();
                 let mut tool = Tool {
                     id: id.clone(),
-                    title: str_field(update, "title").unwrap_or_default(),
+                    title: keep_head(str_field(update, "title").unwrap_or_default()),
                     kind: str_field(update, "kind").unwrap_or_else(|| "other".into()),
                     status: str_field(update, "status").unwrap_or_else(|| "pending".into()),
                     raw_input: None,
@@ -383,7 +407,7 @@ impl Model {
                 let at = self.tool_at(&id).unwrap_or(self.entries.len() - 1);
                 if let Some(Entry::Tool(tool)) = self.entries.get_mut(at) {
                     if let Some(v) = str_field(update, "title") {
-                        tool.title = v;
+                        tool.title = keep_head(v);
                     }
                     if let Some(v) = str_field(update, "kind") {
                         tool.kind = v;
@@ -411,7 +435,13 @@ impl Model {
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
-                    .map(|e| (str_field(e, "content").unwrap_or_default(), str_field(e, "status").unwrap_or_default()))
+                    .take(PLAN_ITEMS)
+                    .map(|e| {
+                        (
+                            short_text(str_field(e, "content").unwrap_or_default(), PLAN_ITEM_BYTES),
+                            short_text(str_field(e, "status").unwrap_or_default(), 64),
+                        )
+                    })
                     .collect();
                 if let Some(Entry::Plan(old)) = self.entries.back_mut() {
                     *old = entries;
@@ -594,13 +624,39 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
-    use super::{line_changes, Entry, Model};
+    use super::{command_of, line_changes, Entry, Model};
     use serde_json::json;
 
     fn update(model: &mut Model, kind: &str, extra: serde_json::Value) {
         let mut update = json!({"sessionUpdate": kind});
         update.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         model.update(&json!({"sessionId": "s", "update": update}));
+    }
+
+    #[test]
+    fn argv_commands_keep_their_argument_boundaries() {
+        assert_eq!(command_of(&json!({"command": ["rm", "a b"]})).as_deref(), Some("rm 'a b'"));
+        assert_eq!(command_of(&json!({"command": ["rm", "a", "b"]})).as_deref(), Some("rm a b"));
+        assert_eq!(command_of(&json!({"command": ["echo", "it's", ""]})).as_deref(), Some(r"echo 'it'\''s' ''"));
+        assert_eq!(command_of(&json!({"command": "rm a b"})).as_deref(), Some("rm a b"));
+    }
+
+    #[test]
+    fn a_huge_new_file_counts_its_lines_without_tables() {
+        let huge = "\n".repeat(2_000_000);
+        assert_eq!(line_changes("", &huge), (2_000_000, 0));
+        assert_eq!(line_changes("a\n", &huge), (2_000_000, 1));
+    }
+
+    #[test]
+    fn an_echo_in_small_chunks_is_swallowed() {
+        let mut model = Model::new("agent".into(), "/".into());
+        let sent = "hello world ".repeat(100);
+        model.user(&sent, &sent);
+        for piece in sent.as_bytes().chunks(5) {
+            update(&mut model, "user_message_chunk", json!({"content": {"type": "text", "text": std::str::from_utf8(piece).unwrap()}}));
+        }
+        assert_eq!(model.entries.len(), 1, "the echo was drawn again");
     }
 
     #[test]

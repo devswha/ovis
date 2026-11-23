@@ -444,7 +444,7 @@ async fn run(mut opts: Opts) -> i32 {
                 hub.note_row("_keeper/agent_exit", json!({"status": text}));
                 hub.model.agent_gone = Some(text.clone());
                 hub.model.note(format!("{text}. Ctrl+Q로 닫으세요"));
-                hub.agent = None;
+                hub.agent_gone();
                 exited = Some(status);
                 // Now, while the reaped agent's group number cannot have been handed out again: a
                 // screen left open for hours must not signal whatever holds that number later.
