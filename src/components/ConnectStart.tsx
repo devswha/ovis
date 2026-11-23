@@ -276,9 +276,9 @@ export function MyPcs({ devices, accountPcs = null, phone, onForget, inUse = nul
 }
 
 /** Scan a QR code, where the phone app can scan: what it read opens as a typed address would (`open`). */
-function ScanWay({ open, failed }: { readonly open: AddressOpen; readonly failed: (cause: unknown) => void }) {
+function ScanWay({ open, failed, disabled = false }: { readonly open: AddressOpen; readonly failed: (cause: unknown) => void; readonly disabled?: boolean }) {
   const t = useT();
-  return <Way icon={QrCode} title={t("Scan a QR code")} sub={t("The QR on the PC's screen")} action="scan-qr" onClick={() => { open.setError(null); scanQr(t, open.take, failed); }} />;
+  return <Way icon={QrCode} title={t("Scan a QR code")} sub={t("The QR on the PC's screen")} action="scan-qr" disabled={disabled} onClick={() => { open.setError(null); scanQr(t, open.take, failed); }} />;
 }
 
 /**
@@ -320,7 +320,7 @@ function QrOrCode({ code, disabled = false }: { readonly code: CodeWays; readonl
   const open = useAddressOpen();
   return (
     <>
-      {canScanQr() ? <ScanWay open={open} failed={code.start} /> : <CodeLine onCode={code.submit} disabled={disabled} />}
+      {canScanQr() ? <ScanWay open={open} failed={code.start} disabled={disabled} /> : <CodeLine onCode={code.submit} disabled={disabled} />}
       <OpenState open={open} />
     </>
   );

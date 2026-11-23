@@ -261,6 +261,16 @@ describe("RelayShellScreens", () => {
     expect(html).toContain('data-tab-panel="relay"');
     expect(html).toContain('data-provider="google" aria-busy="true" disabled=""');
     expect(html).toMatch(/data-action="add-code" disabled=""/);
+    // where the phone app can scan, the QR way is held as well: a scan, or the code a failed one falls back to, waits
+    const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+    Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, PluginHeaders: [{ name: "CapacitorBarcodeScanner" }], nativePromise: async () => ({}) } });
+    try {
+      const scanning = render(createElement(RelayShell, { ...baseProps({ kind: "empty", account: { kind: "signing-in", provider: "google" } }), scoped: false, onSignIn: none }));
+      expect(scanning).toMatch(/data-action="scan-qr" disabled=""/);
+    } finally {
+      if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+      else Reflect.deleteProperty(globalThis, "Capacitor");
+    }
   });
 
   describe("the confirm before a link's PC is paired with", () => {
