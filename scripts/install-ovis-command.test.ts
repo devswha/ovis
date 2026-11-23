@@ -20,6 +20,12 @@ const WAITS_LINE = "the app is not running yet, so this PC was not added to your
 const OLD_READER_LINE = "this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings → Updates, then run in a terminal on this PC: ";
 const UPDATE_LINE = "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again";
 const TOKEN_LINE = "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC";
+const USAGE = "usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add [--account <id>]]";
+const ACCOUNT = "acct_1a2b3c4d5e6f";
+const NOT_ADDED_LINE = "this PC was not added to your Ovis account; what the add said is above. To try again: ";
+const NO_ACCOUNT_CHECK_LINE = "this Ovis release does not check the account --account names, so the installer does not add this PC with it. Update Ovis in Settings → Updates, then run on this PC: ";
+/** after the app's address, which a terminal shows as a link */
+const STARTED_LINE = ", in herdr, which was started in the background: this PC has no user service manager, so after a restart run this installer again";
 const CTRL_C = "\x03";
 /** a run of install.sh ends in about a second alone, in many on a PC busy with other checks */
 const RUN_ENDS_WITHIN_MS = 45_000;
@@ -30,12 +36,12 @@ function fn(name: string): string {
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const CONSTANTS = ["REPO", "BIN_DIR", "LAUNCHER_MARK"].map((name) => {
+const CONSTANTS = ["REPO", "BIN_DIR", "LAUNCHER_MARK", "OVIS_HOME", "HERDR_SERVICE", "HERDR_AGENT_LABEL", "ACCOUNT_SINCE"].map((name) => {
   const line = new RegExp(`^${name}=.*$`, "m").exec(INSTALLER)?.[0];
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
 }).join("\n");
-const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_reads_answers", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted"].map(fn).join("\n");
+const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_reads_answers", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted", "add_takes_account", "running_lines", "herdr_command", "ovis_cli", "at_least"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-command-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -65,9 +71,12 @@ else console.log(JSON.stringify({ root: import.meta.dir, command, rest, config: 
  * typed ahead from an answer, by the function install.sh knows such a release by; `old` is v0.5.2's, which asks
  * [y/N] and takes the next line the terminal hands it (the words are its own).
  */
-function readerScript(reader: "new" | "old"): string {
+function readerScript(reader: "new" | "old" | "before-account"): string {
+  const answerOf = `export function answerOf(line: string, digits: string, whole = false): "approve" | "decline" | null { return null; }\n`;
   return reader === "new"
-    ? `export function answerOf(line: string, digits: string, whole = false): "approve" | "decline" | null { return null; }\n`
+    ? `${answerOf}export const flags = ["--account"];\n`
+    : reader === "before-account"
+    ? answerOf
     : `export function approves(answer: string, digits: string): boolean { return false; }\n// Type the last three digits to approve [y/N]; nothing here is called answerOf (the word alone, in a comment, is not the function)\n`;
 }
 
@@ -79,6 +88,8 @@ const STAND_INS: Record<string, string> = {
   "plugin config-dir "*) echo "$SCRATCH/herdr-config/$3" ;;
   "status server --json") if [ -e "$SCRATCH/running" ]; then echo '{"running":true}'; else echo '{"running":false}'; fi ;;
   "plugin action invoke "*) ;;
+  # a headless server that comes up only on a PC whose herdr can start, and starts the app with it (its startup hook)
+  server) [ -e "$SCRATCH/herdr-starts" ] || { echo "herdr: cannot start here" >&2; exit 1; }; : >"$SCRATCH/running" ;;
   *) echo "unexpected herdr $*" >&2; exit 1 ;;
 esac`,
   node: `case "$1" in -p) case "$(uname -m)" in aarch64 | arm64) echo "22 arm64" ;; *) echo "22 x64" ;; esac ;; *) echo v22.0.0 ;; esac`,
@@ -108,7 +119,7 @@ class Pc {
     this.plugin("plugin");
   }
 
-  plugin(name: string, knows: "add" | "link" | "neither" = "add", id = "devswha.ovis", reader: "new" | "old" = "new"): string {
+  plugin(name: string, knows: "add" | "link" | "neither" = "add", id = "devswha.ovis", reader: "new" | "old" | "before-account" = "new"): string {
     const root = join(this.scratch, name);
     mkdirSync(join(root, "scripts"), { recursive: true });
     writeFileSync(join(root, "scripts", "plugin.ts"), pluginScript(knows));
@@ -154,7 +165,7 @@ class Pc {
     writeFileSync(join(this.scratch, "herdr-config", id, name), text);
     return this;
   }
-  flag(name: "add-fails" | "add-waits" | "add-reads" | "running"): this { writeFileSync(join(this.scratch, name), ""); return this; }
+  flag(name: "add-fails" | "add-waits" | "add-reads" | "running" | "herdr-starts"): this { writeFileSync(join(this.scratch, name), ""); return this; }
   addCalls(): { command: string; rest: string[]; terminal: boolean; typed?: string | null; release?: string }[] {
     const log = join(this.scratch, "add.calls");
     return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
@@ -730,7 +741,7 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       const pc = new Pc();
       const { out, exitCode } = await pc.unattended(args);
       expect(exitCode, out).toBe(1);
-      expect(out.trim()).toBe(`Ovis: does not know the option '${args.at(-1)}'. usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add]`);
+      expect(out.trim()).toBe(`Ovis: does not know the option '${args.at(-1)}'. ${USAGE}`);
       expect(existsSync(pc.launcher)).toBe(false);
     }
   });
@@ -759,6 +770,58 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       expect(out).toContain(TOKEN_LINE);
       expect(pc.addCalls()).toEqual([]);
     }
+  });
+
+  it.concurrent("refuses --account without an id, before it installs anything", async () => {
+    for (const args of [["--account"], ["--account="], ["--add", "--account", "--add"]]) {
+      const pc = new Pc();
+      const { out, exitCode } = await pc.unattended(args);
+      expect(exitCode, out).toBe(1);
+      expect(out.trim()).toBe(`Ovis: --account takes your Ovis account's id (ovis status on a PC already in it shows it). ${USAGE}`);
+      expect(existsSync(pc.launcher)).toBe(false);
+    }
+  });
+
+  // a script's or a coding agent's add: nobody is there to type yes, so the account is named in advance
+  it.concurrent("with --account, adds with no terminal and reads nothing, and its exit status says whether the PC was added", async () => {
+    for (const [args, extra] of [[["--add", "--account", ACCOUNT], {}], [[`--account=${ACCOUNT}`], {}], [[], { OVIS_ADD_ACCOUNT: ACCOUNT }]] as const) {
+      const pc = new Pc().flag("running");
+      const { out, exitCode } = await pc.unattended([...args], extra);
+      expect(exitCode, out).toBe(0);
+      expect(pc.addCalls()).toEqual([{ command: "add", rest: ["--account", ACCOUNT], terminal: false }]);
+      expect(out).not.toContain(HINT_LINE);
+      expect(out.split(TOKEN_LINE)).toHaveLength(2);
+      expect(out.indexOf(TOKEN_LINE)).toBeLessThan(out.indexOf("the add step"));
+    }
+    const failing = new Pc().flag("running").flag("add-fails");
+    const failed = await failing.unattended(["--add", "--account", ACCOUNT]);
+    expect(failed.exitCode, failed.out).toBe(1);
+    expect(failed.out).toContain(`Ovis: ${NOT_ADDED_LINE}${failing.launcher} add --account ${ACCOUNT}\n`);
+  });
+
+  it.concurrent("with --account on a fresh PC, starts herdr and adds the PC, all in one run", async () => {
+    const pc = new Pc().flag("herdr-starts");
+    const { out, exitCode } = await pc.unattended(["--add", "--account", ACCOUNT]);
+    expect(exitCode, out).toBe(0);
+    expect(pc.addCalls()).toEqual([{ command: "add", rest: ["--account", ACCOUNT], terminal: false }]);
+    expect(out).toContain(STARTED_LINE);
+  });
+
+  it.concurrent("with --account, does not start the add of a release that would not check that account, and exits non-zero", async () => {
+    const pc = new Pc().flag("running");
+    pc.plugin("plugin", "add", "devswha.ovis", "before-account");
+    const { out, exitCode } = await pc.unattended(["--add", "--account", ACCOUNT]);
+    expect(exitCode, out).toBe(1);
+    expect(pc.addCalls()).toEqual([]);
+    expect(out).toContain(`Ovis: ${NO_ACCOUNT_CHECK_LINE}${pc.launcher} add --account ${ACCOUNT}\n`);
+  });
+
+  it.concurrent("with --account where the app does not come up, says what to run once it does, and exits non-zero", async () => {
+    const pc = new Pc();
+    const { out, exitCode } = await pc.unattended(["--add", "--account", ACCOUNT]);
+    expect(exitCode, out).toBe(1);
+    expect(pc.addCalls()).toEqual([]);
+    expect(out).toContain(`Ovis: ${WAITS_LINE}${pc.launcher} add --account ${ACCOUNT}\n`);
   });
 
   it("does not run at a screen that shows its words when there is no terminal to answer at", () => {
@@ -884,11 +947,22 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       expect(pc.ovis(["add"]).code).toBe(1);
     });
 
-    it.concurrent("does not start the add step while the app is not running, and says what to run once it is", async () => {
+    it.concurrent("starts herdr where it is not running, so the app runs now and the add step goes on", async () => {
+      const pc = new Pc().flag("herdr-starts");
+      const { out, exitCode } = await pc.atTerminal("--add");
+      expect(exitCode, out).toBe(0);
+      expect(pc.addCalls()).toEqual([{ command: "add", rest: [], terminal: true }]);
+      expect(out).toContain(STARTED_LINE);
+      expect(out).toContain(`see it: ${pc.launcher} status. Stop it: ${pc.launcher} stop (it starts again with herdr). Stop herdr and every terminal in it: herdr server stop`);
+      expect(out).not.toContain(WAITS_LINE);
+    });
+
+    it.concurrent("does not start the add step where herdr does not come up, and says what to run once it does", async () => {
       const pc = new Pc();
       const { out, exitCode } = await pc.atTerminal("--add");
       expect(exitCode, out).toBe(0);
-      expect(out).toContain("herdr is not running, so neither is the app yet");
+      expect(out).toContain(`herdr did not start, so neither did the app; to see why: run ${join(pc.bin, "herdr")} server`);
+      expect(out).not.toContain("Ovis runs now");
       expect(out).not.toContain("start it first");
       expect(out).not.toContain("the add step");
       expect(pc.addCalls()).toEqual([]);

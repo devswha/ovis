@@ -47,7 +47,7 @@ git --version
 | --- | --- | --- |
 | **A. herdr plugin** (default) | The user wants it to start with herdr | In-app: Settings → About |
 | **B. Source checkout** | The user wants to develop it, or asks for a clone | In-app, while the checkout stays on a clean `main` |
-| **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, and Node 22 only when the Rust PTY host does not run on the PC and it has no Node 18 or newer) and to let Tailscale serve the app | In-app, like A |
+| **C. One-line installer** | The user agrees to install what is missing (herdr, Bun, and Node 22 only when the Rust PTY host does not run on the PC and it has no Node 18 or newer), to let Tailscale serve the app, and, where herdr is not running, to have herdr started at login (and at boot, with lingering) | In-app, like A |
 
 Use A unless the user says otherwise. C is A plus the prerequisites and step 5 in one command,
 `curl -fsSL https://ovis.sh/install.sh | sh`: it installs herdr for the user only (no sudo) when it
@@ -57,7 +57,20 @@ size and SHA-256 it names; nothing there changes when a check fails), with no Bu
 small plugin folder that runs that binary into herdr, starts it when herdr
 runs, and, when Tailscale runs on the PC, serves the app to the tailnet (`tailscale serve`) and
 prints the address as a QR code. It changes the user's Tailscale configuration, so it needs the
-same **Ask** as step 5. Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
+same **Ask** as step 5. Where herdr is not running (C just installed it, or it is stopped), C starts
+herdr's server headless, and the app with it, from a user service that starts herdr again at login:
+`ovis-herdr` (`systemctl --user`) on Linux, the `sh.ovis.herdr-server` LaunchAgent on macOS. On Linux
+it also turns on lingering (`loginctl enable-linger`) when that asks for no password, so herdr starts
+at boot and runs after a logout, and records that it did in `~/.local/share/ovis/lingering`. Without
+a service manager it starts herdr once. The service never stops herdr, and a herdr that runs is left
+as it is. It ends by saying what runs, `ovis status` to see it and `ovis stop` to stop it.
+
+To add the PC to the user's Ovis account in the same line, with no terminal, pass the account's id
+(the user reads it from `ovis status` on a PC already in the account, or **Settings → Manage account**):
+`curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>`. It runs
+`ovis add --account <id>`, which prints a sign-in address and code for the user to open, then waits up
+to 10 minutes for the user to press **Add** on a device of that account. The installer exits non-zero
+when the PC was not added. Never guess the id, and do not sign in for the user. Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
 take turns through an install lock in `~/.local/share/ovis`: a waiter breaks the lock once the holder's pid no
 longer runs, one breaker at a time. A release
 from before the compiled server, a branch in `OVIS_REF`, an install from source already on the PC, or
@@ -299,6 +312,15 @@ The old `HERDR_WEB_*` names still work. The [user guide](docs/guide.md#configura
 # an install from before the rename runs, or is registered, under its old id until the installer moves it
 herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
 herdr plugin uninstall devswha.ovis || herdr plugin uninstall devswha.herdr-web-ui
+```
+
+Where the one-line installer started herdr, also remove its service, without stopping herdr (it may
+hold the user's agents), and turn lingering off only where the installer turned it on:
+
+```bash
+systemctl --user disable ovis-herdr; rm -f ~/.config/systemd/user/ovis-herdr.service; systemctl --user daemon-reload   # Linux
+launchctl disable gui/$(id -u)/sh.ovis.herdr-server; rm -f ~/Library/LaunchAgents/sh.ovis.herdr-server.plist   # macOS
+if [ -f ~/.local/share/ovis/lingering ]; then loginctl disable-linger && rm ~/.local/share/ovis/lingering; fi
 ```
 
 An install on herdr-core (no herdr) has no plugin: stop it and remove its service and checkout.

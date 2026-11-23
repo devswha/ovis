@@ -331,8 +331,19 @@ The installer runs `ovis add` as its last step when it is given `--add`
 (`curl -fsSL https://ovis.sh/install.sh | sh -s -- --add`), at a terminal you can answer at and
 while the app runs. What was typed in that terminal while the installer worked is discarded before
 the step starts, so it answers nothing the step asks; where the installer cannot discard it, it
-prints the command instead. On a PC where it has just installed herdr the app is not up yet: start
-herdr, then run `ovis add`, as its last lines say.
+prints the command instead. On a PC where herdr was not running (installed just now, or stopped),
+the installer first starts it from a user service that starts it again at login, and at boot where
+lingering can be turned on ([Quick start](guide.md#quick-start)), so the app is up for the add and
+stays up. With the account named, nothing is asked, so one line adds a new server from a script or a
+coding agent, with no terminal:
+
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>
+```
+
+It runs `ovis add --account <id>` and exits non-zero when the PC was not added. A release whose add
+does not take `--account` (before 0.5.10) is not started that way, since it would not check the
+account; the installer says to update first.
 
 `login`, `add` and `link` are one command under three names. On a desktop, `login` opens the sign-in
 page in the browser itself, as `codex login` does; the address and code stay on screen for another device. Every way turns the relay on first when
