@@ -130,6 +130,13 @@ export const QUIT_BOUND_MS = 2_000;
  * refused, never sent to the pane focused before.
  */
 export const LAYOUT_SHOWN_WAIT_MS = 2_000;
+/**
+ * How long a screen's claim to open the first workspace holds once written (tui/core/layout.ts `claimFirst`). The screen
+ * lets it go when it is done or leaves; one that died holding it leaves the claim to this time, after which another
+ * screen takes it. Longer than a call waits for its answer (10 s), so the shell's start a claim covers was answered, or
+ * given up, before another screen starts one.
+ */
+export const FIRST_CLAIM_MS = 15_000;
 /** The most input events that wait behind a layout write; past it nothing more waits until the write is done. */
 export const BEHIND_WRITE_EVENTS = 4_096;
 /** The most bytes of typed and pasted text that wait behind a layout write: one paste at its limit. */

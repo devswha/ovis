@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { HcConnection, HcError } from "../../server/herdr-core/connection.ts";
+import { HcConnection, HcError, HcReplyError } from "../../server/herdr-core/connection.ts";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { leaves, type LayoutNode, OVIS_LAYOUT_DOC, place as placeTree } from "../../server/herdr-core/layout-doc.ts";
 import { editLayout, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
@@ -319,6 +319,50 @@ describe("the screen's layout writes", () => {
     await run.advance(20);
     expect(tabs()).toEqual(["main", "side", "build"]);
     expect(run.grid()[0]!.includes("  build  ")).toBe(true);
+  }, TEST_MS);
+});
+
+describe("the first workspace", () => {
+  it("is one shell: a read of the core that fails after the shell started starts no other, and no folder is blamed", async () => {
+    const core = new FakeHcCore();
+    const line = new HcConnection(() => core.transport());
+    let made = false;
+    // every read of the terminals fails once the shell started: only the start's own answer may decide what follows it
+    const hc: Pick<HcConnection, "call" | "hello"> = {
+      hello: () => line.hello(),
+      call: (async (method: string, params: Record<string, unknown>, timeout?: number) => {
+        if (made && method === "terminal.list") throw new HcReplyError("internal", "snapshot unavailable");
+        const result = await (line.call as (method: string, params: Record<string, unknown>, timeout?: number) => Promise<unknown>)(method, params, timeout);
+        if (method === "terminal.run") made = true;
+        return result;
+      }) as HcConnection["call"],
+    };
+    const { writes, notices, answers } = screen(core, "/work/place", hc);
+    const done = await writes.openFirst();
+    // null for a start in no folder: toEqual takes an undefined item at the end for none
+    expect(calls(core, "terminal.run").map((call) => call.params["cwd"] ?? null)).toEqual(["/work/place"]);
+    expect([done, notices(), answers.filter((answer) => answer.type === "follow")]).toEqual([{ ended: [], inputTarget: "t1" }, [], [{ type: "follow", target: pane("t1"), away: null }]]);
+    expect(Object.keys((core.docs.get(OVIS_LAYOUT_DOC)?.value ?? {}) as object)).not.toContain("first_workspace");
+  }, TEST_MS);
+
+  it("a folder the core refuses gives way to the core's own, and a start it refuses for any other reason to nothing", async () => {
+    const refused = new FakeHcCore();
+    refused.refuseFolder("/work/gone");
+    const first = screen(refused, "/work/gone");
+    expect(await first.writes.openFirst()).toEqual({ ended: [], inputTarget: "t1" });
+    expect([calls(refused, "terminal.run").map((call) => call.params["cwd"] ?? null), first.notices()]).toEqual([["/work/gone", null], [{ code: "first_folder_unusable", folder: "/work/gone", calm: true }]]);
+    const core = new FakeHcCore();
+    const line = new HcConnection(() => core.transport());
+    const hc: Pick<HcConnection, "call" | "hello"> = {
+      hello: () => line.hello(),
+      call: ((method: string, params: Record<string, unknown>, timeout?: number) => method === "terminal.run"
+        ? Promise.reject(new HcReplyError("blocked", "no more terminals"))
+        : (line.call as (method: string, params: Record<string, unknown>, timeout?: number) => Promise<unknown>)(method, params, timeout)) as HcConnection["call"],
+    };
+    const other = screen(core, "/work/place", hc);
+    expect(await other.writes.openFirst()).toEqual({ ended: [] });
+    expect([other.notices(), calls(core, "terminal.run")]).toEqual([[{ code: "layout_refused", action: "new_workspace", reason: "blocked" }], []]);
+    expect(Object.keys((core.docs.get(OVIS_LAYOUT_DOC)?.value ?? {}) as object)).not.toContain("first_workspace");
   }, TEST_MS);
 });
 

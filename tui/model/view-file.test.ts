@@ -8,6 +8,7 @@ import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
 import { type ViewFiles, ViewStore } from "../view-store.ts";
+import { FIRST_CLAIM_MS } from "./deadlines.ts";
 import { type Focus, nextFocus, type World } from "./focus.ts";
 import { initialState, type ModelState, reduce } from "./reduce.ts";
 import { readView, restoredFocus, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./view-file.ts";
@@ -490,7 +491,7 @@ describe("a rerun of the screen on the same core", () => {
     expect(JSON.parse(kept).focus.tabs["w-ovis"]).toBe("t-logs");
     // another screen holds the claim to open the first workspace (tui/core/layout.ts `claimFirst`): this one leaves the core empty
     const claimed = (core: FakeHcCore) => {
-      core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: OVIS_LAYOUT_SCHEMA, workspaces: [], first_workspace: { opening: true } }, version: 1 });
+      core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: OVIS_LAYOUT_SCHEMA, workspaces: [], first_workspace: { opening: true, until: FIRST_CLAIM_MS } }, version: 1 });
       return core;
     };
     const empty = await Run.start({ core: claimed(new FakeHcCore(options("coreone"))), views: new ViewStore(folder) });

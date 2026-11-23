@@ -14,6 +14,7 @@ import { HcError, HcReplyError } from "../../server/herdr-core/connection.ts";
 import { AdapterError } from "../../server/herdr-core/errors.ts";
 import { foreignLayout, leaves, OVIS_LAYOUT_DOC, OVIS_LAYOUT_SCHEMA, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
 import { type CloseTarget, collapseEdit, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, passthroughEdit, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
+import { FIRST_CLAIM_MS } from "../model/deadlines.ts";
 import { type CoreHost, type FirstTurn, LAYOUT_DOC, OTHER_WORKSPACE_ID } from "../../server/herdr-core/snapshot.ts";
 import { checkoutHolding, factsOf, type Repository, WORKTREE_LABEL, worktreeFolder, worktreeLabel } from "../../server/herdr-core/worktrees.ts";
 import type { CheckoutRow } from "../model/overlays.ts";
@@ -38,6 +39,12 @@ export interface LayoutDone {
   readonly inputTarget?: string;
 }
 
+/**
+ * What opening the first workspace did, as a write's answer. `again`: another screen holds the claim to open it, and this
+ * one looks again after this long, in case that screen left without opening anything.
+ */
+export interface FirstDone extends LayoutDone { readonly again?: number }
+
 const NOTHING_ENDED: LayoutDone = { ended: [] };
 
 /** A failed connection or a core reporting that it too lost the answer (for example, on a remote machine). */
@@ -54,18 +61,34 @@ interface LayoutWritesOptions {
   folder: string | undefined;
   /** the user's home: the first workspace opened there is named as herdr's server names its own */
   home?: string | undefined;
+  /**
+   * the wall clock, in ms, which every screen on this PC reads alike (the loop's own clock is the process's): a
+   * first-workspace claim's time is told by it. Unset: the system's
+   */
+  wall?: (() => number) | undefined;
   answer: (answer: LayoutAnswer) => void;
 }
 
 /** What herdr names the first workspace its server opens in its own home; a workspace in any other folder is named after it. */
 const HOME_NAME = "~";
 
-/** The layout document's key for the first workspace's claim (`LayoutWrites.claimFirst`). */
+/** The layout document's key for the first workspace's claim (`LayoutWrites.claimFirst`): `{ opening: true, until }`. */
 const FIRST_CLAIM = "first_workspace";
-/** The claim a screen writes while it opens the first workspace; the document holds it for no longer. */
-const OPENING = { opening: true } as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Until when, by the wall clock, a claim in the layout document holds; null for none, for one past its time, and for one
+ * that names no time or a time no claim written by now could have (a clock that ran ahead holds a claim no longer).
+ */
+function claimedUntil(doc: unknown, now: number): number | null {
+  const claim = isRecord(doc) ? doc[FIRST_CLAIM] : undefined;
+  const until = isRecord(claim) ? claim["until"] : undefined;
+  return typeof until === "number" && until > now && until <= now + FIRST_CLAIM_MS ? until : null;
+}
+
+/** A claim this screen wrote: the document without it, and the document's version with it (null once it is not this screen's to take out). */
+interface FirstClaim { readonly rest: Record<string, unknown>; version: number | null }
 
 const SPLITS: Readonly<Record<string, SplitDirection>> = { split_vertical: "right", split_horizontal: "down" };
 const SWAPS: Readonly<Record<string, PaneDirection>> = { swap_pane_left: "left", swap_pane_down: "down", swap_pane_up: "up", swap_pane_right: "right" };
@@ -91,9 +114,16 @@ function oneStep(ids: readonly string[], id: string, down: boolean): number | nu
 export class LayoutWrites {
   private readonly store: LayoutStore;
   private busy = false;
+  private readonly wall: () => number;
+  /** the first workspace being opened (`openFirst`), settled once it is done; null while none is */
+  private opening: Promise<void> | null = null;
+  /** the screen is leaving (`leave`): nothing more is started, and no read still on its way is waited for */
+  private leaving = false;
+  private readonly left = Promise.withResolvers<null>();
 
   constructor(private readonly options: LayoutWritesOptions) {
     const { hc } = options;
+    this.wall = options.wall ?? Date.now;
     this.store = new LayoutStore(hc, {
       snapshot: async () => (await this.fresh()).view,
       newId: newLayoutId,
@@ -114,78 +144,130 @@ export class LayoutWrites {
   /**
    * Opens a first workspace on a core that has none, as herdr's server does when a client connects: a shell in the folder
    * the screen was started from (the core's own folder when it has none), named `~` in the home and after the folder
-   * anywhere else, as a new workspace is (`firstShell`). Every screen on the core, and the browser, share it, so the create is guarded by a claim in the
-   * layout document taken by compare-and-set (`claimFirst`): of the screens that find the core empty at once, one
-   * creates. Answers when it is done; a failure is a notice.
+   * anywhere else, as a new workspace is (`firstShell`). Every screen on the core, and the browser, share it, so the
+   * create is guarded by a claim in the layout document taken by compare-and-set (`claimFirst`): of the screens that
+   * find the core empty at once, one creates. Answers as a layout write does (the new pane is where input read meanwhile
+   * goes), and never rejects: a failure is a notice. null while another write is in flight or the screen is leaving:
+   * nothing was asked.
    */
-  openFirst(): Promise<void> {
-    if (this.busy) return Promise.resolve();
+  openFirst(): Promise<FirstDone> | null {
+    if (this.busy || this.leaving) return null;
     this.busy = true;
-    return this.claimFirst().catch((error: unknown) => this.refused("new_workspace", error)).finally(() => {
+    const done = this.claimFirst().catch(async (error: unknown): Promise<FirstDone> => {
+      await this.refused("new_workspace", error);
+      return unknownAnswer(error) ? { ended: [], dropInput: "layout_unknown" } : NOTHING_ENDED;
+    }).finally(() => {
       this.busy = false;
+      this.opening = null;
     });
+    this.opening = done.then(() => {});
+    return done;
   }
 
   /**
-   * The first workspace's claim. The claim is a key of the layout document beside its workspaces; every reader keeps
-   * only the schema and the workspaces (snapshot.ts `keptLayout`), so no reader sees it and the next layout edit drops
-   * it. Steps:
-   * 1. read the document, then the terminals: nothing to do unless the core has no terminal, Ovis arranges its layout and
-   *    no claim is in the document;
-   * 2. write the claim with the version read: a screen that loses the race gets a conflict and stops;
-   * 3. read the terminals again: another client may have opened one meanwhile, then the claim is let go;
-   * 4. create the workspace, then take the claim out of the document: a screen that reads the document after that finds
-   *    the workspace's terminal, and the document is left as the browser and every reader know it.
-   * A screen that dies between 2 and 4 leaves the claim until the next layout edit drops it: the core then stays empty,
-   * and the sidebar's new button still opens a workspace.
+   * The screen is leaving. A first workspace it is opening is settled first, while the line is open: no read on its way
+   * is waited for and nothing more is started, so a claim it took is let go at once; a shell's start already sent is
+   * answered first, then its claim let go. Answers when that is done; null when no first workspace is being opened.
    */
-  private async claimFirst(): Promise<void> {
-    const { hc } = this.options;
-    if (!layoutCalls(await hc.hello())) return;
-    const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
-    const [list, app] = await Promise.all([hc.call("terminal.list", {}), hc.call("doc.get", { name: LAYOUT_DOC })]);
-    if (!ownsLayout(app.value) || foreignLayout(doc.value) || list.terminals.length > 0) return;
-    if (isRecord(doc.value) && doc.value[FIRST_CLAIM] !== undefined) return;
-    const layout = isRecord(doc.value) ? doc.value : { schema: OVIS_LAYOUT_SCHEMA, workspaces: [] };
-    const write = async (claim: boolean, version: number): Promise<number | null> => {
-      const { [FIRST_CLAIM]: _old, ...rest } = layout;
-      try {
-        return (await hc.call("doc.set", { name: OVIS_LAYOUT_DOC, value: claim ? { ...rest, [FIRST_CLAIM]: OPENING } : rest, version })).version;
-      } catch (error) {
-        if (error instanceof HcError && error.kind === "conflict") return null;
-        throw error;
-      }
-    };
-    const claimed = await write(true, doc.version);
-    if (claimed === null) return;
-    if ((await hc.call("terminal.list", {})).terminals.length > 0) {
-      await write(false, claimed);
-      return;
-    }
-    let address: string;
-    try {
-      address = await this.createFirst();
-    } catch (error) {
-      await write(false, claimed);
-      throw error;
-    }
-    await write(false, claimed);
-    this.follow(address, null);
+  leave(): Promise<void> | null {
+    this.leaving = true;
+    this.left.resolve(null);
+    return this.opening;
+  }
+
+  /** `read`'s answer, or null once the screen is leaving: a read that never answers holds no leaving screen. */
+  private unlessLeft<T>(read: Promise<T>): Promise<T | null> {
+    return Promise.race([read, this.left.promise]);
   }
 
   /**
-   * Creates the first workspace (`firstShell`). A folder the core refuses (removed, or not usable: hc answers
-   * `spawn_failed`) gives way to the core's own folder, named `~` as herdr's, once and under the same claim, with a calm
-   * notice naming the folder; a line that ended or timed out may have made it, so nothing is tried again then.
+   * The first workspace's claim: `{ opening: true, until }` under a key of the layout document beside its workspaces.
+   * Every reader keeps only the schema and the workspaces (snapshot.ts `keptLayout`), so no reader sees it. It holds
+   * until its time (`FIRST_CLAIM_MS` from when it was written, by the wall clock), and the document's version says whose
+   * it is: only the screen whose write made that version takes it again or takes it out. Steps:
+   * 1. read the document, then the terminals: nothing to do unless the core has no terminal and Ovis arranges its layout;
+   * 2. a claim still within its time is another screen's: this one looks again when that time is up (`again`);
+   * 3. write the claim at the version read (over one past its time: its screen died holding it): a screen that loses
+   *    the race gets a conflict, and looks again after a claim's time;
+   * 4. read the terminals again: another client may have opened one meanwhile;
+   * 5. write the claim again, with a new time, right before the shell starts: a screen held up past its claim's time
+   *    finds another's write there and starts nothing, so a slow screen and the one that took over never both start one;
+   * 6. start the shell, then take the claim out of the document, whatever the start answered.
+   * A screen that leaves in between lets its claim go first (`leave`). One that dies leaves it to its time.
+   */
+  private async claimFirst(): Promise<FirstDone> {
+    const { hc } = this.options;
+    if (!layoutCalls(await hc.hello())) return NOTHING_ENDED;
+    const read = await this.unlessLeft((async () => {
+      const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
+      const [list, app] = await Promise.all([hc.call("terminal.list", {}), hc.call("doc.get", { name: LAYOUT_DOC })]);
+      return { doc, list, app };
+    })());
+    if (read === null) return NOTHING_ENDED;
+    const { doc, list, app } = read;
+    if (!ownsLayout(app.value) || foreignLayout(doc.value) || list.terminals.length > 0) return NOTHING_ENDED;
+    const now = this.wall();
+    const held = claimedUntil(doc.value, now);
+    if (held !== null) return { ended: [], again: held - now };
+    const { [FIRST_CLAIM]: _lapsed, ...rest } = isRecord(doc.value) ? doc.value : { schema: OVIS_LAYOUT_SCHEMA, workspaces: [] };
+    const claim: FirstClaim = { rest, version: doc.version };
+    if (!await this.take(claim)) return { ended: [], again: FIRST_CLAIM_MS };
+    try {
+      const listed = await this.unlessLeft(hc.call("terminal.list", {}));
+      if (listed === null || listed.terminals.length > 0) return NOTHING_ENDED;
+      if (!await this.take(claim)) return { ended: [], again: FIRST_CLAIM_MS };
+      if (this.leaving) return NOTHING_ENDED;
+      return this.follow(await this.createFirst(), null);
+    } finally {
+      await this.letGo(claim);
+    }
+  }
+
+  /**
+   * Writes this screen's claim at the version it knows, with a new time. False when another writer came first: the claim
+   * is another screen's now, or the document changed and dropped it.
+   */
+  private async take(claim: FirstClaim): Promise<boolean> {
+    if (claim.version === null) return false;
+    try {
+      const value = { ...claim.rest, [FIRST_CLAIM]: { opening: true, until: this.wall() + FIRST_CLAIM_MS } };
+      claim.version = (await this.options.hc.call("doc.set", { name: OVIS_LAYOUT_DOC, value, version: claim.version })).version;
+      return true;
+    } catch (error) {
+      if (!(error instanceof HcError && error.kind === "conflict")) throw error;
+      claim.version = null;
+      return false;
+    }
+  }
+
+  /** Takes this screen's claim out of the document, which is then as the browser and every reader know it. */
+  private async letGo(claim: FirstClaim): Promise<void> {
+    const { version } = claim;
+    if (version === null) return;
+    claim.version = null;
+    try {
+      await this.options.hc.call("doc.set", { name: OVIS_LAYOUT_DOC, value: claim.rest, version });
+    } catch {
+      // another writer changed the document since (the claim is gone with that, or is not this screen's), or the line
+      // ended: a claim still there holds no longer than its time
+    }
+  }
+
+  /**
+   * Starts the first workspace's shell (`firstShell`) and answers its terminal. A folder the core refuses (removed, or
+   * not usable: hc answers the start `spawn_failed`) gives way to the core's own folder, named `~` as herdr's, once and
+   * under the same claim, with a calm notice naming the folder. Only that answer to the start does: any other failure
+   * says nothing against the folder, and one after the start (a line that ended, a timeout) may have made the shell, so
+   * nothing is started again then.
    */
   private async createFirst(): Promise<string> {
     const shell = this.firstShell();
     try {
-      return (await this.store.createWorkspace(shell)).root_pane.pane_id;
+      return await this.store.startWorkspace(shell);
     } catch (error) {
-      if (shell.cwd === undefined || unknownAnswer(error)) throw error;
+      if (shell.cwd === undefined || !(error instanceof HcReplyError && error.kind === "spawn_failed")) throw error;
       this.notice("first_folder_unusable", { folder: shell.cwd }, true);
-      return (await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id;
+      return this.store.startWorkspace({ name: HOME_NAME });
     }
   }
 

@@ -99,6 +99,8 @@ export interface RunOptions {
   /** the folder the screen was started from, and the user's home (the loop's `cwd` and `home`) */
   cwd?: string;
   home?: string;
+  /** the wall clock the screen reads (the loop's `wall`); unset: the run's own clock, so no test waits on real time */
+  wall?: () => number;
 }
 
 export class Run {
@@ -120,10 +122,10 @@ export class Run {
     readonly folder: string,
     readonly socket: string,
     views: ViewStore | undefined,
-    where: Pick<RunOptions, "cwd" | "home"> = {},
+    where: Pick<RunOptions, "cwd" | "home" | "wall"> = {},
   ) {
     this.nextBeat = HEARTBEAT_MS;
-    this.loop = startLoop({ host, clock, socket, keys: undefined, connect: (path) => this.connect(path), ...(views ? { views } : {}), ...where });
+    this.loop = startLoop({ host, clock, socket, keys: undefined, connect: (path) => this.connect(path), ...(views ? { views } : {}), ...where, wall: where.wall ?? (() => clock.now()) });
   }
 
   readonly loop: Loop;
@@ -135,7 +137,7 @@ export class Run {
     const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "run-"));
     const socket = join(folder, "hc.sock");
     const host = new HeadlessHost({ cols: options.cols ?? 120, rows: options.rows ?? 40, colorTerm: options.colorTerm ?? "truecolor", answer: (options.answerFirst ?? "") + PROBE_ANSWER });
-    const run = new Run(core, host, new ManualClock(), folder, socket, options.views, { cwd: options.cwd, home: options.home });
+    const run = new Run(core, host, new ManualClock(), folder, socket, options.views, { cwd: options.cwd, home: options.home, wall: options.wall });
     try {
       await run.listen();
       await run.settle();

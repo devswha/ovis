@@ -66,6 +66,8 @@ export interface LoopOptions {
   home?: string;
   /** where the view is kept per core between runs; none: nothing is kept */
   views?: ViewStore;
+  /** the wall clock in ms, shared by every screen on this PC (tui/core/layout.ts `wall`); unset: the system's */
+  wall?: () => number;
 }
 
 /**
@@ -278,6 +280,7 @@ export function startLoop(options: LoopOptions): Loop {
     model: world.model,
     folder: options.cwd,
     home: options.home,
+    wall: options.wall,
     answer: (answer) => {
       guard(() => dispatch(answer.type === "notice"
         ? { type: "notice", code: answer.code, data: answer.data, ...(answer.calm ? { calm: true } : {}), at: clock.now() }
@@ -347,23 +350,41 @@ export function startLoop(options: LoopOptions): Loop {
 
   function worldChanged(): void {
     dispatch({ type: "world", world: world.view().world, core: snapshot?.core ?? null, epoch: snapshot?.epoch ?? 0, at: clock.now() });
+    // the core has a workspace: it is looked at no more, and gets no first one should it empty later
+    if (firstAgain !== null && state.world.workspaces.length > 0) firstAgain = null;
     reshow();
   }
 
   /** a first workspace was asked for on this line's empty core: once a line */
   let firstAsked: number | null = null;
+  /** when this line's empty core is looked at again: another screen held the claim to open its first workspace */
+  let firstAgain: { readonly at: number; readonly epoch: number } | null = null;
 
   /**
    * An empty core gets a first workspace, as herdr's server opens one when a client connects: checked once per line,
    * right after its hello, never on a core the app arranges. A core that empties later (its last workspace closed, or
-   * the core shutting down) gets none.
+   * the core shutting down) gets none. It is a layout write like any other: what is read while it is under way waits
+   * behind it or is refused (`holdUntil`), and what waited goes to the pane it made. Where another screen holds the
+   * claim to open it, this one looks again once that claim's time is up, in case that screen left with nothing opened.
    */
   function openFirstWorkspace(): void {
     const view = world.view();
-    if (link.state.kind !== "Online" || hello === null || !view.ownsLayout || view.world.workspaces.length > 0 || firstAsked === link.state.epoch) return;
-    firstAsked = link.state.epoch;
+    if (closing || link.state.kind !== "Online" || hello === null || !view.ownsLayout || view.world.workspaces.length > 0 || firstAsked === link.state.epoch) return;
+    const { epoch } = link.state;
+    // one write at a time: behind another (the user's own, or the last line's still being answered) the empty core is
+    // looked at again later
+    const opening = behindWrite !== null || replaying ? null : layout.openFirst();
+    if (opening === null) {
+      firstAgain = { at: clock.now() + LAYOUT_SHOWN_WAIT_MS, epoch };
+      return;
+    }
+    firstAgain = null;
+    firstAsked = epoch;
     act("open_first_workspace");
-    void layout.openFirst();
+    holdUntil(opening.then((done) => {
+      if (done.again !== undefined && link.state.kind === "Online" && link.state.epoch === epoch) firstAgain = { at: clock.now() + done.again, epoch };
+      return done;
+    }));
   }
 
   /** The read of the core the world asks for, its answer handed back to it. */
@@ -1055,6 +1076,14 @@ export function startLoop(options: LoopOptions): Loop {
     }
     // what a write did never showed in time: what waited for it is refused, not sent elsewhere
     if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop(behindWrite.awaiting.kind === "gone" ? behindWrite.awaiting.done.dropInput ?? "not_closed" : "not_shown");
+    if (firstAgain !== null && now >= firstAgain.at) {
+      const { epoch } = firstAgain;
+      firstAgain = null;
+      if (link.state.kind === "Online" && link.state.epoch === epoch) {
+        firstAsked = null;
+        openFirstWorkspace();
+      }
+    }
     owning++;
     try {
       for (const event of framer.tick(now)) userInput(event);
@@ -1238,6 +1267,7 @@ export function startLoop(options: LoopOptions): Loop {
     if (input !== undefined) all.set("input", input);
     if (pasteAt !== null) all.set("paste", pasteAt);
     if (behindWrite?.awaiting) all.set("layout_shown", behindWrite.awaiting.until);
+    if (firstAgain !== null) all.set("first_workspace", firstAgain.at);
     for (const [name, at] of link.deadlines()) all.set(`link:${name}`, at);
     for (const [name, at] of panes.deadlines()) all.set(`panes:${name}`, at);
     for (const [name, at] of state.deadlines) all.set(`model:${name}`, at);
@@ -1266,7 +1296,10 @@ export function startLoop(options: LoopOptions): Loop {
   function closeAll(): Promise<void> {
     act("close_all");
     closing = true;
-    const closes = Promise.allSettled([panes.close(), link.close()]);
+    // a first workspace this screen is opening is settled while the line is open: its claim in the layout document is
+    // let go, or its shell's start answered (within the bound below, as every close is)
+    const leaving = layout.leave();
+    const closes = Promise.allSettled([panes.close(), leaving === null ? link.close() : leaving.then(() => link.close())]);
     return new Promise<void>((resolve) => {
       let settled = false;
       const settle = () => {
@@ -1275,6 +1308,8 @@ export function startLoop(options: LoopOptions): Loop {
         quitting = null;
         timer?.cancel();
         timer = null;
+        // past the bound, a first workspace still being opened is waited for no longer: the line closes under it
+        void link.close().catch(() => {});
         resolve();
       };
       quitting = { at: clock.now() + QUIT_BOUND_MS, settle };

@@ -9,7 +9,7 @@ import { WORKSPACE_NAME_LABEL } from "../server/herdr-core/snapshot.ts";
 import { REATTACH_DEADLINE } from "./core/pane.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
 import { ending, EXIT_FAILED } from "./start.ts";
-import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS, RESIZE_SETTLE_MS } from "./model/deadlines.ts";
+import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FIRST_CLAIM_MS, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS, RESIZE_SETTLE_MS } from "./model/deadlines.ts";
 import { focused } from "./model/focus.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
@@ -607,14 +607,15 @@ describe("the loop", () => {
    */
   const claimedEmpty = (): FakeHcCore => {
     const core = new FakeHcCore();
-    core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: OVIS_LAYOUT_SCHEMA, workspaces: [], first_workspace: { opening: true } }, version: 1 });
+    core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: OVIS_LAYOUT_SCHEMA, workspaces: [], first_workspace: { opening: true, until: FIRST_CLAIM_MS } }, version: 1 });
     return core;
   };
 
   it.each([[true, "joined"], [true, "split"], [false, "joined"], [false, "split"]] as const)(
     "empty-core creation classifies pane input before any pane exists: shown=%s, %s", async (shown, ordering) => {
       const run = await start({ core: claimedEmpty() });
-      await run.advance(1);
+      // the screen's own look at the empty core is a layout write: the frame after it ends its hold
+      await run.advance(FRAME_PASS_MS);
       expect(run.loop.model().world.workspaces).toEqual([]);
       run.core.holdingEvents = true;
       if (ordering === "joined") run.type(NEW_WORKSPACE + "abc");
@@ -640,7 +641,7 @@ describe("the loop", () => {
     ["success", "joined"], ["success", "split"],
   ] as const)("empty-core input belongs to its creation when another client arrives first: %s, %s", async (outcome, ordering) => {
     const run = await start({ core: claimedEmpty() });
-    await run.advance(1);
+    await run.advance(FRAME_PASS_MS);
     const entered = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<void>();
     const call = run.loop.link.call.bind(run.loop.link);
@@ -1894,6 +1895,184 @@ describe("the screen's own layout, as herdr's", () => {
     // the claim that decided it is gone again: the document holds what every reader knows
     const claims = core.calls().filter((call) => call.method === "doc.set").map((call) => Object.keys((call.params["value"] ?? {}) as object).includes("first_workspace"));
     expect([claims.includes(true), claims.at(-1)]).toEqual([true, false]);
+  }, TEST_MS);
+
+  const names = (run: Run) => run.loop.model().world.workspaces.map((workspace) => workspace.name);
+  /** the folder of each shell started, null for one started in no folder (toEqual takes an undefined item at the end for none) */
+  const started = (core: FakeHcCore) => core.calls().filter((call) => call.method === "terminal.run").map((call) => call.params["cwd"] ?? null);
+  const claimIn = (core: FakeHcCore) => (core.docs.get(OVIS_LAYOUT_DOC)?.value as Record<string, unknown> | undefined)?.["first_workspace"];
+  type LinkCall = Run["loop"]["link"]["call"];
+  /**
+   * A screen whose core was emptied after its first workspace and whose line was restarted: the new line opens a first
+   * workspace again. `gate` is given each call of that line with the way to make it. Answers once `reached` says so.
+   */
+  async function emptiedAgain(cwd: string, gate: (method: string, params: Record<string, unknown>, forward: () => ReturnType<LinkCall>) => ReturnType<LinkCall>, reached: () => boolean): Promise<Run> {
+    const run = await start({ core: new FakeHcCore(), cwd, home: "/home/user" });
+    await run.advance(250);
+    expect(names(run)).toEqual([cwd.slice(cwd.lastIndexOf("/") + 1)]);
+    const call = run.loop.link.call.bind(run.loop.link);
+    run.loop.link.call = ((method, params, timeout) => gate(method, { ...params }, () => call(method, params, timeout))) as LinkCall;
+    run.core.remove("t1");
+    run.core.restart();
+    for (let turn = 0; turn < 40 && !reached(); turn++) await run.advance(250);
+    expect(reached()).toBe(true);
+    return run;
+  }
+
+  it("the first workspace's opening is a layout write: an overlay's key read meanwhile is refused once, and text read meanwhile is for the pane it makes", async () => {
+    const answer = Promise.withResolvers<void>();
+    let pending = false;
+    const run = await emptiedAgain("/work/place", async (method, _params, forward) => {
+      if (method === "terminal.run" && !pending) {
+        pending = true;
+        await answer.promise;
+      }
+      return forward();
+    }, () => pending);
+    try {
+      expect(run.loop.model().world.workspaces).toEqual([]);
+      run.type("abc\x02g");
+      await run.settle();
+      const told = () => run.loop.model().notices.map(({ code, data }) => [code, data["action"] ?? data["reason"]]);
+      expect([run.loop.report().mode.overlays, told(), received(run)]).toEqual([[], [["layout_busy", "goto"]], {}]);
+      // asked again, it says no more
+      run.type("\x02g");
+      await run.settle();
+      expect([run.loop.report().mode.overlays, told()]).toEqual([[], [["layout_busy", "goto"]]]);
+      answer.resolve();
+      await settled(run);
+      // what was typed went to the new pane and nowhere else: the pane, still painting its first picture at the frame that
+      // ends the hold, refuses it, and that is said (main's rule for input read before a pane's picture)
+      expect([run.loop.report().mode.overlays, names(run), focused(run.loop.model().world, run.loop.model().focus).pane?.id]).toEqual([[], ["place"], "t2"]);
+      expect([told(), received(run)]).toEqual([[["layout_busy", "goto"], ["input_refused", "painting"]], {}]);
+      await run.live();
+      run.type("z\x02g");
+      await settled(run);
+      expect([run.loop.report().mode.overlays, received(run)]).toEqual([["goto"], { t2: "7a" }]);
+    } finally {
+      answer.resolve();
+    }
+  }, TEST_MS);
+
+  it("text read while the first workspace is being opened goes to no pane another client opened meanwhile: it is dropped, and that is said", async () => {
+    const release = Promise.withResolvers<void>();
+    let waiting = false;
+    // the opening's first read of the terminals, held: another client's terminal is there by the time it answers
+    const run = await emptiedAgain("/work/place", async (method, params, forward) => {
+      if (method === "terminal.list" && params["all"] !== true && !waiting) {
+        waiting = true;
+        await release.promise;
+      }
+      return forward();
+    }, () => waiting);
+    try {
+      run.type("abc");
+      const rival = place(run.core, { space: "rival", spaceName: "rival", tab: "rival-tab", tabName: "rival" }, "$ ");
+      await run.live();
+      await settled(run);
+      expect([run.loop.model().focus.panes["rival-tab"], received(run)]).toEqual([rival, {}]);
+      release.resolve();
+      await settled(run);
+      expect([started(run.core), received(run), run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])]).toEqual([["/work/place"], {}, [["input_dropped", "not_shown"]]]);
+      run.type("z");
+      await settled(run);
+      expect(received(run)).toEqual({ [rival]: "7a" });
+    } finally {
+      release.resolve();
+    }
+  }, TEST_MS);
+
+  it("a screen that detaches while it holds the first workspace's claim lets it go: the next screen opens one at once", async () => {
+    const release = Promise.withResolvers<void>();
+    let claimed = false;
+    let waiting = false;
+    const run = await emptiedAgain("/work/place", async (method, params, forward) => {
+      if (method === "doc.set" && Object.hasOwn((params["value"] ?? {}) as object, "first_workspace")) {
+        const result = await forward();
+        claimed = true;
+        return result;
+      }
+      // the claim's own read of the terminals, which never answers while this screen is there
+      if (claimed && method === "terminal.list" && params["all"] !== true) {
+        waiting = true;
+        await release.promise;
+      }
+      return forward();
+    }, () => waiting);
+    try {
+      expect(claimIn(run.core)).toMatchObject({ opening: true });
+      run.type("\x02q");
+      expect(await run.loop.done).toMatchObject({ kind: "quit" });
+      release.resolve();
+      expect([claimIn(run.core), started(run.core)]).toEqual([undefined, ["/work/place"]]);
+      const next = await start({ core: run.core, cwd: "/work/next", home: "/home/user" });
+      await next.advance(250);
+      expect([names(next), started(run.core), claimIn(run.core)]).toEqual([["next"], ["/work/place", "/work/next"], undefined]);
+    } finally {
+      release.resolve();
+    }
+  }, TEST_MS);
+
+  it("a claim whose screen died holding it holds no longer than its time: a screen waiting on it opens the first workspace then, and one that finds it past its time at once", async () => {
+    let wall = 1_700_000_000_000;
+    const claimed = (claim: Record<string, unknown>): FakeHcCore => {
+      const core = new FakeHcCore();
+      core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: OVIS_LAYOUT_SCHEMA, workspaces: [], first_workspace: claim }, version: 1 });
+      return core;
+    };
+    const held = claimed({ opening: true, until: wall + FIRST_CLAIM_MS });
+    const waiting = await start({ core: held, cwd: "/work/late", home: "/home/user", wall: () => wall });
+    await waiting.advance(FIRST_CLAIM_MS - 1);
+    expect([names(waiting), started(held)]).toEqual([[], []]);
+    // its time passes and nothing took it out: the screen that waited takes it over and opens the workspace
+    wall += FIRST_CLAIM_MS;
+    await waiting.advance(250);
+    expect([names(waiting), started(held), claimIn(held)]).toEqual([["late"], ["/work/late"], undefined]);
+    // a core that got its workspace and empties later gets no other, however a look-again stood
+    const watching = await start({ core: claimed({ opening: true, until: wall + FIRST_CLAIM_MS }), cwd: "/work/watch", home: "/home/user", wall: () => wall });
+    const other = place(watching.core, { space: "o", spaceName: "other", tab: "ot", tabName: "ot" }, "$ ");
+    await watching.advance(250);
+    expect(names(watching)).toEqual(["other"]);
+    watching.core.remove(other);
+    wall += FIRST_CLAIM_MS;
+    await watching.advance(FIRST_CLAIM_MS + 250);
+    expect([names(watching), started(watching.core)]).toEqual([[], []]);
+    // found already past its time, or written with no time at all (as a screen before this rule left it): taken at once
+    for (const claim of [{ opening: true, until: wall - 1 }, { opening: true }]) {
+      const stale = claimed(claim);
+      const fresh = await start({ core: stale, cwd: "/work/fresh", home: "/home/user", wall: () => wall });
+      await fresh.advance(250);
+      expect([names(fresh), started(stale), claimIn(stale)]).toEqual([["fresh"], ["/work/fresh"], undefined]);
+    }
+  }, TEST_MS);
+
+  it("a screen held up past its claim starts nothing once another screen took the claim over", async () => {
+    const release = Promise.withResolvers<void>();
+    let claimed = false;
+    let waiting = false;
+    const run = await emptiedAgain("/work/slow", async (method, params, forward) => {
+      if (method === "doc.set" && Object.hasOwn((params["value"] ?? {}) as object, "first_workspace")) {
+        const result = await forward();
+        claimed = true;
+        return result;
+      }
+      if (claimed && method === "terminal.list" && params["all"] !== true && !waiting) {
+        waiting = true;
+        await release.promise;
+      }
+      return forward();
+    }, () => waiting);
+    try {
+      // another screen, finding the claim past its time, writes its own over it
+      const doc = run.core.docs.get(OVIS_LAYOUT_DOC)!;
+      const other = { opening: true, until: 2 * FIRST_CLAIM_MS };
+      run.core.docs.set(OVIS_LAYOUT_DOC, { value: { ...(doc.value as object), first_workspace: other }, version: doc.version + 1 });
+      release.resolve();
+      await run.advance(250);
+      expect([started(run.core), claimIn(run.core), names(run)]).toEqual([["/work/slow"], other, []]);
+    } finally {
+      release.resolve();
+    }
   }, TEST_MS);
 
   it("a core with workspaces gets none", async () => {
