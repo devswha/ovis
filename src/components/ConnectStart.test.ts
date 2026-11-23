@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
-import { onePcRows, openOverText, openWay, otherWay, pcsShown, phoneShellState, phoneSavedPcs, relayTabPcs } from "./ConnectStart.tsx";
+import { onePcRows, openWay, otherWay, pcsShown, phoneShellState, phoneSavedPcs, relayTabPcs } from "./ConnectStart.tsx";
 
 const id = (letter: string) => letter.repeat(32);
 const accountPc = (letter: string, patch: Partial<MyPc> = {}) => ({ server_id: id(letter), name: `pc-${letter}`, state: "paired", paired: false, listed: true, linked: false, join: { relay: "wss://relay.ovis.sh" }, ...patch }) as unknown as MyPc;
@@ -120,8 +120,6 @@ describe("one PC, one row", () => {
     expect(otherWay({ phones: [ssh] }, ssh)).toBeNull();
     // a row with a relay row: the relay failed, so the first saved way
     expect(otherWay({ relay: relay("a", "mac"), phones: [tailscale] }, null)).toBe(tailscale);
-    const t = (key: string, values?: Record<string, string>) => key.replace(/\{(\w+)\}/g, (_, name: string) => values?.[name] ?? "");
-    expect([tailscale, ssh, lan].map((pc) => openOverText(t as never, pc))).toEqual(["Open over Tailscale", "Open over SSH", "Open at its address"]);
   });
 });
 

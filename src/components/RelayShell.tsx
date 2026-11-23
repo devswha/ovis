@@ -20,14 +20,14 @@ import { useOffline } from "../lib/useOffline.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { AccountSignIn } from "./AccountPcs.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
-import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, type ConnectWay, MyPcs, OfflineLine, openOverText, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
+import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, type ConnectWay, MyPcs, OfflineLine, savedWayTag, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
-import { canScanQr, OpenState, scanQr, useAddressOpen, useConnectScreen } from "./RelayAddPc.tsx";
+import { canScanQr, OpenState, OtherWayButton, scanQr, useAddressOpen, useConnectScreen } from "./RelayAddPc.tsx";
 import { INSTALLER_COMMAND, PcApprovalWait, type PlainReason, PLUGIN_COMMANDS, RelayShellCardContent, TypedDigits } from "./RelayShellScreens.tsx";
 import { RelayStepFrame, type RelayStepBack } from "./RelayStepFrame.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
@@ -405,7 +405,7 @@ export function RelayShell(props: RelayShellProps) {
   const otherSaved = state.kind === "failed" && state.pairing !== true && state.server_id !== undefined && state.failure !== "identity-changed" && state.failure !== "sign-in-first"
     ? phone.pcs.find((saved) => saved.serverId === state.server_id) ?? null : null;
   const otherWay = otherSaved && (
-    <button type="button" className="btn" data-action="open-other-way" onClick={() => { scan.setError(null); scan.take(new URL(otherSaved.origin), { askTailscale: otherSaved.way === "tailscale" }); }}>{openOverText(t, otherSaved)}</button>
+    <OtherWayButton way={savedWayTag(t, otherSaved)} host={otherSaved.host} onClick={() => { scan.setError(null); scan.take(new URL(otherSaved.origin), { askTailscale: otherSaved.way === "tailscale" }); }} />
   );
   const content = <RelayShellCardContent props={props} other={otherWay} />;
   const step = plain ? undefined : pairingStep(state);

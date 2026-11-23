@@ -1809,7 +1809,8 @@ describe("the hosted front page", () => {
         await act(async () => { openers()[0]!.props.onClick(); });
         await act(async () => { await Promise.resolve(); });
         const offer = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
-        expect(offer().map(textOf)).toEqual(["Open at its address"]);
+        // it names the host it opens, whole: the person sees what answers, not only that it is "the PC at its address"
+        expect(offer().map((node) => [node.props["aria-label"], textOf(node)])).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
         await act(async () => { offer()[0]!.props.onClick(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`, `HerdrShell.open ${lan}/`]);
         await act(async () => { renderer!.unmount(); });
@@ -1819,7 +1820,7 @@ describe("the hosted front page", () => {
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
         await act(async () => { await Promise.resolve(); });
-        expect(offer().map(textOf)).toEqual(["Open over Tailscale"]);
+        expect(offer().map((node) => [node.props["aria-label"], textOf(node)])).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
         await act(async () => { offer()[0]!.props.onClick(); });
         expect(again.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
         await act(async () => { renderer!.unmount(); });

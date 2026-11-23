@@ -10,7 +10,7 @@ import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { markRemovedPc, removedPcs, type RemovedPcMark } from "../lib/relay/shellState.ts";
 import { StartScreenAccountMenu } from "./AccountHead.tsx";
 import { deviceOffline, useOffline } from "../lib/useOffline.ts";
-import { AddressForm, canScanQr, clearOutcome, offlineOpenText, OpenError, OpenStatus, scanQr, sshHandoff, tailscaleOn, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
+import { AddressForm, atDots, canScanQr, clearOutcome, offlineOpenText, OpenError, OpenStatus, scanQr, sshHandoff, tailscaleOn, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { SheepMascot } from "./SheepMascot.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
@@ -87,9 +87,9 @@ export function otherWay(group: PcGroup, by: PhoneSavedPc | null): PhoneSavedPc 
   return group.phones.find((pc) => pc !== by) ?? null;
 }
 
-/** What the button that opens a PC by another saved way says: Open over Tailscale, Open over SSH, Open at its address. */
-export function openOverText(t: Translate, pc: Pick<PhoneSavedPc, "way">): string {
-  return pc.way === "address" ? t("Open at its address") : t("Open over {way}", { way: pc.way === "ssh" ? "SSH" : "Tailscale" });
+/** A saved way's tag, as a row of My PCs and the button that opens a PC by another way (OtherWayButton) show it. */
+export function savedWayTag(t: Translate, pc: Pick<PhoneSavedPc, "way">): string {
+  return pc.way === "address" ? t("Address") : pc.way === "ssh" ? "SSH" : "Tailscale";
 }
 
 /** what this device's own check last found of a PC, where it settled it: it answered, or the relay found it off */
@@ -164,10 +164,6 @@ interface WayLine {
   readonly inUse?: boolean;
 }
 
-/** An address that may break onto the next line after each of its dots, before it breaks anywhere else. */
-function atDots(address: string): ReactNode {
-  return address.split(".").map((part, at) => at === 0 ? part : <Fragment key={at}>.<wbr />{part}</Fragment>);
-}
 
 /**
  * One row of My PCs: it opens its PC, the whole row; `editing`, the list's Forget PCs: it opens nothing, and a row this
@@ -409,7 +405,7 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   // `other`: a saved way the open offers by name when this one fails or is refused (a row of several)
   const openSaved = (pc: PhoneSavedPc, other: PhoneSavedPc | null = null): void => open.take(new URL(pc.origin), {
     askTailscale: pc.way === "tailscale",
-    ...(other === null ? {} : { other: { label: openOverText(t, other), run: () => openSaved(other) } }),
+    ...(other === null ? {} : { other: { way: savedWayTag(t, other), host: other.host, run: () => openSaved(other) } }),
   });
   const fromPhone = (pc: PhoneSavedPc): PhonePc => ({
     key: pc.origin, name: pc.name, way: pc.way, address: pc.host, ...(pc.way === "tailscale" ? { data: { "data-tailnet-pc": pc.origin } } : {}),

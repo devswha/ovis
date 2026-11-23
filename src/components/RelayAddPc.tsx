@@ -1,6 +1,6 @@
 import "./RelayAddPc.css";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 
 import { useT, type Translate } from "../lib/i18n.ts";
@@ -181,11 +181,33 @@ export type AddressOpen = ReturnType<typeof useAddressOpen>;
 interface Attempt { readonly id: number; readonly host: string; readonly phase: "asking" | "opening"; readonly view: string }
 /**
  * What the last attempt ended on, shown where the attempt was: why it did not open, or Tailscale off on the phone; `other`,
- * the same PC by another way it is saved by, offered by name (OtherWay).
+ * the same PC by another way it is saved by, offered by its host (OtherWayButton).
  */
 export type OpenOutcome = ({ readonly view: string; readonly kind: "error"; readonly text: string } | { readonly view: string; readonly kind: "tailscale-off" }) & { readonly other?: OtherWay };
-/** Another way the same PC is saved by, which a failed or refused open offers: its button's words, and what it does. */
-export interface OtherWay { readonly label: string; readonly run: () => void }
+/** Another way the same PC is saved by, which a failed or refused open offers: its way's tag, the host it opens, and what it does. */
+export interface OtherWay { readonly way: string; readonly host: string; readonly run: () => void }
+
+/** An address that may break onto the next line after each of its dots, before it breaks anywhere else. */
+export function atDots(address: string): ReactNode {
+  return address.split(".").map((part, at) => at === 0 ? part : <Fragment key={at}>.<wbr />{part}</Fragment>);
+}
+
+/**
+ * The one button a failed or refused open offers to open the same PC by another way it is saved by: that way's tag, then
+ * the host it opens, whole (on a second line rather than cut), so the person sees what will answer, and the same in its
+ * accessible name. The host is what the app saved; that it is this PC is only what that host's page told the app.
+ */
+export function OtherWayButton({ way, host, onClick }: { readonly way: string; readonly host: string; readonly onClick: () => void }) {
+  const t = useT();
+  const label = t("Open {host}", { host });
+  const at = label.indexOf(host);
+  return (
+    <button type="button" className="btn relay-add-other-way-button" data-action="open-other-way" aria-label={`${label} (${way})`} onClick={onClick}>
+      <span className="phone-pc-tag">{way}</span>
+      <span className="relay-add-other-way-host">{at < 0 ? label : <>{label.slice(0, at)}{atDots(host)}{label.slice(at + host.length)}</>}</span>
+    </button>
+  );
+}
 let attempt: Attempt | null = null;
 let outcome: OpenOutcome | null = null;
 let attempts = 0;
@@ -346,7 +368,7 @@ export function OpenStatus({ view, anyView = false, tailscaleOff }: { readonly v
   if (ended === null || !(anyView || ended.view === view)) return null;
   const other = ended.other && (
     <div className="relay-add-other-way">
-      <button type="button" className="btn" data-action="open-other-way" onClick={() => { const run = ended.other?.run; clearOutcome(); run?.(); }}>{ended.other.label}</button>
+      <OtherWayButton way={ended.other.way} host={ended.other.host} onClick={() => { const run = ended.other?.run; clearOutcome(); run?.(); }} />
     </div>
   );
   return <>{ended.kind === "error" ? <p className="account-error" role="alert">{ended.text}</p> : tailscaleOff}{other}</>;

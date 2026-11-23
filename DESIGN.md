@@ -5201,9 +5201,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   relay PC is) and always opens by the relay, whose key is checked and whose connection moves to a direct Tailscale or
   home network carrier by itself; an address way never names it, states it or opens it, and its address is not shown.
   A row of saved ways alone opens by the one whose page loaded last in the app, and shows that one's address on the wide
-  screen. When a row's open fails or is refused and the PC has another saved way, the failure offers it by name, one
-  button (Open over Tailscale, Open over SSH, Open at its address): on My PCs, and on a relay PC's own failure card (not
-  for a key that is not the PC's). In Forget PCs a row of several lists its ways under it, one to a line, each with its
+  screen. When a row's open fails or is refused and the PC has another saved way, the failure offers it, one button
+  naming that way's tag and the host it opens, whole (Tailscale · Open macbookpro.tail1e211e.ts.net:17317, wrapping
+  rather than cut), so the person sees what will answer: on My PCs, and on a relay PC's own failure card (not for a key
+  that is not the PC's). In Forget PCs a row of several lists its ways under it, one to a line, each with its
   own Forget (the relay's on the PC in use asks once more) or Account PC or SSH PC; a row of one way stays as it was. A
   browser has only the relay's rows, so nothing there is put together.
   With no network on the device (the browser's online state: only an explicit offline

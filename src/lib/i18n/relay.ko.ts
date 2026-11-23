@@ -177,6 +177,5 @@ export const RELAY_KO: Record<string, string> = {
   "Connect this device to the internet to open the PC.": "PC를 열려면 기기를 인터넷에 연결하세요.",
   "Account PC": "계정의 PC",
   "SSH PC": "SSH PC",
-  "Open over {way}": "{way}로 열기",
-  "Open at its address": "주소로 열기",
+  "Open {host}": "{host} 열기",
 };
