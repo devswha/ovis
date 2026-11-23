@@ -354,7 +354,7 @@ export function startLoop(options: LoopOptions): Loop {
         owePass();
         return;
       case "copy":
-        copy(step.pane, step.range);
+        copy(step.pane, step.range, step.contentVersion);
         return;
       case "divider":
         act(`divider:${step.done ? "done" : "move"}`);
@@ -372,8 +372,8 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** The selected text to the host's clipboard as OSC 52, with a notice: `copied`, or `copy_refused` over the size cap. */
-  function copy(pane: string, range: ScreenRange): void {
-    const text = panes.view(pane)?.emulator?.textOf(range);
+  function copy(pane: string, range: ScreenRange, contentVersion: number): void {
+    const text = panes.view(pane)?.emulator?.textOf(range, contentVersion);
     if (!text?.ok) return;
     const data = new TextEncoder().encode(text.value);
     const write = osc52(data);
@@ -511,7 +511,7 @@ export function startLoop(options: LoopOptions): Loop {
       const snapshot = copy?.ok && emulator ? emulator.frameScreen() : null;
       const look: PanePicture | null = snapshot?.ok && snapshot.value && emulator ? {
         rect: scene.rect, top: scene.view?.row ?? 0, grid: actual, emulator,
-        altScreen: snapshot.value.altScreen, screen: snapshot.value.screens, history: snapshot.value.history,
+        altScreen: snapshot.value.altScreen, screen: snapshot.value.screens, history: snapshot.value.history, contentVersion: snapshot.value.contentVersion,
       } : null;
       if (look) nextDrawn.set(spot.pane, look);
       const selection = pointer.shown(spot.pane, paneFocus, look);

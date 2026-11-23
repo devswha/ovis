@@ -97,7 +97,7 @@ export interface Emulator {
   scrollFromBottom(rowsAboveBottom: number): EmulatorResult<void>;
   history(): EmulatorResult<EngineHistory>;
   rowContinues(y: number): EmulatorResult<boolean | null>;
-  textOf(range: ScreenRange): EmulatorResult<string>;
+  textOf(range: ScreenRange, contentVersion?: number): EmulatorResult<string>;
   wordAt(point: ScreenPoint): EmulatorResult<ScreenRange | null>;
   lineAt(point: ScreenPoint): EmulatorResult<ScreenRange | null>;
   search(needle: string): EmulatorResult<ScreenRange[]>;

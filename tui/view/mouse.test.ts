@@ -19,8 +19,8 @@ const TEST_MS = 120_000;
 
 const EMULATOR = {};
 /** pane a: screen cells x 0-8, y 1-5, drawn from grid row 2 of its 9x8 grid; 20 rows of history above, at the bottom */
-const lookA = (programMouse: boolean, history = { scrollback: 20, total: 28, viewportTop: 20 }): PaneLook => ({
-  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, altScreen: false, screen: 0, emulator: EMULATOR, history,
+const lookA = (programMouse: boolean, history = { scrollback: 20, total: 28, viewportTop: 20 }): PaneLook & { contentVersion: number } => ({
+  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, altScreen: false, screen: 0, emulator: EMULATOR, history, contentVersion: 0,
 });
 const HITS = new HitMap([
   { rect: { x: 0, y: 0, width: 20, height: 1 }, target: { part: "tabs", id: "" } },
@@ -40,7 +40,7 @@ function sceneOf(focus: string, look: PaneLook | null): PointerScene {
     tab: { id: "T1", root: { split: "right", ratio: 0.5, first: { leaf: "a" }, second: { leaf: "b" } } },
     splits: [{ id: "split_0_root", direction: "right", rect: { x: 0, y: 1, width: 20, height: 5 }, divider: { x: 9, y: 1, width: 2, height: 5 } }],
     look: (pane) => (pane === "a" ? look : null),
-    painted: (pane) => (pane === "a" ? look : null),
+    painted: (pane) => (pane === "a" && look ? { ...look, contentVersion: 0 } : null),
   };
 }
 
@@ -75,14 +75,14 @@ const RULES: [name: string, focus: string, programMouse: boolean, events: Ev[], 
     [["press", "left", 5, 3, true], ["motion", "left", 2, 2, true], ["release", "left", 2, 2, true]], [
       [],
       [{ kind: "redraw" }],
-      [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 2, y: 23 }, end: { x: 5, y: 24 } } }],
+      [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 2, y: 23 }, end: { x: 5, y: 24 } }, contentVersion: 0 }],
     ]],
   ["with no mouse mode a drag selects", "a", false, [["press", "left", 1, 1], ["motion", "left", 3, 1], ["release", "left", 3, 1]], [
-    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } } }],
+    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } }, contentVersion: 0 }],
   ]],
   ["a click with no drag selects nothing and copies nothing", "a", false, [["press", "left", 1, 1], ["release", "left", 1, 1]], [[], []]],
   ["the next press drops the selection", "a", false, [["press", "left", 1, 1], ["motion", "left", 3, 1], ["release", "left", 3, 1], ["press", "left", 1, 1]], [
-    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } } }], [{ kind: "redraw" }],
+    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } }, contentVersion: 0 }], [{ kind: "redraw" }],
   ]],
   ["the wheel scrolls three rows, never past the history, and back", "a", false, [["press", "wheelUp", 1, 1], ["press", "wheelDown", 1, 1]], [
     [{ kind: "scroll", pane: "a", fromBottom: 3 }], [],
@@ -194,7 +194,7 @@ describe("the pointer", () => {
     pointer.focusChanged("a");
     expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), scene)).toEqual([
       { kind: "redraw" },
-      { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 4, y: 23 } } },
+      { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 4, y: 23 } }, contentVersion: 0 },
     ]);
   });
 
@@ -579,11 +579,113 @@ describe("mouse on the whole screen", () => {
     const from = run.host.output().length;
     // the press at the oldest row, the wheel down to the newest while the button is held, the release at the bottom right
     run.type("\x1b[<64;41;21M".repeat(800));
-    await run.settle();
-    run.type(`\x1b[<0;26;3M${"\x1b[<65;41;21M".repeat(800)}\x1b[<32;71;38M\x1b[<0;71;38m`);
+    // Endpoints belong to the displayed viewport: show each scroll destination before pointing at its rows.
+    await run.advance(20);
+    run.type(`\x1b[<0;26;3M${"\x1b[<65;41;21M".repeat(800)}`);
+    await run.advance(20);
+    run.type("\x1b[<32;71;38M\x1b[<0;71;38m");
     await run.settle();
     expect(run.host.output().slice(from)).not.toContain("]52;");
     expect(run.loop.model().notices.find((notice) => notice.code === "copy_refused")?.data).toMatchObject({ reason: "too_large" });
+  }, TEST_MS);
+
+  for (const held of [false, true]) for (const beforePress of [false, true]) {
+    it(`same-screen scroll ${beforePress ? "before" : "after"} press ${held ? "during a hold" : "after a hold, before repaint"} selects displayed cells and refuses stale text`, async () => {
+      const run = await demo120();
+      await run.advance(20);
+      const program = run.core.program("t1");
+      if (!held) {
+        program.output("\x1b[?2026h\x1b[?2026l");
+        await run.advance(20);
+      }
+      program.output(`\x1b[H\x1b[2J${"line\r\n".repeat(35)}AAAA`);
+      await run.settle();
+      expect((await hostScreen(run)).text(37, 25, 28)).toBe("AAAA");
+      const from = run.host.output().length;
+      if (!beforePress) await run.keys("press@25:37");
+      program.output(`${held ? "\x1b[?2026h" : ""}\r\nBBBB`);
+      await run.settle();
+      // Still A on the host, even though the live viewport has advanced.
+      expect((await hostScreen(run)).text(37, 25, 28)).toBe("AAAA");
+      if (beforePress) await run.keys("press@25:37");
+      await run.keys("drag@28:37");
+      await run.advance(20);
+      const row = held ? 37 : 36;
+      const marked = await hostScreen(run);
+      expect([marked.inverted(36, 25, 70), marked.inverted(37, 25, 70)]).toEqual(held ? ["", "AAAA"] : ["AAAA", ""]);
+      await run.keys(`release@28:${row}`);
+      if (held) {
+        expect(run.host.output().slice(from)).not.toContain("]52;");
+        expect(notices(run)).not.toContain("copied");
+      } else {
+        expect(run.host.output().slice(from)).toContain(osc52Of("AAAA"));
+        expect(run.host.output().slice(from)).not.toContain(osc52Of("BBBB"));
+      }
+      if (held) program.output("\x1b[?2026l");
+      await run.advance(20);
+      // After the hold and its paint, B is displayed and a new gesture can copy B.
+      expect((await hostScreen(run)).text(37, 25, 28)).toBe("BBBB");
+      const fresh = run.host.output().length;
+      await run.keys("press@25:37,drag@28:37,release@28:37");
+      await run.advance(20);
+      expect((await hostScreen(run)).inverted(37, 25, 70)).toBe("BBBB");
+      expect(run.host.output().slice(fresh)).toContain(osc52Of("BBBB"));
+    }, TEST_MS);
+  }
+
+  it("a wheel during a drag uses the newly displayed viewport and copies the unchanged history", async () => {
+    const run = await demo120();
+    run.core.program("t1").output(`\x1b[H\x1b[2J${Array.from({ length: 60 }, (_, n) => `row-${n.toString().padStart(2, "0")}`).join("\r\n")}`);
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-59");
+    await run.keys("press@30:37,wheelup@40:20");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-56");
+    await run.keys("drag@25:37");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(37, 25, 30)).toBe("row-56");
+    const from = run.host.output().length;
+    await run.keys("release@25:37");
+    expect(run.host.output().slice(from)).toContain(osc52Of("row-56\nrow-57\nrow-58\nrow-59"));
+  }, TEST_MS);
+
+  it("a wheel during a held drag never maps the endpoint into an unseen viewport", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output(`\x1b[H\x1b[2J${Array.from({ length: 60 }, (_, n) => `row-${n}`).join("\r\n")}`);
+    await run.advance(20);
+    program.output("\x1b[?2026h\r\nrow-60");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@30:37,wheelup@40:20");
+    await run.advance(20);
+    await run.keys("drag@25:37");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(37, 25, 70)).toBe("row-59");
+    await run.keys("release@25:37");
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+  }, TEST_MS);
+
+  it("a wheel drag refuses a changed anchor outside the displayed viewport", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output(`\x1b[H\x1b[2J${Array.from({ length: 60 }, (_, n) => `row-${n}`).join("\r\n")}`);
+    await run.advance(20);
+    await run.keys("press@30:37,wheelup@40:20");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-56");
+    // The program overwrites the active bottom row (the anchor), outside the scrolled viewport.
+    program.output("\x1b[36;1HCHANGED\r\nrow-60");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-56");
+    await run.keys("drag@25:37");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(37, 25, 30)).toBe("row-56");
+    const from = run.host.output().length;
+    await run.keys("release@25:37");
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
   }, TEST_MS);
 
   for (const held of [false, true]) for (const beforePress of [false, true]) {

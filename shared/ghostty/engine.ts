@@ -317,6 +317,8 @@ export interface EngineScreen {
   readonly altScreen: boolean;
   readonly screens: number;
   readonly history: EngineHistory;
+  /** A text read is safe only while no content-changing call has intervened since this capture. */
+  readonly contentVersion: number;
 }
 
 export type Rgb = readonly [number, number, number];
@@ -573,6 +575,7 @@ export class GhosttyEngine {
   /** whether a synchronized-output hold is on: frames then come from the render state captured when it began */
   private held = false;
   private renderedScreen: EngineScreen | null = null;
+  private contentVersion = 0;
   /** since the last resize the program switched its columns (DECCOLM), or the terminal was reset: the grid may not be the size the engine was given */
   private gridTouched = false;
   private win32Input = false;
@@ -781,7 +784,22 @@ export class GhosttyEngine {
     this.reserveInput(bytes.length);
     if (this.events) this.followWrittenModes(bytes);
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
-    this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
+    this.changeContent(() => this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length));
+  }
+
+  /**
+   * A hold can capture midway through a write or resize, before that call changes more text. Mark both boundaries,
+   * also on failure: such a snapshot must never authorize a read of the terminal after the call. No parser mirror
+   * or history copy is needed. The browser does not use frame-bound reads and keeps its existing behavior.
+   */
+  private changeContent(run: () => void): void {
+    if (!this.events) return run();
+    this.contentVersion++;
+    try {
+      run();
+    } finally {
+      this.contentVersion++;
+    }
   }
 
   /**
@@ -844,11 +862,11 @@ export class GhosttyEngine {
     if (mode === DECCOLM) this.gridTouched = true;
     // the browser's loader toggles 2027 around every emoji joiner: as with write, no guard on its engines
     if (!this.events) return this.setModeConfig(this.e.GhosttyTerminalOption.MODE, mode, on);
-    this.guard(() => {
+    this.guard(() => this.changeContent(() => {
       this.setModeConfig(this.e.GhosttyTerminalOption.MODE, mode, on);
       // setting the mode this way does not call back: a hold begins or ends here, as the program's own bytes would make it
       if (mode === MODE.syncOutput) this.setHeld(on);
-    });
+    }));
   }
 
   private getMode(mode: number): boolean {
@@ -939,7 +957,7 @@ export class GhosttyEngine {
   reset(): void {
     this.guard(() => {
       this.gridTouched = true;
-      this.x.ghostty_terminal_reset(this.terminal);
+      this.changeContent(() => this.x.ghostty_terminal_reset(this.terminal));
       this.placementsGeneration = -1;
       this.win32Input = false;
       if (!this.events) this.browserResets++;
@@ -970,7 +988,7 @@ export class GhosttyEngine {
     this.guard(() => {
       const size = this.size;
       if (!this.gridTouched && size.cols === cols && size.rows === rows && size.cellW === w && size.cellH === h) return;
-      apply();
+      this.changeContent(apply);
     });
   }
 
@@ -981,7 +999,7 @@ export class GhosttyEngine {
    * has the byte limit lifted for good, so there the line count alone decides.
    */
   setScrollback(lines: number): void {
-    this.guard(() => this.setLineLimit(lines));
+    this.guard(() => this.changeContent(() => this.setLineLimit(lines)));
   }
 
   private setLineLimit(lines: number): void {
@@ -1056,7 +1074,7 @@ export class GhosttyEngine {
     if (this.events) {
       this.check(this.x.ghostty_terminal_get(this.terminal, this.e.GhosttyTerminalData.SCREEN_GENERATION, this.scratch), "screen generation");
       const screens = Number(this.view().getBigUint64(this.scratch, true));
-      this.renderedScreen = { screens, altScreen: this.onAlternate(), history: this.readHistory() };
+      this.renderedScreen = { screens, altScreen: this.onAlternate(), history: this.readHistory(), contentVersion: this.contentVersion };
     }
   }
 
@@ -1430,9 +1448,13 @@ export class GhosttyEngine {
     });
   }
 
-  /** the text of a range, a soft-wrapped line joined, each row's trailing blanks dropped, rows ended by "\n" */
-  textOf(range: ScreenRange): string {
+  /**
+   * The text of a range, soft wraps joined and trailing blanks dropped. With a captured content version, refuse
+   * instead of substituting text from a newer terminal state (including a held frame whose history was pruned).
+   */
+  textOf(range: ScreenRange, contentVersion?: number): string {
     return this.guard(() => {
+      if (contentVersion !== undefined && contentVersion !== this.contentVersion) return "";
       const x = this.x;
       const selection = this.scratch + AT.selection, s = this.f.GhosttySelection;
       if (!this.gridRef(range.start, this.scratch + AT.refStart) || !this.gridRef(range.end, this.scratch + AT.refEnd)) return "";

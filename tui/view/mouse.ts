@@ -39,7 +39,7 @@ export interface PaneLook {
 }
 
 /** A pane's displayed cells: program mouse routing still reads the live modes separately. */
-export type PanePicture = Omit<PaneLook, "programMouse">;
+export type PanePicture = Omit<PaneLook, "programMouse"> & { readonly contentVersion: number };
 
 /** What the pointer reads of the screen at an event. */
 export interface PointerScene {
@@ -60,7 +60,7 @@ export type PointerAct =
   | { readonly kind: "forward"; readonly pane: string; readonly event: MouseInput }
   /** show the pane's screen this many rows above its newest rows */
   | { readonly kind: "scroll"; readonly pane: string; readonly fromBottom: number }
-  | { readonly kind: "copy"; readonly pane: string; readonly range: ScreenRange }
+  | { readonly kind: "copy"; readonly pane: string; readonly range: ScreenRange; readonly contentVersion: number }
   /** the dragged divider's ratio; `done` at the release */
   | { readonly kind: "divider"; readonly grab: number; readonly tab: string; readonly name: DividerName; readonly ratio: number; readonly done: boolean }
   /** the selection changed: the next frame draws it */
@@ -72,7 +72,7 @@ type Grab =
   | { readonly kind: "none" }
   | { readonly kind: "forward"; readonly pane: string }
   /** bound to the emulator and the screen (main or alternate) it was pressed on: the anchor means nothing on another */
-  | ({ readonly kind: "select"; readonly pane: string; readonly anchor: ScreenPoint } & ScreenOf)
+  | ({ readonly kind: "select"; readonly pane: string; readonly anchor: ScreenPoint; readonly contentVersion: number } & ScreenOf)
   | { readonly kind: "divider"; readonly id: number; readonly tab: string; readonly name: DividerName; readonly rect: Rect; readonly direction: SplitDirection; readonly offset: number; moved: number | null };
 
 interface Selection extends ScreenOf { readonly pane: string; readonly start: ScreenPoint; readonly end: ScreenPoint }
@@ -87,7 +87,7 @@ const NONE: Grab = { kind: "none" };
 const isWheel = (event: MouseInput): boolean => event.button !== undefined && event.button.startsWith("wheel");
 
 /** How many rows above its newest rows a pane's screen shows. */
-export function rowsAboveBottom(look: PanePicture): number {
+export function rowsAboveBottom(look: Pick<PaneLook, "history" | "grid">): number {
   return Math.max(0, look.history.total - look.grid.rows - look.history.viewportTop);
 }
 
@@ -192,8 +192,7 @@ export class Pointer {
       }
       const picture = scene.painted(hit.pane);
       if (event.button === "left" && picture && onScreen(look, picture)) {
-        // Wheel events can move this same screen's viewport before a paint; keep their existing coordinate behavior.
-        this.grab = { kind: "select", pane: hit.pane, anchor: pointOf(event, look), ...screenOf(picture) };
+        this.grab = { kind: "select", pane: hit.pane, anchor: pointOf(event, picture), contentVersion: picture.contentVersion, ...screenOf(picture) };
       }
       return dropped;
     }
@@ -239,11 +238,23 @@ export class Pointer {
       this.selection = null;
       return shown ? [{ kind: "redraw" }] : [];
     }
-    const end = pointOf(event, live);
+    const end = pointOf(event, look);
     const moved = this.selection !== null || end.x !== grab.anchor.x || end.y !== grab.anchor.y;
     if (moved) this.selection = { pane: grab.pane, start: grab.anchor, end, emulator: grab.emulator, altScreen: grab.altScreen, screen: grab.screen };
     const acts: PointerAct[] = moved ? [{ kind: "redraw" }] : [];
-    if (event.action === "release" && this.selection) acts.push({ kind: "copy", pane: grab.pane, range: ordered(this.selection) });
+    if (event.action === "release" && this.selection) {
+      const range = ordered(this.selection);
+      const top = look.history.viewportTop + look.top;
+      const height = Math.min(look.rect.height, look.grid.rows - look.top);
+      const width = Math.min(look.rect.width, look.grid.cols);
+      const entirelyShown = range.start.y >= top && range.end.y < top + height &&
+        range.start.x < width && range.end.x < width && (range.start.y === range.end.y || width === look.grid.cols);
+      // Wheel-only drags can read unchanged history outside the viewport. After output, unseen rows may have
+      // been replaced or pruned: only a range wholly shown in the new frame can authorize a fresh text read.
+      if (grab.contentVersion === look.contentVersion || entirelyShown) {
+        acts.push({ kind: "copy", pane: grab.pane, range, contentVersion: look.contentVersion });
+      }
+    }
     return acts;
   }
 
@@ -277,7 +288,7 @@ function pathOf(id: string): boolean[] | null {
 }
 
 /** The event's cell in the pane's grid: clamped into the pane's rectangle, then through the rows the frame clips. */
-function gridCell(event: MouseInput, look: PanePicture): GridCell {
+function gridCell(event: MouseInput, look: Pick<PaneLook, "rect" | "top" | "grid">): GridCell {
   const { rect } = look;
   const col = Math.min(Math.max(event.col, rect.x), rect.x + Math.max(0, rect.width - 1));
   const row = Math.min(Math.max(event.row, rect.y), rect.y + Math.max(0, rect.height - 1));

@@ -571,6 +571,50 @@ describe("shared/ghostty engine", () => {
     }
   });
 
+  for (const [change, current] of [["\r\nBBBB", "AAAA"], ["\rBBBB", "BBBB"]] as const) it(`frame-bound text refuses a held snapshot captured inside a write before ${JSON.stringify(change)}`, () => {
+    const { engine } = screenEngine(20, 3);
+    try {
+      engine.write(bytesOf("one\r\ntwo\r\nAAAA"));
+      engine.write(bytesOf(`\x1b[?2026h${change}`));
+      expect(rowText(screenRows(engine).get(2)!)).toBe("AAAA");
+      const frame = engine.frameScreen();
+      if (!frame) throw new Error("the held frame has no identity");
+      const selected = { start: { x: 0, y: 2 }, end: { x: 3, y: 2 } };
+      expect(engine.textOf(selected, frame.contentVersion)).toBe("");
+      engine.releaseHold();
+      screenRows(engine);
+      const shown = engine.frameScreen();
+      if (!shown) throw new Error("the released frame has no identity");
+      expect(engine.textOf(selected, shown.contentVersion)).toBe(current);
+      if (change.startsWith("\r\n")) expect(engine.textOf({ start: { x: 0, y: 3 }, end: { x: 3, y: 3 } }, shown.contentVersion)).toBe("BBBB");
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  for (const change of ["write", "resize", "mode", "scrollback"] as const) {
+    it(`frame-bound text refuses a snapshot after ${change} can change its contents`, () => {
+      const { engine } = screenEngine(20, 3);
+      try {
+        engine.write(bytesOf("AAAA"));
+        screenRows(engine);
+        const frame = engine.frameScreen();
+        if (!frame) throw new Error("the frame has no identity");
+        const selected = { start: { x: 0, y: 0 }, end: { x: 3, y: 0 } };
+        expect(engine.textOf(selected, frame.contentVersion)).toBe("AAAA");
+        switch (change) {
+          case "write": engine.write(bytesOf("\rBBBB")); break;
+          case "resize": engine.resize(10, 4, 8, 16); break;
+          case "mode": engine.setMode(3, true); break;
+          case "scrollback": engine.setScrollback(0); break;
+        }
+        expect(engine.textOf(selected, frame.contentVersion)).toBe("");
+      } finally {
+        engine.dispose();
+      }
+    });
+  }
+
   it("engine core widths", () => {
     const family = bytesOf("ABC👨‍👩‍👧XYZ");
     const cursorAfter = (widths: EngineOptions["widths"]): number[] => {
