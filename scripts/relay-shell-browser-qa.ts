@@ -825,11 +825,16 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
         }
       }
-      // a short desktop window: each pane scrolls on its own under a mouse wheel, so Pair under an opened code field and
-      // the last PC stay within reach of a pointer
+      // a short desktop window with more PCs than it can hold: each pane scrolls on its own under a mouse wheel, so Pair
+      // under an opened code field and the last PC stay within reach of a pointer
+      const extra = Array.from({ length: 14 }, (_, index) => ({ server_id: (index + 16).toString(16).repeat(16), server_public_key: "qa-extra-key", name: `QA PC ${index + 1}` }));
       await a.setViewportSize({ width: 1024, height: 400 });
+      await seed(a, extra);
       await a.goto(`${APP}/`);
       await pcLink(a, "Desk PC").waitFor();
+      await pcLink(a, "QA PC 14").waitFor();
+      const listPane = front(a).locator('[data-view="my-pcs"]');
+      assert.ok(await listPane.evaluate((pane) => pane.scrollHeight > pane.clientHeight + 100), "My PCs is taller than the 1024x400 window, so its own pane has to scroll");
       await front(a).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
       const reachable = async (pane: Locator, target: Locator, what: string): Promise<void> => {
         const box = await pane.boundingBox();
@@ -841,11 +846,17 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
         await target.click({ trial: true });
       };
       await reachable(front(a).locator('[data-view="add-pc"]'), front(a).locator('[data-code-form] button[type="submit"]'), "Pair under the opened code field");
-      await reachable(front(a).locator('[data-view="my-pcs"]'), front(a).locator(".relay-add-saved-pc").last(), "the last PC of My PCs");
+      await reachable(listPane, front(a).locator(".relay-add-saved-pc").last(), "the last PC of 16 in My PCs");
+      assert.ok(await listPane.evaluate((pane) => pane.scrollTop > 0), "the wheel scrolled My PCs' own pane");
       await capture(a, "short-window-1024x400");
+      await a.evaluate(async (ids) => {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("ovis-relay", 2); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+        await new Promise<void>((resolve, reject) => { const tx = db.transaction("devices", "readwrite"); for (const id of ids) tx.objectStore("devices").delete(id); tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error); });
+        db.close();
+      }, extra.map((pc) => pc.server_id));
       await a.setViewportSize({ width: 1440, height: 900 });
       assert.deepEqual([...A.errors, ...B.errors], [], "no page error on either device");
-      log9("front page: My PCs, its Add a PC's code field (a code that does not read stays to correct, Cancel closes it) and the account menu at 1440 and 390, dark and light; at 1024x400 Pair and the last PC are reached with the wheel; page errors on both devices: none");
+      log9("front page: My PCs, its Add a PC's code field (a code that does not read stays to correct, Cancel closes it) and the account menu at 1440 and 390, dark and light; at 1024x400 with 16 PCs My PCs scrolls on its own, and Pair and the last PC are reached with the wheel; page errors on both devices: none");
       keep("task-9-account.txt", `# relay-shell-browser-qa (n): the sign-in screen and Add a PC on ${APP} (routed to ${origin}), account service ${ACCOUNT_SERVICE} (shared/account-service-fake.ts), PCs on the Bun relay as ${RELAY}\n${lines.join("\n")}\n`);
     } finally {
       keep("task-9-console.txt", `${consoleLines.join("\n")}\n`);

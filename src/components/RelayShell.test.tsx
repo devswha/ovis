@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -243,7 +243,7 @@ describe("the hosted front page", () => {
         activeElement: new HTMLElement(),
         body: { nodeType: 1, children: [], createNodeMock: node },
         querySelector: () => null, querySelectorAll: () => [],
-        addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
+        addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
       } });
     });
 
@@ -1110,6 +1110,194 @@ describe("the hosted front page", () => {
       const alerts = renderer!.root.findAll((node) => node.props.role === "alert" && shown(node) && textOf(node).includes("The sign-in did not finish."));
       expect(alerts).toHaveLength(1);
       expect(renderer!.root.find((node) => node.props["data-view"] === "add-pc").findAll((node) => node === alerts[0])).toHaveLength(1);
+    });
+
+    /** a phone app whose plugins answer as `answer` says, every call written down */
+    const app = (headers: { name: string; methods?: string[] }[], answer: (method: string, options: Record<string, unknown>) => unknown) => {
+      const called: string[] = [];
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: headers.map(({ name, methods }) => ({ name, methods: (methods ?? []).map((method) => ({ name: method })) })),
+        nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+          called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
+          return await answer(method, options);
+        },
+      } });
+      return called;
+    };
+    const withApp = async (run: () => Promise<void>) => {
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      try { await run(); } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    };
+    const statusShown = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node)).map(textOf);
+    const savedRow = (way: string) => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === way).find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc");
+
+    it("keeps an open the person started in view when they go on to Add PC: its status follows, and only then does the app open it", async () => {
+      await withApp(async () => {
+        const tailscale = Promise.withResolvers<{ on?: boolean }>();
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "cancelOpen"] }], (method) =>
+          method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: {} } : method === "tailscale" ? tailscale.promise : method === "open" ? new Promise(() => {}) : {});
+        await mount(signedIn(four()));
+        await act(async () => { savedRow("tailscale").props.onClick(); });
+        await openAdd();
+        expect(statusShown()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+        await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
+        expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
+        expect(statusShown()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+      });
+    });
+
+    it("starts no open for a QR read after the control that scanned it is gone", async () => {
+      await withApp(async () => {
+        const scanned = Promise.withResolvers<{ ScanResult: string }>();
+        const called = app([{ name: "HerdrShell", methods: ["open"] }, { name: "CapacitorBarcodeScanner", methods: ["scanBarcode"] }], (method) => method === "scanBarcode" ? scanned.promise : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await act(async () => { action("scan-qr").props.onClick(); });
+        await act(async () => { tab("ssh").props.onClick(); });
+        await act(async () => { scanned.resolve({ ScanResult: "https://desk.tail1e211e.ts.net" }); await scanned.promise; });
+        expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toEqual([]);
+        expect(statusShown()).toEqual([]);
+      });
+    });
+
+    it("keeps an open running when the tab that started it gives way to another, on a wide screen", async () => {
+      wide();
+      await withApp(async () => {
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "cancelOpen"] }], (method) => method === "getState" ? { saved: [], names: {} } : method === "open" ? new Promise(() => {}) : {});
+        await mount(signedIn(four()));
+        await act(async () => { tab("tailscale").props.onClick(); });
+        const form = renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale").findByType("form");
+        await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: "other.tail1e211e.ts.net" }) } } }); });
+        await act(async () => { tab("ssh").props.onClick(); });
+        expect(called).not.toContain("HerdrShell.cancelOpen");
+        // still in view, beside the list and on the tab now chosen
+        expect(statusShown()).toEqual(["Opening other.tail1e211e.ts.net…Cancel", "Opening other.tail1e211e.ts.net…Cancel"]);
+      });
+    });
+
+    it("ends an open the app never answers once its deadline passes, says why, and takes the next tap", async () => {
+      jest.useFakeTimers();
+      try {
+        await withApp(async () => {
+          const called = app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) => method === "getState" ? { saved: ["http://192.168.0.5:7317", "http://192.168.0.6:7317"], names: {} } : method === "open" ? new Promise(() => {}) : {});
+          await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+          const rows = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pc-way"] === "address").map((node) => node.find((each) => each.type === "button" && each.props.className === "relay-add-saved-pc"));
+          await act(async () => { rows()[0]!.props.onClick(); });
+          expect(statusShown()).toEqual(["Opening 192.168.0.5:7317…"]);
+          await act(async () => { rows()[1]!.props.onClick(); });
+          expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toHaveLength(1);
+          await act(async () => { jest.advanceTimersByTime(30_000); });
+          expect(statusShown()).toEqual([]);
+          expect(renderer!.root.findAll((node) => node.props.role === "alert" && shown(node)).map(textOf).join(" ")).toContain("192.168.0.5:7317 did not answer within 20 seconds.");
+          await act(async () => { rows()[1]!.props.onClick(); });
+          expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toEqual(["HerdrShell.open http://192.168.0.5:7317/", "HerdrShell.open http://192.168.0.6:7317/"]);
+        });
+      } finally { jest.useRealTimers(); }
+    });
+
+    it("asks the app whether Tailscale is on, when it comes back, only from a Tailscale tab that is on screen", async () => {
+      await withApp(async () => {
+        const called = app([{ name: "HerdrShell", methods: ["getState", "tailscale"] }], (method) => method === "getState" ? { saved: [], names: {} } : method === "tailscale" ? { on: true } : {});
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+        await mount(signedIn(four()));
+        await openAdd();
+        await act(async () => { tab("tailscale").props.onClick(); });
+        const asked = () => called.filter((call) => call === "HerdrShell.tailscale").length;
+        expect(asked()).toBe(1);
+        await act(async () => { back()[0]!.props.onClick(); });
+        await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+        expect(asked()).toBe(1);
+        await openAdd();
+        // on screen again: asked once, and again when the app comes back
+        expect(asked()).toBe(2);
+        await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+        expect(asked()).toBe(3);
+      });
+    });
+
+    it("ends a code's lookup when the person leaves it: folding its field, Add PC's Back, another tab, the comparison's Cancel or a sign-in, after which its result changes nothing", async () => {
+      const compare = { kind: "code-compare" as const, offer: { v: 1 as const, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } };
+      // folding its field, Add PC's Back, another tab
+      const leave: (() => Promise<void>)[] = [
+        async () => { await act(async () => { action("add-code").props.onClick(); }); },
+        async () => { await act(async () => { back()[0]!.props.onClick(); }); },
+        async () => { await act(async () => { tab("tailscale").props.onClick(); }); },
+      ];
+      for (const go of leave) {
+        const calls: string[] = [];
+        const draw = (shown_: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown_) })); });
+        const page: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCancel: () => { calls.push("cancel"); } };
+        await mount(page);
+        await openAdd();
+        await typeCode("ABCDE-12345");
+        await draw({ ...page, state: { kind: "code-looking" } });
+        // the field is read-only while it looks
+        expect(renderer!.root.find((node) => node.type === "input" && node.props.name === "code").props.readOnly).toBe(true);
+        await go();
+        expect(calls).toEqual(["cancel"]);
+        // the shell, cancelled, reads the front page again
+        await draw(page);
+        // a result that arrives after: nothing opens over the page
+        await draw({ ...page, state: compare });
+        expect(dialogs()).toHaveLength(0);
+        await draw(page);
+        await act(async () => { renderer!.unmount(); });
+      }
+      // the comparison's Cancel, while the front page the shell reads again is still on its way: the dialog stays closed
+      const calls: string[] = [];
+      const page: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCancel: () => { calls.push("cancel"); } };
+      await mount(page);
+      await openAdd();
+      await typeCode("ABCDE-12345");
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...page, state: compare }) })); });
+      expect(dialog().props["data-pair-dialog"]).toBe("compare");
+      await act(async () => { button("Cancel").props.onClick(); });
+      expect(calls).toEqual(["cancel"]);
+      expect(dialogs()).toHaveLength(0);
+      await act(async () => { renderer!.unmount(); });
+      // a sign-in started over a failed code ends the code first
+      const signed: string[] = [];
+      const out: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: () => { signed.push("sign-in"); }, onCancel: () => { signed.push("cancel"); } };
+      await mount(out);
+      await typeCode("x");
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...out, state: { kind: "code-entry", failure: "not-a-code" } }) })); });
+      expect(renderer!.root.find((node) => node.type === "input" && node.props.name === "code").props.readOnly).toBe(false);
+      await act(async () => { button("Continue with GitHub").props.onClick(); });
+      expect(signed).toEqual(["cancel", "sign-in"]);
+    });
+
+    it("moves the focus to Add PC's title when Add PC opens it, never when the window narrows under it", async () => {
+      screen.install();
+      screen.set(false);
+      const focused: string[] = [];
+      const tracking = (element: { type: unknown; props: Record<string, unknown> }) => ({ ...node(), focus: () => { focused.push(element.type === "button" ? String(element.props["data-action"] ?? element.props["aria-label"]) : String(element.type)); } });
+      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) }), { createNodeMock: tracking as never }); });
+      await act(async () => { action("add-pc").props.onClick(); });
+      expect(focused.filter((each) => each === "h1")).toHaveLength(1);
+      await act(async () => { screen.set(true); });
+      await act(async () => { screen.set(false); });
+      expect(focused.filter((each) => each === "h1")).toHaveLength(1);
+    });
+
+    it("keeps a failed sign-in in view on another tab, on a wide screen and on a phone, said once", async () => {
+      const failing = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: "The sign-in did not finish." } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
+      const said = () => renderer!.root.findAll((node) => node.props.role === "alert" && shown(node) && textOf(node).includes("The sign-in did not finish.")).length;
+      wide();
+      await mount(failing);
+      expect(said()).toBe(1);
+      await act(async () => { tab("tailscale").props.onClick(); });
+      expect(said()).toBe(1);
+      await act(async () => { renderer!.unmount(); });
+      screen.set(false);
+      await mount(failing);
+      expect(said()).toBe(1);
+      await openAdd();
+      expect(said()).toBe(1);
+      await act(async () => { tab("ssh").props.onClick(); });
+      expect(said()).toBe(1);
     });
 
     it("never says Needs approval: an account PC this device is not let into yet is On or Off like any other", async () => {

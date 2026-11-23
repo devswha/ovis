@@ -153,8 +153,11 @@
 }
 
 /* two columns for every row (a subgrid each): the row's open link, then Forget where the row has one, in a cell of its
-   own beside the link, so a tap on the link never lands on Forget and every row's state lines up */
+   own beside the link, so a tap on the link never lands on Forget and every row's state lines up. It keeps its full
+   height (its overflow clips the rounded corners, so a column with a height cap could otherwise shrink it and cut rows
+   off): the pane around it scrolls instead */
 .my-pcs-list {
+  flex: none;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   margin: 0;

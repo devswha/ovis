@@ -5168,10 +5168,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   search by name (any case, the PC in use found like any other, one line when nothing matches), and on the wide screen
   the All, On and Off chips. The code is one small Pair with a code line that opens its field in place, under what to
   do on the PC (beside the QR way in the phone app, both held while a sign-in is under way); the code is looked up
-  right there, the field keeping what was typed through the lookup and a failure to correct, until it finds its PC (the
-  comparison) or Cancel closes it. In the phone app, a PC opened by its address says Opening it, with Cancel (only
-  where the app has cancelOpen: iOS opens at once), one at a time for the whole page (a second tap while the app is asked
-  whether Tailscale is on replaces the first; one already opening holds the next; leaving the screen ends it), and a
+  right there, the field read-only while it looks and keeping what was typed through a failure to correct, until it
+  finds its PC (the comparison) or Cancel closes it; the screen owns that lookup, so folding the field, Add PC's Back,
+  another tab, the comparison's Cancel or a sign-in each end it too, and what it answers later opens nothing. In the
+  phone app, a PC opened by its address says Opening it, with Cancel (only where the app has cancelOpen: iOS opens at
+  once), one at a time for the whole screen, which owns it: it follows the person to Add PC and back on a phone and
+  stands in both panes on a wide screen, a tab or a pane giving way does not end it, a QR read after its scanner's tab is
+  gone starts none, and an open the app has not answered in 25 s ends with the PC did not answer, taking taps again (a
+  second tap while the app is asked whether Tailscale is on replaces the first; one already opening holds the next;
+  leaving the screen ends it). The Tailscale tab asks the app whether Tailscale is on only while it is on screen. A
   failed open says why from the app's own reason, with Tailscale's hint for a tailnet address (its IPv6 too), never the
   app's own words, which are not the person's language; a saved Tailscale PC tapped while the app says
   Tailscale is off shows Open Tailscale instead of trying it; an SSH PC whose address another app on the phone

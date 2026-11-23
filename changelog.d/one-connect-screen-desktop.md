@@ -5,6 +5,7 @@
   line that opens its field, in the phone app beside Scan a QR code; a code that does not work stays
   in the field to correct.
 - In the phone app, opening a PC by its Tailscale, SSH or other address says it is opening, with
-  Cancel, and a failed open now explains why (off, out of reach, not Ovis, a Tailscale address
-  while Tailscale is off) instead of the app's raw error. A saved Tailscale PC tapped while
+  Cancel, and stays in view when you go on to Add PC; an open the app never answers ends after
+  25 seconds and says so. A failed open now explains why (off, out of reach, not Ovis, a Tailscale
+  address while Tailscale is off) instead of the app's raw error. A saved Tailscale PC tapped while
   Tailscale is off offers Open Tailscale at once.

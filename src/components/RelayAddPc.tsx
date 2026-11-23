@@ -1,6 +1,6 @@
 import "./RelayAddPc.css";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { ChevronRight, type LucideIcon } from "lucide-react";
 
 import { useT, type Translate } from "../lib/i18n.ts";
@@ -166,24 +166,31 @@ function scan(t: Translate, take: (url: URL | null) => void, failed: (cause: unk
 export type AddressOpen = ReturnType<typeof useAddressOpen>;
 
 /**
- * The PC the phone app is asked to open, one at a time for the whole page (both panes of a wide screen, the plain wait's
- * QR): `asking` while the app says whether Tailscale is on, `opening` once its open runs (Android checks the address is
- * Ovis for up to 20 s; iOS opens at once). A newer attempt, a Cancel or the leaving of the screen that started it
- * replaces it, so what an earlier one answers late opens nothing.
+ * The PC the phone app is asked to open, one at a time for the whole connect screen, which owns it (useConnectScreen):
+ * `asking` while the app says whether Tailscale is on, `opening` once its open runs (Android checks the address is Ovis
+ * for up to 20 s; iOS opens at once). `view`: the pane it was started from, where a wide screen shows it; a phone shows it
+ * in whichever pane is on screen, so it follows the person. A newer attempt, Cancel, its deadline or the connect screen
+ * going away replaces it, so what an earlier one answers late opens nothing; a tab or a pane giving way does not.
  */
-interface Attempt { readonly id: number; readonly host: string; readonly phase: "asking" | "opening" }
+interface Attempt { readonly id: number; readonly host: string; readonly phase: "asking" | "opening"; readonly view: string }
+/** What the last attempt ended on, shown where the attempt was: why it did not open, or Tailscale off on the phone. */
+export type OpenOutcome = { readonly view: string; readonly kind: "error"; readonly text: string } | { readonly view: string; readonly kind: "tailscale-off" };
 let attempt: Attempt | null = null;
+let outcome: OpenOutcome | null = null;
 let attempts = 0;
 const watching = new Set<() => void>();
-function setAttempt(next: Attempt | null): void {
-  attempt = next;
-  for (const watch of [...watching]) watch();
-}
-function useAttempt(): Attempt | null {
-  return useSyncExternalStore((watch) => { watching.add(watch); return () => watching.delete(watch); }, () => attempt, () => null);
+function tell(): void { for (const watch of [...watching]) watch(); }
+function setAttempt(next: Attempt | null): void { attempt = next; tell(); }
+function setOutcome(next: OpenOutcome | null): void { outcome = next; tell(); }
+const watch = (listener: () => void): (() => void) => { watching.add(listener); return () => watching.delete(listener); };
+/** The connect screen's attempt and what the last one ended on, as they change. */
+export function useOpening(): { readonly pending: Attempt | null; readonly outcome: OpenOutcome | null } {
+  const pending = useSyncExternalStore(watch, () => attempt, () => null);
+  const ended = useSyncExternalStore(watch, () => outcome, () => null);
+  return { pending, outcome: ended };
 }
 /** Whether the app can stop an open it runs: Android can; iOS, which opens at once, has no cancelOpen. */
-function canStopOpen(): boolean {
+export function canStopOpen(): boolean {
   return hasNativeMethod(SHELL, "cancelOpen");
 }
 /** Stops the attempt there is: one still asking ends here; one opening asks the app to stop, where it can (a call to a method it lacks never settles). */
@@ -193,9 +200,19 @@ export function stopAttempt(): void {
   setAttempt(null);
   if (was.phase === "opening" && canStopOpen()) void callNative(SHELL, "cancelOpen").catch(() => undefined);
 }
+/** Clears what the last attempt ended on (the person dismissed it, or moved on). */
+export function clearOutcome(): void {
+  if (outcome !== null) setOutcome(null);
+}
+/** The connect screen, which owns the attempt: when it goes away, so do its attempt and what the last one ended on. */
+export function useConnectScreen(): void {
+  useEffect(() => () => { stopAttempt(); clearOutcome(); }, []);
+}
 
 /** how long a saved Tailscale PC waits for the app to say whether Tailscale is on before it opens anyway */
 const TAILSCALE_WAIT_MS = 1_500;
+/** how long an open may run before the page takes it as unanswered: the app's own check gives up after 20 s (PCStore.ANSWER_SECONDS) */
+const OPEN_WAIT_MS = 25_000;
 
 /**
  * Whether Tailscale is on in the phone app: only an explicit `on: false` is off; yes where the app cannot tell (no
@@ -211,37 +228,38 @@ export async function tailscaleOn(): Promise<boolean> {
 }
 
 /**
- * What a scanned or typed address does, with what it ends on: `pending`, the one attempt the page has (`cancel` stops
- * it); `error`, why this opener's own did not open; `tailscaleOff`, a saved Tailscale PC asked for while Tailscale is off
- * (until the app comes back with it on).
+ * What a scanned or typed address does from one pane (`view`) of the connect screen, whose one attempt it starts
+ * (useOpening shows it); `error`: what this opener itself refused (not an address, another app's link, plain http on
+ * the internet). A QR the scanner reads after this opener is gone starts nothing.
  */
-export function useAddressOpen() {
+export function useAddressOpen(view = "page") {
   const t = useT();
   const [error, setError] = useState<string | null>(null);
-  const [tailscaleOff, setTailscaleOff] = useState(false);
-  const pending = useAttempt();
+  const { pending } = useOpening();
   // the public http address the person was just warned about: opening it again goes ahead
   const warned = useRef<string | null>(null);
-  // the attempt this opener started: leaving the screen ends it while it is still the page's
-  const own = useRef<number | null>(null);
-  useEffect(() => () => { if (own.current !== null && attempt?.id === own.current) stopAttempt(); }, []);
-  useEffect(() => {
-    if (!tailscaleOff) return;
-    let live = true;
-    const visible = (): void => { if (document.visibilityState === "visible") void tailscaleOn().then((on) => { if (live && on) setTailscaleOff(false); }); };
-    document.addEventListener("visibilitychange", visible);
-    return () => { live = false; document.removeEventListener("visibilitychange", visible); };
-  }, [tailscaleOff]);
+  // whether this opener is still on the page: a scan it started that answers later counts only then
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const failed = (cause: unknown): void => { setError(cause instanceof Error ? cause.message : String(cause)); };
-  /** The app's open of `url`, as attempt `id`, where the app has it; what it ends on is said only while `id` is still the page's. */
+  /** The app's open of `url`, as attempt `id`, where the app has it, until its deadline; what it ends on is said only while `id` is still the screen's. */
   const openNow = (url: URL, id: number): void => {
-    if (!hasNativeMethod(SHELL, "open")) { setAttempt(null); setError(t("This app cannot open a PC by its address. Update the Ovis app.")); return; }
+    if (!hasNativeMethod(SHELL, "open")) { setAttempt(null); setOutcome({ view, kind: "error", text: t("This app cannot open a PC by its address. Update the Ovis app.") }); return; }
+    // fixed wait: an open the app never answers (no cancelOpen to stop it) holds the screen no longer than the app's own check would
+    const deadline = setTimeout(() => {
+      if (attempt?.id !== id) return;
+      stopAttempt();
+      setOutcome({ view, kind: "error", text: openFailureText(t, url, "timeout", "") });
+    }, OPEN_WAIT_MS);
     void callNative(SHELL, "open", { url: url.href, check: true }).then(() => undefined, (cause: unknown) => {
       if (attempt?.id !== id) return;
       const code = typeof (cause as { code?: unknown } | null)?.code === "string" ? (cause as { code: string }).code : undefined;
       const said = openFailureText(t, url, code, cause instanceof Error ? cause.message : String(cause));
-      setError(said === "" ? null : said);
-    }).finally(() => { if (attempt?.id === id) setAttempt(null); });
+      if (said !== "") setOutcome({ view, kind: "error", text: said });
+    }).finally(() => {
+      clearTimeout(deadline);
+      if (attempt?.id === id) setAttempt(null);
+    });
   };
   /**
    * What a scanned or typed address does: a pairing link of this app opens at its PC's page, where the pairing asks
@@ -249,7 +267,7 @@ export function useAddressOpen() {
    * link of another origin is refused; a PC's own address opens (a public http one only after a warning): the phone app
    * checks it is Ovis first (HerdrShell.open, app/web/connect.js), a browser goes there; anything else says so. In the app
    * one opens at a time: while one opens, another tap waits; one still asking about Tailscale gives way to the new one.
-   * `askTailscale`: a saved Tailscale PC, which asks the app first whether Tailscale is on (TailscaleOff when it is not).
+   * `askTailscale`: a saved Tailscale PC, which asks the app first whether Tailscale is on.
    */
   const take = (url: URL | null, options: { readonly askTailscale?: boolean } = {}): void => {
     if (url === null) { setError(t("That is not an http or https address.")); return; }
@@ -269,38 +287,53 @@ export function useAddressOpen() {
     if (!hasNativePlugin(SHELL)) { setError(null); window.location.assign(url.href); return; }
     if (attempt?.phase === "opening") return;
     setError(null);
-    setTailscaleOff(false);
+    clearOutcome();
     const id = ++attempts;
-    own.current = id;
     const ask = options.askTailscale === true && hasNativeMethod(SHELL, "tailscale");
-    setAttempt({ id, host: url.host, phase: ask ? "asking" : "opening" });
+    setAttempt({ id, host: url.host, phase: ask ? "asking" : "opening", view });
     if (!ask) { openNow(url, id); return; }
     void tailscaleOn().then((on) => {
       if (attempt?.id !== id) return;
-      if (!on) { setAttempt(null); setTailscaleOff(true); return; }
-      setAttempt({ id, host: url.host, phase: "opening" });
+      if (!on) { setAttempt(null); setOutcome({ view, kind: "tailscale-off" }); return; }
+      setAttempt({ id, host: url.host, phase: "opening", view });
       openNow(url, id);
     });
   };
-  return { error, setError, failed, cancel: stopAttempt, take, pending, tailscaleOff };
+  /** `run` with what a scan (or its failure) answers, only while this opener is still on the page */
+  const ifLive = <T,>(run: (value: T) => void) => (value: T): void => { if (live.current) run(value); };
+  return { error, setError, failed, cancel: stopAttempt, take, scanned: ifLive(take), ifLive, pending };
+}
+
+/** What this opener itself refused, in its own pane. */
+export function OpenError({ open }: { readonly open: AddressOpen }) {
+  return open.error === null ? null : <p className="account-error" role="alert">{open.error}</p>;
 }
 
 /**
- * What opening a PC came to: the page's one attempt, with Cancel where it can be stopped (one still asking about
- * Tailscale always; one opening only where the app has cancelOpen), or why this opener's own did not open.
+ * The connect screen's attempt, in a pane (`view`): the host being opened, in every pane on screen, with Cancel where it
+ * can be stopped (one still asking about Tailscale always; one opening only where the app has cancelOpen); or why the
+ * last one did not open, in the pane it was started from (`anyView`: a phone, one pane on screen at a time, says it in
+ * whichever that is), a Tailscale-off outcome drawn by `tailscaleOff`.
  */
-export function OpenState({ open }: { readonly open: AddressOpen }) {
+export function OpenStatus({ view, anyView = false, tailscaleOff }: { readonly view: string; readonly anyView?: boolean; readonly tailscaleOff?: ReactNode }) {
   const t = useT();
-  if (open.pending !== null) {
+  const { pending, outcome: ended } = useOpening();
+  if (pending !== null) {
     return (
       <p className="relay-add-opening" role="status" data-opening="">
         <span className="boot-spinner" aria-hidden="true" />
-        <span className="relay-add-opening-text">{t("Opening {host}…", { host: open.pending.host })}</span>
-        {(open.pending.phase === "asking" || canStopOpen()) && <button type="button" className="btn btn-ghost" onClick={open.cancel}>{t("Cancel")}</button>}
+        <span className="relay-add-opening-text">{t("Opening {host}…", { host: pending.host })}</span>
+        {(pending.phase === "asking" || canStopOpen()) && <button type="button" className="btn btn-ghost" onClick={stopAttempt}>{t("Cancel")}</button>}
       </p>
     );
   }
-  return open.error === null ? null : <p className="account-error" role="alert">{open.error}</p>;
+  if (ended === null || !(anyView || ended.view === view)) return null;
+  return ended.kind === "error" ? <p className="account-error" role="alert">{ended.text}</p> : <>{tailscaleOff}</>;
+}
+
+/** An opener's own refusal and the screen's attempt, on a screen of one pane (the plain wait). */
+export function OpenState({ open }: { readonly open: AddressOpen }) {
+  return <><OpenStatus view="" anyView /><OpenError open={open} /></>;
 }
 
 /**
