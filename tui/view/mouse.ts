@@ -178,14 +178,15 @@ export class Pointer {
         const look = grab.kind === "forward" ? this.pressedScreen(grab, scene) : null;
         return grab.kind === "forward" && look ? [{ kind: "forward", pane: grab.pane, event: inGrid(event, look) }] : [];
       }
-      if (event.action !== "press") return [];
+      if (event.action !== "press" || event.button !== "left") return [];
+      const hit = scene.hits?.at(event.col, event.row);
+      if (!hit || !("part" in hit) || !hit.part.startsWith("overlay:")) return [];
+      const [kind, entry] = splitId(hit.id);
+      if (hit.id !== "close" && (kind !== "menu" || entry === "")) return [];
       const dropped = finished(this.grab);
       this.grab = NONE;
-      const hit = event.button === "left" ? scene.hits?.at(event.col, event.row) : null;
-      if (!hit || !("part" in hit) || !hit.part.startsWith("overlay:")) return dropped;
       if (hit.id === "close") return [...dropped, { kind: "close_overlay" }];
-      const [kind, entry] = splitId(hit.id);
-      return kind === "menu" && entry !== "" ? [...dropped, { kind: "choose", entry }] : dropped;
+      return [...dropped, { kind: "choose", entry }];
     }
     if (isWheel(event)) return this.wheel(event, scene);
     if (event.action === "press") return this.press(event, scene);

@@ -116,7 +116,7 @@ it.each(["joined", "split"])("Escape dismisses a stale menu without leaking trai
   expect(run.core.program("t1").receivedHex()).toBe("7a");
 }, 60_000);
 
-it.each(["before repaint", "after repaint", "split before repaint"])("a stale menu dismissal preserves a program's matching mouse release: %s", async (ordering) => {
+it.each(["before repaint", "after repaint", "split before repaint", "right before Escape"])("a stale menu dismissal preserves a program's matching mouse release: %s", async (ordering) => {
   const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });
   runs.push(run);
   await run.live();
@@ -137,7 +137,9 @@ it.each(["before repaint", "after repaint", "split before repaint"])("a stale me
   run.core.remove("t3");
   await run.settle();
   expect(run.grid()).toEqual(painted);
-  run.type("4\x1b[27u");
+  run.type("4");
+  if (ordering === "right before Escape") run.type("\x1b[<2;31;6M\x1b[<2;31;6m");
+  run.type("\x1b[27u");
   await run.settle();
   expect(run.loop.report().mode.overlays).toEqual([]);
   // Motion, wheel and a new press must neither reach the program nor replace its existing grab.
