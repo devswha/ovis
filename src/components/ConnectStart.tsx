@@ -248,10 +248,25 @@ export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, in
   const addButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (addFocused) addButton.current?.focus(); }, [addFocused]);
   const forgetSaved = (pc: PhoneSavedPc) => () => { open.setError(null); callNative(SHELL, "forget", { url: pc.origin }).then(phone.reread, open.failed); };
+  // a Tailscale PC opens nothing while Tailscale is off on the phone: the app says so first, and Open Tailscale takes over,
+  // until the app comes back with it on
+  const [tailscaleOff, setTailscaleOff] = useState(false);
+  useEffect(() => {
+    if (!tailscaleOff) return;
+    let live = true;
+    const visible = (): void => { if (document.visibilityState === "visible") void tailscaleOn().then((on) => { if (live && on) setTailscaleOff(false); }); };
+    document.addEventListener("visibilitychange", visible);
+    return () => { live = false; document.removeEventListener("visibilitychange", visible); };
+  }, [tailscaleOff]);
+  const openSaved = (pc: PhoneSavedPc): void => {
+    open.setError(null);
+    if (pc.way !== "tailscale") { open.take(new URL(pc.origin)); return; }
+    void tailscaleOn().then((on) => { setTailscaleOff(!on); if (on) open.take(new URL(pc.origin)); });
+  };
   const fromPhone = (pc: PhoneSavedPc): PhonePc => ({
     key: pc.origin, name: pc.name, way: pc.way, address: pc.host, ...(pc.way === "tailscale" ? { data: { "data-tailnet-pc": pc.origin } } : {}),
     ...(current !== null && "origin" in current && originOf(pc.origin) === current.origin ? { word: "in-use" as const } : {}),
-    open: () => open.take(new URL(pc.origin)),
+    open: () => openSaved(pc),
     forget: pc.way === "ssh" ? undefined : forgetSaved(pc),
   });
   const rows: PhonePc[] = [
@@ -276,6 +291,7 @@ export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, in
     <div className="my-pcs" data-view="my-pcs">
       <ConnectHead title={t("Your PCs")} onBack={onBack ?? backToCurrent} backLabel={backToCurrent ? t("Back to {name}", { name: currentName }) : undefined} menu={menu} />
       {top}
+      {tailscaleOff && <TailscaleOff failed={open.failed} />}
       {phone.sshPort !== null && <p className="account-error" role="alert">{t("Another app on this phone took the address the SSH PC opens on ({address}), so the app did not open it: that app would have answered in its place. Close or uninstall the app you do not know, or restart the phone, then open the PC again.", { address: phone.sshPort })}</p>}
       {searchable && (
         <div className="my-pcs-find">
@@ -333,14 +349,16 @@ function CodeLine({ onCode, disabled }: { readonly onCode: (code: string) => voi
 export interface CodeWays { readonly start: () => void; readonly submit: (code: string) => void }
 
 /**
- * The relay tab's way in to a PC: its QR code where the phone app can scan, else its code (a browser), folded to one
- * line; a scanner that cannot run (the camera refused) leads to the code screen. `disabled` while a sign-in is under way.
+ * The relay tab's way in to a PC: its QR code where the phone app can scan, and its code everywhere (the PC offers both),
+ * folded to one line; a scanner that cannot run (the camera refused) leads to the code screen. Both are held while a
+ * sign-in is under way (`disabled`).
  */
 function QrOrCode({ code, disabled = false }: { readonly code: CodeWays; readonly disabled?: boolean }) {
   const open = useAddressOpen();
   return (
     <>
-      {canScanQr() ? <ScanWay open={open} failed={code.start} disabled={disabled} /> : <CodeLine onCode={code.submit} disabled={disabled} />}
+      {canScanQr() && <ScanWay open={open} failed={code.start} disabled={disabled} />}
+      <CodeLine onCode={code.submit} disabled={disabled} />
       <OpenState open={open} />
     </>
   );
@@ -383,10 +401,27 @@ export function AccountlessRelayPanel({ code }: { readonly code: CodeWays }) {
   );
 }
 
+/** Whether Tailscale is on in the phone app: yes where the app cannot tell (no `tailscale`, or a check that failed). */
+async function tailscaleOn(): Promise<boolean> {
+  if (!hasNativeMethod(SHELL, "tailscale")) return true;
+  try { return (await callNative<{ on?: boolean }>(SHELL, "tailscale")).on !== false; } catch { return true; }
+}
+
+/** With Tailscale off on the phone a Tailscale address opens nothing: one line and Open Tailscale, where the app has it. */
+function TailscaleOff({ failed }: { readonly failed: (cause: unknown) => void }) {
+  const t = useT();
+  return (
+    <div className="connect-tailscale-off" role="alert" data-tailscale-off="">
+      <p className="relay-shell-copy">{t("Turn on Tailscale to connect")}</p>
+      {hasNativeMethod(SHELL, "openTailscale") && <button type="button" className="btn btn-primary" onClick={() => { callNative(SHELL, "openTailscale").catch(failed); }}>{t("Open Tailscale")}</button>}
+    </div>
+  );
+}
+
 /**
  * The Tailscale tab: a PC's Tailscale address in one field, and in the phone app its QR scan; with Tailscale off on the
- * phone nothing here would open, so one line and Open Tailscale alone, checked again when the app comes back (from
- * Tailscale). An app that cannot tell draws it as on.
+ * phone nothing here would open, so one line and Open Tailscale alone (TailscaleOff), checked again when the app comes
+ * back (from Tailscale). An app that cannot tell draws it as on.
  */
 function TailscalePanel() {
   const t = useT();
@@ -396,10 +431,7 @@ function TailscalePanel() {
   useEffect(() => {
     if (!native) return;
     let live = true;
-    const check = (): void => {
-      // an Android build without the check: as on
-      callNative<{ on?: boolean }>(SHELL, "tailscale").then((answer) => { if (live) setOn(answer.on !== false); }, () => undefined);
-    };
+    const check = (): void => { void tailscaleOn().then((now) => { if (live) setOn(now); }); };
     check();
     const visible = (): void => { if (document.visibilityState === "visible") check(); };
     document.addEventListener("visibilitychange", visible);
@@ -408,8 +440,7 @@ function TailscalePanel() {
   if (!on) {
     return (
       <div className="connect-start-panel" data-tab-panel="tailscale">
-        <p className="relay-shell-copy">{t("Turn on Tailscale to connect")}</p>
-        <button type="button" className="btn btn-primary" onClick={() => { open.setError(null); callNative(SHELL, "openTailscale").catch(open.failed); }}>{t("Open Tailscale")}</button>
+        <TailscaleOff failed={open.failed} />
         <OpenState open={open} />
       </div>
     );

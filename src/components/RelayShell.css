@@ -273,7 +273,19 @@
   flex: none;
 }
 
+/* Tailscale off on the phone, over a saved Tailscale PC's tap: what to do, and Open Tailscale */
+.connect-tailscale-off {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.connect-tailscale-off > .relay-shell-copy {
+  margin: 0;
+}
+
 .my-pcs > .relay-shell-copy,
+.my-pcs > .connect-tailscale-off,
 .my-pcs > .relay-add-opening,
 .my-pcs > .account-error,
 .my-pcs > .account-notice,

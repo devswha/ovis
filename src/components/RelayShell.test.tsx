@@ -750,6 +750,64 @@ describe("the hosted front page", () => {
       expect(pushed).toHaveLength(2);
     });
 
+    it("keeps the code line beside the QR way in the phone app, signed out and signed in, both held while a sign-in is under way", async () => {
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "CapacitorBarcodeScanner", methods: [{ name: "scanBarcode" }] }],
+        nativePromise: async () => ({}),
+      } });
+      const ways = () => [action("scan-qr"), action("add-code")].map((node) => [node.props["data-action"], node.props.disabled === true]);
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        expect(ways()).toEqual([["scan-qr", false], ["add-code", false]]);
+        await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...props({ kind: "empty", account: { kind: "signing-in", provider: "google" } }), scoped: false, onSignIn: none }) })); });
+        expect(ways()).toEqual([["scan-qr", true], ["add-code", true]]);
+        await act(async () => { renderer!.unmount(); });
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none });
+        await openAdd();
+        expect(ways()).toEqual([["scan-qr", false], ["add-code", false]]);
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("offers Open Tailscale for a saved Tailscale PC while the phone app says Tailscale is off, instead of waiting for its open to fail", async () => {
+      for (const on of [false, true]) {
+        const called: string[] = [];
+        const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+        Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+          isNativePlatform: () => true, getPlatform: () => "android",
+          PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "openTailscale"].map((name) => ({ name })) }],
+          nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+            called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
+            if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };
+            if (method === "tailscale") return { on };
+            return {};
+          },
+        } });
+        try {
+          await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+          const card = () => renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined);
+          if (on) {
+            expect(card()).toHaveLength(0);
+            expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
+          } else {
+            expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
+            expect(called.some((call) => call.startsWith("HerdrShell.open "))).toBe(false);
+            await act(async () => { card()[0]!.find((node) => node.type === "button").props.onClick(); });
+            expect(called).toContain("HerdrShell.openTailscale");
+          }
+          await act(async () => { renderer!.unmount(); });
+        } finally {
+          if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+          else Reflect.deleteProperty(globalThis, "Capacitor");
+        }
+      }
+    });
+
     it("never says Needs approval: an account PC this device is not let into yet is On or Off like any other", async () => {
       await mount(signedIn(four()));
       expect(rowTexts()).toEqual([["relay", "Desk PCRelay"], ["relay", "MacBookRelay"], ["relay", "Home serverRelayOff"], ["relay", "Mac miniRelayOn"]]);
@@ -816,7 +874,8 @@ describe("the hosted front page", () => {
         await mount(shown);
         expect(rowTexts().map(([way, text]) => [way, text.replace(/Forget$/, "")])).toEqual([["tailscale", "DeskTailscaledesk.tail1e211e.ts.net"], ["tailscale", "100.101.1.2:7317Tailscale"], ["address", "192.168.0.5:7317Address"]]);
         await openAdd();
-        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-code")).toHaveLength(0);
+        // the code line too, beside the QR way: the PC offers both
+        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-code")).toHaveLength(1);
         await act(async () => { action("scan-qr").props.onClick(); });
         expect(assigned).toEqual([`https://app.ovis.sh/s/${ids.mini}/#offer=abc`]);
         await act(async () => { tab("tailscale").props.onClick(); });
