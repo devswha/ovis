@@ -35,9 +35,17 @@ public enum Bars {
         return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2] > lightAbove ? .dark : .light
     }
 
+    /// What is known of the page once it sent `body` (the app's document-start script): a new document has said
+    /// nothing yet, so what the one before it said goes; a text is its theme-color, readable or not; anything else is
+    /// not the page's word and changes nothing.
+    public static func page(_ known: Icons?, said body: Any) -> Icons? {
+        known
+    }
+
     /// What the status bar shows: a cover over the page hides the page, so its colour counts (`cover`); else what the
-    /// page last said (`page`); else the app's own.
-    public static func icons(cover: Icons?, page: Icons?) -> Icons {
+    /// page said (`page`); else, for a document that has not said yet, the colour behind it (`ground`, the web view's
+    /// own, which shows until a page paints); else the app's own.
+    public static func icons(cover: Icons?, page: Icons?, ground: Icons?) -> Icons {
         cover ?? page ?? fallback
     }
 }

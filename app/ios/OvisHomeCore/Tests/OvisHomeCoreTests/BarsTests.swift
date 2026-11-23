@@ -44,12 +44,54 @@ final class BarsTests: XCTestCase {
         XCTAssertEqual(Bars.icons(red: -0.2, green: -0.1, blue: 0), .light)
     }
 
+    func testAColourTooLongToBeOneIsUnreadable() {
+        // a text is read up to 64 bytes: a longer one is not looked into, and is no colour
+        XCTAssertEqual(Bars.icons(themeColor: "#ffffff" + String(repeating: " ", count: 57)), .dark)
+        XCTAssertEqual(Bars.icons(themeColor: "#ffffff" + String(repeating: " ", count: 58)), .light)
+        XCTAssertEqual(Bars.icons(themeColor: String(repeating: " ", count: 80) + "#ffffff"), .light)
+    }
+
+    func testWhatThePageSaysReplacesWhatItSaidBefore() {
+        XCTAssertEqual(Bars.page(nil, said: "#ffffff"), .dark)
+        XCTAssertEqual(Bars.page(.dark, said: "#1f1f1f"), .light)
+        XCTAssertEqual(Bars.page(.light, said: "#ffffff"), .dark)
+    }
+
+    func testAPageThatStopsNamingAReadableColourGetsTheAppsOwnIcons() {
+        // not the icons of the colour it named before: a white page that now names none, or one too long to be one
+        XCTAssertEqual(Bars.page(.dark, said: ""), .light)
+        XCTAssertEqual(Bars.page(.dark, said: "white"), .light)
+        XCTAssertEqual(Bars.page(.dark, said: String(repeating: "f", count: 65)), .light)
+        XCTAssertEqual(Bars.page(.dark, said: String(repeating: "#ffffff", count: 100_000)), .light)
+    }
+
+    func testANewDocumentHasSaidNothingYet() {
+        // what the document before it said is not its colour
+        XCTAssertNil(Bars.page(.dark, said: NSNull()))
+        XCTAssertNil(Bars.page(.light, said: NSNull()))
+        XCTAssertNil(Bars.page(nil, said: NSNull()))
+    }
+
+    func testAnythingElseIsNotThePagesWord() {
+        let bodies: [Any] = [5, true, ["#ffffff"], ["color": "#ffffff"], Date(timeIntervalSince1970: 0)]
+        for body in bodies {
+            XCTAssertEqual(Bars.page(.dark, said: body), .dark, "\(body)")
+            XCTAssertEqual(Bars.page(.light, said: body), .light, "\(body)")
+            XCTAssertNil(Bars.page(nil, said: body), "\(body)")
+        }
+    }
+
     func testWhatIsOnScreenDecides() {
-        // a cover over the page hides it, so the cover's colour counts; else what the page last said; else the app's own
-        XCTAssertEqual(Bars.icons(cover: .dark, page: .light), .dark)
-        XCTAssertEqual(Bars.icons(cover: .light, page: .dark), .light)
-        XCTAssertEqual(Bars.icons(cover: nil, page: .dark), .dark)
-        XCTAssertEqual(Bars.icons(cover: nil, page: .light), .light)
-        XCTAssertEqual(Bars.icons(cover: nil, page: nil), .light)
+        // a cover over the page hides it, so the cover's colour counts; else what the page said
+        XCTAssertEqual(Bars.icons(cover: .dark, page: .light, ground: .light), .dark)
+        XCTAssertEqual(Bars.icons(cover: .light, page: .dark, ground: .dark), .light)
+        XCTAssertEqual(Bars.icons(cover: nil, page: .dark, ground: .light), .dark)
+        XCTAssertEqual(Bars.icons(cover: nil, page: .light, ground: .dark), .light)
+        // a document that has not said yet shows the colour behind the web view
+        XCTAssertEqual(Bars.icons(cover: nil, page: nil, ground: .dark), .dark)
+        XCTAssertEqual(Bars.icons(cover: nil, page: nil, ground: .light), .light)
+        XCTAssertEqual(Bars.icons(cover: .light, page: nil, ground: .dark), .light)
+        // with nothing to go by, the app's own
+        XCTAssertEqual(Bars.icons(cover: nil, page: nil, ground: nil), .light)
     }
 }
