@@ -20,7 +20,7 @@ import { useOffline } from "../lib/useOffline.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { AccountSignIn } from "./AccountPcs.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
-import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, type ConnectWay, MyPcs, OfflineLine, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
+import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, type ConnectWay, MyPcs, OfflineLine, openOverText, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
@@ -400,7 +400,14 @@ export function RelayShell(props: RelayShellProps) {
       </main>
     );
   }
-  const content = <RelayShellCardContent props={props} />;
+  // a saved PC whose relay open failed or was refused: the way the phone app also saved it by (its own page told the
+  // app its relay ID), offered by name, one button; never for a key that is not the PC's, nor a pairing's sign-in
+  const otherSaved = state.kind === "failed" && state.pairing !== true && state.server_id !== undefined && state.failure !== "identity-changed" && state.failure !== "sign-in-first"
+    ? phone.pcs.find((saved) => saved.serverId === state.server_id) ?? null : null;
+  const otherWay = otherSaved && (
+    <button type="button" className="btn" data-action="open-other-way" onClick={() => { scan.setError(null); scan.take(new URL(otherSaved.origin), { askTailscale: otherSaved.way === "tailscale" }); }}>{openOverText(t, otherSaved)}</button>
+  );
+  const content = <RelayShellCardContent props={props} other={otherWay} />;
   const step = plain ? undefined : pairingStep(state);
   if (step !== undefined) {
     // before this phone's press the comparison can still go back; after it, the pairing waits on the PC and only its own small Cancel ends it
@@ -420,6 +427,7 @@ export function RelayShell(props: RelayShellProps) {
         {plain ? <SheepMascot screen="header" size={80} /> : <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="relay-shell-mark" />}
         {noneOnline}
         {content}
+        {otherSaved && <OpenState open={scan} />}
       </div>
     </main>
   );

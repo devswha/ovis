@@ -177,6 +177,6 @@ export const RELAY_ZH: Record<string, string> = {
   "Connect this device to the internet to open the PC.": "请将此设备连接到互联网后再打开电脑。",
   "Account PC": "账号的电脑",
   "SSH PC": "SSH 电脑",
-  "This is the PC in use now. Forget every way it is saved ({ways})?": "这是正在使用的电脑。要移除它保存的所有连接方式（{ways}）吗？",
-  "Forget every way this PC is saved ({ways})?": "要移除这台电脑保存的所有连接方式（{ways}）吗？",
+  "Open over {way}": "通过 {way} 打开",
+  "Open at its address": "通过地址打开",
 };

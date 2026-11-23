@@ -177,6 +177,6 @@ export const RELAY_JA: Record<string, string> = {
   "Connect this device to the internet to open the PC.": "PC を開くには、このデバイスをインターネットに接続してください。",
   "Account PC": "アカウントの PC",
   "SSH PC": "SSH の PC",
-  "This is the PC in use now. Forget every way it is saved ({ways})?": "いま使っているPCです。保存された接続方法（{ways}）をすべて削除しますか？",
-  "Forget every way this PC is saved ({ways})?": "このPCの保存された接続方法（{ways}）をすべて削除しますか？",
+  "Open over {way}": "{way} で開く",
+  "Open at its address": "アドレスで開く",
 };

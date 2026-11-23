@@ -35,9 +35,14 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func getState(_ call: CAPPluginCall) {
+        // on the main thread, as the web view's address and what the view controller shows are read there
+        DispatchQueue.main.async { self.answerState(call) }
+    }
+
+    private func answerState(_ call: CAPPluginCall) {
         // the relay ID each saved PC's own page said it has, for My PCs to list a PC saved by several ways once: only to
         // the app's own pages, never to a PC's page, which has this bridge too
-        let ids: [String: String] = Home.ownPage(bridge?.webView?.url, appOrigin: PCStore.appOrigin) ? PCStore.ids : [:]
+        let ids = Home.shownIds(bridge?.webView?.url, appOrigin: PCStore.appOrigin, ids: PCStore.ids) ?? [:]
         call.resolve([
             "ids": ids,
             "saved": PCStore.saved,
@@ -107,14 +112,18 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     /// (Home.identifiedKey), so a page speaks for its own PC alone, never for another saved one; My PCs then lists that
     /// PC once with the relay row of the same ID.
     @objc func identify(_ call: CAPPluginCall) {
-        guard let key = Home.identifiedKey(bridge?.webView?.url, current: PCStore.current, appOrigin: PCStore.appOrigin) else {
-            call.reject("Only a saved PC's own page says which PC it is.")
-            return
+        let serverId = call.getString("server_id"), name = call.getString("name")
+        // on the main thread, as open and keepHosted write the names there: no write between this read and this one
+        DispatchQueue.main.async {
+            guard let key = Home.identifiedKey(self.bridge?.webView?.url, current: PCStore.current, appOrigin: PCStore.appOrigin) else {
+                call.reject("Only a saved PC's own page says which PC it is.")
+                return
+            }
+            let kept = Home.identified(ids: PCStore.ids, names: PCStore.names, key: key, serverId: serverId, name: name)
+            PCStore.ids = kept.ids
+            PCStore.names = kept.names
+            call.resolve()
         }
-        let kept = Home.identified(ids: PCStore.ids, names: PCStore.names, key: key, serverId: call.getString("server_id"), name: call.getString("name"))
-        PCStore.ids = kept.ids
-        PCStore.names = kept.names
-        call.resolve()
     }
 
     @objc func forget(_ call: CAPPluginCall) {

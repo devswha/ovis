@@ -281,6 +281,18 @@
   text-align: start;
 }
 
+/* Forget PCs on a row of several ways: each way a line of its own under the row, its tag and address, with its own
+   Forget (or why not) in the column Forget takes */
+.my-pc > .my-pc-way {
+  display: flex;
+  grid-column: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  padding: 0 var(--space-4) var(--space-2);
+}
+
 /* Forget PCs: why a row has no Forget, in its place and as wide, in grey: an account PC, or an SSH PC */
 .my-pc > .my-pc-kept {
   grid-column: 2;

@@ -291,12 +291,19 @@ public enum Home {
         url?.scheme?.lowercased() == "capacitor" || sameOrigin(url, appOrigin)
     }
 
+    /// The saved PCs' relay IDs (`ids`) as getState gives them to the page loaded now at `url`: to the app's own pages
+    /// alone (ownPage), else nil.
+    public static func shownIds(_ url: URL?, appOrigin: URL?, ids: [String: String]) -> [String: String]? {
+        ownPage(url, appOrigin: appOrigin) ? ids : nil
+    }
+
     /// What the page of the saved PC `key` said of itself (identifiedKey), recorded in the app's maps: its relay ID in
-    /// `ids` (an unreadable one changes nothing), and its name in `names` only where none is kept (one the person or an
-    /// open gave stays), 64 characters at most.
+    /// `ids`, dropped when it says none ("": the address now reaches an Ovis with no relay ID; an unreadable one changes
+    /// nothing), and its name in `names` only where none is kept (one the person or an open gave stays), 64 characters
+    /// at most, counted as a person sees them (grapheme clusters, as Android's Home.capped counts them).
     public static func identified(ids: [String: String], names: [String: String], key: String, serverId: String?, name: String?) -> (ids: [String: String], names: [String: String]) {
         var ids = ids, names = names
-        if let id = relayId(serverId) { ids[key] = id }
+        if let id = relayId(serverId) { ids[key] = id } else if serverId == "" { ids[key] = nil }
         let shown = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !shown.isEmpty, (names[key] ?? "").isEmpty { names[key] = String(shown.prefix(64)) }
         return (ids, names)

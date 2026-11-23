@@ -274,17 +274,40 @@ final class Home {
         return bundled || (url != null && appOrigin != null && PCStore.sameOrigin(url, appOrigin));
     }
 
+    /** The saved PCs' relay IDs (`ids`) as getState gives them to the page loaded now at `url`: to the app's own pages alone (ownPage), else null. */
+    static org.json.JSONObject shownIds(String url, boolean bundled, String appOrigin, org.json.JSONObject ids) {
+        return ownPage(url, bundled, appOrigin) ? ids : null;
+    }
+
+    /**
+     * `text` cut to its first `most` characters as a person sees them (grapheme clusters, as Swift counts a String), so
+     * no emoji or accented letter is split, nor a surrogate pair: the same cap on both platforms.
+     */
+    static String capped(String text, int most) {
+        java.text.BreakIterator characters = java.text.BreakIterator.getCharacterInstance();
+        characters.setText(text);
+        int end = 0;
+        for (int count = 0; count < most; count++) {
+            int next = characters.next();
+            if (next == java.text.BreakIterator.DONE) return text;
+            end = next;
+        }
+        return end >= text.length() ? text : text.substring(0, end);
+    }
+
     /**
      * Records what the page of the saved PC `key` said of itself (identifiedKey) in the app's maps: its relay ID in
-     * `ids` (an unreadable one changes nothing), and its name in `names` only where none is kept (one the person or an
-     * open gave stays), 64 characters at most.
+     * `ids`, dropped when it says none ("": the address now reaches an Ovis with no relay ID; an unreadable one changes
+     * nothing), and its name in `names` only where none is kept (one the person or an open gave stays), 64 characters
+     * at most (capped).
      */
     static void identified(org.json.JSONObject ids, org.json.JSONObject names, String key, String serverId, String name) {
         try {
             String id = relayId(serverId);
             if (id != null) ids.put(key, id);
+            else if ("".equals(serverId)) ids.remove(key);
             String shown = name == null ? "" : name.trim();
-            if (!shown.isEmpty() && names.optString(key, "").isEmpty()) names.put(key, shown.length() > 64 ? shown.substring(0, 64) : shown);
+            if (!shown.isEmpty() && names.optString(key, "").isEmpty()) names.put(key, capped(shown, 64));
         } catch (org.json.JSONException notStored) {
             // a key JSON cannot hold: nothing is kept
         }

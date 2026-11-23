@@ -22,13 +22,21 @@ describe("telling the phone app which PC this page is", () => {
     expect(told).toEqual([["HerdrShell", "identify", { server_id: "a".repeat(32), name: "hasang-uui-MacBookPro" }], ["HerdrShell", "identify", { name: "nas" }]]);
   });
 
-  it("tells nothing with nothing to tell, to an app without identify, or outside the app", () => {
+  it("says a health read that names no relay ID as an empty one, so the app drops the one it kept", () => {
+    const told = app(["identify"]);
+    tellAppWhichPc({ serverId: "" });
+    expect(told).toEqual([["HerdrShell", "identify", { server_id: "" }]]);
+  });
+
+  it("tells nothing with nothing to tell, to an app without identify, or outside the app", async () => {
     const told = app(["identify"]);
     tellAppWhichPc({});
+    tellAppWhichPc({ name: " " });
     expect(told).toEqual([]);
-    expect(app(["getState"])).toEqual([]);
+    const older = app(["getState"]);
     tellAppWhichPc({ serverId: "a".repeat(32) });
+    expect(older).toEqual([]);
     Reflect.deleteProperty(globalThis, "Capacitor");
-    tellAppWhichPc({ serverId: "a".repeat(32) });
+    expect(() => tellAppWhichPc({ serverId: "a".repeat(32) })).not.toThrow();
   });
 });

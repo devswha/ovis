@@ -264,7 +264,7 @@ export function App() {
   // a PC this one only watches there (Machine.view_only) is drawn as a watching device draws every PC
   const viewOnly = (machineId: string): boolean => auth?.role === "watch" || machines.find((machine) => machine.id === machineId)?.view_only === true;
   const { health, localFreshness, shownHealth, readLocalHealth } = useLocalHealth();
-  useTellAppWhichPc(health?.web_ui?.server_id, machines.find((machine) => machine.id === LOCAL_MACHINE)?.name);
+  useTellAppWhichPc(health === null ? undefined : health.web_ui?.server_id ?? "", machines.find((machine) => machine.id === LOCAL_MACHINE)?.name);
   const exposure = health?.lan_exposure ?? health?.direct_exposure;
   const exposureDirect = !health?.lan_exposure || health.lan_exposure.direct === true;
   const noticeScope = serverIdOfPath(window.location.pathname) ?? "";

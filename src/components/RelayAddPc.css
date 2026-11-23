@@ -111,3 +111,13 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* an open that failed or was refused offers the same PC by another way it is saved by: one button, under what it says */
+.relay-add-other-way {
+  display: flex;
+  margin: 0 0 var(--space-4);
+}
+
+.relay-add-other-way > .btn {
+  min-height: var(--touch-target);
+}

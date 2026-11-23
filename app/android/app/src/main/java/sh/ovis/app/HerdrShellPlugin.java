@@ -40,7 +40,8 @@ public class HerdrShellPlugin extends Plugin {
         state.put("command", PCStore.failureCommand == null ? "" : PCStore.failureCommand);
         // the relay ID each saved PC's own page said it has, for My PCs to list a PC saved by several ways once: only to
         // the app's own pages, never to a PC's page, which has this bridge too
-        if (Home.ownPage(loadedUrl(), showingConnectScreen(), BuildConfig.APP_ORIGIN)) state.put("ids", PCStore.ids(getContext()));
+        org.json.JSONObject ids = Home.shownIds(loadedUrl(), showingConnectScreen(), BuildConfig.APP_ORIGIN, PCStore.ids(getContext()));
+        if (ids != null) state.put("ids", ids);
         call.resolve(state);
     }
 
@@ -143,7 +144,7 @@ public class HerdrShellPlugin extends Plugin {
                     call.reject("Cancelled", "cancelled");
                     return;
                 }
-                if (name != null && !name.isEmpty()) PCStore.setName(getContext(), key, name.length() > 64 ? name.substring(0, 64) : name);
+                if (name != null && !name.isEmpty()) PCStore.setName(getContext(), key, Home.capped(name, 64));
                 PCStore.open(getContext(), key, text);
                 PCStore.fail(null, null);
                 PCStore.redirects = 0;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
-import { onePcRows, openWay, pcsShown, phoneShellState, phoneSavedPcs, relayTabPcs } from "./ConnectStart.tsx";
+import { onePcRows, openOverText, openWay, otherWay, pcsShown, phoneShellState, phoneSavedPcs, relayTabPcs } from "./ConnectStart.tsx";
 
 const id = (letter: string) => letter.repeat(32);
 const accountPc = (letter: string, patch: Partial<MyPc> = {}) => ({ server_id: id(letter), name: `pc-${letter}`, state: "paired", paired: false, listed: true, linked: false, join: { relay: "wss://relay.ovis.sh" }, ...patch }) as unknown as MyPc;
@@ -104,17 +104,24 @@ describe("one PC, one row", () => {
     expect(groups.map((group) => [group.relay?.server_id ?? null, group.phones.map((pc) => pc.origin)])).toEqual([[id("a"), []], [null, [same.origin]], [null, [other.origin]]]);
   });
 
-  it("opens by the way whose page loaded in the app last, else by the relay", () => {
-    const app = "https://app.ovis.sh";
+  it("opens a row with a relay row by the relay, whatever loaded last: a saved address never decides it", () => {
+    const scope = `https://app.ovis.sh/s/${id("a")}/`;
     const group = { relay: relay("a", "mac"), phones: [tailscale] };
-    const scope = `${app}/s/${id("a")}/`;
-    expect(openWay(group, [tailscale.origin, scope], app)).toBe(tailscale);
-    expect(openWay(group, [scope, tailscale.origin], app)).toBeNull();
-    expect(openWay(group, [], app)).toBeNull();
-    // with no relay row, the saved way that loaded last, else the first
+    expect(openWay(group, [tailscale.origin, scope])).toBeNull();
+    expect(openWay(group, [scope, tailscale.origin])).toBeNull();
+    expect(openWay(group, [])).toBeNull();
+  });
+
+  it("opens a row of saved ways alone by the one that loaded last, else the first, and offers the next when that fails", () => {
     const ssh = saved("http://127.0.0.1:47317", "ssh", id("c")), lan = saved("http://192.168.0.5:7317", "address", id("c"));
-    expect(openWay({ phones: [ssh, lan] }, [lan.origin, ssh.origin], app)).toBe(lan);
-    expect(openWay({ phones: [ssh, lan] }, [], app)).toBe(ssh);
+    expect(openWay({ phones: [ssh, lan] }, [lan.origin, ssh.origin])).toBe(lan);
+    expect(openWay({ phones: [ssh, lan] }, [])).toBe(ssh);
+    expect(otherWay({ phones: [ssh, lan] }, lan)).toBe(ssh);
+    expect(otherWay({ phones: [ssh] }, ssh)).toBeNull();
+    // a row with a relay row: the relay failed, so the first saved way
+    expect(otherWay({ relay: relay("a", "mac"), phones: [tailscale] }, null)).toBe(tailscale);
+    const t = (key: string, values?: Record<string, string>) => key.replace(/\{(\w+)\}/g, (_, name: string) => values?.[name] ?? "");
+    expect([tailscale, ssh, lan].map((pc) => openOverText(t as never, pc))).toEqual(["Open over Tailscale", "Open over SSH", "Open at its address"]);
   });
 });
 

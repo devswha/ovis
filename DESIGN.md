@@ -5193,11 +5193,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Tailscale is off shows Open Tailscale instead of trying it; an SSH PC whose address another app on the phone
   took says so above the list; and while the app keeps a PC open as the person chooses another, My PCs marks it In use
   now and its Back goes back to it (backToCurrent), the app's own connect page's ‹ PC; the In use now row goes back too,
-  rather than load that PC again. One PC is one row: in the phone app a PC saved by several ways (the relay, its
+  rather than load that PC again. One PC is one row, as Tailscale's machine list draws one row per machine whatever
+  addresses reach it (the owner's own mockup otherwise): in the phone app a PC saved by several ways (the relay, its
   Tailscale address, SSH, another address) is listed once, with each way's tag (Relay · Tailscale), when the page of
-  each saved way told the app that PC's relay ID (never by name: a way with no ID stays a row of its own); its name and
-  word are the relay's, it opens by the way whose page loaded last in the app, else the relay, and its Forget asks once
-  before it forgets every way this screen can. A browser has only the relay's rows, so nothing there is put together.
+  each saved way told the app that PC's relay ID (never by name: a way with no ID stays a row of its own). That is for
+  the eye alone: a row with a relay way is the relay's row (its name, or Unnamed PC, its word, In use now only when the
+  relay PC is) and always opens by the relay, whose key is checked and whose connection moves to a direct Tailscale or
+  home network carrier by itself; an address way never names it, states it or opens it, and its address is not shown.
+  A row of saved ways alone opens by the one whose page loaded last in the app, and shows that one's address on the wide
+  screen. When a row's open fails or is refused and the PC has another saved way, the failure offers it by name, one
+  button (Open over Tailscale, Open over SSH, Open at its address): on My PCs, and on a relay PC's own failure card (not
+  for a key that is not the PC's). In Forget PCs a row of several lists its ways under it, one to a line, each with its
+  own Forget (the relay's on the PC in use asks once more) or Account PC or SSH PC; a row of one way stays as it was. A
+  browser has only the relay's rows, so nothing there is put together.
   With no network on the device (the browser's online state: only an explicit offline
   counts), My PCs says so in one line with Try again (this phone in the app, this device in a browser), in place of No
   PC is online and the account service's failure, as Slack and WhatsApp say it over a list they keep; it still lists

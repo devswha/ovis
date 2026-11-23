@@ -461,6 +461,24 @@ public class HomeTest {
         assertEquals("home-nas", names.getString(nas));
         assertEquals(null, Home.relayId("0123456789ABCDEF0123456789ABCDEF"));
         assertEquals(null, Home.relayId(null));
+        // its health read names no relay ID now: the one kept goes, so the address no longer joins that PC's row
+        Home.identified(ids, names, mac, "", null);
+        assertFalse(ids.has(mac));
+        assertEquals("hasang-uui-MacBookPro", names.getString(mac));
+    }
+
+    @Test
+    public void aNameIsCappedByWholeCharacters() {
+        StringBuilder long_ = new StringBuilder();
+        for (int i = 0; i < 70; i++) long_.append('a');
+        assertEquals(64, Home.capped(long_.toString(), 64).length());
+        assertEquals("short", Home.capped("short", 64));
+        // 63 letters, then an emoji outside the BMP (a surrogate pair) and one more: the pair stays whole
+        String pair = long_.substring(0, 63) + "\uD83D\uDCBB" + "b";
+        assertEquals(long_.substring(0, 63) + "\uD83D\uDCBB", Home.capped(pair, 64));
+        // an accented letter written as a letter and its combining mark is one character
+        String combining = long_.substring(0, 63) + "e\u0301" + "b";
+        assertEquals(long_.substring(0, 63) + "e\u0301", Home.capped(combining, 64));
     }
 
     @Test
@@ -470,6 +488,10 @@ public class HomeTest {
         assertTrue(Home.ownPage(APP + "/s/" + ID + "/#add", false, APP));
         assertFalse(Home.ownPage("https://macbookpro.tail1e211e.ts.net:17317/", false, APP));
         assertFalse(Home.ownPage(null, false, APP));
+        org.json.JSONObject ids = new org.json.JSONObject();
+        assertEquals(ids, Home.shownIds(APP + "/#pcs", false, APP, ids));
+        assertEquals(ids, Home.shownIds(null, true, APP, ids));
+        assertEquals(null, Home.shownIds("https://macbookpro.tail1e211e.ts.net:17317/", false, APP, ids));
     }
 
     @Test

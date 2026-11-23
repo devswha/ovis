@@ -479,6 +479,18 @@ final class HomeTests: XCTestCase {
         XCTAssertEqual(kept.names, [mac: "hasang-uui-MacBookPro", nas: "home-nas"])
         XCTAssertNil(Home.relayId("0123456789ABCDEF0123456789ABCDEF"))
         XCTAssertNil(Home.relayId(nil))
+        // its health read names no relay ID now: the one kept goes, so the address no longer joins that PC's row
+        kept = Home.identified(ids: kept.ids, names: kept.names, key: mac, serverId: "", name: nil)
+        XCTAssertEqual(kept.ids, [:])
+        XCTAssertEqual(kept.names[mac], "hasang-uui-MacBookPro")
+    }
+
+    func testANameIsCappedByWholeCharacters() {
+        let letters = String(repeating: "a", count: 63)
+        let pair = Home.identified(ids: [:], names: [:], key: "k", serverId: nil, name: letters + "\u{1F4BB}b")
+        XCTAssertEqual(pair.names["k"], letters + "\u{1F4BB}")
+        let combining = Home.identified(ids: [:], names: [:], key: "k", serverId: nil, name: letters + "e\u{0301}b")
+        XCTAssertEqual(combining.names["k"], letters + "e\u{0301}")
     }
 
     func testOnlyTheAppsOwnPagesAreToldTheSavedPcsIds() {
@@ -488,6 +500,8 @@ final class HomeTests: XCTestCase {
         XCTAssertTrue(Home.ownPage(URL(string: "https://app.ovis.sh/s/\(id)/#add"), appOrigin: app))
         XCTAssertFalse(Home.ownPage(URL(string: "https://macbookpro.tail1e211e.ts.net:17317/"), appOrigin: app))
         XCTAssertFalse(Home.ownPage(nil, appOrigin: app))
+        XCTAssertEqual(Home.shownIds(URL(string: "https://app.ovis.sh/#pcs"), appOrigin: app, ids: ["k": id]), ["k": id])
+        XCTAssertNil(Home.shownIds(URL(string: "https://macbookpro.tail1e211e.ts.net:17317/"), appOrigin: app, ids: ["k": id]))
     }
 
     func testTheAppsOwnPageNeverLeavesADarkScreenWithNothingOnIt() {

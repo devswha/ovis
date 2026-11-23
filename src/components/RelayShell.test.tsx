@@ -1710,36 +1710,123 @@ describe("the hosted front page", () => {
       expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay"]]);
     });
 
-    it("lists a PC saved by the relay and by its Tailscale address as one row, both ways tagged, opening by the way that loaded last, and forgets every way after one question", async () => {
+    const lines = () => renderer!.root.findAll((node) => node.props["data-way-line"] !== undefined && shown(node)).map((line) => {
+      const after = line.parent!.children.slice(line.parent!.children.indexOf(line) + 1).find((next) => typeof next !== "string" && (next.type === "button" || next.props["data-kept"] !== undefined || next.type === "span"));
+      const end = after === undefined || typeof after === "string" ? "" : after.type === "button" ? textOf(after) : textOf(after);
+      return [line.props["data-way-line"], textOf(line), end];
+    });
+    const tail = "https://macbookpro.tail1e211e.ts.net:17317", scope = `https://app.ovis.sh/s/${ids.mac}/`, desk = "https://desk.tail1e211e.ts.net", sshMac = "http://127.0.0.1:47317";
+
+    it("lists a PC saved by the relay and by its Tailscale address as one row, both ways tagged, always opened by the relay whatever loaded last", async () => {
       await withApp(async () => {
-        const tail = "https://macbookpro.tail1e211e.ts.net:17317", scope = `https://app.ovis.sh/s/${ids.mac}/`, desk = "https://desk.tail1e211e.ts.net";
-        let saved = [tail, scope, desk];
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
-          method === "getState" ? { saved, names: { [desk]: "hasang-uui-MacBookPro" }, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+          method === "getState" ? { saved: [tail, scope, desk], names: { [desk]: "hasang-uui-MacBookPro" }, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+        // the Mac once, by the relay's name, with no address (it opens by the relay); a PC saved with no ID stays its own
+        // row, whatever its name
+        expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscale"], ["tailscale", "hasang-uui-MacBookProTailscaledesk.tail1e211e.ts.net"]]);
+        // its Tailscale page loaded last in the app, and still the row is the relay's page
+        expect(openers()[0]!.type).toBe("a");
+        expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+      });
+    });
+
+    it("never lets an address that claims a relay PC's ID name it or give it a state", async () => {
+      await withApp(async () => {
+        app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "backToCurrent"] }], (method) =>
+          method === "getState" ? { saved: [tail], names: { [tail]: "not-the-mac" }, ids: { [tail]: ids.mac }, choosing: true, current: tail } : {});
+        const unnamed = { ...device(ids.mac, "x", AP), name: undefined } as unknown as ReturnType<typeof device>;
+        await mount({ ...props({ kind: "list", devices: [unnamed], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+        // the Tailscale page the app keeps open is that address's, not the relay PC's: no In use now on it, and no name
+        expect(rowTexts()).toEqual([["relay", "Unnamed PCRelay · Tailscale"]]);
+        expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+      });
+    });
+
+    it("lists the ways of a row of several one to a line in Forget PCs, each forgotten on its own, or why not", async () => {
+      await withApp(async () => {
+        // relay pairing + Tailscale address
+        let called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
+          method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
         const forgot: string[] = [];
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
-        // the Mac once, its Tailscale address on its row; a PC saved with no ID stays its own row, whatever its name
-        expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscalemacbookpro.tail1e211e.ts.net:17317"], ["tailscale", "hasang-uui-MacBookProTailscaledesk.tail1e211e.ts.net"]]);
-        // the address of a row of several ways is its own line, drawn only where it fits whole (a wide screen)
-        expect(renderer!.root.findAll((node) => node.type === "span" && typeof node.props.className === "string" && node.props.className.startsWith("my-pc-address")).map((node) => node.props.className)).toEqual(["my-pc-address my-pc-address-more", "my-pc-address"]);
-        // its Tailscale page loaded last in the app: the row opens it there
-        await act(async () => { openers()[0]!.props.onClick(); });
-        await act(async () => { await Promise.resolve(); });
-        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
+        await forgetPcs();
+        expect(lines()).toEqual([["relay", "Relay", "Forget"], ["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"]]);
+        expect(forgets().map((node) => node.props["aria-label"])).toEqual(["Forget hasang-uui-MacBookPro · Relay", "Forget hasang-uui-MacBookPro · Tailscale"]);
+        await act(async () => { forgets()[1]!.props.onClick(); });
+        expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
+        expect(forgot).toEqual([]);
+        await act(async () => { forgets()[0]!.props.onClick(); });
+        expect(forgot).toEqual([ids.mac]);
         await act(async () => { renderer!.unmount(); });
-        // its relay page loaded last: the row is that page
-        saved = [scope, tail, desk];
-        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
-        expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
 
+        // relay pairing + SSH: the SSH way goes from the app's own screen, with its keys
+        called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
+          method === "getState" ? { saved: [sshMac], names: {}, ids: { [sshMac]: ids.mac } } : {});
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+        await forgetPcs();
+        expect(lines()).toEqual([["relay", "Relay", "Forget"], ["ssh", "SSH127.0.0.1:47317", "SSH PC"]]);
+        await act(async () => { renderer!.unmount(); });
+
+        // an account PC + Tailscale address: the account's way says so, the address is forgotten on its own
+        called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
+          method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
+        const mac = pc(ids.mac, "hasang-uui-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: [mac] } }), scoped: false, onSignIn: none });
+        await forgetPcs();
+        expect(lines()).toEqual([["relay", "Relay", "Account PC"], ["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"]]);
+        await act(async () => { forgets()[0]!.props.onClick(); });
+        expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
+      });
+    });
+
+    it("asks once more before it forgets the relay way of the PC in use, and only that way", async () => {
+      await withApp(async () => {
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "backToCurrent"] }], (method) =>
+          method === "getState" ? { saved: [tail, scope], names: {}, ids: { [tail]: ids.mac }, choosing: true, current: scope } : {});
+        const forgot: string[] = [];
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         await forgetPcs();
         const ask = () => renderer!.root.findAll((node) => node.props["data-forget-ask"] !== undefined && shown(node));
         await act(async () => { forgets()[0]!.props.onClick(); });
-        expect(ask().map(textOf)).toEqual(["Forget every way this PC is saved (Relay · Tailscale)?ForgetCancel"]);
+        expect(ask().map(textOf)).toEqual(["This is the PC in use now. Forget it?ForgetCancel"]);
         expect(forgot).toEqual([]);
         await act(async () => { ask()[0]!.findAll((node) => node.type === "button").find((node) => textOf(node) === "Forget")!.props.onClick(); });
         expect(forgot).toEqual([ids.mac]);
-        expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
+        expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([]);
+      });
+    });
+
+    it("offers a row's other saved way by name when its open fails: a row of saved ways, and a relay PC's own page", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method, options) =>
+          method === "getState" ? { saved: [tail, lan], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } }
+            : method === "open" && options.url === `${tail}/` ? Promise.reject(Object.assign(new Error("unknown-host"), { code: "unknown-host" })) : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317"]]);
+        await act(async () => { openers()[0]!.props.onClick(); });
+        await act(async () => { await Promise.resolve(); });
+        const offer = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
+        expect(offer().map(textOf)).toEqual(["Open at its address"]);
+        await act(async () => { offer()[0]!.props.onClick(); });
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`, `HerdrShell.open ${lan}/`]);
+        await act(async () => { renderer!.unmount(); });
+
+        // the relay PC's own page, whose open over the relay failed: the Tailscale address the app saved it by
+        const again = app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) =>
+          method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
+        await act(async () => { await Promise.resolve(); });
+        expect(offer().map(textOf)).toEqual(["Open over Tailscale"]);
+        await act(async () => { offer()[0]!.props.onClick(); });
+        expect(again.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
+        await act(async () => { renderer!.unmount(); });
+        // a key that is not the PC's offers no other way
+        app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) => method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
+        await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
+        expect(offer()).toHaveLength(0);
       });
     });
 
