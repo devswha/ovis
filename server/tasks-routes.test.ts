@@ -3,10 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { HerdrPane } from "../shared/protocol.ts";
 import * as herdr from "./herdr/client.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { createServer } from "./index.ts";
-import { handleTasksRequest } from "./tasks-routes.ts";
+import { OmpSubagentStatus } from "./omp-subagents.ts";
+import { MIN, ompSession, records as r } from "./omp-subagents.fixture.ts";
+import { handleTasksRequest, type TaskTrackers } from "./tasks-routes.ts";
 
 describe("GET /api/pane/omo-tasks", () => {
   let server: ReturnType<typeof createServer>;
@@ -77,6 +80,73 @@ describe("handleTasksRequest with an OmO session", () => {
       expect(body.runs.map((run) => [run.id, run.name, run.status])).toEqual([["dag_1", "Bug-fix round", "running"]]);
       expect(Number.isFinite(Date.parse(body.server_time))).toBe(true);
       expect(await handleTasksRequest(new Request("http://localhost/api/pane/plan"), new URL("http://localhost/api/pane/plan"), "/api/pane/plan", { omo: { sessionOf: () => null }, claudeAgents, opencodeAgents })).toBeNull();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("handleTasksRequest with an omp pane", () => {
+  const address = "http://localhost/api/pane/omo-tasks?pane_id=w1:p1";
+  const ask = (trackers: TaskTrackers) => handleTasksRequest(new Request(address), new URL(address), "/api/pane/omo-tasks", trackers);
+  const claudeAgents: TaskTrackers["claudeAgents"] = { sessionOf: () => null, ensure: async () => undefined };
+  const opencodeAgents: TaskTrackers["opencodeAgents"] = { sessionOf: () => null, ensure: () => false, beginRead: () => 0, tasksOf: async () => null };
+  const body = async (response: Response | null) => await response!.json() as { tasks: { id: string; status: string; category: string | null }[]; runs: unknown[]; server_time: string };
+  const omp = { pane_id: "w1:p1", agent: "omp", cwd: "/w" };
+
+  it("answers the omp pane's subagents, the ones at work first, with the session the tracker finds for the request", async () => {
+    const s = ompSession();
+    const now = Date.now();
+    s.agent("Finished", now - 20 * MIN, [r.prompt(now - 20 * MIN), r.answered(now - 12 * MIN)]);
+    s.agent("Busy", now - 10 * MIN, [r.prompt(now - 10 * MIN), r.calls(now - 9 * MIN)], { type: "scout" });
+    const ompAgents = new OmpSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: () => {} });
+    const get = spyOn(herdr, "paneGet").mockResolvedValue(omp as never);
+    try {
+      const response = await ask({ omo: { sessionOf: () => null }, claudeAgents, opencodeAgents, ompAgents });
+      expect(response?.status).toBe(200);
+      const answer = await body(response);
+      expect(answer.tasks.map((task) => [task.id, task.status, task.category])).toEqual([["Busy", "running", "scout"], ["Finished", "completed", "task"]]);
+      expect(answer.runs).toEqual([]);
+      expect(Number.isFinite(Date.parse(answer.server_time))).toBe(true);
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it("answers an omp pane's subagents before the Claude Code or OpenCode session the pane ran earlier", async () => {
+    const s = ompSession();
+    const now = Date.now();
+    s.agent("Busy", now - 10 * MIN, [r.prompt(now - 10 * MIN)]);
+    const ompAgents = new OmpSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: () => {} });
+    await ompAgents.ensure(omp as unknown as HerdrPane, true);
+    const earlier: TaskTrackers["claudeAgents"] = { sessionOf: () => ({ path: "/earlier.jsonl", live: false, startedAt: null }), ensure: async () => undefined };
+    const answer = await body(await ask({ omo: { sessionOf: () => null }, claudeAgents: earlier, opencodeAgents, ompAgents }));
+    expect(answer.tasks.map((task) => [task.id, task.status])).toEqual([["Busy", "running"]]);
+  });
+
+  it("leaves a pane the omp tracker does not hold to the other trackers, and only asks it to look the pane up", async () => {
+    const asked: string[] = [];
+    const ompAgents: NonNullable<TaskTrackers["ompAgents"]> = { sessionOf: () => null, ensure: async (found, wanted) => { asked.push(`${found.agent}:${wanted}`); }, tasksOf: () => { throw new Error("not asked"); } };
+    const get = spyOn(herdr, "paneGet").mockResolvedValue({ pane_id: "w1:p1", agent: "claude" } as never);
+    try {
+      const answer = await body(await ask({ omo: { sessionOf: () => null }, claudeAgents, opencodeAgents, ompAgents }));
+      expect(answer.tasks).toEqual([]);
+      expect(answer.runs).toEqual([]);
+      expect(asked).toEqual(["claude:true"]);
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it("lists an OmO pane's tasks as before with the omp tracker wired", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ovis-tasks-omo-omp-"));
+    try {
+      const dir = join(cwd, ".omo", "senpi-task", "tasks");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "st_1.json"), JSON.stringify({ task_id: "st_1", parent_session_id: "session-1", host_pid: process.pid, status: "running", task_summary: "index the repo", started_at: new Date(Date.now() - 60_000).toISOString() }));
+      const ompAgents: NonNullable<TaskTrackers["ompAgents"]> = { sessionOf: () => null, ensure: async () => { throw new Error("not asked"); }, tasksOf: () => { throw new Error("not asked"); } };
+      const answer = await body(await ask({ omo: { sessionOf: () => ({ cwd, sessionId: "session-1" }) }, claudeAgents, opencodeAgents, ompAgents }));
+      expect(answer.tasks.map((task) => [task.id, task.status])).toEqual([["st_1", "running"]]);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

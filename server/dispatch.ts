@@ -215,7 +215,7 @@ const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|docs|image)$|workspa
 
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
   const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
-  const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage, askFirstMessage } = core;
+  const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, ompAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage, askFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
   if (options.profile === "machine") wordHerdrFailures(machineFailure, machineLayoutReason);
   const startup = portalStartupResult ?? await portalStartup;
@@ -1026,7 +1026,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const paneResponse = await handlePaneRequest(request, url, pathname, options);
   if (paneResponse) return paneResponse;
 
-  const tasksResponse = await handleTasksRequest(request, url, pathname, { omo, claudeAgents, opencodeAgents });
+  const tasksResponse = await handleTasksRequest(request, url, pathname, { omo, claudeAgents, opencodeAgents, ompAgents });
   if (tasksResponse) return tasksResponse;
 
   // a GET a watching device may make on purpose: a subagent's prose and tool-call arguments (which can carry file

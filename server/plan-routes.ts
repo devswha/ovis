@@ -1,6 +1,6 @@
 /**
  * GET /api/pane/plan: the plan the pane's agent keeps now (Claude Code's task list, Codex's
- * `update_plan` checklist, OmO's `todo` list), read through the trackers the server core owns. The
+ * `update_plan` checklist, the `todo` list of OmO and of omp), read through the trackers the server core owns. The
  * dispatcher in index.ts runs the access gate first.
  */
 import { coreAcp } from "./herdr-core/runtime.ts";

@@ -1,4 +1,4 @@
-/** One background task of an OmO session, one subagent of a Claude Code session, or one subagent or background command of an OpenCode session (GET /api/pane/omo-tasks), from OmO's task record, the subagent's files, or OpenCode's store. */
+/** One background task of an OmO session, one subagent of a Claude Code or omp session, or one subagent or background command of an OpenCode session (GET /api/pane/omo-tasks), from OmO's task record, the subagent's files, or OpenCode's store. */
 export interface OmoTask {
   id: string;
   /** the task's summary, else its description or name */
@@ -6,7 +6,7 @@ export interface OmoTask {
   /** the category or agent type it ran as */
   category: string | null;
   model: string | null;
-  /** `lost`: OmO's process that ran it is gone, or the pane no longer runs the Claude Code session that started it */
+  /** `lost`: OmO's process that ran it is gone, or the pane no longer runs the Claude Code session that started it, or the omp that ran it ended or was killed with it at work */
   status: "running" | "completed" | "failed" | "cancelled" | "lost";
   started_at: string | null;
   ended_at: string | null;
@@ -16,8 +16,8 @@ export interface OmoTask {
   /**
    * What GET /api/pane/background-agent can show of it while it runs: `claude-subagent` for a
    * Claude Code subagent (its own transcript), `opencode-subagent` for an OpenCode subagent (its
-   * child session in OpenCode's store), null for a source it reads nothing of (OmO's tasks, a
-   * background command). Absent from a bridge from before the route.
+   * child session in OpenCode's store), null for a source it reads nothing of (OmO's tasks, omp's
+   * subagents, a background command). Absent from a bridge from before the route.
    */
   detail_kind?: "claude-subagent" | "opencode-subagent" | null;
 }

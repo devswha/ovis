@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { at, claude, file, json } from "./session-plan.fixture.ts";
+import { appendFileSync, writeFileSync } from "node:fs";
+import { at, claude, file, json, omp } from "./session-plan.fixture.ts";
 import { planSummary, readPlan } from "./session-plan.ts";
 
 const steps = (path: string) => (readPlan("claude-transcript", path) ?? []).map((step) => `${step.id}:${step.status}:${step.blocked_by.join(",")}`);
@@ -92,5 +92,85 @@ describe("readPlan (Codex checklist)", () => {
     f.add({ timestamp: at(1), type: "response_item", payload: { type: "function_call", name: "update_plan", arguments: JSON.stringify({ plan: [{ step: "Only", status: "in_progress" }] }) } });
     f.add({ timestamp: at(2), type: "response_item", payload: { type: "function_call", name: "update_plan", arguments: "{plan: nope}" } });
     expect((readPlan("codex-transcript", f.path) ?? []).map((step) => step.label)).toEqual(["Only"]);
+  });
+});
+
+describe("readPlan (omp's todo list)", () => {
+  // the answers of omp's `todo` tool: what is left, then the whole list by phase
+  const FIRST = [
+    "Remaining items (3):",
+    "  - Frame it [in_progress] (Frame)",
+    "  - Write the spec [pending] (Spec & design)",
+    "  - Build it [pending] (Spec & design)",
+    "Overall: 0/3 done, 3 open.",
+    'Active phase 1/2 "Frame" (0/1).',
+    "  Frame:",
+    "    - [ ] Frame it (in progress)",
+    "  Spec & design:",
+    "    - [ ] Write the spec",
+    "    - [ ] Build it",
+  ].join("\n");
+  const SECOND = [
+    "Remaining items (2):",
+    "  - Write the spec [in_progress] (Spec & design)",
+    "  - Ship [pending] (Spec & design)",
+    "Overall: 1/4 done, 2 open.",
+    'Active phase 2/2 "Spec & design" (0/3).',
+    "  Frame:",
+    "    - [X] Frame it",
+    "  Spec & design:",
+    "    - [ ] Write the spec (in progress)",
+    "    - [ ] Build it (dropped)",
+    "    - [ ] Ship",
+  ].join("\n");
+  const labels = (path: string) => (readPlan("omp-transcript", path) ?? []).map((step) => `${step.label}:${step.status}`);
+
+  it("takes the last todo answer of the transcript as the plan, and keeps the times of the steps it still has", () => {
+    const s = omp();
+    s.todo(FIRST, 1);
+    expect(readPlan("omp-transcript", s.path)).toEqual([
+      { id: "1", label: "Frame it", active: null, status: "in_progress", blocked_by: [], owner: null, started_at: at(1), ended_at: null },
+      { id: "2", label: "Write the spec", active: null, status: "pending", blocked_by: [], owner: null, started_at: null, ended_at: null },
+      { id: "3", label: "Build it", active: null, status: "pending", blocked_by: [], owner: null, started_at: null, ended_at: null },
+    ]);
+    s.todo(SECOND, 3);
+    expect(readPlan("omp-transcript", s.path)).toEqual([
+      { id: "1", label: "Frame it", active: null, status: "completed", blocked_by: [], owner: null, started_at: at(1), ended_at: at(3) },
+      { id: "2", label: "Write the spec", active: null, status: "in_progress", blocked_by: [], owner: null, started_at: at(3), ended_at: null },
+      { id: "3", label: "Ship", active: null, status: "pending", blocked_by: [], owner: null, started_at: null, ended_at: null },
+    ]);
+    expect(planSummary(readPlan("omp-transcript", s.path))).toEqual({ done: 1, total: 3, current: "Write the spec" });
+  });
+
+  it("has no plan until the first todo answer, and none once an answer says the list is empty", () => {
+    const s = omp();
+    expect(readPlan("omp-transcript", s.path)).toBeNull();
+    s.todo(FIRST, 1);
+    expect(labels(s.path)).toEqual(["Frame it:in_progress", "Write the spec:pending", "Build it:pending"]);
+    s.todo("Todo list is empty.", 2);
+    expect(readPlan("omp-transcript", s.path)).toBeNull();
+    s.todo(SECOND, 3);
+    expect(labels(s.path)).toEqual(["Frame it:completed", "Write the spec:in_progress", "Ship:pending"]);
+  });
+
+  it("takes nothing from the mark of a call, a failed answer, another tool's answer or an assistant message that mentions a todo", () => {
+    const s = omp();
+    s.todo(FIRST, 1);
+    s.todo(SECOND, 2, { isError: true });
+    s.add({ type: "message", timestamp: at(3), message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: SECOND }] } });
+    s.add({ type: "message", timestamp: at(3), message: { role: "assistant", content: [{ type: "toolCall", id: "toolu_x", name: "todo", arguments: { op: "done" } }, { type: "text", text: SECOND }] } });
+    s.add({ type: "custom", customType: "tool_execution_start", data: { toolName: "todo", args: { op: "done" } }, timestamp: at(3) });
+    expect(labels(s.path)).toEqual(["Frame it:in_progress", "Write the spec:pending", "Build it:pending"]);
+  });
+
+  it("reads an answer cut before its end as no answer, and one that is written in pieces once it is whole", () => {
+    const s = omp();
+    s.todo(FIRST, 1);
+    s.todo(SECOND.split("\n").slice(0, 8).join("\n"), 2);
+    expect(labels(s.path)).toEqual(["Frame it:in_progress", "Write the spec:pending", "Build it:pending"]);
+    appendFileSync(s.path, '{"type":"message","timestamp":"2026-10-07T00:09:00.000Z","message":{"role":"toolResult","toolName":"todo","content":[{"type":"text","text":"Todo list');
+    expect(labels(s.path)).toEqual(["Frame it:in_progress", "Write the spec:pending", "Build it:pending"]);
+    appendFileSync(s.path, ' is empty."}]}}\n');
+    expect(readPlan("omp-transcript", s.path)).toBeNull();
   });
 });

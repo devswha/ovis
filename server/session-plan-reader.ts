@@ -14,7 +14,9 @@ import { claudeCommandEchoRecord, opensTurn } from "./transcript-turns.ts";
  *
  * Codex: each explicit `update_plan` call sends the whole checklist, so the last one is the plan.
  * Code inside an `exec` call may quote a plan without calling the tool, and is ignored.
- * OmO: the last complete `todo` tool answer replaces the plan; an empty list clears it.
+ * OmO and omp: the last complete `todo` tool answer replaces the plan; an empty list clears it. Both write
+ * it as one record, `{"type":"message","message":{"role":"toolResult","toolName":"todo","content":[{"type":"text",...}]}}`
+ * (omp's own `{"type":"custom","customType":"tool_execution_start"}` mark of the call is no answer).
  *
  * A Claude rewind leaves the answers it went back over in the file, and the next prompt hangs from
  * the record it went back to (followClaudeBranch, which the chat follows).
@@ -24,7 +26,7 @@ const LINE_BUDGET = 8 * 1024 * 1024;
 const MAX_STEPS = 200;
 const MAX_FILES = 256;
 
-export type PlanSource = "claude-transcript" | "codex-transcript" | "omo-session";
+export type PlanSource = "claude-transcript" | "codex-transcript" | "omo-session" | "omp-transcript";
 
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Row : null;
@@ -80,7 +82,7 @@ export function planState(source: PlanSource, path: string, budget: { left: numb
   }
   remember(reads, key, state, MAX_FILES);
   const read = state;
-  const readers = { "claude-transcript": claudeLine, "codex-transcript": codexLine, "omo-session": omoLine } satisfies Record<PlanSource, (read: Read, line: string) => void>;
+  const readers = { "claude-transcript": claudeLine, "codex-transcript": codexLine, "omo-session": todoLine, "omp-transcript": todoLine } satisfies Record<PlanSource, (read: Read, line: string) => void>;
   const each = (line: string) => { readers[source](read, line); contextLine(read, source, line); };
   read.behind = read.offset < stat.size;
   while (read.offset < stat.size && budget.left > 0) {
@@ -156,6 +158,8 @@ const CONTEXT_MARKS: Record<PlanSource, readonly string[]> = {
   "codex-transcript": ['"token_count"', '"turn_context"', '"session_meta"'],
   // OmO's figure has no window: the ring would draw nothing
   "omo-session": [],
+  // omp's chat reads its own figure (conversation-metadata.ts); no ring is told for the pane from here
+  "omp-transcript": [],
 };
 
 function contextLine(read: Read, source: PlanSource, line: string): void {
@@ -274,11 +278,11 @@ function codexLine(read: Read, line: string): void {
   }
 }
 
-const OMO_STATUSES = {
+const TODO_STATUSES = {
   pending: "pending", in_progress: "in_progress", completed: "completed", blocked: "pending", dropped: null,
 } as const satisfies Record<TodoStatus, PlanStep["status"] | null>;
 
-function omoLine(read: Read, line: string): void {
+function todoLine(read: Read, line: string): void {
   if (!line.includes('"todo"')) return;
   let entry: Row | null;
   try { entry = row(JSON.parse(line)); } catch (error) {
@@ -299,7 +303,7 @@ function omoLine(read: Read, line: string): void {
   const at = stamp(entry["timestamp"]);
   read.steps.clear();
   for (const item of items) {
-    const status = OMO_STATUSES[item.status];
+    const status = TODO_STATUSES[item.status];
     if (status === null) continue;
     if (read.steps.size >= MAX_STEPS) break;
     const known = before.get(item.label);

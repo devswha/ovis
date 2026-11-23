@@ -1738,8 +1738,10 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
  * process, and on Windows, which shows no process's environment, is herdr's path held to the
  * user's own default and profile stores instead.
  * `identity`: the authorized file's exact dev:ino (authorizedTranscript), so later reads can be held to it.
+ * `onProcesses`: told the pane's omp processes the route found (none where herdr shows none, and on Windows), as
+ * claudeTranscriptPath tells its process, so a caller that needs them asks herdr nothing more.
  */
-export async function ompTranscriptPath(paneId: string, cwd: string, known?: KnownProcesses): Promise<{ path: string; blobs: string | null; identity?: string }> {
+export async function ompTranscriptPath(paneId: string, cwd: string, known?: KnownProcesses, onProcesses?: (pids: readonly number[]) => void): Promise<{ path: string; blobs: string | null; identity?: string }> {
   const info = await herdrRpc<{ agent: { agent_session?: { kind?: unknown; value?: unknown } } }>("agent.get", { target: paneId });
   const session = info.agent.agent_session;
   const path = session?.kind === "path" && typeof session.value === "string" ? session.value : null;
@@ -1747,6 +1749,7 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
   let route = process.platform === "win32" ? null : await ompPaneRoute(paneId, known);
   if (route === null && known != null && process.platform !== "win32") route = await ompPaneRoute(paneId);
   if (route === "unproved") throw new ConversationUnavailable("no_session_path");
+  if (route !== null) onProcesses?.(route.pids);
   const store = route === null ? ompSessionStore(path, home) : path === null ? null : ompRouteStore(route, path);
   if (path !== null && store !== null) {
     // omp names its session file at start and writes it with the first answer
@@ -1761,6 +1764,26 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
   if (held === null) throw new ConversationUnavailable("no_session_path");
   const authorized = authorizedTranscript(held, route!.layout.sessions);
   return authorized === null ? { path: held, blobs: null } : { ...ompAuthorizedTranscript(authorized), identity: authorized.identity };
+}
+
+/**
+ * The omp session a pane runs, for the trackers that read what its transcript holds next to the chat (its plan, its subagents):
+ * the transcript the chat reads (ompTranscriptPath; null where it finds none, as the chat then shows none), and when the omp
+ * that keeps it started, the oldest of the pane's omp processes (null where none is shown, or the platform tells no start).
+ * What an omp began it ends with: an agent last heard of before this start was left by one that is gone.
+ */
+export async function ompPaneSession(pane: HerdrPane): Promise<{ path: string; startedAt: number | null } | null> {
+  const cwd = pane.foreground_cwd || pane.cwd;
+  if (!cwd) return null;
+  let pids: readonly number[] = [];
+  try {
+    const { path } = await ompTranscriptPath(pane.pane_id, cwd, undefined, (found) => { pids = found; });
+    const starts = (await Promise.all(pids.map((pid) => processStartedAtAsync(pid)))).filter((start): start is number => start !== null);
+    return { path, startedAt: starts.length === 0 ? null : Math.min(...starts) };
+  } catch (error) {
+    if (error instanceof ConversationUnavailable) return null;
+    throw error;
+  }
 }
 
 async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[], previousClaims?: ReadonlySet<string>, peerInfo?: Map<string, Awaited<ReturnType<typeof paneProcessInfo>> | null>): Promise<{ path: string; binding: string; peerClaims: ReadonlySet<string> }> {

@@ -4,7 +4,7 @@ import type { HerdrPane, PaneContext, PlanSummary } from "../shared/protocol.ts"
 import { transcriptPage } from "./conversation.ts";
 import { paneAfterStatus } from "./machines.ts";
 import { readPlan, SessionPlans } from "./session-plan.ts";
-import { at, claude, file } from "./session-plan.fixture.ts";
+import { at, claude, file, omp } from "./session-plan.fixture.ts";
 
 const steps = (path: string) => (readPlan("claude-transcript", path) ?? []).map((step) => `${step.id}:${step.status}:${step.blocked_by.join(",")}`);
 
@@ -473,6 +473,111 @@ describe("SessionPlans", () => {
     plans.poll();
     expect(changes).toEqual([{ done: 0, total: 2, current: null }]);
     expect(plans.planOf(pane("p1", "claude"))?.map((step) => step.label)).toEqual(["Far", "Near"]);
+  });
+
+  const OMP_FIRST = 'Remaining items (2):\n  - Read [in_progress] (Build)\n  - Fix [pending] (Build)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 "Build" (0/2).\n  Build:\n    - [ ] Read (in progress)\n    - [ ] Fix';
+  const OMP_SECOND = 'Remaining items (1):\n  - Fix [in_progress] (Build)\nOverall: 1/2 done, 1 open.\nActive phase 1/1 "Build" (1/2).\n  Build:\n    - [X] Read\n    - [ ] Fix (in progress)';
+
+  it("reads an omp pane's plan from the todo answers of its transcript, which a later answer replaces and an empty one clears", async () => {
+    const o = omp();
+    o.todo(OMP_FIRST, 1);
+    const changes: (PlanSummary | null)[] = [];
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => null, ompPath: async () => o.path, onChange: (_id, summary) => changes.push(summary) });
+    await plans.refresh([pane("p1", "omp")]);
+    expect(changes).toEqual([]);
+    plans.poll();
+    expect(changes).toEqual([{ done: 0, total: 2, current: "Read" }]);
+    expect(plans.planOf(pane("p1", "omp"))?.map((step) => step.label)).toEqual(["Read", "Fix"]);
+    o.todo(OMP_SECOND, 2);
+    plans.poll();
+    expect(plans.summaryOf("p1")).toEqual({ done: 1, total: 2, current: "Fix" });
+    expect(plans.planOf(pane("p1", "omp"))).toMatchObject([
+      { label: "Read", status: "completed", started_at: at(1), ended_at: at(2) },
+      { label: "Fix", status: "in_progress", started_at: at(2), ended_at: null },
+    ]);
+    o.todo("Todo list is empty.", 3);
+    plans.poll();
+    expect(plans.summaryOf("p1")).toBeNull();
+    expect(plans.planOf(pane("p1", "omp"))).toBeNull();
+    expect(changes).toEqual([{ done: 0, total: 2, current: "Read" }, { done: 1, total: 2, current: "Fix" }, null]);
+  });
+
+  it("looks an omp pane's transcript up again as time passes and as its session changes, and keeps the one it found when a look fails for a moment", async () => {
+    const o = omp();
+    o.todo(OMP_FIRST, 1);
+    let clock = 0;
+    let found: string | null = o.path;
+    const looked: string[] = [];
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => null, ompPath: async (p) => { looked.push(p.agent_session?.value ?? ""); return found; }, onChange: () => {}, now: () => clock });
+    await plans.refresh([pane("p1", "omp", "t1")]);
+    plans.poll();
+    expect(plans.summaryOf("p1")).toEqual({ done: 0, total: 2, current: "Read" });
+    clock = 20_000;
+    await plans.refresh([pane("p1", "omp", "t1")]);
+    expect(looked).toEqual(["t1"]);
+    clock = 31_000;
+    found = null;
+    await plans.refresh([pane("p1", "omp", "t1")]);
+    plans.poll();
+    expect(looked).toEqual(["t1", "t1"]);
+    expect(plans.known(pane("p1", "omp", "t1"))).toBe(true);
+    expect(plans.summaryOf("p1")).toEqual({ done: 0, total: 2, current: "Read" });
+    // another session of the pane is no session the old one stands for
+    await plans.refresh([pane("p1", "omp", "t2")]);
+    plans.poll();
+    expect(looked).toEqual(["t1", "t1", "t2"]);
+    expect(plans.known(pane("p1", "omp", "t2"))).toBe(false);
+    expect(plans.summaryOf("p1")).toBeNull();
+  });
+
+  it("asks again for an omp transcript none was found for after retryMs, and tells no plan meanwhile", async () => {
+    let clock = 0;
+    let looks = 0;
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => null, ompPath: async () => { looks++; return null; }, onChange: () => {}, now: () => clock });
+    await plans.refresh([pane("p1", "omp")]);
+    plans.poll();
+    expect(looks).toBe(1);
+    expect(plans.summaryOf("p1")).toBeNull();
+    clock = 14_000;
+    await plans.refresh([pane("p1", "omp")]);
+    expect(looks).toBe(1);
+    clock = 16_000;
+    await plans.refresh([pane("p1", "omp")]);
+    expect(looks).toBe(2);
+  });
+
+  it("keeps no omp plan for a caller that finds no omp transcripts, and clears the plan of a pane that runs something else", async () => {
+    const bare = new SessionPlans({ claudePath: () => null, codexPath: async () => null, onChange: () => {} });
+    await bare.refresh([pane("p1", "omp")]);
+    bare.poll();
+    expect(bare.known(pane("p1", "omp"))).toBe(false);
+    expect(bare.summaryOf("p1")).toBeNull();
+    const o = omp();
+    o.todo(OMP_FIRST, 1);
+    const changes: (PlanSummary | null)[] = [];
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => null, ompPath: async () => o.path, onChange: (_id, summary) => changes.push(summary) });
+    await plans.refresh([pane("p1", "omp")]);
+    plans.poll();
+    expect(plans.summaryOf("p1")).toEqual({ done: 0, total: 2, current: "Read" });
+    await plans.refresh([pane("p1", "shell")]);
+    expect(changes.at(-1)).toBeNull();
+    expect(plans.summaryOf("p1")).toBeNull();
+  });
+
+  it("clears a Codex pane's plan when the look for its rollout fails, as it always did: only omp's session is kept", async () => {
+    const f = file("rollout.jsonl");
+    f.add({ timestamp: at(1), type: "response_item", payload: { type: "function_call", name: "update_plan", call_id: "c1", arguments: JSON.stringify({ plan: [{ step: "Go", status: "completed" }] }) } });
+    let clock = 0;
+    let found: string | null = f.path;
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => found, onChange: () => {}, now: () => clock });
+    await plans.refresh([pane("p2", "codex", "t1")]);
+    plans.poll();
+    expect(plans.summaryOf("p2")).toEqual({ done: 1, total: 1, current: null });
+    clock = 31_000;
+    found = null;
+    await plans.refresh([pane("p2", "codex", "t1")]);
+    plans.poll();
+    expect(plans.summaryOf("p2")).toBeNull();
   });
 });
 

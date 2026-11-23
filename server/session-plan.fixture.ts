@@ -46,3 +46,22 @@ export function claude() {
     },
   };
 }
+
+/**
+ * An omp transcript as omp 19.1 writes it: a padded `title` record and the `session` header, then for each call of its `todo` tool
+ * a `tool_execution_start` mark of the call and the answer, the record that carries the list.
+ */
+export function omp() {
+  const f = file("omp.jsonl");
+  writeFileSync(f.path, json({ type: "title", v: 1, title: "", updatedAt: at(0), pad: " ".repeat(64) }) + json({ type: "session", version: 3, id: "01a207c9", timestamp: at(0), cwd: "/w" }));
+  let call = 0;
+  return {
+    path: f.path,
+    add: f.add,
+    todo(answer: string, minute = 1, extra: Record<string, unknown> = {}): void {
+      const id = `toolu_${++call}`;
+      f.add({ type: "custom", customType: "tool_execution_start", data: { toolCallId: id, toolName: "todo", startedAt: at(minute), intent: "Planning" }, id: `m${call}`, parentId: null, timestamp: at(minute) });
+      f.add({ type: "message", id: `a${call}`, parentId: `m${call}`, timestamp: at(minute), runtime: { version: "19.1.0" }, message: { role: "toolResult", toolCallId: id, toolName: "todo", content: [{ type: "text", text: answer }], ...extra } });
+    },
+  };
+}

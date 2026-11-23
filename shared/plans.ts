@@ -8,7 +8,7 @@ export function planSummary(steps: readonly PlanStep[] | null): PlanSummary | nu
 
 /**
  * One step of the plan an agent keeps for its session (GET /api/pane/plan): a task of Claude
- * Code's task list (`TaskCreate`/`TaskUpdate`), Codex's `update_plan` checklist, or OmO's `todo` list.
+ * Code's task list (`TaskCreate`/`TaskUpdate`), Codex's `update_plan` checklist, or the `todo` list of OmO or omp.
  */
 export interface PlanStep {
   id: string;

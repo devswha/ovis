@@ -23,7 +23,7 @@ import { listHcMachines, startMachineBridge } from "../herdr-core/machine-bridge
 import { coreConnection } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { Finishes, herdrLifetime } from "../finishes.ts";
-import { claudePanePid, claudePaneSession, forgetPaneTranscriptState, paneTranscript, stoppedAgentJob } from "../conversation.ts";
+import { claudePanePid, claudePaneSession, forgetPaneTranscriptState, ompPaneSession, paneTranscript, stoppedAgentJob } from "../conversation.ts";
 import { openCodeNativeState, openCodePanePid, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import { opencodeDatabasePath } from "../opencode.ts";
 import { OpencodeSubagentStatus } from "../opencode-subagents.ts";
@@ -40,6 +40,7 @@ import { launchedAgents } from "../launched-agents.ts";
 import { bridgeAgentNews, MachineManager } from "../machines.ts";
 import { omoPanes } from "../omo.ts";
 import { OMO_ALIASES, OmoStatus } from "../omo-status.ts";
+import { OmpSubagentStatus } from "../omp-subagents.ts";
 import type { OrderSequence } from "../order-sequence.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import type { PreferenceStore } from "../preferences.ts";
@@ -321,6 +322,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (isTaskAgent(agentNow.get(paneId)) && !omo.runs(paneId)) claudeAgentsChanged(paneId, count.running, count.turnRunning, count.promptAt, false, null, false, count.capped);
     },
   });
+  const ompAgents = new OmpSubagentStatus({
+    resolve: ompPaneSession,
+    // only the count is told: omp reports the pane's own status, and no turn of it waits on its subagents
+    onChange: (paneId, running) => {
+      if (agentNow.get(paneId) !== "omp") return;
+      const status = completions.current(paneId);
+      if (status !== undefined) broadcastAll(paneStatus(paneId, status, { background_tasks: running }));
+    },
+  });
   function owns(paneId: string, tracker: "claude" | "opencode"): boolean {
     if (omo.runs(paneId)) return false;
     const agent = agentNow.get(paneId);
@@ -332,6 +342,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     claudePath: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null,
     omoPath: (paneId) => omo.pathOf(paneId),
     codexPath: async (pane) => codexOpenRollout(pane.pane_id, pane.cwd, await paneCodexHome(pane.pane_id, options.codexHome)),
+    ompPath: async (pane) => (await ompPaneSession(pane))?.path ?? null,
     onChange: (paneId, summary) => planChanged(paneId, summary),
     onContext: (paneId, context) => contextChanged(paneId, context),
     claudeWindow: (path, model) => readStatuslineContext(userHome(), basename(path, ".jsonl"), model, path),
@@ -492,6 +503,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     void claudeAgents.refresh(named.panes).catch(() => undefined).then(() => plans.refresh(named.panes)).catch(() => undefined);
     void opencodeAgents.refresh(named.panes, read);
     void taskAgents.refresh(named.panes).catch(() => undefined);
+    void ompAgents.refresh(named.panes).catch(() => undefined);
     for (const pane of named.panes) {
       pane.agent_status = launchedAgents.settle(pane.pane_id, pane.agent_status);
       if (pane.agent === "claude" && agentNow.get(pane.pane_id) === "claude") claudeAgents.poll(pane.pane_id);
@@ -500,7 +512,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     options.openCodeState?.reconcile(named.panes, promptCheckpoint);
     return named;
   };
-  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId);
+  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId) || ompAgents.countOf(paneId);
   /**
    * The snapshot a send is checked against, each status as its agent reported it. A card's wait is not in it: the send
    * reads the screen itself (server/core/pending.ts), and a wait outlives its card by a read or more.
@@ -928,6 +940,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     pending.forget(paneId);
     waits.forget(paneId);
     taskAgents.forget(paneId);
+    ompAgents.forget(paneId);
     completions.forget(paneId);
     heard.delete(paneId);
     restedOnTranscript.delete(paneId);
@@ -1065,6 +1078,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   claudeAgents.start();
   opencodeAgents.start();
   taskAgents.start();
+  ompAgents.start();
   const waitTimer = setInterval(() => { waitsRanOut(); hookTurnWentOn(); }, 1000);
   waitTimer.unref?.();
   /** the panes a page in use shows: its terminal attached (the chat lens's too), or its chat or prompt followed without one */
@@ -1097,7 +1111,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
+  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); ompAgents.stop(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up
@@ -1116,5 +1130,5 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     return identity === null || identity !== liveHerdr ? undefined : herdrLifetime(identity);
   };
-  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn };
+  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, ompAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn };
 }

@@ -3,10 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SessionSnapshot } from "../shared/protocol.ts";
+import type { PanePlan } from "../shared/plans.ts";
+import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import * as herdr from "./herdr/client.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { createServer } from "./index.ts";
+import { handlePlanRequest } from "./plan-routes.ts";
+import { SessionPlans } from "./session-plan.ts";
+import { omp } from "./session-plan.fixture.ts";
 
 describe("GET /api/pane/plan", () => {
   let server: ReturnType<typeof createServer>;
@@ -57,6 +61,55 @@ describe("GET /api/pane/plan", () => {
     } finally {
       answer();
       snap.mockRestore();
+    }
+  });
+});
+
+describe("handlePlanRequest for an omp pane", () => {
+  const address = "http://localhost/api/pane/plan?pane_id=w1:p1";
+  const answer = 'Remaining items (2):\n  - Read [in_progress] (Build)\n  - Fix [pending] (Build)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 "Build" (0/2).\n  Build:\n    - [ ] Read (in progress)\n    - [ ] Fix';
+  const pane = { pane_id: "w1:p1", agent: "omp", cwd: "/w", agent_session: { kind: "path", value: "/s.jsonl" } } as unknown as HerdrPane;
+  const ensured: string[] = [];
+  const ask = async (plans: SessionPlans): Promise<PanePlan> => {
+    const response = await handlePlanRequest(new Request(address), new URL(address), "/api/pane/plan", {
+      omo: { apply: <T>(read: T): T => read },
+      claudeAgents: { ensure: async (found) => { ensured.push(found.pane_id); } },
+      plans,
+    });
+    expect(response?.status).toBe(200);
+    return await response!.json() as PanePlan;
+  };
+
+  it("finds the transcript of a pane the last snapshot had not shown, and answers the plan as the poll last read it", async () => {
+    const o = omp();
+    o.todo(answer, 1);
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => null, ompPath: async () => o.path, onChange: () => {} });
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as never);
+    try {
+      // nothing is read for a request: it only looks the transcript up
+      expect((await ask(plans)).plan).toBeNull();
+      expect(plans.known(pane)).toBe(true);
+      plans.poll();
+      const read = await ask(plans);
+      expect(read.plan?.steps.map((step) => [step.label, step.status])).toEqual([["Read", "in_progress"], ["Fix", "pending"]]);
+      expect(Number.isFinite(Date.parse(read.server_time))).toBe(true);
+      // the Claude tracker is asked about a Claude pane only
+      expect(ensured).toEqual([]);
+    } finally {
+      snapshot.mockRestore();
+    }
+  });
+
+  it("answers no plan for a pane no transcript was found for, or one herdr does not list", async () => {
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => null, ompPath: async () => null, onChange: () => {} });
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane] } as never);
+    try {
+      expect((await ask(plans)).plan).toBeNull();
+      expect(plans.known(pane)).toBe(false);
+      snapshot.mockResolvedValue({ panes: [] } as never);
+      expect((await ask(plans)).plan).toBeNull();
+    } finally {
+      snapshot.mockRestore();
     }
   });
 });
