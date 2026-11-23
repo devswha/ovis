@@ -6,9 +6,23 @@
  * is open (it opens by a click on the header as well as by its key after the prefix).
  */
 import type { HerdrAction } from "../../shared/herdr-keys.ts";
+import { neighbour, type PaneDirection } from "../../server/herdr-core/layout-doc.ts";
 import { CATALOGUE } from "./catalogue.ts";
 import type { KeyInput, OverlayChoice } from "./effects.ts";
-import { type Focus, focused, type World } from "./focus.ts";
+import { type Focus, focused, type PaneNode, type TabNode, type World } from "./focus.ts";
+
+/** The actual directional target, shared by menu identity and the effect applied after selection. */
+export function directionalNeighbour(tab: TabNode | null, pane: PaneNode | null, action: HerdrAction): string | null | undefined {
+  let direction: PaneDirection;
+  switch (action) {
+    case "focus_pane_left": case "swap_pane_left": direction = "left"; break;
+    case "focus_pane_right": case "swap_pane_right": direction = "right"; break;
+    case "focus_pane_up": case "swap_pane_up": direction = "up"; break;
+    case "focus_pane_down": case "swap_pane_down": direction = "down"; break;
+    default: return undefined;
+  }
+  return tab?.root && pane ? neighbour(tab.root, pane.id, direction) : undefined;
+}
 
 type PlaceKind = "workspace" | "tab" | "pane" | "agent";
 
@@ -63,9 +77,12 @@ export function menuEntries(world: World, focus: Focus, epoch: number): MenuEntr
       case "previous_agent": case "next_agent": case "focus_agent": case "open_notification_target":
         return JSON.stringify([here, world.agents?.map(paneId)]);
       case "cycle_pane_previous": case "cycle_pane_next":
-      case "focus_pane_left": case "focus_pane_right": case "focus_pane_up": case "focus_pane_down":
-      case "swap_pane_left": case "swap_pane_right": case "swap_pane_up": case "swap_pane_down":
         return JSON.stringify([here, tab?.panes.map((p) => paneId(p.id))]);
+      case "focus_pane_left": case "focus_pane_right": case "focus_pane_up": case "focus_pane_down":
+      case "swap_pane_left": case "swap_pane_right": case "swap_pane_up": case "swap_pane_down": {
+        const other = directionalNeighbour(tab, pane, action);
+        return JSON.stringify([here, other == null ? null : paneId(other)]);
+      }
       default:
         return JSON.stringify(here);
     }

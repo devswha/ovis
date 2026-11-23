@@ -132,7 +132,11 @@ export class LayoutWrites {
       this.unchanged(action, result);
       return NOTHING_ENDED;
     };
-    if (Object.hasOwn(SWAPS, action)) return async () => this.unchanged(action, await store.edit(swapEdit(id, null, SWAPS[action]!)));
+    if (Object.hasOwn(SWAPS, action)) return async () => this.unchanged(action, await store.edit((layout) => {
+      const result = swapEdit(id, null, SWAPS[action]!)(layout);
+      return effect.neighbor !== undefined && result.target !== effect.neighbor
+        ? { layout: null, reason: "target_changed" } : result;
+    }));
     if (Object.hasOwn(RESIZES, action)) return async () => this.unchanged(action, await store.edit(resizeEdit(id, RESIZES[action]!, RESIZE_STEP)));
     if (action === "move_tab_previous" || action === "move_tab_next") {
       return async () => {

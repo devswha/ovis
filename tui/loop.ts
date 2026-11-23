@@ -527,6 +527,10 @@ export function startLoop(options: LoopOptions): Loop {
           const tab = focused(state.world, state.focus).tab;
           const shapeOf = tab ? world.view().tabs.get(tab.id) : undefined;
           const toward = shapeOf ? paneToward(shapeOf, effect.target.id, direction) : null;
+          if (effect.neighbor !== undefined && toward !== effect.neighbor) {
+            dispatch({ type: "notice", code: "target_changed", data: { action: effect.action }, at: clock.now() });
+            return;
+          }
           if (toward !== null) dispatch({ type: "select", target: { kind: "pane", id: toward }, at: clock.now() });
           return;
         }

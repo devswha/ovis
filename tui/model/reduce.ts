@@ -14,7 +14,7 @@ import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KE
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
-import { entryKey, indexOfEntry, keptCursor, menuEntries } from "./menu.ts";
+import { directionalNeighbour, entryKey, indexOfEntry, keptCursor, menuEntries } from "./menu.ts";
 import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -644,8 +644,9 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
   const shown = focused(s.world, s.focus);
   const pushOverlay = (overlay: Overlay) => { acc.s = { ...acc.s, overlays: [...acc.s.overlays, overlay] }; };
   const runOn = (on: Target | undefined | null, name: string | null = null) => {
+    const neighbor = directionalNeighbour(shown.tab, shown.pane, action);
     if (on === undefined || on === null) notice(acc, "nothing_focused", { action }, at);
-    else acc.effects.push({ type: "run", action, target: on, index, name });
+    else acc.effects.push({ type: "run", action, target: on, index, name, ...(neighbor === undefined ? {} : { neighbor }) });
   };
   switch (action) {
     case "help":

@@ -306,6 +306,7 @@ export class CoreWorld {
           tabs: snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id).map((tab) => ({
             id: tab.tab_id,
             name: tab.label,
+            root: tabs.get(tab.tab_id)?.root,
             ...zoomOf(tabs.get(tab.tab_id)),
             panes: (order.get(tab.tab_id) ?? []).map((id) => {
               const created = this.records.get(id)?.["created_ms"];
