@@ -311,6 +311,45 @@
   color: var(--text-dim);
 }
 
+/* More ways on a row of several: a disclosure of its own beside the row's link, in the column Forget takes, so a tap on
+   the row still opens it by the relay; open, its glyph turns up */
+.my-pc > .my-pc-more {
+  grid-column: 2;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  margin-inline-end: var(--space-2);
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+}
+
+.my-pc > .my-pc-more > svg {
+  transition: transform var(--dur-fast) ease;
+}
+
+.my-pc > .my-pc-more[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .my-pc > .my-pc-more > svg {
+    transition: none;
+  }
+}
+
+/* the saved ways the row's tap does not open, one to a line under it, each its way tag and the host it opens, whole */
+.my-pc > .my-pc-others {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  padding: 0 var(--space-4) var(--space-3);
+}
+
+.my-pc-others > .relay-add-other-way-button {
+  justify-content: flex-start;
+}
+
 .my-pcs-add {
   position: sticky;
   bottom: 0;

@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { ApiError } from "../lib/api.ts";
-import { failureText, statusText } from "./RelayPanel.tsx";
+import { SettingsProvider } from "../lib/settings.ts";
+import type { RelayState } from "../lib/useRelay.ts";
+import { failureText, RelayDirectRow, statusText } from "./RelayPanel.tsx";
 
 const t = ((text: string, values?: Record<string, string | number>) => Object.entries(values ?? {}).reduce((out, [key, value]) => out.replace(`{${key}}`, String(value)), text)) as Parameters<typeof statusText>[0];
 const base: RelayStatus = { phase: "online", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: null, error: null };
@@ -26,4 +30,31 @@ test("a machine's refusal to make a pairing code is said in words, and any other
   // a machine makes no code that names no account
   expect(failureText(new ApiError("/api/relay/offer", 409, "machine profile", "machine_profile"))).toBe("Run ovis add on this machine, then scan its QR code with a signed-in device.");
   expect(failureText(new ApiError("/api/relay/offer", 409, "This PC is already in an Ovis account.", "in_account"))).toBe("This PC is already in an Ovis account.");
+});
+
+/** the Direct connection row as Settings draws it, in `language`: its name, its one line and its switch */
+function directRow(direct: NonNullable<RelayStatus["direct"]>, language = "en"): { label: string; line: string; toggle: string } {
+  const relay = { status: { ...base, direct }, pending: false, request: async () => ({ ...base, direct }) } as unknown as RelayState;
+  const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
+  Object.defineProperty(navigator, "languages", { configurable: true, value: [language] });
+  try {
+    const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayDirectRow, { relay, readOnly: false }) }));
+    const text = (pattern: RegExp): string => pattern.exec(html)?.[1]?.replace(/<[^>]+>/g, "") ?? "";
+    const toggle = /<button[^>]*role="switch"[^>]*>/.exec(html)?.[0] ?? "";
+    const name = /aria-label="([^"]*)"/.exec(toggle)?.[1];
+    return { label: text(/class="settings-label">([^<]*)</), line: text(/class="(?:visually-hidden|settings-description)">([\s\S]*?)<\/span>/),
+      toggle: name === undefined ? "" : `${name} ${/aria-checked="true"/.test(toggle) ? "on" : "off"}` };
+  } finally {
+    if (saved) Object.defineProperty(navigator, "languages", saved);
+    else Reflect.deleteProperty(navigator, "languages");
+  }
+}
+
+test("the Direct connection row says what its switch does, off and on, and names the Tailscale carrier too", () => {
+  expect(directRow({ on: false, carriers: [] })).toEqual({ label: "Direct connection", line: "Relay connections stay on the relay.", toggle: "Direct connection off" });
+  const on = "A device that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct connection: faster, and this PC listens for it on those addresses.";
+  expect(directRow({ on: true, carriers: ["ws://192.168.0.10:7319"] })).toEqual({ label: "Direct connection", line: on, toggle: "Direct connection on" });
+  expect(directRow({ on: true, carriers: ["ws://192.168.0.10:7319", "ws://100.64.0.7:7319"] }).line).toBe(on);
+  expect(directRow({ on: true, carriers: [] }).line).toBe(on);
+  expect(directRow({ on: false, carriers: [] }, "ko").label).toBe("직접 연결");
 });
