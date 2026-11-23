@@ -192,7 +192,8 @@ interface TurnResult {
   turn_id: string;
   stop_reason: "end_turn" | "cancelled" | "refusal" | "max_tokens" | "max_turn_requests"
              | "gone" | "unknown";           // ACP's reasons, plus Ovis's own two
-  evidence: "acp" | "hook" | "reader" | "terminal";  // where the end and the answer came from
+  end_from: "acp" | "hook" | "reader" | "terminal";     // what said the turn ended
+  answer_from: "acp" | "reader" | "terminal" | null;    // what supplied final_message
   final_message: Untrusted | null;
   usage: { tokens?: number; cost?: { amount: number; currency: string } } | null;
                                              // shown only where the harness reports it (ACP usage_update)
@@ -212,7 +213,7 @@ interface TranscriptPage {
 type SessionUpdate =                // ACP's names
   | { type: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk"; text: Untrusted }
   | { type: "tool_call" | "tool_call_update"; id: string; title: string; status: "pending" | "in_progress" | "completed" | "failed" }
-  | { type: "plan"; entries: { content: string; status: string }[] }
+  | { type: "plan"; entries: { content: Untrusted; status: string }[] }
   | { type: "native"; harness: string; value: unknown };   // passed through, meaning not promised
 
 interface Screen { cols: number; rows: number; text: Untrusted }
@@ -226,10 +227,10 @@ interface Grant {                    // what the user turned on, and where
 }
 
 interface Limits {                   // D23, decided 2026-11-24; no other limit
-  depth: 1;                          // settable 1..3
-  children: 4;                       // running at once, per parent
-  child_minutes: 60;
-  calls_per_minute: 30;              // per run
+  depth: 1 | 2 | 3;                  // default 1
+  children: number;                  // running at once, per parent; default 4
+  child_minutes: number;             // default 60
+  calls_per_minute: number;          // per run; default 30
 }
 
 interface AuditRecord {              // G6: one per start, send and stop
@@ -246,7 +247,7 @@ interface AuditRecord {              // G6: one per start, send and stop
 
 interface Refusal {
   error: {
-    code: "tools_off" | "not_granted" | "approval_required" | "approval_denied"
+    code: "tools_off" | "not_granted" | "approval_required" | "approval_denied" | "waiting_human"
         | "depth_exceeded" | "children_limit" | "time_limit" | "rate_limited"
         | "ancestor_target" | "self_target" | "not_owner" | "taken_over"
         | "unknown_session" | "unknown_contract";
@@ -268,7 +269,7 @@ Otherwise the child is a real TUI in a herdr-core terminal and is driven as one:
 
 - `send` goes through the terminal input path.
 - `wait` and `result` come from the hook, the reader or hc's turn count.
-- `TurnResult.evidence` names which of them answered.
+- `TurnResult.end_from` and `answer_from` name which of them answered.
 
 The calling agent uses the same verbs either way and reads `drive` on the `SessionRef`. The same
 fallback applies when the ACP start fails, for example a missing adapter or an `initialize` with no
@@ -317,9 +318,9 @@ phone, phone-setup, tui); these join them.
 | `ovis read <s> --transcript` | `TranscriptPage` | `GET /api/pane/conversation` (`server/pane-routes.ts` → `server/conversation.ts`) | Map Ovis turns to ACP update kinds; mark text `Untrusted` |
 | `ovis read <s> --result` | `TurnResult` | the conversation's last turn | Bind it to a `turn_id`; take the end from the hook where there is one |
 | `ovis read <s> --screen` | `Screen` | `GET /api/pane/read` (`server/pane-routes.ts`) | none |
-| `ovis agent machines` / `harnesses` / `ls` / `read` | as above | as above | Run token checks (G2) |
+| `ovis agent machines` / `harnesses` / `ls` / `read` | as above | as above | Run token checks (G2). While the child waits on an approval, `read --screen` and `--transcript` answer `waiting_human` with no text (G8) |
 | `ovis agent start --harness h [--on m] [--cwd d] ["task"]` | `SessionRef` | this PC: `POST /api/tab/create` or `/api/workspace/create` with `agent` (`server/workspace-routes.ts` → `agentLaunch` in `server/agent-launch.ts`), first message checked by `firstMessageFault` (`shared/launch-rules.ts`); another machine: hc `terminal.run` with `on` (`server/herdr-core/machine-scope.ts`) | Terminal drive: pass hc's `parent` (Ovis reads it today but never sets it), with `labels` for the run. ACP drive on this PC, which has no code in Ovis today: run the keeper in a new herdr-core terminal (hc `terminal.run` with `parent`), which starts `<agent> acp` (or the user's adapter) on a pipe; then `initialize` with no `fs`/`terminal` client capabilities and with `subagents`, then `session/new`. Both drives: G2 to G5 and G10 checks, and an approval card for `--on` (G3). |
-| `ovis agent send <s> "task" [--key k]` | `SendAccepted` | `POST /api/pane/input` (`server/pane-routes.ts`; keeps the Claude rewind-dialog refusal); hc `terminal.send` takes `caller` and waits for a person (plan 11.1) | `turn_id` and the caller key (the one route the plan says must be new); G7 and G9 checks. ACP drive: `session/prompt`, sent once per key |
+| `ovis agent send <s> "task" [--key k]` | `SendAccepted` | `POST /api/pane/input` (`server/pane-routes.ts`; keeps the Claude rewind-dialog refusal); hc `terminal.send` takes `caller` and waits for a person (plan 11.1) | `turn_id` and the caller key (the one route the plan says must be new); G7 and G9 checks; refused with `waiting_human` before any text is typed while the child waits on an approval (G8). ACP drive: `session/prompt`, sent once per key |
 | `ovis agent wait <s> [--turn id]` | `SessionState` once the turn ends or waits on a person | the snapshot's turn count and status, the conversation reader, the hook (`server/approvals/hub.ts` for approvals) | A wait that resumes by (session, turn id, cursor) after a drop. ACP drive: the `session/prompt` response, with `waiting_human` while a permission card is open |
 | `ovis agent result <s> [--turn id]` | `TurnResult` | as `ovis read --result` | as above. ACP drive: the stop reason and the turn's `agent_message_chunk`s, converted in the one place plan A1 names (today that code sits inside `server/grok.ts`, which reads Grok's `session/update` file) |
 | `ovis agent ask --harness h [--cwd d] "task" [--key k]` | `TurnResult` | none: it is `start`, `send`, `wait` and `result` above in one call | The one tool the goal names **(proposal)**. One harness, one task, one answer; no retry, queue or fan-out (it is not orchestration). It leaves the child running for a follow-up `send` until `stop` or the G5 time limit. |
@@ -333,7 +334,7 @@ face (orchestrators wrap the command or the MCP tool themselves).
 
 ### Where wait and result come from
 
-- **ACP drive:** the `session/prompt` response ends the turn with its stop reason (`evidence: "acp"`).
+- **ACP drive:** the `session/prompt` response ends the turn with its stop reason (`end_from: "acp"`, `answer_from: "acp"`).
   The answer is the turn's `agent_message_chunk`s. Both are data, with no screen reading.
 - **Terminal drive:** "hook plus reader" (plan 12.4). The hook says early that the turn ended and
   the reader takes out the answer. A harness with neither falls back to the terminal level, hc's
@@ -360,11 +361,11 @@ program of the same OS account (as R20).
 | G1 Visible | Every agent an agent starts shows under its parent in the sidebar. A terminal child is a real TUI in a herdr-core terminal that a person can step into and take over at any time. An ACP child is drawn as a chat in Ovis's view, and a person can cancel it at any time. | always | Terminal: `start` sets hc `parent`; the sidebar already nests by `parent_pane_id` (read, `shared/agent-roster.ts`, `src/components/AgentSidebar.tsx`). Across machines the parent is not found today (same machine only): H3. ACP: the keeper's terminal, started with `parent`, so the same nesting applies; its chat and cards in Ovis, F4 for the real TUI. | A started child of either drive appears under its parent; one started on another machine shows its parent. |
 | G2 View by default | An agent caller may only view (list, state, transcript). Start and send are turned on by the user per session, project or machine (`Grant`). | view only | Run token → grants check before every verb. Agent callers are a new kind of principal: neither `drive` nor `watch` (read, `shared/access.ts`). | Without a grant, `start` and `send` are refused `not_granted`. |
 | G3 Other machine | Starting on another machine goes through a person's approval card showing who, which machine, which harness and what task. "Always allow" binds to one parent and one machine. | card each time | `start --on`; the card reuses the approval card surface. Touches authentication: owner check and a real review. | Zero starts elsewhere without an approval. |
-| G4 Depth | A child cannot start agents. | 1, settable to 3 | Depth carried in the run token; a child gets view-only tools. | Past the depth, `depth_exceeded`. |
+| G4 Depth | An agent may start agents only while its depth is below the limit. At the default of 1, a child cannot start agents and gets view-only tools; at 2 or 3, descendants may start agents until the limit. | 1, settable to 3 | Depth carried in the run token, one more for each generation. | Past the depth, `depth_exceeded`, at 1, 2 and 3. |
 | G5 Limits | At most 4 running children per parent; 60 minutes per child; cost shown wherever the harness reports it, with no cost cap. Past a limit no new work is taken and a person is told; a running child is never killed. | 4, 60 min | `start` and `send`. | Past the limit, `children_limit` or `time_limit`, and the running child still runs. |
 | G6 Record | Each parent → child act is recorded: who, machine, harness, when, turn id, stop reason. What was sent is in the session's own transcript and is not copied. | always | `AuditRecord` on every start, send and stop; a screen for it in H3. | Every start, send and stop leaves exactly one record. |
 | G7 No loops | Sending to an ancestor or to oneself is refused. The same key types once. Calls per minute are limited. | 30/min per run | `send`, using the `parent` chain and the key store. | `ancestor_target`, `self_target`, a repeated key gives `duplicate: true` and types nothing, a burst gets `rate_limited`. |
-| G8 Only people approve | The tool has no approval verb. A child's approval request goes to a person as a card; the parent only sees `waiting_human`. For an ACP child, Ovis is the only ACP client: each `session/request_permission` becomes a card with the agent's options unchanged, and the calling agent never holds the connection or sees the request. Ovis adds no approval of its own, so a child that requests nothing ends with no card. "Always allow" on a child's card holds for that child session only. Exact scope: this covers the requests that reach Ovis; a call the harness's own settings already allow never asks. | always | Schema: no approve scope. The ACP client is Ovis's (server and keeper) and its connection is never handed out. | No verb exists, and the parent's view of a waiting child holds no card content. With a fake ACP agent: a permission request shows a card, the turn waits until a person answers, and the parent's tool has no way to answer it. A turn with no request ends with no card. |
+| G8 Only people approve | The tool has no approval verb. A child's approval request goes to a person as a card; the parent only sees `waiting_human`. While a child waits on an approval, the parent's `send` is refused (`waiting_human`) before any text is typed, so it cannot answer a dialog by typing, and `read --screen` and `--transcript` return no text, so the dialog's content never reaches the parent. For an ACP child, Ovis is the only ACP client: each `session/request_permission` becomes a card with the agent's options unchanged, and the calling agent never holds the connection or sees the request. Ovis adds no approval of its own, so a child that requests nothing ends with no card. "Always allow" on a child's card holds for that child session only. Exact scope: this covers the requests that reach Ovis; a call the harness's own settings already allow never asks. | always | Schema: no approve scope. The ACP client is Ovis's (server and keeper) and its connection is never handed out. | No verb exists, and the parent's view of a waiting child holds no card content. A `send` to a child with a dialog open types nothing and returns `waiting_human`; a screen read then returns no dialog text. With a fake ACP agent: a permission request shows a card, the turn waits until a person answers, and the parent's tool has no way to answer it. A turn with no request ends with no card. |
 | G9 People win | A send waits while a person types in that terminal; once a person takes over, the parent's sends are refused. For an ACP child, a person's cancel or card answer wins over the parent; after a person cancels a turn, the parent's next send is refused until a person resumes the child. | always | The existing send path and attach claims (`server/input-guard.ts`, hc `terminal.send`); for ACP, the server's client. | A send during typing waits; after take-over, `taken_over`; after a person cancels an ACP turn, `taken_over`. |
 | G10 Off switch | One switch turns the whole tool off and revokes every agent caller's token at once. Off by default. | off | Settings, checked before every verb. | With the switch off, every verb is `tools_off` and old tokens fail. |
 | G11 Untrusted text | `read` and `result` mark another agent's words as data so they do not read as instructions. | always | `Untrusted` wrapper in the schema; the skill text says how to treat it. | Every text field from another session is `Untrusted`. |
