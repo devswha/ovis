@@ -368,6 +368,21 @@ public class HomeTest {
     }
 
     @Test
+    public void nothingCountsWhileTheAppIsAwayEvenIfItsTimerStillRuns() {
+        Home.Clock clock = new Home.Clock(0);
+        for (long now = 1_000; now <= 5_000; now += 1_000) clock.tick(now);
+        clock.away(5_000);
+        assertEquals(5_000, clock.tick(5_500));
+        assertEquals(5_000, clock.tick(20_000));
+        assertFalse(Home.timedOut(clock.tick(35_000), false));
+        clock.resumed(35_000);
+        assertEquals(5_500, clock.tick(35_500));
+        for (long now = 36_000; now <= 37_500; now += 500) clock.tick(now);
+        assertFalse(Home.timedOut(clock.tick(37_900), false));
+        assertTrue(Home.timedOut(clock.tick(38_000), false));
+    }
+
+    @Test
     public void aLookThatComesLateWithoutAReturnCountsAsOneLookAtMost() {
         // the timer held up, with no word that the app was away: a second at most, never the whole gap
         Home.Clock clock = new Home.Clock(0);

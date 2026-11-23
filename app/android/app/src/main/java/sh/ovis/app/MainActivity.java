@@ -823,6 +823,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onStop() {
+        homeClock.away(SystemClock.elapsedRealtime());
         answerTimer.removeCallbacksAndMessages(null);
         super.onStop();
     }

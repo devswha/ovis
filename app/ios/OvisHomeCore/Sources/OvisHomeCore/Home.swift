@@ -159,23 +159,31 @@ public enum Home {
     }
 
     /// How long home has waited with the app in front, in seconds on any one clock: each look (`tick`) adds the time
-    /// since the look before, a second at most, and a return to the front (`resumed`) starts counting from there, so
-    /// the time the app was away is never counted.
+    /// since the look before, a second at most; nothing is added between leaving the front (`away`) and coming back
+    /// (`resumed`), whether or not looks go on meanwhile (iOS lets an app run on for a while behind another).
     public struct Clock {
         private var waited: TimeInterval = 0
         private var seenAt: TimeInterval
+        private var isAway = false
 
         public init(now: TimeInterval) {
             seenAt = now
         }
 
+        @discardableResult
         public mutating func tick(now: TimeInterval) -> TimeInterval {
-            waited += max(0, min(now - seenAt, 1))
+            if !isAway { waited += max(0, min(now - seenAt, 1)) }
             seenAt = now
             return waited
         }
 
+        public mutating func away(now: TimeInterval) {
+            tick(now: now)
+            isAway = true
+        }
+
         public mutating func resumed(now: TimeInterval) {
+            isAway = false
             seenAt = now
         }
     }

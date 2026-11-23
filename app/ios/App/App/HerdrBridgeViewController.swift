@@ -537,7 +537,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// PC only over that one.
     private let homeOver: String?
     private var urlWatch: NSKeyValueObservation?
-    private var frontWatch: NSObjectProtocol?
+    private var frontWatch: [NSObjectProtocol] = []
     /// Looks twice a second whether the app's own page came up (watchOwnPage), and whether it answered that it did.
     private var ownPageWatch: Timer?
     private var ownPageUp = false
@@ -764,11 +764,16 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             let now = ProcessInfo.processInfo.systemUptime
             homeClock = Home.Clock(now: now)
             watch = OpeningWatch(now: now, answerLimit: TimeInterval(Self.answerSeconds))
-            // back in front: the time the app was away does not count against the hosted screen
+            // the time the app is away does not count against the hosted screen, though its timer may run on there
             if phase != nil {
-                frontWatch = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-                    self?.homeClock.resumed(now: ProcessInfo.processInfo.systemUptime)
-                }
+                frontWatch = [
+                    NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                        self?.homeClock.away(now: ProcessInfo.processInfo.systemUptime)
+                    },
+                    NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                        self?.homeClock.resumed(now: ProcessInfo.processInfo.systemUptime)
+                    }
+                ]
             }
             // often enough that the cover lifts within a fifth of a second of the client's first frame
             ticker = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.tick(origin) }
@@ -787,6 +792,11 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         let look: (Timer?) -> Void = { [weak self] timer in
             guard let self, let webView = self.webView, self.view.window != nil || timer == nil else {
                 timer?.invalidate()
+                return
+            }
+            // only in front: a page is neither judged nor built again behind another app
+            guard UIApplication.shared.applicationState != .background else {
+                clock.resumed(now: ProcessInfo.processInfo.systemUptime)
                 return
             }
             if self.ownPageUp {
@@ -820,7 +830,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         ticker?.invalidate()
         ownPageWatch?.invalidate()
         urlWatch?.invalidate()
-        if let frontWatch { NotificationCenter.default.removeObserver(frontWatch) }
+        frontWatch.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
     private func tick(_ origin: String) {

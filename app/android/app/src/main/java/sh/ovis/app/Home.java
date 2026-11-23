@@ -197,24 +197,31 @@ final class Home {
 
     /**
      * How long home has waited with the app in front, in milliseconds on any one clock: each look (tick) adds the
-     * time since the look before, a second at most, and a return to the front (resumed) starts counting from there,
-     * so the time the app was away is never counted.
+     * time since the look before, a second at most; nothing is added between leaving the front (away) and coming
+     * back (resumed), whether or not looks go on meanwhile.
      */
     static final class Clock {
         private long waited;
         private long seenAt;
+        private boolean away;
 
         Clock(long now) {
             seenAt = now;
         }
 
         long tick(long now) {
-            waited += Math.max(0, Math.min(now - seenAt, 1000));
+            if (!away) waited += Math.max(0, Math.min(now - seenAt, 1000));
             seenAt = now;
             return waited;
         }
 
+        void away(long now) {
+            tick(now);
+            away = true;
+        }
+
         void resumed(long now) {
+            away = false;
             seenAt = now;
         }
     }

@@ -384,6 +384,29 @@ final class HomeTests: XCTestCase {
         XCTAssertTrue(Home.timedOut(elapsed: clock.tick(now: 69.05), answered: false))
     }
 
+    func testNothingCountsWhileTheAppIsAwayEvenIfItsTimerStillRuns() {
+        // iOS lets an app run on for a while behind another: its looks go on, and none of them may count
+        var clock = Home.Clock(now: 0)
+        var now = 0.2
+        while now < 4.95 {
+            _ = clock.tick(now: now)
+            now += 0.2
+        }
+        clock.away(now: 5)
+        XCTAssertEqual(clock.tick(now: 5.2), 5, accuracy: 0.001)
+        XCTAssertEqual(clock.tick(now: 20), 5, accuracy: 0.001)
+        XCTAssertFalse(Home.timedOut(elapsed: clock.tick(now: 35), answered: false))
+        clock.resumed(now: 35)
+        XCTAssertEqual(clock.tick(now: 35.2), 5.2, accuracy: 0.001)
+        now = 35.4
+        while now < 37.85 {
+            clock.tick(now: now)
+            now += 0.2
+        }
+        XCTAssertFalse(Home.timedOut(elapsed: clock.tick(now: 37.9), answered: false))
+        XCTAssertTrue(Home.timedOut(elapsed: clock.tick(now: 38.05), answered: false))
+    }
+
     func testALookThatComesLateWithoutAReturnCountsAsOneLookAtMost() {
         // the timer held up, with no word that the app was away: a second at most, never the whole gap
         var clock = Home.Clock(now: 0)
