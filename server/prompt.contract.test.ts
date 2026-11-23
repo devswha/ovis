@@ -55,16 +55,16 @@ writeFileSync(out, "");
 `;
 
 /**
- * Claude's command approval with two numbered rows, its whole panel under its rule: ↑/↓ move its `❯`, Enter or a row's number
- * logs the row it picks.
+ * Claude's command approval with numbered rows, its whole panel under its rule: ↑/↓ move its `❯`, Enter or a row's number
+ * logs the row it picks. Its command is `pwd`, or the lines given as its head.
  */
 const APPROVAL = `
 const { appendFileSync, writeFileSync } = require("node:fs");
 const [out, spec] = process.argv.slice(2);
-const { rows } = JSON.parse(spec);
+const { head, rows } = JSON.parse(spec);
 let cursor = 0;
 const draw = () => process.stdout.write("\\u001b[2J\\u001b[H" + [
-  "─".repeat(40), " Bash command", "", "   pwd", "", " Do you want to proceed?",
+  "─".repeat(40), " Bash command", "", ...(head.length ? head : ["   pwd"]), "", " Do you want to proceed?",
   ...rows.map((row, index) => " " + (index === cursor ? "❯" : " ") + " " + (index + 1) + ". " + row), "", " Esc to cancel",
 ].join("\\r\\n"));
 process.stdin.setRawMode(true);
@@ -239,58 +239,95 @@ describe("answer buttons on a question's alert (#2916)", () => {
 });
 
 describe("a Claude command approval its PermissionRequest hook holds", () => {
-  it("answers only the held request its card showed, with no key, and a card read on the screen alone with keys", async () => {
+  // no quote in a row: the pane's shell gets them inside single quotes
+  const ROWS = ["Yes", "Yes, and always allow pwd in this project", "No"];
+  let hooks: ClaudePermissionHooks;
+  const holding: (() => void)[] = [];
+
+  beforeAll(() => {
     writeFileSync(join(root, "approval.js"), APPROVAL);
-    const asked = await menu("hooked", [], ["Yes", "No"], false, "approval.js");
-    const holding: (() => void)[] = [];
-    const hooks = new ClaudePermissionHooks(join(root, "claude hooks"), { onHeld: () => holding.shift()?.() });
-    try {
-      const args = hooks.launchArgs(asked.pane, undefined)!;
-      const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1]!, "utf8")) as { hooks: { PermissionRequest: { hooks: { command: string; args: string[] }[] }[] } };
-      const hook = settings.hooks.PermissionRequest[0]!.hooks[0]!;
-      const held = new Promise<void>((resolve) => holding.push(resolve));
-      const relay = Bun.spawn([hook.command, ...hook.args], {
-        stdin: new Blob([JSON.stringify({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "pwd" } })]), stdout: "pipe",
-      });
-      await held;
-      const route = async (path: string, init?: RequestInit) => {
-        const url = new URL(path, "http://localhost");
-        return (await handlePromptRequest(new Request(url, init), url, { permissionHooks: hooks }))!;
-      };
-      const read = async (): Promise<{ id: string; body: string | null }> => {
-        for (let i = 0; i < 100; i++) {
-          const { prompt } = await (await route(`/api/pane/prompt?pane_id=${encodeURIComponent(asked.pane)}`)).json() as { prompt: { id: string; body: string | null } | null };
-          if (prompt) return prompt;
-          await Bun.sleep(50);
-        }
-        throw new Error("no card within 5s");
-      };
-      const post = async (promptId: string, optionIndex: number) => route("/api/pane/prompt/answer", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ pane_id: asked.pane, prompt_id: promptId, option_index: optionIndex }),
-      });
+    hooks = new ClaudePermissionHooks(join(root, "claude hooks"), { onHeld: () => holding.shift()?.() });
+  });
+  afterAll(() => hooks.stop());
 
-      const bound = await read();
-      expect(bound.body).toBe("pwd");
-      const [screenId, heldId] = bound.id.split(".");
-      expect(heldId).toMatch(/^[0-9a-f]{16}$/);
-      // an id naming a request other than the one held: refused, and nothing is sent
-      expect((await post(`${screenId}.${"0".repeat(16)}`, 0)).status).toBe(409);
-      expect((await post(bound.id, 0)).status).toBe(200);
-      expect(JSON.parse(await new Response(relay.stdout).text())).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
-      expect((await post(bound.id, 0)).status).toBe(409);
-
-      // nothing held any more: the card is the screen's again (the same dialog still drawn is another asking), and its
-      // answer goes as keys
-      const plain = await read();
-      expect(plain.id).not.toContain(".");
-      expect(plain.body).toBe("pwd");
-      expect((await post(plain.id, 1)).status).toBe(200);
-      // the hook's Yes pressed no key: the dialog logged only the No that went as keys
-      expect(await confirmed(asked)).toEqual(["No"]);
-    } finally {
-      hooks.stop();
+  /** What Claude started in `target` sends its hook for this command: the relay's answer, once the server holds it. */
+  async function asks(target: Menu, command: string): Promise<{ answer: () => Promise<unknown> }> {
+    const args = hooks.launchArgs(target.pane, undefined)!;
+    const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1]!, "utf8")) as { hooks: { PermissionRequest: { hooks: { command: string; args: string[] }[] }[] } };
+    const hook = settings.hooks.PermissionRequest[0]!.hooks[0]!;
+    const held = new Promise<void>((resolve) => holding.push(resolve));
+    const relay = Bun.spawn([hook.command, ...hook.args], {
+      stdin: new Blob([JSON.stringify({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command } })]), stdout: "pipe",
+    });
+    await held;
+    return { answer: async () => JSON.parse(await new Response(relay.stdout).text()) as unknown };
+  }
+  const route = async (path: string, init?: RequestInit) => {
+    const url = new URL(path, "http://localhost");
+    return (await handlePromptRequest(new Request(url, init), url, { permissionHooks: hooks }))!;
+  };
+  async function read(target: Menu): Promise<{ id: string; body: string | null }> {
+    for (let i = 0; i < 100; i++) {
+      const { prompt } = await (await route(`/api/pane/prompt?pane_id=${encodeURIComponent(target.pane)}`)).json() as { prompt: { id: string; body: string | null } | null };
+      if (prompt) return prompt;
+      await Bun.sleep(50);
     }
+    throw new Error("no card within 5s");
+  }
+  const post = async (target: Menu, promptId: string, optionIndex: number) => route("/api/pane/prompt/answer", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pane_id: target.pane, prompt_id: promptId, option_index: optionIndex }),
+  });
+  const ALLOW = { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } };
+
+  it("answers only the held request its card showed, with no key, and a card read on the screen alone with keys", async () => {
+    const asked = await menu("hooked", [], ROWS, false, "approval.js");
+    const relay = await asks(asked, "pwd");
+    const bound = await read(asked);
+    expect(bound.body).toBe("pwd");
+    const [screenId, heldId] = bound.id.split(".");
+    expect(heldId).toMatch(/^[0-9a-f]{16}$/);
+    // an id naming a request other than the one held: refused, and nothing is sent
+    expect((await post(asked, `${screenId}.${"0".repeat(16)}`, 0)).status).toBe(409);
+    expect((await post(asked, bound.id, 0)).status).toBe(200);
+    expect(await relay.answer()).toEqual(ALLOW);
+    expect((await post(asked, bound.id, 0)).status).toBe(409);
+
+    // nothing held any more: the card is the screen's again (the same dialog still drawn is another asking), and its
+    // answer goes as keys
+    const plain = await read(asked);
+    expect(plain.id).not.toContain(".");
+    expect(plain.body).toBe("pwd");
+    expect((await post(asked, plain.id, 2)).status).toBe(200);
+    // the hook's Yes pressed no key: the dialog logged only the No that went as keys
+    expect(await confirmed(asked)).toEqual(["No"]);
+  }, 30_000);
+
+  it("sends another option of a card built on a held request as keys only while the dialog is that request, whole", async () => {
+    const whole = await menu("hooked-whole", [], ROWS, false, "approval.js");
+    const relay = await asks(whole, "pwd");
+    const card = await read(whole);
+    expect(card.id).toContain(".");
+    expect((await post(whole, card.id, 1)).status).toBe(200);
+    expect(await confirmed(whole)).toEqual([ROWS[1]!]);
+
+    // the dialog's command starts as the held one's and goes on: the card showed only `pwd`
+    const longer = await menu("hooked-longer", ["   pwd; touch extra.txt"], ROWS, false, "approval.js");
+    const held = await asks(longer, "pwd");
+    const shown = await read(longer);
+    expect(shown.body).toBe("pwd");
+    expect(shown.id).toContain(".");
+    expect((await post(longer, shown.id, 1)).status).toBe(409);
+    // Yes settles the request the card showed, which is `pwd` alone
+    expect((await post(longer, shown.id, 0)).status).toBe(200);
+    expect(await held.answer()).toEqual(ALLOW);
+    // neither went as keys: the dialog logs only the No answered on the screen's own card after them
+    const plain = await read(longer);
+    expect(plain.id).not.toContain(".");
+    expect((await post(longer, plain.id, 2)).status).toBe(200);
+    expect(await confirmed(longer)).toEqual(["No"]);
+    hooks.stop();
+    expect(await relay.answer()).toEqual({});
   }, 30_000);
 });
 

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ClaudePermissionHooks, heldBody, permissionDecision } from "./claude-permission-hook.ts";
+import { parseInteractivePrompt } from "./prompt.ts";
 
 const ULTRACODE = JSON.stringify({ ultracode: true });
 type CommandHook = { type: string; command: string; args: string[] };
@@ -258,6 +259,59 @@ describe("the hook relay", () => {
     expect(hooks.answer("p1", screenB, cardA.id, "allow")).toBe(false);
     expect(hooks.answer("p1", screenB, cardB.id, "deny")).toBe(true);
     expect(await b.answer()).toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+  });
+
+  // an option other than Yes or No goes as keys to the dialog on the screen: only while it is the card's request whole
+  it("tells the dialog of the card's request, whole, from one that only starts the same way", async () => {
+    const { hooks, held } = hooksIn();
+    const hook = ourHook(hooks.launchArgs("p1", undefined)!);
+    const command = "git log --oneline --graph --decorate --all -- server/claude-permission-hook.ts";
+    let holding = held("p1");
+    const worded = ask(hook, bash(command, "Show the file's history"));
+    await holding;
+    const wrapped = "Tip: auto mode handles these prompts for you —\nchoose \"switch to auto mode\" below\nShow the file's history\n"
+      + "git log --oneline --graph\n  --decorate --all -- server/claude-\n  permission-hook.ts";
+    const card = hooks.shown("p1", wrapped)!;
+    expect(hooks.showsWhole("p1", wrapped, card.id)).toBe(true);
+    // the dialog's command goes on past the card's
+    expect(hooks.showsWhole("p1", `Show the file's history\n${command}; rm -rf ~`, card.id)).toBe(false);
+    // or the screen cut it
+    expect(hooks.showsWhole("p1", `Show the file's history\n${command.slice(0, 60)}`, card.id)).toBe(false);
+    // or Claude's words for it are another command's
+    expect(hooks.showsWhole("p1", `List the commits\n${command}`, card.id)).toBe(false);
+    expect(hooks.showsWhole("p1", wrapped, "0".repeat(16))).toBe(false);
+    hooks.stop();
+    expect(await worded.answer()).toEqual({});
+
+    const { hooks: bare, held: bareHeld } = hooksIn();
+    const bareHook = ourHook(bare.launchArgs("p1", undefined)!);
+    holding = bareHeld("p1");
+    const unworded = ask(bareHook, bash("pwd"));
+    await holding;
+    const plain = bare.shown("p1", "pwd")!;
+    expect(bare.showsWhole("p1", "pwd", plain.id)).toBe(true);
+    // with no words of Claude's, the dialog's text is the command alone
+    expect(bare.showsWhole("p1", "pwd; touch extra.txt", plain.id)).toBe(false);
+    expect(bare.showsWhole("p1", "Print the folder\npwd", plain.id)).toBe(false);
+    bare.stop();
+    expect(await unworded.answer()).toEqual({});
+  });
+
+  it("tells the card's request, whole, on Claude Code's own dialog", async () => {
+    for (const [version, description] of [["2.1.318", "Write short git status to status.txt"], ["2.1.319", "Write short git status output to status.txt"]] as const) {
+      const screen = readFileSync(new URL(`./fixtures/claude-diff-panel-${version}-borderless-bash-196.txt`, import.meta.url), "utf8");
+      const approval = parseInteractivePrompt("claude", screen)!.body!;
+      const { hooks, held } = hooksIn();
+      const hook = ourHook(hooks.launchArgs("p1", undefined)!);
+      const holding = held("p1");
+      const { answer } = ask(hook, bash("git status --short > status.txt", description));
+      await holding;
+      const card = hooks.shown("p1", approval)!;
+      expect(heldBody(card), version).toBe(approval);
+      expect(hooks.showsWhole("p1", approval, card.id), version).toBe(true);
+      hooks.stop();
+      expect(await answer()).toEqual({});
+    }
   });
 
   it("forgets a request whose hook Claude ended", async () => {

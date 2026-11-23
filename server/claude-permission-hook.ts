@@ -262,6 +262,19 @@ export class ClaudePermissionHooks {
     return this.bound(paneId, approval, id) !== null;
   }
 
+  /**
+   * Whether the dialog on the screen is the request a card built on `id` showed, past its first 40 characters: the
+   * dialog's text ends with Claude's words for it and then its whole command (is the command alone, when Claude gave
+   * no words), normalised as `shows` does. Only then may an option of that card go as keys to the dialog.
+   */
+  showsWhole(paneId: string, approval: string, id: string): boolean {
+    const held = this.bound(paneId, approval, id);
+    if (held === null) return false;
+    const text = squeezed(approval);
+    const command = squeezed(held.command);
+    return held.description === null ? text === command : text.endsWith(squeezed(held.description) + command);
+  }
+
   /** Answers the request a card built on `id` showed. False when that request is no longer bound to the card. */
   answer(paneId: string, approval: string, id: string, decision: PermissionDecision): boolean {
     const held = this.bound(paneId, approval, id);

@@ -1877,16 +1877,21 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         }
       }
 
-      // Yes or No on a card built on a held hook request is that request's answer, with no key
-      const decision = heldId === null || body.option_index === undefined || body.custom_text !== undefined ? null
-        : permissionDecision(prompt.options[body.option_index]?.label ?? "");
-      if (decision !== null && parsedPrompt?.responder === "claude-approval") {
-        // the request left since the read: no key either, as the dialog now on the screen may be another command's
-        if (!options.permissionHooks!.answer(body.pane_id, approvalText(prompt)!, heldId!, decision)) return promptChanged();
-        delivered = true;
-        askingEnded(body.pane_id);
-        form.still = claudeStepStill(parsedPrompt);
-        return jsonResponse({ ok: true });
+      if (heldId !== null && parsedPrompt?.responder === "claude-approval") {
+        // Yes or No on a card built on a held hook request is that request's answer, with no key
+        const decision = body.option_index === undefined || body.custom_text !== undefined ? null
+          : permissionDecision(prompt.options[body.option_index]?.label ?? "");
+        if (decision !== null) {
+          // the request left since the read: no key either, as the dialog now on the screen may be another command's
+          if (!options.permissionHooks!.answer(body.pane_id, approvalText(prompt)!, heldId, decision)) return promptChanged();
+          delivered = true;
+          askingEnded(body.pane_id);
+          form.still = claudeStepStill(parsedPrompt);
+          return jsonResponse({ ok: true });
+        }
+        // any other answer goes as keys to the dialog on the screen, not to the request the card showed: only while
+        // that dialog is shown to be this very request, whole
+        if (!options.permissionHooks!.showsWhole(body.pane_id, approvalText(prompt)!, heldId)) return promptChanged();
       }
 
       let steps: AnswerStep[];
