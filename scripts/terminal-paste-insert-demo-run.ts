@@ -503,7 +503,7 @@ async function checkOlderBridgeAndUncertainty(page: Page): Promise<void> {
   console.log("PASS an older bridge, a drop before the answer and a refused block keep the line with a note and send nothing else");
 }
 
-/** a Korean phone in the dark theme: the line, Insert, Send and Paste in Korean, and a refused insert's note too */
+/** a Korean phone in the dark theme: the line, Insert, Send and Paste in Korean, a refused insert's note too, Tab reaching Insert and no sideways scroll */
 async function checkKorean(browser: Browser, origin: string): Promise<void> {
   scenario = "korean";
   const ko = (name: string): string => { assert.ok(KO[name], `"${name}" has a Korean entry`); return KO[name]!; };
@@ -521,12 +521,18 @@ async function checkKorean(browser: Browser, origin: string): Promise<void> {
     check("the line, Insert, Send and Paste are named in Korean", JSON.stringify(words) === JSON.stringify({
       label: ko("Input line"), insert: [ko("Insert text without Enter"), ko("Insert text")], send: ko("Press Enter in the terminal"), paste: ko("Paste into the input line"),
     }), words);
+    const line = page.locator(".pane-frame.is-current .terminal-input-text");
+    await setLine(page, "git status");
+    await line.focus();
+    for (let i = 0; i < 4 && !(await insert.evaluate((node) => node === document.activeElement)); i++) await page.keyboard.press("Tab");
+    check("Tab reaches Insert", await insert.evaluate((node) => node === document.activeElement), "ko");
+    check("no horizontal scroll", await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "ko");
     await setLine(page, "one\ntwo");
     await insert.tap();
     await noteText(page, ko("Insert takes one line. Send several lines, or insert them one at a time."));
     await setLine(page, "");
     assert.deepEqual(errors, []);
-    console.log("PASS a Korean phone in the dark theme names the line, Insert, Send and Paste, and notes a refused insert, in Korean");
+    console.log("PASS a Korean phone in the dark theme names the line, Insert, Send and Paste, and notes a refused insert, in Korean; Tab reaches Insert, nothing scrolls sideways");
   } finally { await context.close(); }
 }
 
@@ -627,17 +633,21 @@ async function captureStates(page: Page, variant: Variant, phone: boolean): Prom
   await capture(page, variant, "multiline");
   await line.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await capture(page, variant, "multiline-scrolled-end");
-  const refusals: [string, { code: string; message: string }][] = [
-    ["read-only", { code: "read_only", message: "observe" }], ["too-long", { code: "insert_too_long", message: "long" }],
-    ["secret-prompt", { code: "secret_prompt", message: "password" }], ["not-transmitted", { code: "not_transmitted", message: "dropped" }],
-    ["waited-too-long", { code: "insert_timeout", message: "late" }], ["not-ready", { code: "input_not_ready", message: "not ready" }],
-    ["other", { code: "pane_busy", message: "The pane is busy with a demo turn." }],
+  const refusals: [string, { code: string; message: string }, string][] = [
+    ["read-only", { code: "read_only", message: "observe" }, "Not inserted: this view only watches the pane."],
+    ["too-long", { code: "insert_too_long", message: "long" }, "Not inserted: the text is too long for the terminal."],
+    ["secret-prompt", { code: "secret_prompt", message: "password" }, "Not inserted: the terminal is asking for a password. Nothing was typed."],
+    ["not-transmitted", { code: "not_transmitted", message: "dropped" }, "Not inserted: the connection dropped before the text left. Try again."],
+    ["waited-too-long", { code: "insert_timeout", message: "late" }, "Not inserted: it waited too long behind earlier input, and nothing was typed. Try again."],
+    ["not-ready", { code: "input_not_ready", message: "not ready" }, "Not inserted: the terminal is not ready. Nothing was typed."],
+    ["other", { code: "pane_busy", message: "The pane is busy with a demo turn." }, "Not inserted: The pane is busy with a demo turn."],
   ];
-  for (const [state, forced] of refusals) {
+  for (const [state, forced, note] of refusals) {
     await h.set({ forceInsert: forced });
     await setLine(page, "git status");
     await press(insert);
-    await page.locator(".pane-frame.is-current .terminal-input-note").waitFor();
+    await noteText(page, note);
+    check(`a ${state} refusal keeps the line`, await line.inputValue() === "git status", await line.inputValue());
     await capture(page, variant, `refused-${state}`);
   }
   await h.set({ forceInsert: null });

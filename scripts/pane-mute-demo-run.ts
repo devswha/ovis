@@ -12,10 +12,11 @@ import type { ServerMessage } from "../shared/protocol.ts";
 import { handlePreferencesRequest, PreferenceStore } from "../server/preferences.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { contextMenuKey } from "./context-menu-key.ts";
 import { sheetRisen } from "./settings-page.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 
-interface RosterPatch { secondPc?: "connected" | "disconnected" | null; empty?: boolean; loading?: boolean }
+interface RosterPatch { secondPc?: "connected" | "disconnected" | null; longLabel?: { paneId: string; label: string } | null; empty?: boolean; loading?: boolean }
 declare global {
   interface Window {
     muteFixture: {
@@ -38,6 +39,8 @@ function installMuteFixture(): void {
     if (!local?.snapshot) return machines;
     if (patch.loading) return [{ ...local, snapshot: null }];
     if (patch.empty) return [{ ...local, snapshot: { ...local.snapshot, panes: [], agents: [], workspaces: [], tabs: [], layouts: [] } }];
+    const long = patch.longLabel;
+    if (long) for (const pane of local.snapshot.panes) if (pane.pane_id === long.paneId) pane.label = long.label;
     if (patch.secondPc) return [...machines, { ...structuredClone(local), id: "pc-2", name: "Laptop", state: patch.secondPc, error: null }];
     return machines;
   };
@@ -129,6 +132,7 @@ function installMuteFixture(): void {
 const P = panes.omp;
 const CONTROL = panes.web;
 const OPENED = panes.api;
+const LONG_LABEL = "Rewrite the whole configuration loader so that every environment variable is validated before the service boots";
 const app = mkdtempSync(join(tmpdir(), "herdr-pane-mute-demo-"));
 const stateRoot = mkdtempSync(join(tmpdir(), "herdr-pane-mute-state-"));
 let stores = 0;
@@ -344,13 +348,21 @@ export async function runPaneMute(): Promise<void> { try {
         const context = await newContext(browser, false, {});
         const page = await openTab(context);
         assert.deepEqual(await getPreferences(page), { revision: 0, settings: {}, muted_panes: [] }, "GET of a fresh store carries the empty list");
-        await toggleMute(page, false, "local", P);
+        // by keys alone: the context-menu key opens the row menu, ArrowDown reaches Mute alerts, Enter flips it
+        await row(page, "local", P).locator(".agent-select").focus();
+        await contextMenuKey(page);
+        await page.locator(".row-menu").waitFor();
+        await page.waitForFunction(() => document.activeElement?.closest(".row-menu") !== null);
+        await page.keyboard.press("ArrowDown");
+        await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitemcheckbox");
+        await page.keyboard.press("Enter");
+        await page.locator(".row-menu").waitFor({ state: "detached" });
         const saved = await storeHolds("the first mute of a fresh store", (document) => document.muted_panes?.includes(key) === true);
         const { state_id: savedId, ...savedRest } = saved;
         assert.match(savedId ?? "", /^[0-9a-f]{32}$/, "the first save names the state folder");
         assert.deepEqual(savedRest, { revision: 1, settings: {}, pins: [], muted_panes: [key] }, "the first mute is saved over the fresh store");
         await context.close();
-        checks.push("fresh store: GET says muted_panes: [], and the first mute is saved as revision 1");
+        checks.push("fresh store: GET says muted_panes: [], and the first mute, made by keys alone, is saved as revision 1");
       }
 
       openStore("fresh");
@@ -515,7 +527,25 @@ export async function runPaneMute(): Promise<void> { try {
         assert.equal(await sheetItem().getAttribute("aria-pressed"), "true", "a muted pane's sheet shows Mute alerts pressed");
         assert.equal(await sheetItem().locator(".row-sheet-label").textContent(), ko("Unmute alerts"));
         await closeMenu(page);
-        await page.evaluate(() => window.muteFixture.roster({ loading: true }));
+        await page.evaluate((label) => window.muteFixture.roster({ longLabel: label }), { paneId: P, label: LONG_LABEL });
+        await openDrawer(page);
+        await row(page, "local", P).locator(".agent-title", { hasText: LONG_LABEL.slice(0, 20) }).waitFor();
+        const fit = await row(page, "local", P).evaluate((item) => {
+          const box = item.getBoundingClientRect();
+          const bell = item.querySelector('[data-testid="alerts-muted"]')!.getBoundingClientRect();
+          const title = item.querySelector<HTMLElement>(".agent-title")!;
+          return { bellInRow: bell.width > 0 && bell.left >= box.left - 0.5 && bell.right <= box.right + 0.5, titleClear: title.getBoundingClientRect().right <= bell.left + 0.5, titleCut: title.scrollWidth > title.clientWidth };
+        });
+        assert.deepEqual(fit, { bellInRow: true, titleClear: true, titleCut: true }, "a long muted title is cut short before the muted bell, which stays in its row");
+        const end = await page.locator(".agents-sidebar .agent-list-contents").evaluate((list) => {
+          list.scrollTop = list.scrollHeight;
+          const items = list.querySelectorAll(".agent-item");
+          const last = items[items.length - 1]!.getBoundingClientRect();
+          const box = list.getBoundingClientRect();
+          return { rows: items.length, lastShown: last.top >= Math.max(box.top, 0) - 0.5 && last.bottom <= Math.min(box.bottom, innerHeight) + 0.5 };
+        });
+        assert.equal(end.lastShown, true, `the roster's last row comes into view at its end: ${JSON.stringify(end)}`);
+        await page.evaluate(() => window.muteFixture.roster({ longLabel: null, loading: true }));
         await openDrawer(page);
         const empty = page.locator(".agents-sidebar .agent-empty");
         await empty.filter({ hasText: ko("Loading agents…") }).waitFor();
@@ -524,7 +554,7 @@ export async function runPaneMute(): Promise<void> { try {
         assert.equal(await empty.textContent(), ko("No agents running"));
         assert.deepEqual(errorsOf(page), []);
         await context.close();
-        checks.push("Korean phone: the row sheet's Mute alerts by touch and by arrow keys, pressed once muted, in Korean; the roster's loading and empty lines in Korean");
+        checks.push("Korean phone: the row sheet's Mute alerts by touch and by arrow keys, pressed once muted, in Korean; a long muted title cut before its bell; the roster's last row reachable; its loading and empty lines in Korean");
       }
 
       if (evidence) {
