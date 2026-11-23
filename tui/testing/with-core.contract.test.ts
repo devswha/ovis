@@ -62,9 +62,10 @@ interface Run {
   stderr: () => string;
 }
 
-function helper(args: string[], env: Record<string, string>, cwd = mkdtempSync(join(scratch, "command-"))): Run {
+function helper(args: string[], env: Record<string, string>, options: { cwd?: string; preload?: string } = {}): Run {
+  const cwd = options.cwd ?? mkdtempSync(join(scratch, "command-"));
   // A detached system command can keep this directory after with-core exits and removes its root.
-  const child = Bun.spawn([process.execPath, HELPER, ...args], { env: { ...env, TMPDIR: realpathSync(tmpdir()) }, cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, ...(options.preload ? ["--preload", options.preload] : []), HELPER, ...args], { env: { ...env, TMPDIR: realpathSync(tmpdir()) }, cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   let out = "";
   let err = "";
   const waiters = new Set<() => void>();
@@ -263,7 +264,7 @@ describe("with-core's options", () => {
       const file = join(scratch, "linked.env");
       const marker = join(scratch, "ran-linked");
       writeFileSync(file, `HC_SOCKET=${socket}\nHC_SESSION=elsewhere\n`);
-      const run = helper(["--core-env", file, "--", "sh", "-c", `touch '${marker}'`], callerEnv({ HOME: home }), cwd);
+      const run = helper(["--core-env", file, "--", "sh", "-c", `touch '${marker}'`], callerEnv({ HOME: home }), { cwd });
       expect({ socket, exit: await run.exited, ran: existsSync(marker) }).toEqual({ socket, exit: 2, ran: false });
       expect(run.stderr()).not.toContain("root=");
     }
@@ -339,6 +340,17 @@ describe("with-core cleanup with a CLI stand-in", () => {
     }, TEST_MS);
   }
 
+  it("a dump WASM failure stops the started core and removes its folder", async () => {
+    const hc = standInHc("dump-failure");
+    const preload = join(scratch, "fail-dump.js");
+    writeFileSync(preload, 'WebAssembly.Module = new Proxy(WebAssembly.Module, { construct() { throw new Error("forced dump WASM failure"); } });\n');
+    const run = helper(["--pty", "--dump", "--", "/bin/sh", "-c", "printf rendered"], callerEnv({ OVIS_TEST_HC_BIN: hc.path }), { preload });
+    const code = await run.exited;
+    expect({
+      code, renderingFailed: run.stderr().includes("forced dump WASM failure"),
+      calls: readFileSync(hc.log, "utf8").trim().split("\n"), left: leftovers(run),
+    }).toEqual({ code: 125, renderingFailed: true, calls: ["start", "status", "stop"], left: NOTHING_LEFT });
+  }, TEST_MS);
 });
 
 describe("with-core --pty", () => {

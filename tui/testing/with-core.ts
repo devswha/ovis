@@ -288,9 +288,14 @@ async function main(): Promise<number> {
       forced ??= 127;
     }
     if (ptyRun) {
-      const code = await ptyRun.exited;
-      if (options.pty.dump) process.stdout.write(await gridText(screenOutput(ptyRun.output()), options.pty.cols, options.pty.rows));
-      forced ??= code ?? EXIT_FAILED;
+      try {
+        const code = await ptyRun.exited;
+        if (options.pty.dump) process.stdout.write(await gridText(screenOutput(ptyRun.output()), options.pty.cols, options.pty.rows));
+        forced ??= code ?? EXIT_FAILED;
+      } catch (error) {
+        console.error(`with-core: cannot finish pseudo-terminal output: ${error instanceof Error ? error.message : String(error)}`);
+        forced ??= EXIT_FAILED;
+      }
     }
   } else if (!finishing && forced === null) {
     try {
