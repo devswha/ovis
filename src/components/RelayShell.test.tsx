@@ -919,6 +919,37 @@ describe("the hosted front page", () => {
         }
       });
 
+      it("opens nothing when the device went offline while the app was asked whether Tailscale is on, and ends that attempt", async () => {
+        const called: string[] = [];
+        const tailscale = Promise.withResolvers<{ on?: boolean }>();
+        const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+        Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+          isNativePlatform: () => true, getPlatform: () => "android",
+          PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "tailscale"].map((name) => ({ name })) }],
+          nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+            called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
+            if (method === "getState") return { saved: ["https://macbookpro.tail1e211e.ts.net:17317"], names: {} };
+            if (method === "tailscale") return await tailscale.promise;
+            if (method === "open") return await new Promise(() => {});
+            return {};
+          },
+        } });
+        try {
+          await mount(offlinePage());
+          await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "tailscale").find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+          expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node))).toHaveLength(1);
+          (navigator as { onLine?: boolean }).onLine = false;
+          await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
+          expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+          expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node))).toHaveLength(0);
+          expect(alerts()).toContain("Connect this phone to the internet to open the PC.");
+        } finally {
+          (navigator as { onLine?: boolean }).onLine = true;
+          if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+          else Reflect.deleteProperty(globalThis, "Capacitor");
+        }
+      });
+
       it("says this device, in a browser, and opens nothing while it is offline", async () => {
         offline(true);
         try {
@@ -1778,6 +1809,21 @@ describe("the hosted front page", () => {
         expect(lines()).toEqual([["relay", "Relay", "Account PC"], ["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"]]);
         await act(async () => { forgets()[0]!.props.onClick(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
+      });
+    });
+
+    it("forgets one of two address ways of one ID at a time, each from its own line, the other staying", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
+          method === "getState" ? { saved: [tail, lan], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await forgetPcs();
+        expect(lines()).toEqual([["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"], ["address", "Address192.168.0.5:7317", "Forget"]]);
+        await act(async () => { forgets()[1]!.props.onClick(); });
+        // no question for one way of a PC not in use, and only that way goes
+        expect(renderer!.root.findAll((node) => node.props["data-forget-ask"] !== undefined && shown(node))).toHaveLength(0);
+        expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${lan}`]);
       });
     });
 

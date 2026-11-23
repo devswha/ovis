@@ -364,7 +364,8 @@ final class PCStore {
         }
     }
 
-    static void setName(Context context, String key, String name) {
+    /** On PCStore's monitor, as identify writes the names there too: neither write is lost to the other. */
+    static synchronized void setName(Context context, String key, String name) {
         JSONObject names = names(context);
         try {
             if (name == null) names.remove(key);

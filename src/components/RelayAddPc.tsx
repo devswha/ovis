@@ -333,6 +333,8 @@ export function useAddressOpen(view = "page") {
     void tailscaleOn().then((on) => {
       if (attempt?.id !== id) return;
       if (!on) { setAttempt(null); setOutcome({ view, kind: "tailscale-off", ...(options.other ? { other: options.other } : {}) }); return; }
+      // the network went away while the app was asked: this attempt ends there, opening nothing
+      if (deviceOffline()) { setAttempt(null); setOutcome({ view, kind: "error", text: offlineOpenText(t) }); return; }
       setAttempt({ id, host: url.host, phase: "opening", view });
       openNow(url, id, options.other);
     });

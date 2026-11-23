@@ -460,6 +460,11 @@ final class HomeTests: XCTestCase {
         XCTAssertEqual(Home.identifiedKey(URL(string: mac + "/?pane=w1%3Ap1"), current: mac, appOrigin: app), mac)
         XCTAssertEqual(Home.identifiedKey(URL(string: "https://MACBOOKPRO.tail1e211e.ts.net:17317/"), current: mac, appOrigin: app), mac)
         XCTAssertEqual(Home.identifiedKey(URL(string: "http://127.0.0.1:47320/"), current: "http://127.0.0.1:47320", appOrigin: app), "http://127.0.0.1:47320")
+        // a scheme's own port written out or not is one origin; another port is another
+        XCTAssertEqual(Home.identifiedKey(URL(string: "https://pc.example/"), current: "https://pc.example:443", appOrigin: app), "https://pc.example:443")
+        XCTAssertEqual(Home.identifiedKey(URL(string: "https://pc.example:443/"), current: "https://pc.example", appOrigin: app), "https://pc.example")
+        XCTAssertEqual(Home.identifiedKey(URL(string: "http://pc/"), current: "http://pc:80", appOrigin: app), "http://pc:80")
+        XCTAssertNil(Home.identifiedKey(URL(string: "https://pc.example:8443/"), current: "https://pc.example", appOrigin: app))
         // a page that went to another origin, another PC's, or none shown
         XCTAssertNil(Home.identifiedKey(URL(string: "https://evil.example/"), current: mac, appOrigin: app))
         XCTAssertNil(Home.identifiedKey(URL(string: "https://desk.tail1e211e.ts.net/"), current: mac, appOrigin: app))

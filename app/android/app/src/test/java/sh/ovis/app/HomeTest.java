@@ -437,6 +437,11 @@ public class HomeTest {
         assertEquals(mac, Home.identifiedKey(mac + "/?pane=w1%3Ap1", mac, APP));
         assertEquals(mac, Home.identifiedKey("https://MACBOOKPRO.tail1e211e.ts.net:17317/", mac, APP));
         assertEquals("http://127.0.0.2:47317", Home.identifiedKey("http://127.0.0.2:47317/", "http://127.0.0.2:47317", APP));
+        // a scheme's own port written out or not is one origin; another port is another
+        assertEquals("https://pc.example:443", Home.identifiedKey("https://pc.example/", "https://pc.example:443", APP));
+        assertEquals("https://pc.example", Home.identifiedKey("https://pc.example:443/", "https://pc.example", APP));
+        assertEquals("http://pc:80", Home.identifiedKey("http://pc/", "http://pc:80", APP));
+        assertEquals(null, Home.identifiedKey("https://pc.example:8443/", "https://pc.example", APP));
         // a page that went to another origin, another PC's, or none shown
         assertEquals(null, Home.identifiedKey("https://evil.example/", mac, APP));
         assertEquals(null, Home.identifiedKey("https://desk.tail1e211e.ts.net/", mac, APP));

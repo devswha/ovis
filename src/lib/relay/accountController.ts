@@ -248,15 +248,18 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const from = account.session();
     // an enrollment of this tab stops here; one still linking, here or in another tab, is in the leave's snapshot (leave.ts)
     for (const serverId of running.values()) cancelEnrollment(serverId);
+    let departing: string | undefined;
     return from.then((session) => {
       if (session === undefined) throw new SignedOutError();
+      departing = session.account;
       return leaveAccount({ service: account, accountStore, relayStore: store, session });
     }).then(async ({ unconfirmed }): Promise<LeaveOutcome> => {
       // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
       const names = new Map((await store.list()).map((device) => [device.server_id, device.name ?? device.server_id.slice(0, 8)]));
       const message = unconfirmed.length === 0 ? null
         : t("This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") });
-      dropKnownPcs();
+      // the PCs kept for the account that left; another that signed in meanwhile keeps its own
+      dropKnownPcs(departing);
       if (epoch === generation) { accountView = { kind: "signed-out", error: message }; await changed(); }
       return { left: true, message };
     }, async (error: unknown): Promise<LeaveOutcome> => {

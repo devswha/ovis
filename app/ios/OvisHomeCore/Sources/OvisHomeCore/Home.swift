@@ -258,23 +258,14 @@ public enum Home {
         return "\(scheme)://\(shownHost)\(appOrigin.port.map { ":\($0)" } ?? "")/s/\(id)/"
     }
 
-    /// `scheme://host[:port]` of an http or https URL, the host in lowercase (PCStore.origin(of:), the key a PC saved
-    /// by its address is kept by), or nil.
-    private static func origin(of url: URL?) -> String? {
-        guard let url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              let host = url.host?.lowercased(), !host.isEmpty else { return nil }
-        let shownHost = host.contains(":") ? "[\(host)]" : host
-        return url.port.map { "\(scheme)://\(shownHost):\($0)" } ?? "\(scheme)://\(shownHost)"
-    }
-
     /// The saved PC whose own page `url` is, which may say which PC it is (HerdrShell identify): `current`, the PC the
     /// app shows, when `url` is on its origin and it is saved by its address (a Tailscale or home network address, or an
     /// SSH PC's on this phone). Nil for any other page: the hosted app at `appOrigin` and a relay PC's scope there (its
     /// path names it already), or a page that went to another origin. So a page speaks for its own PC alone.
     public static func identifiedKey(_ url: URL?, current: String?, appOrigin: URL?) -> String? {
+        // one origin whether or not its scheme's own port is written out (https://pc:443 is https://pc); another port is not
         guard let current, let saved = URL(string: current), let path = URLComponents(string: current)?.percentEncodedPath,
-              path.isEmpty || path == "/", !sameOrigin(saved, appOrigin),
-              let pageOrigin = origin(of: url), pageOrigin == origin(of: saved) else { return nil }
+              path.isEmpty || path == "/", !sameOrigin(saved, appOrigin), sameOrigin(url, saved) else { return nil }
         return current
     }
 

@@ -257,8 +257,8 @@ final class Home {
      */
     static String identifiedKey(String url, String current, String appOrigin) {
         if (url == null || current == null || PCStore.scoped(current) || (appOrigin != null && PCStore.sameOrigin(current, appOrigin))) return null;
-        String origin = PCStore.origin(url);
-        return origin != null && origin.equals(PCStore.origin(current)) ? current : null;
+        // one origin whether or not its scheme's own port is written out (https://pc:443 is https://pc); another port is not
+        return PCStore.sameOrigin(url, current) ? current : null;
     }
 
     /** A relay ID as a page says it, 32 lowercase hex digits, or null. */
