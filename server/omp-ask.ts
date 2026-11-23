@@ -37,6 +37,18 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
 }
 
 /**
+ * omp 19's form (dialogs/omp-form.ts) is read off the screen alone; the pane's one open `ask` call that carries a form
+ * (`{ html }`) is the call it answers, so a key goes out only while that call is still open. The id stays the screen's.
+ */
+export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): InteractivePrompt {
+  const parsed = parsedByPublicPrompt.get(prompt);
+  const call = ompOpenCall(open, session);
+  const args = open[0]?.args;
+  if (!parsed || call === null || typeof args !== "object" || args === null || !("html" in args) || typeof args.html !== "string") return prompt;
+  return publicPrompt({ ...parsed, ompCall: call });
+}
+
+/**
  * A tab strip proves positions, not a call: only the pane's one matching open call authorizes moves, and only on a
  * question whose drawn text and options are that call's. The review draws headers and answers alone, which another call
  * with the same headers draws as well: it offers no move. The card's id stays as read, with or without the binding.

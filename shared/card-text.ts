@@ -21,6 +21,7 @@ const CARD_TEXT = [
   "Command approval",
   "Choose an option",
   "This request cannot be shown in full. Press F4 in the terminal to read it.",
+  "Show all choices",
   "Permission request",
   "Waiting for your answer",
   "Waiting for input",
