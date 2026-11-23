@@ -339,6 +339,18 @@
   min-height: calc(1lh + 2 * var(--space-2));
 }
 
+/* a question's context is prose, not terminal output: body-size text and room for a few lines before it scrolls */
+.prompt-card-body.is-prose {
+  min-height: calc(4lh + 2 * var(--space-2));
+  max-height: calc(10lh + 2 * var(--space-2));
+  font-family: inherit;
+  font-size: var(--fs-sm);
+}
+
+.prompt-card-body.is-prose.is-line {
+  min-height: calc(1lh + 2 * var(--space-2));
+}
+
 .prompt-card-body::after {
   content: "";
   position: sticky;

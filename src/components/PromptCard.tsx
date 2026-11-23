@@ -281,7 +281,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
           })}
         </dl>
       )}
-      {words.body !== null && words.body.length > 0 && <pre className={`prompt-card-body${words.body.includes("\n") ? "" : " is-line"}`}>{words.body}</pre>}
+      {words.body !== null && words.body.length > 0 && <pre className={`prompt-card-body${words.body.includes("\n") ? "" : " is-line"}${prompt.kind === "question" ? " is-prose" : ""}`}>{words.body}</pre>}
       {hasChoices && (
         /* busy on the options alone, never on the card: a live region inside an aria-busy subtree is not
            read (Chromium), and the status line below has to be */
