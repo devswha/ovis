@@ -516,6 +516,7 @@ export async function runPaneMute(): Promise<void> { try {
         await openMenu(page, true, "local", P);
         assert.equal(await sheetItem().getAttribute("aria-pressed"), "false", "the phone's row sheet offers Mute alerts, not pressed");
         assert.equal(await sheetItem().locator(".row-sheet-label").textContent(), ko("Mute alerts"));
+        assert.equal(await sheetItem().evaluate((item) => item === document.activeElement), false, "the sheet opens on another item, so the arrow keys have somewhere to go");
         for (let step = 0; step < 4 && !await sheetItem().evaluate((item) => item === document.activeElement); step += 1) await page.keyboard.press("ArrowDown");
         assert.equal(await sheetItem().evaluate((item) => item === document.activeElement), true, "the arrow keys reach Mute alerts in the sheet");
         await sheetItem().tap();
