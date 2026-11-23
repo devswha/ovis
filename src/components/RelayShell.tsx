@@ -10,7 +10,8 @@ import { hasNativePlugin } from "../lib/nativeApp.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { AccountView, RelayShellState } from "../lib/relay/shellState.ts";
-import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
+import { usePhoneSheetBack, useSheetHistory } from "../lib/sheetHistory.ts";
+import { observedVersionOf } from "../lib/relay/device.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
@@ -19,7 +20,7 @@ import { StartScreenAccountMenu } from "./AccountHead.tsx";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { AccountSignIn } from "./AccountPcs.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
-import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CodeWays, MyPcs, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
+import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, MyPcs, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
@@ -216,17 +217,28 @@ export function RelayShell(props: RelayShellProps) {
   // this phone's pairings as their last check found them (MyPcs adds the account's)
   const offOf = (serverId: string): boolean => { const now = pcStatus?.get(serverId); const shown = now?.kind === "checking" ? now.previous : now; return shown?.kind === "offline" && shown.reason === "pc"; };
   const answered = (serverId: string): boolean => { const now = pcStatus?.get(serverId); return (now?.kind === "checking" ? now.previous : now)?.kind === "answered"; };
-  const savedPcs = devices.map((device) => ({ server_id: device.server_id, name: device.name, ...(offOf(device.server_id) ? { status: "off" as const } : answered(device.server_id) ? { status: "online" as const } : {}) }));
+  // what this device knows itself comes first: a pairing's saved Ovis too old, then what a check settled, for its own
+  // pairings and the account's PCs alike (a check the relay turned away settles nothing)
+  const checkedOf = (serverId: string): CheckedPc | undefined => offOf(serverId) ? "off" : answered(serverId) ? "online" : undefined;
+  const savedPcs = devices.map((device) => ({ server_id: device.server_id, name: device.name, status: observedVersionOf(device)?.outdated === true ? "update" as const : checkedOf(device.server_id) }));
+  const checked = new Map([...(pcStatus?.keys() ?? [])].flatMap((serverId) => { const found = checkedOf(serverId); return found === undefined ? [] : [[serverId, found] as const]; }));
 
   // the front page: My PCs once anything opens here (signed in, a PC saved on this phone, or asked for by a PC's More),
-  // otherwise Add a PC itself, as Connect a PC. Until the phone app says what it saved, a page that waits on that draws
-  // neither, so it does not flash the other
-  const listed = addOpen || account?.kind === "signed-in" || devices.length > 0 || phone.pcs.length > 0;
-  const undecided = !listed && !phone.read;
+  // otherwise Add a PC itself, as Connect a PC. What is saved decides only the app's own front page: a PC's page (scoped)
+  // keeps that PC's sign-in, and its Back. Until the phone app says what it saved, a front page that waits on that draws
+  // neither, so it does not flash the other (usePhoneSaved waits only so long)
+  const inventory = !scoped && (devices.length > 0 || phone.pcs.length > 0);
+  const listed = addOpen || account?.kind === "signed-in" || inventory;
+  const undecided = !listed && !scoped && !phone.read;
   // a wide screen (a desktop browser) keeps Add a PC open beside My PCs; a narrower one opens it from Add PC
   const wide = useMediaQuery(WIDE_QUERY);
   const desk = wide && listed;
   const myPcsShown = listed && (desk || !addView);
+  // Add a PC over My PCs has an entry of its own in the history: Back (the phone's, the browser's or its own) comes back to
+  // the list, and the focus goes back to Add PC. Beside My PCs on a wide screen it is no step of its own
+  const [cameBack, setCameBack] = useState(false);
+  const closeAdd = (): void => { setAddView(false); setCameBack(true); };
+  useSheetHistory(addView && listed && !desk, closeAdd);
   const signIn = signedOut && onSignIn ? (
     <AccountSignIn onSignIn={onSignIn} error={account.kind === "signed-out" ? account.error : null} notice={account.kind === "signed-out" ? (account.notice ?? null) : null}
       busy={account.kind === "signing-in"} busyProvider={account.kind === "signing-in" ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null}
@@ -243,11 +255,11 @@ export function RelayShell(props: RelayShellProps) {
     : account !== null ? <SignedOutRelayPanel signIn={signIn} signingIn={account.kind === "signing-in"} code={code} />
     : <AccountlessRelayPanel code={code} />;
   const frontView = (top: ReactNode, menu?: ReactNode): ReactNode => {
-    if (!myPcsShown) return <AddPcTabs title={listed ? t("Add PC") : t("Connect a PC")} relay={relayPanel} layout={listed ? "page" : "front"} onBack={listed ? () => setAddView(false) : account === null && scoped ? onBack : undefined} />;
+    if (!myPcsShown) return <AddPcTabs title={listed ? t("Add PC") : t("Connect a PC")} relay={relayPanel} layout={listed ? "page" : "front"} focused={listed} onBack={listed ? closeAdd : account === null && scoped ? onBack : undefined} />;
     const list = (
-      <MyPcs devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} phone={phone} onForget={props.onForgetSaved} wide={desk}
+      <MyPcs devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} checked={checked} phone={phone} onForget={props.onForgetSaved} wide={desk} addFocused={cameBack}
         inUse={addOpen && addFrom !== null ? serverIdOfPath(addFrom) : null} onBack={addOpen ? () => { setAddOpen(false); leaveAddEntry(addFrom); } : undefined}
-        onAdd={desk ? undefined : () => setAddView(true)} menu={menu} top={top}
+        onAdd={desk ? undefined : () => { setCameBack(false); setAddView(true); }} menu={menu} top={top}
         empty={account?.kind === "signed-in" && account.pcs !== null ? <p className="relay-shell-copy">{t("Sign in with the same account on the PC where Ovis runs")}</p> : undefined} />
     );
     return desk ? <div className="connect-desk">{list}<AddPcTabs title={t("Add PC")} relay={relayPanel} layout="side" /></div> : list;

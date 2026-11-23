@@ -205,8 +205,44 @@ try {
     assert.deepEqual({ entry: history.ids[history.current], path: back.path, sheet: back.sheet }, { entry: pcEntry, path: pcPage, sheet: false }, `${round}: Back from My PCs lands on the PC page it was opened from, its sheet closed (${history.text})`);
   }
 
+  /** A row of My PCs with Forget: its chevron and its middle open the PC (the link), never Forget, at either density. */
+  async function rowHits(): Promise<void> {
+    for (const density of ["compact", "comfortable"] as const) {
+      const hits = await page.evaluate((density) => {
+        const root = document.documentElement;
+        const was = root.dataset["density"];
+        root.dataset["density"] = density;
+        try {
+          const row = [...document.querySelectorAll<HTMLElement>("li.my-pc")].find((each) => each.querySelector(".phone-pc-forget") !== null);
+          if (row === undefined) return null;
+          const link = row.querySelector("a.relay-add-saved-pc")!, forget = row.querySelector(".phone-pc-forget")!;
+          const middle = (rect: DOMRect): Element | null => document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          const hit = (element: Element | null): string => element === null ? "nothing" : element.closest(".phone-pc-forget") ? "forget" : element.closest("a.relay-add-saved-pc") === link ? "link" : "other";
+          const open = link.getBoundingClientRect(), gone = forget.getBoundingClientRect();
+          return { chevron: hit(middle(link.querySelector(".relay-shell-pc-glyph")!.getBoundingClientRect())), row: hit(middle(row.getBoundingClientRect())), apart: open.right <= gone.left || gone.right <= open.left || open.bottom <= gone.top || gone.bottom <= open.top };
+        } finally { if (was === undefined) delete root.dataset["density"]; else root.dataset["density"] = was; }
+      }, density);
+      assert.deepEqual(hits, { chevron: "link", row: "link", apart: true }, `${density}: the chevron and the middle of a row with Forget open the PC, and Forget's own area lies beside the link, not over it`);
+    }
+  }
+
+  /** Add PC over My PCs is an entry of its own: the browser's Back comes back to My PCs on /#add, the focus with it. */
+  async function addAndBack(): Promise<void> {
+    await page.locator('[data-view="my-pcs"] [data-action="add-pc"]').tap();
+    await page.locator('[data-view="add-pc"]').waitFor();
+    await page.waitForFunction(() => document.activeElement?.tagName === "H1" && document.activeElement.textContent === "Add PC");
+    await shot("add-pc");
+    await page.goBack();
+    await page.locator('[data-view="my-pcs"]').waitFor();
+    const back = await place(page);
+    assert.equal(back.path + back.hash, "/#add", "the browser's Back from Add PC lands on My PCs, still the page More opened");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("data-action") === "add-pc");
+  }
+
   // My PCs' own Back, then the browser's (a phone's Back button)
   await connectAPc("own-back");
+  await rowHits();
+  await addAndBack();
   await addScreen.tap();
   await backOnPcPage("own-back");
   await connectAPc("browser-back");
@@ -221,7 +257,7 @@ try {
   assert.equal(left.sheet, false, "Back from the PC page opens no sheet");
   assert.deepEqual(errors, [], "no page errors");
   await context.close();
-  console.log(`PASS More → Connect a PC opens My PCs over a phone's round trip (${PHONE_LATENCY_MS} ms), the PC marked In use now, and it stays; My PCs' Back and the browser's land on the PC page, whose Back leaves it in one press`);
+  console.log(`PASS More → Connect a PC opens My PCs over a phone's round trip (${PHONE_LATENCY_MS} ms), the PC marked In use now, and it stays; a row's chevron and middle open the PC, never Forget, at both densities; Back from Add PC lands on My PCs with the focus; My PCs' Back and the browser's land on the PC page, whose Back leaves it in one press`);
 } finally {
   await browser?.close();
   site.stop(true);

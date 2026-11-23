@@ -130,8 +130,8 @@ export function Way({ icon: Icon, title, sub, onClick, action, disabled = false 
   );
 }
 
-/** A PC this device paired, as its last check found it. */
-export type SavedPc = { readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | undefined };
+/** A PC this device paired, as this device knows it: its saved Ovis too old, or as its last check found it. */
+export type SavedPc = { readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | "update" | undefined };
 
 /** Whether the phone app around this page can scan a PC's QR code itself (a browser cannot). */
 export function canScanQr(): boolean {

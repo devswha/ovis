@@ -138,7 +138,11 @@
   flex: 1;
 }
 
+/* two columns for every row (a subgrid each): the row's open link, then Forget where the row has one, in a cell of its
+   own beside the link, so a tap on the link never lands on Forget and every row's state lines up */
 .my-pcs-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -148,10 +152,12 @@
   overflow: hidden;
 }
 
-/* a PC's row (ConnectStart PcRow): its name over the way it connects, its state word and chevron at the end, and Forget,
-   where it has one, at the end of the second line, so every row's state lines up */
+/* a PC's row (ConnectStart PcRow): its name over the way it connects, its state word and chevron at the end of the link */
 .my-pc {
-  position: relative;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
 }
 
 .my-pc + .my-pc {
@@ -159,6 +165,7 @@
 }
 
 .my-pc > .relay-add-saved-pc {
+  grid-column: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   grid-template-areas: "name state chevron" "meta meta meta";
@@ -224,16 +231,11 @@
 }
 
 .my-pc > .phone-pc-forget {
-  position: absolute;
-  inset-block-end: 0;
-  inset-inline-end: var(--space-2);
+  grid-column: 2;
   height: var(--touch-target);
+  margin-inline-end: var(--space-2);
   padding-inline: var(--space-2);
   color: var(--text-dim);
-}
-
-.my-pc:has(> .phone-pc-forget) .phone-pc-meta {
-  max-width: calc(100% - 2 * var(--touch-target));
 }
 
 .my-pcs-add {
