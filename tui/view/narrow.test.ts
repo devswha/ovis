@@ -191,6 +191,20 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(run.loop.report().mode.overlays).toEqual(when === "before repaint" ? ["menu"] : []);
   }, TEST_MS);
 
+  it.each([false, true])("6z goes to the pane labelled 6 on the screen (repainted: %s)", async (repaint) => {
+    const run = await shown(120, 80);
+    run.type("\x02\r");
+    await run.advance(FRAME_PASS_MS);
+    place(run.core, { space: "w-new", spaceName: "new", tab: "t-new", tabName: "new" }, "$ ");
+    await run.settle();
+    if (repaint) await run.advance(FRAME_PASS_MS);
+    const line = run.grid().find((row) => row.includes("6 · pane"));
+    expect(line).toContain(repaint ? "shell" : "files");
+    run.type("6z");
+    await run.advance(200);
+    expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(repaint ? ["7a", ""] : ["", "7a"]);
+  }, TEST_MS);
+
   it("the narrow header counts the agents that need the user elsewhere, and not the one it shows", async () => {
     const run = await Run.start({ fixture: agents, cols: 45, rows: 30 });
     runs.push(run);
@@ -271,6 +285,24 @@ describe("plain route: every built action of the catalogue is an entry of the me
       expect({ action: entry.action, state: byLabel.state, effects: byLabel.effects }).toEqual({ action: entry.action, state: direct.state, effects: direct.effects });
       expect({ action: entry.action, state: chosen.state, effects: chosen.effects }).toEqual({ action: entry.action, state: direct.state, effects: direct.effects });
     });
+  });
+
+  it.each(["reused address", "new connection"])("a menu letter cannot close or rename a new terminal at the painted address: %s", (change) => {
+    const born = (created: number): World => ({
+      workspaces: [{ id: "w", name: "", tabs: [{ id: "tab", name: "", panes: [
+        { id: "p", name: "shell", created }, { id: "other", name: "", created: 2 },
+      ] }] }],
+    });
+    const menu = after(base, { type: "world", epoch: 1, world: born(1), at: AT }, { type: "action", action: "menu", at: AT });
+    const top = menu.overlays.at(-1);
+    if (top?.kind !== "menu") throw new Error("menu did not open");
+    const changed = after(menu, { type: "world", epoch: change === "new connection" ? 2 : 1, world: born(change === "new connection" ? 1 : 3), at: AT });
+    for (const action of ["close_pane", "rename_pane"]) {
+      const row = top.entries.find((entry) => entry.kind === "action" && entry.action === action);
+      if (!row?.label) throw new Error(`no label for ${action}`);
+      const chosen = reduce(changed, text(row.label));
+      expect([chosen.state.overlays.at(-1)?.kind, chosen.effects]).toEqual(["menu", []]);
+    }
   });
 
   it("a digit goes to its place; Hangul typed under a Korean input method chooses nothing; the up arrow wraps to the last entry", () => {

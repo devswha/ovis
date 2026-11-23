@@ -30,7 +30,7 @@ import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-v
 import { type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
 import { focused } from "./model/focus.ts";
-import { initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
+import { initialState, type ModelEvent, type ModelState, presentedMenu, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
@@ -274,7 +274,7 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   function worldChanged(): void {
-    dispatch({ type: "world", world: world.view().world, core: snapshot?.core ?? null, at: clock.now() });
+    dispatch({ type: "world", world: world.view().world, core: snapshot?.core ?? null, epoch: snapshot?.epoch ?? 0, at: clock.now() });
     reshow();
   }
 
@@ -607,6 +607,7 @@ export function startLoop(options: LoopOptions): Loop {
     }
     const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
+    const frameMenu = state.overlays.at(-1);
     const chrome = buildChrome({
       regions: shape.regions,
       spots: shape.spots,
@@ -624,7 +625,6 @@ export function startLoop(options: LoopOptions): Loop {
       width: size.cols, height: size.rows, parts: chrome.parts,
       panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input,
     });
-    hits = frame.hits;
     let taken = true;
     if (frame.bytes.length > 0) {
       writes++;
@@ -632,6 +632,8 @@ export function startLoop(options: LoopOptions): Loop {
     }
     painter.taken(taken);
     if (ended || !taken) return;
+    hits = frame.hits;
+    state = presentedMenu(state, frameMenu);
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
     const order = [...shape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));

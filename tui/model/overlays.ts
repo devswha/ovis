@@ -8,7 +8,9 @@ import { TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
-import { chooseEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
+import { chooseEntry, indexOfEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
+
+interface MenuList { readonly entries: readonly MenuEntry[]; readonly cursor: number }
 
 /** A one-line text field of graphemes. `fresh`: still the suggested text, replaced by the first character typed. */
 export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly fresh: boolean; readonly original: string }
@@ -22,7 +24,7 @@ export type Overlay =
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
   | { readonly kind: "goto"; readonly field: Field }
   /** `cursor`: the index of the entry Enter chooses */
-  | { readonly kind: "menu"; readonly entries: readonly MenuEntry[]; readonly cursor: number };
+  | ({ readonly kind: "menu"; readonly presented: MenuList } & MenuList);
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
@@ -135,7 +137,9 @@ const run = (action: RunEffect["action"], target: Target | null, name: string | 
 export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
   const chosen = chooseEntry(overlay.entries, at);
   if (chosen === null) return { overlay, effects: [] };
-  return "cursor" in chosen ? { overlay: { ...overlay, cursor: chosen.cursor }, effects: [] } : { overlay: null, effects: [], choice: chosen.choice };
+  if (!("cursor" in chosen)) return { overlay: null, effects: [], choice: chosen.choice };
+  const cursor = indexOfEntry(overlay.presented.entries, overlay.entries[chosen.cursor]!);
+  return { overlay: { ...overlay, cursor: chosen.cursor, presented: { ...overlay.presented, cursor } }, effects: [] };
 }
 
 export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<Overlay, { kind: K }>> } = {
@@ -170,15 +174,22 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     closeKeys: ["esc"],
     target: () => null,
     input: (overlay, input) => {
-      if (isEnter(input)) return menuChoice(overlay, overlay.cursor);
+      const presented = overlay.presented;
+      const current = (at: number) => {
+        const shown = presented.entries[at];
+        return shown === undefined ? -1 : indexOfEntry(overlay.entries, shown);
+      };
+      if (isEnter(input)) return menuChoice(overlay, current(presented.cursor));
       if (input.kind === "key") {
-        const cursor = movedCursor(overlay.entries, overlay.cursor, input.event);
-        if (cursor !== null) return { overlay: { ...overlay, cursor }, effects: [] };
+        const cursor = movedCursor(presented.entries, presented.cursor, input.event);
+        if (cursor !== null) {
+          const next = current(cursor);
+          return { overlay: { ...overlay, cursor: next < 0 ? overlay.cursor : next, presented: { ...presented, cursor } }, effects: [] };
+        }
       }
       // a label is one character typed as it is: under an input method a letter arrives composed and chooses nothing
       const typed = input.kind === "paste" || (input.kind === "key" && (input.event.mods.alt || input.event.mods.ctrl)) ? "" : input.event.text ?? "";
-      const at = labelled(overlay.entries, [...typed][0] ?? "");
-      return at < 0 ? { overlay, effects: [] } : menuChoice(overlay, at);
+      return menuChoice(overlay, current(labelled(presented.entries, [...typed][0] ?? "")));
     },
   },
 };

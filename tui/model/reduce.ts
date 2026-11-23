@@ -41,6 +41,8 @@ export interface ModelState {
   readonly armed: boolean;
   readonly overlays: readonly Overlay[];
   readonly world: World;
+  /** A new core line can reuse every local address and birth time. Its menu choices are distinct. */
+  readonly worldEpoch: number;
   readonly focus: Focus;
   readonly keymap: Keymap;
   readonly notices: readonly Notice[];
@@ -59,7 +61,7 @@ export interface ModelState {
 export type ScreenEvent =
   | { readonly type: "resize"; readonly cols: number; readonly rows: number; readonly at: number }
   /** what exists now; focus, overlays and the navigate preview follow */
-  | { readonly type: "world"; readonly world: World; readonly core?: string | null; readonly at: number }
+  | { readonly type: "world"; readonly world: World; readonly core?: string | null; readonly epoch?: number; readonly at: number }
   /** herdr's `[keys]` table as parsed (anything else: the defaults), read again by main.ts */
   | { readonly type: "keys"; readonly keys: unknown; readonly at: number }
   /** a deadline the state named came due */
@@ -91,7 +93,7 @@ export interface Step { readonly state: ModelState; readonly effects: readonly E
 
 export function initialState(keys: unknown): ModelState {
   return {
-    mode: { name: "terminal" }, locked: false, armed: false, overlays: [], world: EMPTY_WORLD, focus: NO_FOCUS, keymap: buildKeymap(keys),
+    mode: { name: "terminal" }, locked: false, armed: false, overlays: [], world: EMPTY_WORLD, worldEpoch: 0, focus: NO_FOCUS, keymap: buildKeymap(keys),
     notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null, viewCore: null, restoring: null,
   };
 }
@@ -140,6 +142,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       mouse(acc, event);
       break;
     case "world":
+      if (event.epoch !== undefined && event.epoch !== state.worldEpoch) acc.s = { ...state, worldEpoch: event.epoch };
       applyWorld(acc, event.world, event.core ?? null, event.at);
       break;
     case "keys":
@@ -186,7 +189,16 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       // an event of a kind the model does not know changes nothing
       break;
   }
+  if (acc.s.world !== state.world || acc.s.focus !== state.focus) refreshMenus(acc);
   return { state: acc.s, effects: acc.effects, levels: acc.levels };
+}
+
+/** Commit the key map of the frame the host took. Until the first menu frame, keys use the list at open. */
+export function presentedMenu(state: ModelState, frame: Overlay | undefined): ModelState {
+  const menu = state.overlays.at(-1);
+  if (frame?.kind !== "menu" || menu?.kind !== "menu" || menu.presented.entries !== frame.presented.entries) return state;
+  if (frame.entries === menu.presented.entries && frame.cursor === menu.presented.cursor) return state;
+  return { ...state, overlays: [...state.overlays.slice(0, -1), { ...menu, presented: { entries: frame.entries, cursor: frame.cursor } }] };
 }
 
 type Unit = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "paste"; readonly event: PasteInput };
@@ -440,7 +452,6 @@ function applyWorld(acc: Acc, world: World, core: string | null, at: number): vo
   for (const overlay of gone) notice(acc, "target_gone", { overlay: overlay.kind }, at);
   restore(acc, core, at);
   follow(acc);
-  refreshMenus(acc);
 }
 
 /** An open menu lists what exists now, its cursor kept on the entry it was on. */
@@ -451,7 +462,7 @@ function refreshMenus(acc: Acc): void {
     ...acc.s,
     overlays: overlays.map((overlay) => {
       if (overlay.kind !== "menu") return overlay;
-      const entries = menuEntries(world, focus);
+      const entries = menuEntries(world, focus, acc.s.worldEpoch);
       return { ...overlay, entries, cursor: keptCursor(overlay.entries, overlay.cursor, entries) };
     }),
   };
@@ -509,9 +520,11 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction>, index: numb
       else if (unlockChords(s.keymap).length === 0) notice(acc, "lock_unbound", {}, at);
       else acc.s = { ...s, locked: true, overlays: [], mode: { name: "terminal" } };
       return;
-    case "menu":
-      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus), cursor: 0 }] };
+    case "menu": {
+      const list = { entries: menuEntries(s.world, s.focus, s.worldEpoch), cursor: 0 };
+      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", ...list, presented: list }] };
       return;
+    }
     case "navigate_workspace_up":
     case "navigate_workspace_down": {
       if (s.mode.name !== "navigate") return;

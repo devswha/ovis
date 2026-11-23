@@ -13,9 +13,9 @@ import { type Focus, focused, type World } from "./focus.ts";
 type PlaceKind = "workspace" | "tab" | "pane" | "agent";
 
 /** One line of the menu: a place (its id; an agent's and a pane's is the pane's) or an action; `label` the key that chooses it. */
-export type MenuEntry =
+export type MenuEntry = { readonly epoch: number } & (
   | { readonly kind: PlaceKind; readonly id: string; readonly label: string | null; readonly created?: number }
-  | { readonly kind: "action"; readonly action: HerdrAction; readonly label: string; readonly targets: string };
+  | { readonly kind: "action"; readonly action: HerdrAction; readonly label: string; readonly targets: string });
 
 /** The keys of the first places, in order: digits, which every keyboard types and no input method composes. */
 const PLACE_LABELS = [..."1234567890"];
@@ -23,7 +23,7 @@ const PLACE_LABELS = [..."1234567890"];
 const ACTION_LABELS = [..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"];
 
 /** The menu's entries for what exists now and where the screen looks. */
-export function menuEntries(world: World, focus: Focus): MenuEntry[] {
+export function menuEntries(world: World, focus: Focus, epoch: number): MenuEntry[] {
   const shown = focused(world, focus);
   const created = new Map(world.workspaces.flatMap((w) => w.tabs.flatMap((t) => t.panes.map((p) => [p.id, p.created] as const))));
   const places: { kind: PlaceKind; id: string }[] = [
@@ -72,16 +72,16 @@ export function menuEntries(world: World, focus: Focus): MenuEntry[] {
   };
   return [
     ...places.map((place, at): MenuEntry => ({
-      ...place, label: PLACE_LABELS[at] ?? null,
+      ...place, epoch, label: PLACE_LABELS[at] ?? null,
       ...(place.kind === "pane" || place.kind === "agent" ? { created: created.get(place.id) } : {}),
     })),
-    ...actions.map(({ id }, at): MenuEntry => ({ kind: "action", action: id, label: ACTION_LABELS[at]!, targets: targets(id) })),
+    ...actions.map(({ id }, at): MenuEntry => ({ kind: "action", action: id, epoch, label: ACTION_LABELS[at]!, targets: targets(id) })),
   ];
 }
 
 /** An entry's identity, the same across world updates: what a click on its painted line names (never its index, which a world update shifts). */
 export const entryKey = (entry: MenuEntry): string => entry.kind === "action"
-  ? `action:${entry.action}:${entry.targets}` : JSON.stringify([entry.kind, entry.id, entry.created]);
+  ? `${entry.epoch}:action:${entry.action}:${entry.targets}` : JSON.stringify([entry.epoch, entry.kind, entry.id, entry.created]);
 
 /** The cursor's place among `next` for the entry it was on in `before`: the same entry, else the same index, kept in range. */
 export function keptCursor(before: readonly MenuEntry[], cursor: number, next: readonly MenuEntry[]): number {
