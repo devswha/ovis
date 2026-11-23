@@ -195,6 +195,25 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     expect(fileKeys(dir)).toEqual([]);
   });
 
+  test("T44: a reader called back from the old rows' clear, as an identity changes, sees no rows and does not open the store again", () => {
+    const dir = stateDir();
+    let serverId: string | null = SERVER;
+    const seen: (string | null)[] = [];
+    let rowId: string | null = null;
+    // what DeviceStore.listsAccountRow does when a write settles a waiting list notice (JoinNotices.settleListed)
+    let read: () => void = () => {};
+    const { ports: p } = ports(dir, { settleNotices: () => { read(); } });
+    const source = accountRowsFor(dir, () => serverId, p);
+    source.store()!.commitList(list(["k-1"]));
+    rowId = source.rows()[0]!.id;
+    read = () => { if (rowId !== null) seen.push(source.row(rowId)?.id ?? null); };
+    serverId = "f".repeat(32);
+    expect(source.rows()).toEqual([]);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((id) => id === null)).toBe(true);
+    expect(fileKeys(dir)).toEqual([]);
+  });
+
   test("T44: a store opened for another relay identity empties the file at once", () => {
     const dir = stateDir();
     const { ports: p } = ports(dir);
