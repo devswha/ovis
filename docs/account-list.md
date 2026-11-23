@@ -107,6 +107,115 @@ in `v` the level that first defined it in that form. Level 1 is five kinds, each
 1: `genesis`, `device`, `invite`, `join` and `remove`. What each kind carries and means is not part
 of this page.
 
+## Names the service cannot read
+
+The account service stores the list and must not read the names in it: a device's label, a PC's
+address, an operating system. A kind puts those fields into one field, `sealed`, encrypted under
+the list's current **epoch key**, and every member holds that key **wrapped** to an encryption key
+of its own. The service keeps the wraps beside the list and can open none of them.
+
+Nothing of this section is part of when an entry holds, and who is a member never depends on it: a
+wrap or a sealed field that does not open hides a name, and nothing else. Which fields a kind seals
+and what it calls the clear fields named below belongs to the kinds. The code is
+[`shared/account-list-seal.ts`](../shared/account-list-seal.ts); the vectors are in
+[`shared/account-list-vectors/seal/`](../shared/account-list-vectors/seal).
+
+```
+number(n) = n as 8 bytes, big-endian            a seq or an epoch: 0 to 999999999999999
+id(list)  = the 32 bytes the list id spells     for entry 0, which has no list id yet: 32 zero bytes
+key(k)    = the 91 bytes a key spells
+HKDF(secret, info, n) = HKDF with SHA-256, a salt of 32 zero bytes, n bytes out
+GCM(key, nonce, data, text) = AES-256-GCM, a 12-byte nonce: the ciphertext, then the 16-byte tag
+```
+
+### The keys
+
+- A member's **encryption key** is a P-256 key used for ECDH only, never to sign, written as a
+  key. A device makes it in WebCrypto so that it cannot be exported and keeps it in IndexedDB. A PC
+  keeps its private key in a file, as the base64url of the 138-byte PKCS8 form a join line's
+  secret has.
+- An **epoch key** is 32 random bytes. Epochs count from 0: entry 0 opens epoch 0, and an entry
+  that removes a member opens the next. An entry with a `sealed` field says in clear which epoch
+  it is sealed under.
+- The **commitment** to an epoch key is `SHA-256("ovis-list-epoch-key/1" || number(epoch) || key)`,
+  as a hash. The entry that opens an epoch carries it in clear, under its signature. A member
+  takes an epoch key, from a wrap or from a link, only when it gives the commitment the list holds
+  for that epoch. Without this the service, which can wrap any key to any member, could hand a new
+  member a key of its own and read what that member seals.
+
+### A wrap
+
+An epoch key for one member, made by any member that holds the key. It is stored at the service,
+never in the list.
+
+```
+wrap   = 0x01 X Y GCM(k, n, no data, epoch key)       113 bytes: 1 + 32 + 32 + 32 + 16
+X Y    = the point of a P-256 key made for this wrap alone (the ephemeral key)
+k n    = HKDF(shared, "ovis-list-wrap/1" || id(list) || number(epoch) || key(member) || key(ephemeral), 44)
+shared = the X of ECDH between the ephemeral key and the member's key, 32 bytes
+```
+
+`k` is the first 32 bytes and `n` the last 12. On the wire a wrap is 151 characters of base64url
+without padding, in its one spelling. A wrap of another length, with another first byte, or whose
+point is not on the curve has not the form.
+
+### A link
+
+Each epoch key also encrypts the one before, so a member given the current key reads every earlier
+epoch. The entry that opens epoch e carries the link to epoch e-1 beside its commitment.
+
+```
+link = 0x01 nonce GCM(HKDF(key of e, "ovis-list-epoch-link/1", 32), nonce, data, key of e-1)      61 bytes
+data = "ovis-list-epoch-link/1" || id(list) || number(e)
+```
+
+A member walks back one link at a time and checks each key against its commitment. One walk opens
+at most 1024 links; a longer history is walked on from the last key reached.
+
+### A sealed field
+
+```
+sealed    = 0x01 nonce GCM(HKDF(epoch key, "ovis-list-seal/1", 32), nonce, data, plaintext)
+data      = "ovis-list-seal/1" || id(list) || number(seq) || number(epoch)
+plaintext = "ovis-list-sealed/1" field field ...
+```
+
+- `list`, `seq` and the epoch are the entry's own, so a sealed field opens only in the entry it
+  was sealed for.
+- The plaintext's fields have the form of an entry's fields: lengths of 4 bytes, names ascending.
+  A sealed field is the plaintext and 29 bytes, and at most 8192 bytes.
+- The nonce is 12 random bytes. It is never made from `seq`: a member whose entry n lost its place
+  signs another entry n, with other fields, and a nonce made from `seq` would come twice under one
+  key. A list holds far fewer entries than the 2^32 after which random nonces under one key stop
+  being safe.
+- The epoch key never encrypts by itself: fields and links each use a key of their own made from it.
+- A member seals only under the key of the list's current epoch. One that does not hold that key
+  seals nothing: under an earlier key, a member already removed would read the names.
+
+### A removal, an addition
+
+- The entry that removes a member is sealed under the epoch it ends, so the member reads its own
+  removal. The remover makes the next epoch key, puts its commitment and its link into that entry,
+  and gives the service a wrap for every member that stays. The removed member's key and its old
+  wraps open nothing sealed afterwards.
+- A member that adds another wraps the current epoch key to it.
+- A member whose encryption key is not a point of the curve gets no wrap; the removal or the
+  addition goes on without it.
+
+### What does not open
+
+Opening never fails with an error. It gives the key or the fields, or one of these, and the device
+or PC is then shown without its name:
+
+| why | when |
+|---|---|
+| `missing` | no wrap, link, key or sealed field was given |
+| `form` | a wrong length, another first byte, a point not on the curve, a plaintext that is no fields, a place that is none (a list id with seq 0, none with a later seq) |
+| `refused` | in form, but the tag does not hold: another member's wrap, another list, seq or epoch, another key, a changed byte |
+| `other_key` | a wrap or a link that opens, to a key that is not the one the list commits to |
+| `bound` | the walk back opened as many links as one walk may |
+| `unavailable` | the runtime could not do it (no WebCrypto on a page on plain http): a fault of the place, not a verdict on the bytes |
+
 ## The vectors
 
 Each file of [`shared/account-list-vectors/envelope/`](../shared/account-list-vectors/envelope) is
@@ -120,3 +229,22 @@ that reads is `body`, `.`, `signature`; the `wire-` vectors carry a `text` that 
 beside the entry it was made from. ECDSA signatures are random, so a vector fixes the body, the
 hash and one signature to verify; nobody is asked to reproduce a signature. Two implementations
 agree on this page when both give every vector's `expect`.
+
+### The vectors of seal/
+
+Each file of [`shared/account-list-vectors/seal/`](../shared/account-list-vectors/seal) is one JSON
+object with a `name`, an optional `note`, one of `wrap`, `link` and `sealed`, and `expect`.
+
+- `wrap`: `list`, `epoch`, `commitment`, `member` (a name in `keys`, the test keys as above) and
+  `text`, the wrap on the wire. A `text` that does not read has not the form.
+- `link`: `list`, `from` (`epoch` and its `key`, 64 hex digits), `commitment` (of the epoch before)
+  and `bytes` (base64url).
+- `sealed`: `list` (empty for entry 0), `seq`, `epoch` (`epoch` and its `key`) and `bytes`.
+- `expect` is `{ key }` (the epoch key that comes out, 64 hex digits), `{ fields }` (the names and
+  their values, as text) or `{ why }`, one of the codes above.
+
+Wraps, links and sealed fields are made with random bytes, so a vector fixes one to open; nobody is
+asked to make the same bytes again. The `-made-elsewhere` vectors were written by a second
+implementation, which also reads every vector in the tests. Devices use WebCrypto with a key that
+cannot be exported, so [`scripts/account-list-seal-browser-qa.ts`](../scripts/account-list-seal-browser-qa.ts)
+reads every vector in a real browser too.

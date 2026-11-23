@@ -1,0 +1,23 @@
+{
+  "name": "wrap-other-list",
+  "keys": {
+    "TEST-ONLY-member": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgUvK-GDe_rkgbHkMeBF7BkBDq_dJv7fuvECRLKRcMHLKhRANCAARz7DoMfjc8Bgeq1WEqNbluGy3AAp_DTvuEWNiD3dgBN5RE8BDXvzi9_LP2nVnmklzYmxEZLk_nqLon6CBg9jrQ",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc-w6DH43PAYHqtVhKjW5bhstwAKfw077hFjYg93YATeURPAQ1784vfyz9p1Z5pJc2JsRGS5P56i6J-ggYPY60A"
+    },
+    "TEST-ONLY-other-member": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNDXBz19H28b0uURfllxnrFqekv8tbHmSAruxeIu0ksOhRANCAARd1cLiwqrvxbGINpVliA3xcCgen6U_QsMctX-_z9Zh4vdANV-t_KIzLkgPBlpoXFkKOmN-0gfJKIMw95RfIJ_Q",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXdXC4sKq78WxiDaVZYgN8XAoHp-lP0LDHLV_v8_WYeL3QDVfrfyiMy5IDwZaaFxZCjpjftIHySiDMPeUXyCf0A"
+    }
+  },
+  "wrap": {
+    "list": "417ce74826c2964f802363a6dbf2ce5dcd0885ae6afb92a46c9dbee94c4b38b9",
+    "epoch": 3,
+    "commitment": "dc21b011c16aa13daf9709a4a43489284cc551718c71eba42bf73648a5b5d8d3",
+    "member": "TEST-ONLY-member",
+    "text": "AROQERCubJLvvt9wQwoSV51fW2_XwXiQ6_C2BPlMGoGyYidLkD0LNi8Jl8AHznemLBN1RnESKwoYeajKL8ZwO_q6zvfysYpQjnVMswjcy4_QcAknTm4NiNnwkdOYPjIDhuVnCYwgEIu7ku4OQCML1Ew"
+  },
+  "expect": {
+    "why": "refused"
+  }
+}

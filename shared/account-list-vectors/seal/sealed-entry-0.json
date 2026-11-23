@@ -1,0 +1,21 @@
+{
+  "name": "sealed-entry-0",
+  "note": "Entry 0 has no list id yet: 32 zero bytes stand for it.",
+  "sealed": {
+    "list": "",
+    "seq": 0,
+    "epoch": {
+      "epoch": 0,
+      "key": "c0f61de1e59da9ce4d675918700fae87e76def95bb152b9c5ce952e5f7f42552"
+    },
+    "bytes": "AQLePS3t45fz5X0eVju5GypoFYPdbgOM-h8xj6V-6oMBaXRuaMz81lsqPaUWxXLWUnL8vKuDpEdLD7GUbKuvo6s"
+  },
+  "expect": {
+    "fields": [
+      [
+        "label",
+        "Phone"
+      ]
+    ]
+  }
+}

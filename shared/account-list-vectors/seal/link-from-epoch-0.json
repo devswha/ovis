@@ -1,0 +1,16 @@
+{
+  "name": "link-from-epoch-0",
+  "note": "No epoch comes before epoch 0.",
+  "link": {
+    "list": "477baceda68c821e84d19a77ee733a897a6735b4857320725a6f9559669f8505",
+    "from": {
+      "epoch": 0,
+      "key": "c0f61de1e59da9ce4d675918700fae87e76def95bb152b9c5ce952e5f7f42552"
+    },
+    "commitment": "e9460d4e3cf3931b2f5c9a39eb201699e5476f69a205f917e9f45ddbd910a5a6",
+    "bytes": "AbZH0bPahDcX7UGXxBv3JnRiunbsb66RYa205Nv6crzDcFfykJuAZpZyjXYcPl7A8_XB54HqsujuxAXBrQ"
+  },
+  "expect": {
+    "why": "form"
+  }
+}

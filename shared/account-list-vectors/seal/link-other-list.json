@@ -1,0 +1,15 @@
+{
+  "name": "link-other-list",
+  "link": {
+    "list": "417ce74826c2964f802363a6dbf2ce5dcd0885ae6afb92a46c9dbee94c4b38b9",
+    "from": {
+      "epoch": 3,
+      "key": "46aba7fe34f5c5d000d0bb9effd5d83c914cf131e830c345e2d98552109d746a"
+    },
+    "commitment": "98428950800ab84939a3c19f0926ba971489ce5ecb2a03bc8b60adb8ae978cc4",
+    "bytes": "AbZH0bPahDcX7UGXxBv3JnRiunbsb66RYa205Nv6crzDcFfykJuAZpZyjXYcPl7A8_XB54HqsujuxAXBrQ"
+  },
+  "expect": {
+    "why": "refused"
+  }
+}

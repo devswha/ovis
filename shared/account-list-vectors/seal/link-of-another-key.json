@@ -1,0 +1,16 @@
+{
+  "name": "link-of-another-key",
+  "note": "A link that opens, to a key the list does not commit to for the epoch before.",
+  "link": {
+    "list": "477baceda68c821e84d19a77ee733a897a6735b4857320725a6f9559669f8505",
+    "from": {
+      "epoch": 3,
+      "key": "46aba7fe34f5c5d000d0bb9effd5d83c914cf131e830c345e2d98552109d746a"
+    },
+    "commitment": "98428950800ab84939a3c19f0926ba971489ce5ecb2a03bc8b60adb8ae978cc4",
+    "bytes": "Adusn-YaXOkL2e5QItNhOIA5MrnNsx1E9WtlSy0L6mu2yZBEDNsF50tEMGr78TRqWSWq-fjLakzruFqDtw"
+  },
+  "expect": {
+    "why": "other_key"
+  }
+}

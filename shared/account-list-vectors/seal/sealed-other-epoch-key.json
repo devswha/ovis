@@ -1,0 +1,15 @@
+{
+  "name": "sealed-other-epoch-key",
+  "sealed": {
+    "list": "477baceda68c821e84d19a77ee733a897a6735b4857320725a6f9559669f8505",
+    "seq": 7,
+    "epoch": {
+      "epoch": 2,
+      "key": "46aba7fe34f5c5d000d0bb9effd5d83c914cf131e830c345e2d98552109d746a"
+    },
+    "bytes": "AYnKsVRHzGs8v8aICBQ_QLOiKWDoHLBUmHSesGAqnuD_XfoT3kqxHF1QW5-k0cQWXRAI9wdrwezXqy_tHr8hxd8fw7PjO4kARfzFN4SSIuicn9W-Kt6ft81bSpw61ys0AVPL4P5ahxcBF1wtEtY8HEcU8TSf8dqGurudfzx6gmkYYIb1bQw"
+  },
+  "expect": {
+    "why": "refused"
+  }
+}
