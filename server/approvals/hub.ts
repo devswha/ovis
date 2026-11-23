@@ -137,6 +137,8 @@ export function relayCommand(root = ROOT, compiled = COMPILED): string[] {
 
 export class ApprovalHub {
   private listener: Server | null = null;
+  /** stopped with the server: a launch whose version was read after that gets no hook, and opens no listener again */
+  private stopped = false;
   private readonly launches = new Map<string, Launch>();
   private readonly pending = new Map<string, Pending[]>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
@@ -205,7 +207,7 @@ export class ApprovalHub {
     this.forget(paneId);
     const unchanged = args === undefined ? undefined : [...args];
     const adapter = this.adapters.get(kind);
-    if (adapter === undefined || version === null || !adapter.supports(version)) return unchanged;
+    if (this.stopped || adapter === undefined || version === null || !adapter.supports(version)) return unchanged;
     if (this.platform !== "win32" && Buffer.byteLength(this.address) > SOCKET_PATH_MAX) return unchanged;
     try {
       this.listen();
@@ -346,6 +348,7 @@ export class ApprovalHub {
   }
 
   stop(): void {
+    this.stopped = true;
     // each held request gets its answer (no decision, so the terminal's dialog stands) before the listener closes
     for (const list of [...this.pending.values()]) for (const entry of [...list]) entry.settle(null);
     if (this.listener === null) return;

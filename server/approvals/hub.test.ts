@@ -72,6 +72,14 @@ describe("which launches get the hook", () => {
     expect(hub.launchArgs("claude", "p1", undefined, null)).toBeUndefined();
     expect(hub.launchArgs("claude", "p1", undefined, CLAUDE_HOOK_MIN_VERSION)?.[0]).toBe("--settings");
   });
+
+  // CodeRabbit on #4516: a version read that ends after the server stopped opened the listener again
+  it("adds none once the hub has stopped, and opens no listener again", () => {
+    const { hub } = hubIn();
+    hub.stop();
+    expect(hub.launchArgs("fake", "p1", ["--x"], "1.0.0")).toEqual(["--x"]);
+    expect(existsSync(hub.address)).toBe(false);
+  });
 });
 
 describe("where the hub listens", () => {
