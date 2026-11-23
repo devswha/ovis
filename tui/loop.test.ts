@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_RESIZE, HcConnection, HcError, HcReplyError } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
-import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
+import { type OvisLayout, OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
+import { REATTACH_DEADLINE } from "./core/pane.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
 import { ending, EXIT_FAILED } from "./start.ts";
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
@@ -61,6 +62,15 @@ const received = (run: Run): Record<string, string> => Object.fromEntries([...ne
 async function settled(run: Run): Promise<void> {
   await run.advance(200);
   await run.settle();
+  // and every shown pane has its picture, with no attach again still due (a pane a zoom uncovered at another rectangle
+  // attaches again at it REATTACH_SETTLE_MS later, unless typing took the terminal first), within a bound
+  const drawn = () => !run.loop.panes.deadlines().has(REATTACH_DEADLINE) &&
+    run.loop.panes.views().filter((view) => !view.covered).every((view) => view.state.kind !== "Opening" && view.state.kind !== "Painting");
+  for (let waited = 0; !drawn() && waited < 2_000; waited += FRAME_PASS_MS) {
+    await run.advance(FRAME_PASS_MS);
+    await run.settle();
+  }
+  expect(drawn()).toBe(true);
   await run.advance(FRAME_PASS_MS);
   await run.settle();
   await run.advance(1);
@@ -299,7 +309,7 @@ describe("the loop", () => {
     for (const terminal of ["t1", "t2", "t3", "t4"]) expect(run.core.terminal(terminal).state).toBe("live");
   }, TEST_MS);
 
-  it("a detach never waits behind a layout write: with the core silent mid-close, the prefix and q leave within the quit bound", async () => {
+  it("a detach behind a layout write leaves within the quit bound: with the core silent mid-close, the prefix and q", async () => {
     const run = await start({ fixture: demo });
     await run.live();
     await run.advance(1);
@@ -316,7 +326,7 @@ describe("the loop", () => {
     expect(run.core.calls().filter(({ method }) => method === "terminal.kill" || method === "terminal.rm")).toEqual([]);
   }, TEST_MS);
 
-  it("a detach behind an action in the same read never waits behind a layout write either", async () => {
+  it("a detach behind an action in the same read leaves within the quit bound behind a layout write too", async () => {
     const run = await start({ fixture: demo });
     await run.live();
     // a printable prefix: a zoom and the detach after it are one text run, so the detach is the rest of that run
@@ -762,8 +772,8 @@ describe("the loop", () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    const outcome = async (prefix: string, reads: Uint8Array[]) => {
-      const run = await Run.start({ fixture: demo });
+    const outcome = async (prefix: string, reads: Uint8Array[], zoomed = false, settleBetween = !zoomed) => {
+      const run = await Run.start(zoomed ? { core: oneTab(3, true) } : { fixture: demo });
       try {
         await run.live();
         if (prefix !== "\x02") run.loop.dispatch({ type: "keys", keys: { prefix }, at: run.clock.current });
@@ -777,15 +787,24 @@ describe("the loop", () => {
           // picture, so a character's halves read 200 ms apart would meet a newer picture; any other read comes once the
           // screen settled
           const inside = (reads[at + 1]?.[0] ?? 0) >> 6 === 0b10;
-          if (inside) await run.advance(1);
-          else await settled(run);
+          if (settleBetween || at === reads.length - 1) {
+            if (inside) await run.advance(1);
+            else await settled(run);
+          }
         }
         const model = run.loop.model();
-        return {
-          ended, busy: model.notices.some((notice) => notice.code === "layout_busy"), focus: model.focus, mode: model.mode.name,
+        const layout = run.core.docs.get(OVIS_LAYOUT_DOC)?.value as OvisLayout | undefined;
+        // a new tab's id is made at random: such ids are named by where they first appear, so equal outcomes compare equal
+        const made = new Map<string, string>();
+        const named = <T>(value: T): T => JSON.parse(JSON.stringify(value).replace(/ovis-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g, (id) => {
+          if (!made.has(id)) made.set(id, `made-${made.size}`);
+          return made.get(id)!;
+        }));
+        return named({
+          ended, busy: model.notices.some((notice) => notice.code === "layout_busy"), focus: model.focus, mode: model.mode.name, panes: model.world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort(), zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
           received: received(run),
-        };
+        });
       } finally {
         await run.close();
       }
@@ -807,21 +826,34 @@ describe("the loop", () => {
         return false;
       });
     };
-    for (const prefix of ["\x02", "-"]) {
-      const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
-      for (let n = 0; n < 10; n++) {
-        const picked = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!);
+    const variants: [prefix: string, zoomed: boolean, runs: number, tokens: string[]][] = [
+      ["\x02", false, 10, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
+      ["-", false, 10, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
+      ["\x02", true, 30, ["\x02w", "\x02l", "\x02h", "\x02z", "\x02x", "l", "h", "a", "Z", "\r"]],
+    ];
+    for (const [prefix, zoomed, runs, tokens] of variants) {
+      for (let n = 0; n < runs; n++) {
+        const picked = Array.from({ length: 3 + Math.floor(random() * 4) }, () => tokens[Math.floor(random() * tokens.length)]!);
         const text = picked.join("");
+        const settleBetween = !zoomed && !refusesInHold(picked, prefix);
         const bytes = new TextEncoder().encode(text);
-        const whole = await outcome(prefix, [bytes]);
-        if (refusesInHold(picked, prefix)) continue;
-        expect({ text, busy: whole.busy }).toEqual({ text, busy: false });
+        const whole = await outcome(prefix, [bytes], zoomed);
+        if (settleBetween) expect({ text, busy: whole.busy }).toEqual({ text, busy: false });
         const joined = compared(whole);
-        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)))) }).toEqual({ text, outcome: joined });
+        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), zoomed, settleBetween)) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
-          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ text, cut, outcome: joined });
+          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], zoomed, settleBetween)) }).toEqual({ text, cut, outcome: joined });
         }
       }
+    }
+    // Keep the write pending across the cuts: splitting bytes must not turn a refused move, close, or zoom into a later command.
+    for (const pinned of ["\x02wll\rZ", "\x02l\x02lZ", "\x02ll\x02lh", "\x02lab\x02hcd", "\x02l\x02xZ", "\x02l\x02zZ"]) {
+      const gate = new TextEncoder().encode(pinned);
+      const result = await outcome("\x02", [gate], true);
+      expect({ pinned, busy: result.busy }).toEqual({ pinned, busy: true });
+      const whole = compared(result);
+      expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), true)) }).toEqual({ pinned, outcome: whole });
+      for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], true)) }).toEqual({ pinned, cut, outcome: whole });
     }
   }, SOAK_MS);
 
@@ -986,15 +1018,17 @@ describe("the loop", () => {
     expect(run.loop.model().notices.map((notice) => notice.code)).not.toContain("input_refused");
   }, TEST_MS);
 
-  it("zoom: text after a focus move under a zoom reaches the zoomed pane, in one read as in two", async () => {
+  it("zoom: text after a focus move under a zoom reaches the newly zoomed live pane, in one read as in two", async () => {
     /** what each program received after `reads`, with t2 zoomed and cycle_pane_next on prefix+y */
     const outcome = async (reads: string[]) => {
       const core = oneTab(2);
       const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
-      core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 1 });
+
       const run = await Run.start({ core });
       try {
         await run.live();
+        await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 0 });
+        await settled(run);
         run.loop.dispatch({ type: "keys", keys: { cycle_pane_next: "prefix+y" }, at: run.clock.current });
         await run.advance(1);
         for (const read of reads) {
@@ -1006,7 +1040,7 @@ describe("the loop", () => {
         await run.close();
       }
     };
-    const received = ["", Buffer.from("k").toString("hex")];
+    const received = [Buffer.from("k").toString("hex"), ""];
     expect(await outcome(["\x02yk"])).toEqual({ reads: ["\x02yk"], received });
     expect(await outcome(["\x02y", "k"])).toEqual({ reads: ["\x02y", "k"], received });
   }, TEST_MS);
@@ -1272,6 +1306,44 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect(run.loop.model().mode.name).toBe("navigate");
     return { run };
   }],
+  ["navigate mode in a zoomed tab, the zoom moved after the focus", async () => {
+    const run = await start({ core: oneTab(3, true) });
+    await run.live();
+    await run.keys("ctrl+b,w,l");
+    await run.live();
+    expect([run.loop.model().mode.name, run.loop.model().world.workspaces[0]?.tabs[0]?.zoomed]).toEqual(["navigate", "t2"]);
+    return { run };
+  }],
+  ["navigate mode after refusing the second of two zoom moves", async () => {
+    const run = await start({ core: oneTab(3, true) });
+    await run.live();
+    await run.keys("ctrl+b,w");
+    run.type("ll");
+    await run.settle();
+    await run.live();
+    expect([run.loop.model().mode.name, run.loop.model().focus.panes["t"], run.loop.model().world.workspaces[0]?.tabs[0]?.zoomed])
+      .toEqual(["navigate", "t2", "t2"]);
+    return { run };
+  }],
+  ["navigate mode after a zoom conflict notice expires", async () => {
+    const run = await start({ core: oneTab(3, true) });
+    await run.live();
+    await run.keys("ctrl+b,w");
+    run.core.conflictNext(2);
+    await run.keys("l");
+    expect(run.loop.model().notices.map(({ code }) => code)).toEqual(["layout_conflict"]);
+    await run.advance(NOTICE_SHOW_MS + 1);
+    expect([run.loop.model().mode.name, run.loop.model().focus.panes["t"], run.loop.model().notices])
+      .toEqual(["navigate", "t1", []]);
+    return { run };
+  }],
+  ["the picker open with a query typed", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.keys("ctrl+b,g,o");
+    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["goto"]);
+    return { run };
+  }],
   ["resize mode", async () => {
     const run = await start({ fixture: demo });
     await run.live();
@@ -1371,6 +1443,40 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     await run.advance(1);
     await run.keys("ctrl+b,enter,down,down");
     expect([run.loop.report().mode.overlays, run.loop.model().overlays.at(-1)]).toEqual([["menu"], expect.objectContaining({ cursor: 2 })]);
+    return { run };
+  }],
+  ["the full-screen agent list open", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,a");
+    expect(run.loop.report().mode.overlays).toEqual(["agents"]);
+    return { run };
+  }],
+  ["the agents list open with an alert", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,a");
+    run.core.reportStatus("t2", { state: "blocked", app: "claude" });
+    await run.advance(20);
+    expect(run.loop.model().notices.map(({ code }) => code)).toEqual(["agent_blocked"]);
+    expect(run.grid().at(-1)).toContain("! Needs you: ");
+    const passes = run.loop.report().passes;
+    const written = run.host.bytes().length;
+    await run.advance(NOTICE_SHOW_MS - 100);
+    expect([run.loop.report().passes - passes, run.host.bytes().length - written]).toEqual([0, 0]);
+    return { run };
+  }],
+  ["a pane looked at, its finished turn marked seen", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    await run.advance(1);
+    run.type("\x1b[I");
+    run.core.reportStatus("t1", { state: "working", app: "claude" });
+    run.core.reportStatus("t1", { state: "idle", app: "claude" });
+    await run.advance(20);
+    expect(run.core.calls().filter((call) => call.method === "terminal.label").map((call) => call.params["labels"])).toEqual([{ "herdr.seen": "1" }]);
     return { run };
   }],
   ["a view kept by an earlier run restored", async () => {
