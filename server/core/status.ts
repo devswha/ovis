@@ -269,6 +269,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    */
   function queueStatus(paneId: string, status: AgentStatus): AgentStatus {
     if (agentNow.get(paneId) !== "claude" || (status !== "idle" && status !== "done")) return status;
+    // nor one at rest on its Stop hook's word alone: another Stop hook may keep the turn going (hookTurnWentOn), and a
+    // queued message typed into it would be taken in mid-turn. herdr's own rest releases it
+    if (stoppedOnHook.has(paneId)) return "working";
     return (heard.get(paneId) === "working" && claudeAgents.holdsQueue(paneId)) || claudeAgents.loopHolds(paneId) ? "working" : status;
   }
   const stopSubmitted = onChatSubmitted((paneId, prompt, sentAt) => {
@@ -816,10 +819,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         fd = openSync(mark.path, "r");
         readSync(fd, bytes, 0, length, mark.size);
       } catch { continue; } finally { if (fd !== undefined) closeSync(fd); }
-      const answered = bytes.toString("utf8").split("\n").some((line) => {
+      const text = bytes.toString("utf8");
+      const whole = text.slice(0, text.lastIndexOf("\n") + 1);
+      const answered = whole.split("\n").some((line) => {
         try { return (JSON.parse(line) as { type?: unknown }).type === "assistant"; } catch { return false; }
       });
       if (answered) hookRestEnds(paneId);
+      // the lines read whole are not read again
+      else mark.size += Buffer.byteLength(whole);
     }
   }
 

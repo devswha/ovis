@@ -356,10 +356,12 @@ describe("a Claude pane whose Stop hook told its turn ended", () => {
     h.status.hookTurn(h.pane.pane_id, "claude", { turn: "ended", prompt: null });
     expect(h.last().status).toBe("done");
     expect(h.alerts).toEqual(["working", "done"]);
-    expect(h.pending.current(h.pane.pane_id)).toBe("done");
+    // the queue waits for herdr's own rest: another Stop hook may keep the turn going
+    expect(h.pending.current(h.pane.pane_id)).toBe("working");
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.last().status).toBe("done");
+    expect(h.pending.current(h.pane.pane_id)).toBe("done");
     expect(h.alerts.filter((alert) => alert !== "done")).toEqual(["working"]);
   });
 
@@ -447,6 +449,8 @@ describe("a Claude pane whose Stop hook told its turn ended", () => {
       h.herdrSays({ ...h.pane, agent_status: "working" });
       turn(h, "ended", "p1");
       expect(h.last().status).toBe("done");
+      // a message queued meanwhile is not typed into the turn that goes on
+      expect(h.pending.current(h.pane.pane_id)).toBe("working");
       jest.advanceTimersByTime(1000);
       expect(h.last().status).toBe("done");
       appendFileSync(h.path, line({ type: "user", isMeta: true, timestamp: new Date().toISOString(), message: { role: "user", content: "Stop hook feedback: review failed" } }));
@@ -455,6 +459,7 @@ describe("a Claude pane whose Stop hook told its turn ended", () => {
       appendFileSync(h.path, answer("fixing it"));
       jest.advanceTimersByTime(1000);
       expect(h.last().status).toBe("working");
+      expect(h.pending.current(h.pane.pane_id)).toBe("working");
       // its real end: Claude's Stop again, for the same prompt
       turn(h, "ended", "p1");
       expect(h.last().status).toBe("done");
