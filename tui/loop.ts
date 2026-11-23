@@ -292,6 +292,12 @@ export function startLoop(options: LoopOptions): Loop {
       dispatch({ type: "notice", code: alert.kind === "blocked" ? "agent_blocked" : "agent_done", data: { agent }, calm: true, at: clock.now() });
     }
     if (notice.type === "event" && notice.event.type === "turn" && notice.event.terminal !== undefined) seen.turn(notice.event.terminal);
+    // a snapshot shows turns no event told (the line was down, or events were missed): the look hears of them here,
+    // after the world took the snapshot in
+    if (notice.type === "snapshot") {
+      sight();
+      seen.snapshot();
+    }
     if (snapshot && !snapshot.complete && notice.type === "doc" && notice.epoch === snapshot.epoch && notice.name === LINK_DOCS.at(-1)) {
       snapshot.complete = true;
       identifySnapshot();

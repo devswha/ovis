@@ -23,19 +23,24 @@ afterEach(async () => {
   for (const run of runs.splice(0)) await run.close();
 });
 
+/** An agent's terminal in the one tab these cores have, named `name` and reporting `state`, with `seen` as its `herdr.seen` (null: no label); answers its address. */
+function agent(core: FakeHcCore, name: string, state: string, seen: string | null): string {
+  const labels: Record<string, string> = { [SPACE_LABEL]: "w", [WORKSPACE_NAME_LABEL]: "work", [TAB_LABEL]: "t", [TAB_NAME_LABEL]: "tab", [PANE_NAME_LABEL]: name };
+  if (seen !== null) labels[SEEN] = seen;
+  const { address } = core.spawn({ labels });
+  core.setPaint(address, { body: `${name}\r\n` });
+  core.reportStatus(address, { state, app: "claude" });
+  return address;
+}
+
 /**
  * A core with one tab split in two agents, `t1` (named one) and `t2` (named two), each reporting idle at turn 0. `seen`
  * gives each a `herdr.seen` label to start with (none: no label); `first` the state t1 reports before the screen comes.
  */
 function twoAgents(seen: string | null = "0", first = "idle"): FakeHcCore {
   const core = new FakeHcCore();
-  for (const [name, state] of [["one", first], ["two", "idle"]] as const) {
-    const labels: Record<string, string> = { [SPACE_LABEL]: "w", [WORKSPACE_NAME_LABEL]: "work", [TAB_LABEL]: "t", [TAB_NAME_LABEL]: "tab", [PANE_NAME_LABEL]: name };
-    if (seen !== null) labels[SEEN] = seen;
-    const { address } = core.spawn({ labels });
-    core.setPaint(address, { body: `${name}\r\n` });
-    core.reportStatus(address, { state, app: "claude" });
-  }
+  agent(core, "one", first, seen);
+  agent(core, "two", "idle", seen);
   return core;
 }
 
@@ -76,6 +81,33 @@ const select = async (run: Run, id: string) => {
 const alertNotices = (run: Run) => run.loop.model().notices.filter((notice) => notice.code.startsWith("agent_")).map((notice) => [notice.code, notice.data["agent"], notice.calm]);
 
 const shownPane = (run: Run) => focused(run.loop.model().world, run.loop.model().focus).pane?.id;
+
+/** A turn of t1 ends while the screen's line is down: the snapshot of the next line shows it, no event told it. */
+async function endsWhileDown(run: Run): Promise<void> {
+  await run.cutLine();
+  await run.advance(1_000);
+  expect(run.loop.link.state.kind).toBe("Offline");
+  run.core.reportStatus("t1", { state: "working", app: "claude" });
+  run.core.reportStatus("t1", { state: "idle", app: "claude" });
+  await run.listen();
+  await run.advance(6_000);
+  await run.live();
+  await run.advance(20);
+}
+
+/**
+ * A turn of t1 ends in events the screen misses, on a line that stays up: the core's `missed` snapshot shows it, and
+ * the events themselves, sent after that snapshot, are dropped as older than it.
+ */
+async function endsInMissedEvents(run: Run): Promise<void> {
+  run.core.holdingEvents = true;
+  run.core.reportStatus("t1", { state: "working", app: "claude" });
+  run.core.reportStatus("t1", { state: "idle", app: "claude" });
+  run.core.missed();
+  await run.settle();
+  run.core.releaseEvents();
+  await run.advance(20);
+}
 
 describe("the look rule", () => {
   const LOOKING: LookState = { hostFocused: true, inputAfterTurn: false, pane: "t1", live: true, drawn: true, overlay: false, online: true };
@@ -455,5 +487,60 @@ describe("read state through herdr.seen (UB Q7)", () => {
     await run.advance(20);
     expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
     expect([run.core.terminal("t1").turn, run.core.terminal("t1").labels[SEEN]]).toEqual([2, "1"]);
+  }, TEST_MS);
+});
+
+describe("a turn the screen did not watch end", () => {
+  for (const [how, ends] of [["while the line was down", endsWhileDown], ["in events the screen missed", endsInMissedEvents]] as const) {
+    it(`no focus reports: a turn that ended ${how} stays unread until a key is read after it`, async () => {
+      const run = await started(twoAgents());
+      await run.keys("A");
+      await run.advance(20);
+      await ends(run);
+      // the pane leaves the view and comes back, with nothing typed since that turn ended
+      await select(run, "t2");
+      await select(run, "t1");
+      expect([run.core.terminal("t1").turn, run.core.terminal("t1").labels[SEEN], seenWrites(run)]).toEqual([1, "0", []]);
+      await run.keys("B");
+      await run.advance(20);
+      expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+    }, TEST_MS);
+  }
+
+  it("no focus reports: a terminal the snapshot first shows past its first turn stays unread until a key is read", async () => {
+    const run = await started(twoAgents());
+    await run.keys("A");
+    await run.advance(20);
+    await run.cutLine();
+    await run.advance(1_000);
+    // made while the line was down, and its first turn ended there too
+    const made = agent(run.core, "three", "working", "0");
+    run.core.reportStatus(made, { state: "idle", app: "claude" });
+    await run.listen();
+    await run.advance(6_000);
+    await select(run, made);
+    await run.live();
+    await run.advance(20);
+    expect([shownPane(run), run.core.terminal(made).turn, seenWrites(run)]).toEqual([made, 1, []]);
+    await run.keys("B");
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: made, seen: "1" }]);
+  }, TEST_MS);
+
+  it("a host that reports its focus: the pane in front is read once the snapshot shows the turn the events missed", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    await endsInMissedEvents(run);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("no focus reports: a key read before a turn ended still says who was looking as it ended: no Done notice for that pane, and no read", async () => {
+    const run = await started(twoAgents());
+    await run.keys("x");
+    await run.advance(20);
+    await endTurn(run, "t1");
+    // the other pane's finish is told: nobody was looking at it
+    await endTurn(run, "t2");
+    expect([alertNotices(run), seenWrites(run)]).toEqual([[["agent_done", "two", true]], []]);
   }, TEST_MS);
 });
