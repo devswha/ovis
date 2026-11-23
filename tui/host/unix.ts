@@ -3,6 +3,7 @@ import { writeSync } from "node:fs";
 import { constants } from "node:os";
 import { WRITE_AGAIN_LIMIT, WRITE_AGAIN_PAUSE_MS } from "../model/deadlines.ts";
 import { guardedHost, type HostHooks } from "./guard.ts";
+import { openHold, SCREEN_HOLD } from "./hold.ts";
 import type { Host } from "./index.ts";
 import { openLibc } from "./libc.ts";
 
@@ -91,6 +92,8 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
   const write = parts.writeSync ?? writeSync;
   const pause = parts.pause ?? pauseSync;
   const signalLibc = openSignal();
+  // the launcher's file, when a launcher started this screen: opened now, so that saying what is held is one write
+  const hold = env[SCREEN_HOLD] ? openHold(env[SCREEN_HOLD]) : null;
   let sink: ((bytes: Uint8Array) => void) | null = null;
 
   const readAll = () => {
@@ -158,5 +161,6 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
       stdin.ref?.();
       proc.kill(proc.pid, "SIGSTOP");
     },
+    hold: (held) => { hold?.(held); },
   });
 }

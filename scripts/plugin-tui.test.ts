@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ENTRIES } from "../server/entries.ts";
-import { LEAVE_ALL } from "../tui/host/guard.ts";
+import { type Held, LEAVE, LEAVE_ALL } from "../tui/host/guard.ts";
 import * as libc from "./libc.ts";
 import { importClosure, read } from "./source-scan.ts";
 import { callerEnv, launchTui, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
@@ -23,6 +23,8 @@ afterEach(() => {
 
 const SAVED = new Uint8Array([1, 2, 3]);
 const SOCKET = "/scratch/hc.sock";
+/** the hold file the fake launcher names to its screen */
+const HOLD = "/scratch/held";
 /** a home with nothing in it: hc's own config.toml is looked for under it, never under the real one */
 const HOME = "/nonexistent-home";
 
@@ -37,23 +39,30 @@ interface Fake {
   readonly runs: { command: readonly string[]; env: Record<string, string>; cwd: string | undefined }[];
   readonly restored: Uint8Array[];
   readonly written: string[];
+  /** each search for hc: the environment it and its `--version` run in, and what named it */
+  readonly finds: { env: Record<string, string>; selector: Readonly<Record<string, string | undefined>> }[];
+  /** how many hold files were removed */
+  readonly unheld: () => number;
   readonly handlers: Map<string, () => void>;
   readonly parts: LaunchParts;
 }
 
 /**
  * The launcher's parts as data: `probes` answer the connects in turn (the last one again after that), `answer` is the
- * line typed at the question, `hc` what the finder finds, `started` the exit of `hc server start`, `end` the screen's.
+ * line typed at the question, `hc` what the finder finds, `started` the exit of `hc server start`, `end` the screen's,
+ * `held` what the screen's hold file says when it ended (null: no hold file could be made).
  */
-function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; end?: End | Promise<End>; over?: Partial<LaunchParts> } = {}): Fake {
+function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; end?: End | Promise<End>; held?: Held | null; over?: Partial<LaunchParts> } = {}): Fake {
   const calls: string[] = [];
   const said: string[] = [];
   const runs: Fake["runs"] = [];
   const restored: Uint8Array[] = [];
   const written: string[] = [];
   const handlers = new Map<string, () => void>();
+  const finds: Fake["finds"] = [];
   const probes = [...options.probes ?? [{ kind: "core" } as const]];
   let clock = 0;
+  let unheld = 0;
   const parts: LaunchParts = {
     platform: "linux",
     isTty: true,
@@ -65,8 +74,9 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
       calls.push(`probe ${socket}`);
       return probes.length > 1 ? probes.shift()! : probes[0]!;
     },
-    findHc: async () => {
+    findHc: async (env, selector) => {
       calls.push("find");
+      finds.push({ env, selector });
       return options.hc === undefined ? "/bin/hc" : options.hc;
     },
     startCore: async (hc) => {
@@ -86,6 +96,7 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
       runs.push({ command, ...run });
       return { exited: Promise.resolve(options.end ?? { code: 0, signal: null }), kill: (signal) => { calls.push(`kill ${signal}`); } };
     },
+    holdFile: () => options.held === null ? null : { path: HOLD, held: () => options.held ?? "none", remove: () => { unheld++; } },
     terminal: { save: () => SAVED, restore: (saved) => { restored.push(saved); }, write: (bytes) => { written.push(bytes); } },
     on: (signal, handler) => {
       calls.push(`on ${signal}`);
@@ -101,7 +112,7 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
     ...options.over,
   };
   const codes = () => said.flatMap((text) => [...text.matchAll(/^ovis tui: ([a-z_]+): /gm)].map((match) => match[1]!));
-  return { calls, codes, said, runs, restored, written, handlers, parts };
+  return { calls, codes, said, runs, restored, written, finds, unheld: () => unheld, handlers, parts };
 }
 
 /** the launcher's work, without its signal listeners */
@@ -120,7 +131,7 @@ describe("the launch decision table", () => {
     ["no core, Enter: hc found, a core started, the screen once it answers", { probes: [none, none, core] }, [], 0, STARTED, []],
     ["no core, y", { probes: [none, none, core], answer: "y" }, [], 0, STARTED, []],
     ["no core, Yes with blanks", { probes: [none, none, core], answer: " Yes " }, [], 0, STARTED, []],
-    ["a flush that cannot run still asks, and a yes still starts", { probes: [none, none, core], flushed: false }, [], 0, STARTED, []],
+    ["an Enter typed ahead that cannot be thrown away is no yes: nothing asked, found or started, the start command", { probes: [none], flushed: false, answer: "" }, [], 1, ["probe /scratch/hc.sock", "discard"], ["no_core"]],
     ["no core, n: the start command, nothing started", { probes: [none], answer: "n" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
     ["no core, no", { probes: [none], answer: "no" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
     ["no core, any other answer", { probes: [none], answer: "maybe" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
@@ -183,11 +194,11 @@ describe("core choice", () => {
     const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, XDG_RUNTIME_DIR: "/run/test", OVIS_TOKEN: "secret", PATH: "/usr/bin" } } });
     expect(await launchTui(["--session", "work"], run.parts)).toBe(0);
     expect(work(run.calls)).toEqual(["probe /run/test/herdr-core/work.sock", "run screen"]);
-    expect(run.runs[0]!.env).toEqual({ HOME, HC_SESSION: "work", XDG_RUNTIME_DIR: "/run/test", PATH: "/usr/bin", OVIS_TUI_CWD: "/home/me/project" });
+    expect(run.runs[0]!.env).toEqual({ HOME, HC_SESSION: "work", XDG_RUNTIME_DIR: "/run/test", PATH: "/usr/bin", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_HOLD: HOLD });
     const fromSettings = fake({ over: { caller: { HOME, XDG_RUNTIME_DIR: "/run/test" }, settings: { HC_SESSION: "ovis", OVIS_TOKEN: "secret" } } });
     expect(await launchTui([], fromSettings.parts)).toBe(0);
     expect(work(fromSettings.calls)).toEqual(["probe /run/test/herdr-core/ovis.sock", "run screen"]);
-    expect(fromSettings.runs[0]!.env).toEqual({ HOME, HC_SESSION: "ovis", XDG_RUNTIME_DIR: "/run/test", OVIS_TUI_CWD: "/home/me/project" });
+    expect(fromSettings.runs[0]!.env).toEqual({ HOME, HC_SESSION: "ovis", XDG_RUNTIME_DIR: "/run/test", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_HOLD: HOLD });
   });
 
   it.each([
@@ -227,22 +238,39 @@ describe("signals and the terminal", () => {
   });
 
   /** the real runner, with a screen that ends as told: by its own SIGKILL, or with a code */
-  const realRun = (script: string) => fake({ over: { screen: { command: ["/bin/sh", "-c", script], cwd: scratch, file: null }, run: systemParts({}, scratch).run } });
+  const realRun = (script: string, held?: Held | null) => fake({ ...(held === undefined ? {} : { held }), over: { screen: { command: ["/bin/sh", "-c", script], cwd: scratch, file: null }, run: systemParts({}, scratch).run } });
 
-  it.skipIf(process.platform === "win32")("writes the saved settings back and leaves the screen's modes when it was killed by SIGKILL", async () => {
-    const run = realRun("kill -KILL $$");
+  it.skipIf(process.platform === "win32").each([
+    ["a screen killed before it turned its modes on, or after it undid them: the caller's own modes are left alone", "none", []],
+    ["a screen killed while it held its modes", "modes", [LEAVE]],
+    ["a screen killed while it also watched the colour scheme", "modes+watch", [LEAVE_ALL]],
+    ["a screen that could be told no hold file: every mode it can turn on", null, [LEAVE_ALL]],
+  ] as const)("after a SIGKILL writes the saved settings back and undoes only what the screen held: %s", async (_, held, written) => {
+    const run = realRun("kill -KILL $$", held);
     expect(await launchTui([], run.parts)).toBe(128 + 9);
     expect(run.restored).toEqual([SAVED]);
-    expect(run.written).toEqual([LEAVE_ALL]);
+    expect(run.written).toEqual([...written]);
+    expect(run.unheld()).toBe(held === null ? 0 : 1);
   });
 
-  it.skipIf(process.platform === "win32")("writes nothing after the screen exited by itself, whatever its code", async () => {
+  it.skipIf(process.platform === "win32")("writes nothing after the screen exited by itself, whatever its code or what its hold file still says", async () => {
     for (const [script, code] of [["exit 0", 0], ["exit 143", 143]] as const) {
-      const run = realRun(script);
+      const run = realRun(script, "modes");
       expect(await launchTui([], run.parts)).toBe(code);
       expect(run.restored).toEqual([]);
       expect(run.written).toEqual([]);
+      expect(run.unheld()).toBe(1);
     }
+  });
+
+  it.skipIf(process.platform === "win32")("names its hold file to the screen, reads there what a screen that died held, and removes it with its folder", async () => {
+    // the real hold file, in this test's folder, and a screen that says what it holds as the host does, then dies
+    const system = systemParts({ TMPDIR: scratch }, scratch);
+    const screen = `import { openHold } from ${JSON.stringify(join(ROOT, "tui", "host", "hold.ts"))}; openHold(process.env.OVIS_TUI_HOLD)("modes+watch"); process.kill(process.pid, "SIGKILL");`;
+    const run = fake({ over: { screen: { command: [process.execPath, "-e", screen], cwd: scratch, file: null }, run: system.run, holdFile: system.holdFile } });
+    expect(await launchTui([], run.parts)).toBe(128 + 9);
+    expect(run.written).toEqual([LEAVE_ALL]);
+    expect(readdirSync(scratch).filter((name) => name.startsWith("ovis-tui-"))).toEqual([]);
   });
 });
 
@@ -250,7 +278,7 @@ describe("the shell's environment", () => {
   /** the shell every measured case ran under */
   const SHELL = { PATH: "/usr/bin", HOME: "/home/me", SHELLV: "shell" };
 
-  it("drops the cross-file and nested-default repro without losing PATH, HOME or TERM", async () => {
+  it("drops the cross-file and nested-default repro, and PATH, HOME and TERM too where the folder names them", async () => {
     writeFileSync(join(scratch, ".env"), [
       "DB_HOST=localhost", "DEFAULT_TOKEN=tok_123", "TOKEN=${TOKEN_OVERRIDE:-$DEFAULT_TOKEN}", 'WINDIR="C:\\repos\\app"',
       "TZ=UTC", "HC_API_KEY=canary", "PATH=/wrong", "HOME=/wrong", "TERM=dumb",
@@ -273,8 +301,10 @@ describe("the shell's environment", () => {
     expect(exit, err).toBe(0);
     const { loaded, caller } = JSON.parse(text);
     expect(loaded).toEqual(["DB_HOST", "DEFAULT_TOKEN", "TOKEN", "WINDIR", "TZ", "HC_API_KEY", "DATABASE_URL"]);
-    expect(caller).toMatchObject(shell);
-    expect(loaded.filter((name: string) => Object.hasOwn(caller, name))).toEqual([]);
+    // the shell gave PATH, HOME and TERM and the folder names them too: nothing tells whose value this process holds
+    const { PATH: _path, HOME: _home, TERM: _term, ...unnamed } = shell;
+    expect(caller).toMatchObject(unnamed);
+    expect([...loaded, "PATH", "HOME", "TERM"].filter((name: string) => Object.hasOwn(caller, name))).toEqual([]);
   });
 
   it.each([
@@ -298,9 +328,54 @@ describe("the shell's environment", () => {
     );
   });
 
-  it.each(["PATH", "HOME", "TERM", "USER", "LOGNAME", "SHELL"])("fallback keeps %s even when named by a file", (name) => {
-    expect(shellEnv({ kernel: null, env: { [name]: "shell" }, dotenv: [`${name}=shell\n`] })).toEqual({ [name]: "shell" });
+  it.each(["PATH", "HOME", "TERM", "USER", "LOGNAME", "SHELL"])("fallback drops %s too when a file names it, and keeps it when none does", (name) => {
+    expect(shellEnv({ kernel: null, env: { [name]: "/only/from/folder", OTHER: "shell" }, dotenv: [`${name}=/only/from/folder\n`] })).toEqual({ OTHER: "shell" });
+    expect(shellEnv({ kernel: null, env: { [name]: "shell" }, dotenv: ["OTHER=file\n"] })).toEqual({ [name]: "shell" });
   });
+
+  it.skipIf(process.platform === "win32")("fallback: a HOME that only the folder's .env gives does not choose Ovis's settings", async () => {
+    // a real Bun in the folder takes HOME from its .env, as the launcher's own does; that home holds settings of its own
+    const project = join(scratch, "project");
+    const named = join(project, "home");
+    const account = join(scratch, "account");
+    mkdirSync(join(named, ".config", "ovis"), { recursive: true });
+    mkdirSync(account);
+    writeFileSync(join(project, ".env"), `HOME=${named}\n`);
+    writeFileSync(join(named, ".config", "ovis", "env"), "OVIS_TUI_BIN=/named/by/the/folder\n");
+    const child = Bun.spawn([process.execPath, "-e", `
+      import { runTui } from ${JSON.stringify(join(ROOT, "scripts", "plugin-tui.ts"))};
+      process.exit(await runTui([], () => null, () => ${JSON.stringify(account)}));
+    `], {
+      cwd: project, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", XDG_RUNTIME_DIR: join(scratch, "run"), HC_SESSION: "row60-home", HERDR_TEST_SESSION: "row60-home", PORT: "1", TMPDIR: scratch },
+    });
+    const [err, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    expect(code, err).toBe(1);
+    // no core runs and this is no terminal: that alone is said. The folder's settings would add their own line (tui_bin_unused)
+    expect([...err.matchAll(/^ovis tui: ([a-z_]+): /gm)].map((match) => match[1])).toEqual(["no_core"]);
+  }, 30_000);
+
+  it.skipIf(process.platform === "win32")("looks for hc under the home it is given, never under the working folder when the environment has no HOME", async () => {
+    // hc's usual folders are named from the home; with none they would be relative, and so the working folder's.
+    // Under root's sticky /tmp, as server/herdr-core/discovery.test.ts: there every folder above the candidate passes
+    // the trust check, which a shared TMPDIR need not, so only where it is looked for keeps the folder's hc from running
+    const project = mkdtempSync(join("/tmp", "ovis-plugin-tui-"));
+    try {
+      const ran = join(scratch, "the-folder-s-hc-ran");
+      mkdirSync(join(project, ".local", "bin"), { recursive: true, mode: 0o755 });
+      mkdirSync(join(scratch, "account"));
+      writeFileSync(join(project, ".local", "bin", "hc"), `#!/bin/sh\n: > '${ran}'\necho 'hc 0.1.18'\n`, { mode: 0o755 });
+      const child = Bun.spawn([process.execPath, "-e", `
+        import { systemParts } from ${JSON.stringify(join(ROOT, "scripts", "plugin-tui.ts"))};
+        await systemParts({}, ${JSON.stringify(join(scratch, "account"))}).findHc({ PATH: "/nonexistent" }, {});
+      `], { cwd: project, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, TMPDIR: scratch } });
+      const [err, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+      expect(code, err).toBe(0);
+      expect(existsSync(ran)).toBe(false);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("fallback drops every optional setting named by .env, including routing names", () => {
     const env = { HC_SOCKET: "/scratch/file.sock", HC_SESSION: "file", TZ: "UTC", TMPDIR: "/file", HC_API_KEY: "canary", XDG_CONFIG_HOME: "/file-config", LC_SECRET: "canary" };
@@ -395,12 +470,12 @@ describe("the screen's start", () => {
 });
 
 describe.skipIf(process.platform === "win32")("a recording stand-in hc", () => {
-  /** an hc that answers --version and records the environment `server start` got */
+  /** an hc that answers --version and records the environment it got for that (`<record>.version`) and for `server start` */
   function standIn(): { bin: string; record: string } {
     const bin = join(scratch, "bin", "hc");
     const record = join(scratch, "hc-env");
     mkdirSync(join(scratch, "bin"), { recursive: true });
-    writeFileSync(bin, `#!/bin/sh\ncase "$1" in\n  --version) echo "hc 0.1.18" ;;\n  server) env > '${record}' ;;\n  *) exit 9 ;;\nesac\n`);
+    writeFileSync(bin, `#!/bin/sh\ncase "$1" in\n  --version) env > '${record}.version'; echo "hc 0.1.18" ;;\n  server) env > '${record}' ;;\n  *) exit 9 ;;\nesac\n`);
     chmodSync(bin, 0o755);
     return { bin, record };
   }
@@ -430,6 +505,29 @@ describe.skipIf(process.platform === "win32")("a recording stand-in hc", () => {
     expect(run.runs.length).toBe(1);
   });
 
+  it("gets none of Ovis's own names for its --version or its server start: not a token only the settings hold, not the caller's", async () => {
+    const { bin, record } = standIn();
+    mkdirSync(join(scratch, ".config", "ovis"), { recursive: true });
+    writeFileSync(join(scratch, ".config", "ovis", "env"), `OVIS_HC_BIN=${bin}\nOVIS_TOKEN=only-in-the-settings\nPORT=7317\n`);
+    const caller = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, HC_SOCKET: join(scratch, "run", "hc.sock"), OVIS_URL: "http://127.0.0.1:7317", HERDR_WEB_TOKEN: "old-name" };
+    const run = parts("y", caller);
+    expect(await launchTui([], run.parts)).toBe(0);
+    for (const file of [`${record}.version`, record]) {
+      expect(Object.keys(recorded(file)).filter((name) => /^(?:OVIS_|HERDR_WEB_|PORT$)/.test(name)), file).toEqual([]);
+    }
+  });
+
+  it("hands Ovis's SSH askpass to none of them: not the screen, not hc's --version, not the core it starts", async () => {
+    const { bin, record } = standIn();
+    // as server/ssh.ts gives it to the ssh it starts: the token and socket, the helper ssh must use, the stand-in display
+    const askpass = { HERDR_ASKPASS_TOKEN: "one-connection-s-token", HERDR_ASKPASS_SOCKET: join(scratch, "ask"), SSH_ASKPASS: "/ovis/askpass", SSH_ASKPASS_REQUIRE: "force", DISPLAY: "herdr:0" };
+    const run = parts("y", { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, HC_SOCKET: join(scratch, "run", "hc.sock"), OVIS_HC_BIN: bin, ...askpass });
+    expect(await launchTui([], run.parts)).toBe(0);
+    for (const [who, env] of [["the screen", run.runs[0]!.env], ["--version", recorded(`${record}.version`)], ["server start", recorded(record)]] as const) {
+      expect(Object.keys(askpass).filter((name) => name in env), who).toEqual([]);
+    }
+  });
+
   it("starts nothing on n", async () => {
     const { bin, record } = standIn();
     const run = parts("n", { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, HC_SOCKET: join(scratch, "hc.sock"), OVIS_HC_BIN: bin });
@@ -446,7 +544,8 @@ describe.skipIf(process.platform === "win32")("a recording stand-in hc", () => {
     mkdirSync(project);
     mkdirSync(out);
     mkdirSync(join(scratch, ".config", "ovis"), { recursive: true });
-    writeFileSync(join(project, ".env"), "OVIS_TOKEN=canary\nCANARY_GENERIC=canary\nDOTENV_SECRET='pa$$word'\nH1=a#b\nDOUBLE=fromfile\n");
+    // SHELL: one of the shell's basic names, which only the folder gives here
+    writeFileSync(join(project, ".env"), "OVIS_TOKEN=canary\nCANARY_GENERIC=canary\nDOTENV_SECRET='pa$$word'\nH1=a#b\nDOUBLE=fromfile\nSHELL=/only/from/folder\n");
     writeFileSync(join(project, ".env.local"), "LOCAL_ONLY=canary\n");
     const hc = join(scratch, "hc");
     writeFileSync(hc, `#!/bin/sh\ncase "$1" in\n  --version) echo "hc 0.1.18" ;;\n  server) env > "$CANARY_OUT/hc.env" ;;\nesac\n`);
@@ -477,7 +576,7 @@ for (const path of ["kernel", "fallback"]) {
     const shell = {
       PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, HC_SOCKET: join(scratch, "hc.sock"),
       HERDR_TEST_SESSION: "row60-canary", XDG_RUNTIME_DIR: join(scratch, "run"), PORT: "1",
-      HERDR_PLUGIN_CONFIG_DIR: join(scratch, ".config", "ovis"), DOUBLE: "fromshell", CANARY_OUT: out,
+      HERDR_PLUGIN_CONFIG_DIR: join(scratch, ".config", "ovis"), DOUBLE: "fromshell", CANARY_OUT: out, TMPDIR: scratch,
     };
     const child = Bun.spawn([process.execPath, driver], { cwd: project, env: shell, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const [said, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -488,7 +587,7 @@ for (const path of ["kernel", "fallback"]) {
       const screen = JSON.parse(readFileSync(join(out, `screen-${path}.json`), "utf8")) as Record<string, string>;
       const core = recorded(join(out, `hc-${path}.env`));
       for (const env of [screen, core]) {
-        expect(["OVIS_TOKEN", "CANARY_GENERIC", "DOTENV_SECRET", "H1", "LOCAL_ONLY"].filter((name) => name in env)).toEqual([]);
+        expect(["OVIS_TOKEN", "CANARY_GENERIC", "DOTENV_SECRET", "H1", "LOCAL_ONLY", "SHELL"].filter((name) => name in env)).toEqual([]);
         expect([env["DOUBLE"], env["HOME"], env["PATH"]]).toEqual([path === "kernel" ? "fromshell" : undefined, scratch, shell.PATH]);
       }
       expect(screen["OVIS_TUI_CWD"]).toBe(project);

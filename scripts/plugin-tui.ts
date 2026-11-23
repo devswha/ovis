@@ -7,16 +7,17 @@
  * terminal back when the screen died by a signal. When no core answers, it asks before it starts one; no other path
  * starts a core. It asks the Ovis server nothing and takes no turn in the plugin's lifecycle lock.
  */
-import { existsSync, readFileSync, readSync, writeSync } from "node:fs";
-import { constants, homedir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, readSync, rmSync, writeSync } from "node:fs";
+import { constants, userInfo } from "node:os";
 import { join } from "node:path";
 import { isatty } from "node:tty";
 import { FFIType } from "bun:ffi";
 import { COMPILED, entryCommand, ROOT } from "../server/entries.ts";
 import { mergeEnvLayers } from "../server/legacy-env.ts";
-import { coreLaunchEnv } from "../server/herdr-core/core-env.ts";
+import { coreLaunchEnv, withoutAskpass } from "../server/herdr-core/core-env.ts";
 import { coreSocket } from "../server/herdr-core/core-socket.ts";
-import { LEAVE_ALL } from "../tui/host/guard.ts";
+import { type Held, LEAVE_ALL, undoHeld } from "../tui/host/guard.ts";
+import { readHold, SCREEN_HOLD } from "../tui/host/hold.ts";
 import { EXIT_FAILED, parseArgs, SCREEN_FOLDER, targetEnv } from "../tui/start.ts";
 import { openLibc } from "../tui/host/libc.ts";
 import { discardTyped, macExecEnv } from "./libc.ts";
@@ -30,10 +31,10 @@ const TUI_BIN_VARIABLE = "OVIS_TUI_BIN";
 /** What the screen never gets: it talks to herdr-core alone. */
 const WITHHELD = ["OVIS_TOKEN", "OVIS_URL", "HERDR_WEB_TOKEN", "HC_SCOPE"] as const;
 
-/** The screen's environment: the caller's (with the chosen core), without the Ovis server's token or address. */
+/** The screen's environment: the caller's (with the chosen core), without the Ovis server's token or address and without Ovis's SSH askpass. */
 export function tuiEnv(caller: Env): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(caller)) if (value !== undefined && !(WITHHELD as readonly string[]).includes(key)) env[key] = value;
+  for (const [key, value] of Object.entries(withoutAskpass(caller))) if (value !== undefined && !(WITHHELD as readonly string[]).includes(key)) env[key] = value;
   return env;
 }
 
@@ -43,12 +44,11 @@ export function tuiEnv(caller: Env): Record<string, string> {
  */
 const DOTENV_FILES = [".env", ".env.local", ...["development", "production", "test"].flatMap((mode) => [`.env.${mode}`, `.env.${mode}.local`])];
 
-const BASIC_SHELL_NAMES = new Set(["PATH", "HOME", "TERM", "USER", "LOGNAME", "SHELL"]);
-
 /**
  * The environment the user's shell gave this process, without what Bun took from the working folder at its start (the
  * `.env` files; a `bunfig.toml` preload runs before any of this). Prefer the NUL-separated copy from the kernel.
- * Without it, drop every name the files assign regardless of the value, except the six basic shell names.
+ * Without it, drop every name the files assign, whatever its value: nothing here can tell a value the shell gave from
+ * one a file gave, for PATH, HOME, TERM, USER, LOGNAME and SHELL as for any other name.
  */
 export function shellEnv(from: { kernel: string | null; env: Env; dotenv: readonly string[] }): Record<string, string> {
   if (from.kernel !== null) {
@@ -59,7 +59,7 @@ export function shellEnv(from: { kernel: string | null; env: Env; dotenv: readon
   for (const text of from.dotenv) for (const [, name] of text.matchAll(/^\s*(?:export\s+)?([A-Za-z0-9_.-]+)\s*[=:]/gm)) {
     if (name !== undefined) given.add(name);
   }
-  return Object.fromEntries(Object.entries(from.env).filter((entry): entry is [string, string] => entry[1] !== undefined && (BASIC_SHELL_NAMES.has(entry[0]) || !given.has(entry[0]))));
+  return Object.fromEntries(Object.entries(from.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !given.has(entry[0])));
 }
 
 /** The Linux or macOS copy of the environment this process was started with, untouched by Bun's `.env` loading. */
@@ -108,6 +108,17 @@ function startCommand(chosen: Env, caller: Env): string {
   return [...words, "hc", "server", "start"].join(" ");
 }
 
+/**
+ * What says which hc runs: OVIS_HC_BIN and the app's mark on its own, as Ovis's settings files name them, else the
+ * caller. They are all of the settings and of Ovis's own names that the search for hc is given.
+ */
+function hcSelector(caller: Env, settings: Env): Record<string, string> {
+  return Object.fromEntries(["OVIS_HC_BIN", "OVIS_HC_BIN_BUNDLED"].flatMap((name) => {
+    const value = settings[name] ?? caller[name];
+    return value === undefined ? [] : [[name, value]];
+  }));
+}
+
 /** Enter (an empty line), `y` or `yes` starts a core; `n`, the end of the input and anything else do not. */
 const saidYes = (line: string | null) => line !== null && ["", "y", "yes"].includes(line.trim().toLowerCase());
 
@@ -138,6 +149,14 @@ export function screenStart(compiled: boolean = COMPILED, root: string = ROOT): 
   return compiled ? { command: [bin, entry], cwd: root, file: null } : { command: [bin, "--no-env-file", entry], cwd: root, file: entry };
 }
 
+/** The launcher's own file in which the screen says which of the terminal's modes it holds (tui/host/hold.ts). */
+export interface HoldFile {
+  readonly path: string;
+  /** what the screen last said it holds */
+  held(): Held;
+  remove(): void;
+}
+
 /** The terminal's settings, read before the screen starts and written back when it died by a signal. */
 export interface TerminalSettings {
   save(): Uint8Array | null;
@@ -158,15 +177,21 @@ export interface LaunchParts {
   /** the folder `ovis tui` was typed in: a new workspace starts there, the first one too */
   readonly folder: string;
   probe(socket: string): Promise<Probe>;
-  /** hc with its trust checks, without the login shell's PATH; null when there is none */
-  findHc(env: Env): Promise<string | null>;
+  /**
+   * hc with its trust checks, without the login shell's PATH; null when there is none. `env`: where it is looked for
+   * and what its `--version` runs in, the environment its core would start in. `selector`: which hc the settings or
+   * the caller name (`hcSelector`), which reaches the search alone, never the program
+   */
+  findHc(env: Record<string, string>, selector: Env): Promise<string | null>;
   /** `hc server start` in `env`: its exit code, and what it said on stderr */
   startCore(hc: string, env: Record<string, string>): Promise<{ code: number; err: string }>;
-  /** throws away what was typed and not read yet; false where it cannot (the question is asked all the same) */
+  /** throws away what was typed and not read yet; false where it cannot (nothing is asked then) */
   discard(): boolean;
   /** the question at the terminal, in cooked mode: the line typed, or null at the end of the input */
   ask(question: string): Promise<string | null>;
   run(command: readonly string[], options: { env: Record<string, string>; cwd: string }): Screen;
+  /** a hold file for one screen; null where none can be made */
+  holdFile(): HoldFile | null;
   readonly terminal: TerminalSettings;
   /** listens for a signal; what it returns stops listening */
   on(signal: "SIGINT" | "SIGTERM" | "SIGHUP", handler: () => void): () => void;
@@ -202,15 +227,18 @@ export async function launchTui(argv: readonly string[], parts: LaunchParts): Pr
       return EXIT_FAILED;
     };
     if (!parts.isTty) return refused();
-    // what was typed before the question is no answer to it: an Enter typed ahead would start a core unread
-    parts.discard();
+    // what was typed before the question is no answer to it: an Enter typed ahead would start a core unread. Where it
+    // cannot be thrown away, a line read after the question may be that Enter, so nothing is asked and nothing started
+    if (!parts.discard()) return refused();
     if (!saidYes(await parts.ask(QUESTION))) return refused();
-    const hc = await parts.findHc({ ...parts.caller, ...parts.settings });
+    // hc is looked for, asked its version and started in one environment: the caller's without Ovis's own names
+    const launch = coreLaunchEnv(chosen);
+    const hc = await parts.findHc(launch, hcSelector(parts.caller, parts.settings));
     if (hc === null) {
       say("no_hc", "no herdr-core (hc) program was found on this PC; install it, or name it with OVIS_HC_BIN");
       return EXIT_FAILED;
     }
-    const started = await parts.startCore(hc, coreLaunchEnv(chosen));
+    const started = await parts.startCore(hc, launch);
     if (started.code !== 0) {
       say("start_failed", `${hc} server start exited ${started.code}${started.err.trim() === "" ? "" : `: ${started.err.trim()}`}`);
       return EXIT_FAILED;
@@ -236,12 +264,15 @@ export async function launchTui(argv: readonly string[], parts: LaunchParts): Pr
  * Runs the screen with the terminal handed over and stays until it ends. The screen holds the terminal in raw mode and
  * owns Ctrl+C, so a SIGINT sent to the whole group is ignored from before it starts; a SIGTERM or SIGHUP sent to this
  * process alone is passed on. A screen that died by a signal could not give the terminal back: this process writes back
- * the settings it read before the start and undoes every mode the screen's host can turn on. After any other end it writes
- * nothing: the screen gave the terminal back itself, and popping the keyboard protocol twice would take the shell's own.
+ * the settings it read before the start and undoes the modes the screen said it held when it died (its hold file), no
+ * others: a screen killed before it turned its modes on, or stopped from its shell after it had undone them, holds
+ * none, and undoing them all the same would take the caller's own (the shell's keyboard protocol entry, its bracketed
+ * paste). After any other end it writes nothing: the screen gave the terminal back itself.
  */
 async function runScreen(argv: string[], env: Record<string, string>, parts: LaunchParts): Promise<number> {
   const offs = [parts.on("SIGINT", () => undefined)];
   let child: Screen | undefined;
+  let hold: HoldFile | null = null;
   for (const signal of ["SIGTERM", "SIGHUP"] as const) offs.push(parts.on(signal, () => child?.kill(signal)));
   try {
     // Bun's own "Module not found" would be all a user saw of an install that lost the screen's file
@@ -250,8 +281,9 @@ async function runScreen(argv: string[], env: Record<string, string>, parts: Lau
       return EXIT_FAILED;
     }
     const saved = parts.terminal.save();
+    hold = parts.holdFile();
     try {
-      child = parts.run([...parts.screen.command, ...argv], { env, cwd: parts.screen.cwd });
+      child = parts.run([...parts.screen.command, ...argv], { env: hold === null ? env : { ...env, [SCREEN_HOLD]: hold.path }, cwd: parts.screen.cwd });
     } catch (error) {
       parts.err(`ovis tui: start_failed: the screen could not be started: ${error instanceof Error ? error.message : String(error)}\n`);
       return EXIT_FAILED;
@@ -259,9 +291,13 @@ async function runScreen(argv: string[], env: Record<string, string>, parts: Lau
     const end = await child.exited;
     if (end.signal === null) return end.code ?? EXIT_FAILED;
     if (saved !== null) parts.terminal.restore(saved);
-    parts.terminal.write(LEAVE_ALL);
+    // with no hold file the screen told nobody how far it got: every mode it can turn on is undone, as the likelier harm
+    // is a terminal left in them
+    const undo = hold === null ? LEAVE_ALL : undoHeld(hold.held());
+    if (undo !== "") parts.terminal.write(undo);
     return 128 + (constants.signals[end.signal] ?? 0);
   } finally {
+    hold?.remove();
     for (const off of offs) off();
   }
 }
@@ -307,7 +343,18 @@ function readSettings(env: Env, home: string): Env {
   return mergeEnvLayers(ENV_FILES.map((name) => join(dir, name)).filter((file) => existsSync(file)).map(readEnvFile));
 }
 
-/** The launcher's parts on this system for a caller's environment and home: the process's terminal and signals, Bun.spawn, hc. */
+/** A folder of this run's own in `temp`, with the hold file in it. */
+function systemHoldFile(temp: string): HoldFile | null {
+  let dir: string;
+  try { dir = mkdtempSync(join(temp, "ovis-tui-")); } catch { return null; }
+  const path = join(dir, "held");
+  return { path, held: () => readHold(path), remove: () => { rmSync(dir, { recursive: true, force: true }); } };
+}
+
+/**
+ * The launcher's parts on this system for a caller's environment and home: the process's terminal and signals,
+ * Bun.spawn, hc. `home` is where Ovis's settings and hc's usual folders are looked for.
+ */
 export function systemParts(caller: Env, home: string): LaunchParts {
   return {
     platform: process.platform,
@@ -327,9 +374,10 @@ export function systemParts(caller: Env, home: string): LaunchParts {
         return { kind: "failed", code: typeof kind === "string" ? kind : "connect_failed", reason: error instanceof Error ? error.message : String(error) };
       }
     },
-    findHc: async (env) => {
+    findHc: async (env, selector) => {
       const { findHc } = await import("../server/herdr-core/discovery.ts");
-      return (await findHc({ env, loginShellPath: async () => null }))?.bin ?? null;
+      // `home` is given, never read from `env`: with no HOME there, hc's usual folders would be looked for under the working folder
+      return (await findHc({ env: { ...env, ...selector }, versionEnv: env, home, loginShellPath: async () => null }))?.bin ?? null;
     },
     startCore: async (hc, env) => {
       const child = Bun.spawn([hc, "server", "start"], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -345,6 +393,8 @@ export function systemParts(caller: Env, home: string): LaunchParts {
       const child = Bun.spawn([...command], { env: options.env, cwd: options.cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
       return { exited: child.exited.then((code) => ({ code: child.signalCode === null ? code : null, signal: child.signalCode as NodeJS.Signals | null })), kill: (signal) => child.kill(signal) };
     },
+    // the shell's temp folder: os.tmpdir() would read this process's TMPDIR, which a `.env` of the working folder may have set
+    holdFile: () => systemHoldFile(caller["TMPDIR"] || "/tmp"),
     terminal: systemTerminal(),
     on: (signal, handler) => {
       process.on(signal, handler);
@@ -357,9 +407,18 @@ export function systemParts(caller: Env, home: string): LaunchParts {
   };
 }
 
-/** `ovis tui <args>`, for scripts/plugin.ts before its own work: the exit code. */
-export async function runTui(args: readonly string[], kernel: () => string | null = kernelEnv): Promise<number> {
+/** The account's own home, from the system's user database: never a value a folder's `.env` could have given. */
+function accountHome(): string {
+  // an account the database does not hold (a bare uid in a container) has no home to look in
+  try { return userInfo().homedir; } catch { return "/"; }
+}
+
+/**
+ * `ovis tui <args>`, for scripts/plugin.ts before its own work: the exit code. The home is the shell's HOME, else
+ * `account`'s: os.homedir() would read this process's HOME, which a `.env` of the working folder may have set.
+ */
+export async function runTui(args: readonly string[], kernel: () => string | null = kernelEnv, account: () => string = accountHome): Promise<number> {
   // the screen and a core it starts get what the shell gave, never what Bun took from the working folder
   const caller = callerEnv({ kernel, env: process.env, cwd: process.cwd() });
-  return launchTui(args, systemParts(caller, caller["HOME"] || homedir()));
+  return launchTui(args, systemParts(caller, caller["HOME"] || account()));
 }

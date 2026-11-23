@@ -48,7 +48,8 @@ herdr-core is not running. Start it? [Y/n]
 
 Enter, `y` or `yes` starts it and opens the screen. Anything else, `n` or Ctrl+D included, prints
 the command that starts it and exits with code 1. Keys you typed before the question showed up
-don't count as an answer. A core started this way keeps running after you leave the screen, and it
+don't count as an answer; where the terminal can't throw them away, `ovis tui` doesn't ask at all and
+prints the command instead. A core started this way keeps running after you leave the screen, and it
 gets none of the Ovis server's credentials or the SSH, tmux or pane variables of the shell you
 started it from.
 

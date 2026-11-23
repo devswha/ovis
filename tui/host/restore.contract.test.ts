@@ -335,6 +335,14 @@ describe("the launcher and the screen together", () => {
     expect(output.endsWith(`${ESC}[?2031l${LEAVE}`)).toBe(true);
   }, TEST_MS);
 
+  it("writes nothing to the terminal when the screen dies before it turned its own modes on: the caller's are left as they were", async () => {
+    const run = runSupervised({ entry: [process.execPath, LAUNCHER, "kill-first"], env: scratch(), cols: 80, rows: 24 });
+    const end = await run.ended;
+    expect({ code: end.code, after: [end.after?.canonical, end.after?.echo] }).toEqual({ code: 128 + constants.signals.SIGKILL, after: [true, true] });
+    // no escape sequence at all: not the keyboard protocol's pop, not bracketed paste off
+    expect(run.output()).not.toContain(ESC);
+  }, TEST_MS);
+
   it.skipIf(process.platform === "win32")("comes back after an interactive shell stopped the whole job and `fg` continued it: the screen takes keys again", async () => {
     const env = { ...scratch(), PS1: "$ ", SHELL: "/bin/bash" };
     // the shell leads the pty's session with every stream on it, so its prompt shows and its job control works

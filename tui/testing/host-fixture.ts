@@ -1,7 +1,7 @@
 /**
  * The real host (tui/host/unix.ts) in a small entry, for tui/host/restore.contract.test.ts:
  *
- *   bun tui/testing/host-fixture.ts exit|linger|process-exit|throw|wait|leave-fails|fail-wait|watch-kill|job
+ *   bun tui/testing/host-fixture.ts exit|linger|process-exit|throw|wait|leave-fails|fail-wait|watch-kill|kill-first|job
  *
  * It enters, listens, runs the probe and reports on the terminal it holds: `PROBE <ms> <json>`, `DEPTH`,
  * `RESIZE <cols>x<rows>`, `INPUT <length> <hex of the first 32 bytes>`, then `READY`. A `q` ends it the
@@ -11,7 +11,8 @@
  * signal. From the `q` on, `leave-fails` and `fail-wait` make every write of the host fail with
  * EBADF: `leave-fails` then leaves, writes `LEFT <what leave threw>` past the host and stays until a
  * signal; `fail-wait` ends only by a signal. `watch-kill` turns on the colour-scheme watch at the `q` and then dies by
- * SIGKILL, as a screen that cannot give the terminal back. `job` ends only by a signal, and a Ctrl+Z byte sends SIGTSTP to
+ * SIGKILL, as a screen that cannot give the terminal back; `kill-first` dies by SIGKILL before it enters, holding
+ * none of the terminal's modes. `job` ends only by a signal, and a Ctrl+Z byte sends SIGTSTP to
  * its own process group, as a shell's job control stops a foreground job. Not a terminal: one line on stderr, exit 3.
  */
 import { writeSync } from "node:fs";
@@ -28,6 +29,7 @@ const host = createUnixHost({
 });
 const say = (line: string) => host.write(`${line}\r\n`);
 
+if (mode === "kill-first") process.kill(process.pid, "SIGKILL");
 if (!host.enter()) {
   process.stderr.write("host-fixture: not a terminal\n");
   process.exit(3);

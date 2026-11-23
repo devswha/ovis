@@ -18,9 +18,9 @@ const CASE_MS = 120_000;
 const FIRST_FRAME_END = "\x1b[?2026l";
 /** what a terminal answers to the screen's start probe: DA1 ends it, DECRQM 2026 says synchronized output works */
 const ANSWERS: [query: string, answer: string][] = [["\x1b[c", "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
-/** names only the folder's files give: none may reach the screen or the core (Bun loads each, measured) */
+/** names only the folder's files give, SHELL among them: none may reach the screen or the core (Bun loads each, measured) */
 const FILE_ONLY = ["CANARY_GENERIC", "DOTENV_SECRET", "OVIS_TOKEN", "LOCAL_ONLY", "H1", "H4", "S1", "S2", "S3", "QUOTED", "EXPANDED", "EXPORTED", "BACKTICK", "CRLF_NAME",
-  "DB_HOST", "DATABASE_URL", "DEFAULT_TOKEN", "TOKEN", "HC_SESSION", "TZ", "TMPDIR", "HC_API_KEY"];
+  "DB_HOST", "DATABASE_URL", "DEFAULT_TOKEN", "TOKEN", "HC_SESSION", "TZ", "TMPDIR", "HC_API_KEY", "SHELL"];
 const PLUGIN = join(ROOT, "scripts", "plugin.ts");
 
 const cores: IsolatedCore[] = [];
@@ -44,8 +44,12 @@ interface Scene {
   mark: string;
 }
 
-/** An isolated core's folders, a home whose Ovis settings name the stand-in hc, and the user's project folder. */
-function scene(extra: Record<string, string> = {}): Scene {
+/**
+ * An isolated core's folders, a home whose Ovis settings name the stand-in hc, and the user's project folder.
+ * `repeated`: the folder's .env also repeats the shell's own PATH, HOME and TERM. With the kernel's copy they stay; a
+ * launch without it cannot tell whose they are and drops them, so its scenes leave them to the shell alone.
+ */
+function scene(extra: Record<string, string> = {}, repeated = true): Scene {
   const folder = coreFolder();
   const home = join(folder.root, "home");
   const project = join(folder.root, `proj${crypto.randomUUID().slice(0, 8)}`);
@@ -76,8 +80,10 @@ exec '${HC}' "$@"
     "DB_HOST=localhost", "DEFAULT_TOKEN=canary", "TOKEN=${TOKEN_OVERRIDE:-$DEFAULT_TOKEN}",
     `HC_SOCKET=${join(project, "file.sock")}`, "HC_SESSION=file", "TZ=UTC", `TMPDIR=${project}`,
     "HC_API_KEY=canary", `XDG_CONFIG_HOME=${project}`, "SAMEVAL=same",
+    // one of the shell's basic names that only the folder gives
+    "SHELL=/only/from/folder",
     // the shell's own values repeated: they must stay
-    `PATH=${path}`, `HOME=${home}`, "TERM=xterm-256color",
+    ...(repeated ? [`PATH=${path}`, `HOME=${home}`, "TERM=xterm-256color"] : []),
     "",
   ].join("\n"));
   writeFileSync(join(project, ".env.local"), "LOCAL_ONLY=l\nDATABASE_URL=postgres://app:canary@$DB_HOST/app\n");
@@ -133,7 +139,7 @@ function screenPid(at: Scene): number {
 
 const recorded = (file: string) => Object.fromEntries(readFileSync(file, "utf8").split("\n").filter((line) => line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 
-/** No file-only name; the six-name exception keeps the necessary shell values even on the fallback path. */
+/** No file-only name, by either path; and the shell's own PATH, HOME and TERM, which no file of a fallback scene names. */
 function shellOnly(at: Scene, env: Record<string, string>): void {
   expect(FILE_ONLY.filter((name) => name in env)).toEqual([]);
   expect(env["HC_SOCKET"]).toBe(at.folder.env["HC_SOCKET"]);
@@ -207,11 +213,11 @@ else process.exit(await (await import(${JSON.stringify(join(ROOT, "scripts", "pl
   }, CASE_MS);
 
   it("dotenv canary, fallback without a kernel copy: from source", async () => {
-    await startsACore(`bun '${driver}'`, scene(), true);
+    await startsACore(`bun '${driver}'`, scene({}, false), true);
   }, CASE_MS);
 
   it("dotenv canary, fallback without a kernel copy: compiled", async () => {
-    await startsACore(`'${join(built, "fallback")}'`, scene(), true);
+    await startsACore(`'${join(built, "fallback")}'`, scene({}, false), true);
   }, CASE_MS);
 
   it("kernel copy keeps a shell value that the folder repeats", async () => {
