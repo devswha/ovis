@@ -187,7 +187,8 @@ What is there:
   with Connect and Forget, and one saved unreadable with Forget alone). The relay and Tailscale tabs list
   their own PCs opened before. A build with
   `OVIS_APP_ACCOUNT=0` has no relay tab and opens on Tailscale. The address `demo` opens the bundled demo, which has no button
-  of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
+  of its own: the store review notes (app/store) send reviewers there. This page is no longer the app's first screen
+  unless the build says so: see [The first screen](#the-first-screen). `error.html` is shown when a PC cannot be
   reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
   reason, Try again and Change PC. Both are in English and Korean: an element's
   `data-ko` attribute holds its Korean text, put in when the phone's first language is Korean
@@ -353,6 +354,63 @@ Still open:
   https, on iOS only: Android has no such delay.
 - Not tried: QR scanning (needs a camera), keyboard and IME in the app, a physical iPhone,
   Release signing.
+
+### The first screen
+
+With no PC to open, the app opens the hosted app's Connect a PC screen, `<hosted origin>/#pcs`, called
+home here: on a first launch, after Change PC or Forget, and from a PC's Connect a PC (choosing, which
+keeps that PC to go back to). A saved PC still opens directly at every start. Home opens as a PC's first
+page does, so it has the bridge, but it is not made the current PC: nothing is written until a PC is
+picked. The app's own page (`app/web/index.html`) stands in when home does not load. The decisions are
+pure functions, `Home.java` (`HomeTest`) and `app/ios/OvisHomeCore` (`swift test` there on a Mac);
+`MainActivity` and `HerdrBridgeViewController` only carry them out.
+
+What opens (`Home.screen`), first match:
+
+| When | Screen |
+|---|---|
+| Something waits that only the app's own page takes (an SSH setup a page asked for, a pairing link from outside the app, an SSH PC whose address another app holds) and no PC is to open | the app's own page |
+| The demo was asked for (`HerdrShell.openDemo`, or `demo` typed where an address goes) | the bundled demo |
+| A PC is current and the person is not choosing another | that PC |
+| Home failed in this process and was not tried again, or the build has `OVIS_APP_HOME=bundled` | the app's own page |
+| Otherwise | home |
+
+While home is up (`Home.on`):
+
+| State | Event | What happens |
+|---|---|---|
+| loading (cover: "Opening Ovis…", no Change PC) | its client drew | the cover lifts: shown |
+| loading | the main frame failed, answered with an HTTP error, or was redirected to another origin | fallback |
+| loading | 8 s in front with no answer, or 20 s once its page had answered | fallback |
+| shown | a main-frame load failed (a PC's row pressed with the network gone) | fallback |
+| loading, shown | the web view arrived at a relay PC's page (`/s/<server_id>/…`, the page's own link) | the hosted app becomes the current PC and choosing ends; from here on the rules of a PC's page hold |
+| loading, shown | a PC picked through `HerdrShell.open` (Tailscale, SSH, an address) | that PC opens, as before |
+| fallback | anything that still arrives from the load that was given up | nothing |
+
+Fallback: the flag `homeFailed` is set, in memory only, and the app's own page comes up in a new web
+view (the old one goes, so a load that finishes late cannot take the person off what they type). The page
+reads `fallback` from `HerdrShell.getState` and shows one line, "Can't connect to the internet", with
+Try again, which calls `HerdrShell.goHome`. Nothing else leads back to home by itself, so an offline phone
+stays on that page: the flag is cleared only by Try again, or once a PC's page has loaded, after which the
+next Connect a PC tries home again. An app started again tries home.
+
+Back (`Home.back`, the phone's Back on Android; `getState`'s `back` tells a page where its own back
+control leads, `"current"`, `"home"` or `""`): the page's own history first; with nothing behind it, home
+opened while choosing goes back to the current PC (`backToCurrent`), the app's own page opened by home for
+what only it takes goes back to home, and so does the demo; otherwise Back leaves the app. The app's own
+page while choosing goes back to the PC at once, as it always did. An app killed while choosing opens the
+current PC at its next start, as before: choosing is kept in memory only.
+
+`HerdrShell` gained `goHome` and `openDemo` on both platforms, and `getState` the fields `home` (the
+page asking is home), `fallback` and `back`. `open` takes `https://demo/`, what the word `demo` becomes in
+the hosted screen's address field, as the bundled demo. `openSshSetup` asked while choosing keeps the
+current PC. A pairing link tapped outside the app (Android) still waits for the app's own page, which
+checks it and opens its PC.
+
+`OVIS_APP_HOME=bundled bun run build:web` builds an app whose first screen is its own page, as before
+home existed (`BuildConfig.HOME_HOSTED`, `OvisAppHome` in Info.plist, through the files
+`app/scripts/hosted-origin.ts` writes). A build with `OVIS_APP_ACCOUNT=0` takes that too unless it sets
+`OVIS_APP_HOME=hosted`.
 
 ### Push in the app
 
