@@ -14,8 +14,8 @@ import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KE
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
-import { directionalNeighbour, entryKey, indexOfEntry, keptCursor, menuEntries } from "./menu.ts";
-import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
+import { directionalNeighbour, indexOfEntry, keptCursor, menuEntries } from "./menu.ts";
+import { field, menuChoice, type MenuSelection, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
 export type ModeState =
@@ -66,6 +66,8 @@ export type ScreenEvent =
   | { readonly type: "world"; readonly world: World; readonly core?: string | null; readonly epoch?: number; readonly at: number }
   /** herdr's `[keys]` table as parsed (anything else: the defaults), read again by main.ts */
   | { readonly type: "keys"; readonly keys: unknown; readonly at: number }
+  /** A reload already resolved while reading held input; replay uses exactly this map. */
+  | { readonly type: "keymap"; readonly keymap: Keymap; readonly at: number }
   /** a deadline the state named came due */
   | { readonly type: "deadline"; readonly name: string; readonly at: number }
   /** an action chosen without a key (a menu entry, a click) */
@@ -82,7 +84,7 @@ export type ScreenEvent =
    * the top overlay's entry with key `entry` (`entryKey`, as its line was painted) was clicked: the menu chooses it as
    * Enter on it would; an entry gone from the menu since that paint chooses nothing
    */
-  | { readonly type: "choose"; readonly entry: string; readonly at: number }
+  | { readonly type: "choose"; readonly entry: string | null; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
   | { readonly type: "restore"; readonly core: string; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number }
   /**
@@ -103,6 +105,8 @@ export interface Step {
   readonly levels: readonly Level[];
   /** Where the character that chose an external action began, in the read and in the input ladder. */
   readonly textAction?: { readonly offset: number; readonly before: ModelState };
+  /** The presented identity chosen by this input, including a refused stale choice. */
+  readonly menuSelection?: MenuSelection;
 }
 
 export function initialState(keys: unknown): ModelState {
@@ -113,10 +117,11 @@ export function initialState(keys: unknown): ModelState {
 }
 
 /** The work in progress of one `reduce` call; only this call's own arrays are changed. */
-interface Acc { s: ModelState; readonly effects: Effect[]; readonly levels: Level[] }
+interface Acc { s: ModelState; readonly effects: Effect[]; readonly levels: Level[]; menuSelection?: MenuSelection }
 
 export function reduce(state: ModelState, event: ModelEvent): Step {
   const acc: Acc = { s: state, effects: [], levels: [] };
+  let textAction: Step["textAction"];
   switch (event.type) {
     case "reply":
       acc.levels.push(0);
@@ -149,11 +154,9 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
         notice(acc, "paste_refused", { length: event.text.length }, event.at);
       }
       break;
-    case "text": {
-      const textAction = ladderText(acc, event);
-      if (textAction) return { textAction, state: acc.s, effects: acc.effects, levels: acc.levels };
+    case "text":
+      textAction = ladderText(acc, event);
       break;
-    }
     case "mouse":
       mouse(acc, event);
       break;
@@ -162,7 +165,10 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       applyWorld(acc, event.world, event.core ?? null, event.at);
       break;
     case "keys":
-      reload(acc, event.keys, event.at);
+      reload(acc, buildKeymap(event.keys), event.at);
+      break;
+    case "keymap":
+      reload(acc, event.keymap, event.at);
       break;
     case "deadline":
       fire(acc, event.name, event.at);
@@ -186,8 +192,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       break;
     case "choose": {
       const top = acc.s.overlays.at(-1);
-      const at = top?.kind === "menu" ? top.entries.findIndex((entry) => entryKey(entry) === event.entry) : -1;
-      if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, at), event.at);
+      if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
       break;
     }
     case "restore": {
@@ -211,7 +216,8 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       break;
   }
   if (acc.s.world !== state.world || acc.s.focus !== state.focus) refreshMenus(acc);
-  return { state: acc.s, effects: acc.effects, levels: acc.levels };
+  return { state: acc.s, effects: acc.effects, levels: acc.levels,
+    ...(textAction ? { textAction } : {}), ...(acc.menuSelection ? { menuSelection: acc.menuSelection } : {}) };
 }
 
 /** Commit the key map of the frame the host took. Until the first menu frame, keys use the list at open. */
@@ -328,10 +334,9 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
       acc.levels.push(2);
       const from = acc.effects.length;
       toOverlay(acc, { kind: "text", event: { type: "text", text: first, at: event.at } });
-      // Once the menu closes the remaining bytes are a new input, after the loop performed its choice
-      // (including reload_keys, which can change how those very bytes are decoded by the ladder).
-      const closedMenu = s.overlays.at(-1)?.kind === "menu" && acc.s.overlays.length < s.overlays.length;
-      if (handBack(acc, from, after, event.at, closedMenu)) return { offset: event.text.length - rest.length, before: s };
+      // A menu selection hands its tail back after the choice, including reload_keys. Its identity
+      // and any prefix text stay separate so held input can replay the choice without reinterpreting its key.
+      if (handBack(acc, from, after, event.at, acc.menuSelection !== undefined)) return { offset: event.text.length - rest.length, before: s };
       rest = after;
       continue;
     }
@@ -400,6 +405,7 @@ function toOverlay(acc: Acc, input: OverlayInput): void {
 /** The top overlay replaced by its answer (or closed), its effects given, then what it chose done. */
 function answerOverlay(acc: Acc, answer: OverlayAnswer, at: number): void {
   const { overlays } = acc.s;
+  if (answer.selection) acc.menuSelection = answer.selection;
   const top = overlays.at(-1);
   const dismissed = answer.overlay === null && top?.kind === "menu" && top.presented === null;
   acc.s = { ...acc.s, menuDismissed: acc.s.menuDismissed || dismissed, overlays: answer.overlay === null ? overlays.slice(0, -1) : [...overlays.slice(0, -1), answer.overlay] };
@@ -464,9 +470,8 @@ function fire(acc: Acc, name: string, at: number): void {
   }
 }
 
-function reload(acc: Acc, keys: unknown, at: number): void {
+function reload(acc: Acc, keymap: Keymap, at: number): void {
   disarm(acc);
-  const keymap = buildKeymap(keys);
   const unlocked = acc.s.locked && unlockChords(keymap).length === 0;
   acc.s = { ...acc.s, keymap, locked: acc.s.locked && !unlocked };
   if (unlocked) notice(acc, "unlocked", {}, at);

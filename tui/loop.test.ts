@@ -569,17 +569,21 @@ describe("the loop", () => {
     await settled(events);
     expect([sentTo(events, "t1"), sentTo(events, "t2") === hex("a".repeat(BEHIND_WRITE_EVENTS)), dropped(events)]).toEqual(["", true, ["full"]]);
     // full, with a core that never answers: the prefix and q still leave at once
-    const full = await start({ fixture: demo });
-    await full.live();
-    await full.advance(1);
-    full.muted = true;
-    let ended = false;
-    void full.loop.done.then(() => { ended = true; });
-    full.type("\x02x");
-    for (let n = 0; n <= BEHIND_WRITE_EVENTS; n++) full.type("a");
-    full.type("\x02q");
-    await full.advance(QUIT_BOUND_MS + 100);
-    expect([dropped(full), ended]).toEqual([["full"], true]);
+    for (const overflow of ["events", "first text"]) {
+      const full = await start({ fixture: demo });
+      await full.live();
+      await full.advance(1);
+      full.muted = true;
+      let ended = false;
+      void full.loop.done.then(() => { ended = true; });
+      full.type("\x02x");
+      if (overflow === "events") for (let n = 0; n <= BEHIND_WRITE_EVENTS; n++) full.type("a");
+      else full.type("a".repeat(BEHIND_WRITE_BYTES + 1));
+      full.type("\x02");
+      full.type("q");
+      await full.advance(QUIT_BOUND_MS + 100);
+      expect([overflow, dropped(full), ended]).toEqual([overflow, ["full"], true]);
+    }
   }, TEST_MS);
 
   it("a key's own text counts against the bytes that wait: a paste at the bound fits, a kitty key with text after it does not", async () => {

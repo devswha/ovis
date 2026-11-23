@@ -29,8 +29,9 @@ import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect, MouseInput } from "./model/effects.ts";
+import { buildKeymap } from "./model/keymap.ts";
 import { exists, focused } from "./model/focus.ts";
-import { type Following, initialState, type ModelEvent, type ModelState, presentedMenu, reduce } from "./model/reduce.ts";
+import { type Following, initialState, type ModelEvent, type ModelState, presentedMenu, reduce, type Step } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
@@ -346,6 +347,8 @@ export function startLoop(options: LoopOptions): Loop {
       dispatch(event);
       return;
     }
+    // The world or a command may have changed the displayed menu since the write started.
+    if (behindWrite.events.length === 0 && !behindWrite.full) behindWrite.ahead = state;
     // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order. What waits is
     // what the read-ahead took in each step (a text run cut where it handed its rest back, as split reads give it), and
     // a layout action refused here waits as `consumed`: its keys are taken, and never chose anything in another layout
@@ -357,6 +360,7 @@ export function startLoop(options: LoopOptions): Loop {
       behindWrite.ahead = step.state;
       let rest = "";
       let refused = false;
+      let reloaded: Extract<ModelEvent, { type: "keymap" }> | undefined;
       for (const effect of step.effects) {
         if (effect.type === "quit") {
           drop("detach", false);
@@ -371,10 +375,18 @@ export function startLoop(options: LoopOptions): Loop {
           busy(effect.action);
           refused = true;
         }
+        if (effect.type === "reload_keys") {
+          reloaded = { type: "keymap", keymap: buildKeymap(options.readKeys ? options.readKeys() : options.keys), at: next.at };
+          behindWrite.ahead = reduce(behindWrite.ahead, reloaded).state;
+        }
       }
       const taken = next.type === "text" ? next.text.slice(0, next.text.length - rest.length) : "";
       if (!refused) {
-        pieces.push(next.type === "text" ? { ...next, text: taken } : next);
+        if (step.menuSelection) {
+          if (next.type === "text" && step.textAction && step.textAction.offset > 0) pieces.push({ ...next, text: next.text.slice(0, step.textAction.offset) });
+          pieces.push({ type: "choose", entry: step.menuSelection.accepted ? step.menuSelection.entry : null, at: next.at });
+        } else pieces.push(next.type === "text" ? { ...next, text: taken } : next);
+        if (reloaded) pieces.push(reloaded);
         continue;
       }
       // the action was chosen by the last code point taken: what came before it in the run waits as typed
@@ -456,9 +468,15 @@ export function startLoop(options: LoopOptions): Loop {
     behindWrite = null;
     replaying = true;
     try {
+      let accepting = true;
       for (const event of waited) {
-        if (event.type === "held_mouse") dispatch(event.input, event.matches);
-        else userInput(event);
+        if (event.type === "held_mouse") {
+          // Reject new input after a stale choice, but still finish a gesture already delivered.
+          if (accepting || event.input.action === "release") dispatch(event.input, event.matches);
+        } else if (accepting) {
+          if (event.type === "choose") accepting = dispatch(event).menuSelection?.accepted === true;
+          else userInput(event);
+        }
       }
       // what came after the queue filled went nowhere, a focus loss or the key after a prefix among it: a prefix the
       // replay armed would take the next key typed as its own, so it returns to Idle
@@ -495,10 +513,11 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** One event through the state core, and its effects performed in order, now. */
-  function dispatch(event: ModelEvent, matches?: (scene: PointerScene) => boolean): void {
+  function dispatch(event: ModelEvent, matches?: (scene: PointerScene) => boolean): Step {
     const before = state;
     const step = reduce(state, event);
     state = step.state;
+    if (behindWrite && (event.type === "world" || event.type === "restore")) behindWrite.ahead = reduce(behindWrite.ahead, event).state;
     for (const effect of step.effects) perform(effect, matches);
     if (state !== before) {
       keepView();
@@ -506,6 +525,7 @@ export function startLoop(options: LoopOptions): Loop {
       owePass();
     }
     onceShown();
+    return step;
   }
 
   /** The view written to this core's file when it changed; a failed write said once. */
@@ -557,7 +577,7 @@ export function startLoop(options: LoopOptions): Loop {
         return;
       case "reload_keys":
         act("reload_keys");
-        dispatch({ type: "keys", keys: options.readKeys ? options.readKeys() : options.keys, at: clock.now() });
+        if (!replaying) dispatch({ type: "keymap", keymap: buildKeymap(options.readKeys ? options.readKeys() : options.keys), at: clock.now() });
         return;
       case "mouse": {
         act(`mouse:${effect.over}`);
@@ -808,6 +828,7 @@ export function startLoop(options: LoopOptions): Loop {
     // but never bless an overlay changed by input or a world update during the host write.
     const sameOverlay = state.overlays.at(-1) === paintedOverlay;
     state = presentedMenu(state, frameMenu, frameMenuDismissed);
+    if (behindWrite) behindWrite.ahead = presentedMenu(behindWrite.ahead, frameMenu, frameMenuDismissed);
     if (sameOverlay) paintedOverlay = state.overlays.at(-1);
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;

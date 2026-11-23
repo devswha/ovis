@@ -8,7 +8,7 @@ import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadline
 import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
-import { chooseEntry, indexOfEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
+import { chooseEntry, entryKey, indexOfEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
 
 interface MenuList { readonly entries: readonly MenuEntry[]; readonly cursor: number }
 
@@ -29,7 +29,8 @@ export type Overlay =
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
 /** The overlay after the input (null: closed), what it asks of the caller, and what the reducer does once it closed. */
-export interface OverlayAnswer { readonly overlay: Overlay | null; readonly effects: readonly RunEffect[]; readonly choice?: OverlayChoice }
+export interface MenuSelection { readonly entry: string | null; readonly accepted: boolean }
+export interface OverlayAnswer { readonly overlay: Overlay | null; readonly effects: readonly RunEffect[]; readonly choice?: OverlayChoice; readonly selection?: MenuSelection }
 
 interface OverlayEntry<O extends Overlay> {
   /** the keys that close it, in herdr's syntax, shown in its frame; never empty */
@@ -153,14 +154,15 @@ function fieldInput<O extends Extract<Overlay, { field: Field }>>(overlay: O, in
 
 const run = (action: RunEffect["action"], target: Target | null, name: string | null): RunEffect => ({ type: "run", action, target, index: null, name });
 
-/** The menu's answer to choosing entry `at`: the cursor moved there and kept open, or closed with the choice. */
-export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
-  if (overlay.presented === null) return { overlay, effects: [] };
-  const chosen = chooseEntry(overlay.entries, at);
-  if (chosen === null) return { overlay: { ...overlay, presented: null }, effects: [] };
-  if (!("cursor" in chosen)) return { overlay: null, effects: [], choice: chosen.choice };
+/** Choose a presented identity: move the cursor, close with its choice, or refuse it without retargeting. */
+export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, entry: string | null): OverlayAnswer {
+  const at = overlay.entries.findIndex((candidate) => entryKey(candidate) === entry);
+  const chosen = overlay.presented === null ? null : chooseEntry(overlay.entries, at);
+  const selection = { entry, accepted: chosen !== null };
+  if (chosen === null || overlay.presented === null) return { overlay: { ...overlay, presented: null }, effects: [], selection };
+  if (!("cursor" in chosen)) return { overlay: null, effects: [], choice: chosen.choice, selection };
   const cursor = indexOfEntry(overlay.presented.entries, overlay.entries[chosen.cursor]!);
-  return { overlay: { ...overlay, cursor: chosen.cursor, presented: { ...overlay.presented, cursor } }, effects: [] };
+  return { overlay: { ...overlay, cursor: chosen.cursor, presented: { ...overlay.presented, cursor } }, effects: [], selection };
 }
 
 export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<Overlay, { kind: K }>> } = {
@@ -203,7 +205,11 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
         const shown = presented.entries[at];
         return shown === undefined ? -1 : indexOfEntry(overlay.entries, shown);
       };
-      if (isEnter(input)) return menuChoice(overlay, current(presented.cursor));
+      const choose = (at: number) => {
+        const entry = presented.entries[at];
+        return menuChoice(overlay, entry === undefined ? null : entryKey(entry));
+      };
+      if (isEnter(input)) return choose(presented.cursor);
       if (input.kind === "key") {
         const cursor = movedCursor(presented.entries, presented.cursor, input.event);
         if (cursor !== null) {
@@ -214,7 +220,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
       // a label is one character typed as it is: under an input method a letter arrives composed and chooses nothing
       const typed = input.kind === "paste" || (input.kind === "key" && (input.event.mods.alt || input.event.mods.ctrl)) ? "" : input.event.text ?? "";
       const at = labelled(presented.entries, [...typed][0] ?? "");
-      return at < 0 ? { overlay, effects: [] } : menuChoice(overlay, current(at));
+      return at < 0 ? { overlay, effects: [] } : choose(at);
     },
   },
 };
