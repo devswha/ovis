@@ -191,12 +191,14 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(run.loop.report().mode.overlays).toEqual(when === "before repaint" ? ["menu"] : []);
   }, TEST_MS);
 
-  it.each([false, true])("6z goes to the pane labelled 6 on the screen (repainted: %s)", async (repaint) => {
+  it.each(["before repaint", "after repaint", "Down during repaint"])("6z goes to the pane labelled 6 on the screen: %s", async (ordering) => {
     const run = await shown(120, 80);
     run.type("\x02\r");
     await run.advance(FRAME_PASS_MS);
     place(run.core, { space: "w-new", spaceName: "new", tab: "t-new", tabName: "new" }, "$ ");
     await run.settle();
+    const repaint = ordering !== "before repaint";
+    if (ordering === "Down during repaint") run.host.duringNextWrite(() => run.type("\x1b[B"));
     if (repaint) await run.advance(FRAME_PASS_MS);
     const line = run.grid().find((row) => row.includes("6 · pane"));
     expect(line).toContain(repaint ? "shell" : "files");

@@ -199,7 +199,8 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
 export function presentedMenu(state: ModelState, frame: Overlay | undefined, dismissed: boolean): ModelState {
   const menu = state.overlays.at(-1);
   if (dismissed && state.menuDismissed && menu === frame) return { ...state, menuDismissed: false };
-  if (frame?.kind !== "menu" || menu?.kind !== "menu" || menu.presented !== frame.presented) return state;
+  // An arrow changes only the presented cursor. A stale choice or replacement menu changes its entry list.
+  if (frame?.kind !== "menu" || menu?.kind !== "menu" || menu.presented?.entries !== frame.presented?.entries) return state;
   if (frame.entries === menu.presented?.entries && frame.cursor === menu.presented?.cursor) return state;
   return { ...state, overlays: [...state.overlays.slice(0, -1), { ...menu, presented: { entries: frame.entries, cursor: frame.cursor } }] };
 }
