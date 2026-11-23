@@ -2,6 +2,7 @@ import { describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as codex from "../codex.ts";
+import * as served from "../approvals/codex.ts";
 import * as conversation from "../conversation.ts";
 import { handlers, hub, root } from "./status.fake.ts";
 
@@ -37,6 +38,22 @@ function codexHub(text: string) {
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
+  it("takes the turn's end its own app server told, and reads no rollout for it", async () => {
+    // the rollout says answered: only the server's word can make this turn a failure
+    const h = codexHub(answered);
+    const told = spyOn(served, "servedTurnEnd").mockReturnValue("failed");
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.herdrSays(pane("idle"));
+      handlers.onStatus("w1:p1", "idle", "codex");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(h.last().status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+      expect(h.read).not.toHaveBeenCalled();
+    } finally { told.mockRestore(); h.restore(); }
+  });
+
   it("reads at rest and tells the failure once, never DONE first, for a turn this server saw run", async () => {
     const h = codexHub(failed);
     try {

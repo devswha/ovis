@@ -152,7 +152,8 @@ export type ParsedPrompt = InteractivePrompt & {
   /**
    * the shell command of an approval dialog the approval hub binds a held request to (server/approvals/hub.ts): Claude's
    * Bash approval, as its panel shows it between its dashed rules, and OmO's permission dialog for a shell command and
-   * the one Ovis's pi extension draws like it (dialogs/pi.ts); null for a dialog the screen does not show whole
+   * the one Ovis's pi extension draws like it (dialogs/pi.ts), and the command of Codex's approval of a request it asks a
+   * client on its own app server (dialogs/codex.ts); null for a dialog the screen does not show whole
    */
   approvalCommand?: string | null;
   lettaSearch?: string;
