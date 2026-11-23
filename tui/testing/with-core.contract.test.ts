@@ -116,20 +116,24 @@ const NOTHING_LEFT = { pidsAlive: [], socket: false, root: false, processes: [] 
  * test still lets it through), or does nothing for `server stop` with `noStop`: run by its
  * absolute path, it hands everything else to the real hc.
  */
-function gatedHc(name: string, options: { gate?: "start" | "stop"; noStop?: boolean }): { path: string; open: () => Promise<void> } {
+function gatedHc(name: string, options: { gate?: "start" | "stop"; noStop?: boolean }, target = bin): { path: string; open: () => Promise<void> } {
   const dir = join(scratch, name);
   mkdirSync(dir);
   const fifo = join(dir, "gate");
+  // Resolve before using the restricted tool environment: Homebrew supplies gtimeout, or timeout in gnubin.
+  const lookup = { PATH: process.env["PATH"] ?? "" };
+  const timeout = options.gate ? Bun.which("timeout", lookup) ?? Bun.which("gtimeout", lookup) : null;
   if (options.gate) {
+    if (!timeout) throw new Error("the gate contract needs GNU timeout or gtimeout on PATH");
     const made = Bun.spawnSync(["mkfifo", fifo], { env: TOOL_ENV });
     if (made.exitCode !== 0) throw new Error("mkfifo failed");
   }
   const script = [
     "#!/bin/sh",
     "PATH=/usr/bin:/bin",
-    options.gate ? `if [ "$1 $2" = "server ${options.gate}" ]; then timeout 20 sh -c 'read _ < "$0"' '${fifo}'; fi` : "",
+    options.gate ? `if [ "$1 $2" = "server ${options.gate}" ]; then '${timeout}' 20 sh -c 'read _ < "$0"' '${fifo}'; fi` : "",
     options.noStop ? `if [ "$1 $2" = "server stop" ]; then exit 0; fi` : "",
-    `exec '${resolve(bin!)}' "$@"`,
+    `exec '${resolve(target!)}' "$@"`,
   ].join("\n");
   const path = join(dir, "hc");
   writeFileSync(path, script);
@@ -137,13 +141,43 @@ function gatedHc(name: string, options: { gate?: "start" | "stop"; noStop?: bool
   return {
     path,
     open: async () => {
-      const opened = Bun.spawn(["timeout", "20", "sh", "-c", `echo go > '${fifo}'`], { env: TOOL_ENV });
+      if (!timeout) throw new Error("this hc has no gate");
+      const opened = Bun.spawn([timeout, "20", "sh", "-c", `echo go > '${fifo}'`], { env: TOOL_ENV });
       expect(await opened.exited).toBe(0);
     },
   };
 }
 
 describe("with-core's options", () => {
+  it("runs both gate waits through gtimeout found outside the system PATH", async () => {
+    const timer = Bun.which("timeout") ?? Bun.which("gtimeout");
+    if (!timer) throw new Error("the gate contract needs GNU timeout or gtimeout");
+    const tools = join(scratch, "homebrew-bin");
+    mkdirSync(tools);
+    const log = join(tools, "timer-ran");
+    const gtimeout = join(tools, "gtimeout");
+    writeFileSync(gtimeout, `#!/bin/sh\necho timer >> '${log}'\nexec '${timer}' "$@"\n`);
+    chmodSync(gtimeout, 0o755);
+    const path = process.env["PATH"];
+    let hc: ReturnType<typeof gatedHc>;
+    try {
+      process.env["PATH"] = tools;
+      hc = gatedHc("portable-gate", { gate: "start" }, "/bin/echo");
+    } finally {
+      if (path === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = path;
+    }
+    const child = Bun.spawn([hc.path, "server", "start"], { env: TOOL_ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    try {
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited, hc.open()]);
+      expect({ out, err, code }).toEqual({ out: "server start\n", err: "", code: 0 });
+      expect(existsSync(log) ? readFileSync(log, "utf8") : "").toBe("timer\ntimer\n");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await child.exited;
+    }
+  }, TEST_MS);
+
   it("sees a detached system command in its run's working directory after the helper exits", async () => {
     const run = helper(["--no-core", "--", "true"], callerEnv());
     expect(await run.exited).toBe(0);
