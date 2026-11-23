@@ -86,24 +86,39 @@ fn restarts_in_the_same_root_and_loads_the_last_session() {
     let mut client = Client::connect(&root);
     let opened = client.wait("the session note", |r| method(r) == Some("_keeper/session"));
     let session = opened["msg"]["params"]["sessionId"].as_str().expect("session id").to_string();
+    client.send(&prompt(1, &session, "echo first run"));
+    let first_answer = client.answer(json!(1));
     drop(client);
     first.signal(libc::SIGKILL);
     first.wait_exit();
 
     let _second = Keeper::start(&root, &[]);
     let mut client = Client::connect(&root);
-    let mut seqs = vec![];
     let load = client.wait("the load of the last session", |r| {
         r["dir"] == "to-agent" && method(r) == Some("session/load") && r["msg"]["params"]["sessionId"] == session.as_str()
     });
     assert!(load["seq"].as_u64() > opened["seq"].as_u64(), "the archive did not continue its numbering");
-    let mut client = Client::connect(&root);
-    client.wait("every row up to the load, in order", |r| {
+    let loaded = client.wait("the loaded session's note", |r| method(r) == Some("_keeper/session") && r["seq"].as_u64() > load["seq"].as_u64());
+    client.send(&prompt(1, &session, "echo second run"));
+    let answer = client.answer(json!(1));
+    assert!(
+        answer["seq"].as_u64() > loaded["seq"].as_u64(),
+        "the first run's answer to client {} was taken for this run's",
+        first_answer["client"]
+    );
+
+    let mut seqs = vec![];
+    let mut addressed = vec![];
+    let mut replay = Client::connect(&root);
+    replay.wait("every row up to the answer, in order", |r| {
         seqs.push(r["seq"].as_u64().expect("seq"));
-        r["seq"] == load["seq"]
+        if r["dir"] == "to-client" && r["client"].as_u64() == client.conn {
+            addressed.push(r["seq"].as_u64().expect("seq"));
+        }
+        r["seq"] == answer["seq"]
     });
-    assert_eq!(seqs, (1..=load["seq"].as_u64().unwrap()).collect::<Vec<_>>());
-    client.wait("the loaded session's note", |r| method(r) == Some("_keeper/session") && r["seq"].as_u64() > load["seq"].as_u64());
+    assert_eq!(seqs, (1..=answer["seq"].as_u64().unwrap()).collect::<Vec<_>>());
+    assert_eq!(addressed, vec![answer["seq"].as_u64().unwrap()], "rows of an earlier run carry this client's number");
 }
 
 #[test]

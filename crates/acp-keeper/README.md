@@ -23,7 +23,9 @@ ROOT is a directory private to the user (0700). The keeper keeps there:
 A client sends `{"replay":N}` and gets rows N.. from the file, a
 `{"through":seq,"pid":pid,"client":conn}` watermark, then live rows. Its requests reach the agent
 under an id of the keeper's own, and the answer comes back as a `to-client` row for that `client`
-with the client's own id: clients that count ids alike never get each other's answers, and one
+with the client's own id: clients that count ids alike never get each other's answers (client
+numbers go on across restarts of the keeper in the same ROOT, so no row in the archive is
+addressed to an earlier client of the same number), and one
 client reusing an id still in flight gets error -32600. An agent request (an approval) waits for
 the first answer from the screen or any client; that answer alone goes to the agent.
 

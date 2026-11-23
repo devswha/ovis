@@ -134,7 +134,7 @@ fn check_root(root: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>) -> std::io::Result<impl std::future::Future<Output = ()>> {
+async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>, mut conn: u64) -> std::io::Result<impl std::future::Future<Output = ()>> {
     let path = root.join("acp.sock");
     match std::fs::remove_file(&path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
@@ -142,7 +142,6 @@ async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSende
     }
     let listener = tokio::net::UnixListener::bind(path)?;
     Ok(async move {
-        let mut conn = 0;
         while let Ok((stream, _)) = listener.accept().await {
             conn += 1;
             tokio::spawn(serve_client(conn, archive.clone(), pid, tx.clone(), stream));
@@ -151,13 +150,12 @@ async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSende
 }
 
 #[cfg(windows)]
-async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>) -> std::io::Result<impl std::future::Future<Output = ()>> {
+async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>, mut conn: u64) -> std::io::Result<impl std::future::Future<Output = ()>> {
     use tokio::net::windows::named_pipe::ServerOptions;
     let name = format!(r"\\.\pipe\acp-keeper-{}", std::process::id());
     std::fs::write(root.join("acp.pipe"), &name)?;
     let mut server = ServerOptions::new().first_pipe_instance(true).create(&name)?;
     Ok(async move {
-        let mut conn = 0;
         loop {
             if server.connect().await.is_err() {
                 return;
@@ -362,7 +360,7 @@ async fn run(mut opts: Opts) -> i32 {
             }
         }
     });
-    let accept = match listen(&root, archive.clone(), child_pid, tx.clone()).await {
+    let accept = match listen(&root, archive.clone(), child_pid, tx.clone(), previous.last_client).await {
         Ok(accept) => accept,
         Err(e) => {
             eprintln!("listen: {e}");

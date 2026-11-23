@@ -210,17 +210,23 @@ pub fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
-/// What an earlier keeper in the same ROOT left in the archive: the last session it opened, and
-/// the agent requests nobody answered (the agent that asked them is gone).
+/// What an earlier keeper in the same ROOT left in the archive: the last session it opened, the
+/// agent requests nobody answered (the agent that asked them is gone), and its last client number.
 #[derive(Default)]
 pub struct Previous {
     pub session: Option<String>,
     pub pending: Vec<(Value, u64)>,
+    /// The highest client number a row was addressed to: this run's clients count on from it, so a
+    /// client replaying across a restart never takes an earlier client's answer for its own.
+    pub last_client: u64,
 }
 
 impl Previous {
     fn read(&mut self, unanswered: &mut HashMap<String, (Value, u64)>, row: &[u8]) {
         let Ok(row) = serde_json::from_slice::<Value>(row) else { return };
+        if let Some(client) = row["client"].as_u64() {
+            self.last_client = self.last_client.max(client);
+        }
         let (Some(seq), Some(dir), Some(raw)) = (row["seq"].as_u64(), row["dir"].as_str(), row["raw"].as_str()) else {
             return;
         };
