@@ -9,11 +9,15 @@
  * the command's waits between looks are released one at a time, each bounded.
  */
 import { afterEach, expect, test } from "bun:test";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { decodeOffer } from "../shared/relay-offer.ts";
+import { channelBinding, importPublicKey } from "../shared/relay-e2ee.ts";
+import { FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../shared/relay-mux.ts";
+import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../shared/relay-pair-sas.ts";
 import { PAIRING_LINK_MS } from "../server/devices.ts";
-import { ask, ended, linkRecord, pairingPc, phone, sendLink, signedInWith, vouchFor, type Pc } from "../server/account/pairing.test-helpers.ts";
-import { bounded, TestClock } from "../server/relay/test-helpers.ts";
-import { link } from "./plugin-link.ts";
+import { ask, ended, linkRecord, pairingPc, phone, sendLink, signedInWith, vouchFor, type Pc, type Phone } from "../server/account/pairing.test-helpers.ts";
+import { bounded, deferred, relayConnection, TestClock } from "../server/relay/test-helpers.ts";
+import { approveJoins, link, type OwnJoin } from "./plugin-link.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => {
@@ -222,4 +226,196 @@ test("ovis add --account, as a script or an agent runs it with no terminal: this
   expect(asked.at(-1)).toBe(200);
   expect(made.devices.account()).toBe(OWNER);
   expect(service.pcs(OWNER).map((entry) => [entry.server_id, entry.listed_by_device])).toEqual([[serverId, false]]);
+});
+
+/** Lines typed at a terminal when the test types them: one typed while nothing reads waits for the next read. */
+function terminalLines() {
+  const kept: string[] = [];
+  let reader: ((line: IteratorResult<string>) => void) | null = null;
+  return {
+    lines: { next: () => { const line = kept.shift(); return line !== undefined ? Promise.resolve({ value: line, done: false as const }) : new Promise<IteratorResult<string>>((resolve) => { reader = resolve; }); } },
+    type: (line: string) => { const resolve = reader; reader = null; if (resolve === null) kept.push(line); else resolve({ value: line, done: false }); },
+    discard: () => { kept.length = 0; return true; },
+  };
+}
+
+/**
+ * The first device that opens a PC added in one press, which has no member yet: its account admitted it (an admission
+ * for its key, `vouchFor`), and it asks to join through the relay with the account intent. The PC takes that as a first
+ * join, which only its own window, or its terminal, may let in. The PC reads its account's admissions at most once every
+ * 10 seconds, so every device that asks in one test is vouched for before the first asks.
+ */
+async function firstJoin(pc: Pc, device: Phone) {
+  const session = await relayConnection(pc);
+  const frames: MuxFrame[] = [];
+  let heard: (() => void) | undefined;
+  session.onFrame = (frame) => { frames.push(frame); heard?.(); };
+  const next = async (type: number): Promise<MuxFrame> => {
+    for (;;) {
+      const index = frames.findIndex((frame) => frame.type === type || frame.type === FrameType.SESSION_ERROR);
+      if (index >= 0) return frames.splice(index, 1)[0]!;
+      const arrived = deferred<void>();
+      heard = arrived.resolve;
+      await bounded(arrived.promise);
+    }
+  };
+  await session.hello([PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT]);
+  const binding = channelBinding(session.channel);
+  if (!binding) throw new Error("No channel binding");
+  const nonce = randomPairNonce();
+  session.mux.sendSession({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
+    payload: { label: "Android · Chrome", public_key: device.spki, commitment: toBase64Url(pairCommitment(binding, device.spki, nonce)) } });
+  const challenge = await next(FrameType.PAIR_CHALLENGE);
+  if (challenge.type !== FrameType.PAIR_CHALLENGE) throw new Error(`The join was refused: ${JSON.stringify(challenge.payload)}`);
+  session.mux.sendSession({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(nonce) } });
+  return {
+    next, approveOn: challenge.payload.approve_on as string | undefined, digits: pairDigits(binding, device.spki, nonce, fromBase64Url(challenge.payload.nonce)),
+    /** the device goes on once the digits show, as the app does for a join the PC decides (docs/relay.md, step 7) */
+    confirm: () => session.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } }),
+  };
+}
+
+/** Resolves once this PC holds a join for its own window. */
+function joinWaiting(pc: Pc): Promise<void> {
+  const approvals = pc.app.context.services.relay.approvals;
+  const found = deferred<void>();
+  const stop = approvals.subscribe(() => { if (approvals.ownJoins().length > 0) found.resolve(); });
+  if (approvals.ownJoins().length > 0) found.resolve();
+  return bounded(found.promise).finally(stop);
+}
+
+test("ovis add at a terminal goes on after Added: the first device that opens the PC asks for a first join, and the six digits it shows, typed here, let it in", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  pcs.push(made);
+  const service = made.account;
+  service.opensAll = true;
+  const origin = `http://127.0.0.1:${made.app.port}`;
+  const serverId = made.app.context.services.relay.currentIdentity()!.server_id;
+  const keys = terminalLines();
+  const out: string[] = [];
+  let signedIn = false;
+  // the command's own clock, moved on before a line is typed so the question was on the screen long enough to read
+  let skew = 0;
+  const watching = deferred<void>();
+  const asked = deferred<string>();
+  const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    if (new URL(request.url).pathname === "/api/relay" && request.method === "GET") return Response.json({ phase: made.devices.account() === null ? "connecting" : "online", blocked: null });
+    return await globalThis.fetch(request);
+  };
+  const run = link(["--account", OWNER], {
+    origin, headers: {}, fetch, accountService: "https://account.test", serviceFetch: service.fetch, signal: new AbortController().signal,
+    lines: keys.lines, discard: keys.discard, terminal: true, isTty: true, now: () => Date.now() + skew,
+    wait: (_ms, signal) => new Promise((resolve, reject) => { if (signal.aborted) reject(signal.reason); else setTimeout(resolve, 0); }),
+    out: (text) => {
+      out.push(text);
+      const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
+      if (shown && !signedIn) { signedIn = true; service.approveDevice(shown[1]!, OWNER); }
+      if (text.includes("press Add for")) {
+        void service.fetch(new Request(`https://account.test/v1/pcs/${serverId}/admit`, {
+          method: "POST", headers: { authorization: `Bearer ${service.issueToken(OWNER)}`, "content-type": "application/json" }, body: "{}",
+        }));
+      }
+      if (text.includes("If the phone shows six digits, type them here")) watching.resolve();
+      if (text.includes("asks to open this PC")) asked.resolve(text);
+    },
+  });
+  await bounded(watching.promise);
+  expect(made.devices.account()).toBe(OWNER);
+  expect(made.devices.hasAccountApprover()).toBe(false);
+  // the phone opens the PC from My PCs: no member could approve it, so this PC itself is asked
+  const device = await phone();
+  await vouchFor(made, OWNER, device);
+  const waiting = joinWaiting(made);
+  const join = await firstJoin(made, device);
+  expect(join.approveOn).toBe("linux");
+  await waiting;
+  const question = await bounded(asked.promise);
+  expect(question).toContain("Android · Chrome asks to open this PC (from Ovis account acct_owner,");
+  expect(question).not.toContain(join.digits.slice(3));
+  join.confirm();
+  skew += 2_000;
+  keys.type(join.digits);
+  expect(await bounded(run)).toBe(0);
+  expect(out.join("")).toContain("Android · Chrome can open this PC now.\n");
+  expect((await join.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
+  expect(made.devices.hasKey(device.spki)).toBe(true);
+});
+
+/** A PC added to OWNER in one press, as `ovis add` leaves it: in the account, with no member to approve a join. */
+async function addedPc(): Promise<Pc> {
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  pcs.push(made);
+  made.account.opensAll = true;
+  const identity = made.app.context.services.relay.currentIdentity()!;
+  const named = await made.local("/api/account/relay-account", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account: OWNER } });
+  if (named.status !== 204) throw new Error(`The account was not named: ${named.status} ${JSON.stringify(named.body)}`);
+  const token = made.account.issueToken(OWNER, { twoStep: true });
+  const call = (path: string, method: string) => made.account.fetch(new Request(`https://account.test${path}`, { method, headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify(method === "PUT" ? { label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" } : {}) }));
+  await call(`/v1/pcs/${identity.server_id}`, "PUT");
+  await call(`/v1/pcs/${identity.server_id}/admit`, "POST");
+  const pressed = await made.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1", "x-herdr-update": "1" }, body: { account: OWNER } });
+  if (pressed.status !== 200) throw new Error(`The PC was not added: ${pressed.status} ${JSON.stringify(pressed.body)}`);
+  expect(made.devices.hasAccountApprover()).toBe(false);
+  return made;
+}
+
+/**
+ * `ovis approve` at this PC's terminal (scripts/plugin.ts approvePairings): the joins this PC's own route lists to it,
+ * each first join asked about with the six digits typed, sent to that route as the command sends them.
+ */
+async function approving(pc: Pc, answer: (said: string, type: (line: string) => void) => void) {
+  const base = `http://127.0.0.1:${pc.app.port}`;
+  const headers = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: base };
+  const { joins } = await (await fetch(`${base}/api/relay/joins`, { headers })).json() as { joins: OwnJoin[] };
+  const keys = terminalLines();
+  let at = Date.now();
+  const out: string[] = [];
+  const code = await approveJoins(joins, {
+    account: OWNER, lines: keys.lines, discard: keys.discard, terminal: true, signal: new AbortController().signal, now: () => at,
+    out: (text) => { out.push(text); answer(text, (line) => { setTimeout(() => { at += 2_000; keys.type(line); }, 0); }); },
+    approve: async (id, digits) => {
+      const typed = await fetch(`${base}/api/relay/join`, { method: "POST", headers, body: JSON.stringify({ id, digits }) });
+      if (typed.ok) return "approved";
+      const code = ((await typed.json()) as { error?: { code?: string } }).error?.code;
+      return code === "wrong_digits" ? "wrong_digits" : code === "relay_pairing_gone" ? "gone" : "away";
+    },
+  });
+  return { code, joins, text: out.join("") };
+}
+
+test("ovis approve lets in a first join, listed to this PC's terminal, with the six digits its device shows; wrong digits end it, and Enter leaves it waiting", async () => {
+  const pc = await addedPc();
+  const device = await phone();
+  await vouchFor(pc, OWNER, device);
+  // Enter by itself: nothing is sent, and the join still waits
+  let waiting = joinWaiting(pc);
+  const left = await firstJoin(pc, device);
+  await waiting;
+  const skip = await approving(pc, (said, type) => { if (said.includes("press Enter to skip")) type(""); });
+  expect(skip.joins).toHaveLength(1);
+  expect(skip.joins[0]!.digits).toBe(left.digits);
+  expect(skip.text).toContain("Android · Chrome asks to open this PC (from Ovis account acct_owner,");
+  expect(skip.text).not.toContain(left.digits.slice(3));
+  expect(skip.text).toContain("Android · Chrome is left waiting until its time runs out.\n");
+  expect(pc.app.context.services.relay.approvals.ownJoins()).toHaveLength(1);
+  // wrong digits end that join: the device is refused, and nothing was let in
+  const wrong = left.digits === "000000" ? "111111" : "000000";
+  const refused = await approving(pc, (said, type) => { if (said.includes("press Enter to skip")) type(wrong); });
+  expect(refused.text).toContain("That is not the number Android · Chrome shows, so it was not let in.");
+  const ended = await left.next(FrameType.AUTH_OK);
+  expect(ended.type === FrameType.SESSION_ERROR ? ended.payload.code : ended.type).toBe("auth_failed");
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
+  expect(pc.app.context.services.relay.approvals.ownJoins()).toEqual([]);
+  // the device asks again, with new digits, and those typed here let it in
+  waiting = joinWaiting(pc);
+  const join = await firstJoin(pc, device);
+  await waiting;
+  join.confirm();
+  const approved = await approving(pc, (said, type) => { if (said.includes("press Enter to skip")) type(join.digits); });
+  expect(approved.code).toBe(0);
+  expect(approved.text).toContain("Android · Chrome can open this PC now.\n");
+  expect((await join.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
+  expect(pc.devices.hasKey(device.spki)).toBe(true);
 });
