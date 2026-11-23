@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { coreFolder, IsolatedCore, stoppedCleanly } from "./test-hc.ts";
+import { cleanUpAll, coreStops } from "./test-cleanup.ts";
+import { coreFolder, IsolatedCore } from "./test-hc.ts";
 import { buildBinary } from "./server-artifact.ts";
 import { runOnPty, stopAllPtyRuns, type PtyRun } from "../tui/testing/pty.ts";
 
@@ -24,11 +25,13 @@ const PLUGIN = join(ROOT, "scripts", "plugin.ts");
 
 const cores: IsolatedCore[] = [];
 let built = "";
-const teardown = async () => {
-  await stopAllPtyRuns();
-  for (const core of cores.splice(0)) expect(stoppedCleanly(await core.stop())).toBe(true);
-  if (built) rmSync(built, { recursive: true, force: true });
-};
+let ending: Promise<void> | undefined;
+/** One teardown, whoever asks: the ptys, every core and the built binaries are each tried, and what failed is thrown after the last. */
+const teardown = () => (ending ??= cleanUpAll([
+  stopAllPtyRuns,
+  ...coreStops(cores.splice(0)),
+  () => { if (built) rmSync(built, { recursive: true, force: true }); },
+]));
 afterAll(teardown, CASE_MS);
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => { void teardown().finally(() => process.exit(128 + 15)); });
 
