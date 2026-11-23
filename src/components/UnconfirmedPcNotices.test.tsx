@@ -5,6 +5,7 @@ import { FakeAccountService, PC_NEW_MS, WEB_REDIRECT } from "../../shared/accoun
 import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { isNewAccountPc, type MyPc } from "../lib/account/myPcs.ts";
+import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { memoryAccountStore, memoryLock, type AccountProvider, type AccountStore } from "../lib/account/store.ts";
@@ -194,6 +195,27 @@ it("PCR-1: a removal from a sign-in older than ten minutes removes nothing, and 
     expect(text()).toContain(`New PC added to your account: ${LABEL}`);
     expect(buttons()).toContain("I didn't add this");
     expect(buttons()).not.toContain("Add");
+  });
+
+  it("keeps the new-PC card closed under the service's admission time, not this device's clock", async () => {
+    await signIn();
+    await listedByDeviceCode();
+    // the admit's answer takes a second to come back: this device's clock has moved on by then
+    service = new AccountService({ store, lock: memoryLock(), now: () => now, fetch: async (input: Request | string | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const answer = await fake.fetch(request);
+      if (new URL(request.url).pathname.endsWith("/admit")) now += 1_000;
+      return answer;
+    } });
+    await mount();
+    await press("Add");
+    const close = renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Close");
+    expect(close).toHaveLength(1);
+    await act(async () => { close[0]!.props.onClick(); });
+    // the directory's own row names the same admission, so the card closed here is closed for it too
+    const [row] = await service.forSignIn((await service.session())!).listPcs();
+    expect(row?.admitted_at).toBe(new Date(now - 1_000).toISOString());
+    expect(localStorage.getItem(newPcNoticeKey(ACCOUNT, row!))).toBe("1");
   });
 
   it("removes the listing from the account on No and hides it, for good after a reload", async () => {

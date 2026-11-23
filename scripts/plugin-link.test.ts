@@ -1617,6 +1617,8 @@ describe("ovis link, on the PC itself", () => {
     confirm?: string | false;
     /** Ctrl+C once this PC is in an account: as the ask that bound it answers, or as the relay is waited for after it */
     stopWhenBound?: "take" | "relay";
+    /** Ctrl+C as this PC is named for its listing's account, before the wait set up anything */
+    stopWhenNamed?: boolean;
     /** a device of the account chooses No on the card right after that ask: its own fresh sign-in removes the listing */
     noAfter?: number;
     answer?: (asks: number, state: { account: string | null }) => Response | undefined;
@@ -1646,7 +1648,11 @@ describe("ovis link, on the PC itself", () => {
         if (options.stopWhenBound === "relay" && state.account !== null) stop.abort();
         return Response.json({ phase: options.relay?.() ?? (state.account === null ? "connecting" : "online"), blocked: null });
       }
-      if (path === "/api/account/relay-account") { named.push((await request.json() as { account?: unknown }).account); return new Response(null, { status: 204 }); }
+      if (path === "/api/account/relay-account") {
+        named.push((await request.json() as { account?: unknown }).account);
+        if (options.stopWhenNamed === true) stop.abort();
+        return new Response(null, { status: 204 });
+      }
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
       if (path === "/api/relay/link/close") return Response.json({ ok: true });
       if (path === "/api/account/one-press") {
@@ -1852,6 +1858,17 @@ describe("ovis link, on the PC itself", () => {
   it("Ctrl+C while it waits takes this PC off the account's list, says it is in no account, and ends the sign-in", async () => {
     const run = await pressing({ stopAt: 2 });
     expect(run.code).toBe(1);
+    expect(run.text.endsWith("Stopped. This PC was taken off your account's list; it is in no account. Run ovis add to try again.\n")).toBe(true);
+    expect(run.listed()).toEqual([]);
+    expect(run.signedOut).toBe(true);
+  });
+
+  it("Ctrl+C as the wait is set up, right after the listing, takes this PC off the account's list too", async () => {
+    const run = await pressing({ stopWhenNamed: true });
+    expect(run.code).toBe(1);
+    // the window's close never left: the run was stopped before it
+    expect(run.paths).not.toContain("POST /api/relay/link/close");
+    expect(run.pressed).toEqual([]);
     expect(run.text.endsWith("Stopped. This PC was taken off your account's list; it is in no account. Run ovis add to try again.\n")).toBe(true);
     expect(run.listed()).toEqual([]);
     expect(run.signedOut).toBe(true);

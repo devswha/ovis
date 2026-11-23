@@ -886,9 +886,14 @@ page signs in on its own window.
 then), so the same admission adds a PC that signed in on the link page. Every device of the account
 whose sign-in is its own shows such a PC's card, **Add this PC to your account?**, with the name the
 PC gave itself and when it was listed, for the 10 minutes after the listing; **Add** there reads the
-listing again (the admit names none, so one that replaced the listing on the card is not admitted)
-and asks `POST /v1/pcs/{server_id}/admit`, with **Sign in again** for `session_not_fresh` and
-`own_sign_in_required`, after which the add goes on. **No** removes the listing. `ovis add` on that
+listing again and admits nothing when it is no longer the one on the card, then asks `POST
+/v1/pcs/{server_id}/admit`, with **Sign in again** for `session_not_fresh` and
+`own_sign_in_required`, after which the add goes on. The admit names the PC, not the listing, so a
+listing that replaces the card's in the moment between that read and the admit is admitted in its
+place; it is a listing of the same PC (its id derives from the PC's key), whose name may differ. An
+admit bound to the listing is the account service's to add. The card keeps a closed new-PC notice
+under the admission's time as the service answered it, which the directory's row repeats. **No**
+removes the listing. `ovis add` on that
 PC waits for that admission and takes it as above ([A PC with no screen](relay.md#a-pc-with-no-screen)).
 A PC's own page that signed in on the link page does not take it: its digit wait goes on, and the
 admission ends unused after its 10 minutes (the listing stays confirmed).

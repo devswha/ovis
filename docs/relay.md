@@ -396,8 +396,8 @@ for it before they show or ask anything.
   closing, a refusal at the PC), it first reads which account this PC is in (it may have taken the
   admission as the run was stopped, or during the relay's wait): in the account that signed in, it
   says so, with **If that is not your account, run `ovis logout` now**; in another, it reports both.
-  In none, it takes this PC off the account's list, which its sign-in may do
-  only while nobody admitted it, and says where the PC is: off the list and in no account; no
+  In none, it tries to take this PC off the account's list, which its sign-in may do
+  only for a listing it made and nobody admitted, so the listing can stay; it says where the PC is: off the list and in no account; no
   longer listed, since a device chose **No**; still listed, as a device pressed **Add** just then
   (run `add` again within the 10 minutes to finish) or an earlier run listed it; or not known. As the
   10 minutes end and the listing is still there, it asks this PC once more first. A PC that joined

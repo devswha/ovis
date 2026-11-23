@@ -183,7 +183,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
       window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
       return;
     }
-    let admitted: { readonly new_until: string };
+    let admitted: { readonly new_until: string; readonly admitted_at: string | null };
     try { admitted = await directory.admitPc(pc.server_id); }
     catch (error) {
       // the account no longer lists it: nothing was admitted, and the card is drawn again
@@ -192,8 +192,11 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
       return;
     }
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+    // the new-PC card's dismissal is kept under the admission's time (newPcNoticeKey): the service's own, as its directory
+    // row gives it, never this device's clock, so a card closed here stays closed when the row is read again
+    const at = admitted.admitted_at ?? (await directory.listPcs().catch(() => [])).find((each) => each.server_id === pc.server_id)?.admitted_at ?? null;
     const { unconfirmed: _unconfirmed, ...listed } = pc;
-    onConfirmed({ ...listed, new_until: admitted.new_until, admitted_at: new Date(now()).toISOString() });
+    onConfirmed({ ...listed, new_until: admitted.new_until, admitted_at: at });
   }, (error) => refusal(t, error));
   const remove = (): Promise<void> => act(async () => { await removal.remove(session, pc.server_id, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
     () => ({ text: t("The PC could not be removed. Try again."), signInAgain: false }));

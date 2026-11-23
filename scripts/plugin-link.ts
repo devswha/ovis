@@ -1539,8 +1539,8 @@ const clockTime = (at: number): string => new Date(at).toLocaleTimeString("en-GB
  * admission with its own key's proof (POST /api/account/one-press, server/account/one-press.ts), asked every few seconds
  * until it has it, for as long as the card offers Add. Then its relay comes online. A run that ends otherwise (Ctrl+C,
  * the ten minutes, an error) first reads which account this PC is in: one in the account that signed in is said to be,
- * one in another account is reported, and one in none is taken off that account's list, which this sign-in may do only
- * while nobody admitted it, and the command says where it is.
+ * one in another account is reported, and for one in none the command tries to take its listing off that account's
+ * list, which this sign-in may do only for a listing it made and nobody admitted, and says what is left.
  */
 async function addByPress(options: LinkOptions, api: Api, press: Pressing): Promise<number> {
   const { out, signal } = options;
@@ -1555,15 +1555,6 @@ async function addByPress(options: LinkOptions, api: Api, press: Pressing): Prom
     out(`An earlier ${command} listed this PC in your account at ${clockTime(press.listedAt!)}, more than 10 minutes ago, so your devices no longer offer Add for it. On a device of your account, choose Remove from my account on its card, then run ${command} again.\n`);
     return 1;
   }
-  // the window the listing opened takes digits approved here, which this way does not ask for
-  await api("POST", "/api/relay/link/close").catch((error: unknown) => { if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error; });
-  out([
-    ...step([`This PC is listed in your account as ${name}.`]),
-    "",
-    "2/2  Press Add on a device of your account",
-    ...step([`Open Ovis on your phone or another PC and press Add for ${name}.`, `Waiting… (up to ${remaining(stopAt - startedAt)}, Ctrl+C to stop)`]),
-    "",
-  ].join("\n"));
   // a terminal that went away takes no write: what is owed to this PC (its listing) comes first, then a word that may fail
   const tell = (text: string): void => { try { out(text); } catch {} };
   // `none`: this PC said it is in no account; otherwise that was not known
@@ -1624,7 +1615,17 @@ async function addByPress(options: LinkOptions, api: Api, press: Pressing): Prom
   };
   let away = false;
   let slow = false;
+  // from here on this PC is listed, so a run stopped anywhere below (this first request included) tries to unlist it
   try {
+    // the window the listing opened takes digits approved here, which this way does not ask for
+    await api("POST", "/api/relay/link/close").catch((error: unknown) => { if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error; });
+    out([
+      ...step([`This PC is listed in your account as ${name}.`]),
+      "",
+      "2/2  Press Add on a device of your account",
+      ...step([`Open Ovis on your phone or another PC and press Add for ${name}.`, `Waiting… (up to ${remaining(stopAt - startedAt)}, Ctrl+C to stop)`]),
+      "",
+    ].join("\n"));
     for (;;) {
       const got = await take();
       if (got === "added") return await added();
