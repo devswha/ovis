@@ -4,8 +4,8 @@
  * tag v19.1.1 (31ffee513f27a01bba7d4dfbe12bae239cdc646a) holds unchanged.
  * Upstream SHA-256 f3eda632a287bf41bd59da18bc6be3d70581df08fd36518a8b24147e9dd4424e.
  *
- * Ovis edits, none changing a result: plainCell's two emphasis patterns lose their lookbehinds (Safari before 16.4
- * cannot parse one, and the client ships none: shared/lookbehind.ts).
+ * Ovis edits. The first changes no result: plainCell's two emphasis patterns lose their lookbehinds (Safari
+ * before 16.4 cannot parse one, and the client ships none: shared/lookbehind.ts).
  *  - `*…*` began with a negative lookbehind for a word character or `*` and held another before its closing `*`, so
  *    that the capture does not end in a space. It is now `/(^|[^\w*])\*(?!\s)(.*?\S)\*(?![\w*])/g`, replaced by
  *    "$1$2" where it was "$1";
@@ -14,7 +14,12 @@
  * The character before an opening mark is matched and put back where the lookbehind looked at it. It is never
  * the end of the match before, which ends in its own closing mark, a character the lookbehind refused too. The
  * capture's last character is `\S`, which `.` takes as well.
- * Re-vendor rather than edit.
+ * The rest fix what a review of Ovis's chart found in this code:
+ *  - readCell scales a spread by its own unit where that measures what the value does (`1 s ± 100 ms` is 0.1 s, not
+ *    100 s); a spread without a unit still takes the value's;
+ *  - restatedColumns searches the first MAX_QUOTIENT_COLUMNS measures for a ratio of two others, where it tried every
+ *    pair of them for each: the cube of the table's width, seconds for 200 columns in the chat's render.
+ * Re-vendor rather than edit, then make these again.
  */
 /**
  * Numeric reading of GFM table cells and columns, the input to
@@ -536,7 +541,9 @@ function readCell(markdown: string): Cell {
 		const tail: readonly [Dimension, number] | undefined =
 			knownUnit(written) ?? (written.includes("/") ? ["rate", 1] : undefined);
 		const own = !unit && tail ? { dim: tail[0], unit: written, value: value * tail[1] } : undefined;
-		const error = toNumber(spread[1]!) * (tail && own ? tail[1] : factor);
+		// The spread's own unit scales it where it measures what the value does (`1 s ± 100 ms` is 0.1 s); a bare one
+		// (`3.67s ± 0.69`) takes the value's.
+		const error = toNumber(spread[1]!) * (tail && (own || tail[0] === dim) ? tail[1] : factor);
 		return {
 			...cell,
 			...own,
@@ -921,6 +928,12 @@ function keepSweeps(columns: readonly TableColumn[]): TableColumn[] {
 const MAX_COMPOSED = 8;
 /** Most parts one whole splits into directly. */
 const MAX_PARTS = 4;
+/**
+ * Most measure columns searched for a ratio of two others ({@link restatedColumns}). Each is tried against every
+ * ordered pair of the rest, so the search grows with the cube of the table's width: 200 independent columns took
+ * seconds of the chat's render, and 24 take a few milliseconds. A ratio table is a handful of columns.
+ */
+const MAX_QUOTIENT_COLUMNS = 24;
 /** Share of its total that parts falling within it must make up in one row at least. */
 const MIN_PART_SHARE = 0.25;
 /** A whole that parts may fall within, leaving an unlisted rest. */
@@ -954,7 +967,8 @@ function plainValue(column: TableColumn, row: number): NumberCell | undefined {
 /**
  * Columns restating another column's values: `y = k·x` within the written
  * precision over three or more rows where `x` varies, a running total
- * (`Offset` stepping by `Verts`), or the ratio of two others ({@link quotient}).
+ * (`Offset` stepping by `Verts`), or the ratio of two others ({@link quotient}), among the first
+ * {@link MAX_QUOTIENT_COLUMNS} measures.
  * Of a proportional pair the first column stays, unless the second is a share
  * summing to 100% beside counts or the table bolded more of its cells
  * (`**87%**` beside `33/38`).
@@ -979,7 +993,7 @@ function restatedColumns(measures: readonly TableColumn[], rows: readonly number
 		const source = measures.find(other => other !== column && runningTotal(column, other, rows));
 		if (source) restated.set(column.index, source.index);
 	}
-	const kept = measures.filter(column => !restated.has(column.index));
+	const kept = measures.filter(column => !restated.has(column.index)).slice(0, MAX_QUOTIENT_COLUMNS);
 	for (const ratio of kept) {
 		if (restated.has(ratio.index)) continue;
 		const terms = kept.filter(column => column !== ratio && !restated.has(column.index));

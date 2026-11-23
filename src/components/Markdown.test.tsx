@@ -90,6 +90,14 @@ test("a table that omp would chart has the chart directly under it, named by the
   expect(String(renderer?.root.findByType("img").props["src"]).startsWith("data:image/svg+xml")).toBe(true);
 });
 
+test("a row the table names like a theme token keeps its name in the chart, whose colors are the theme's", async () => {
+  await draw(BENCHMARK.replace("Opus 5.5", "var(--accent)"), { tableCharts: true });
+  const url = String(renderer?.root.findByType("img").props["src"]);
+  const svg = decodeURIComponent(url.slice(url.indexOf(",") + 1));
+  expect(svg).toContain(">var(--accent)</text>");
+  expect(svg).not.toMatch(/(?:fill|stroke|stop-color)="var\(/);
+});
+
 test("without charts asked for, the table has none", async () => {
   await draw(`before\n\n${BENCHMARK}\n\nafter`);
   expect(drawn()).toEqual(["p", "markdown-table-wrap", "p"]);

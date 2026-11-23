@@ -4,7 +4,7 @@
  * tag v19.1.1 (31ffee513f27a01bba7d4dfbe12bae239cdc646a) holds unchanged.
  * Upstream SHA-256 bf9ec00587eed19619d0cda2b8700f75af43ea3f6035595819576f8d7c784cc1.
  *
- * Ovis edits, none changing a result:
+ * Ovis edits. The first three change no result:
  *  - the two imports name their modules with the extension: "./chart-plan.ts" and "./table-data.ts";
  *  - ES2023 array methods, which Ovis's ES2022 library and the browsers its build targets lack, become their
  *    ES2022 spellings: `x.toSorted(f)` as `[...x].sort(f)` (two places) and `x.findLast(f)` as
@@ -12,7 +12,13 @@
  *  - titleFigure's pattern loses its leading lookbehind (Safari before 16.4 cannot parse one, and the client ships
  *    none: shared/lookbehind.ts): `exec` finds the figures, and one that follows a word character, `.`, `-` or `−`
  *    is skipped by searching on from the next character, as the lookbehind's search would.
- * Re-vendor rather than edit.
+ * The rest fix what a review of Ovis's chart found in this code:
+ *  - chartAlt calls a chart "100% stacked" only when it is stacked, not for a normalized histogram;
+ *  - drawStacked slices `status` with `categories`, so each band badges its own rows;
+ *  - an axis over an extent that overflowed to Infinity (`1e299 GiB ± 1e299 GiB`) draws no chart, where its tick
+ *    loops never ended: rejectOverflow (valueScale, spanScale, panelScale, tickUnit) and stepTicks' bound on
+ *    ticks throw a RangeError, which tableChartSvg answers with no chart.
+ * Re-vendor rather than edit, then make these again.
  */
 /**
  * Draws a {@link ChartSpec} as a standalone SVG document colored only with
@@ -254,7 +260,10 @@ interface Tier {
 	readonly high: number;
 }
 
-/** The SVG document for `spec`, labeled for screen readers with {@link chartAlt}. */
+/**
+ * The SVG document for `spec`, labeled for screen readers with {@link chartAlt}. A spec whose axis extent
+ * overflowed to Infinity ({@link rejectOverflow}) has no chart: a RangeError.
+ */
 export function renderChartSvg(spec: ChartSpec): string {
 	const layer = drawChart(spec);
 	const header = drawHeader(spec, layer);
@@ -299,7 +308,7 @@ function chartAlt(spec: ChartSpec): string {
 	const kind =
 		spec.kind === "multiples"
 			? "small multiples"
-			: spec.normalized
+			: spec.normalized && spec.kind === "stacked"
 				? "100% stacked"
 				: spec.kind === "dots"
 					? "dot"
@@ -1521,6 +1530,7 @@ function drawStacked(spec: ChartSpec): Layer {
 			...spec,
 			categories: categories.slice(first, last),
 			groups: spec.groups?.slice(stack.groups[0], stack.groups[1]),
+			status: spec.status?.slice(first, last),
 		};
 		const tops = rowTops(view, top, rowHeight);
 		const bottom = tops.at(-1)!;
@@ -3639,6 +3649,7 @@ function valueScale(
 		unit?: number;
 	},
 ): Scale {
+	rejectOverflow(values);
 	let min = Math.min(...values);
 	let max = Math.max(...values);
 	if (!Number.isFinite(min) || !Number.isFinite(max)) {
@@ -3733,6 +3744,7 @@ function spanScale(
 	unit = 1,
 ): Scale {
 	const reach = [...values, ...marks];
+	rejectOverflow(reach);
 	const [min, max] = [Math.min(...reach), Math.max(...reach)];
 	if (!(Math.min(...values) > 0) || !(min > 0) || Math.max(...values) / Math.min(...values) < SPAN_LOG)
 		return valueScale(reach, from, to, { zero: false, unit });
@@ -3823,6 +3835,7 @@ function brokenScale(tier: Tier, from: number, to: number, nice: boolean): Scale
  * logarithmic, so lengths stay proportional.
  */
 function panelScale(values: readonly number[], from: number, to: number): Scale {
+	rejectOverflow(values);
 	const tier = outlierTier(values);
 	if (tier) return brokenScale(tier, from, to, false);
 	const max = Math.max(...values);
@@ -3883,14 +3896,32 @@ function niceStep(raw: number): number {
 	return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10) * power;
 }
 
+/** Most ticks one axis holds: {@link linearTicks} spaces three to six intervals, so more is a step that ran away from its limits. */
+const MAX_TICKS = 32;
+
+/**
+ * Rejects `values` holding an infinity: the extents of an axis that overflowed (`1e299 GiB ± 1e299 GiB` sums past
+ * what a number holds). No axis spans one, the loops that tick it and read it in a unit never end, and what it
+ * draws is broken: a RangeError, so the host draws no chart ({@link renderChartSvg}). An empty list and `NaN`
+ * are no overflow: the scales give those an axis of their own.
+ */
+function rejectOverflow(values: readonly number[]): void {
+	if (values.some(value => value === Number.POSITIVE_INFINITY || value === Number.NEGATIVE_INFINITY))
+		throw new RangeError("chart axis extent overflows");
+}
+
 /**
  * `first`, `first + step`, … through `last`, counted rather than summed: once
  * `step` falls under the values' float spacing (`1e17 + 5 === 1e17`), a
- * running sum stops moving and never reaches `last`.
+ * running sum stops moving and never reaches `last`. Limits that overflowed
+ * (`ceil(1.75e308 / 5e307) * 5e307` is Infinity) make the count infinite: a
+ * RangeError, never a loop to it.
  */
 function stepTicks(first: number, last: number, step: number): number[] {
+	const count = (last - first) / step;
+	if (count > MAX_TICKS) throw new RangeError("chart axis has too many ticks");
 	const ticks: number[] = [];
-	for (let at = 0; at <= (last - first) / step; at++) ticks.push(first + at * step);
+	for (let at = 0; at <= count; at++) ticks.push(first + at * step);
 	return ticks;
 }
 
@@ -4295,10 +4326,13 @@ function binaryBytes(axis: { readonly dim: Dimension; readonly points?: readonly
 /**
  * One tick unit for an axis of `series` over `values`, in base units: the
  * binary size unit the largest value reads in (1 GiB) where the table wrote
- * binary sizes, so ticks fall on `25 GiB` rather than `23.3 GiB`; else 1.
+ * binary sizes, so ticks fall on `25 GiB` rather than `23.3 GiB`; else 1. The
+ * values hold no infinity ({@link rejectOverflow}), so `unit` passes the largest
+ * within 102 steps: against an infinity `unit * 1024 <= max` never turns false.
  */
 function tickUnit(series: ChartSeries, values: readonly number[]): number {
 	if (!binaryBytes(series)) return 1;
+	rejectOverflow(values);
 	const max = Math.max(0, ...values.map(Math.abs));
 	let unit = 1;
 	while (unit * 1024 <= max) unit *= 1024;

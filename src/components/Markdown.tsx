@@ -139,15 +139,16 @@ function useThemeRevision(): number {
  * joins the page. Until it is a whole figure (a reply still streaming) or when it does not draw,
  * it shows as the code block it is, or as `fallback` where there is no code worth showing (a chart
  * the engine made). `alt` names the image for a screen reader, which an image document's own label does not reach.
+ * `paintOnly` is that chart's: its tokens resolve in paint attributes alone, so a row the table names `var(--accent)` keeps its name.
  */
-function SvgFigure({ value, alt, fallback }: { value: string; alt?: string; fallback?: ReactNode }) {
+function SvgFigure({ value, alt, fallback, paintOnly }: { value: string; alt?: string; fallback?: ReactNode; paintOnly?: boolean }) {
   const t = useT();
   const revision = useThemeRevision();
   const [zoomed, setZoomed] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const paletteKey = useMemo(() => JSON.stringify(svgFigurePalette((property) => getComputedStyle(document.documentElement).getPropertyValue(property))), [revision]);
   const palette = useMemo(() => JSON.parse(paletteKey) as ReturnType<typeof svgFigurePalette>, [paletteKey]);
-  const src = useMemo(() => svgFigureUrl(value, palette), [value, palette]);
+  const src = useMemo(() => svgFigureUrl(value, palette, { paintOnly }), [value, palette, paintOnly]);
   if (src === null || failed === src) return fallback === undefined ? <CodeBlock language="svg" value={value} /> : fallback;
   return (
     <div className="markdown-mermaid-frame">
@@ -177,7 +178,7 @@ function TableChart({ header, rows }: { header: InlineNode[][]; rows: InlineNode
 function TableChartFigure({ cells }: { cells: TableChartCells }) {
   const engine = useTableChartEngine();
   const svg = useMemo(() => engine?.tableChartSvg(cells.header, cells.rows) ?? null, [engine, cells]);
-  return engine === null || svg === null ? null : <SvgFigure value={svg} alt={engine.chartLabel(svg)} fallback={null} />;
+  return engine === null || svg === null ? null : <SvgFigure value={svg} alt={engine.chartLabel(svg)} fallback={null} paintOnly />;
 }
 
 export type ImageSize = { width: number; height: number };

@@ -4,12 +4,19 @@
  * tag v19.1.1 (31ffee513f27a01bba7d4dfbe12bae239cdc646a) holds unchanged.
  * Upstream SHA-256 05879300643001909a27ab2d9d19bb9b1ac6fdbf2c3441da8a0535743fe0d54e.
  *
- * Ovis edits, all mechanical, none changing a result:
+ * Ovis edits. The first two are mechanical and change no result:
  *  - the import names its module with the extension: "./table-data.ts" for "./table-data";
  *  - ES2023 array methods, which Ovis's ES2022 library and the browsers its build targets lack, become their
  *    ES2022 spellings: `x.toSorted(f)` as `[...x].sort(f)` (four places) and `x.toReversed()` as
  *    `[...x].reverse()` (three places).
- * Re-vendor rather than edit.
+ * The rest fix what a review of Ovis's chart found in this code:
+ *  - a `change` chart's before column leads, wherever the table writes it (guessShape): the chart reads each
+ *    column as a factor of the first, so `After | Before` drew its increases as decreases;
+ *  - a target written `<` or `>` stays strict (`ChartTarget.strict`, targetCell, targetStanding): a value at
+ *    its number misses it, and the label says `<` or `>`;
+ *  - pairSpread's median of an even count is the geometric mean of the two middle ratios, so swapping two
+ *    columns, which reciprocates every ratio, leaves its result alone.
+ * Re-vendor rather than edit, then make these again.
  */
 /**
  * Which chart a table becomes and the data it plots. {@link planChart} is the
@@ -273,6 +280,8 @@ export type Bound = "max" | "min";
  */
 export interface ChartTarget extends ChartPoint {
 	readonly bound?: Bound;
+	/** The cell wrote its bound as `<` or `>` (`< 100 ms`): a value at the target itself misses it. */
+	readonly strict?: boolean;
 }
 
 export interface ChartSeries {
@@ -928,16 +937,16 @@ function guessShape(table: TableAnalysis): ChartPlan | undefined {
 		);
 		// Rows spanning decades (each a metric of its own: `Benchmark time | Render targets`) read as factors of the
 		// before column; a middle condition (`last build`) between the two moves too.
-		if (before && after && beforeAfter(table, [before, after]))
-			return plan(
-				"change",
-				measures.filter(
-					column =>
-						column.dim === before.dim &&
-						column.index >= Math.min(before.index, after.index) &&
-						column.index <= Math.max(before.index, after.index),
-				),
+		if (before && after && beforeAfter(table, [before, after])) {
+			const between = measures.filter(
+				column =>
+					column.dim === before.dim &&
+					column.index >= Math.min(before.index, after.index) &&
+					column.index <= Math.max(before.index, after.index),
 			);
+			// A change reads each column as a factor of the first: the before column leads, wherever the table writes it.
+			return plan("change", [before, ...between.filter(column => column !== before)]);
+		}
 		if (before && after) return plan("paired", [before, after]);
 	}
 	if (rows.length === 2 && measures.length === 1) return undefined;
@@ -1256,6 +1265,8 @@ const BOUND =
 	/(?<sign>≤|<=|<|≥|>=|>|\bat most\b|\bat least\b|\bunder\b|\bbelow\b|\bup to\b|\bno more than\b|\bno less than\b)\s*(?=[~≈]?\s*[$€£¥]?\s*\.?\d)/i;
 /** Bounds requiring a value at or over their number. */
 const FLOOR_SIGN = /^(?:≥|>=|>|at least|no less than)$/i;
+/** Bounds excluding their own number: a value at it misses (`< 100 ms`, `under 8`), where `≤` and `at most` keep it. */
+const STRICT_SIGN = /^(?:<|>|under|below)$/i;
 /** Share of a target column's written cells that must be bounds where its word also names settings, and under which a measured column's must stay. */
 const BOUND_SHARE = 0.5;
 /** Share of its target a value may reach (or, for a floor, exceed it by the inverse) and still be close to missing it. */
@@ -1342,10 +1353,11 @@ function measuredCell(cell: Cell | undefined): NumberCell | undefined {
 
 /**
  * A target cell's number and {@link Bound}: a bound wherever it starts (`≤ 200 µs`, `at most 8`, `first screen
- * ≤ 120 ms`), a window (`60–100 ms`), or a bare number; `text` writes a bound as `≤`/`≥`. `undefined` without
- * one, or for two targets in one cell (`30 / 200 ms`, `1 / 4`).
+ * ≤ 120 ms`), a window (`60–100 ms`), or a bare number; `text` writes a bound as `≤`/`≥`, or as `<`/`>` where
+ * the cell wrote one that excludes its number ({@link STRICT_SIGN}; `strict`). `undefined` without one, or for
+ * two targets in one cell (`30 / 200 ms`, `1 / 4`).
  */
-function targetCell(written: string): { cell: NumberCell; bound?: Bound; text: string } | undefined {
+function targetCell(written: string): { cell: NumberCell; bound?: Bound; strict?: boolean; text: string } | undefined {
 	const bound = BOUND.exec(written);
 	const rest = bound ? written.slice(bound.index + bound[0].length) : written;
 	// `≤ 3s / ≤ 6s`: one target per measure of a pair, none for the row.
@@ -1353,15 +1365,23 @@ function targetCell(written: string): { cell: NumberCell; bound?: Bound; text: s
 	const cell = parseCell(rest);
 	if (!isNumber(cell) || cell.dim === "fraction" || cell.to !== undefined) return undefined;
 	if (!bound) return { cell, text: cell.figure };
-	const floor = FLOOR_SIGN.test(bound.groups!.sign!);
-	return { cell, bound: floor ? "min" : "max", text: `${floor ? "≥" : "≤"} ${cell.figure}` };
+	const sign = bound.groups!.sign!;
+	const floor = FLOOR_SIGN.test(sign);
+	const strict = STRICT_SIGN.test(sign);
+	return {
+		cell,
+		bound: floor ? "min" : "max",
+		strict: strict || undefined,
+		text: `${strict ? (floor ? ">" : "<") : floor ? "≥" : "≤"} ${cell.figure}`,
+	};
 }
 
 /**
  * How `point` stands against `target`: `met` when it keeps the target's side (its worst end — the high end
- * under a ceiling, the low end over a floor — at or past the target; inside a window), `close` when met
- * within {@link CLOSE_SHARE}; `share` its worst end over the target (the window's top), `undefined` for a
- * zero target. `undefined` for a target without a bound or window. Exported for the renderer.
+ * under a ceiling, the low end over a floor — at or past the target, or past it where the target is
+ * {@link ChartTarget.strict}; inside a window), `close` when met within {@link CLOSE_SHARE}; `share` its worst
+ * end over the target (the window's top), `undefined` for a zero target. `undefined` for a target without a
+ * bound or window. Exported for the renderer.
  */
 export function targetStanding(
 	point: ChartPoint,
@@ -1376,7 +1396,9 @@ export function targetStanding(
 	if (!target.bound) return undefined;
 	const worst = target.bound === "max" ? high : point.value;
 	const share = target.value > 0 ? worst / target.value : undefined;
-	const met = target.bound === "max" ? worst <= target.value : worst >= target.value;
+	// A strict target (`< 100 ms`) is missed at its own number; an inclusive one (`≤ 100 ms`) is kept.
+	const gap = target.bound === "max" ? target.value - worst : worst - target.value;
+	const met = target.strict ? gap > 0 : gap >= 0;
 	const close =
 		met && share !== undefined && (target.bound === "max" ? share >= CLOSE_SHARE : share <= 1 / CLOSE_SHARE);
 	return { met, close, share };
@@ -1429,7 +1451,7 @@ function bulletChart(
 		points.push(point(value));
 		// A side the cell leaves unwritten (`0` under `budget`) is written into its figure (`≤ 0`).
 		const text = goal.bound || !bound ? goal.text : `${bound === "max" ? "≤" : "≥"} ${goal.text}`;
-		targets.push({ ...point(goal.cell), text, bound });
+		targets.push({ ...point(goal.cell), text, bound, strict: bound && goal.strict });
 		notes.push(undefined);
 	}
 	if (!lead || points.filter(Boolean).length < 2) return undefined;
@@ -4911,7 +4933,10 @@ export function guessShading(columns: readonly TableColumn[], rows: readonly num
 /**
  * The widest typical ratio between two columns of `grid` (rows of positive
  * values, `NaN` where absent): per pair, the median of their ratios over the
- * rows holding both.
+ * rows holding both. An even count has two middle ratios, taken as their
+ * geometric mean (the median of the logs), so a pair reads alike in either
+ * order: swapping its columns reciprocates every ratio, and the median of
+ * their logs only changes sign.
  */
 function pairSpread(grid: readonly (readonly number[])[]): number {
 	const width = grid[0]?.length ?? 0;
@@ -4923,7 +4948,8 @@ function pairSpread(grid: readonly (readonly number[])[]): number {
 				.filter(Number.isFinite)
 				.sort((x, y) => x - y);
 			if (ratios.length < 2) continue;
-			const middle = ratios[Math.floor(ratios.length / 2)]!;
+			const half = ratios.length >> 1;
+			const middle = ratios.length % 2 ? ratios[half]! : Math.sqrt(ratios[half - 1]! * ratios[half]!);
 			widest = Math.max(widest, middle, 1 / middle);
 		}
 	}

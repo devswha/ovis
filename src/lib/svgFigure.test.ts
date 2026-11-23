@@ -25,6 +25,26 @@ it("resolves theme tokens, a fallback for an unknown one, and the text color oth
   expect(svg).not.toContain("var(");
 });
 
+it("resolves a chart's tokens in paint attributes alone, so the words it labels its rows with stay as written", () => {
+  const source = '<svg viewBox="0 0 10 10" aria-label="chart of var(--accent)"><rect fill="var(--accent)" stroke="var(--nope, red)"/><text fill="var(--fg)">var(--accent)</text><title>var(--fg)</title></svg>';
+  const palette = { fg: "#eee", accent: "#f0a830" };
+  const chart = decode(svgFigureUrl(source, palette, { paintOnly: true }));
+  expect(chart).toContain('<rect fill="#f0a830" stroke="red"/>');
+  expect(chart).toContain('<text fill="#eee">var(--accent)</text>');
+  expect(chart).toContain("<title>var(--fg)</title>");
+  expect(chart).toContain('aria-label="chart of var(--accent)"');
+  // a fence is read as it was: its tokens resolve wherever they stand
+  expect(decode(svgFigureUrl(source, palette))).not.toContain("var(");
+});
+
+it("takes a comment or CDATA in a chart for no figure, where a fence may hold them", () => {
+  for (const body of ["<!-- a chart -->", "<![CDATA[a chart]]>"]) {
+    const source = `<svg viewBox="0 0 10 10">${body}<rect fill="var(--accent)"/></svg>`;
+    expect(svgFigureUrl(source, { fg: "#eee" }, { paintOnly: true })).toBeNull();
+    expect(svgFigureUrl(source, { fg: "#eee" })).not.toBeNull();
+  }
+});
+
 it("gives the root what an image document cannot inherit, and keeps what it already says", () => {
   const sized = decode(svgFigureUrl('<svg viewBox="0 0 900 560"><text fill="currentColor">x</text></svg>', { fg: "#eee" }));
   expect(sized).toMatch(/^<svg color="#eee" font-family="sans-serif" xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="900" height="560" viewBox/);
@@ -59,7 +79,7 @@ it("keeps a figure that could run or load something as code", () => {
     '<svg viewBox="0 0 10 10"><style>&#x40;import "https://example.com/x.css";</style></svg>',
     '<svg viewBox="0 0 10 10"><image h&#114;ef="https://example.com/a.png"/></svg>',
   ];
-  for (const source of unsafe) expect(svgFigureUrl(source, { fg: "#eee" })).toBeNull();
+  for (const source of unsafe) for (const options of [{}, { paintOnly: true }]) expect(svgFigureUrl(source, { fg: "#eee" }, options)).toBeNull();
 });
 
 it("keeps a style that holds an element as code, since the element would split a CSS token past the checks", () => {
@@ -152,7 +172,7 @@ it("judges the markup as drawn, so a token cannot assemble an href, a handler or
     '<svg viewBox="0 0 10 10"><image hvar(--missing, ref)="https://example.com/x.png"/></svg>',
     '<svg viewBox="0 0 10 10"><rect onvar(--nope, load)="x()"/></svg>',
     '<svg viewBox="0 0 10 10"><var(--nope, script)>x</script></svg>',
-  ]) expect(svgFigureUrl(source, { fg: "#eee" })).toBeNull();
+  ]) for (const options of [{}, { paintOnly: true }]) expect(svgFigureUrl(source, { fg: "#eee" }, options)).toBeNull();
 });
 
 it("keeps a figure no URL can carry, or whose root is not first, as code, and reads the root's quotes", () => {
@@ -177,17 +197,20 @@ it("reads a fence in time that grows with its length, not its square", () => {
     (n: number) => "<svg><" + "é".repeat(n) + ":g/></svg>",
     (n: number) => "<svg>" + "<!--".repeat(n / 4) + "</svg>",
     (n: number) => "<svg>" + "<![CDATA[".repeat(n / 9) + "</svg>"];
-  for (const shape of shapes) {
+  // a chart read for its paint attributes alone
+  const paintShapes = [(n: number) => '<svg viewBox="0 0 1 1">' + '<rect fill="var(--x)"/>'.repeat(n / 23) + "</svg>",
+    (n: number) => '<svg viewBox="0 0 1 1"><rect' + ' fill="var(--x)"'.repeat(n / 15) + "/></svg>"];
+  for (const [shape, options] of [...shapes.map((shape) => [shape, {}] as const), ...paintShapes.map((shape) => [shape, { paintOnly: true }] as const)]) {
     const small = shape(8_000);
     const large = shape(64_000);
     let fastestSmall = Infinity;
     let fastestLarge = Infinity;
     for (let round = 0; round < 5 && !(fastestLarge / Math.max(fastestSmall, 0.05) < 30); round += 1) {
       let start = cpu();
-      for (let run = 0; run < 20; run += 1) svgFigureUrl(small, { fg: "#eee" });
+      for (let run = 0; run < 20; run += 1) svgFigureUrl(small, { fg: "#eee" }, options);
       fastestSmall = Math.min(fastestSmall, cpu() - start);
       start = cpu();
-      for (let run = 0; run < 20; run += 1) svgFigureUrl(large, { fg: "#eee" });
+      for (let run = 0; run < 20; run += 1) svgFigureUrl(large, { fg: "#eee" }, options);
       fastestLarge = Math.min(fastestLarge, cpu() - start);
     }
     expect(fastestLarge / Math.max(fastestSmall, 0.05)).toBeLessThan(30);

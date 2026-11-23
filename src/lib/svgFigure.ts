@@ -189,6 +189,47 @@ function resolveTokens(text: string, value: (name: string, fallback: string) => 
   }
   return out + text.slice(from);
 }
+
+/** The attributes a color goes in: the only places a chart the engine made writes a token ({@link resolvePaint}). */
+const PAINT_ATTRIBUTES = new Set(["fill", "stroke", "stop-color", "flood-color", "lighting-color", "color"]);
+
+/**
+ * `markup` with tokens resolved in the values of paint attributes only: the words a chart labels its rows with
+ * (a row named `var(--accent)`), in a text node or an attribute, stay as written. Tags are read by the sticky
+ * patterns `unsafe` reads them by and the text between them is copied as it is; null for markup they do not
+ * read (a comment, CDATA, a malformed attribute), which no chart the engine makes holds. One pass, as
+ * {@link resolveTokens}.
+ */
+function resolvePaint(markup: string, value: (name: string, fallback: string) => string): string | null {
+  let out = "";
+  let from = 0;
+  for (let start = markup.indexOf("<"); start !== -1; start = markup.indexOf("<", from)) {
+    ELEMENT.lastIndex = start;
+    if (ELEMENT.exec(markup) === null) return null;
+    let at = ELEMENT.lastIndex;
+    out += markup.slice(from, at);
+    for (;;) {
+      TAG_END.lastIndex = at;
+      const end = TAG_END.exec(markup);
+      if (end !== null) {
+        out += end[0];
+        from = TAG_END.lastIndex;
+        break;
+      }
+      ATTRIBUTE.lastIndex = at;
+      const attribute = ATTRIBUTE.exec(markup);
+      if (attribute === null) return null;
+      const written = attribute[2] ?? attribute[3] ?? "";
+      const opening = attribute[0].length - written.length - 1;
+      out += attribute[0].slice(0, opening)
+        + (PAINT_ATTRIBUTES.has(localName(attribute[1]!)) ? resolveTokens(written, value) : written)
+        + attribute[0].slice(opening + written.length);
+      at = ATTRIBUTE.lastIndex;
+    }
+  }
+  return out + markup.slice(from);
+}
+
 const VIEW_BOX = /\sviewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([\d.eE+]+)[\s,]+([\d.eE+]+)\s*["']/;
 
 /**
@@ -197,18 +238,23 @@ const VIEW_BOX = /\sviewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([\d.eE
  * declaration at most), past the size cap, holding markup that could run or load something
  * (UNSAFE), or not text a URL can carry (a lone surrogate), which keeps the fence a code block.
  * Tokens become the palette's colors (an unknown name takes its fallback, else the text color).
+ * With `paintOnly`, for a chart the engine made from a table, they do so in paint attributes
+ * alone: the table's own words, a row named `var(--accent)`, stay what they say. Markup that is
+ * not tags and text (a comment, CDATA) is then no figure.
  * The root gets what an image document cannot inherit from the page: `color` for `currentColor`,
  * a sans-serif `font-family`, the SVG namespace, and a size from its `viewBox` when it has none
  * (one unit is one CSS pixel), so the figure is not drawn at the 300×150 an unsized image gets.
  */
-export function svgFigureUrl(source: string, palette: SvgFigurePalette): string | null {
+export function svgFigureUrl(source: string, palette: SvgFigurePalette, options: { paintOnly?: boolean } = {}): string | null {
   if (source.length > SVG_FIGURE_MAX_LENGTH) return null;
   const trimmed = source.trim();
   const head = DECLARATION.exec(trimmed)?.[0] ?? "";
   if (!ROOT_START.test(trimmed.slice(head.length)) || !CLOSE_TAG.test(trimmed.slice(-256))) return null;
   const fg = palette.fg ?? "currentColor";
-  const resolved = resolveTokens(trimmed.slice(head.length), (name, fallback) =>
+  const resolve = options.paintOnly ? resolvePaint : resolveTokens;
+  const resolved = resolve(trimmed.slice(head.length), (name, fallback) =>
     (Object.hasOwn(palette, name) ? palette[name as keyof SvgFigurePalette] : undefined) ?? (fallback || fg));
+  if (resolved === null) return null;
   const end = tagEnd(resolved);
   if (end === -1) return null;
   const usesXlink = resolved.includes("xlink:");
