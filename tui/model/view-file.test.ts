@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
+import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
@@ -348,6 +349,29 @@ describe("a rerun of the screen on the same core", () => {
     runs.splice(runs.indexOf(run), 1);
     await run.close();
   };
+
+  it.each([45, 120])("an unchanged zoomed restart keeps remembered focus without view_moved at %s columns", async (cols) => {
+    const folder = scratch();
+    const core = new FakeHcCore();
+    demo.build(core);
+    const layout = (zoomed: string | null) => ({ schema: 1, workspaces: [{ id: "w-ovis", tabs: [{
+      id: "t-main", root: { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } }, zoomed,
+    }] }] });
+    core.docs.set(OVIS_LAYOUT_DOC, { value: layout("t2"), version: 1 });
+    const before = await first(core, folder, cols);
+    expect(before.loop.model().focus.panes["t-main"]).toBe("t1");
+    await close(before);
+    const again = await first(core, folder, cols);
+    expect(again.loop.panes.views().filter((view) => !view.covered).map((view) => view.terminal)).toEqual(["t2"]);
+    expect(again.loop.model().notices.map((notice) => notice.code)).not.toContain("view_moved");
+    expect(again.loop.model().focus.panes["t-main"]).toBe("t1");
+    await again.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: layout(null), version: 1 });
+    await again.advance(200);
+    await again.live();
+    again.type("z");
+    await again.settle();
+    expect(["t1", "t2"].map((id) => core.program(id).receivedHex())).toEqual(["7a", ""]);
+  }, TEST_MS);
 
   it("a rerun with the saved file focuses the same pane, at 45 columns too, and its file holds nothing private", async () => {
     const folder = scratch();

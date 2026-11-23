@@ -94,7 +94,7 @@ const gone = (id: string): string => `${id}\u0000gone`;
 /**
  * The focus the saved view gives on `world`: what is still there is shown again, and a place that is gone gives way
  * by `nextFocus`, as if it had been closed since. A saved pane whose address a newer terminal took (another `created`)
- * counts as gone. `moved`: the pane shown is not the one saved.
+ * counts as gone. `moved`: the remembered pane changed, independently of the core's current zoom.
  */
 export function restoredFocus(saved: SavedView, world: World): { focus: Focus; moved: boolean } {
   const created = new Map(world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => [pane.id, pane.created] as const))));
@@ -114,5 +114,7 @@ export function restoredFocus(saved: SavedView, world: World): { focus: Focus; m
   };
   const wanted = focused(before, focus).pane?.id ?? null;
   const next = nextFocus(before, world, focus);
-  return { focus: next, moved: wanted !== (focused(world, next).pane?.id ?? null) };
+  const tab = next.workspace === null ? undefined : next.tabs[next.workspace];
+  const remembered = tab === undefined ? null : next.panes[tab] ?? null;
+  return { focus: next, moved: wanted !== remembered };
 }
