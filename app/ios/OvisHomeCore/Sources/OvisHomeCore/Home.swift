@@ -120,9 +120,11 @@ public enum Home {
     /// Whether `url` is a page of a relay PC on the hosted app at `appOrigin`: within `/s/<server_id>/`, as a browser
     /// loads it (no `.` or `..` segment, plain or percent-encoded, no encoded `/` and no `\`).
     public static func relayPc(_ url: URL?, appOrigin: URL?) -> Bool {
-        guard let url, let appOrigin, url.scheme?.lowercased() == "https", appOrigin.scheme?.lowercased() == "https",
-              let host = url.host?.lowercased(), host == appOrigin.host?.lowercased(), (url.port ?? 443) == (appOrigin.port ?? 443),
+        guard let url, let appOrigin, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              scheme == appOrigin.scheme?.lowercased(), let host = url.host?.lowercased(), host == appOrigin.host?.lowercased(),
               let path = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath else { return false }
+        let standard = scheme == "https" ? 443 : 80
+        if (url.port ?? standard) != (appOrigin.port ?? standard) { return false }
         let lower = path.lowercased()
         if path.contains("\\") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c") || lower.contains("%25") { return false }
         let segments = path.split(separator: "/", omittingEmptySubsequences: false)

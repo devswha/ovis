@@ -193,6 +193,11 @@ final class HomeTests: XCTestCase {
         let preview = URL(string: "https://relay-0510.ovis-app.pages.dev")!
         XCTAssertTrue(Home.relayPc(URL(string: "https://relay-0510.ovis-app.pages.dev/s/\(id)/"), appOrigin: preview))
         XCTAssertFalse(Home.relayPc(URL(string: "https://app.ovis.sh/s/\(id)/"), appOrigin: preview))
+        // the origin as a browser compares it: scheme, host and port, the scheme's own port the same as none
+        let local = URL(string: "http://127.0.0.1:18596")!
+        XCTAssertTrue(Home.relayPc(URL(string: "http://127.0.0.1:18596/s/\(id)/"), appOrigin: local))
+        XCTAssertFalse(Home.relayPc(URL(string: "http://127.0.0.1/s/\(id)/"), appOrigin: local))
+        XCTAssertFalse(Home.relayPc(URL(string: "https://127.0.0.1:18596/s/\(id)/"), appOrigin: local))
     }
 
     func testTheAddressDemoTypedIntoTheHostedScreenIsTheBundledDemo() {

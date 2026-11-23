@@ -229,6 +229,11 @@ public class HomeTest {
         String preview = "https://relay-0510.ovis-app.pages.dev";
         assertTrue(Home.relayPc(preview + "/s/" + ID + "/", preview));
         assertFalse(Home.relayPc(APP + "/s/" + ID + "/", preview));
+        // the origin as a browser compares it: scheme, host and port, the scheme's own port the same as none
+        String local = "http://127.0.0.1:18596";
+        assertTrue(Home.relayPc(local + "/s/" + ID + "/", local));
+        assertFalse(Home.relayPc("http://127.0.0.1/s/" + ID + "/", local));
+        assertFalse(Home.relayPc("https://127.0.0.1:18596/s/" + ID + "/", local));
     }
 
     @Test
