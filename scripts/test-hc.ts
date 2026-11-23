@@ -18,7 +18,7 @@ import { coreSocket, userCore } from "../server/herdr-core/core-socket.ts";
 
 /** the longest unix socket path the OS takes (sun_path less its terminating NUL) */
 const SOCKET_PATH_MAX = 107;
-/** how long a stopped core's processes may take to go before they are killed */
+/** how long an hc command or a stopped core's processes may take to end */
 const STOP_WAIT_MS = 10_000;
 
 /**
@@ -188,7 +188,7 @@ export interface StopResult {
  */
 export async function corePids(bin: string, env: Record<string, string>): Promise<number[]> {
   refuseUnlessIsolated(env);
-  const proc = Bun.spawn([bin, "server", "status", "--json"], { env, stdout: "pipe", stderr: "ignore" });
+  const proc = Bun.spawn([bin, "server", "status", "--json"], { env, stdout: "pipe", stderr: "ignore", timeout: STOP_WAIT_MS, killSignal: "SIGKILL" });
   const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
   return record(statusPids(out));
 }
@@ -234,7 +234,7 @@ export async function stopTestCores(bin: string, cores: TestCore[], waitMs = STO
       stopped.push(null);
       continue;
     }
-    stopped.push(await Bun.spawn([bin, "server", "stop"], { env: core.env, stdout: "ignore", stderr: "ignore" }).exited);
+    stopped.push(await Bun.spawn([bin, "server", "stop"], { env: core.env, stdout: "ignore", stderr: "ignore", timeout: STOP_WAIT_MS, killSignal: "SIGKILL" }).exited);
     await settle(() => !core.pids.some(pidAlive) && !existsSync(socket), waitMs);
     // what of this core outlived the wait goes before the next core is stopped: while it ran, it could dial that one and start it again
     const ended: number[] = [];
@@ -377,7 +377,9 @@ export class IsolatedCore implements TestCore {
   hc(args: string[], fromStop = false): Promise<{ exit: number; out: string; err: string }> {
     if (this.stopping && !fromStop) return Promise.reject(new Error(`no hc ${args.join(" ")} once the core is being stopped`));
     refuseUnlessIsolated(this.env, this.root);
-    const child = Bun.spawn([this.bin, ...args], { env: this.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    // The deadline belongs to this subprocess handle, including a CLI that ignores SIGTERM. A stop must never
+    // wait forever for starting/running, nor for its own status/stop command. No pid read from hc is used here.
+    const child = Bun.spawn([this.bin, ...args], { env: this.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: STOP_WAIT_MS, killSignal: "SIGKILL" });
     const done = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).then(([out, err, exit]) => ({ exit, out, err }));
     this.running.add(done);
     void done.finally(() => this.running.delete(done)).catch(() => {});

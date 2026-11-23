@@ -111,6 +111,34 @@ function leftovers(run: Run): { pidsAlive: number[]; socket: boolean; root: bool
 }
 const NOTHING_LEFT = { pidsAlive: [], socket: false, root: false, processes: [] };
 
+/** A core CLI stand-in: a socket file records its lifetime; no daemon or unrelated pid is ever stopped. */
+function standInHc(name: string, block?: "start" | "status" | "stop") {
+  const dir = join(scratch, name);
+  mkdirSync(dir);
+  const path = join(dir, "hc");
+  const log = join(dir, "calls");
+  const watchdog = join(dir, "watchdog");
+  writeFileSync(path, [
+    `#!${process.execPath}`,
+    'import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs";',
+    "const verb = process.argv[3];",
+    `appendFileSync(${JSON.stringify(log)}, verb + "\\n");`,
+    "const socket = process.env.HC_SOCKET;",
+    "const reply = () => {",
+    '  if (verb === "start") writeFileSync(socket, "stand-in core");',
+    '  else if (verb === "status") console.log(JSON.stringify({ pid: process.pid }));',
+    '  else if (verb === "stop" && existsSync(socket)) unlinkSync(socket);',
+    "};",
+    `if (verb === ${JSON.stringify(block)}) {`,
+    '  process.on("SIGTERM", () => {});',
+    // This is the regression's escape hatch, not its synchronization: an unbounded helper must still end safely.
+    `  setTimeout(() => { writeFileSync(${JSON.stringify(watchdog)}, "escaped"); reply(); }, 30_000);`,
+    "} else reply();",
+  ].join("\n"));
+  chmodSync(path, 0o755);
+  return { path, log, watchdog };
+}
+
 /**
  * An hc that waits before `server <verb>` until the test writes to `<gate>` (bounded, so a failed
  * test still lets it through), or does nothing for `server stop` with `noStop`: run by its
@@ -296,6 +324,21 @@ describe("with-core's options", () => {
     expect(await Bun.spawn([join(dir, "hc"), "control"], { env }).exited).toBe(0);
     expect(readFileSync(log, "utf8")).toBe("control\n");
   }, TEST_MS);
+});
+
+describe("with-core cleanup with a CLI stand-in", () => {
+  for (const verb of ["start", "status", "stop"] as const) {
+    it(`an hc server ${verb} that ignores SIGTERM cannot strand cleanup`, async () => {
+      const hc = standInHc(`blocked-${verb}`, verb);
+      const run = helper(["--limit", "1", "--", "/bin/true"], callerEnv({ OVIS_TEST_HC_BIN: hc.path }));
+      // Once the command ended, with-core clears --limit before normal cleanup; its successful exit still wins.
+      expect(await run.exited).toBe(verb === "stop" ? 0 : 124);
+      expect(readFileSync(hc.log, "utf8")).toContain(`${verb}\n`);
+      expect(existsSync(hc.watchdog)).toBe(false);
+      expect(leftovers(run)).toEqual(NOTHING_LEFT);
+    }, TEST_MS);
+  }
+
 });
 
 describe("with-core --pty", () => {
