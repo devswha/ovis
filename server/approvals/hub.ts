@@ -376,12 +376,15 @@ export class ApprovalHub {
   /**
    * Whether the dialog shows the subject of the request a card built on `id` showed, whole, and of no other held
    * request: only then is that dialog this request's, and the card's options other than a decision go to it as keys.
-   * Runs of white space count as one in `shows`, so two requests that differ only in them are both shown.
+   * Runs of white space count as one in `shows`, so two requests that differ only in them are both shown. Nor may another
+   * held request the dialog shows name another tool or file in its words (two MCP tools called with the same arguments
+   * show the same subject).
    */
   showsOnly(paneId: string, dialog: ApprovalDialog, id: string): boolean {
     const open = this.open(paneId, dialog);
     const latest = open.at(-1);
-    return dialog.command !== null && latest !== undefined && idOf(latest) === id && open.every((entry) => entry.command === latest.command && subjectOf(entry) === subjectOf(latest));
+    return dialog.command !== null && latest !== undefined && idOf(latest) === id
+      && open.every((entry) => entry.command === latest.command && subjectOf(entry) === subjectOf(latest) && entry.description === latest.description);
   }
 
   /** Answers the request a card built on `id` showed. False when that request is no longer bound to the card. */

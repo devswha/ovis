@@ -236,6 +236,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * that leaves none open is the rest, and one for a prompt not open (late, after herdr's rest) tells nothing.
    */
   const hookPrompts = new Map<string, (string | null)[]>();
+  /** the prompts herdr's rest dropped from hookPrompts with no Stop: their Stop, if it comes, is late and ends nothing */
+  const droppedPrompts = new Map<string, Set<string>>();
+  const dropPrompts = (paneId: string): void => {
+    const open = (hookPrompts.get(paneId) ?? []).filter((prompt): prompt is string => prompt !== null);
+    hookPrompts.delete(paneId);
+    if (open.length > 0) droppedPrompts.set(paneId, new Set([...(droppedPrompts.get(paneId) ?? []), ...open].slice(-16)));
+  };
   /**
    * Claude keeps its busy title up while a background subagent works after its turn ended, and herdr reads `working` (#2069).
    * Nor is a turn its Stop hook ended still at work.
@@ -252,7 +259,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function hearClaude(paneId: string, agent: string | null | undefined, status: AgentStatus, event: boolean): void {
     if (agent !== "claude" || status !== "working") restedOnTranscript.delete(paneId);
     if (agent !== "claude" || status !== "working" || event) stoppedOnHook.delete(paneId);
-    if (agent !== "claude" || (event && status !== "working")) hookPrompts.delete(paneId);
+    if (agent !== "claude") { hookPrompts.delete(paneId); droppedPrompts.delete(paneId); }
+    else if (event && status !== "working") dropPrompts(paneId);
     if (agent !== "claude") { heard.delete(paneId); return; }
     const before = heard.get(paneId);
     heard.set(paneId, status);
@@ -471,6 +479,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       restedOnTranscript.delete(paneId);
       stoppedOnHook.delete(paneId);
       hookPrompts.delete(paneId);
+      droppedPrompts.delete(paneId);
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
@@ -785,6 +794,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       return;
     }
     const at = open.indexOf(prompt);
+    // the Stop of a prompt herdr's rest already dropped: late, while another turn may run (a repeated Stop of a prompt
+    // that ended, after another Stop hook blocked the first, is still the rest)
+    if (at < 0 && prompt !== null && droppedPrompts.get(paneId)?.delete(prompt)) return;
     const left = at >= 0 ? open.slice(at + 1) : open;
     if (left.length > 0) { hookPrompts.set(paneId, left); return; }
     hookPrompts.delete(paneId);
@@ -821,6 +833,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       } catch { continue; } finally { if (fd !== undefined) closeSync(fd); }
       const text = bytes.toString("utf8");
       const whole = text.slice(0, text.lastIndexOf("\n") + 1);
+      // one entry longer than a read, written after the Stop: the turn went on
+      if (whole === "" && length === WENT_ON_READ) { hookRestEnds(paneId); continue; }
       const answered = whole.split("\n").some((line) => {
         try { return (JSON.parse(line) as { type?: unknown }).type === "assistant"; } catch { return false; }
       });
@@ -907,6 +921,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     restedOnTranscript.delete(paneId);
     stoppedOnHook.delete(paneId);
     hookPrompts.delete(paneId);
+    droppedPrompts.delete(paneId);
     agentNow.delete(paneId);
     agentRead.set(paneId, opencodeAgents.beginRead());
     agentExited.delete(paneId);
@@ -997,6 +1012,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (claudeFailed.delete(from)) claudeFailed.add(to);
       if (stoppedOnHook.has(from)) { stoppedOnHook.set(to, stoppedOnHook.get(from)!); stoppedOnHook.delete(from); }
       if (hookPrompts.has(from)) { hookPrompts.set(to, hookPrompts.get(from)!); hookPrompts.delete(from); }
+      if (droppedPrompts.has(from)) { droppedPrompts.set(to, droppedPrompts.get(from)!); droppedPrompts.delete(from); }
       if (claudeFailHeld.has(from)) { claudeFailHeld.set(to, claudeFailHeld.get(from) ?? null); claudeFailHeld.delete(from); }
       if (claudeRested.has(from)) { claudeRested.set(to, claudeRested.get(from)!); claudeRested.delete(from); }
       try { options.seenMoved?.(from, to, renumber); }

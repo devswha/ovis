@@ -509,7 +509,8 @@ describe("Claude's other tools on a card from the hook's request", () => {
     { name: "webfetch", tool: "WebFetch", title: "Fetch", body: "url: https://example.com/\nprompt: What is the title of this page?" },
     { name: "mcp", tool: "mcp__echo__shout", title: "Tool use", body: 'mcp__echo__shout\nmessage: "hi 안녕 \\"q\\""\ntimes: 2' },
   ];
-  for (const { name, tool, index, title, body } of cases) {
+  // Windows names a path with its own separator, which the recorded dialog of a Linux host does not draw
+  for (const { name, tool, index, title, body } of cases.filter((entry) => posix || entry.name !== "write-outside")) {
     it(`binds ${name}'s request to its dialog, shows it whole, and answers Yes and No through the hook`, async () => {
       const { prompt, dialog } = dialogOf(name);
       expect(prompt).toMatchObject({ kind: "approval", title });
@@ -529,6 +530,24 @@ describe("Claude's other tools on a card from the hook's request", () => {
       }
     });
   }
+
+  it("sends no keys to an MCP dialog two held calls of different tools with the same arguments both match", async () => {
+    const { hooks, held } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const { dialog } = dialogOf("mcp");
+    const shout = requestOf("mcp__echo__shout");
+    let holding = held("p1");
+    const first = ask(hook, shout);
+    await holding;
+    holding = held("p1");
+    const second = ask(hook, { ...shout, tool_name: "mcp__echo__delete" });
+    await holding;
+    const card = hooks.shown("p1", dialog)!;
+    expect(card.description).toBe("mcp__echo__delete");
+    expect(hooks.showsOnly("p1", dialog, card.id)).toBe(false);
+    hooks.stop();
+    expect(await Promise.all([first.answer(), second.answer()])).toEqual([{}, {}]);
+  });
 
   it("releases a file request once the screen shows another file's dialog", async () => {
     let now = 0;

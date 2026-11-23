@@ -427,6 +427,17 @@ describe("a Claude pane whose Stop hook told its turn ended", () => {
     expect(h.last().status).toBe("done");
   });
 
+  it("ends nothing at the late Stop of a prompt herdr's rest dropped, while a turn it did not tell of runs", async () => {
+    const h = await claudeHub("");
+    turn(h, "began", "p1");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    // a turn Claude began by itself (a background task's notice): no prompt told
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    turn(h, "ended", "p1");
+    expect(h.last().status).toBe("working");
+  });
+
   it("keeps a prompt it was told through a snapshot read at rest before herdr reads the turn", async () => {
     const h = await claudeHub("");
     turn(h, "began", "p1");
