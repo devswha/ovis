@@ -16,8 +16,13 @@ export const LAYOUT_AREA: PaneLayoutRect = Object.freeze({ x: 0, y: 0, width: 10
 
 export type SplitDirection = "right" | "down";
 export type LayoutNode = { leaf: string } | { split: SplitDirection; ratio: number; first: LayoutNode; second: LayoutNode };
-export interface TabLayout { id: string; root: LayoutNode; zoomed: string | null }
-export interface WorkspaceLayout { id: string; tabs: TabLayout[] }
+/**
+ * `passthrough`: the tab's panes whose right press goes to the program that asked for the mouse instead of opening the
+ * terminal screen's menu (herdr's "Send right-clicks to pane"); absent when none. The browser reads nothing of it.
+ */
+export interface TabLayout { id: string; root: LayoutNode; zoomed: string | null; passthrough?: string[] }
+/** `collapsed`: a repository's workspace whose worktree workspaces the terminal screen's sidebar folds; absent when not. */
+export interface WorkspaceLayout { id: string; tabs: TabLayout[]; collapsed?: true }
 export interface OvisLayout { schema: typeof OVIS_LAYOUT_SCHEMA; workspaces: WorkspaceLayout[] }
 
 export interface Grouping { id: string; tabs: { id: string; panes: readonly string[] }[] }
@@ -47,9 +52,10 @@ export function parseOvisLayout(value: unknown): OvisLayout | null {
     for (const tab of workspace["tabs"]) {
       if (!isRecord(tab) || typeof tab["id"] !== "string") continue;
       const root = parseNode(tab["root"]) ?? { leaf: "" };
-      tabs.push({ id: tab["id"], root, zoomed: typeof tab["zoomed"] === "string" ? tab["zoomed"] : null });
+      const passthrough = Array.isArray(tab["passthrough"]) ? tab["passthrough"].filter((pane): pane is string => typeof pane === "string" && pane !== "") : [];
+      tabs.push({ id: tab["id"], root, zoomed: typeof tab["zoomed"] === "string" ? tab["zoomed"] : null, ...(passthrough.length > 0 ? { passthrough } : {}) });
     }
-    workspaces.push({ id: workspace["id"], tabs });
+    workspaces.push({ id: workspace["id"], tabs, ...(workspace["collapsed"] === true ? { collapsed: true as const } : {}) });
   }
   return { schema: OVIS_LAYOUT_SCHEMA, workspaces };
 }
@@ -86,6 +92,7 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
     schema: OVIS_LAYOUT_SCHEMA,
     workspaces: order(doc?.workspaces ?? [], shown).map(({ live, kept }) => ({
       id: live.id,
+      ...(kept?.collapsed ? { collapsed: true as const } : {}),
       tabs: order(kept?.tabs ?? [], live.tabs).filter(({ live: tab }) => tab.panes.length > 0).map(({ live: tab, kept: stored }) => {
         const panes = new Set(tab.panes);
         const seen = new Set<string>();
@@ -98,7 +105,8 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
           root = { split: "right", ratio: clampRatio(before / (before + orphans.length)), first: root, second: sideBySide(orphans) };
         }
         const zoomed = stored?.zoomed && panes.has(stored.zoomed) ? stored.zoomed : null;
-        return { id: tab.id, root, zoomed };
+        const passthrough = (stored?.passthrough ?? []).filter((pane) => panes.has(pane));
+        return { id: tab.id, root, zoomed, ...(passthrough.length > 0 ? { passthrough } : {}) };
       }),
     })),
   };
