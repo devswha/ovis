@@ -224,7 +224,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const local = localWays({ plan, readOnly, canPair, portal });
   const tailnet = localWays({ plan: tailscale, readOnly, canPair, portal: null });
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
-  const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set(), wanted: false });
+  const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set(), wanted: false, views: new Set() });
   // the six-digit code a device types where it opens this PC's Ovis: under the relay tab, else under SSH. Where the
   // relay tab's top offers it beside the account QR code (AccountQr `pairHere`: online, this PC's relay ID known), that
   // is its one place
@@ -1537,7 +1537,7 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
  * this dialog has asked for one (`wanted`: a press, or a tab that shows one as it opens). Until then no view shows digits
  * another place of the page made (the setup guide's relay QR code, Settings' Devices group)
  */
-interface SharedCode { code: PairingCode | null; asking: boolean; readonly waiting: Set<() => void>; wanted: boolean }
+interface SharedCode { code: PairingCode | null; asking: boolean; readonly waiting: Set<() => void>; wanted: boolean; readonly views: Set<(code: PairingCode) => void> }
 
 /**
  * The ask in `shared` ended: with `code`, its announcement reaches the waiting views; with none, the first waiting view
@@ -1576,6 +1576,14 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
   const requesting = useRef(false);
   const linkRef = useRef<HTMLAnchorElement>(null);
   const announcing = useRef(false);
+
+  // the dialog's other views, told when one of them takes the PC's pending code as its tab opens: that code is wanted now
+  useEffect(() => {
+    if (!shared) return;
+    const views = shared.current.views;
+    views.add(setCode);
+    return () => { views.delete(setCode); };
+  }, [shared]);
 
   useEffect(() => {
     const onCode = (event: Event) => {
@@ -1645,7 +1653,13 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
       // a view that goes before the ask ends asks nothing; one whose effect runs again waits again
       return () => { held.waiting.delete(ask); started.current = false; };
     }
-    if (held?.code && Date.parse(held.code.expires_at) > Date.now()) { want(); setCode(held.code); return; }
+    if (held?.code && Date.parse(held.code.expires_at) > Date.now()) {
+      want();
+      setCode(held.code);
+      // no announcement: no code was made, and the relay QR codes on the page already show this one
+      for (const show of held.views) show(held.code);
+      return;
+    }
     void pair();
   }, [startAtOnce, shared]);
 

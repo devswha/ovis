@@ -1576,6 +1576,21 @@ describe("the relay tab's QR code behind a press", () => {
       expect(digits()).toEqual(["246 813"]);
     });
 
+    it("shows the code the Tailscale tab took on opening under the relay tab too, with no second code made", async () => {
+      pcAccount = ACCOUNT_ID;
+      await open(false);
+      await guideOffer("023060");
+      expect(digits()).toEqual([]);
+      // the Tailscale tab shows a code as it opens: the PC's pending one, which the sheet now wants
+      await act(async () => { renderer!.root.findByProps({ "data-tab": "tailscale" }).props.onClick(); });
+      await flush();
+      const tailscalePanel = () => renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale" && node.type === "div");
+      expect(tailscalePanel().findAll((node) => node.props.className === "compact-pair-code").map(text)).toEqual(["023 060"]);
+      await act(async () => { renderer!.root.findByProps({ "data-tab": "relay" }).props.onClick(); });
+      await flush();
+      expect([digits(), getCode().length, starts()]).toEqual([["023 060"], 0, 0]);
+    });
+
     it("keeps a code pressed for in this sheet before the add on screen after it", async () => {
       pcAccount = ACCOUNT_ID;
       await open(false);
