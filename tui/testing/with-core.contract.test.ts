@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { IsolatedCore, pidAlive } from "../../scripts/test-hc.ts";
+import { coreFolder, corePids, IsolatedCore, pidAlive } from "../../scripts/test-hc.ts";
 import { processesWith } from "./processes.ts";
 
 /**
@@ -328,6 +328,104 @@ describe("with-core's options", () => {
 });
 
 describe("with-core cleanup with a CLI stand-in", () => {
+  for (const mode of ["start", "status", "status-read"] as const) {
+    it(`cleans up before the test releases inherited hc pipes: ${mode}`, async () => {
+      const dir = mkdtempSync(join(scratch, "pipes-"));
+      const gate = join(dir, "gate");
+      const seen = join(dir, "seen");
+      const python = Bun.which("python3");
+      if (!python) throw new Error("the inherited-pipe contract needs Python 3 for SCM_RIGHTS");
+      // SCM_RIGHTS transfers the real inherited writers to a child whose handle the test owns. This works for
+      // Bun's socketpair-backed pipes too; opening /proc/<pid>/fd cannot duplicate those descriptors.
+      const holder = Bun.spawn([python, "-I", "-c", [
+        "import contextlib, os, socket, sys",
+        "with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:",
+        "    server.bind(sys.argv[1])",
+        "    server.listen(1)",
+        '    print("listening", flush=True)',
+        "    conn, _ = server.accept()",
+        "    with conn:",
+        "        _, fds, _, _ = socket.recv_fds(conn, 1, 2)",
+        "    with contextlib.ExitStack() as stack:",
+        "        for fd in fds:",
+        '            stack.enter_context(os.fdopen(fd, "wb"))',
+        '        print("holding", flush=True)',
+        "        sys.stdin.read()",
+      ].join("\n"), gate], { env: TOOL_ENV, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+      const reader = holder.stdout.getReader();
+      let output = "";
+      let holding = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const until = async (word: string) => {
+        const read = async () => {
+          while (!output.includes(word)) {
+            const part = await reader.read();
+            if (part.done) throw new Error(`pipe holder ended before ${word}: ${output}`);
+            output += new TextDecoder().decode(part.value);
+          }
+        };
+        try {
+          await Promise.race([read(), new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`no pipe holder ${word}`)), WAIT_MS);
+          })]);
+        } finally { clearTimeout(timer); }
+      };
+      const sendFds = [
+        "import socket, sys",
+        "with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:",
+        "    conn.connect(sys.argv[1])",
+        '    socket.send_fds(conn, [b"x"], [1, 2])',
+      ].join("\n");
+      const path = join(dir, "hc");
+      writeFileSync(path, [
+        `#!${process.execPath}`,
+        'import { existsSync, unlinkSync, writeFileSync } from "node:fs";',
+        "const verb = process.argv[3];",
+        'if (verb === "start") writeFileSync(process.env.HC_SOCKET, "stand-in");',
+        'if (verb === "status") console.log(JSON.stringify({ pid: process.pid }));',
+        'if (verb === "stop" && existsSync(process.env.HC_SOCKET)) unlinkSync(process.env.HC_SOCKET);',
+        `if (verb === ${JSON.stringify(mode === "start" ? "start" : "status")} && !existsSync(${JSON.stringify(seen)})) {`,
+        `  writeFileSync(${JSON.stringify(seen)}, "seen");`,
+        '  console.error("stderr prefix");',
+        `  const sender = Bun.spawn([${JSON.stringify(python)}, "-I", "-c", ${JSON.stringify(sendFds)}, ${JSON.stringify(gate)}], { env: process.env, stdin: "ignore", stdout: "inherit", stderr: "inherit" });`,
+        "  if (await sender.exited !== 0) process.exit(1);",
+        "}",
+      ].join("\n"));
+      chmodSync(path, 0o755);
+      const folder = mode === "status-read" ? coreFolder() : null;
+      let run: Run | null = null;
+      let status: Promise<boolean> | null = null;
+      try {
+        await until("listening");
+        run = folder ? null : helper(["--limit", "1", "--", "/bin/true"], callerEnv({ OVIS_TEST_HC_BIN: path }));
+        status = folder ? corePids(path, folder.env).then(() => false, (error: unknown) => error instanceof Error && error.message.includes("exited 124")) : null;
+        await until("holding");
+        holding = true;
+        if (run) {
+          await run.line(/with-core: stopped pids=/);
+          expect(await run.exited).toBe(124);
+          expect(existsSync(run.stderr().match(/root=(\S+)/)![1]!)).toBe(false);
+        } else {
+          const bounded = await Promise.race([status, new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), WAIT_MS); })]);
+          expect(bounded).toBe(true);
+        }
+        expect(holder.exitCode).toBeNull();
+        expect(holder.signalCode).toBeNull();
+      } finally {
+        clearTimeout(timer);
+        holder.stdin.end();
+        if (!holding && holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+        await holder.exited;
+        reader.releaseLock();
+        expect(await new Response(holder.stderr).text()).toBe("");
+        if (run) await run.exited;
+        if (status) await status;
+        if (folder) rmSync(folder.root, { recursive: true, force: true });
+      }
+      if (run) expect(leftovers(run)).toEqual(NOTHING_LEFT);
+    }, TEST_MS);
+  }
+
   for (const verb of ["start", "status", "stop"] as const) {
     it(`an hc server ${verb} that ignores SIGTERM cannot strand cleanup`, async () => {
       const hc = standInHc(`blocked-${verb}`, verb);
