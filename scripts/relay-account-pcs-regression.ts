@@ -229,16 +229,21 @@ try {
 
   const connecting = await accountWindow(browser, pageErrors);
   assert.equal(await connecting.page.locator('.machine-title[aria-current="true"][title="Desk"]').count(), 0, "a new window starts on another PC");
+  const offered = connecting.page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/api/relay/offer");
   const mine = await openRelayTab(connecting.page);
-  // signed in to this PC's own account, the tab is the signed-in line and the phone's QR code: the account's PCs are in
-  // the sidebar, not here
+  // signed in to this PC's own account in this PC's own window, the tab opens as the Tailscale tab does: the phone part
+  // first, the relay's pairing QR code made as it opens, then the signed-in line; the account's PCs are in the sidebar
   assert.equal(await mine.getByRole("button", { name: "Add from account", exact: true }).count(), 0, "no prompt");
-  assert.equal(await mine.getByText("Your account's PCs", { exact: true }).count(), 0, "the relay tab lists no PCs");
-  assert.equal(await mine.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).count(), 1, "the phone's QR code");
+  assert.equal(await mine.getByText("Your account's PCs", { exact: true }).count(), 0, "the relay tab lists no account PCs");
+  const pairingQr = mine.getByTestId("connect-phone-scan").getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true });
+  await pairingQr.waitFor();
+  assert.equal((await offered).headers()["x-ovis-no-account-only"], undefined, "the relay's own offer, made as the tab opened, not the account QR code's");
+  assert.equal(await mine.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).count(), 0, "one QR code a phone scans");
+  const qrBottom = await pairingQr.evaluate((qr) => qr.getBoundingClientRect().bottom);
+  assert.ok(qrBottom <= await mine.getByText("This PC is in your account.", { exact: true }).evaluate((line) => line.getBoundingClientRect().top), "the signed-in line comes under the phone part");
   // this PC's own window, signed in to its account: under the QR code, the PCs it can reach to add over SSH, and a field
   const reachable = mine.locator(".connect-reachable");
   await reachable.getByRole("textbox", { name: "A PC not in the list", exact: true }).waitFor();
-  const qrBottom = await mine.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).evaluate((qr) => qr.getBoundingClientRect().bottom);
   assert.ok(qrBottom <= await reachable.evaluate((list) => list.getBoundingClientRect().top), "the PCs to add come under the phone's QR code");
   await shot(connecting.page, "relay-tab");
 
@@ -291,7 +296,7 @@ try {
     if (!strict) await shot(page, "unavailable");
   }
   assert.deepEqual(pageErrors, [], "no page error");
-  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, marks offline PCs and automatically asks a member to pair a ready PC; it opens in the sidebar with no SSH setup dialog; a sign-in on this PC, already in the account, closes Add a connection and leaves Settings open with the account and its PCs; Add a connection → Ovis relay is the signed-in line and the QR code, with no list of the account's PCs, and only in this PC's own window signed in to its account the PCs to add over SSH under it");
+  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, marks offline PCs and automatically asks a member to pair a ready PC; it opens in the sidebar with no SSH setup dialog; a sign-in on this PC, already in the account, closes Add a connection and leaves Settings open with the account and its PCs; Add a connection → Ovis relay, in this PC's own window signed in to its account, opens on the relay's pairing QR code, then the signed-in line and the PCs to add over SSH, with no list of the account's PCs");
 } catch (error) {
   code = 1;
   console.error("FAIL relay account PCs:", error);

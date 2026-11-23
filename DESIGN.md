@@ -5117,8 +5117,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   this PC is already in closes the sheet and Settings onto the main screen, and opened by hand with
   this PC in the account and the relay online, the tab is the signed-in line and the phone's QR code,
   no list of the account's PCs (the sidebar has them). Where Add PC over SSH adds a PC to the account
-  (this PC's own window, signed in to the account this PC is in, as `sshAddOffered` says), the phone
-  part is followed, behind a hairline (`.connect-reachable`), by the PCs this PC can reach: one line of
+  (this PC's own window, signed in to the account this PC is in, as `sshAddOffered` says), the tab
+  opens as the Tailscale tab does (owner, 2026-11-23): the phone part first, with the relay's own
+  pairing QR code beside its code to type, Refresh and Copy (`RelayRoute` compact, made as the tab
+  opens and renewed as it runs out, as a page with no account draws it), in place of the QR code that
+  opens this PC's page, then the signed-in line. That state is drawn only under the account policy
+  (`pc_add_from_account`), where a device that redeems a relay code waits for this PC's screen to
+  approve the key it proved. The phone part is followed, behind a hairline (`.connect-reachable`), by
+  the PCs this PC can reach: one line of
   what Add does, then the Tailscale tab's rows and the ssh config's other hosts in one list, each the
   name, then dim its way and address (**Tailscale · old-desktop.tail….ts.net**, **SSH config ·
   root@hosthatch**), then **Add**, which opens the PC setup dialog with that host filled in and **Add
@@ -5152,7 +5158,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   line (WhatsApp shows its linking QR code on the device being added, never on one already
   linked), and it is deliberate here: a pairing QR code on a PC with members would let in whoever
   scans it with nobody approving, so that PC's QR code only opens its page and the account's own
-  approval decides. Relay pairing without the
+  approval decides. The one exception is this PC's own window under the account policy (above),
+  whose relay pairing code still needs this PC's screen to approve each device that redeems it. Relay pairing without the
   account, a code from another PC and Tailscale PCs added through the relay are gone from it. Every tab
   ends in its phone part (`PhoneScan`, `.connect-phone-scan`: a hairline above, a phone icon and
   one line, **Scan it with the Ovis app on your phone**, then that way's QR code with the code it

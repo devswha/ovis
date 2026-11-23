@@ -1416,11 +1416,11 @@ describe("the relay tab's QR code behind a press", () => {
     descriptors.clear();
   });
 
-  interface TabOptions { signedIn?: boolean; accountId?: string | null; joinBySignIn?: boolean; relay?: RelayState; active?: boolean; pcAdd?: PcAccountStatus["pcAddFromAccount"]; provider?: "github" | "google" }
+  interface TabOptions { signedIn?: boolean; accountId?: string | null; joinBySignIn?: boolean; relay?: RelayState; active?: boolean; pcAdd?: PcAccountStatus["pcAddFromAccount"]; provider?: "github" | "google"; addsOverSsh?: boolean }
   const thisPc = { id: "local", kind: "local", name: "Desk", server_id: SERVER_ID } as unknown as Machine;
-  const tab = ({ signedIn = true, accountId = signedIn ? ACCOUNT_ID : null, joinBySignIn = false, relay = relayState(), active = true, pcAdd, provider }: TabOptions = {}) => (
+  const tab = ({ signedIn = true, accountId = signedIn ? ACCOUNT_ID : null, joinBySignIn = false, relay = relayState(), active = true, pcAdd, provider, addsOverSsh = false }: TabOptions = {}) => (
     <SettingsProvider>
-      <RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} machines={[thisPc]} {...(provider ? { provider } : {})} account={pcAdd ? { ...SERVICE, opensAll: () => true } : SERVICE} phone={false} active={active}
+      <RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} machines={[thisPc]} {...(provider ? { provider } : {})} account={pcAdd ? { ...SERVICE, opensAll: () => true } : SERVICE} phone={false} active={active} addsOverSsh={addsOverSsh}
         {...(pcAdd ? { onConnectMachine: () => {}, pcAddFromAccount: pcAdd } : {})}
         onPairingHeld={(next) => { held.push(next); }} onRevokedAll={() => { revokedAll += 1; }} />
     </SettingsProvider>
@@ -1471,6 +1471,27 @@ describe("the relay tab's QR code behind a press", () => {
     await mount({ joinBySignIn: true, provider: "google" });
     expect(qrCodes().map((qr) => qr.props.value)).toEqual([`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/#sign-in=google`]);
     expect(renderer!.root.findAllByProps({ "data-testid": "connect-phone-scan" })).toHaveLength(1);
+    expect(minted()).toEqual([]);
+  });
+  it("in this PC's own window where Add PC over SSH adds to the account, draws the relay's pairing QR code and code at once, as the Tailscale tab does, the account's line under it", async () => {
+    pcAccount = ACCOUNT_ID;
+    await mount({ joinBySignIn: true, provider: "github", addsOverSsh: true });
+    const scan = renderer!.root.findByProps({ "data-testid": "connect-phone-scan" });
+    // the relay's own pairing: its QR code and the code to type, made as the tab opens, never the account QR code's
+    expect(scan.findAllByType(QrCode).map((qr) => qr.props.value)).toEqual([OFFER_URL]);
+    expect(text(scan)).toContain("7K3QD-M2XHA");
+    expect(minted()).toEqual(["/api/relay/code", "/api/relay/offer"]);
+    expect(offerMarks).toEqual([null]);
+    // the QR code that opens this PC's page gives way to it: one QR code a phone scans
+    expect(qrCodes()).toHaveLength(1);
+    const parts = section().children.filter((child): child is ReactTestInstance => typeof child !== "string");
+    const at = (match: (node: ReactTestInstance) => boolean) => parts.findIndex((part) => match(part) || part.findAll(match).length > 0);
+    expect(at((node) => node.props["data-testid"] === "connect-phone-scan")).toBeLessThan(at((node) => node.type === "p" && text(node) === "This PC is in your account."));
+    // with the relay off there is nothing a phone could use, and nothing is made
+    await act(async () => { renderer!.unmount(); });
+    requests.length = 0;
+    await mount({ joinBySignIn: true, provider: "github", addsOverSsh: true, relay: relayState({ ...ONLINE, phase: "off" }) });
+    expect(qrCodes()).toHaveLength(0);
     expect(minted()).toEqual([]);
   });
   it("for a PC in an account this page cannot tell is its own, the QR code names no sign-in: the phone picks one", async () => {

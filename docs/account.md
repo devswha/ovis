@@ -219,7 +219,7 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 - **That QR code is for a PC in no account only.** On a PC that is in an account it would pair
   whoever scans it, from anywhere, with a PC that has members, with nobody approving: there a
   device joins by signing in to the account ([Joining through the account](#who-may-admit-a-device)).
-  So the relay tab shows no QR code for such a PC, and the PC makes none: its offer is asked for
+  So the relay tab shows no such QR code for a PC in an account, and the PC makes none: its offer is asked for
   with the header `x-ovis-no-account-only: 1` (`POST /api/relay/offer`), which a PC in an account
   answers `409 in_account`, starting no code and leaving the one pending as it was. On a PC in no
   account the offer carries a code of its own: the one pending when that was made the same way,
@@ -228,7 +228,9 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   one a sign-in on the PC opens included): left pending, it would admit one more device after the
   PC joined. It also ends, with every device that waits to link under it, when another account
   takes the place of the one named for the PC, and on **Reset relay identity**. An offer asked for without the header is what it was, on any PC: the first-run
-  guide's QR code, the relay tab where the page has no account, a phone's **Use the relay** and
+  guide's QR code, the relay tab where the page has no account, the relay tab in this PC's own
+  window signed in to the account this PC is in (drawn only under the account policy, where a device
+  that redeems a relay code waits for this PC's screen to approve the key it proved), a phone's **Use the relay** and
   `bun scripts/plugin.ts pair` keep it, without those guards, and a signed-in device that redeems
   such a code on a PC in no account links itself the same way. It never carries the code of an
   offer asked for with the header: with that code pending it starts a code of its own, which

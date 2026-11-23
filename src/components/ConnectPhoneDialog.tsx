@@ -271,7 +271,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
             <div className="connect-tab" data-tab-panel="relay" hidden={tab !== "relay"}>
               <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} accountId={accountId} provider={provider} joinBySignIn={joinBySignIn} account={account} phone={phone}
                 pcAddFromAccount={pcAddFromAccount} onAccountSetup={onAccountSetup}
-                active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} machines={machines} onConnectMachine={onConnectMachine} />
+                active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} machines={machines} onConnectMachine={onConnectMachine} addsOverSsh={addsOverSsh && tabs.includes("tailscale")} />
               {codeTab === "relay" && pairByCode}
               {addsOverSsh && tabs.includes("tailscale") && <ReachablePcList found={found} accountPcs={inAccount} onAddPc={onAddPc!} />}
             </div>
@@ -820,8 +820,10 @@ function CommandToCopy({ command }: { command: string }) {
  * behind a press for a PC in no account, and for a PC that is in one a QR code that opens this PC's page in the Ovis
  * app, which signs in to that account and joins it there (no code, key or token in it).
  */
-export function RelayTab({ relay, closesGate, signedIn, accountId = null, provider = null, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll, machines = [], onConnectMachine, pcAddFromAccount, onAccountSetup }: {
+export function RelayTab({ relay, closesGate, signedIn, accountId = null, provider = null, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll, machines = [], onConnectMachine, pcAddFromAccount, onAccountSetup, addsOverSsh = false }: {
   pcAddFromAccount?: PcAccountStatus["pcAddFromAccount"]; onAccountSetup?: (() => void) | undefined;
+  /** this PC's own window, signed in to the account this PC is in (ConnectPhoneDialog `addsOverSsh`): the top is the relay's pairing QR code and code */
+  addsOverSsh?: boolean;
   relay: RelayState; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; account: RelayAccount | null; phone: boolean;
   accountId?: string | null;
   provider?: AccountProvider | null;
@@ -902,7 +904,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   const qr = (ownSwitch: boolean) => (
     <AccountQr relay={relay} phone={phone} active={active} signedIn={signedIn} accountId={mine} provider={provider} serverId={machines.find((machine) => machine.kind === "local")?.server_id ?? null}
       pcAccount={pcIn} onPcAccount={setPcAccount} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
-      first={bare} relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
+      first={bare} pairHere={addsOverSsh} relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
   );
   // signed out the tab is its sign-in buttons: the relay's own switch stays in More settings. Keyed by the account, so
   // a sign-in that ended in another account shows the buttons again
@@ -1003,9 +1005,15 @@ const names = (strays: readonly AccountQrStray[]): string => strays.map((stray) 
  * A press made while the page's relay state said otherwise (it is read every 15 seconds) is refused by the PC: the QR
  * code comes down with no failure to read, and the relay's state is read again, which brings that sentence.
  */
-export function AccountQr({ relay, phone, active, signedIn, accountId = null, provider = null, serverId = null, pcAccount, onPcAccount, first = false, relayControls, onPairingHeld, onRevokedAll }: {
+export function AccountQr({ relay, phone, active, signedIn, accountId = null, provider = null, serverId = null, pcAccount, onPcAccount, first = false, pairHere = false, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
   first?: boolean;
+  /**
+   * In this PC's own window, signed in to the account this PC is in: the phone part of a PC in this page's account is
+   * the relay's own pairing QR code and code (RelayRoute, as a page with no account draws it), made as the tab opens,
+   * like the Tailscale tab's, in place of the QR code that opens this PC's page; this account's line goes under it
+   */
+  pairHere?: boolean;
   accountId?: string | null;
   /** how this page is signed in, and this PC's relay ID: the QR code of a PC in an account (signInLink) */
   provider?: AccountProvider | null;
@@ -1372,7 +1380,13 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
   const labelled = standing ? standingLabel : told || shown;
   return (
     <section className="connect-account-qr" aria-labelledby={labelled ? id : undefined} data-testid="connect-account-qr" data-account={here ?? undefined} data-first={first || undefined}>
-      {standing ? (
+      {standing && pairHere && here === "mine" && online ? (
+        <>
+          <PhoneScan><RelayRoute relay={relay} readOnly={false} phone={phone} compact /></PhoneScan>
+          <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{t("This PC is in your account.")}</p>
+          {enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
+        </>
+      ) : standing ? (
         <>
           {standingLabel && <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{here === "mine" ? t("This PC is in your account.") : t("Sign in to this PC's account.")}</p>}
           {here === "mine" && enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
