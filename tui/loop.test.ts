@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
+import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection, HcError, HcReplyError } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
@@ -425,6 +425,43 @@ describe("the loop", () => {
     run.type("d");
     await settled(run);
     expect([sentTo(run, "t1"), sentTo(run, "t2")]).toEqual(["", Buffer.from("d").toString("hex")]);
+  }, TEST_MS);
+
+  it.each(["removed", "already gone", "rm refused", "answer lost", "remote timeout"] as const)("a partial close with a sibling %s routes held input independently of event order", async (third) => {
+    for (const answerFirst of [false, true]) {
+      const run = await start({ core: oneTab(3) });
+      await run.live();
+      await run.advance(1);
+      run.core.holdingEvents = answerFirst;
+      const call = run.loop.link.call.bind(run.loop.link);
+      run.loop.link.call = async (method, params, timeout) => {
+        if ("terminal" in params) {
+          if (method === "terminal.kill" && params.terminal === "t2") throw new HcReplyError("blocked", "kill refused");
+          if (method === "terminal.kill" && params.terminal === "t3" && third === "remote timeout") throw new HcReplyError("timeout", "machine did not answer");
+          if (method === "terminal.rm" && params.terminal === "t3") {
+            if (third === "rm refused") throw new HcReplyError("blocked", "remove refused");
+            if (third === "already gone") await call(method, params, timeout); // the record is gone when our call arrives
+            if (third === "answer lost") {
+              await call(method, params, timeout); // it ran, but this client cannot know that
+              throw new HcError("timeout", "no answer");
+            }
+          }
+        }
+        return call(method, params, timeout);
+      };
+      run.type("\x02Dyabc");
+      await settled(run);
+      if (answerFirst) expect(received(run)).toEqual({});
+      run.core.releaseEvents();
+      await settled(run);
+      const reason = third === "answer lost" || third === "remote timeout" ? "layout_unknown" : third === "rm refused" ? "not_closed" : null;
+      expect(received(run)).toEqual(reason ? {} : { t2: Buffer.from("abc").toString("hex") });
+      expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])).toEqual([
+        reason === "layout_unknown" ? ["layout_unknown", undefined] : ["layout_refused", "blocked"],
+        ...(reason ? [["input_dropped", reason]] : []),
+      ]);
+      await run.close();
+    }
   }, TEST_MS);
 
   it("input behind a write that makes a pane waits until the screen shows that pane, and never reaches the pane before", async () => {
