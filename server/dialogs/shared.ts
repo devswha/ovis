@@ -1,6 +1,6 @@
 import { type CardText, type InteractivePrompt, type InteractivePromptOption, type InteractivePromptStep } from "../../shared/protocol.ts";
 import { type CardTextKey } from "../../shared/card-text.ts";
-import { type OpenCodeFormFieldOption, type OpenCodeFormInfo } from "../opencode-service.ts";
+import { type OpenCodeFormFieldOption, type OpenCodeFormInfo, type OpenCodePermissionDecision } from "../opencode-service.ts";
 import { createHash } from "node:crypto";
 import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
@@ -110,6 +110,7 @@ type Responder =
   | "omp-submit"
   | "omp-handoff"
   | "opencode-question"
+  | "opencode-permission"
   | "opencode-v1-question"
   | "fallback-menu"
   | "fallback-gjc-menu"
@@ -133,6 +134,8 @@ export type ParsedPrompt = InteractivePrompt & {
     revision: number;
     available: boolean;
   };
+  /** the pending request of OpenCode's permission service the card answers, and the decision each option sends */
+  openCodePermission?: { requestID: string; sessionID: string; decisions: OpenCodePermissionDecision[] };
   piAskForm?: { identity: string; index: number };
   claudeTabs?: { identity: string; index: number };
   piAskUser?: PiAskUserForm;

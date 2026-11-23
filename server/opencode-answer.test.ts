@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,10 @@ async function fixture(run: (f: {
   closed: boolean;
   replies: unknown[];
   sent: string[];
+  version: string;
+  permissions: unknown[];
+  permissionReplies: { path: string; body: unknown }[];
+  permissionReply?: () => Response;
   listing?: () => Promise<Response>;
   replying?: () => Promise<Response>;
   snapshot?: () => Promise<void>;
@@ -46,6 +50,8 @@ async function fixture(run: (f: {
       fields: [{ key: "q0", type: "string", custom: true }, { key: "q1", type: "string", custom: true }],
     }] satisfies OpenCodeFormInfo[],
     replies: [] as unknown[], sent: [] as string[],
+    version: "2.0.32", permissions: [] as unknown[], permissionReplies: [] as { path: string; body: unknown }[],
+    permissionReply: undefined as (() => Response) | undefined,
     listing: undefined as (() => Promise<Response>) | undefined,
     replying: undefined as (() => Promise<Response>) | undefined,
     snapshot: undefined as (() => Promise<void>) | undefined,
@@ -77,7 +83,13 @@ async function fixture(run: (f: {
   const service = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(request) {
-      if (request.method === "GET" && new URL(request.url).pathname === "/api/info") return Response.json({ version: "2.0.32", pid: process.pid, urls: [], paths: { tmp: root } });
+      const { pathname } = new URL(request.url);
+      if (request.method === "GET" && pathname === "/api/info") return Response.json({ version: f.version, pid: process.pid, urls: [], paths: { tmp: root } });
+      if (request.method === "GET" && pathname.endsWith("/permission")) return Response.json({ data: f.permissions });
+      if (request.method === "POST" && pathname.includes("/permission/")) {
+        f.permissionReplies.push({ path: pathname, body: await request.json() });
+        return f.permissionReply?.() ?? new Response(null, { status: 204 });
+      }
       if (request.method === "GET") {
         const listing = f.listing;
         f.listing = undefined;
@@ -480,4 +492,58 @@ describe("OpenCode answer ordering", () => {
       } finally { release.resolve(Response.json(f.forms)); }
     });
   }, 3_000);
+});
+
+/** The permission requests a real OpenCode 2.2.2 asked (server/fixtures/opencode-permission-2.2.2.json), moved to the fixture's session. */
+const recorded: Record<string, unknown>[] = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-permission-2.2.2.json"), "utf8")) as { events: { type: string; data: Record<string, unknown> }[] })
+  .events.filter((event) => event.type === "permission.asked").map((event) => ({ ...event.data, sessionID: "ses_fixture01" }));
+const asked = (action: string): Record<string, unknown> => recorded.find((request) => request.action === action)!;
+
+describe("OpenCode permission card", () => {
+  it.each([[0, "once"], [1, "always"], [2, "reject"]] as const)("answers the pending request through its service: option %i is %s, no key typed", async (index, decision) => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      const prompt = await f.read();
+      expect(prompt).toMatchObject({ kind: "approval", agent: "opencode", question: "Run a shell command", body: "$ ls -la ." });
+      expect(prompt.options.map((option) => option.label)).toEqual(["Allow once", "Always allow", "Deny"]);
+      expect((await f.answer(prompt, { option_index: index })).status).toBe(200);
+      expect(f.permissionReplies).toEqual([{ path: `/api/session/ses_fixture01/permission/${String(asked("shell").id)}/reply`, body: { decision } }]);
+      expect(f.counted.answers).toBe(1);
+    });
+  });
+
+  it("drops the card once the request is answered elsewhere, and refuses an answer to it", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("edit")];
+      const prompt = await f.read();
+      f.permissions = [];
+      expect((await f.read())?.id).not.toBe(prompt.id);
+      expect((await f.answer(prompt, { option_index: 0 })).status).toBe(409);
+      expect(f.permissionReplies).toEqual([]);
+    });
+  });
+
+  it("reports a request OpenCode no longer holds as changed", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("webfetch")];
+      f.permissionReply = () => Response.json({ _tag: "PermissionNotFoundError" }, { status: 404 });
+      const prompt = await f.read();
+      expect((await f.answer(prompt, { option_index: 1 })).status).toBe(409);
+      expect(f.permissionReplies).toHaveLength(1);
+    });
+  });
+
+  it.each(["version", "shape", "session"] as const)("leaves the request to the terminal for an unknown %s", async (kind) => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [asked("shell")];
+      if (kind === "version") f.version = "3.0.0";
+      if (kind === "shape") f.permissions = [{ ...asked("shell"), resources: "ls -la ." }];
+      if (kind === "session") f.permissions = [{ ...asked("shell"), sessionID: "ses_other" }];
+      expect((await f.read()).fallback).toBe(true);
+    });
+  });
 });

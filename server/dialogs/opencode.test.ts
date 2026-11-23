@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { commandOutcome, type CommandSend } from "../outcome.ts";
 import { openCodePromptTexts, skillsNotAttached } from "../opencode-native.ts";
-import { nativeQuestionReader, v1QuestionReader } from "./opencode.ts";
+import type { OpenCodePermissionRequest } from "../opencode-service.ts";
+import { nativePermissionReader, nativeQuestionReader, openCodePermissionPrompt, v1QuestionReader } from "./opencode.ts";
 import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
 import { registry } from "./registry.ts";
 
@@ -95,5 +96,36 @@ describe("the prompt text OpenCode 2.0.32 stores for a send", () => {
     expect([...openCodePromptTexts([{ typed: "@effect " }, { pasted: "one\r\ntwo\rthree\n" }])]).toEqual(["@effect one\ntwo\nthree\n", "@effect one\ntwo\nthree "]);
     const long = ` ${"x".repeat(151)} `;
     expect([...openCodePromptTexts([{ pasted: long }])]).toEqual([long, `${"x".repeat(151)} `]);
+  });
+});
+
+describe("OpenCode permission card", () => {
+  const recorded = (JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures", "opencode-permission-2.2.2.json"), "utf8")) as { events: { type: string; data: OpenCodePermissionRequest }[] })
+    .events.filter((event) => event.type === "permission.asked").map((event) => event.data);
+  const card = (action: string) => openCodePermissionPrompt(recorded.find((request) => request.action === action)!);
+
+  it("is the native reader its card names, and reads no screen", () => {
+    expect(registry.readerFor("opencode-permission")).toBe(nativePermissionReader);
+    expect(card("shell").responder).toBe("opencode-permission");
+  });
+
+  it("shows what each recorded request asks for: a command, a file's patch, a URL, an MCP tool's input", () => {
+    expect(card("shell")).toMatchObject({ kind: "approval", question: "Run a shell command", body: "$ ls -la ." });
+    expect(card("edit")).toMatchObject({ question: "Edit hello.txt" });
+    expect(card("edit").body).toContain("+hello from ovis");
+    expect(card("webfetch")).toMatchObject({ question: "Fetch https://example.com", body: null });
+    expect(card("ovisfix_echo")).toMatchObject({ question: "Use the tool ovisfix_echo", body: JSON.stringify({ word: "hello" }, null, 2) });
+  });
+
+  it("says what Always allow saves, and offers it only when OpenCode would save something", () => {
+    expect(card("shell").options[1]).toEqual({ label: "Always allow", description: "Allows these in this project from now on: ls *" });
+    expect(card("edit").options[1]!.description).toBe("Allows every edit request in this project from now on");
+    const once = openCodePermissionPrompt({ ...recorded[0]!, save: [] });
+    expect(once.options.map((option) => option.label)).toEqual(["Allow once", "Deny"]);
+    expect(once.openCodePermission?.decisions).toEqual(["once", "reject"]);
+  });
+
+  it("is another card for another request of the same words", () => {
+    expect(openCodePermissionPrompt({ ...recorded[0]!, id: "per_other" }).id).not.toBe(card("shell").id);
   });
 });
