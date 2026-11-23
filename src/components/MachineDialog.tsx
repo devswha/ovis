@@ -8,7 +8,7 @@ import { pcAccountStatus } from "../lib/account/join.ts";
 import { accountServiceHere } from "../lib/account/ownWindow.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { addOverSsh, sshAddListed, type SshAddOutcome } from "../lib/account/sshAdd.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
+import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { hostKeyFingerprints } from "../lib/hostKey.ts";
 import { sshOutputParts } from "../lib/sshOutput.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
@@ -19,6 +19,7 @@ import "./Machines.css";
 import { useT } from "../lib/i18n.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { asksChoice, FoundHerdrChoices, HerdrSessionChoices, type HerdrChoice } from "./FoundHerdrChoices.tsx";
+import { useSignInAgainHere } from "./AccountSection.tsx";
 
 export function MachineDialog({ machine, preset, updateRemote = false, onClose, onConnected }: { machine?: Machine; preset?: AddPcPreset; updateRemote?: boolean; onClose(): void; onConnected(id: string): void }) {
   const t = useT();
@@ -62,6 +63,11 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const [vouch, setVouch] = useState(true);
   const [added, setAdded] = useState<SshAddOutcome | "adding" | null>(null);
   const addedFor = useRef<string | null>(null);
+  // a sign-in the account service refused as too old: this page's own sign-in again, offered in place (`from`: the sign-in
+  // stored when it was refused), then under way (`link`: the page to open where the browser would not open it itself)
+  const signInAgain = useSignInAgainHere();
+  const [again, setAgain] = useState<{ readonly step: "offered"; readonly from: AccountSession } | { readonly step: "signing-in"; readonly from: AccountSession; readonly link: string | null } | null>(null);
+  const againRun = useRef<AbortController | null>(null);
   // an update asked with "Add it to my account": the server takes the add as its own setup, run once the update connects
   const addAfterUpdate = useRef<string | null>(null);
   const [install, setInstall] = useState<PcInstallJob | null>(null);
@@ -82,7 +88,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   // approved install keeps going on the server and shows in the sidebar
   // React's autoFocus runs at mount, while the dialog is still closed; showModal() then moves focus
   // to the first focusable element (Close), so the field is focused again once the dialog is open
-  useEffect(() => { mounted.current = true; dialog.current?.showModal(); destinationField.current?.focus(); return () => { mounted.current = false; const current = jobRef.current; if (current && !["connected", "failed", "cancelled"].includes(current.phase) && (current.windows_startup || !["installing", "starting"].includes(current.phase))) void answerMachineSetup(current.id, { action: "cancel" }).catch(() => {}); }; }, []);
+  useEffect(() => { mounted.current = true; dialog.current?.showModal(); destinationField.current?.focus(); return () => { mounted.current = false; againRun.current?.abort(); const current = jobRef.current; if (current && !["connected", "failed", "cancelled"].includes(current.phase) && (current.windows_startup || !["installing", "starting"].includes(current.phase))) void answerMachineSetup(current.id, { action: "cancel" }).catch(() => {}); }; }, []);
   const running = !!job && ["installing", "starting"].includes(job.phase);
   useEffect(() => {
     if (!job || finished) return;
@@ -114,6 +120,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const begin = async (choice?: HerdrChoice, installedId?: string) => {
     if (pending) return;
     addedFor.current = null; setAdded(null); addAfterUpdate.current = null;
+    againRun.current?.abort(); againRun.current = null; setAgain(null);
     const updating = needsBridgeUpdate || updateRemote;
     const asAccountAdd = accountAdd !== null && vouch && !updating;
     setError(null); setPending(true);
@@ -129,15 +136,63 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (mounted.current) setPending(false); }
   };
-  // a connected account add: this window lists and admits that PC with its own sign-in, then this PC hands it the account
-  useEffect(() => {
-    if (!job || job.phase !== "connected" || !job.account_add || accountAdd === null || addedFor.current === job.id) return;
-    const id = job.id;
+  /**
+   * A connected account add: this window lists and admits that PC with its own sign-in (`signIn`: one just made again
+   * here), then this PC hands it the account. A refusal of the sign-in itself offers this page's sign-in again; that SSH
+   * connection gone by the time the fresh sign-in is made, the same PC is connected again and its add goes on by itself.
+   */
+  const addOn = (current: SetupJob, signIn?: AccountSession): void => {
+    if (current.phase !== "connected" || !current.account_add || accountAdd === null) return;
+    const id = current.id;
+    const service = new AccountService({ store: indexedAccountStore });
     addedFor.current = id;
     setAdded("adding");
-    void addOverSsh(new AccountService({ store: indexedAccountStore }), { id, account_add: job.account_add }, { account: accountAdd, running: () => mounted.current && jobRef.current?.id === id })
-      .then((outcome) => { if (mounted.current && addedFor.current === id) setAdded(outcome); });
+    void addOverSsh(service, { id, account_add: current.account_add }, { account: accountAdd, running: () => mounted.current && jobRef.current?.id === id, ...(signIn === undefined ? {} : { signIn }) })
+      .then(async (outcome) => {
+        if (!mounted.current || addedFor.current !== id) return;
+        if (outcome === "disconnected" && signIn !== undefined) { void begin(undefined, current.machine_id); return; }
+        const from = outcome === "sign-in-again" && signInAgain !== undefined ? await service.session().catch(() => undefined) : undefined;
+        if (!mounted.current || addedFor.current !== id) return;
+        setAdded(outcome);
+        if (from?.account === accountAdd) setAgain({ step: "offered", from });
+      });
+  };
+  useEffect(() => {
+    if (!job || job.phase !== "connected" || !job.account_add || accountAdd === null || addedFor.current === job.id) return;
+    addOn(job);
   }, [job?.id, job?.phase]);
+  /**
+   * Signs in again with this page's own sign-in (in the press itself, so no popup blocker takes its page), stored in the
+   * refused one's place for the same account only; the add then goes on with exactly that sign-in. Cancel, a sign-in that
+   * did not finish, or one not stored (another account's) leaves the offer.
+   */
+  const signInAndAdd = (from: AccountSession): void => {
+    const current = jobRef.current;
+    if (signInAgain === undefined || current === null) return;
+    const controller = new AbortController();
+    againRun.current = controller;
+    const running = (): boolean => !controller.signal.aborted && mounted.current && jobRef.current?.id === current.id;
+    setError(null);
+    setAgain({ step: "signing-in", from, link: null });
+    signInAgain(from, { signal: controller.signal, wanted: running, blocked: (link) => { if (running()) setAgain({ step: "signing-in", from, link }); } }).then((session) => {
+      if (againRun.current === controller) againRun.current = null;
+      if (!running()) return;
+      if (session === null) { setAgain({ step: "offered", from }); return; }
+      setAgain(null);
+      addOn(current, session);
+    }, (failure: unknown) => {
+      if (againRun.current === controller) againRun.current = null;
+      if (!running()) return;
+      console.warn("Ovis: the sign-in did not finish", failure instanceof Error ? failure.name : failure);
+      setAgain({ step: "offered", from });
+      setError(t("The sign-in did not finish. Try again."));
+    });
+  };
+  const cancelAgain = (): void => {
+    againRun.current?.abort();
+    againRun.current = null;
+    setAgain((now) => now === null ? null : { step: "offered", from: now.from });
+  };
   useEffect(() => {
     if (!job || job.phase !== "connected" || addAfterUpdate.current !== job.id) return;
     addAfterUpdate.current = null;
@@ -226,7 +281,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         {!secretAllowed && <p className="field-hint">{t("Open this app over HTTPS or localhost to enter a password.")}</p>}
         <button type="submit" className="btn btn-primary" disabled={!secretAllowed || pending}>{t("Continue")}</button>
       </form></>}</div>}
-      {added !== null && <p className="field-hint" role="status">{addedWords(added, t)}</p>}
+      {added !== null && <p className="field-hint" role="status">{again?.step === "signing-in" ? t("Finish signing in in your browser.") : again?.step === "offered" ? t("Sign in again now to add it right away.") : addedWords(added, t)}</p>}
       {install !== null && <div className="machine-progress" role="status"><strong>{install.phase === "failed" ? t("Ovis was not installed on that PC") : t("Installing Ovis on that PC…")}</strong>{install.error !== null ? <p>{install.error}</p> : <p>{install.step}</p>}</div>}
       {error && <p className="machine-error" role="alert">{error}</p>}
     </div>
@@ -237,7 +292,12 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
       {job?.challenge?.kind === "host_key" && <><button className="btn" disabled={pending} onClick={() => void act({ action: "answer", challenge_id: job.challenge!.id, answer: "no" })}>{t("Reject")}</button><button className="btn btn-primary" disabled={pending} onClick={() => void act({ action: "answer", challenge_id: job.challenge!.id, answer: "yes" })}>{t("Trust fingerprint")}</button></>}
       {job?.phase === "approval" && <button className="btn btn-primary" disabled={pending} onClick={() => void act({ action: "approve" })}>{t("Install and connect")}</button>}
       {job?.phase === "failed" && job.action_required === "install_ovis" && accountAdd !== null && !installing && install?.phase !== "connected" && <button className="btn btn-primary" disabled={pending} onClick={() => void installOvis()}>{t("Install Ovis there")}</button>}
-      {job?.phase === "connected" ? <button className="btn btn-primary" onClick={() => onConnected(job.machine_id)}>{t("Open PC")}</button> : (!job || finished) && <button className={choosing && job?.found_ovis?.length ? "btn" : "btn btn-primary"} form="machine-connect-form" type="submit" disabled={pending}>{t(pending ? "Connecting…" : needsBridgeUpdate && ownUpdate ? (previewVersion(own?.latest_version) ? "Update this PC's Ovis to the preview and connect" : "Update this PC's Ovis and connect") : needsBridgeUpdate ? "Update bridge and connect" : job ? "Retry connection" : "Connect")}</button>}
+      {again?.step === "offered" && <button className="btn btn-primary" onClick={() => signInAndAdd(again.from)}>{t("Sign in again")}</button>}
+      {again?.step === "signing-in" && <>
+        {again.link !== null && <ExternalLink kind="sign-in" className="btn btn-primary" href={again.link}>{t("Open the sign-in page")}</ExternalLink>}
+        <button className="btn" onClick={cancelAgain}>{t("Cancel")}</button>
+      </>}
+      {job?.phase === "connected" ? <button className={again === null ? "btn btn-primary" : "btn"} onClick={() => onConnected(job.machine_id)}>{t("Open PC")}</button> : (!job || finished) && <button className={choosing && job?.found_ovis?.length ? "btn" : "btn btn-primary"} form="machine-connect-form" type="submit" disabled={pending}>{t(pending ? "Connecting…" : needsBridgeUpdate && ownUpdate ? (previewVersion(own?.latest_version) ? "Update this PC's Ovis to the preview and connect" : "Update this PC's Ovis and connect") : needsBridgeUpdate ? "Update bridge and connect" : job ? "Retry connection" : "Connect")}</button>}
     </footer>
   </dialog>;
 }
@@ -248,10 +308,11 @@ function addedWords(outcome: SshAddOutcome | "adding", t: ReturnType<typeof useT
     case "adding": return t("Adding it to your account…");
     case "added": return t("Added to your account.");
     case "already": return t("It is already in your account.");
+    case "not-online": return t("It is in your account, but its relay is not online yet, so your devices cannot open it. Run ovis status on that PC to see why.");
     case "other-account": return t("That PC is in another account.");
     case "number": return t("Add it with the number on the server's Ovis page.");
     case "sign-in-again": return t("Sign in again on this PC, then add it again.");
-    case "refused": return t("It was not added to your account. Try again.");
+    case "refused": case "disconnected": return t("It was not added to your account. Try again.");
   }
 }
 

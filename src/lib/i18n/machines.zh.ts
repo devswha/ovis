@@ -156,6 +156,7 @@ export const MACHINES_ZH: Record<string, string> = {
   "Adding it to your account…": "正在添加到你的账号…",
   "Added to your account.": "已添加到你的账号。",
   "It is already in your account.": "它已经在你的账号中。",
+  "It is in your account, but its relay is not online yet, so your devices cannot open it. Run ovis status on that PC to see why.": "它已在你的账号中，但其中继尚未上线，你的设备还无法打开它。请在那台电脑上运行 ovis status 查看原因。",
   "That PC is in another account.": "那台电脑在另一个账号中。",
   "Add it with the number on the server's Ovis page.": "请用服务器 Ovis 页面上显示的数字添加。",
   "Sign in again on this PC, then add it again.": "请在这台电脑上重新登录，然后再次添加。",

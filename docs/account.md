@@ -1134,13 +1134,26 @@ reach (its Tailscale login's PCs and its ssh config hosts); Add opens Add PC ove
 - **List and admit.** The window lists B (`PUT /v1/pcs/:id`) unless already listed, then admits it
   (`POST /v1/pcs/:id/admit`) with the same stored sign-in. The service applies its usual rules:
   fresh own sign-in, and two-step unless the account was never used. On `two_step_required` the
-  window says to add B with the number on its Ovis page.
+  window says to add B with the number on its Ovis page. On `session_not_fresh` or
+  `own_sign_in_required` it offers **Sign in again** in place, the page's own sign-in as the Settings
+  account section starts it; once signed in, the add goes on with exactly that sign-in over the same
+  connection, or, when that connection ended meanwhile, over a new one to the same PC.
 - **Take.** `POST /api/account/ssh-add` `{job_id, server_id}`, this PC's own window only. This PC
   sends B only its own binding's account (`account_add_take`) over the same connection, while the
   job's PC keeps the generation it had at inspect. B names itself for that account and takes the
   admission on its own proof (`POST /v1/pc/admission`), as one press does. B already in that
-  account answers as added; B in another account binds nothing. A listing or an admission alone
+  account answers as added (the window still sends it the take when inspect found it there, so the
+  relay step below runs); B in another account binds nothing. A listing or an admission alone
   never shows as added.
+- **Relay.** B is opened through its relay, which an Ovis installed over SSH never had turned on, so
+  once in the account B turns it on as its own Settings switch does (`RelayService.start`: saved as
+  on, and a device gate still open closes) when it is off, names the account again (a relay pass
+  refused while B was unlisted is asked for again), and waits up to 30 seconds for it to come online,
+  as `ovis add` does. Nothing else is turned on. The take answers `{ account, relay: { phase,
+  blocked } }`, and `POST /api/account/ssh-add` passes it on (`relay: null` from an Ovis from before
+  this). The window says added only with `phase: "online"`; otherwise it says B is in the account
+  but its relay is not online yet, and to run `ovis status` there. A take that binds nothing turns
+  nothing on.
 - **Complete.** B asks its admission `with_listing_id` and, once bound, records its add complete
   (`POST /v1/pc/complete` with a proof scoped to that account and listing). The receipt is kept on disk
   and sent again after each pull until the service has it, so the directory's `completed_at` shows B

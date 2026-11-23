@@ -5,7 +5,7 @@ import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join, posix } from "node:path";
 import { version } from "../package.json";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type SetupStepCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { accountAddRelay, BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddRelay, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type SetupStepCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -1296,9 +1296,10 @@ export class MachineManager {
   /**
    * The take of an account add (POST /api/account/ssh-add): tells the PC that job reached the account to join, `account`,
    * which the caller derives from this PC's own binding. Only while the job's connection stands, its PC has not
-   * reconnected since, and the PC it answered for is `serverId`. The PC takes the admission on its own proof.
+   * reconnected since, and the PC it answered for is `serverId`. The PC takes the admission on its own proof, turns its
+   * relay on and answers with it (`relay`: null where its Ovis did not say).
    */
-  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string }> {
+  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string; relay: AccountAddRelay | null }> {
     const job = this.jobs.get(jobId);
     const reached = job?.accountAdd?.reached;
     if (!job || !reached || job.public.phase !== "connected") throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.");
@@ -1312,7 +1313,7 @@ export class MachineManager {
     const answer = await reached.channel.take(account, serverId) as Record<string, unknown> | null;
     if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
     if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
-    return { account };
+    return { account, relay: accountAddRelay(answer.relay) };
   }
   /** a step by its code (its English beside it), or by words with no code: a PC's own notice */
   private step(job: JobState, step: SetupStepCode | string): void {

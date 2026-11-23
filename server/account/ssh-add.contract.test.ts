@@ -4,7 +4,10 @@
  * relay fields, and binds only on its own admission for that account.
  */
 import { afterEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { startBunRelay, type BunRelay } from "../../relay/bun.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { handleRequest } from "../dispatch.ts";
@@ -12,10 +15,21 @@ import { pairingPc, setUpFor, type Pc } from "./pairing.test-helpers.ts";
 import { askRecovery } from "./recovery.ts";
 
 const pcs: Pc[] = [];
-afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
+const relays: BunRelay[] = [];
+afterEach(async () => {
+  for (const pc of pcs.splice(0)) await pc.close();
+  for (const relay of relays.splice(0)) await relay.stop();
+});
 
-async function pc(): Promise<Pc> {
-  const made = await pairingPc({ server: { accountOpensAll: true } });
+/** A relay on this machine that a PC's relay comes online on: its port. */
+function localRelay(): number {
+  const relay = startBunRelay({ port: 0 });
+  relays.push(relay);
+  return relay.port;
+}
+
+async function pc(options: Parameters<typeof pairingPc>[0] = {}): Promise<Pc> {
+  const made = await pairingPc({ ...options, server: { accountOpensAll: true, ...options.server } });
   made.account.opensAll = true;
   pcs.push(made);
   return made;
@@ -31,6 +45,48 @@ async function admitAt(f: Pc, account: string): Promise<void> {
 }
 
 const sshAdd = (f: Pc, body: unknown) => f.local("/api/account/ssh-add", { method: "POST", headers: { "x-herdr-machine": "1" }, body });
+
+/** What the adding PC sends on that PC's recovery socket around the window's list and admit: inspect, then take for `account`. */
+async function inspectAndTake(b: Pc, account: string, admit = true): Promise<unknown> {
+  const { server_id } = await askRecovery(b.stateDir, { act: "account_add_inspect" }) as { server_id: string };
+  if (admit) await admitAt(b, account);
+  return await askRecovery(b.stateDir, { act: "account_add_take", account, server_id });
+}
+
+const relayPhase = async (f: Pc) => (await f.local("/api/relay")).body["phase"];
+
+// an Ovis installed over SSH never had its relay turned on (its Settings page was never opened): the add turns it on
+test.skipIf(process.platform === "win32")("a take turns that PC's relay on, and answers once it is online, saying so", async () => {
+  const b = await pc({ relayPort: localRelay(), startRelay: false });
+  expect(await relayPhase(b)).toBe("off");
+  expect(await inspectAndTake(b, "acct_1")).toEqual({ account: "acct_1", relay: { phase: "online", blocked: null } });
+  expect(b.devices.account()).toBe("acct_1");
+  expect(await relayPhase(b)).toBe("online");
+  // as its own Settings switch turns it on: it is on again after a restart
+  expect(JSON.parse(readFileSync(join(b.stateDir, "relay", "state.json"), "utf8"))).toMatchObject({ enabled: true });
+});
+
+test.skipIf(process.platform === "win32")("a relay not online within the wait: the take says where it stands, and that PC stays in the account", async () => {
+  // its relay is turned on, but its socket never opens
+  const b = await pc({ startRelay: false, server: { accountAddRelayMs: 300 } });
+  expect(await inspectAndTake(b, "acct_1")).toEqual({ account: "acct_1", relay: { phase: "connecting", blocked: null } });
+  expect(b.devices.account()).toBe("acct_1");
+});
+
+test.skipIf(process.platform === "win32")("a PC already in that account turns its relay on again when it is added once more", async () => {
+  const b = await pc({ relayPort: localRelay(), startRelay: false });
+  await inspectAndTake(b, "acct_1");
+  expect((await b.local("/api/relay/stop", { method: "POST", headers: { "x-herdr-update": "1" } })).status).toBe(200);
+  expect(await relayPhase(b)).toBe("off");
+  expect(await inspectAndTake(b, "acct_1", false)).toEqual({ account: "acct_1", relay: { phase: "online", blocked: null } });
+});
+
+test.skipIf(process.platform === "win32")("a take that binds nothing turns nothing on", async () => {
+  const b = await pc({ relayPort: localRelay(), startRelay: false });
+  expect(await inspectAndTake(b, "acct_1", false)).toMatchObject({ code: "no_admission" });
+  expect(b.devices.account()).toBeNull();
+  expect(await relayPhase(b)).toBe("off");
+});
 
 test.skipIf(process.platform === "win32")("the added PC tells its public relay fields only, its ID derived from its key", async () => {
   const b = await pc();

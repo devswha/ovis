@@ -156,6 +156,7 @@ export const MACHINES_JA: Record<string, string> = {
   "Adding it to your account…": "アカウントに追加しています…",
   "Added to your account.": "アカウントに追加しました。",
   "It is already in your account.": "すでにアカウントにあります。",
+  "It is in your account, but its relay is not online yet, so your devices cannot open it. Run ovis status on that PC to see why.": "アカウントには入っていますが、リレーがまだオンラインでないため、デバイスから開けません。その PC で ovis status を実行して理由を確認してください。",
   "That PC is in another account.": "その PC は別のアカウントにあります。",
   "Add it with the number on the server's Ovis page.": "サーバーの Ovis ページに表示された番号で追加してください。",
   "Sign in again on this PC, then add it again.": "この PC でもう一度サインインしてから、もう一度追加してください。",
