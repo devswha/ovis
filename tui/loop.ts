@@ -914,7 +914,7 @@ export function startLoop(options: LoopOptions): Loop {
       const emulator = view?.emulator ?? null;
       const snapshot = filled && emulator ? emulator.frameScreen() : null;
       const look: PanePicture | null = snapshot?.ok && snapshot.value && emulator ? {
-        rect: painted.rect, top: painted.view?.row ?? 0, grid: actual, emulator,
+        rect: painted.rect, top: painted.view?.row ?? 0, left: painted.view?.col ?? 0, grid: actual, emulator,
         altScreen: snapshot.value.altScreen, screen: snapshot.value.screens, history: snapshot.value.history, contentVersion: snapshot.value.contentVersion,
       } : null;
       if (look) nextDrawn.set(spot.pane, look);

@@ -430,22 +430,26 @@ it("a wrapped target cut below a taller viewer's visible clip has no hint", asyn
   }
 });
 
-it("a drag read with the key that left copy mode selects the cells copy mode last drew, not the clip a later frame draws", async () => {
-  const run = await start(`first\r\n${"padding\r\n".repeat(12)}last\r`);
+it.each([
+  // a terminal taller than its cells is drawn clipped round the program's cursor; copy mode at the oldest row draws its top
+  ["rows", [58, 20], `first\r\n${"padding\r\n".repeat(12)}last\r`, "g", "padding", "first"],
+  // a terminal wider than its cells is drawn from its first column; copy mode at a row's end draws that end
+  ["columns", [80, 10], `LEFT-${".".repeat(17)}RIGHT-${"-".repeat(45)}THE-END\r`, "$", "LEFT-", "RIGHT"],
+] as const)("a drag read with the key that left copy mode selects the cells copy mode last drew, not the clip a later frame draws: %s", async (_clipped, [cols, rows], paint, move, before, drawn) => {
+  const run = await start(paint);
   const rival = new Stage(run.core).rival();
   try {
     await run.keys("q");
-    await rival.attach("t1", 58, 20);
+    await rival.attach("t1", cols, rows);
     await run.advance(300);
     await run.live();
-    // a terminal taller than its cells is drawn clipped round the program's cursor; copy mode at the oldest row draws its top
-    expect(run.grid()[2]?.slice(1, 8)).toBe("padding");
-    await run.keys("ctrl+b,[,g");
+    expect(run.grid()[2]?.slice(1, 1 + before.length)).toBe(before);
+    await run.keys(`ctrl+b,[,${move}`);
     await run.advance(10);
-    expect(run.grid()[2]?.slice(1, 6)).toBe("first");
+    expect(run.grid()[2]?.slice(1, 6)).toBe(drawn);
     // no frame between the reads: the mouse lands on what the host still shows
     await run.keys("q,press@1:2,drag@5:2,release@5:2");
-    expect(clips(run)).toEqual(["first"]);
+    expect(clips(run)).toEqual([drawn]);
   } finally {
     await rival.detach();
     rival.close();
