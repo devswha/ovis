@@ -658,6 +658,22 @@ try {
           }
 
           {
+            // no device paired here, one the PC's account let in (site/demo/transport.ts `demo_devices=account`)
+            const { page, errors } = await open(context, server.port, "&demo_devices=account");
+            errorsOf.push(errors);
+            const joined = page.locator(ROW, { hasText: "Galaxy S25" });
+            await joined.waitFor();
+            assert.equal(await joined.locator(".devices-kind", { hasText: label("Through your account") }).count(), 1, "the row says the account let it in");
+            assert.equal(await page.getByText(label("No devices paired yet."), { exact: true }).count(), 0, "a list of such a device alone is not empty");
+            assert.equal(await page.locator(".devices-revoke-all").count(), 1, "Revoke all is offered with such a device alone");
+            assert.equal(await joined.getByRole("button", { name: label("Revoke {name}").replace("{name}", "Galaxy S25"), exact: true }).count(), 1, "the row has its own Revoke");
+            assert.deepEqual(await overflow(page), [], "the tag fits the row");
+            await reveal(joined);
+            await capture(page, `${prefix}-account`, about("account"));
+            await page.close();
+          }
+
+          {
             const { page, errors } = await open(context, server.port, "&demo_devices=slow");
             errorsOf.push(errors);
             const loading = page.locator(".devices-panel [role='status']", { hasText: label("Loading…") });
@@ -740,7 +756,7 @@ try {
           }
 
           for (const errors of errorsOf) assert.deepEqual(errors, [], "the page raised no error");
-          console.log(`PASS ${width}px ${theme} ${language}: caller warning, confirmation, refused write, watch, empty, loading, revocation, Check now in this PC's row and the pairing notice`);
+          console.log(`PASS ${width}px ${theme} ${language}: caller warning, confirmation, refused write, watch, empty, a device through the account, loading, revocation, Check now in this PC's row and the pairing notice`);
         } finally {
           await context.close();
         }

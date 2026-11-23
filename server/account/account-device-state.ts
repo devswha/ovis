@@ -68,6 +68,8 @@ export interface AccountRowPorts {
   admits(key: string, account: string): boolean;
   /** Puts the admission's notice in the unseen set of every older row, on disk; throws when it could not. */
   publish(entry: JournalEntry & { readonly accountNo: number }): void;
+  /** A new admission's row is on disk: told once per admission, never for a row read at a start, a republish or a sign-in. */
+  admitted?(row: AccountRow): void;
   now(): number;
   /**
    * Numbers one admission on this PC and returns its origin (PcAccountState.admit in pc-binding.ts, P12, P22): its

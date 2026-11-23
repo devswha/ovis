@@ -310,6 +310,9 @@ export class AccountDeviceStore implements AccountRowSource {
     });
     if (!standing.includes(row.id)) return false;
     this.publish(row);
+    try { this.ports.admitted?.(row); } catch (error) {
+      console.error(`[account] the admission of ${row.id} was not announced: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return true;
   }
 

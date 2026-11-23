@@ -25,6 +25,7 @@ import type { AccountOrder, LiftOrder } from "./account/account-order.ts";
 import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
+import { expiresAt } from "./account/row-expiry.ts";
 import { accountOpensAll, type DeviceNotice, type NoticeReplay } from "../shared/account-devices-api.ts";
 import { AccountRecordError, isDeviceSafetyRecord, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceLiftRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import { PromotedHolds } from "./account/promoted-holds.ts";
@@ -1757,6 +1758,33 @@ export class DeviceStore {
   }
 
   /**
+   * The account-joined rows GET /api/devices shows after `list`, which stays devices.json alone for its other callers.
+   * A row is shown while it is admitted here, in its hold or a wait too; one that can no longer sign in here is left
+   * out: expired (by its state or the clock), or stale (accountRowStale: removal evidence, a tombstone, a freeze, the
+   * lock, a failed deny, unreadable account state). A key devices.json holds is listed once, as its row there. Reading it
+   * changes no row: no hold ends, nothing expires.
+   */
+  listAccountJoined(currentId: string | null): PairedDevice[] {
+    const now = Date.now();
+    return (this.joinedRows?.rows() ?? [])
+      .filter((row) => row.state !== "expired" && expiresAt(row) > now && !this.accountRowStale(row)
+        && !this.devices.some((d) => d.id === row.id || d.relay_public_key === row.key))
+      .map((row) => this.joinedAsPaired(row, currentId));
+  }
+
+  /** An account-joined row as GET /api/devices and PATCH /api/devices/:id answer it: last seen by the day this PC keeps. */
+  private joinedAsPaired(row: AccountRow, currentId: string | null): PairedDevice {
+    return { id: row.id, label: row.label, role: "drive", created_at: row.confirmed_at,
+      last_seen_at: row.last_signin_day === null ? null : `${row.last_signin_day}T00:00:00.000Z`,
+      current: row.id === currentId, via_relay: true, through_account: true };
+  }
+
+  /** A list admission (AccountRowPorts.admitted) is an enrollment to this PC's windows: announced as a pairing is. */
+  announceListAdmission(row: AccountRow): void {
+    this.announce(this.joinedAsStored(row), Date.parse(row.confirmed_at), []);
+  }
+
+  /**
    * Hears of every new six-digit code, which replaces the one pending, and of a code ended (endPairing):
    * either way a typed relay code bound to the old one goes (server/relay/pair-code.ts).
    */
@@ -2846,7 +2874,7 @@ export class DeviceStore {
     if (!device) {
       if (patch.label === undefined || patch.role !== undefined) return null;
       const row = this.joinedRows?.rename(id, patch.label);
-      return row ? { id, label: row.label, role: "drive", created_at: row.confirmed_at, last_seen_at: null, current: false, via_relay: true } : null;
+      return row ? this.joinedAsPaired(row, null) : null;
     }
     const updated = { ...device, ...(patch.label === undefined ? {} : { label: patch.label }), ...(patch.role === undefined ? {} : { role: patch.role }) };
     const next = this.devices.map((d) => d === device ? updated : d);
@@ -3824,7 +3852,7 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     // Callers without PC-level Revoke authority get their verdict for each row (T19, T20).
     const callerId = access.level === "full" ? access.device?.id ?? null : null;
     const pendingNotMe = ownWindow && drive ? store.pendingNotMeRows() : null;
-    const devices = store.list(callerId, drive)
+    const devices = [...store.list(callerId, drive), ...store.listAccountJoined(callerId)]
       .map((device) => { const connection = live.get(device.id); return connection ? { ...device, connection } : device; })
       .map((device) => pendingNotMe?.has(device.id) ? { ...device, not_me_waiting: true as const } : device)
       .map((device) => orderedRevoke ? { ...device, remote_revoke: drive ? store.remoteRevoke(callerId, device.id) : "read_only" as const } : device);

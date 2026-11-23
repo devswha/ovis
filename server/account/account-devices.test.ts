@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore } from "../devices.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
-import { ACCOUNT_DEVICES_FILE, ACCOUNT_DEVICES_MAX, AccountDeviceStore, type AccountRowPorts, accountRowsFor } from "./account-devices.ts";
+import { ACCOUNT_DEVICES_FILE, ACCOUNT_DEVICES_MAX, AccountDeviceStore, EXPIRY_DAYS, type AccountRowPorts, accountRowsFor } from "./account-devices.ts";
 import { keyOf, listOrigins, snapshotList as list, nameOf, SERVER } from "./account-devices.test-helpers.ts";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -201,5 +201,51 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     new AccountDeviceStore(dir, SERVER, p).commitList(list(["k-1"]));
     new AccountDeviceStore(dir, "f".repeat(32), p);
     expect(fileKeys(dir)).toEqual([]);
+  });
+
+  test("a new admission is announced once to this PC's windows: not on a re-read, a republish, a sign-in or a start; a readmission is a new one", () => {
+    const dir = stateDir();
+    const announced: string[] = [];
+    const down = new Set<string>();
+    const { ports: p } = ports(dir, {
+      admitted: (row) => { announced.push(nameOf(row.key)); },
+      publish: (entry) => { if (down.has(nameOf(entry.key))) throw new Error("relay down"); },
+    });
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    store.commitList(list(["k-1"]));
+    expect(announced).toEqual(["k-1"]);
+    store.commitList(list(["k-1"]));
+    clock.now += JOIN_HOLD_MS;
+    const [one] = store.rows();
+    expect(store.access(one!.id)).toEqual({ ok: true });
+    expect(announced).toEqual(["k-1"]);
+
+    // a notice that could not go out is published again later; the admission was told when its row was written
+    down.add("k-2");
+    store.commitList(list(["k-1", "k-2"]));
+    expect(announced).toEqual(["k-1", "k-2"]);
+    down.clear();
+    store.commitList(list(["k-1", "k-2"]));
+    expect(store.rows().find((row) => nameOf(row.key) === "k-2")?.hold_until).not.toBeNull();
+    expect(announced).toEqual(["k-1", "k-2"]);
+
+    // a start reads the rows it had: none of them is news
+    const reopened = new AccountDeviceStore(dir, SERVER, p);
+    reopened.commitList(list(["k-1", "k-2"]));
+    expect(announced).toEqual(["k-1", "k-2"]);
+
+    // an expired row the device itself brings back is a new admission
+    clock.now += (EXPIRY_DAYS + 1) * 86_400_000;
+    reopened.expire();
+    expect(reopened.readmit(keyOf("k-1"), list(["k-1", "k-2"]))).toBe(true);
+    expect(announced).toEqual(["k-1", "k-2", "k-1"]);
+  });
+
+  test("an announcement that fails is only logged: the admission stands", () => {
+    const dir = stateDir();
+    const { ports: p } = ports(dir, { admitted: () => { throw new Error("no window"); } });
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    expect(store.commitList(list(["k-1"])).admitted).toEqual([keyOf("k-1")]);
+    expect(fileKeys(dir)).toEqual(["k-1"]);
   });
 });

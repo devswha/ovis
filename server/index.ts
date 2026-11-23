@@ -375,6 +375,7 @@ export function createServer(
       },
     },
     admitListedRows: write => devices.admitListedRows(write),
+    admitted: (row) => { devices.announceListAdmission(row); },
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
