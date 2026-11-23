@@ -177,18 +177,26 @@ it.each(["joined", "split"])("detach crosses a held overlay without waiting: %s"
   expect(bytes(run)).toEqual(["", ""]);
 }, 60_000);
 
-it("a program right grab survives refused overlay presses and keeps its queued physical coordinates", async () => {
+it.each(["after the menu's first paint", "before the menu's first paint"])("a program right grab survives a held menu and keeps its queued physical coordinates: %s", async (ordering) => {
   const { run, answer } = await heldRename(true);
   run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
-  await run.advance(FRAME_PASS_MS);
   const press = "\x1b[<2;6;4M";
-  run.type(click(run, "6 · pane"));
-  await run.settle();
+  if (ordering === "before the menu's first paint") {
+    // the drag and release are read against the grab, not against the overlay that paints next
+    run.type("\x1b[<34;32;6M\x1b[<2;33;6m");
+    await run.settle();
+    await run.advance(FRAME_PASS_MS);
+    expect(busy(run)).toEqual([]);
+  } else {
+    await run.advance(FRAME_PASS_MS);
+    run.type(click(run, "6 · pane"));
+    await run.settle();
+    expect(bytes(run)).toEqual([Buffer.from(press).toString("hex"), ""]);
+    run.type("\x1b[<34;32;6M\x1b[<2;33;6m");
+    await run.settle();
+    expect(busy(run)).toHaveLength(1);
+  }
   expect(bytes(run)).toEqual([Buffer.from(press).toString("hex"), ""]);
-  run.type("\x1b[<34;32;6M\x1b[<2;33;6m");
-  await run.settle();
-  expect(bytes(run)).toEqual([Buffer.from(press).toString("hex"), ""]);
-  expect(busy(run)).toHaveLength(1);
   answer();
   await run.advance(200);
   expect(run.loop.report().mode.overlays).toEqual(["menu"]);
@@ -197,4 +205,73 @@ it("a program right grab survives refused overlay presses and keeps its queued p
   run.type("\x1b[<2;34;6m");
   await run.settle();
   expect(bytes(run)).toEqual([gesture, ""]);
+}, 60_000);
+
+it.each(["joined", "split"])("pane input read before a menu opened replays to the pane, never through the menu: %s", async (ordering) => {
+  const { run, answer } = await heldRename();
+  if (ordering === "joined") run.type("6z");
+  else {
+    run.type("6");
+    run.type("z");
+  }
+  await run.settle();
+  // the menu opens before the write settles: 6 is a label in it now, but it was pane input when it was read
+  run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
+  await run.advance(FRAME_PASS_MS);
+  expect(run.loop.report().mode.overlays).toEqual(["menu"]);
+  expect(bytes(run)).toEqual(["", ""]);
+  answer();
+  await run.advance(200);
+  expect(bytes(run)).toEqual(["367a", ""]);
+  expect(run.loop.report().mode.overlays).toEqual(["menu"]);
+  expect(run.loop.model().focus.panes["t-main"]).toBe("t1");
+}, 60_000);
+
+it("a click on a menu row the accepted frame still shows is refused, and a program's right grab ends only at its own release", async () => {
+  const { run, answer } = await heldRename(true);
+  run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
+  await run.advance(FRAME_PASS_MS);
+  const row = click(run, "6 · pane");
+  // the model closes the menu; no frame since, so the screen still shows its rows
+  run.loop.dispatch({ type: "close_overlay", at: run.clock.current });
+  expect(run.loop.report().mode.overlays).toEqual([]);
+  run.type(row);
+  await run.settle();
+  const press = "\x1b[<2;6;4M";
+  expect(bytes(run)).toEqual([Buffer.from(press).toString("hex"), ""]);
+  expect(busy(run)).toHaveLength(1);
+  answer();
+  await run.advance(200);
+  expect(bytes(run)).toEqual([Buffer.from(press).toString("hex"), ""]);
+  run.type("\x1b[<2;34;6m");
+  await run.settle();
+  expect(bytes(run)).toEqual([Buffer.from(press + "\x1b[<2;9;4m").toString("hex"), ""]);
+}, 60_000);
+
+it("refused prefix chords take no place in what waits: ordinary text after a burst still arrives", async () => {
+  const { run, answer } = await heldRename();
+  run.loop.dispatch({ type: "keys", keys: { prefix: "~" }, at: run.clock.current });
+  for (let index = 0; index <= BEHIND_WRITE_EVENTS; index++) run.type("~R");
+  run.type("a");
+  await run.settle();
+  expect(run.loop.model().notices.map((notice) => notice.code)).toEqual(["layout_busy"]);
+  answer();
+  await run.advance(200);
+  expect(bytes(run)).toEqual(["61", ""]);
+  expect(run.loop.report().actions).not.toContain("reload_keys");
+}, 60_000);
+
+it("a prefix still pending when the hold ends stays armed for the next key", async () => {
+  const { run, answer } = await heldRename();
+  run.loop.dispatch({ type: "keys", keys: { prefix: "~" }, at: run.clock.current });
+  run.type("a~");
+  await run.settle();
+  answer();
+  await run.advance(200);
+  expect(bytes(run)).toEqual(["61", ""]);
+  expect(run.loop.model().armed).toBe(true);
+  run.type("q");
+  await run.advance(QUIT_BOUND_MS + 100);
+  expect(await run.loop.done).toMatchObject({ kind: "quit" });
+  expect(bytes(run)).toEqual(["61", ""]);
 }, 60_000);

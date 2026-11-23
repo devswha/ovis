@@ -316,8 +316,9 @@ export function startLoop(options: LoopOptions): Loop {
    * What the user typed, pasted or clicked while a layout write that one of their actions started is under way: it
    * waits behind that write, in order, and goes through once the write is done, so it meets the layout the write
    * leaves (the pane a close focuses, the pane a split follows), as a later read would. null when no write holds it.
-   * `ahead` is the state core as if what waits had gone through: to see a detach in it, which never waits, and a layout
-   * action, which is refused as busy when it is read, against the layout the user saw. `awaiting`: the write is done
+   * What waits is classified when read: pane input, and mouse reports bound to what they meet. A detach never waits,
+   * and any other action, overlay or mode input is refused when it is read. `armed`: the prefix state of what was read,
+   * kept apart so a refused chord takes no place in what waits. `awaiting`: the write is done
    * and the screen does not show what it did yet: the pane it made or moved (`follow`: what waits goes there once
    * focus follows it), or the panes a close ended still in the world (`gone`: what waits goes through once they left
    * and focus moved off them). It is refused if that is not so by `until`, never sent to the pane focused before.
@@ -325,8 +326,9 @@ export function startLoop(options: LoopOptions): Loop {
    * BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
    */
   let behindWrite: {
-    readonly events: (ModelEvent | { type: "held_mouse"; input: MouseInput; forward: boolean; matches: (scene: PointerScene) => boolean })[];
-    ahead: ModelState;
+    readonly events: HeldInput[];
+    /** the prefix state of what was read during the hold, kept apart from what waits */
+    armed: boolean;
     awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone } | { readonly kind: "zoom"; readonly read: AbortController }) & { readonly until: number } | null;
     bytes: number;
     full: boolean;
@@ -335,6 +337,8 @@ export function startLoop(options: LoopOptions): Loop {
   /** what waited behind a write is going through: a layout action in it was refused when it was read */
   let replaying = false;
   let busyReported = false;
+  type HeldInput = { type: "held_pane"; input: Extract<Effect, { type: "pane" }>["input"] }
+    | { type: "held_mouse"; input: MouseInput; continuation: boolean; matches: (scene: PointerScene) => boolean };
 
   /**
    * A user's input event: through the state core now, or behind the layout write under way. A detach among what would
@@ -349,73 +353,59 @@ export function startLoop(options: LoopOptions): Loop {
       dispatch(event);
       return;
     }
-    const blocked = state.overlays.length > 0 || state.mode.name !== "terminal" || state.menuDismissed;
-    if (event.type === "mouse" && !pointer.forwarding(event)) {
-      const hit = hits?.at(event.col, event.row);
-      if (blocked || (hit && "id" in hit && hit.id === "menu")) {
-        busy(state.overlays.at(-1)?.kind ?? (blocked ? state.mode.name : "menu"));
-        return;
-      }
+    // What waits is classified now: pane input, or a mouse report bound to what it meets. Overlay and mode input,
+    // refused chords and prefixes take no place in it; the prefix state is kept apart.
+    const pieces: HeldInput[] = [];
+    if (event.type === "mouse") {
+      const scene = pointerScene();
+      const continuation = pointer.continuation(event, scene);
+      if (continuation === null) {
+        const blocked = state.overlays.length > 0 || state.mode.name !== "terminal" || state.menuDismissed;
+        // the last accepted frame's overlay owns its cells even once the model closed it
+        const hit = hits?.at(event.col, event.row);
+        if (blocked || (hit && "part" in hit && (hit.part.startsWith("overlay:") || hit.id === "menu"))) {
+          busy(state.overlays.at(-1)?.kind ?? (blocked ? state.mode.name : "menu"));
+          return;
+        }
+        const matches = pointer.bind(event, scene);
+        const owner = overlayGeneration;
+        pieces.push({ type: "held_mouse", input: event, continuation: false,
+          matches: (now) => owner === overlayGeneration && paintedOverlay === state.overlays.at(-1) && matches(now) });
+      } else pieces.push({ type: "held_mouse", input: event, continuation: true, matches: continuation });
     }
-    // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order. What waits is
-    // what the read-ahead took in each step (a text run cut where it handed its rest back, as split reads give it), and
-    // a layout action refused here waits as `consumed`: its keys are taken, and never chose anything in another layout
-    const pieces: ModelEvent[] = [];
-    const units = [event];
+    // read the event the way the loop would, then each rest of a read it hands back, in order. The hold parser knows
+    // pane input, prefix chords and detach only: it never runs the overlay or mode ladder
+    const units: ModelEvent[] = [event];
     for (let next = units.shift(); next !== undefined; next = units.shift()) {
-      // The hold parser recognizes pane input and detach only. It never runs the overlay or mode ladder.
-      const before = { ...behindWrite.ahead, overlays: state.overlays, mode: state.mode, menuDismissed: state.menuDismissed, keymap: state.keymap };
+      const before = { ...state, armed: behindWrite.armed };
       const step = reduce(before, next, true);
-      behindWrite.ahead = step.state;
-      let rest = "";
-      const overlayInput = blocked && next.type !== "focus" && next.type !== "mouse";
-      let refused = overlayInput;
+      behindWrite.armed = step.state.armed;
+      for (const notice of step.state.notices) {
+        if (notice.id >= before.nextNotice) dispatch({ type: "notice", code: notice.code, data: notice.data, ...(notice.calm ? { calm: true } : {}), at: clock.now() });
+      }
       for (const effect of step.effects) {
         if (effect.type === "quit") {
           drop("detach", false);
           perform({ type: "quit" });
           return;
         }
-        if (effect.type === "input") {
-          units.push(effect.event);
-          if (effect.event.type === "text") rest = effect.event.text;
-        }
-        if (effect.type === "busy") {
-          busy(effect.action);
-          refused = true;
-        }
+        if (effect.type === "input") units.push(effect.event);
+        if (effect.type === "busy") busy(effect.action);
+        if (effect.type === "pane") pieces.push({ type: "held_pane", input: effect.input });
       }
-      if (overlayInput) {
-        busy(state.overlays.at(-1)?.kind ?? state.mode.name);
-        continue;
-      }
-      const taken = next.type === "text" ? next.text.slice(0, next.text.length - rest.length) : "";
-      if (!refused) {
-        pieces.push(next.type === "text" ? { ...next, text: taken } : next);
-        continue;
-      }
-      // the action was chosen by the last code point taken: what came before it in the run waits as typed
-      if (next.type === "text" && step.textAction && step.textAction.offset > 0) pieces.push({ ...next, text: next.text.slice(0, step.textAction.offset) });
-      pieces.push({ type: "consumed", at: next.at });
     }
+    // the host's focus is no pane input: the screen takes it now, after the hold's prefix state took it in order
+    if (event.type === "focus") dispatch(event);
     if (behindWrite.full) return;
     // the text a key typed (a kitty key reports it) costs its bytes too, as the same text read as text does
-    const bytes = pieces.reduce((sum, piece) => sum + (piece.type === "text" || piece.type === "paste" || piece.type === "key" ? Buffer.byteLength(piece.text ?? "") : 0), 0);
+    const bytes = pieces.reduce((sum, piece) => sum + (piece.type === "held_pane" ? Buffer.byteLength(piece.input.text ?? "") : 0), 0);
     if (behindWrite.events.length + pieces.length > BEHIND_WRITE_EVENTS || behindWrite.bytes + bytes > BEHIND_WRITE_BYTES) {
       // nothing more waits, so what goes through later keeps its order and no paste is cut; a detach still leaves above
       behindWrite.full = true;
       dispatch({ type: "notice", code: "input_dropped", data: { reason: "full" }, at: clock.now() });
       return;
     }
-    for (const piece of pieces) {
-      if (piece.type !== "mouse") behindWrite.events.push(piece);
-      else {
-        const matches = pointer.bind(piece, pointerScene());
-        const owner = overlayGeneration;
-        behindWrite.events.push({ type: "held_mouse", input: piece, forward: pointer.forwarding(piece),
-          matches: (scene) => owner === overlayGeneration && paintedOverlay === state.overlays.at(-1) && matches(scene) });
-      }
-    }
+    behindWrite.events.push(...pieces);
     behindWrite.bytes += bytes;
   }
 
@@ -433,7 +423,7 @@ export function startLoop(options: LoopOptions): Loop {
    */
   function holdUntil(writing: Promise<LayoutDone>): void {
     if (behindWrite === null) {
-      behindWrite = { events: [], ahead: state, awaiting: null, bytes: 0, full: false, ready: false };
+      behindWrite = { events: [], armed: state.armed, awaiting: null, bytes: 0, full: false, ready: false };
       busyReported = false;
     }
     const before = state.following;
@@ -478,22 +468,24 @@ export function startLoop(options: LoopOptions): Loop {
     owePass();
   }
 
-  /** Only pane input and consumed prefix markers waited; overlay and mode input never reaches replay. */
+  /** What waited goes through as it was classified when read; overlay and mode input never reaches replay. */
   function replay(): void {
     const waited = behindWrite?.events ?? [];
     const full = behindWrite?.full === true;
+    const armed = behindWrite?.armed === true;
     behindWrite = null;
     replaying = true;
     try {
       for (const event of waited) {
-        if (event.type === "held_mouse") {
-          if (event.forward) routeMouse(event.input, "screen", event.matches);
-          else dispatch(event.input, event.matches);
-        } else userInput(event);
+        if (event.type === "held_pane") {
+          // pane input when read: it reaches the pane the write left focused, never an overlay or a command
+          const pane = focused(state.world, state.focus).pane;
+          if (pane !== null) perform({ type: "pane", pane: pane.id, input: event.input });
+        } else if (event.continuation) routeMouse(event.input, "screen", event.matches);
+        else dispatch(event.input, event.matches);
       }
-      // what came after the queue filled went nowhere, a focus loss or the key after a prefix among it: a prefix the
-      // replay armed would take the next key typed as its own, so it returns to Idle
-      if (full) dispatch({ type: "consumed", at: clock.now() });
+      // what came after the queue filled went nowhere, possibly the key a prefix waited for: the prefix returns to Idle
+      dispatch({ type: "armed", armed: armed && !full, at: clock.now() });
     } finally {
       replaying = false;
     }

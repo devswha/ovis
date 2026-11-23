@@ -103,9 +103,19 @@ export class Pointer {
   private grabs = 0;
   private readonly identities = new WeakMap<object, symbol>();
 
-  /** Only continuations of a delivered program press can cross an overlay's hold boundary. */
-  forwarding(event: MouseInput): boolean {
-    return this.grab.kind === "forward" && (event.action === "motion" || event.action === "release") && event.button === this.grab.button;
+  /**
+   * A drag or release of the program grab under way, bound to that grab: its pane, attachment, screen and the cells its
+   * pane maps reports through. null for any other report. An overlay painted meanwhile changes none of them.
+   */
+  continuation(event: MouseInput, scene: PointerScene): ((now: PointerScene) => boolean) | null {
+    const grab = this.grab;
+    if (grab.kind !== "forward" || (event.action !== "motion" && event.action !== "release") || event.button !== grab.button) return null;
+    const mapping = (now: PointerScene) => {
+      const picture = now.painted(grab.pane);
+      return [picture?.rect, picture?.top, picture?.grid];
+    };
+    const cells = mapping(scene);
+    return (now) => this.grab === grab && this.pressedScreen(grab, now) !== null && isDeepStrictEqual(cells, mapping(now));
   }
 
   private identity(object: object): symbol {

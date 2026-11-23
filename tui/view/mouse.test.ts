@@ -735,7 +735,8 @@ describe("mouse on the whole screen", () => {
     expect(heard()).toEqual(queuedPress ? [] : [press]);
     answer();
     await run.advance(20);
-    const continuation = order === "unchanged" ? ["\x1b[<32;6;2M", "\x1b[<0;6;2m"] : order === "repaint after release" ? ["\x1b[<0;1;1m"] : [];
+    // output that leaves the grab's pane, attachment, screen and cells as they were changes nothing a program reads
+    const continuation = order === "unchanged" || order === "repaint after release" ? ["\x1b[<32;6;2M", "\x1b[<0;6;2m"] : [];
     expect(heard()).toEqual(queuedPress ? [] : [press, ...continuation]);
     expect(dataTo(run, "t2", from)).toEqual([]);
   }, TEST_MS);

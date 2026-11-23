@@ -85,11 +85,8 @@ export type ScreenEvent =
   | { readonly type: "choose"; readonly entry: string | null; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
   | { readonly type: "restore"; readonly core: string; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number }
-  /**
-   * Input taken without running what it chose (a layout action refused as busy when it was read) or that went nowhere
-   * (input dropped behind a write): an armed prefix returns to Idle. No overlay or mode is replayed.
-   */
-  | { readonly type: "consumed"; readonly at: number };
+  /** the prefix state the input read behind a layout write left once it went through: armed, or back to Idle */
+  | { readonly type: "armed"; readonly armed: boolean; readonly at: number };
 
 export type ModelEvent = InputEvent | ScreenEvent;
 
@@ -100,8 +97,6 @@ export interface Step {
   readonly state: ModelState;
   readonly effects: readonly Effect[];
   readonly levels: readonly Level[];
-  /** Where the character that handed its tail back began, in the read and in the input ladder. */
-  readonly textAction?: { readonly offset: number };
 }
 
 export function initialState(keys: unknown): ModelState {
@@ -116,7 +111,6 @@ interface Acc { s: ModelState; readonly effects: Effect[]; readonly levels: Leve
 
 export function reduce(state: ModelState, event: ModelEvent, holding = false): Step {
   const acc: Acc = { s: state, effects: [], levels: [], holding };
-  let textAction: Step["textAction"];
   switch (event.type) {
     case "reply":
       acc.levels.push(0);
@@ -150,7 +144,7 @@ export function reduce(state: ModelState, event: ModelEvent, holding = false): S
       }
       break;
     case "text":
-      textAction = ladderText(acc, event);
+      ladderText(acc, event);
       break;
     case "mouse":
       mouse(acc, event);
@@ -198,16 +192,16 @@ export function reduce(state: ModelState, event: ModelEvent, holding = false): S
       restore(acc, event.core, event.at);
       break;
     }
-    case "consumed":
-      disarm(acc);
+    case "armed":
+      if (event.armed) arm(acc);
+      else disarm(acc);
       break;
     default:
       // an event of a kind the model does not know changes nothing
       break;
   }
   if (acc.s.world !== state.world || acc.s.focus !== state.focus) refreshMenus(acc);
-  return { state: acc.s, effects: acc.effects, levels: acc.levels,
-    ...(textAction ? { textAction } : {}) };
+  return { state: acc.s, effects: acc.effects, levels: acc.levels };
 }
 
 /** Commit the key map of the frame the host took. Until the first menu frame, keys use the list at open. */
@@ -308,7 +302,7 @@ function prefixIndex(text: string, keymap: Keymap): number {
 }
 
 /** A text run down the ladder: whole to the pane where nothing above takes a code point, else one code point at a time. */
-function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
+function ladderText(acc: Acc, event: TextInput): void {
   let rest = event.text;
   while (rest.length > 0) {
     const s = acc.s;
@@ -327,7 +321,7 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
       toOverlay(acc, { kind: "text", event: { type: "text", text: first, at: event.at } });
       // Ignored characters stay in this iteration. Only closing the menu or an external effect hands a tail back.
       const closedMenu = s.overlays.at(-1)?.kind === "menu" && acc.s.overlays.length < s.overlays.length;
-      if (handBack(acc, from, after, event.at, closedMenu)) return { offset: event.text.length - rest.length };
+      if (handBack(acc, from, after, event.at, closedMenu)) return;
       rest = after;
       continue;
     }
@@ -336,7 +330,7 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
       const bound = boundIn(s.keymap.modeKeys[s.mode.name], charChords(first, false));
       const from = acc.effects.length;
       if (bound !== undefined) runAction(acc, bound.action, bound.index, event.at);
-      if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length };
+      if (handBack(acc, from, after, event.at)) return;
       rest = after;
       continue;
     }
@@ -350,7 +344,7 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
         const from = acc.effects.length;
         if (bound !== undefined) runAction(acc, bound.action, bound.index, event.at);
         else if (HANGUL.test(first)) notice(acc, "ime_prefix", {}, event.at);
-        if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length };
+        if (handBack(acc, from, after, event.at)) return;
       }
       rest = after;
       continue;
