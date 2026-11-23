@@ -10,6 +10,14 @@ import { DISPLAY_QUERY, emptyProbe, PROBE_QUERY, ReplyFilter, withReply } from "
  */
 const ENTER = "\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[>1u";
 export const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+/** Colour-scheme notifications (2031), the one mode the screen turns on later, through `watchDisplay`. */
+const WATCH_DISPLAY = "\x1b[?2031h";
+const UNWATCH_DISPLAY = "\x1b[?2031l";
+/**
+ * What undoes every mode the screen can turn on, whether it got that far or not: for a process that gives the terminal
+ * back after the screen died without doing so (the launcher), which cannot know how far the screen got.
+ */
+export const LEAVE_ALL = `${UNWATCH_DISPLAY}${LEAVE}`;
 /**
  * Sent again after a resize and a focus-in, as some hosts drop them. The kitty flags are set on the
  * entry already pushed (`=1;1`), so the stack still holds one entry of ours.
@@ -198,7 +206,7 @@ export function guardedHost(port: TerminalPort): Host {
     // a write error that is not gone is thrown once the terminal is given back, never before
     let failed: { error: unknown } | null = null;
     if (modesOn) {
-      try { send(encoder.encode(watchingDisplay ? `\x1b[?2031l${LEAVE}` : LEAVE)); } catch (error) { failed = { error }; }
+      try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch (error) { failed = { error }; }
     }
     modesOn = false;
     if (rawOn) {
@@ -220,7 +228,7 @@ export function guardedHost(port: TerminalPort): Host {
     if (state !== "entered" || ending || suspended) return;
     port.stopReading();
     if (modesOn) {
-      try { send(encoder.encode(watchingDisplay ? `\x1b[?2031l${LEAVE}` : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
+      try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
     }
     modesOn = false;
     if (rawOn) {
@@ -236,7 +244,7 @@ export function guardedHost(port: TerminalPort): Host {
     port.setRaw(true);
     rawOn = true;
     modesOn = true;
-    send(encoder.encode(watchingDisplay ? `${ENTER}\x1b[?2031h` : ENTER));
+    send(encoder.encode(watchingDisplay ? `${ENTER}${WATCH_DISPLAY}` : ENTER));
     port.startReading(take);
     const size = port.size();
     for (const listener of resizes) listener(size);
@@ -320,7 +328,7 @@ export function guardedHost(port: TerminalPort): Host {
     watchDisplay() {
       if (state !== "entered" || watchingDisplay) return;
       watchingDisplay = true;
-      send(encoder.encode("\x1b[?2031h"));
+      send(encoder.encode(WATCH_DISPLAY));
     },
 
     refreshDisplay() {
