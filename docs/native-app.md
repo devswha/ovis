@@ -288,9 +288,11 @@ What is there:
   the luminance Android draws the line at (`Bars` in `app/ios/OvisHomeCore`, `swift test` there). A
   page with no readable colour (anything but `#rrggbb`) keeps the app's own light icons, the
   `SystemBars` style of `capacitor.config.json`. While a native cover is over the page, the cover's
-  own colour decides. Before this the icons were light on every PC and on the hosted app whatever
-  the theme, so white on white in a light one; only the app's own pages set them, through
-  `SystemBars`.
+  own colour decides. A new document starts with nothing said: until it has read its colour, the
+  web view's own background colour decides, which is what shows before a page paints; a load
+  that has not replaced the page yet changes nothing. Before this the icons were light on every PC
+  and on the hosted app whatever the theme, so white on white in a light one; only the app's own
+  pages set them, through `SystemBars`.
 - In the client, `src/lib/nativeApp.ts` notices the app through `window.Capacitor`, as the app
   injects it; the browser build carries no Capacitor code. Inside the app:
   - Settings → Phone & devices has a Change PC row, and so does the pairing screen (a PC that

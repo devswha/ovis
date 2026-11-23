@@ -712,29 +712,41 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         followPageColor()
     }
 
-    /// What the page last said its colour is, as the status bar icons that stand out on it; nil until a page said.
+    /// What the document on show said its colour is, as the status bar icons that stand out on it; nil until it
+    /// said: a new document starts with nothing (Bars.page).
     private var pageIcons: Bars.Icons?
 
-    /// Run in every main-frame page as it starts: tells the app the page's `<meta name="theme-color">`, once the
-    /// document is read and again whenever it changes (a theme picked in Settings, the phone going dark), as
-    /// MainActivity's BAR_COLOR_SCRIPT does on Android. A page with none says so, and gets the app's own icons.
+    /// Run in every main-frame document as it starts: tells the app the page's `<meta name="theme-color">`, once the
+    /// document is read and again whenever it changes (a theme picked in Settings, the phone going dark, a meta
+    /// that becomes or stops being the theme-color), as MainActivity's BAR_COLOR_SCRIPT does on Android. A page with
+    /// none says so, and gets the app's own icons. Before any of that it says a new document started (null): the
+    /// colour of the document before it is not this one's, while a load that has not replaced the page yet says
+    /// nothing and the page still on show keeps its icons. A document that comes back from the page cache does
+    /// not start again, so it says its colour again.
     private static let barsScript = """
         (() => {
           if (window !== window.top) return;
+          const bars = window.webkit.messageHandlers.ovisBars;
+          bars.postMessage(null);
           let last = null;
           const send = () => {
             const meta = document.querySelector('meta[name="theme-color"]');
             const color = meta ? meta.content : '';
             if (color === last) return;
             last = color;
-            window.webkit.messageHandlers.ovisBars.postMessage(color);
+            bars.postMessage(color);
           };
           const follow = () => {
             send();
-            new MutationObserver(send).observe(document.head ?? document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['content'] });
+            new MutationObserver(send).observe(document.head ?? document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['content', 'name'] });
           };
           if (document.readyState === 'loading') addEventListener('DOMContentLoaded', follow, { once: true });
           else follow();
+          addEventListener('pageshow', (event) => {
+            if (!event.persisted) return;
+            last = null;
+            send();
+          });
         })();
         """
 
@@ -745,17 +757,20 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     private func followPageColor() {
         guard let controller = webView?.configuration.userContentController else { return }
         controller.addUserScript(WKUserScript(source: Self.barsScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        controller.add(PageColorMessages { [weak self] color in
-            self?.pageIcons = Bars.icons(themeColor: color)
-            self?.applyBars()
+        controller.add(PageColorMessages { [weak self] body in
+            guard let self else { return }
+            self.pageIcons = Bars.page(self.pageIcons, said: body)
+            self.applyBars()
         }, name: "ovisBars")
     }
 
     /// Sets the icons for what is on screen now: a cover over the page by its own colour, as the page under it does
-    /// not show, else the page's (Bars.icons(cover:page:)).
+    /// not show, else the page's, else, for a document that has not said its colour yet, the web view's own, which
+    /// is what shows until a page paints (Bars.icons(cover:page:ground:)).
     private func applyBars() {
         let cover = openingView.flatMap { Self.icons(on: $0.backgroundColor, in: traitCollection) }
-        let style: UIStatusBarStyle = Bars.icons(cover: cover, page: pageIcons) == .dark ? .darkContent : .lightContent
+        let ground = Self.icons(on: webView?.backgroundColor, in: traitCollection)
+        let style: UIStatusBarStyle = Bars.icons(cover: cover, page: pageIcons, ground: ground) == .dark ? .darkContent : .lightContent
         if statusBarStyle != style { setStatusBarStyle(style) }
     }
 
@@ -766,7 +781,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         return Bars.icons(red: Double(red), green: Double(green), blue: Double(blue))
     }
 
-    /// The phone went light or dark: a cover whose colour follows it changes under the icons.
+    /// The phone went light or dark: a cover or a web view whose colour follows it changes under the icons.
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         applyBars()
@@ -1146,19 +1161,20 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     }
 }
 
-/// Takes what a page says its colour is (HerdrBridgeViewController.barsScript), from the main frame alone: a frame
-/// inside the page does not colour the screen. Held by the web view's content controller, so it holds no view
-/// controller itself.
+/// Takes what a page says of its colour (HerdrBridgeViewController.barsScript), from the main frame alone: a frame
+/// inside the page does not colour the screen. What it said is read by Bars.page, which drops nothing a page can
+/// write as its colour: an unreadable one is the app's own icons, not the icons of the colour before it. Held by
+/// the web view's content controller, so it holds no view controller itself.
 private final class PageColorMessages: NSObject, WKScriptMessageHandler {
-    private let said: (String) -> Void
+    private let said: (Any) -> Void
 
-    init(_ said: @escaping (String) -> Void) {
+    init(_ said: @escaping (Any) -> Void) {
         self.said = said
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let color = message.body as? String, color.utf8.count <= 64 else { return }
-        said(color)
+        guard message.frameInfo.isMainFrame else { return }
+        said(message.body)
     }
 }
 
