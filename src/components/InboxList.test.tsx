@@ -332,7 +332,7 @@ describe("InboxList", () => {
     const [menu] = menus(root);
     expect(menu!.props.choice).toBe(true);
     expect(menu!.props.title).toBe("Filter by state");
-    expect(menu!.props.items.map((entry: { id: string; label: string; checked: boolean }) => `${entry.id}:${entry.label}:${entry.checked}`)).toEqual(["all:All:true", "blocked:Needs you:false", "working:Working:false", "done:Done:false"]);
+    expect(menu!.props.items.map((entry: { id: string; label: string; checked: boolean }) => `${entry.id}:${entry.label}:${entry.checked}`)).toEqual(["all:All:true", "blocked:Needs you:false", "working:Working:false", "done:Done:false", "hidden:Hidden:false"]);
     await act(async () => { menu!.props.items[2].run(); });
     expect(asked).toEqual(["working"]);
 

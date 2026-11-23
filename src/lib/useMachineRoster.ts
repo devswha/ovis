@@ -4,6 +4,7 @@ import type { ServerMessage } from "../../shared/protocol.ts";
 import { ApiError, authenticate, fetchMachines, observePaneSessions, paneSessionEvents, paneSessionsMoving, verifySourceBoot } from "./api.ts";
 import { passingFolder, recentDirectories } from "./recent-directories.ts";
 import { keepMachineEvents } from "./machineEventStream.ts";
+import { useHiddenLens } from "../fork/hidden/hiddenAgents.ts";
 import { MachineSessionRegistry } from "./machineSession.ts";
 import { receiveSeen } from "./seenFinishes.ts";
 import { withPairedNotice } from "./pairedNotices.ts";
@@ -69,9 +70,11 @@ const REFETCH_DEBOUNCE_MS = 500;
 export function useRosterState() {
   const [machineSessions] = useState(() => new MachineSessionRegistry());
   useEffect(() => () => machineSessions.closeAll(), [machineSessions]);
-  const [machines, setMachines] = useState<Machine[]>([]);
+  const [allMachines, setMachines] = useState<Machine[]>([]);
+  // the one place hidden agents leave the roster the app reads (fork/hidden/hiddenAgents.ts)
+  const machines = useHiddenLens(allMachines);
   const [machineRosterLoaded, setMachineRosterLoaded] = useState(false);
-  return { machineSessions, machines, setMachines, machineRosterLoaded, setMachineRosterLoaded };
+  return { machineSessions, machines, allMachines, setMachines, machineRosterLoaded, setMachineRosterLoaded };
 }
 
 /**

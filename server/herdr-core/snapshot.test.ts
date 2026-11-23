@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { HIDDEN_WORKSPACE_ID } from "../../shared/fork/pane.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { ProgramPlatform } from "../agent-identity.ts";
 import { agentOf, buildSnapshot, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID, terminalPlatform } from "./snapshot.ts";
@@ -12,7 +13,7 @@ function block(address: string) {
 }
 
 describe("buildSnapshot", () => {
-  it("leaves out a terminal labeled ovis.view=work, placed by the app or not, with its agent and counts", () => {
+  it("leaves out a terminal labeled ovis.view=work, placed by the app or not, with its agent and counts, and marks ovis.view=hidden", () => {
     const layout = { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("coding"), block("assistant")] } }] }] };
     const terminals = [
       terminal("coding", { status: { app: "claude-code", state: "blocked" } }),
@@ -21,6 +22,8 @@ describe("buildSnapshot", () => {
       // only the exact value hides one
       terminal("capital", { labels: { "ovis.view": "Work" } }),
       terminal("empty", { labels: { "ovis.view": "" } }),
+      // ovis.view=hidden is kept, marked, and placed in a workspace of its own for the clients to take out of every list
+      terminal("quiet", { status: { app: "claude-code", state: "blocked" }, labels: { "ovis.view": "hidden" } }),
     ];
     for (const snapshot of [buildSnapshot(terminals, layout, "0.1.17"), buildSnapshot(terminals, null, "0.1.17")]) {
       const shown = snapshot.panes.map((pane) => pane.pane_id);
@@ -30,6 +33,8 @@ describe("buildSnapshot", () => {
       expect(shown).toContain("capital");
       expect(shown).toContain("empty");
       expect(snapshot.agents.map((agent) => agent.pane_id)).not.toContain("assistant");
+      expect((snapshot.panes as HerdrPane[]).filter((pane) => pane.ovis_hidden).map((pane) => [pane.pane_id, pane.workspace_id])).toEqual([["quiet", HIDDEN_WORKSPACE_ID]]);
+      expect(snapshot.agents.map((agent) => agent.pane_id)).toContain("quiet");
       expect(snapshot.workspaces.reduce((sum, workspace) => sum + workspace.pane_count, 0)).toBe(snapshot.panes.length);
     }
   });

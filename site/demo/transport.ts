@@ -2814,3 +2814,11 @@ if ("serviceWorker" in navigator) {
 Object.defineProperty(globalThis, "PushManager", { value: undefined, configurable: true });
 
 declare const __APP_VERSION__: string;
+
+// fork: one hidden agent, like an hc terminal labelled ovis.view=hidden: only the inbox's Hidden filter lists it (src/fork/hidden/hiddenAgents.ts)
+const hiddenDemo = createDemoWorkspace("/home/demo/assistant", "assistant", null);
+const hiddenPane = snapshot().panes.find((pane) => pane.pane_id === hiddenDemo.pane_id)!;
+Object.assign(hiddenPane, { label: "Personal assistant", agent: "claude", agent_status: "idle", ovis_hidden: true });
+addAgent(hiddenPane);
+keyOfPane.set(hiddenPane.pane_id, hiddenPane.pane_id);
+chats.set(hiddenPane.pane_id, { turns: [], metadata: { model: "claude-opus-5-5", reasoning_effort: "medium" } });

@@ -11,6 +11,7 @@ import { lastViewedPane } from "./lastViewedPane.ts";
 import type { PaneView } from "./actions.ts";
 import type { Translate } from "./i18n.ts";
 import { storedSelection, storeSelection } from "./useSplitView.ts";
+import { holdSelected } from "../fork/hidden/hiddenAgents.ts";
 
 type SelectionHint = { machine: string; pane: string; workspace: string } | null;
 /** `keepNote`: a selection the user did not make (a link, a tapped notification, a pane moved, the selection restored on load) leaves the header's note to the landings (the service worker names a tapped pane twice, before and after focus, and the second must not take the first's note away) */
@@ -134,6 +135,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   selectedPaneRef.current = selectedPaneId;
   const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView, keepNote = false) => {
     const samePane = machineId === selectedMachineRef.current && paneId === selectedPaneRef.current;
+    holdSelected(machineId, paneId);
     picks.current += 1;
     onPickRef.current?.(paneId);
     // Only another PC mounts a new terminal (and socket), which reports its own state. A pane

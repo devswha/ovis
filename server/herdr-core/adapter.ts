@@ -12,7 +12,8 @@ import { jobProcessesBelow } from "../foreground-job.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, leaves, neighbour, OVIS_LAYOUT_DOC, type OvisLayout, type PaneDirection, resizeLeaf, setRatio, splitLeaf, swapLeaves, type TabLayout } from "./layout-doc.ts";
 import { paneSession, titleStatus } from "../agent-identity.ts";
-import { hiddenTerminal } from "../fork/core-terminals.ts";
+import { backgroundTerminal } from "../fork/core-terminals.ts";
+import { HIDDEN_WORKSPACE_ID } from "../../shared/fork/pane.ts";
 import { agentInfoOf, agentOf, agentOfStatus, agyPlanReview, type CoreHost, coreHost, agentStatusOf, foregroundOf, type HcForeground, buildSnapshot, type FirstTurn, keptLayout, opencodeRecords, type SessionOf, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, runsCommandString, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, type RepositoryReads, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
 import type { AgentStatus, SessionSnapshot, WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
@@ -586,7 +587,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     // its worktree.* calls are refused here.
     const asked = new Map<SessionSnapshot["workspaces"][number], string>();
     for (const workspace of shown.workspaces) {
-      if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
+      if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID || workspace.workspace_id === HIDDEN_WORKSPACE_ID) continue;
       const folders = shown.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => started.get(pane.pane_id));
       const kept = pinned.get(workspace.workspace_id)?.folder;
       const folder = kept !== undefined && folders.includes(kept) ? kept : folders[0];
@@ -856,7 +857,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   const openWorkspaces = async (shown: SessionSnapshot, repository: Repository): Promise<Map<string, string>> => {
     const open = new Map<string, string>();
     for (const workspace of shown.workspaces) {
-      if (workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
+      if (workspace.workspace_id === OTHER_WORKSPACE_ID || workspace.workspace_id === HIDDEN_WORKSPACE_ID) continue;
       const facts = workspace.worktree;
       const folder = facts ? (facts.repo_key === repository.repo_key ? facts.checkout_path : null) : homesOf.get(shown)?.get(workspace.workspace_id) ?? shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
       if (!folder) continue;
@@ -1547,11 +1548,11 @@ function coreModel({ firstTurn, host, observeSeen, noteSession }: CoreModelOptio
   };
   /** what each terminal's last report said beyond its state (kind, message, progress), which only a snapshot carries */
   const reported = new Map<string, string>();
-  /** a hidden terminal is in no snapshot, so no event about it is told either (a terminal removed or labelled hidden by this very event counts too) */
-  const hidden = (paneId: string | undefined): boolean => paneId !== undefined && hiddenTerminal(known.get(paneId)?.labels);
+  /** a background terminal (ovis.view=work) is in no snapshot, so no event about it is told either (a terminal removed or labelled so by this very event counts too) */
+  const background = (paneId: string | undefined): boolean => paneId !== undefined && backgroundTerminal(known.get(paneId)?.labels);
   const event = (next: HcEvent): CoreChange[] => {
-    const hiddenBefore = hidden(next.terminal);
-    return eventChanges(next).filter((change) => !("terminal" in change && change.terminal && (hiddenBefore || hidden(change.terminal))));
+    const backgroundBefore = background(next.terminal);
+    return eventChanges(next).filter((change) => !("terminal" in change && change.terminal && (backgroundBefore || background(change.terminal))));
   };
   const eventChanges = (event: HcEvent): CoreChange[] => {
     // another machine's terminal is none of this PC's panes (snapshot.ts `onOtherMachine`)

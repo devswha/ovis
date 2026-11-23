@@ -1,10 +1,11 @@
 import { tally, usageCounters } from "../lib/usageCounters.ts";
 import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
-import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
+import { Ellipsis, EyeOff, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
 import { ForkPlaceOpen } from "../fork/inbox/Places.tsx";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
+import { hiddenWords, inboxMachines } from "../fork/hidden/hiddenAgents.ts";
 import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxSinceAt, inboxStatus, inboxWords, plainWords, type InboxFilter } from "../lib/agentInbox.ts";
 import { agentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stateSince } from "../lib/agentStateSince.ts";
@@ -44,6 +45,8 @@ export interface InboxMore {
 export interface InboxListProps {
   ref?: Ref<InboxListHandle>;
   machines: Machine[];
+  /** every PC with its hidden agents too, for the Hidden filter (fork/hidden/hiddenAgents.ts) */
+  allMachines?: Machine[];
   activity: SidebarActivity;
   /** this device only watches: it is offered no New workspace */
   watching: boolean;
@@ -85,7 +88,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
   );
 }
 
-export function InboxList({ ref, machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, note, connection = null, failure = null }: InboxListProps) {
+export function InboxList({ ref, machines: roster, allMachines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, note, connection = null, failure = null }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -95,6 +98,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   const { settings, resolvedLanguage } = useSettings();
   const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
   const { agentGroupSort: sort, sidebarRows, statusIndicators } = settings;
+  const machines = useMemo(() => inboxMachines(filter, roster, allMachines ?? roster), [filter, roster, allMachines]);
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
   const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
@@ -220,6 +224,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     if (at === null || at === undefined || at === document.body) root.current?.focus({ preventScroll: true });
   }, [failing]);
   const empty = emptyWhy === "loading" ? [t("Loading…")]
+    : emptyWhy === "none" && filter === "hidden" ? [hiddenWords(t).none]
     : emptyWhy === "none" ? (offerNew ? [t("Nothing is running yet"), t("Use + to start a workspace")] : [t("Nothing is running yet")])
     : emptyWhy === "no-match" ? [t("No results")] : null;
 
@@ -261,7 +266,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
       <Plus aria-hidden="true" />
     </button>
   );
-  const filterWord = (value: InboxFilter): string => value === "all" ? t("All") : inboxStateWord(value, t);
+  const filterWord = (value: InboxFilter): string => value === "all" ? t("All") : value === "hidden" ? hiddenWords(t).filter : inboxStateWord(value, t);
   const filterLabel = filter === "all" ? t("Filter by state") : t("Filter by state: {state}", { state: filterWord(filter) });
   const filterButton = (
     <button type="button" className={`icon-button inbox-round inbox-filter-toggle${filter === "all" ? "" : " is-on"}`} aria-label={filterLabel} title={filterLabel}
@@ -362,8 +367,9 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
         items={connected.map((machine) => ({ id: machine.id, label: machine.name, icon: Monitor, run: () => { tally(() => usageCounters.count("new_workspace_by_button")); onNew(machine.id); } }))} />}
       {filterMenu !== null && <RowMenu anchor={filterMenu} title={t("Filter by state")} choice onClose={() => setFilterMenu(null)}
         items={INBOX_FILTERS.map((value) => ({
-          id: value, label: filterWord(value), icon: ListFilter, checked: filter === value, run: () => onFilter(value),
-          ...(value === "all" ? {} : { glyph: <span className="inbox-filter-mark" aria-hidden="true"><StatusBadge compact status={value} label={filterWord(value)} /></span> }),
+          id: value, label: filterWord(value), icon: value === "hidden" ? EyeOff : ListFilter, checked: filter === value, run: () => onFilter(value),
+          ...(value === "hidden" ? { divider: true } : {}),
+          ...(value === "all" || value === "hidden" ? {} : { glyph: <span className="inbox-filter-mark" aria-hidden="true"><StatusBadge compact status={value} label={filterWord(value)} /></span> }),
         }))} />}
     </section>
   );

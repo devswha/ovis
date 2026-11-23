@@ -1,6 +1,7 @@
 import type { AgentInfo, AgentSessionInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
 import { HC_OTHER_WORKSPACE_ID } from "../../shared/machines.ts";
-import { forkPaneFields, hiddenTerminal } from "../fork/core-terminals.ts";
+import { HIDDEN_WORKSPACE_ID } from "../../shared/fork/pane.ts";
+import { backgroundTerminal, forkPaneFields, hiddenTerminal } from "../fork/core-terminals.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
@@ -247,8 +248,8 @@ function whereOf(terminal: HcTerminal): string[] | undefined {
 // the Herdr app labels its terminals `where`: `<space> / <tab>`
 function groups(terminals: readonly HcTerminal[], layout: unknown, host: CoreHost = coreHost(false)): Group[] {
   const own = layout === null || layout === undefined;
-  // the one place a hidden terminal (hiddenTerminal) leaves: every list, count and alert reads this projection
-  const live = new Map(terminals.filter((terminal) => terminal.state === "live" && !onOtherMachine(terminal.address) && !hiddenTerminal(terminal.labels)).map((terminal) => [terminal.address, terminal]));
+  // the one place a background terminal (backgroundTerminal) leaves: every list, count and alert reads this projection; a hidden one (hiddenTerminal) is placed apart (hiddenGroup)
+  const live = new Map(terminals.filter((terminal) => terminal.state === "live" && !onOtherMachine(terminal.address) && !backgroundTerminal(terminal.labels) && !hiddenTerminal(terminal.labels)).map((terminal) => [terminal.address, terminal]));
   const placed = new Set<string>();
   const take = (address: string): HcTerminal | null => {
     const terminal = live.get(address);
@@ -372,6 +373,12 @@ function groups(terminals: readonly HcTerminal[], layout: unknown, host: CoreHos
   return shown;
 }
 
+/** Every hidden terminal on this PC in one last workspace, a tab each, so none rolls up into a workspace the reader sees; the clients take it out again (shared/fork/pane.ts `withoutHidden`). */
+function hiddenGroup(terminals: readonly HcTerminal[]): Group[] {
+  const hidden = terminals.filter((terminal) => terminal.state === "live" && !onOtherMachine(terminal.address) && hiddenTerminal(terminal.labels));
+  return hidden.length === 0 ? [] : [{ id: HIDDEN_WORKSPACE_ID, label: "Hidden", tabs: hidden.map((terminal) => ({ id: `${HIDDEN_WORKSPACE_ID}:${terminal.address}`, label: terminal.name || terminal.address, terminals: [terminal], root: null, kept: false })) }];
+}
+
 export type FirstTurn = (terminal: Pick<HcTerminal, "address" | "turn">) => number;
 
 export function reportedFacts(status: HcStatus | null | undefined): Pick<HerdrPane, "agent_kind" | "agent_message" | "agent_progress"> {
@@ -477,7 +484,8 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
   const layouts: PaneLayoutSnapshot[] = [];
   const own = layout === null || layout === undefined;
   const grouped = groups(terminals, layout, host);
-  const { groups: placed, zoomed } = own ? arranged(grouped, ovisDoc) : { groups: grouped, zoomed: new Map<string, string>() };
+  const { groups: visible, zoomed } = own ? arranged(grouped, ovisDoc) : { groups: grouped, zoomed: new Map<string, string>() };
+  const placed = [...visible, ...hiddenGroup(terminals)];
   const shown = new Set(placed.flatMap((group) => group.tabs.flatMap((tab) => tab.terminals.map((terminal) => terminal.address))));
   for (const [index, group] of placed.entries()) {
     const groupPanes: PaneInfo[] = [];
@@ -501,7 +509,7 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
       });
     }
     panes.push(...groupPanes);
-    const worktree = !own || group.id === OTHER_WORKSPACE_ID ? null : group.tabs.flatMap((tab) => tab.terminals).map((terminal) => worktreeOfLabels(terminal.labels)).find((facts) => facts !== null) ?? null;
+    const worktree = !own || group.id === OTHER_WORKSPACE_ID || group.id === HIDDEN_WORKSPACE_ID ? null : group.tabs.flatMap((tab) => tab.terminals).map((terminal) => worktreeOfLabels(terminal.labels)).find((facts) => facts !== null) ?? null;
     workspaces.push({
       ...(worktree ? { worktree } : {}),
       workspace_id: group.id,

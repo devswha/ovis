@@ -16,6 +16,7 @@ import { programReadsDrags } from "./lib/programDrags.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "./lib/paneRegion.ts";
 import { AccessGate } from "./components/AccessGate.tsx";
 import { useForkApp } from "./fork/useForkApp.tsx";
+import { useHiddenSelection, useListedMachines } from "./fork/hidden/hiddenAgents.ts";
 import { useInboxEdgeBack } from "./fork/inbox/inboxEdgeBack.ts";
 import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
@@ -240,7 +241,7 @@ export function App() {
   const { settings, resolvedTheme, resolvedEntry, update: updateSettings } = useSettings();
   const hiddenMachines = useHiddenMachines();
   const { alerts, alertsRef, alertsOn, alertsOnRef } = useAlertPrefs({ settings });
-  const { machineSessions, machines, setMachines, machineRosterLoaded, setMachineRosterLoaded } = useRosterState();
+  const { machineSessions, machines, allMachines, setMachines, machineRosterLoaded, setMachineRosterLoaded } = useRosterState();
   const [initialLink] = useState(() => {
     if (!linksSomewhere(pageSearch())) return null;
     const link = readLink(pageSearch());
@@ -248,7 +249,7 @@ export function App() {
   });
   useRecentFolderMemory({ machines });
   const { selectedMachineId, setSelectedMachineId, selectedMachine, snapshot } = useSelectedMachine({ initialLink, machines });
-  const { machinesRef } = useMachinesRef({ machines });
+  const { machinesRef } = useMachinesRef({ machines: allMachines });
   const [updateRemote, setUpdateRemote] = useState(false);
   const { machineDialog, setMachineDialog, addPcPreset, setAddPcPreset, addPcFocusReturn, closeMachineDialog } = useMachineDialog();
   const { newSessionMachineId, setNewSessionMachineId } = useNewSessionMachine();
@@ -744,7 +745,8 @@ export function App() {
   const herdrPrefixWaiting = useHerdrPrefixKeys(actions, locked === false, setLayoutNotice);
 
   useMachineGone({ machines, pendingLink, pendingFile, pendingCreate, selectedMachineRef, linkSince, selectionSince, rosterSeq, setLinkLanded, setHeaderNote, selectTargetRef, rosterTick, linkTick });
-  const sidebarMachines = useShownMachines({ machines, selectedMachineRef, selectTargetRef, picks, restored: !linkSelects(initialLink) });
+  // the list readers (sidebar, inbox, palette, counts) never list the hidden agent open in the thread view
+  const sidebarMachines = useListedMachines(useShownMachines({ machines, selectedMachineRef, selectTargetRef, picks, restored: !linkSelects(initialLink) }));
   const waitingRosters = useWaitingRosters(sidebarMachines, machines.find((machine) => machine.id === selectedMachineId), activity.status);
   const sessionTally = sessionCountsAcross(waitingRosters);
   const nextWaiting = nextWaitingTarget(waitingRosters, { machineId: selectedMachineId, paneId: selectedPaneId });
@@ -856,7 +858,7 @@ export function App() {
   // then the lens switch, Files and More (styles.css .header-tabs, THIRD_PARTY_NOTICES.md).
   const phoneTabRow = tabsInHeader && !inbox.shown && !inMode;
   const workspaceTabCount = selectedPane ? snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0 : 0;
-  const classicStripInHeader = (wideScreen ? !splitOn && !tabsInHeader : tabsInHeader) && !guideShown && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
+  const classicStripInHeader = (wideScreen ? !splitOn && !tabsInHeader : tabsInHeader) && !guideShown && snapshot !== null && selectedPane !== null && selectedPane.ovis_hidden !== true && selectedWorkspace !== null;
   const stripInHeader = classicStripInHeader && !inMode && screenMachineId === null;
   // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
   // the connection.
@@ -869,6 +871,8 @@ export function App() {
   useShownCount("view_switch_pane", paneSplit, selectedMachineId);
   const listScreen = inMode && inbox.shown && !inboxWide;
   const tabRoom = inMode && !inboxWide && !inbox.shown && selectedPane !== null && !chatShown && !tabRowHidden(cramped, workspaceTabCount, tabsInHeader);
+
+  useHiddenSelection(selectedMachineId, selectedPaneId);
 
   if (locked === null) {
     // the auth state is unknown until /api/health or /api/session answers (ten seconds when
@@ -900,7 +904,7 @@ export function App() {
   const listNote = herdrPrefixWaiting ? t("herdr prefix: press a key") : note;
   const openThread = (machineId: string, paneId: string): void => { activateSlotOf({ machineId, paneId }); selectTarget(machineId, paneId, "chat"); };
   const modeList = (column: boolean): ReactNode => (
-    <ForkPlaceSection wide={column} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)}><InboxList ref={inbox.list} machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
+    <ForkPlaceSection wide={column} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)}><InboxList ref={inbox.list} machines={sidebarMachines} allMachines={allMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
       current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
       onOpen={openThread}
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
@@ -1239,8 +1243,8 @@ export function App() {
               >
                 <RenderBoundary resetKey={`${machineId}:${paneId ?? ""}`} fallback={(retry) => <>{slotBar}<RegionCrash message={t("This pane can't be shown.")} retry={retry} onShown={active ? paneLost : undefined} /></>}>
                 <CrashProbe region="pane" />
-                {!(slotSnapshot && pane && workspace) && slotBar}
-                {slotSnapshot && pane && workspace && !(active && classicStripInHeader) && !threadDrawn && (
+                {!(slotSnapshot && pane && workspace && pane.ovis_hidden !== true) && slotBar}
+                {slotSnapshot && pane && workspace && pane.ovis_hidden !== true && !(active && classicStripInHeader) && !threadDrawn && (
                   <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} browserTabs={paneSplit && wideScreen && !tabsInHeader} onSelectPane={onSelect}
                     inHeader={tabsInHeader} sheet={active ? tabSheet : null} onSheetClose={closeTabSheet} end={slotEnd} closable={auth?.role !== "watch"}
                     renameRequest={active && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}

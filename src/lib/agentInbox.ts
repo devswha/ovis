@@ -11,7 +11,7 @@ import { capped } from "./promptText.ts";
 import { machineFilter, sidebarFilter } from "./sidebarFilter.ts";
 import { sidebarPinKey } from "./sidebarPins.ts";
 
-export const INBOX_FILTERS = ["all", "blocked", "working", "done"] as const;
+export const INBOX_FILTERS = ["all", "blocked", "working", "done", "hidden"] as const;
 export type InboxFilter = (typeof INBOX_FILTERS)[number];
 
 export function inboxKey(row: AgentRow): string {
@@ -29,7 +29,7 @@ export function inboxOrder(machines: readonly Machine[], activity: SidebarActivi
 }
 
 export function inboxFiltered(rows: readonly AgentRow[], filter: InboxFilter, activity: SidebarActivity): AgentRow[] {
-  return filter === "all" ? [...rows] : rows.filter((row) => agentGroup(inboxStatus(row, activity)) === filter);
+  return filter === "all" || filter === "hidden" ? [...rows] : rows.filter((row) => agentGroup(inboxStatus(row, activity)) === filter);
 }
 
 export function inboxSearched(rows: readonly AgentRow[], query: string, machines: readonly Machine[], t: Translate, words: (row: AgentRow) => string | null): AgentRow[] {
