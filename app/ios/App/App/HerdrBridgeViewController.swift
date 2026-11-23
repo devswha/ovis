@@ -534,6 +534,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     private let homeOver: String?
     private var urlWatch: NSKeyValueObservation?
     private var frontWatch: NSObjectProtocol?
+    /// Looks once a second whether the app's own page came up (watchOwnPage).
+    private var ownPageWatch: Timer?
     private var openingChange: UIButton?
 
     /// Asked of the hosted screen's page while its cover is up: what the page is, as facts for Home.drawn to judge,
@@ -750,6 +752,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             webView.navigationDelegate = proxy
         }
         super.viewDidLoad()
+        if screen == .bundled { watchOwnPage() }
         if webView != nil, let origin = opened {
             showOpening(origin, home: phase != nil)
             let now = ProcessInfo.processInfo.systemUptime
@@ -766,8 +769,27 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         }
     }
 
+    /// The app's own page is what stands in when the hosted screen fails, so it must never be a dark screen itself:
+    /// a web view that has not finished loading it in Home.ownPageSeconds is built again. Seen in a simulator starved
+    /// of CPU: after the hosted screen was given up, the new web view committed index.html and its content process
+    /// then ran nothing more, for minutes, with this app's main thread idle.
+    private func watchOwnPage() {
+        var clock = Home.Clock(now: ProcessInfo.processInfo.systemUptime)
+        ownPageWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self, let webView = self.webView, self.view.window != nil else {
+                timer.invalidate()
+                return
+            }
+            let loaded = !webView.isLoading && webView.url != nil
+            let stalled = Home.ownPageStalled(elapsed: clock.tick(now: ProcessInfo.processInfo.systemUptime), loaded: loaded)
+            if loaded || stalled { timer.invalidate() }
+            if stalled { HerdrBridgeViewController.reopen() }
+        }
+    }
+
     deinit {
         ticker?.invalidate()
+        ownPageWatch?.invalidate()
         urlWatch?.invalidate()
         if let frontWatch { NotificationCenter.default.removeObserver(frontWatch) }
     }

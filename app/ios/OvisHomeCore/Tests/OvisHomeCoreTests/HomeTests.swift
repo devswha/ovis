@@ -399,4 +399,15 @@ final class HomeTests: XCTestCase {
         XCTAssertFalse(Home.opensDemo("https://demo/", atHome: false))
         XCTAssertFalse(Home.opensDemo("https://demo.example.com/", atHome: true))
     }
+
+    func testTheAppsOwnPageThatNeverCameUpIsBuiltAgain() {
+        // its files are in the app, so it is up in well under a second; a web view whose content process never ran it
+        // (seen after the hosted screen was given up on a starved simulator) stays dark for good unless it is replaced
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 5.9, loaded: false))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 6, loaded: false))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 60, loaded: false))
+        // a page that came up is never taken from under the person, however long ago
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 6, loaded: true))
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 3600, loaded: true))
+    }
 }

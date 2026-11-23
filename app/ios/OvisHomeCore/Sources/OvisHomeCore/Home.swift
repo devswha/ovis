@@ -259,6 +259,16 @@ public enum Home {
             && parts.user == nil && parts.password == nil
     }
 
+    /// How long the app's own page may take to finish its first load: its files are in the app.
+    public static let ownPageSeconds: TimeInterval = 6
+
+    /// Whether the app's own page (the fallback, or a build's first screen) has to be built again in a new web view:
+    /// it has not finished its first load `elapsed` seconds in (time in front). The page that stands in when the
+    /// hosted screen fails must never itself be a dark screen with no way on.
+    public static func ownPageStalled(elapsed: TimeInterval, loaded: Bool) -> Bool {
+        !loaded && elapsed >= ownPageSeconds
+    }
+
     /// Whether an open of `text` is the demo: the word "demo" as an address, on home alone. Anywhere else that address
     /// is a PC's, as it always was.
     public static func opensDemo(_ text: String?, atHome: Bool) -> Bool {
