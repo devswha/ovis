@@ -1118,6 +1118,12 @@ the other PC (B) to that account (Linux and macOS on both ends; a Windows B adds
 number). SSH only says which machine and OS user was reached; the account's one-press admission
 decides which account B may join. There, Add a connection's Ovis relay tab lists the PCs this PC can
 reach (its Tailscale login's PCs and its ssh config hosts); Add opens Add PC over SSH with that host.
+A row says **In your account** only for a PC that took its place there: the directory's `completed_at`
+(it completed its add) or `last_seen_at` (it pulled the account's mailbox, which a PC in no account
+never does). A PC only listed or admitted (an add stopped at the sign-in, say) keeps Add; one saved
+here already is added on that same entry (`machine_id`), not saved a second time. Settings → Devices
+and PCs words the account's PCs the same way: **In your account** once joined, **Not added yet**
+before.
 
 - **SSH.** Public keys only (the user's SSH config, key files and agent): no password or
   keyboard-interactive login, and no reconnect key of this app's is used or enrolled. B's host key

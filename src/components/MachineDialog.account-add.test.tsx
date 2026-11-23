@@ -8,6 +8,7 @@ import { act, createElement } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { AccountAddTarget, SetupJob, SetupRequest } from "../../shared/machines.ts";
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
+import type { AddPcPreset } from "../lib/actions.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { AccountService, AccountServiceError } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
@@ -37,7 +38,7 @@ function define(key: string, value: unknown): void {
  * This PC's own window, signed in to its account, adding "lab" over SSH. `admit`: the account service's answers to the
  * admits in turn; `takes`: this PC's answers to POST /api/account/ssh-add in turn.
  */
-async function dialog(options: { admit: (AccountServiceError | null)[]; takes: Response[]; signInAgain?: boolean }) {
+async function dialog(options: { admit: (AccountServiceError | null)[]; takes: Response[]; signInAgain?: boolean; preset?: AddPcPreset }) {
   define("window", { isSecureContext: true, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout: () => 1, clearTimeout() {} });
   define("document", { querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => "https://account.test" } : null });
   define("IS_REACT_ACT_ENVIRONMENT", true);
@@ -81,7 +82,7 @@ async function dialog(options: { admit: (AccountServiceError | null)[]; takes: R
     }
   } });
   let view: ReactTestRenderer | undefined;
-  await act(async () => { view = create(createElement(MachineDialog, { preset: { destination: "lab" }, onClose() {}, onConnected() {} })); });
+  await act(async () => { view = create(createElement(MachineDialog, { preset: options.preset ?? { destination: "lab" }, onClose() {}, onConnected() {} })); });
   undo.push(() => act(async () => view?.unmount()));
   const settle = async () => { for (let flush = 0; flush < 8; flush += 1) await act(async () => {}); };
   await settle();
@@ -133,4 +134,10 @@ test("where this page has no sign-in of its own to start, the words stay as they
   const shown = await dialog({ admit: [new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first")], takes: [], signInAgain: false });
   expect(shown.status()).toContain("Sign in again on this PC, then add it again.");
   expect(shown.button("Sign in again")).toBeUndefined();
+});
+
+test("Add again on the relay tab's row of a PC saved here goes to that same saved PC, never a second one", async () => {
+  const shown = await dialog({ admit: [null], takes: [online()], preset: { destination: "lab", name: "lab", machine_id: "lab-pc" } });
+  expect(shown.setups).toEqual([{ destination: "lab", machine_id: "lab-pc", account_add: true }]);
+  expect(shown.status()).toContain("Added to your account.");
 });
