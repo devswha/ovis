@@ -5,6 +5,8 @@ import { settledWithin, type Tail } from "./drain.ts";
 import { answerQueries, gridText, runSupervised, screenOutput, type PtyRun, type SupervisedRun } from "./pty.ts";
 
 export const SOURCE_OVIS = [process.execPath, join(import.meta.dir, "../../scripts/plugin.ts")] as const;
+/** The transcript an entry run keeps by default: past it the run is ended and every wait rejects. */
+export const ENTRY_MAX_OUTPUT_CHARS = 16 * 1024 * 1024;
 export const DETACH = "\x02q";
 export const RESTORE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
 export const HOST_ANSWERS = [
@@ -34,7 +36,7 @@ export function entryPty(
   const answer = answerQueries((bytes) => run.type(bytes), options.answers ?? HOST_ANSWERS);
   const run: SupervisedRun = runSupervised({
     entry: ["sh", "-c", 'cd "$HOME" && exec "$@"', "entry", ...entry],
-    env, cols, rows, deadlineMs: options.deadlineMs ?? 15_000, maxOutputChars: options.maxOutputChars,
+    env, cols, rows, deadlineMs: options.deadlineMs ?? 15_000, maxOutputChars: options.maxOutputChars ?? ENTRY_MAX_OUTPUT_CHARS,
     onData: (text) => { answer(text); options.onData?.(text); },
   });
   return run;
@@ -90,6 +92,8 @@ export interface BoundedRun {
   /** each of stdout and stderr may hold this many bytes */
   readonly maxBytes: number;
   readonly graceMs: number;
+  /** ends the command through its own handle, and refuses to start one, once aborted */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -97,6 +101,7 @@ export interface BoundedRun {
  * hangs or floods is stopped through its own handle (SIGTERM, then SIGKILL) and the run rejects.
  */
 export async function runBounded(command: readonly string[], options: BoundedRun): Promise<{ code: number; out: string; err: string }> {
+  if (options.signal?.aborted) throw new Error(`${command.join(" ")}: not started, cancelled`);
   const child = Bun.spawn([...command], { cwd: options.cwd, env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const stop = new AbortController();
   const work = Promise.all([child.exited, readCapped(child.stdout, options.maxBytes, stop.signal), readCapped(child.stderr, options.maxBytes, stop.signal)]);
@@ -105,8 +110,13 @@ export async function runBounded(command: readonly string[], options: BoundedRun
   const limit = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(`did not finish within ${options.deadlineMs} ms`)), options.deadlineMs);
   });
+  let onAbort = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new Error("cancelled"));
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+  });
   try {
-    const [code, out, err] = await Promise.race([work, limit]);
+    const [code, out, err] = await Promise.race([work, limit, cancelled]);
     return { code, out, err };
   } catch (error) {
     stop.abort();
@@ -115,6 +125,7 @@ export async function runBounded(command: readonly string[], options: BoundedRun
     throw new Error(`${command.join(" ")}: ${reason}${ended === "exited" ? "" : ended === "unconfirmed" ? " (SIGKILL sent, exit not confirmed)" : ` (stopped with ${ended})`}`, { cause: error });
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
   }
 }
 

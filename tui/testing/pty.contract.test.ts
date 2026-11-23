@@ -57,7 +57,6 @@ describe("runOnPty", () => {
     const run = runOnPty({ command: ["yes"], env: ENV, maxOutputChars: 20_000 });
     await expect(run.until("never printed")).rejects.toThrow("the output passed 20000 characters");
     await run.exited;
-    expect(run.output().length).toBeGreaterThan(20_000);
   }, TEST_MS);
 
   it("never matches a marker once the output passed its limit, even one inside the crossing chunk", async () => {

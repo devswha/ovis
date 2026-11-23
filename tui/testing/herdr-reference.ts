@@ -24,10 +24,15 @@ const SERVER_ERR_CHARS = 16 * 1024;
 const TRANSCRIPT_CHARS = 4 * 1024 * 1024;
 const BOTH = "(?:LEFT-READY[\\s\\S]*RIGHT-READY|RIGHT-READY[\\s\\S]*LEFT-READY)";
 const active: (() => Promise<void>)[] = [];
+// the capture's own CLI calls end through their own handles once it is stopping; no new one starts
+const capture = new AbortController();
+const inflight = new Set<Promise<unknown>>();
 let cleaning: Promise<void> | undefined;
 // every step runs, also after one failed; the first failure is raised once all of them ran
 const stop = () => (cleaning ??= (async () => {
   const failures: unknown[] = [];
+  capture.abort(new Error("the capture is stopping"));
+  await Promise.allSettled([...inflight]);
   for (const step of [stopAllPtyRuns, ...active.reverse()]) {
     try {
       await step();
@@ -69,17 +74,24 @@ try {
   const args = [herdr, "--session", SESSION];
   const server: Subprocess<"ignore", "ignore", "pipe"> = Bun.spawn([...args, "server"], { cwd: home, env, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
   const serverErr = drainTail(server.stderr, SERVER_ERR_CHARS);
-  async function call(...command: string[]): Promise<string> {
-    const { code, out, err } = await runBounded([...args, ...command], { cwd: home, env, deadlineMs: CALL_MS, maxBytes: CALL_BYTES, graceMs: STOP_GRACE_MS });
-    if (code !== 0) throw new Error(`herdr ${command.join(" ")} exited ${code}: ${err.slice(-2000)}`);
-    return out.trim();
+  async function run(signal: AbortSignal | undefined, command: string[]): Promise<string> {
+    const pending = runBounded([...args, ...command], { cwd: home, env, deadlineMs: CALL_MS, maxBytes: CALL_BYTES, graceMs: STOP_GRACE_MS, signal });
+    inflight.add(pending);
+    try {
+      const { code, out, err } = await pending;
+      if (code !== 0) throw new Error(`herdr ${command.join(" ")} exited ${code}: ${err.slice(-2000)}`);
+      return out.trim();
+    } finally {
+      inflight.delete(pending);
+    }
   }
+  const call = (...command: string[]) => run(capture.signal, command);
   active.push(async () => {
     // the server is this code's own child: it is asked to stop, then ended through its handle
     await closeOwnedServer({
       child: server, graceMs: STOP_GRACE_MS, stderr: serverErr, sockets: [apiPath, clientPath],
       ask: async () => {
-        if (existsSync(apiPath) && existsSync(clientPath)) await call("server", "stop");
+        if (existsSync(apiPath) && existsSync(clientPath)) await run(undefined, ["server", "stop"]);
         else server.kill("SIGTERM");
       },
       report: { warn: (line) => console.warn(line), info: (line) => console.log(line) },

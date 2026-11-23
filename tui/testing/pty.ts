@@ -19,8 +19,6 @@ import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
  * after, and it alone signals the entry, through the handle of the child it started.
  */
 export const PTY_DEADLINE_MS = 20_000;
-/** The transcript a run keeps: past it the run is ended and every wait rejects, so nothing is truncated silently. */
-export const PTY_MAX_OUTPUT_CHARS = 16 * 1024 * 1024;
 const SUPERVISOR = join(import.meta.dir, "supervise.ts");
 
 export interface PtyOptions {
@@ -30,7 +28,7 @@ export interface PtyOptions {
   cols?: number;
   rows?: number;
   deadlineMs?: number;
-  /** ends the run, through the PTY host, once its output passes this many characters */
+  /** opt-in: ends the run, through the PTY host, once its output passes this many characters; unset, the transcript is unbounded */
   maxOutputChars?: number;
   /** called with each piece of output as it arrives */
   onData?: (text: string) => void;
@@ -108,7 +106,7 @@ export function runOnPty(options: PtyOptions): PtyRun {
   let ended = false;
   let timedOut = false;
   let overflowed = false;
-  const maxOutputChars = options.maxOutputChars ?? PTY_MAX_OUTPUT_CHARS;
+  const { maxOutputChars } = options;
   let code: number | null = null;
   const wakers = new Set<() => void>();
   const wake = () => { for (const waker of [...wakers]) waker(); };
@@ -117,7 +115,7 @@ export function runOnPty(options: PtyOptions): PtyRun {
     onData: (data) => {
       if (overflowed) return;
       output += data;
-      if (output.length > maxOutputChars) {
+      if (maxOutputChars !== undefined && output.length > maxOutputChars) {
         overflowed = true;
         session.kill();
       }

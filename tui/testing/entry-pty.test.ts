@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drainTail } from "./drain.ts";
-import { closeOwnedServer, closedBoxes, runBounded, shutdownOwned, terminate } from "./entry-pty.ts";
+import { closeOwnedServer, closedBoxes, ENTRY_MAX_OUTPUT_CHARS, entryPty, runBounded, shutdownOwned, terminate } from "./entry-pty.ts";
+import { processesWith } from "./processes.ts";
 
 const ENV = { PATH: "/usr/bin:/bin" };
 const TEST_MS = 20_000;
@@ -28,6 +29,34 @@ describe("runBounded", () => {
   it("rejects a response past the byte limit and stops the flooding command", async () => {
     await expect(runBounded(["yes"], { ...bounds, deadlineMs: 10_000 })).rejects.toThrow(/passed 4096 bytes/);
     await expect(runBounded(["sh", "-c", "yes >&2"], { ...bounds, deadlineMs: 10_000 })).rejects.toThrow(/passed 4096 bytes/);
+  }, TEST_MS);
+});
+
+describe("runBounded with a signal", () => {
+  it("starts nothing once the signal is aborted", async () => {
+    const marker = join(scratch, `started-${crypto.randomUUID()}`);
+    const stop = new AbortController();
+    stop.abort();
+    await expect(runBounded(["sh", "-c", `: > ${marker}`], { ...bounds, signal: stop.signal })).rejects.toThrow(/not started, cancelled/);
+    expect(existsSync(marker)).toBe(false);
+  }, TEST_MS);
+
+  it("ends a running command through its own handle when the signal aborts, leaving no process", async () => {
+    const mark = `NOMARK-${crypto.randomUUID()}`;
+    const cwd = mkdtempSync(join(scratch, "cwd-"));
+    const stop = new AbortController();
+    const running = runBounded(["sh", "-c", "exec sleep 30"], { ...bounds, cwd, deadlineMs: 10_000, signal: stop.signal });
+    stop.abort();
+    await expect(running).rejects.toThrow(/cancelled \(stopped with SIGTERM\)/);
+    expect(processesWith(mark, cwd)).toEqual([]);
+  }, TEST_MS);
+});
+
+describe("entryPty", () => {
+  it("bounds the transcript by default, ending a flood and rejecting the wait", async () => {
+    const run = entryPty(["yes"], { PATH: "/usr/bin:/bin", HOME: scratch, TMPDIR: scratch }, 80, 24);
+    await expect(run.until("never printed")).rejects.toThrow(`the output passed ${ENTRY_MAX_OUTPUT_CHARS} characters`);
+    await run.exited;
   }, TEST_MS);
 });
 
