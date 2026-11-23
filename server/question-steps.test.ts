@@ -12,7 +12,7 @@ const SHORT: PromptRequestOptions = { answerDeadlineMs: 300 };
 import { omoAskOf } from "./omo-questions.ts";
 import { ANSI_RE, type OmoAsk, parsedByPublicPrompt } from "./dialogs/shared.ts";
 import * as conversation from "./conversation.ts";
-import { ConversationUnavailable } from "./conversation-shared.ts";
+import { ConversationNotStarted, ConversationUnavailable } from "./conversation-shared.ts";
 
 // The card moves between a form's questions without answering, as the agent's own keys do: OmO's
 // Tab and Shift+Tab, Codex's ←/→, Hermes's Tab and Shift+Tab.
@@ -424,6 +424,67 @@ describe("the answer route moves between questions, one key at a time, each seen
       (conversation.ompTranscriptPath as unknown as { mockRejectedValue: (error: Error) => void }).mockRejectedValue(new Error("busy"));
       expect(await move(bound.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
+    });
+  });
+
+  describe("an omp 19 form", () => {
+    // the spy withPane installs on the session lookup
+    interface LookupSpy { mockRejectedValue: (error: Error) => void; mockResolvedValue: (value: { path: string; blobs: null }) => void }
+    const FORM_CALL = JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "form-call", name: "ask", arguments: { html: "<form></form>" } }] } }) + "\n";
+    const formScreen = readFileSync(new URL("./fixtures/omp-form-19.1.0-radio-100.txt", import.meta.url), "utf8");
+
+    /** a pane showing the form, whose session holds its one open `{ html }` ask call */
+    async function withForm(run: (pane: Pane, lookup: LookupSpy) => Promise<void>): Promise<void> {
+      await withPane("omp", formScreen, async pane => {
+        const root = mkdtempSync(join(tmpdir(), "question-steps-form-"));
+        const path = join(root, "session.jsonl");
+        writeFileSync(path, FORM_CALL);
+        const lookup = conversation.ompTranscriptPath as unknown as LookupSpy;
+        lookup.mockResolvedValue({ path, blobs: null });
+        try { await run(pane, lookup); } finally { rmSync(root, { recursive: true, force: true }); }
+      });
+    }
+
+    test("answers under its one open call", async () => {
+      await withForm(async pane => {
+        // the form follows its keys: Down puts the cursor on the second option, Enter moves on to the next field
+        pane.onSent = key => {
+          if (key === "down") pane.screen = formScreen.replace("❯ ◉ SQLite", "  ◉ SQLite").replace("  ○ Redis", "❯ ○ Redis");
+          if (key === "enter") pane.screen = readFileSync(new URL("./fixtures/omp-form-19.1.0-checkbox-100.txt", import.meta.url), "utf8");
+        };
+        expect(await move((await card()).id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["down", "enter"]);
+      });
+    });
+
+    test("takes no key while the session lookups keep failing, with a cached lookup, after it is dropped, and with none", async () => {
+      await withForm(async (pane, lookup) => {
+        const shown = await card();
+        lookup.mockRejectedValue(new Error("busy"));
+        // reads 1 and 2 keep the cache; the 3rd drops it; the rest find none
+        for (let read = 0; read < 6; read++) {
+          expect(await move(shown.id, { option_index: 1 }), `read ${read}`).toEqual({ status: 409, code: "prompt_changed" });
+          expect(pane.sent).toEqual([]);
+        }
+      });
+    });
+
+    test("takes no key from a pane whose runtime names no session", async () => {
+      await withForm(async (pane, lookup) => {
+        const shown = await card();
+        lookup.mockRejectedValue(new ConversationNotStarted("no session"));
+        expect(await move(shown.id, { option_index: 1 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      });
+    });
+
+    test("takes no key from a pane that reports no working directory", async () => {
+      await withForm(async pane => {
+        const shown = await card();
+        pane.cwd = "";
+        expect(await move(shown.id, { option_index: 1 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      });
     });
   });
 
