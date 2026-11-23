@@ -40,15 +40,14 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
 /**
  * omp 19's form (dialogs/omp-form.ts) is read off the screen alone; the pane's one open `ask` call that carries a form
  * (`{ html }`) is the call it answers, so a key goes out only while that call is still open. The id stays the screen's.
- * A choice group the scrolled box cuts is made whole from that call's HTML. With the session known and no such call in
- * it (none open, several, one asked another way), the read authorizes no key; with no session to look in (a pane whose
- * runtime names none), the screen alone answers, as it does for 18.x.
+ * A choice group the scrolled box cuts is made whole from that call's HTML. Without such a call (no session to look
+ * in, none open, several, one asked another way), the card shows but the read authorizes no key.
  */
 export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt; unverified?: true } {
   const parsed = parsedByPublicPrompt.get(prompt);
   const call = ompOpenCall(open, session);
   const args = open[0]?.args;
-  if (!parsed || !session) return { prompt };
+  if (!parsed) return { prompt };
   if (call === null || typeof args !== "object" || args === null || !("html" in args) || typeof args.html !== "string") return { prompt, unverified: true };
   return { prompt: publicPrompt({ ...(fillCutChoice(parsed, args.html) ?? parsed), ompCall: call }) };
 }

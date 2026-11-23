@@ -117,7 +117,7 @@ describe("omp 19 Ask form", () => {
     expect(card("submit-46").answers?.[0]).toEqual({ question: "Where should sessions persist?", answer: "…" });
   });
 
-  it("answers only under the session's one open form call, when the session is known", () => {
+  it("answers only under the session's one open form call", () => {
     const radio = card("radio-100");
     const formCall = [{ id: "call-1", wait: true, args: { html: "<form></form>" } }];
     const bound = ompFormPrompt(radio, formCall, "/s.jsonl");
@@ -128,8 +128,8 @@ describe("omp 19 Ask form", () => {
     expect(ompFormPrompt(radio, [], "/s.jsonl").unverified).toBe(true);
     expect(ompFormPrompt(radio, [...formCall, { ...formCall[0]!, id: "call-2" }], "/s.jsonl").unverified).toBe(true);
     expect(ompFormPrompt(radio, [{ id: "call-1", wait: true, args: { questions: [] } }], "/s.jsonl").unverified).toBe(true);
-    // a pane whose runtime names no session: the screen alone, as for omp 18.x
-    expect(ompFormPrompt(radio, [], "").unverified).toBeUndefined();
+    // a pane whose runtime names no session proves no call: shown, but no key goes out
+    expect(ompFormPrompt(radio, formCall, "").unverified).toBe(true);
   });
 
   it("reads no card while the form does not hold the keys, or once it is answered", () => {
