@@ -16,7 +16,7 @@ import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
 import { LayoutWrites } from "./core/layout.ts";
-import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
+import { type CoreLink, LINK_DOCS, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
 import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
 import { errorCode } from "./crash.ts";
@@ -136,6 +136,9 @@ export function startLoop(options: LoopOptions): Loop {
   let shownKey = "";
   let paneFocus: string | null = null;
   let hello: HelloInfo | null = null;
+  let helloEpoch = 0;
+  /** One snapshot publication: the terminals and both layout documents, possibly ahead of this line's hello. */
+  let snapshot: { epoch: number; complete: boolean; core: string | null } | null = null;
   let entered = false;
   let ended = false;
   let quitting: { at: number; settle: () => void } | null = null;
@@ -237,22 +240,14 @@ export function startLoop(options: LoopOptions): Loop {
         told(notice.state);
       }
       shown = shownLink(shown, notice.state);
-      // the next snapshot may be another core's, told before its hello says whose: no view file is written until then
-      options.views?.suspend();
       if (notice.state.kind === "Online") {
         const epoch = notice.state.epoch;
         void link.hello().then((info) => {
           if (link.state.kind === "Online" && link.state.epoch === epoch) {
             hello = info;
+            helloEpoch = epoch;
             world.setVersion(info.version);
-            if (options.views) {
-              const views = options.views;
-              guard(() => {
-                dispatch({ type: "restore", ...views.open(info.core.id), at: clock.now() });
-                // what changed while the line was unknown is kept now, not at the next change
-                keepView();
-              });
-            }
+            guard(identifySnapshot);
             arm();
           }
         }, () => {});
@@ -260,12 +255,26 @@ export function startLoop(options: LoopOptions): Loop {
       owePass();
       return;
     }
+    if (notice.type === "snapshot") {
+      snapshot = { epoch: notice.epoch, complete: false, core: null };
+      options.views?.suspend();
+    }
     if (world.notice(notice)) worldChanged();
+    if (snapshot && !snapshot.complete && notice.type === "doc" && notice.epoch === snapshot.epoch && notice.name === LINK_DOCS.at(-1)) {
+      snapshot.complete = true;
+      identifySnapshot();
+    }
     readCore();
   }
 
+  function identifySnapshot(): void {
+    if (!snapshot?.complete || snapshot.core !== null || snapshot.epoch !== helloEpoch || !hello) return;
+    snapshot.core = hello.core.id;
+    if (options.views) dispatch({ type: "restore", core: snapshot.core, ...options.views.open(snapshot.core), at: clock.now() });
+  }
+
   function worldChanged(): void {
-    dispatch({ type: "world", world: world.view().world, at: clock.now() });
+    dispatch({ type: "world", world: world.view().world, core: snapshot?.core ?? null, at: clock.now() });
     reshow();
   }
 

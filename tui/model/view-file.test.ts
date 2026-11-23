@@ -111,18 +111,29 @@ describe("reopening the same place", () => {
 
   it("the reducer applies a kept view once the world has something in it, and says so when the place moved", () => {
     const empty = initialState(undefined);
-    const waiting = reduce(empty, { type: "restore", view: saved(WORLD, AT_P2), problem: null, at: 1 }).state;
+    const waiting = reduce(empty, { type: "restore", core: "A", view: saved(WORLD, AT_P2), problem: null, at: 1 }).state;
     expect(waiting.restoring).not.toBeNull();
-    const shown = reduce(waiting, { type: "world", world: WORLD, at: 2 }).state;
+    const shown = reduce(waiting, { type: "world", core: "A", world: WORLD, at: 2 }).state;
     expect([shown.restoring, shown.focus, shown.notices]).toEqual([null, AT_P2, []]);
-    const moved = reduce(waiting, { type: "world", world: without(WORLD, "p2"), at: 2 }).state;
+    const moved = reduce(waiting, { type: "world", core: "A", world: without(WORLD, "p2"), at: 2 }).state;
     expect([moved.focus.panes["t1"], moved.notices.map((notice) => [notice.code, notice.calm])]).toEqual(["p3", [["view_moved", true]]]);
   });
 
   it("a file that could not be used is said so, and the screen opens where it would without one", () => {
     const base = stateOf(WORLD, { workspace: null, tabs: {}, panes: {}, previous: null });
-    const step = reduce(base, { type: "restore", view: null, problem: "not_json", at: 1 }).state;
+    const step = reduce(base, { type: "restore", core: "A", view: null, problem: "not_json", at: 1 }).state;
     expect([step.focus, step.notices.map((notice) => [notice.code, notice.data, notice.calm])]).toEqual([base.focus, [["view_unread", { reason: "not_json" }, true]]]);
+  });
+
+  it("an unidentified replacement snapshot neither consumes nor reports a move for the old core's view", () => {
+    const waiting = reduce(initialState(undefined), { type: "restore", core: "A", view: saved(WORLD, AT_P2), problem: null, at: 0 }).state;
+    const replacement = reduce(waiting, { type: "world", core: null, world: without(WORLD, "p2"), at: 1 }).state;
+    expect(replacement.notices).toEqual([]);
+    expect(replacement.restoring?.core).toBe("A");
+    const same = reduce(replacement, { type: "restore", core: "A", view: null, problem: null, at: 2 }).state;
+    expect([same.focus.panes["t1"], same.notices.map(({ code }) => code)]).toEqual(["p3", ["view_moved"]]);
+    const other = reduce(replacement, { type: "restore", core: "B", view: null, problem: null, at: 2 }).state;
+    expect([other.focus.panes["t1"], other.notices, other.restoring]).toEqual(["p1", [], null]);
   });
 });
 
@@ -183,7 +194,7 @@ describe("the file on disk", () => {
     store.keep(stateOf(WORLD, AT_P2));
     expect(readdirSync(folder)).toEqual([]);
     store.open("core1");
-    store.keep({ ...stateOf(WORLD, AT_P2), restoring: saved(WORLD, AT_P2) });
+    store.keep({ ...stateOf(WORLD, AT_P2), restoring: { core: "core1", view: saved(WORLD, AT_P2) } });
     expect(readdirSync(folder)).toEqual([]);
   });
 
@@ -440,6 +451,45 @@ describe("a rerun of the screen on the same core", () => {
     await close(before);
     const again = await first(core, folder);
     expect(again.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+  }, TEST_MS);
+
+  it.each([["coreone", false], ["coretwo", false], ["coreone", true], ["coretwo", true]] as const)("an empty core's pending Logs view only follows its own core (reconnect: %s, initially empty: %s)", async (id, initiallyEmpty) => {
+    const folder = scratch();
+    const options = (id: string) => ({ core: { id, name: id } });
+    const original = new FakeHcCore(options("coreone"));
+    demo.build(original);
+    const before = await first(original, folder);
+    await before.keys("ctrl+b,n");
+    await close(before);
+    const file = join(folder, "view-coreone.json");
+    const kept = readFileSync(file, "utf8");
+    expect(JSON.parse(kept).focus.tabs["w-ovis"]).toBe("t-logs");
+    const empty = await Run.start({ core: new FakeHcCore(options("coreone")), views: new ViewStore(folder) });
+    runs.push(empty);
+    expect(empty.loop.model().world.workspaces).toEqual([]);
+    await empty.cutLine();
+    await empty.advance(1_000);
+    const other = id === "coreone" && !initiallyEmpty ? original : new FakeHcCore(options(id));
+    if (!initiallyEmpty && other !== original) demo.build(other); // another core can issue the same addresses
+    const listener = await other.listen(empty.socket);
+    try {
+      await empty.advance(10_000);
+      expect(empty.loop.link.state).toMatchObject({ kind: "Online", epoch: 2 });
+      if (initiallyEmpty) {
+        expect(empty.loop.model().world.workspaces).toEqual([]);
+        demo.build(other);
+        await empty.advance(100);
+      }
+      const tab = id === "coreone" ? "t-logs" : "t-main";
+      expect(empty.loop.model().focus.tabs["w-ovis"]).toBe(tab);
+      expect(JSON.parse(readFileSync(join(folder, `view-${id}.json`), "utf8")).focus.tabs["w-ovis"]).toBe(tab);
+      if (id !== "coreone") expect(readFileSync(file, "utf8")).toBe(kept);
+      // When A creates new terminals after its empty snapshot, their addresses match but their birth times do not.
+      expect(empty.loop.model().notices.some(({ code }) => code === "view_moved")).toBe(initiallyEmpty && id === "coreone");
+    } finally {
+      await close(empty);
+      await listener.close();
+    }
   }, TEST_MS);
 
   it("the saved pane gone on the core: the screen opens on the next one and says so", async () => {

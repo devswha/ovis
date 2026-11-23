@@ -50,15 +50,16 @@ export interface ModelState {
   readonly host: { readonly cols: number; readonly rows: number; readonly focused: boolean | null };
   readonly sidebarCollapsed: boolean;
   readonly following: Following | null;
-  /** the view kept from an earlier run, waiting for a world with something in it */
-  readonly restoring: SavedView | null;
+  /** The last core whose snapshot was identified, and its saved view if that snapshot was empty. */
+  readonly viewCore: string | null;
+  readonly restoring: { readonly core: string; readonly view: SavedView } | null;
 }
 
 /** Events that do not come from host input: the loop and the other modules send them. */
 export type ScreenEvent =
   | { readonly type: "resize"; readonly cols: number; readonly rows: number; readonly at: number }
   /** what exists now; focus, overlays and the navigate preview follow */
-  | { readonly type: "world"; readonly world: World; readonly at: number }
+  | { readonly type: "world"; readonly world: World; readonly core?: string | null; readonly at: number }
   /** herdr's `[keys]` table as parsed (anything else: the defaults), read again by main.ts */
   | { readonly type: "keys"; readonly keys: unknown; readonly at: number }
   /** a deadline the state named came due */
@@ -79,7 +80,7 @@ export type ScreenEvent =
    */
   | { readonly type: "choose"; readonly entry: string; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
-  | { readonly type: "restore"; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number };
+  | { readonly type: "restore"; readonly core: string; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number };
 
 export type ModelEvent = InputEvent | ScreenEvent;
 
@@ -91,7 +92,7 @@ export interface Step { readonly state: ModelState; readonly effects: readonly E
 export function initialState(keys: unknown): ModelState {
   return {
     mode: { name: "terminal" }, locked: false, armed: false, overlays: [], world: EMPTY_WORLD, focus: NO_FOCUS, keymap: buildKeymap(keys),
-    notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null, restoring: null,
+    notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null, viewCore: null, restoring: null,
   };
 }
 
@@ -139,7 +140,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       mouse(acc, event);
       break;
     case "world":
-      applyWorld(acc, event.world, event.at);
+      applyWorld(acc, event.world, event.core ?? null, event.at);
       break;
     case "keys":
       reload(acc, event.keys, event.at);
@@ -170,13 +171,17 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       if (top?.kind === "menu" && at >= 0) answerOverlay(acc, menuChoice(top, at), event.at);
       break;
     }
-    case "restore":
+    case "restore": {
+      const s = acc.s;
+      const other = s.viewCore !== null && s.viewCore !== event.core;
+      acc.s = { ...s, viewCore: event.core,
+        restoring: event.view ? { core: event.core, view: event.view } : other ? null : s.restoring,
+        ...(other ? { focus: nextFocus(EMPTY_WORLD, s.world, NO_FOCUS), following: null } : {}),
+      };
       if (event.problem !== null) notice(acc, "view_unread", { reason: event.problem }, event.at, true);
-      if (event.view !== null) {
-        acc.s = { ...acc.s, restoring: event.view };
-        restore(acc, event.at);
-      }
+      restore(acc, event.core, event.at);
       break;
+    }
     default:
       // an event of a kind the model does not know changes nothing
       break;
@@ -360,10 +365,10 @@ function choose(acc: Acc, choice: OverlayChoice, at: number): void {
 }
 
 /** The kept view applied once the world has something in it; a saved place that is gone is said so. */
-function restore(acc: Acc, at: number): void {
+function restore(acc: Acc, core: string | null, at: number): void {
   const { restoring, world } = acc.s;
-  if (restoring === null || world.workspaces.length === 0) return;
-  const { focus, moved } = restoredFocus(restoring, world);
+  if (restoring === null || restoring.core !== core || world.workspaces.length === 0) return;
+  const { focus, moved } = restoredFocus(restoring.view, world);
   acc.s = { ...acc.s, focus, restoring: null, following: null };
   if (moved) notice(acc, "view_moved", {}, at, true);
 }
@@ -421,7 +426,7 @@ function reload(acc: Acc, keys: unknown, at: number): void {
   if (count > 0) notice(acc, "keys_refused", { count }, at);
 }
 
-function applyWorld(acc: Acc, world: World, at: number): void {
+function applyWorld(acc: Acc, world: World, core: string | null, at: number): void {
   const s = acc.s;
   const focus = nextFocus(s.world, world, s.focus);
   const gone = s.overlays.filter((overlay) => {
@@ -433,7 +438,7 @@ function applyWorld(acc: Acc, world: World, at: number): void {
     : s.mode;
   acc.s = { ...s, world, focus, mode, overlays: s.overlays.filter((overlay) => !gone.includes(overlay)) };
   for (const overlay of gone) notice(acc, "target_gone", { overlay: overlay.kind }, at);
-  restore(acc, at);
+  restore(acc, core, at);
   follow(acc);
   refreshMenus(acc);
 }

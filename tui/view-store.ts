@@ -37,14 +37,13 @@ export class ViewStore {
   /** the last text the reader would refuse: not checked again until the view changes */
   private refused: string | null = null;
   private failed = false;
-  /** During a line change only the snapshot already identified may still update the open file. */
-  private identified: ModelState["world"] | null = null;
+  /** The displayed snapshot is being replaced; its complete layout and owner are not both known yet. */
   private suspended = false;
 
   constructor(private readonly folder: string, private readonly files: ViewFiles = DISK) {}
 
   /**
-   * The line to the core changed. The displayed snapshot still belongs to the same file, but its replacement may not.
+   * A replacement snapshot arrived. Losing the line alone does not suspend writes to the displayed snapshot's file.
    */
   suspend(): void {
     this.suspended = true;
@@ -89,9 +88,7 @@ export class ViewStore {
    * failures say nothing), else null.
    */
   keep(state: ModelState): string | null {
-    if (this.path === null || (this.suspended && state.world !== this.identified)) return null;
-    this.identified = state.world;
-    if (state.restoring !== null) return null;
+    if (this.path === null || this.suspended || state.restoring !== null) return null;
     const text = viewText(state.world, state.focus);
     if (text === null || text === this.last || text === this.refused) return null;
     const problem = refusedView(text);
