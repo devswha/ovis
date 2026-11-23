@@ -465,12 +465,15 @@ export async function readOpenCodeToolInput(config: OpenCodeServiceConfig, sessi
 /**
  * The requests with the first one's command read from its call when it is a shell request: `resources` holds what the
  * permission rules match, pieces of the command (`a && b >> f` comes as `a` and `b`), so only the call's input says
- * what runs. A request read before keeps the input it had; the input of a running call does not change.
+ * what runs. A later read of the same request, naming the same call, reuses the input: a running call's input does not
+ * change.
  */
 export async function withShellInput(config: OpenCodeServiceConfig, requests: OpenCodePermissionRequest[] | null, known: readonly OpenCodePermissionRequest[] | null | undefined, signal?: AbortSignal): Promise<OpenCodePermissionRequest[] | null> {
   const first = requests?.[0];
   if (!requests || !first || first.action !== "shell" || !first.source) return requests;
-  const input = known?.find((request) => request.id === first.id && request.sessionID === first.sessionID)?.input
+  const { messageID, callID } = first.source;
+  const input = known?.find((request) => request.id === first.id && request.sessionID === first.sessionID
+    && request.source?.messageID === messageID && request.source.callID === callID)?.input
     ?? await readOpenCodeToolInput(config, first.sessionID, first.source, signal);
   return input ? [{ ...first, input }, ...requests.slice(1)] : requests;
 }

@@ -514,7 +514,7 @@ const recorded: Record<string, unknown>[] = (JSON.parse(readFileSync(join(import
   .events.filter((event) => event.type === "permission.asked").map((event) => ({ ...event.data, sessionID: "ses_fixture01" }));
 /** Shell requests a real OpenCode 2.2.2 asked, each with the message its call is in and the command that ran (server/fixtures/opencode-permission-command-2.2.2.json). */
 const commands = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-permission-command-2.2.2.json"), "utf8")) as {
-  cases: { condition: string; executed: string; permission: Record<string, unknown>; message: { data: { id: string; content: { state: { input: Record<string, unknown> } }[] } } }[];
+  cases: { condition: string; executed: string; permission: { id: string } & Record<string, unknown>; message: { data: { id: string; content: { state: { input: Record<string, unknown> } }[] } } }[];
 }).cases.map((recorded) => ({ ...recorded, permission: { ...recorded.permission, sessionID: "ses_fixture01" } }));
 const command = (condition: string) => commands.find((recorded) => recorded.condition === condition)!;
 const asked = (action: string): Record<string, unknown> => action === "shell" ? command("long").permission : recorded.find((request) => request.action === action)!;
@@ -556,7 +556,17 @@ describe("OpenCode permission card", () => {
     });
   });
 
-  it("shows the whole command a request's call runs, read once per request", async () => {
+  it("shows the command another call runs, though the request keeps its id", async () => {
+    await fixture(async (f) => {
+      f.forms = [];
+      f.permissions = [command("short").permission];
+      expect((await f.read()).body).toBe(`$ ${command("short").executed}`);
+      f.permissions = [{ ...command("long").permission, id: command("short").permission.id }];
+      expect((await f.read()).body).toBe(`$ ${command("long").executed}`);
+    });
+  });
+
+  it("shows the whole command a request's call runs, its message read again by no later read", async () => {
     await fixture(async (f) => {
       f.forms = [];
       for (const { permission, executed } of commands) {
