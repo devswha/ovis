@@ -37,14 +37,14 @@ export class ViewStore {
   /** the last text the reader would refuse: not checked again until the view changes */
   private refused: string | null = null;
   private failed = false;
-  /** the line changed and the core it reaches is not known yet: nothing is written until `open` names it */
+  /** During a line change only the snapshot already identified may still update the open file. */
+  private identified: ModelState["world"] | null = null;
   private suspended = false;
 
   constructor(private readonly folder: string, private readonly files: ViewFiles = DISK) {}
 
   /**
-   * The line to the core changed: the world shown next may be another core's, so `keep` writes nothing until `open`
-   * names the core that world belongs to.
+   * The line to the core changed. The displayed snapshot still belongs to the same file, but its replacement may not.
    */
   suspend(): void {
     this.suspended = true;
@@ -83,13 +83,15 @@ export class ViewStore {
   }
 
   /**
-   * Writes the view of `state` when it differs from what the file holds; not before `open`, not while suspended, not
+   * Writes the view of `state` when it differs from what the file holds; not before its owner is known, not
    * while a kept view waits to be applied, and never a view the next run would refuse to read (the file it replaces
    * stays). Answers the error's code, or the reader's problem with the view, the first time a write fails (later
    * failures say nothing), else null.
    */
   keep(state: ModelState): string | null {
-    if (this.path === null || this.suspended || state.restoring !== null) return null;
+    if (this.path === null || (this.suspended && state.world !== this.identified)) return null;
+    this.identified = state.world;
+    if (state.restoring !== null) return null;
     const text = viewText(state.world, state.focus);
     if (text === null || text === this.last || text === this.refused) return null;
     const problem = refusedView(text);

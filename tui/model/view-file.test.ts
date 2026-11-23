@@ -425,6 +425,23 @@ describe("a rerun of the screen on the same core", () => {
     expect(run.loop.model().notices.map((notice) => notice.code)).toEqual([]);
   }, TEST_MS);
 
+  it("exiting offline keeps the tab selected on the last known core", async () => {
+    const folder = scratch();
+    const core = new FakeHcCore();
+    demo.build(core);
+    const before = await first(core, folder);
+    await before.keys("ctrl+b,n");
+    expect(before.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
+    await before.cutLine();
+    await before.advance(1_000);
+    await before.keys("ctrl+b,n");
+    expect(before.loop.link.state.kind).toBe("Offline");
+    expect(before.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+    await close(before);
+    const again = await first(core, folder);
+    expect(again.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+  }, TEST_MS);
+
   it("the saved pane gone on the core: the screen opens on the next one and says so", async () => {
     const folder = scratch();
     const core = new FakeHcCore();
