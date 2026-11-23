@@ -178,7 +178,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
             ? myPcs(directory, devices, { now: listedFor.at, ...listedFor.projection, outdated: view.outdated() })
             : current?.kind === "signed-in" && current.pcs !== null ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });
           const known = readFor === undefined ? [] : knownPcs(readFor.account);
-          if (accountView?.kind === "signed-in") accountView = { ...accountView, pcs: kept, ...(known.length > 0 ? { known } : {}), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
+          // what is kept now replaces what an earlier failed read had, even none (another tab's read may have emptied it)
+          if (accountView?.kind === "signed-in") {
+            const { known: _earlier, ...view } = accountView;
+            accountView = { ...view, pcs: kept, ...(known.length > 0 ? { known } : {}), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
+          }
         }
       }
       if (live()) await changed();
