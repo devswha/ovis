@@ -1,0 +1,198 @@
+#![cfg(unix)]
+
+mod common;
+
+use common::*;
+use serde_json::json;
+
+const LIMIT: usize = 64 << 20;
+
+#[test]
+fn a_prompt_above_the_old_line_limit_reaches_the_agent() {
+    let root = Root::new("big-prompt");
+    let _keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    let text = format!("echo {}", "y".repeat(1_500_000));
+    client.send(&prompt(1, &session, &text));
+    let want = format!("echo bytes={}", text.len());
+    client.wait("the agent's echo of the 1.5 MB prompt", |r| chunk_text(r) == Some(want.as_str()));
+}
+
+#[test]
+fn a_line_over_the_limit_is_noted_and_its_request_answered() {
+    let root = Root::new("oversize");
+    let _keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+
+    let params = json!({"sessionId": session, "prompt": [{"type": "text", "text": "z".repeat(LIMIT)}]});
+    let line = format!("{{\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{params},\"id\":7}}");
+    client.send_raw(format!("{line}\n").as_bytes());
+    let note = client.wait("the note on the client's oversize line", |r| method(r) == Some("_keeper/oversize"));
+    assert_eq!(note["msg"]["params"]["dir"], "from-client");
+    assert_eq!(note["msg"]["params"]["bytes"], line.len());
+    assert_eq!(note["msg"]["params"]["id"], 7);
+    let answer = client.answer(json!(7));
+    assert_eq!(answer["msg"]["error"]["code"], -32600);
+
+    client.send(&prompt(8, &session, &format!("big {}", LIMIT + 10)));
+    let note = client.wait("the note on the agent's oversize line", |r| method(r) == Some("_keeper/oversize"));
+    assert_eq!(note["msg"]["params"]["dir"], "from-agent");
+    assert_eq!(note["msg"]["params"]["bytes"], LIMIT + 10);
+    client.turn_end("the turn after the agent's oversize line");
+}
+
+#[test]
+fn sigterm_ends_every_process_the_agent_started() {
+    let root = Root::new("sigterm");
+    let mut keeper = Keeper::start(&root, &["--linger"]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, &format!("helpers {}", root.0.display())));
+    client.turn_end("the helpers turn");
+    let agent = process_json(&root)["child"].as_i64().expect("child pid") as i32;
+    let (group, own_session) = helpers(&root);
+    let _reap = Reap(vec![agent, group, own_session]);
+
+    keeper.signal(libc::SIGTERM);
+    keeper.wait_exit();
+    assert!(wait_gone(agent), "the agent outlived the keeper");
+    assert!(wait_gone(group), "the helper in the agent's process group outlived the keeper");
+    if scope_available() {
+        assert!(wait_gone(own_session), "the helper in its own session outlived the keeper");
+    } else {
+        eprintln!("no user systemd scope here: the helper in its own session is not checked");
+    }
+}
+
+#[test]
+fn sigkill_of_the_keeper_takes_the_agent_with_it() {
+    let root = Root::new("sigkill");
+    let mut keeper = Keeper::start(&root, &["--linger"]);
+    Client::connect(&root).session();
+    let agent = process_json(&root)["child"].as_i64().expect("child pid") as i32;
+    let _reap = Reap(vec![agent]);
+
+    keeper.signal(libc::SIGKILL);
+    keeper.wait_exit();
+    assert!(wait_gone(agent), "the agent outlived a killed keeper");
+}
+
+#[test]
+fn restarts_in_the_same_root_and_loads_the_last_session() {
+    let root = Root::new("restart");
+    let mut first = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let opened = client.wait("the session note", |r| method(r) == Some("_keeper/session"));
+    let session = opened["msg"]["params"]["sessionId"].as_str().expect("session id").to_string();
+    drop(client);
+    first.signal(libc::SIGKILL);
+    first.wait_exit();
+
+    let _second = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let mut seqs = vec![];
+    let load = client.wait("the load of the last session", |r| {
+        r["dir"] == "to-agent" && method(r) == Some("session/load") && r["msg"]["params"]["sessionId"] == session.as_str()
+    });
+    assert!(load["seq"].as_u64() > opened["seq"].as_u64(), "the archive did not continue its numbering");
+    let mut client = Client::connect(&root);
+    client.wait("every row up to the load, in order", |r| {
+        seqs.push(r["seq"].as_u64().expect("seq"));
+        r["seq"] == load["seq"]
+    });
+    assert_eq!(seqs, (1..=load["seq"].as_u64().unwrap()).collect::<Vec<_>>());
+    client.wait("the loaded session's note", |r| method(r) == Some("_keeper/session") && r["seq"].as_u64() > load["seq"].as_u64());
+}
+
+#[test]
+fn restart_expires_the_dead_agents_pending_approval() {
+    let root = Root::new("expire");
+    let mut first = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, "ask"));
+    let asked = client.wait("the approval request", |r| r["dir"] == "from-agent" && method(r) == Some("session/request_permission"));
+    drop(client);
+    first.signal(libc::SIGKILL);
+    first.wait_exit();
+
+    let _second = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let expired = client.wait("the expiry of the old approval", |r| method(r) == Some("_keeper/expired"));
+    assert_eq!(expired["msg"]["params"]["id"], asked["msg"]["id"]);
+    assert_eq!(expired["msg"]["params"]["seq"], asked["seq"]);
+}
+
+#[test]
+fn restart_clears_what_the_dead_keeper_left_running() {
+    if !scope_available() {
+        eprintln!("no user systemd scope here: skipped");
+        return;
+    }
+    let root = Root::new("leftovers");
+    let mut first = Keeper::start(&root, &["--linger"]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, &format!("helpers {}", root.0.display())));
+    client.turn_end("the helpers turn");
+    let agent = process_json(&root)["child"].as_i64().expect("child pid") as i32;
+    let (group, own_session) = helpers(&root);
+    let _reap = Reap(vec![agent, group, own_session]);
+    drop(client);
+    first.signal(libc::SIGKILL);
+    first.wait_exit();
+
+    let _second = Keeper::start(&root, &[]);
+    assert!(wait_gone(group), "the helper in the dead agent's process group survived the restart");
+    assert!(wait_gone(own_session), "the helper in its own session survived the restart");
+}
+
+#[test]
+fn refuses_to_start_beside_a_live_keeper() {
+    let root = Root::new("twice");
+    let _first = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+
+    let (mut second, stderr) = spawn(&root.0, &[]);
+    let status = second.wait().expect("second keeper status");
+    let said = std::fs::read_to_string(&stderr).unwrap_or_default();
+    let _ = std::fs::remove_file(&stderr);
+    assert!(!status.success(), "a second keeper started on a live ROOT");
+    assert!(said.contains("running"), "the refusal names the running keeper: {said}");
+
+    client.send(&prompt(1, &session, "echo still here"));
+    client.wait("the first keeper's next turn", |r| chunk_text(r) == Some("echo bytes=15"));
+}
+
+#[test]
+fn request_ids_of_different_clients_do_not_collide() {
+    let root = Root::new("ids");
+    let _keeper = Keeper::start(&root, &[]);
+    let mut first = Client::connect(&root);
+    let session = first.session();
+    first.send(&prompt(1, &session, "hold"));
+    first.wait("the held prompt on its way", |r| r["dir"] == "to-agent" && method(r) == Some("session/prompt"));
+    drop(first);
+
+    let mut second = Client::connect(&root);
+    second.send(&prompt(1, &session, "echo second"));
+    let answer = second.answer(json!(1));
+    assert_eq!(answer["msg"]["result"]["stopReason"], "end_turn");
+    second.send(&prompt(2, &session, "release"));
+    second.answer(json!(2));
+
+    let mut answers_to_one = 0;
+    let mut late = Client::connect(&root);
+    let conn = second.conn;
+    let release = late.wait("the release turn's answer", |r| {
+        if r["dir"] == "to-client" && r["client"].as_u64() == conn && r["msg"]["id"] == 1 {
+            answers_to_one += 1;
+        }
+        r["dir"] == "to-client" && r["client"].as_u64() == conn && r["msg"]["id"] == 2
+    });
+    assert!(release["msg"]["result"].is_object());
+    assert_eq!(answers_to_one, 1, "the held prompt's late answer went to the second client as its id 1");
+}

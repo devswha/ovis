@@ -463,7 +463,45 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
-    use super::line_changes;
+    use super::{line_changes, Entry, Model};
+    use serde_json::json;
+
+    fn update(model: &mut Model, kind: &str, extra: serde_json::Value) {
+        let mut update = json!({"sessionUpdate": kind});
+        update.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        model.update(&json!({"sessionId": "s", "update": update}));
+    }
+
+    fn bytes(entry: &Entry) -> usize {
+        match entry {
+            Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) | Entry::Note(s) | Entry::Error(s) => s.len(),
+            Entry::Tool(tool) => tool.title.len() + tool.text.len(),
+            Entry::Plan(items) => items.iter().map(|(c, s)| c.len() + s.len()).sum(),
+        }
+    }
+
+    #[test]
+    fn keeps_a_bounded_tail_of_a_long_conversation() {
+        let mut model = Model::new("agent".into(), "/".into());
+        update(&mut model, "tool_call", json!({"toolCallId": "early", "title": "early tool"}));
+        let piece = "x".repeat(100 * 1024);
+        for n in 0..100 {
+            let kind = if n % 2 == 0 { "agent_message_chunk" } else { "agent_thought_chunk" };
+            update(&mut model, kind, json!({"content": {"type": "text", "text": format!("{piece}{n}")}}));
+        }
+        for n in 0..5000 {
+            model.note(format!("note {n}"));
+        }
+        update(&mut model, "tool_call_update", json!({"toolCallId": "early", "status": "completed"}));
+        let ask = json!({"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {"sessionId": "s", "toolCall": {"toolCallId": "early"}, "options": []}});
+        model.request("1".into(), json!(1), 1, ask.as_object().unwrap());
+        update(&mut model, "agent_message_chunk", json!({"content": {"type": "text", "text": "the end"}}));
+
+        let kept: usize = model.entries.iter().map(bytes).sum();
+        assert!(kept <= 1 << 20, "the screen keeps {kept} bytes of a 10 MB conversation");
+        assert!(model.entries.len() <= 1000, "the screen keeps {} entries", model.entries.len());
+        assert!(matches!(model.entries.iter().last(), Some(Entry::Agent(text)) if text == "the end"));
+    }
 
     #[test]
     fn counts_lines_like_a_diff() {

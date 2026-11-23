@@ -694,3 +694,53 @@ async fn run(opts: Opts) -> i32 {
         _ => 1,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    fn hub(dir: &Path) -> (Hub, UnboundedReceiver<Vec<u8>>) {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let archive = Arc::new(Archive::create(dir.join("archive.jsonl")).unwrap());
+        let (tx, rx) = unbounded_channel();
+        let opts = parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
+        let hub = Hub {
+            archive,
+            agent: Some(tx),
+            model: Model::new("agent".into(), "/".into()),
+            screen: None,
+            opts,
+            next: 0,
+            own: HashMap::new(),
+            inflight: HashSet::new(),
+            prompts: HashSet::new(),
+            started: Instant::now(),
+            drew: false,
+            quit: false,
+        };
+        (hub, rx)
+    }
+
+    #[test]
+    fn a_clients_mode_and_model_change_reaches_the_header() {
+        let dir = std::env::temp_dir().join(format!("ak-unit-{}-change", std::process::id()));
+        let (mut hub, mut sent) = hub(&dir);
+        hub.model.session = Some("s".into());
+        hub.model.session_result(&json!({
+            "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
+            "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
+        }));
+        let mut change = |hub: &mut Hub, id: u64, method: &str, params: Value| {
+            hub.handle(Ev::Client { conn: 1, line: json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string() });
+            let forwarded: Value = serde_json::from_slice(&sent.try_recv().expect("forwarded to the agent")).unwrap();
+            hub.handle(Ev::Agent(json!({"jsonrpc": "2.0", "id": forwarded["id"], "result": {}}).to_string()));
+        };
+        change(&mut hub, 5, "session/set_model", json!({"sessionId": "s", "modelId": "m2"}));
+        change(&mut hub, 6, "session/set_mode", json!({"sessionId": "s", "modeId": "code"}));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(hub.model.models.as_ref().unwrap().current, "m2");
+        assert_eq!(hub.model.modes.as_ref().unwrap().current, "code");
+    }
+}
