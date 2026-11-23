@@ -42,8 +42,9 @@ async function loaded(args: string[]) {
   extension({ on: (name: string, handler: Handler) => handlers.set(name, handler) });
   const dialogs: Dialog[] = [];
   const opened: (() => void)[] = [];
-  const ctx = (hasUI = true) => ({
-    hasUI,
+  const ctx = (mode: string) => ({
+    hasUI: mode !== "print",
+    mode,
     signal: undefined,
     ui: {
       select: (title: string, options: string[], opts: { signal: AbortSignal }) => new Promise<string | undefined>((resolve) => {
@@ -53,7 +54,7 @@ async function loaded(args: string[]) {
       }),
     },
   });
-  const call = (input: unknown, toolName = "bash", hasUI = true) => handlers.get("tool_call")!({ toolName, toolCallId: "call-1", input }, ctx(hasUI));
+  const call = (input: unknown, toolName = "bash", mode = "tui") => handlers.get("tool_call")!({ toolName, toolCallId: "call-1", input }, ctx(mode));
   return { call, dialogs, opened: () => new Promise<void>((resolve) => opened.push(resolve)) };
 }
 
@@ -114,11 +115,14 @@ describe.skipIf(!posix)("pi's approval hook", () => {
     expect(await asked).toBeUndefined();
   });
 
-  it("holds no other tool, and nothing without a UI to ask in", async () => {
+  // RPC mode has a UI too, whose dialogs wait on the RPC client
+  it("holds no other tool, and nothing outside pi's terminal UI", async () => {
     const { hub } = hubIn();
     const pi = await loaded(hub.launchArgs("pi", "p1", undefined, "1.4.0")!);
     expect(await pi.call({ path: "a.txt", content: "x" }, "write")).toBeUndefined();
-    expect(await pi.call({ command: "ls" }, "bash", false)).toBeUndefined();
+    expect(await pi.call({ command: "ls" }, "bash", "rpc")).toBeUndefined();
+    expect(await pi.call({ command: "ls" }, "bash", "print")).toBeUndefined();
+    expect(hub.held("p1")).toEqual([]);
     expect(await pi.call({}, "bash")).toBeUndefined();
     expect(pi.dialogs).toEqual([]);
   });
@@ -167,6 +171,11 @@ if (runs > 2) process.stdout.write(process.argv[2]!);
       .replace("Command: $ touch qa-allow-1.flag", "Command: $ touch qa-allow-2.flag"))!;
     expect(other.body).toBe("touch qa-allow-2.flag");
     expect(other.id).not.toBe(prompt.id);
+    // lines like OmO's patterns are the command's own in pi's dialog, which has none
+    const quoted = "printf 'notes\n\nPatterns:\n  - example'";
+    const own = parseInteractivePrompt("pi", readFileSync(new URL("../fixtures/pi-permission-1.4.0.txt", import.meta.url), "utf8")
+      .replace("Command: $ touch qa-allow-1.flag", `Command: $ ${quoted}`))!;
+    expect(parsedByPublicPrompt.get(own)?.approvalCommand).toBe(quoted);
     expect(permissionDecision("Allow once")).toBe("allow");
     expect(permissionDecision("Deny")).toBe("deny");
     expect(permissionDecision("Allow always")).toBeNull();

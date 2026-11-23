@@ -109,9 +109,10 @@ function permissionCommand(lines: string[], top: number, labels: string[]): stri
   if (header < 0) return start === 0 && labels[0] === "Allow once" && labels.includes("Deny") ? null : undefined;
   const first = block.findIndex((line, index) => index > header && PERMISSION_COMMAND_RE.test(line));
   if (first < 0) return undefined;
-  // OmO's patterns: the last `Patterns:` line after a blank one with only list items under it
+  // OmO's patterns, in OmO's dialog only (its options go past Allow once and Deny; pi's extension draws none): the last
+  // `Patterns:` line after a blank one with only list items under it. In pi's, such lines are the command's own
   let last = block.length;
-  const patterns = findLastIndex(block, (line) => cleanLine(line) === "Patterns:");
+  const patterns = labels.includes("Allow always") ? findLastIndex(block, (line) => cleanLine(line) === "Patterns:") : -1;
   if (patterns > first + 1 && !cleanLine(block[patterns - 1]!) && block.slice(patterns + 1).every((line) => /^\s*- \S/.test(line))) last = patterns - 1;
   const command = [block[first]!.replace(PERMISSION_COMMAND_RE, ""), ...block.slice(first + 1, last)];
   while (command.length > 1 && !cleanLine(command.at(-1)!)) command.pop();

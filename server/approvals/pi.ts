@@ -5,8 +5,9 @@
  * (`Permission required: bash`, then `Command: $ <command>`, which dialogs/pi.ts reads), and through the hub, for
  * Ovis's card. Whichever answers first wins and closes the other. The dialog is what keeps a request Ovis can no longer
  * answer (stopped, or restarted with other keys) from being lost: it waits in pi's terminal, and on Ovis's card read
- * from the screen. Without a UI to draw it (pi's print and RPC modes) the extension holds nothing, as pi without it.
- * Measured on pi 1.4.0 (`tool_call`'s `{ block, reason }`, `ctx.ui.select` with a signal, `ctx.signal`).
+ * from the screen. Outside pi's terminal UI (`ctx.mode` other than "tui": its print mode, and its RPC mode, whose
+ * dialogs wait on the RPC client) the extension holds nothing, as pi without it. Measured on pi 1.4.0 (`tool_call`'s
+ * `{ block, reason }`, `ctx.ui.select` with a signal, `ctx.signal`, `ctx.mode`).
  */
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import { ALLOW_LABEL, DENY_LABEL, extensionApprovals } from "./extension.ts";
@@ -17,7 +18,7 @@ const GLUE = `
 export default function ovisApprovals(pi) {
   pi.on("tool_call", async (event, ctx) => {
     const command = event?.input?.command;
-    if (event?.toolName !== "bash" || typeof command !== "string" || !ctx?.hasUI) return undefined;
+    if (event?.toolName !== "bash" || typeof command !== "string" || ctx?.mode !== "tui") return undefined;
     const closing = new AbortController();
     const signal = ctx.signal ? AbortSignal.any([closing.signal, ctx.signal]) : closing.signal;
     let decision;
