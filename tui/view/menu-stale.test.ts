@@ -115,3 +115,41 @@ it.each(["joined", "split"])("Escape dismisses a stale menu without leaking trai
   await run.settle();
   expect(run.core.program("t1").receivedHex()).toBe("7a");
 }, 60_000);
+
+it.each(["before repaint", "after repaint"])("a stale menu dismissal preserves a program's matching mouse release: %s", async (ordering) => {
+  const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });
+  runs.push(run);
+  await run.live();
+  const program = run.core.program("t1");
+  program.output("\x1b[?1002h\x1b[?1006h");
+  await run.advance(200);
+  run.type("\x1b[<0;31;6M");
+  await run.settle();
+  const press = "\x1b[<0;6;4M";
+  expect(program.receivedHex()).toBe(Buffer.from(press).toString("hex"));
+  run.type("\x02\r");
+  await run.advance(FRAME_PASS_MS);
+  run.type("\x1b[B");
+  await run.settle();
+  const painted = run.grid();
+  expect(painted.some((row) => row.includes("4 · tab") && row.includes("logs"))).toBe(true);
+  // Removing a background tab leaves the pressed program's size and attach unchanged.
+  run.core.remove("t3");
+  await run.settle();
+  expect(run.grid()).toEqual(painted);
+  run.type("4\x1b[27u");
+  await run.settle();
+  expect(run.loop.report().mode.overlays).toEqual([]);
+  // Motion, wheel and a new press must neither reach the program nor replace its existing grab.
+  run.type("\x1b[<32;32;6M\x1b[<64;31;6M\x1b[<2;31;6M");
+  if (ordering === "after repaint") await run.advance(FRAME_PASS_MS);
+  run.type("\x1b[<0;32;6m");
+  await run.settle();
+  const gesture = Buffer.from(press + "\x1b[<0;7;4m").toString("hex");
+  expect(program.receivedHex()).toBe(gesture);
+  // The matching release ended the grab. Neither an orphan drag nor another release may continue it.
+  await run.advance(FRAME_PASS_MS);
+  run.type("\x1b[<32;33;6M\x1b[<0;33;6m");
+  await run.settle();
+  expect(program.receivedHex()).toBe(gesture);
+}, 60_000);

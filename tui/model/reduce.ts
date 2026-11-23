@@ -397,9 +397,9 @@ function restore(acc: Acc, core: string | null, at: number): void {
 }
 
 function mouse(acc: Acc, event: MouseInput): void {
-  if (acc.s.menuDismissed && acc.s.overlays.length === 0) return;
+  if (acc.s.menuDismissed && acc.s.overlays.length === 0 && event.action !== "release") return;
   if (event.action === "press") disarm(acc);
-  const over = acc.s.overlays.length > 0 ? "overlay" : "screen";
+  const over = acc.s.overlays.length > 0 || acc.s.menuDismissed ? "overlay" : "screen";
   acc.levels.push(over === "overlay" ? 2 : 6);
   acc.effects.push({ type: "mouse", over, event });
 }
