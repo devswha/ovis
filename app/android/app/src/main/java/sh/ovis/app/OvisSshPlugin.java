@@ -84,9 +84,7 @@ public class OvisSshPlugin extends Plugin {
         // the hosted app's front page of a release before HerdrShell openSshSetup calls this itself: it gets what that
         // gives, the setup screen over the page (MainActivity.openSshSetup). Any other PC's page is refused
         if (getBridge().getServerUrl() != null) {
-            String user = call.getString("user"), host = call.getString("host");
-            Integer asked = call.getInt("port");
-            String target = user == null || host == null ? "" : user + "@" + host + (asked == null || asked == 22 ? "" : ":" + asked);
+            String target = SshPcs.target(call.getString("user"), call.getString("host"), call.getInt("port"));
             getActivity().runOnUiThread(() -> {
                 if (target.length() > 300 || !SshPcs.setupOpener(getBridge().getWebView().getUrl(), false, BuildConfig.APP_ORIGIN)) {
                     call.reject("Only the app's own pages manage SSH PCs.");

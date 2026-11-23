@@ -219,7 +219,7 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
         // lets that one call through): it gets what that gives, the setup sheet over the page. Any other PC's page is
         // refused
         if bridge?.webView?.url?.scheme != "capacitor" {
-            let target = user.flatMap { user in host.map { "\(user)@\($0)\(port.map { $0 == 22 ? "" : ":\($0)" } ?? "")" } } ?? ""
+            let target = SshPcs.target(user: user, host: host, port: port)
             guard target.count <= 300, SshPcs.setupOpener(bridge?.webView?.url, appOrigin: PCStore.appOrigin) else {
                 call.reject("Only the app's own pages manage SSH PCs.")
                 return

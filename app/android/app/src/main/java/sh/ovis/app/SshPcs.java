@@ -361,6 +361,16 @@ final class SshPcs {
     }
 
     /**
+     * OvisSsh add's user, host and port (the hosted front page of a release gives them apart) as the login openSshSetup
+     * takes, which login reads back: an IPv6 host in brackets, port 22 left out; "" without both a user and a host.
+     */
+    static String target(String user, String host, Integer port) {
+        if (user == null || host == null) return "";
+        String shown = host.contains(":") && !host.startsWith("[") ? "[" + host + "]" : host;
+        return user + "@" + shown + (port == null || port == 22 ? "" : ":" + port);
+    }
+
+    /**
      * Whether the page loaded at `url` may open the SSH setup (HerdrShell openSshSetup): the app's own pages (the connect
      * screen, which has no server URL, so `null` here) or the hosted app (`appOrigin`), never a PC's page.
      */

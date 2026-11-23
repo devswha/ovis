@@ -37,6 +37,19 @@ public class SshLinkTest {
     }
 
     @Test
+    public void writesOvisSshAddsFieldsAsALoginTheSetupScreenReadsBack() {
+        // the hosted front page's OvisSsh.add gives user, host and port apart: an IPv6 host goes in brackets
+        org.junit.Assert.assertArrayEquals(new String[] { "me", "fd7a:115c:a1e0::1", "2222" }, SshPcs.login(SshPcs.target("me", "fd7a:115c:a1e0::1", 2222)));
+        assertEquals("me@[fd7a:115c:a1e0::1]", SshPcs.target("me", "fd7a:115c:a1e0::1", 22));
+        assertEquals("me@[fd7a:115c:a1e0::1]:2222", SshPcs.target("me", "[fd7a:115c:a1e0::1]", 2222));
+        assertEquals("pi@192.168.0.20:2222", SshPcs.target("pi", "192.168.0.20", 2222));
+        assertEquals("me@studio.lan", SshPcs.target("me", "studio.lan", null));
+        // without both, nothing to fill in
+        assertEquals("", SshPcs.target(null, "studio.lan", 22));
+        assertEquals("", SshPcs.target("me", null, 22));
+    }
+
+    @Test
     public void onlyTheAppsOwnPagesAndTheHostedAppOpenTheSshSetup() {
         assertTrue(SshPcs.setupOpener(null, true, STORE));
         assertTrue(SshPcs.setupOpener("https://app.ovis.sh/#pcs", false, STORE));

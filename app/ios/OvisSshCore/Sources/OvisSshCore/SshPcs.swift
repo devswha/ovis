@@ -208,6 +208,14 @@ public final class SshPcs {
         return (user, host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")), port)
     }
 
+    /// OvisSsh add's user, host and port (the hosted front page of a release gives them apart) as the login openSshSetup
+    /// takes, which `login` reads back: an IPv6 host in brackets, port 22 left out; "" without both a user and a host.
+    public static func target(user: String?, host: String?, port: Int?) -> String {
+        guard let user, let host else { return "" }
+        let shown = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return "\(user)@\(shown)\(port.map { $0 == 22 ? "" : ":\($0)" } ?? "")"
+    }
+
     /// Whether the page loaded at `url` may open the SSH setup (HerdrShell openSshSetup): the app's own bundled pages
     /// (`capacitor://localhost`) or the hosted app at `appOrigin` (the build's, https://app.ovis.sh in a store build),
     /// never a PC's page.
