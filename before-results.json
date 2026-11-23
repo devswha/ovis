@@ -1,0 +1,100 @@
+[
+  {
+    "name": "long1",
+    "command": "find /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+    "bound": false,
+    "prompt": {
+      "id": "b46eb678ca39",
+      "agent": "claude",
+      "kind": "approval",
+      "title": "2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+      "question": "Do you want to proceed?",
+      "body": "Bash command\nTip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\nRun the command contents from cmds/long1.txt verbatim\nfind /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n'\n2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+      "options": [
+        {
+          "label": "Yes",
+          "description": null
+        },
+        {
+          "label": "Yes, and allow access to /usr/share/doc and \"awk '{print $1, $2, $3}'\" commands",
+          "description": null
+        },
+        {
+          "label": "Yes, and switch to auto mode · auto mode handles these prompts for you",
+          "description": null
+        },
+        {
+          "label": "No",
+          "description": null
+        }
+      ],
+      "multi_select": false,
+      "custom_option_index": null
+    },
+    "verbatim": false,
+    "shots": {
+      "pc": {
+        "title": "2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+        "text": "Bash command\nTip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\nRun the command contents from cmds/long1.txt verbatim\nfind /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n'\n2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+        "overflowsSideways": true,
+        "endInsideHorizontally": true
+      },
+      "phone": {
+        "title": "2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+        "text": "Bash command\nTip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\nRun the command contents from cmds/long1.txt verbatim\nfind /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n'\n2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+        "overflowsSideways": true,
+        "endInsideHorizontally": false
+      }
+    },
+    "answered": 200
+  },
+  {
+    "name": "long2",
+    "command": "ls -la ~/Documents ~/Downloads ~/Music ~/Pictures ~/Public ~/Templates ~/Videos /usr/share/doc/bash /usr/share/doc/coreutils /etc/hostname /etc/os-release",
+    "bound": true,
+    "prompt": {
+      "id": "3fd3d0478119.9bf30f93c90023c6",
+      "agent": "claude",
+      "kind": "approval",
+      "title": "Bash command",
+      "question": "Do you want to proceed?",
+      "body": "Run the command listed in cmds/long2.txt unchanged\nls -la ~/Documents ~/Downloads ~/Music ~/Pictures ~/Public ~/Templates ~/Videos /usr/share/doc/bash /usr/share/doc/coreutils /etc/hostname /etc/os-release",
+      "options": [
+        {
+          "label": "Yes",
+          "description": null
+        },
+        {
+          "label": "Yes, allow reading from /home/devswha/Documents from this project",
+          "description": null
+        },
+        {
+          "label": "Yes, and switch to auto mode · auto mode handles these prompts for you",
+          "description": null
+        },
+        {
+          "label": "No",
+          "description": null
+        }
+      ],
+      "multi_select": false,
+      "custom_option_index": null
+    },
+    "verbatim": true,
+    "shots": {
+      "pc": {
+        "title": "Bash command",
+        "text": "Run the command listed in cmds/long2.txt unchanged\nls -la ~/Documents ~/Downloads ~/Music ~/Pictures ~/Public ~/Templates ~/Videos /usr/share/doc/bash /usr/share/doc/coreutils /etc/hostname /etc/os-release",
+        "overflowsSideways": true,
+        "endInsideHorizontally": false
+      },
+      "phone": {
+        "title": "Bash command",
+        "text": "Run the command listed in cmds/long2.txt unchanged\nls -la ~/Documents ~/Downloads ~/Music ~/Pictures ~/Public ~/Templates ~/Videos /usr/share/doc/bash /usr/share/doc/coreutils /etc/hostname /etc/os-release",
+        "overflowsSideways": true,
+        "endInsideHorizontally": false
+      }
+    },
+    "answered": 200
+  }
+]

@@ -1,0 +1,52 @@
+[
+  {
+    "name": "long1",
+    "command": "find /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+    "screen": "\n ▐▛███▛█   Claude Code v2.1.330\n▝▜██████▀  Haiku 5.5 · API Usage Billing\n ▝▝   ▝▝   ~/.cache/ovis-tmp/claude-hook-card/qa/after-screen/project\n\n\n❯ Read the file cmds/long1.txt and run its whole content as ONE Bash tool call, byte for byte, without changing\n  anything. Then reply only: done\n\n  Running command from cmds/long1.txt verbatim\n  ⎿  cmds/long1.txt\n\n───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n Bash command\n Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\n Run command from cmds/long1.txt verbatim\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n │ find /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n'\n │ 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n This command requires approval\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and allow access to /usr/share/doc and \"awk '{print $1, $2, $3}'\" commands\n   3. Yes, and switch to auto mode · auto mode handles these prompts for you\n   4. No\n\n Esc to cancel · Tab to amend\n",
+    "bound": true,
+    "prompt": {
+      "id": "26ef29d1b378.b4c5376a14510fb0",
+      "agent": "claude",
+      "kind": "approval",
+      "title": "Bash command",
+      "question": "Do you want to proceed?",
+      "body": "Run command from cmds/long1.txt verbatim\nfind /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+      "options": [
+        {
+          "label": "Yes",
+          "description": null
+        },
+        {
+          "label": "Yes, and allow access to /usr/share/doc and \"awk '{print $1, $2, $3}'\" commands",
+          "description": null
+        },
+        {
+          "label": "Yes, and switch to auto mode · auto mode handles these prompts for you",
+          "description": null
+        },
+        {
+          "label": "No",
+          "description": null
+        }
+      ],
+      "multi_select": false,
+      "custom_option_index": null
+    },
+    "verbatim": true,
+    "shots": {
+      "pc": {
+        "title": "Bash command",
+        "text": "Run command from cmds/long1.txt verbatim\nfind /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+        "overflowsSideways": false,
+        "endInsideHorizontally": true
+      },
+      "phone": {
+        "title": "Bash command",
+        "text": "Run command from cmds/long1.txt verbatim\nfind /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'",
+        "overflowsSideways": false,
+        "endInsideHorizontally": true
+      }
+    },
+    "answered": 200
+  }
+]
