@@ -102,7 +102,7 @@ public class OvisSshPlugin extends Plugin {
         JSObject answer = new JSObject();
         answer.put("added", result.getResultCode() == Activity.RESULT_OK);
         call.resolve(answer);
-        if (result.getResultCode() == Activity.RESULT_OK) getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).reopen());
+        if (result.getResultCode() == Activity.RESULT_OK) getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).reopen(PCStore.current(getContext())));
     }
 
     /** The SSH PCs, by origin: how each is reached and signs in, and its host key's fingerprint ("" once forgotten). */
