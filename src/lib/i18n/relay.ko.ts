@@ -176,9 +176,7 @@ export const RELAY_KO: Record<string, string> = {
   "Connect this phone to the internet to open the PC.": "PC를 열려면 휴대폰을 인터넷에 연결하세요.",
   "Connect this device to the internet to open the PC.": "PC를 열려면 기기를 인터넷에 연결하세요.",
   "Account PC": "계정의 PC",
-  "Remove it in Manage account": "계정 관리에서 뺄 수 있어요",
-  "SSH PC": "SSH로 추가한 PC",
-  "Not removed here": "여기서는 못 지워요",
+  "SSH PC": "SSH의 PC",
   "This is the PC in use now. Forget every way it is saved ({ways})?": "지금 쓰는 PC예요. 저장된 방법({ways})을 모두 지울까요?",
   "Forget every way this PC is saved ({ways})?": "이 PC의 저장된 방법({ways})을 모두 지울까요?",
 };

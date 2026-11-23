@@ -1684,7 +1684,7 @@ describe("the hosted front page", () => {
       });
     });
 
-    it("says, in Forget PCs, why a row has no Forget: an account PC goes in Manage account, an SSH PC not here", async () => {
+    it("says, in Forget PCs, in Forget's place, why a row has none: an account PC, an SSH PC", async () => {
       await withApp(async () => {
         app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
           method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net", "http://127.0.0.1:41234"], names: { "http://127.0.0.1:41234": "lab-linux" } } : {});
@@ -1694,7 +1694,9 @@ describe("the hosted front page", () => {
         expect(reasons()).toEqual([]);
         await forgetPcs();
         expect(forgets().map((node) => node.props["aria-label"])).toEqual(["Forget desk"]);
-        expect(reasons()).toEqual([["account", "Account PC · Remove it in Manage account"], ["ssh", "SSH PC · Not removed here"]]);
+        // in Forget's place, in a few words: the row keeps its height
+        expect(reasons()).toEqual([["account", "Account PC"], ["ssh", "SSH PC"]]);
+        expect(renderer!.root.findAll((node) => node.props["data-kept"] !== undefined && shown(node)).map((node) => node.parent?.props.className)).toEqual(["my-pc", "my-pc"]);
       });
     });
 
@@ -1718,6 +1720,8 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         // the Mac once, its Tailscale address on its row; a PC saved with no ID stays its own row, whatever its name
         expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscalemacbookpro.tail1e211e.ts.net:17317"], ["tailscale", "hasang-uui-MacBookProTailscaledesk.tail1e211e.ts.net"]]);
+        // the address of a row of several ways is its own line, drawn only where it fits whole (a wide screen)
+        expect(renderer!.root.findAll((node) => node.type === "span" && typeof node.props.className === "string" && node.props.className.startsWith("my-pc-address")).map((node) => node.props.className)).toEqual(["my-pc-address my-pc-address-more", "my-pc-address"]);
         // its Tailscale page loaded last in the app: the row opens it there
         await act(async () => { openers()[0]!.props.onClick(); });
         await act(async () => { await Promise.resolve(); });

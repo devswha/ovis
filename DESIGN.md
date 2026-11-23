@@ -5160,13 +5160,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Tailscale, SSH, Address) and, for a relay PC, On, Off or Update needed (never Needs approval: a PC this device is not
   let into yet asks for that on its own page; a pairing of this phone's is On once its own check or the directory says
   so), its name alone on the first line, ending in an ellipsis only where it does not fit there (the state word sits on
-  the second line with the way tag, beside the name only on the wide screen), and **Add PC** pinned at the bottom while
+  the second line with the way tag, beside the name only on the wide screen), an address never cut (it goes under the
+  way tag when it does not fit beside it; a row of several ways shows none on a phone, where its tags say enough, and
+  gives it a line of its own on the wide screen), and **Add PC** pinned at the bottom while
   the list scrolls, as the Claude app keeps New chat in reach over its list. No row carries Forget: the ⋮ menu (there whenever a row can be
   forgotten, signed in or not) has Forget PCs, after which each row this phone can forget shows Forget in its chevron's
   place and no row opens, until Done in Add PC's place; Forget on the PC in use asks once more in the row (This is the
-  PC in use now. Forget it?). A row this screen cannot forget says why in grey under it instead of showing nothing: an
-  account PC this device has no pairing for (Account PC · Remove it in Manage account; no way to remove it is added
-  here) and an SSH PC, which goes with its keys from the app's own screen only (SSH PC · Not removed here). With no PC on it is the same
+  PC in use now. Forget it?). A row this screen cannot forget says why in Forget's place, in grey, so the row keeps its
+  height: Account PC (one this device has no pairing for; no way to remove it is added here) or SSH PC (which goes with
+  its keys from the app's own screen only). With no PC on it is the same
   list, the rows Off under No PC is online and Check again; with none in the account yet, the list says to sign in with
   the same account on the PC where Ovis runs, over Add PC (#16 drew both as a page of their own). On a screen 1024 px
   wide or more the two stand side by side: My PCs on the left and Add a PC always open on the right in a panel, each

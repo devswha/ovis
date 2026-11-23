@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Plus, QrCode } from "lucide-react";
 
 import { useT } from "../lib/i18n.ts";
@@ -141,9 +141,14 @@ interface PhonePc {
   readonly onLink?: (event: { preventDefault(): void }) => void;
   readonly open?: () => void;
   readonly forget?: (() => void) | undefined;
-  /** why a row has no Forget here, said in Forget PCs: an account PC (removed in Manage account), an SSH PC (with its keys, not here) */
+  /** why a row has no Forget here, said in its place in Forget PCs: an account PC, or an SSH PC (which goes with its keys) */
   readonly kept?: "account" | "ssh" | undefined;
   readonly data?: Readonly<Record<string, string>>;
+}
+
+/** An address that may break onto the next line after each of its dots, before it breaks anywhere else. */
+function atDots(address: string): ReactNode {
+  return address.split(".").map((part, at) => at === 0 ? part : <Fragment key={at}>.<wbr />{part}</Fragment>);
 }
 
 /**
@@ -167,7 +172,7 @@ function PcRow({ pc, editing = false, asking = false, onAsk, onKeep }: { readonl
         <span className="relay-add-saved-name">{pc.name}</span>
         <span className="phone-pc-meta">
           <span className="phone-pc-tag">{tag}</span>
-          {pc.address !== undefined && pc.address !== pc.name && <span className="my-pc-address">{pc.address}</span>}
+          {pc.address !== undefined && pc.address !== pc.name && <span className={(pc.ways?.length ?? 1) > 1 ? "my-pc-address my-pc-address-more" : "my-pc-address"}>{atDots(pc.address)}</span>}
         </span>
       </span>
       {word !== null && <span className="relay-add-saved-note my-pc-state" data-pc-state={pc.word}>{dot && <StatusDot state={dot} size="inline" />}{word}</span>}
@@ -181,7 +186,7 @@ function PcRow({ pc, editing = false, asking = false, onAsk, onKeep }: { readonl
       {editing ? <div className="relay-add-saved-pc is-editing">{inside}</div>
         : pc.href !== undefined ? <a className="relay-add-saved-pc" href={pc.href} onClick={pc.onLink}>{inside}</a>
         : <button type="button" className="relay-add-saved-pc" onClick={pc.open}>{inside}</button>}
-      {kept !== undefined && <p className="my-pc-kept" data-kept={kept}>{kept === "account" ? `${t("Account PC")} · ${t("Remove it in Manage account")}` : `${t("SSH PC")} · ${t("Not removed here")}`}</p>}
+      {kept !== undefined && <span className="my-pc-kept" data-kept={kept}>{kept === "account" ? t("Account PC") : t("SSH PC")}</span>}
       {forget && <button type="button" className="btn btn-ghost phone-pc-forget" data-action="forget-pc" aria-label={t("Forget {name}", { name: pc.name })} aria-expanded={asks ? asking : undefined} onClick={asks ? onAsk : forget}>{t("Forget|this phone's PC")}</button>}
       {forget && asking && (
         <div className="my-pc-ask" role="group" aria-label={pc.name} data-forget-ask="">
