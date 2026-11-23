@@ -161,6 +161,12 @@ if (runs > 2) process.stdout.write(process.argv[2]!);
     const prompt = parseInteractivePrompt("pi", readFileSync(new URL("../fixtures/pi-permission-1.4.0.txt", import.meta.url), "utf8"))!;
     expect(prompt).toMatchObject({ kind: "question", question: "Permission required: bash", options: [{ label: "Allow once" }, { label: "Deny" }] });
     expect(parsedByPublicPrompt.get(prompt)?.approvalCommand).toBe("touch qa-allow-1.flag");
+    // a card read from the screen alone (no held request) shows the command, and one read for another command is another card
+    expect(prompt.body).toBe("touch qa-allow-1.flag");
+    const other = parseInteractivePrompt("pi", readFileSync(new URL("../fixtures/pi-permission-1.4.0.txt", import.meta.url), "utf8")
+      .replace("Command: $ touch qa-allow-1.flag", "Command: $ touch qa-allow-2.flag"))!;
+    expect(other.body).toBe("touch qa-allow-2.flag");
+    expect(other.id).not.toBe(prompt.id);
     expect(permissionDecision("Allow once")).toBe("allow");
     expect(permissionDecision("Deny")).toBe("deny");
     expect(permissionDecision("Allow always")).toBeNull();

@@ -212,14 +212,16 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
   const labels = rows.map((row) => row[2]!.trim());
   const confirming = labels.length === 2 && /^yes\b/i.test(labels[0]!) && /^no\b/i.test(labels[1]!);
   const approvalCommand = confirming ? undefined : permissionCommand(lines, block.top, labels);
-  // a permission dialog asks what its header says; the lines over its rows are the end of its command or patterns
+  // a permission dialog asks what its header says, about the command it shows, which is the card's body and in its id:
+  // a card read for one command is never another's. The lines over its rows are only the end of its command or patterns
+  const permission = typeof approvalCommand === "string";
   const text = (words: string[]) => confirming
     ? { title: ownLine(words), question: restOf(words) ?? ownLine(words) }
-    : { title: "", question: typeof approvalCommand === "string" ? PERMISSION_HEADER : words.join(" ") };
+    : permission ? { title: "", question: PERMISSION_HEADER, body: approvalCommand } : { title: "", question: words.join(" ") };
   return finishPrompt("pi", {
     kind: confirming ? "approval" : "question",
-    ...text(block.title),
     body: null,
+    ...text(block.title),
     options: labels.map((label) => ({ label, description: null })),
     multi_select: false,
     custom_option_index: null,

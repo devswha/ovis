@@ -1187,7 +1187,9 @@ async function readKnownPrompt(
   // OmO pane `pi` while OmO waits: told apart by its process tree, it keeps the card other agents get
   if (agent === "pi" && (prompt === null || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback"))
     && !(await paneRunsOmo(paneId).catch(() => false))) return { prompt: null, screen, suppressFallback: true };
-  if (agent === "pi" && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
+  // a command approval stays: its held request is answered through the approval hub with no key, and a key for it is
+  // still refused before it goes (beforeKey)
+  if (agent === "pi" && approvalDialog(prompt) === null && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc" && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
