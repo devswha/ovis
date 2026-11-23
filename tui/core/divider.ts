@@ -1,7 +1,8 @@
 /**
  * A split divider dragged with the mouse: named by the panes on its two sides so it can be found again on a
  * document someone else changed meanwhile, drawn ahead at the newest ratio while the drag lasts, and written to
- * the core's layout document with one write in flight at a time and the newest ratio kept for the next.
+ * the core's layout document with one write in flight at a time, across every divider, and each divider's newest
+ * ratio kept for its next.
  */
 import { type LayoutNode, leaves, type OvisLayout, setRatio, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
 import { type Edited, ratioEdit } from "../../server/herdr-core/layout-ops.ts";
@@ -63,25 +64,44 @@ export interface DividerWritesOptions {
   edit: (change: (layout: OvisLayout) => Edited) => Promise<{ changed: boolean; reason: string | null }>;
   /** a write did not land; the drag's local ratio is dropped */
   refused: (refusal: DividerRefusal) => void;
+  /** the core's own tree of tab `tab` as it stands now, with no local ratio in it; undefined where it shows no such tab */
+  tree: (tab: string) => LayoutNode | undefined;
 }
 
 interface Drag {
-  readonly grab: number;
+  /** the newest grab of this divider */
+  grab: number;
   readonly tab: string;
   readonly name: DividerName;
   ratio: number;
   /** the ratio of the write in flight or the last one answered */
   sent: number | null;
-  inFlight: boolean;
   /** the button was released */
   done: boolean;
-  /** once released and answered: the shown tree it was drawn over, kept until that tree changes */
-  over: string | null;
+  /**
+   * The core's tree as last seen before its newest ratio was answered, at a move (the release included) or a draw
+   * of its tab: once released and answered, the local ratio is drawn until the core's tree differs from it, also
+   * when its tab was not drawn between the release and that change
+   */
+  over: LayoutNode | null;
 }
 
-/** The drags of one screen: one at a time; a new grab replaces the old one's local ratio. */
+/** Whether two trees differ; the same object (the core's view unchanged) needs no comparison. */
+const differ = (one: LayoutNode, other: LayoutNode): boolean => one !== other && JSON.stringify(one) !== JSON.stringify(other);
+
+const sameDivider = (drag: Drag, tab: string, name: DividerName): boolean =>
+  drag.tab === tab && drag.name.first === name.first && drag.name.second === name.second && drag.name.direction === name.direction;
+
+/**
+ * The drags of one screen, one record a divider: a divider grabbed again takes its record over, and a divider whose
+ * newest ratio is not written yet keeps it while another one is dragged. Every edit reads and writes the whole
+ * document, so one is in flight at a time across all of them.
+ */
 export class DividerWrites {
-  private drag: Drag | null = null;
+  /** the dividers drawn at a local ratio, oldest first */
+  private drags: Drag[] = [];
+  /** the drag whose write is in flight */
+  private writing: Drag | null = null;
   /** grabs whose divider was gone or whose write was refused: their later moves write nothing */
   private ended = -1;
 
@@ -90,45 +110,66 @@ export class DividerWrites {
   /** The pointer moved the divider of grab `grab` to `ratio`; `done` when the button was released there. */
   move(grab: number, tab: string, name: DividerName, ratio: number, done: boolean): void {
     if (grab <= this.ended) return;
-    if (this.drag?.grab !== grab) this.drag = { grab, tab, name, ratio, sent: null, inFlight: false, done, over: null };
-    this.drag.ratio = ratio;
-    this.drag.done = done;
-    this.write(this.drag);
-  }
-
-  /** The tab's shape as drawn: the dragged divider at its local ratio while the drag lasts and until the tree changes after it. */
-  shape(tab: string, shape: TabShape | undefined): TabShape | undefined {
-    const drag = this.drag;
-    if (!drag || drag.tab !== tab || !shape) return shape;
-    if (drag.done && !drag.inFlight && drag.sent === drag.ratio) {
-      const seen = JSON.stringify(shape.root);
-      drag.over ??= seen;
-      if (drag.over !== seen) {
-        this.drag = null;
-        return shape;
-      }
+    let drag = this.drags.find((one) => sameDivider(one, tab, name));
+    if (!drag) {
+      drag = { grab, tab, name, ratio, sent: null, done, over: null };
+      this.drags.push(drag);
     }
-    const path = dividerPath(shape.root, drag.name);
-    const root = path && setRatio(shape.root, path, drag.ratio);
-    return root ? { ...shape, root } : shape;
+    drag.grab = grab;
+    drag.ratio = ratio;
+    drag.done = done;
+    drag.over = this.options.tree(tab) ?? drag.over;
+    this.write();
   }
 
-  private write(drag: Drag): void {
-    if (drag.inFlight || drag.sent === drag.ratio) return;
-    drag.inFlight = true;
+  /** The tab's shape as drawn: each dragged divider at its local ratio while its drag lasts and until the tree changes after it. */
+  shape(tab: string, shape: TabShape | undefined): TabShape | undefined {
+    if (!shape) return shape;
+    let root = shape.root;
+    for (const drag of [...this.drags]) {
+      if (drag.tab !== tab) continue;
+      if (drag.done && this.writing !== drag && drag.sent === drag.ratio) {
+        drag.over ??= shape.root;
+        if (differ(drag.over, shape.root)) {
+          this.drags = this.drags.filter((one) => one !== drag);
+          continue;
+        }
+        // the same tree, maybe rebuilt by a refresh of the core's view: the next draw compares this object first
+        drag.over = shape.root;
+      } else drag.over = shape.root;
+      const path = dividerPath(root, drag.name);
+      root = (path && setRatio(root, path, drag.ratio)) ?? root;
+    }
+    return root === shape.root ? shape : { ...shape, root };
+  }
+
+  /** Starts the write of the oldest divider whose newest ratio is unwritten, unless a write is in flight. */
+  private write(): void {
+    if (this.writing) return;
+    const drag = this.drags.find((one) => one.sent !== one.ratio);
+    if (!drag) return;
+    this.writing = drag;
     drag.sent = drag.ratio;
+    const grab = drag.grab;
+    // only the grab that issued the write ends with it: a newer grab of the same divider writes its own ratio, and
+    // its own answer says whether that landed
     const end = (refusal: DividerRefusal) => {
-      this.ended = Math.max(this.ended, drag.grab);
-      if (this.drag === drag) this.drag = null;
+      this.ended = Math.max(this.ended, grab);
+      if (drag.grab !== grab) {
+        drag.sent = null;
+        return;
+      }
+      this.drags = this.drags.filter((one) => one !== drag);
       this.options.refused(refusal);
     };
     this.options.edit(dividerEdit(drag.name, drag.ratio)).then((answer) => {
-      drag.inFlight = false;
+      this.writing = null;
       if (answer.reason === "stale") end({ code: "stale", reason: null });
-      else if (this.drag === drag) this.write(drag);
+      this.write();
     }, (error: unknown) => {
-      drag.inFlight = false;
+      this.writing = null;
       end({ code: "layout_refused", reason: errorCode(error) });
+      this.write();
     });
   }
 }

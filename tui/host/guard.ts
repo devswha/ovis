@@ -83,8 +83,8 @@ export function guardedHost(port: TerminalPort): Host {
   let cancelHoldTimer: (() => void) | null = null;
   let focusTail: Uint8Array = new Uint8Array(0);
 
-  let drainState: { chunks: Uint8Array[]; cancel: () => void; resolve: (bytes: Uint8Array) => void } | null = null;
-  let drainPromise: Promise<Uint8Array> | null = null;
+  let drainState: { cancel: () => void; resolve: () => void } | null = null;
+  let drainPromise: Promise<void> | null = null;
 
   const reportGone = (why: "hangup" | "write-failed") => {
     if (gone) return [];
@@ -116,14 +116,11 @@ export function guardedHost(port: TerminalPort): Host {
 
   const finishDrain = () => {
     if (!drainState) return;
-    const { chunks, cancel, resolve } = drainState;
+    const { cancel, resolve } = drainState;
     drainState = null;
     cancel();
-    const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
-    let at = 0;
-    for (const chunk of chunks) { out.set(chunk, at); at += chunk.length; }
     drainPromise = null;
-    resolve(out);
+    resolve();
   };
 
   const modesAgain = () => {
@@ -145,13 +142,11 @@ export function guardedHost(port: TerminalPort): Host {
     return found;
   };
 
-  /** Input bytes, in order: to a drain while one runs, else to the listeners (after a focus-in, the modes again). */
+  /** Input bytes, in order, to the listeners (after a focus-in, the modes again); a drain that runs waits DRAIN_WAIT_MS more. */
   const deliver = (input: Uint8Array) => {
     if (drainState) {
-      drainState.chunks.push(input);
       drainState.cancel();
       drainState.cancel = port.timer(DRAIN_WAIT_MS, finishDrain);
-      return;
     }
     if (input.length === 0) return;
     if (sawFocusIn(input)) modesAgain();
@@ -295,12 +290,14 @@ export function guardedHost(port: TerminalPort): Host {
 
     drain() {
       if (drainPromise) return drainPromise;
-      if (state !== "entered") return Promise.resolve(new Uint8Array(0));
-      drainPromise = new Promise<Uint8Array>((resolve) => {
-        drainState = { chunks: [], cancel: port.timer(DRAIN_WAIT_MS, finishDrain), resolve };
+      if (state !== "entered") return Promise.resolve();
+      const drained = new Promise<void>((resolve) => {
+        drainState = { cancel: port.timer(DRAIN_WAIT_MS, finishDrain), resolve };
       });
+      drainPromise = drained;
+      // what readNow hands on may end the drain at once (a listener that leaves): this call still answers its own promise
       port.readNow();
-      return drainPromise;
+      return drained;
     },
   };
 }

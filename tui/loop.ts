@@ -17,7 +17,7 @@ import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
 import { type LayoutDone, LayoutWrites } from "./core/layout.ts";
 import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
-import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
+import { createPanes, type PaneInput, type PaneNotice, type Panes } from "./core/pane.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
 import { errorCode } from "./crash.ts";
 import { effectBytes, osc52 } from "./host/effects.ts";
@@ -32,7 +32,7 @@ import type { Effect } from "./model/effects.ts";
 import { exists, focused } from "./model/focus.ts";
 import { type Following, initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
-import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
+import { type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
 import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
 
@@ -86,6 +86,8 @@ export interface LoopReport {
   actions: string[];
   hc: { version: string; features: string[] } | null;
   size: { cols: number; rows: number };
+  /** the pane grids the frame keeps, each at its size */
+  grids: { pane: string; cols: number; rows: number }[];
   mode: { name: string; locked: boolean; armed: boolean; overlays: string[] };
   /** the stable code of the error giving the terminal back at quit failed with, or null */
   leaveError: string | null;
@@ -127,9 +129,10 @@ export function startLoop(options: LoopOptions): Loop {
   let grids = new Map<string, { emulator: unknown; grid: PaneGrid }>();
   let shape: ScreenShape | null = null;
   const pointer = new Pointer();
-  /** the last frame's hit map and pane scenes: what the mouse lands on */
+  /** Published together only after a frame is taken: the cells and layout the mouse actually sees. */
   let hits: HitMap | null = null;
-  const drawn = new Map<string, PaneScene>();
+  let drawn = new Map<string, PanePicture>();
+  let paintedLayout: Pick<PointerScene, "tab" | "splits"> = { tab: null, splits: [] };
   let shownKey = "";
   let paneFocus: string | null = null;
   let hello: HelloInfo | null = null;
@@ -202,6 +205,7 @@ export function startLoop(options: LoopOptions): Loop {
 
   const dividers = new DividerWrites({
     edit: (change) => editLayout(link, change),
+    tree: (tab) => world.view().tabs.get(tab)?.root,
     refused: (refusal) => {
       guard(() => {
         dispatch({ type: "notice", code: refusal.code, data: refusal.reason === null ? {} : { reason: refusal.reason }, at: clock.now() });
@@ -529,7 +533,7 @@ export function startLoop(options: LoopOptions): Loop {
         owePass();
         return;
       case "copy":
-        copy(step.pane, step.range);
+        copy(step.pane, step.range, step.contentVersion);
         return;
       case "divider":
         act(`divider:${step.done ? "done" : "move"}`);
@@ -547,8 +551,8 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** The selected text to the host's clipboard as OSC 52, with a notice: `copied`, or `copy_refused` over the size cap. */
-  function copy(pane: string, range: ScreenRange): void {
-    const text = panes.view(pane)?.emulator?.textOf(range);
+  function copy(pane: string, range: ScreenRange, contentVersion: number): void {
+    const text = panes.view(pane)?.emulator?.textOf(range, contentVersion);
     if (!text?.ok) return;
     const data = new TextEncoder().encode(text.value);
     const write = osc52(data);
@@ -565,39 +569,42 @@ export function startLoop(options: LoopOptions): Loop {
     dispatch({ type: "notice", code: "copied", data: { bytes: data.length }, at: clock.now() });
   }
 
-  /** What the pointer reads of a shown pane as the last frame drew it; null for a pane not drawn or with no picture. */
-  function lookOf(pane: string, view: PaneView | undefined = panes.view(pane), scene: PaneScene | undefined = drawn.get(pane)): PaneLook | null {
+  /** Live modes and identity for routing and validation, located in the last accepted frame. */
+  function lookOf(pane: string): PaneLook | null {
+    const view = panes.view(pane);
+    const picture = drawn.get(pane);
     const emulator = view?.emulator;
-    if (!emulator || !view.actual || !scene) return null;
+    if (!emulator || !view.actual || !picture) return null;
     const modes = emulator.modes();
     const history = emulator.history();
     if (!modes.ok || !history.ok) return null;
-    return { rect: scene.rect, top: scene.view?.row ?? 0, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, emulator, history: history.value };
+    return { ...picture, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, screen: modes.value.screens, emulator, history: history.value };
   }
 
   function pointerScene(): PointerScene {
-    const tab = focused(state.world, state.focus).tab;
-    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
-    return { hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane) };
+    return { hits, focus: paneFocus, ...paintedLayout, look: lookOf, painted: (pane) => drawn.get(pane) ?? null };
   }
 
   /** The shown tab's panes with their cells, told to the pane machine when anything about them changed. */
   function reshow(): void {
     const size = host.size();
     const view = world.view();
-    const tab = focused(state.world, state.focus).tab;
+    const { tab, pane } = focused(state.world, state.focus);
+    // the focus moves before the layout: a pane that a zoom is about to cover still tells its program the focus left (a
+    // covered pane is silent), and one the zoom uncovers hears it come once it shows
+    if ((pane?.id ?? null) !== paneFocus) {
+      paneFocus = pane?.id ?? null;
+      pointer.focusChanged(paneFocus);
+      panes.focus(paneFocus);
+    }
     shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed });
+    // a pane that left the shown tab keeps no grid: shown again, it is drawn anew from its new attach
+    for (const pane of grids.keys()) if (!shape.spots.some((spot) => spot.pane === pane)) grids.delete(pane);
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
     const key = JSON.stringify(shown);
     if (painter && key !== shownKey) {
       shownKey = key;
       panes.show(shown);
-    }
-    const pane = focused(state.world, state.focus).pane?.id ?? null;
-    if (pane !== paneFocus) {
-      paneFocus = pane;
-      pointer.focusChanged(pane);
-      panes.focus(pane);
     }
   }
 
@@ -605,11 +612,11 @@ export function startLoop(options: LoopOptions): Loop {
     passOwed = true;
   }
 
-  /** Bytes read from the host (or drained): events, each through the state core at once. */
+  /** Bytes read from the host: events, each through the state core at once. */
   function read(bytes: Uint8Array): void {
     const events: InputEvent[] = framer.feed(bytes, clock.now());
-    if (events.some((event) => event.type === "paste" && !event.complete)) pasteAt = clock.now() + PASTE_ABANDON_MS;
-    else if (pasteAt !== null) pasteAt = events.length > 0 ? null : clock.now() + PASTE_ABANDON_MS;
+    // only a refused paste whose end mark has not come yet is waited for: a paste begun after its end is framed as any paste
+    pasteAt = framer.discarding() ? clock.now() + PASTE_ABANDON_MS : null;
     for (const event of events) {
       // the rest of a read that detached goes nowhere, as a later read would not
       if (closing) break;
@@ -656,6 +663,10 @@ export function startLoop(options: LoopOptions): Loop {
 
   function pass(now: number): void {
     if (!painter || !shape || ended) return;
+    const frameShape = shape;
+    const tab = focused(state.world, state.focus).tab;
+    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
+    const nextLayout = { tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: frameShape.splits };
     passOwed = false;
     lastPass = now;
     passes++;
@@ -663,11 +674,12 @@ export function startLoop(options: LoopOptions): Loop {
     if (painter.styles.get(STYLE_TABLE_LIMIT) !== undefined) rebuildPainter();
     const scenes: PaneScene[] = [];
     const copied = new Set<string>();
-    drawn.clear();
-    for (const spot of shape.spots) {
+    const nextDrawn = new Map<string, PanePicture>();
+    for (const spot of frameShape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
-      const actual = view?.actual ?? { cols: spot.cells.cols, rows: spot.cells.rows };
+      // the grid of the picture drawn, never a size a newer attach was told before its first paint: with none, the visible cells
+      const actual = view?.grid ?? { cols: spot.cells.cols, rows: spot.cells.rows };
       let held = grids.get(spot.pane);
       const emulator = view?.emulator ?? null;
       if (!held || held.emulator !== emulator) {
@@ -675,23 +687,25 @@ export function startLoop(options: LoopOptions): Loop {
         grids.set(spot.pane, held);
       }
       held.grid.resize(actual.cols, actual.rows);
-      if (emulator) {
-        held.grid.copy(emulator, held.grid.allDirty);
-        copied.add(spot.pane);
-      }
+      const copy = emulator ? held.grid.copy(emulator, held.grid.allDirty) : null;
+      if (copy?.ok) copied.add(spot.pane);
       const live = paneLive(view, shown);
       const scene = paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live });
-      drawn.set(spot.pane, scene);
-      const look = lookOf(spot.pane, view, scene);
+      const snapshot = copy?.ok && emulator ? emulator.frameScreen() : null;
+      const look: PanePicture | null = snapshot?.ok && snapshot.value && emulator ? {
+        rect: scene.rect, top: scene.view?.row ?? 0, grid: actual, emulator,
+        altScreen: snapshot.value.altScreen, screen: snapshot.value.screens, history: snapshot.value.history, contentVersion: snapshot.value.contentVersion,
+      } : null;
+      if (look) nextDrawn.set(spot.pane, look);
       const selection = pointer.shown(spot.pane, paneFocus, look);
       scenes.push({ ...scene, scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(selection ? { selection } : {}) });
     }
     const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
     const chrome = buildChrome({
-      regions: shape.regions,
-      spots: shape.spots,
-      splits: shape.splits,
+      regions: frameShape.regions,
+      spots: frameShape.spots,
+      splits: frameShape.splits,
       state,
       world: world.view(),
       panes: paneViews,
@@ -705,7 +719,6 @@ export function startLoop(options: LoopOptions): Loop {
       width: size.cols, height: size.rows, parts: chrome.parts,
       panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input,
     });
-    hits = frame.hits;
     let taken = true;
     if (frame.bytes.length > 0) {
       writes++;
@@ -713,9 +726,12 @@ export function startLoop(options: LoopOptions): Loop {
     }
     painter.taken(taken);
     if (ended || !taken) return;
+    hits = frame.hits;
+    drawn = nextDrawn;
+    paintedLayout = nextLayout;
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
-    const order = [...shape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
+    const order = [...frameShape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
     for (const spot of order) {
       if (budget <= 0) break;
       budget -= panes.credit(spot.pane, budget);
@@ -726,12 +742,14 @@ export function startLoop(options: LoopOptions): Loop {
     if (ready.length > 0 && !draining) drainThenLive(ready);
   }
 
-  /** What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. */
+  /**
+   * What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. It is read as any
+   * input, at once and through the focus it meets: a pane already Live takes it without waiting for this one.
+   */
   function drainThenLive(ready: string[]): void {
     draining = true;
-    host.drain().then((bytes) => guard(() => {
+    host.drain().then(() => guard(() => {
       draining = false;
-      if (bytes.length > 0) read(bytes);
       for (const pane of ready) if (panes.view(pane)?.ready) panes.live(pane);
       owePass();
       arm();
@@ -834,12 +852,15 @@ export function startLoop(options: LoopOptions): Loop {
       end(first.kind === "NoCore" ? { kind: "no_core", code: first.code } : { kind: "incompatible", code: first.code, reason: first.reason });
       return;
     }
+    // heard before the entry: the entry's own write can find the terminal gone, and a signal held during it is told at its end
+    host.onEnd((how) => onHostEnd(how));
     if (!host.enter()) {
       void link.close().catch(() => {});
       end({ kind: "not_a_terminal" });
       return;
     }
     entered = true;
+    if (closing) return;
     framer.setModes({ mouse: true });
     host.onInput((bytes) => {
       guard(() => read(bytes));
@@ -855,14 +876,13 @@ export function startLoop(options: LoopOptions): Loop {
       });
       arm();
     });
-    host.onEnd((how) => onHostEnd(how));
     const size = host.size();
     guard(() => {
       dispatch({ type: "resize", cols: size.cols, rows: size.rows, at: clock.now() });
       reshow();
     });
     const probe = await host.probe();
-    if (ended) return;
+    if (ended || closing) return;
     guard(() => {
       framer.setModes({ kitty: (probe.kittyFlags ?? 0) > 0 });
       sync = probe.syncOutput === true;
@@ -899,6 +919,7 @@ export function startLoop(options: LoopOptions): Loop {
         leaveError,
         hc: hello ? { version: hello.version, features: [...hello.features] } : null,
         size: entered ? host.size() : { cols: 0, rows: 0 },
+        grids: [...grids].map(([pane, { grid }]) => ({ pane, cols: grid.grid.cols, rows: grid.grid.rows })),
         mode: { name: state.mode.name, locked: state.locked, armed: state.armed, overlays: state.overlays.map((overlay) => overlay.kind) },
         link: { kind: link.state.kind, code: "code" in link.state ? link.state.code : null },
       };

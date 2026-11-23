@@ -640,6 +640,29 @@ describe("the pane attach machine under hostile conditions", () => {
     expect([screen.state(flat), screen.asked(flat)]).toEqual(["Failed(emulator)", []]);
   });
 
+  it("a new attach told a larger size before its first paint is complete: the picture drawn keeps its own grid", async () => {
+    const { stage, screen, t } = await scene();
+    await stage.live(screen, [t, 80, 24]);
+    screen.faults.stripMark = true;
+    screen.show([t, 120, 40]);
+    await stage.advance(REATTACH_SETTLE_MS);
+    const view = screen.view(t);
+    expect([screen.state(t), screen.attaches.at(-1)!.reply, view.actual, view.emulator === screen.emulators[0]!.emulator, view.grid]).toEqual(["Painting", "120x40", { cols: 120, rows: 40 }, true, { cols: 80, rows: 24 }]);
+  });
+
+  it("a size refused before a new attach's first paint keeps the grid of the picture still shown", async () => {
+    const { stage, screen, t } = await scene();
+    await stage.live(screen, [t, 80, 24]);
+    // the next attach's first paint never completes: the first attach's picture stays shown
+    screen.faults.stripMark = true;
+    screen.show([t, 100, 30]);
+    await stage.advance(REATTACH_SETTLE_MS);
+    expect([screen.state(t), screen.attaches.length, screen.view(t).emulator === screen.emulators[0]!.emulator, screen.emulators[1]!.cols]).toEqual(["Painting", 2, true, 100]);
+    await stage.rival().attach(t, 1200, 50);
+    await stage.settle();
+    expect([screen.state(t), screen.view(t).emulator === screen.emulators[0]!.emulator, screen.view(t).actual]).toEqual(["Failed(size)", true, { cols: 80, rows: 24 }]);
+  });
+
   it("a stream the core closes without a reason is asked about once, attached again a bounded number of times, then failed", async () => {
     const { core, stage, screen, t } = await scene();
     await stage.live(screen, [t, 80, 24]);

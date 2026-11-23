@@ -240,6 +240,14 @@ export function detached(size: PaneSize): PaneSize {
   return { ...size, advertised: null, chosen: null, repaint: false, echo: false, again: false, ownAt: null, foreignAt: null };
 }
 
+/**
+ * The emulator refused the terminal's size: the pane cannot be drawn at it. `actual` becomes `drawn`, the grid an emulator took
+ * last, or null when the pane shows no picture, so nothing is laid out at the refused size.
+ */
+export function refused(size: PaneSize, drawn: Size | null): PaneSize {
+  return { ...size, actual: drawn };
+}
+
 /** When the pane must attach again, or null when nothing waits. `attachSize` says what that attach advertises. */
 export function reattachDue(size: PaneSize): number | null {
   if (size.ownAt !== null) return size.ownAt + REATTACH_SETTLE_MS;

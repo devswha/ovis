@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { type InputEvent, type Mods, typedKey } from "../input/decode.ts";
 import { Framer } from "../input/framer.ts";
 import type { Effect } from "./effects.ts";
-import type { World } from "./focus.ts";
+import { focused, type World } from "./focus.ts";
 import { modeBar } from "./hints.ts";
 import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import { OVERLAYS } from "./overlays.ts";
@@ -381,5 +381,20 @@ describe("layout actions as data", () => {
     const calm = after(seen, { type: "notice", code: "layout_unchanged", data: { action: "zoom", reason: "single_pane" }, calm: true, at: AT });
     const plain = after(seen, { type: "notice", code: "layout_refused", data: { action: "zoom", reason: "x" }, at: AT });
     expect([calm.notices.map((notice) => notice.calm), plain.notices.map((notice) => notice.calm)]).toEqual([[true], [undefined]]);
+  });
+});
+
+describe("the pane looked at before", () => {
+  it("is the pane last shown: selecting a pane a zoom keeps covered leaves it, so last_pane goes back to the pane left", () => {
+    const world: World = { workspaces: [{ id: "w", name: "w", tabs: [
+      { id: "ta", name: "a", panes: [{ id: "A", name: "" }] },
+      { id: "tb", name: "b", panes: [{ id: "B", name: "" }, { id: "C", name: "" }], zoomed: "B" },
+    ] }] };
+    const seen = reduce(initialState(undefined), { type: "world", world, at: 0 }).state;
+    const shown = (state: ModelState) => focused(state.world, state.focus).pane?.id;
+    const zoomed = after(seen, { type: "select", target: { kind: "tab", id: "tb" }, at: AT });
+    const cycled = after(zoomed, { type: "action", action: "cycle_pane_next", at: AT });
+    const back = after(cycled, { type: "action", action: "last_pane", at: AT });
+    expect([shown(seen), shown(zoomed), shown(cycled), cycled.focus.previous, shown(back)]).toEqual(["A", "B", "B", "A", "A"]);
   });
 });

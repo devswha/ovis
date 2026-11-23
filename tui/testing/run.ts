@@ -126,10 +126,16 @@ export class Run {
     const socket = join(folder, "hc.sock");
     const host = new HeadlessHost({ cols: options.cols ?? 120, rows: options.rows ?? 40, colorTerm: options.colorTerm ?? "truecolor", answer: PROBE_ANSWER });
     const run = new Run(core, host, new ManualClock(), folder, socket);
-    await run.listen();
-    await run.settle();
-    if (run.loop.link.state.kind === "Online") fixture?.online?.(core);
-    await run.settle();
+    try {
+      await run.listen();
+      await run.settle();
+      if (run.loop.link.state.kind === "Online") fixture?.online?.(core);
+      await run.settle();
+    } catch (error) {
+      // the caller never gets this run: it lets go of the listener and the folder itself, and the startup error is the one thrown
+      await run.close().catch(() => {});
+      throw error;
+    }
     return run;
   }
 
@@ -283,13 +289,28 @@ export class Run {
   async close(): Promise<LoopEnd> {
     let end: LoopEnd | null = null;
     void this.loop.done.then((how) => { end = how; });
-    await this.settle();
-    if (!end) {
-      this.loop.dispatch({ type: "action", action: "detach", at: this.clock.current });
-      for (let waited = 0; !end && waited < 3_000; waited += 100) await this.advance(100);
+    /** the first error of the detach, the line's cut and the folder's removal: each is tried, and this one is thrown */
+    let first: { error: unknown } | null = null;
+    try {
+      await this.settle();
+      if (!end) {
+        this.loop.dispatch({ type: "action", action: "detach", at: this.clock.current });
+        for (let waited = 0; !end && waited < 3_000; waited += 100) await this.advance(100);
+      }
+    } catch (error) {
+      first = { error };
     }
-    await this.cutLine();
-    rmSync(this.folder, { recursive: true, force: true });
+    try {
+      await this.cutLine();
+    } catch (error) {
+      first ??= { error };
+    }
+    try {
+      rmSync(this.folder, { recursive: true, force: true });
+    } catch (error) {
+      first ??= { error };
+    }
+    if (first) throw first.error;
     return end ?? { kind: "crashed", error: new Error("the screen did not end") };
   }
 }

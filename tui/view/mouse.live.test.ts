@@ -190,18 +190,38 @@ describe.skipIf(!bin || process.platform === "win32")("the mouse at the screen's
   }, TEST_MS);
 
   it("a signal in the middle of a drag or with a selection held gives the terminal back cooked, once", async () => {
-    const { core, root } = await coreWithProgram(false);
+    const { core, hc, root, run: start } = await coreWithProgram(false);
+    // a second pane beside the first: t1's box x 24-61, the divider at x 61-62; the selections stay in t1
+    await start("second", "0", "one");
+    // the screen writes the layout document only for a divider drag: its event says the drag was taken in
+    let written: (() => void) | null = null;
+    const events = await openEventStream(hc, {
+      event: (event) => { if (event.type === "doc" && event.data?.["name"] === OVIS_LAYOUT_DOC) written?.(); },
+      resync: () => {},
+      tooLong: () => {},
+    });
     const codes = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 } as const;
     for (const [signal, keys] of [["SIGTERM", "press@25:2,drag@33:2"], ["SIGINT", "press@25:2,drag@33:2,release@33:2"], ["SIGHUP", "press@61:10,drag@50:10"]] as const) {
       const run = screen(core, root);
       await run.until(/SELECT-ME[\s\S]*\x1b\[\?25h/, "the live pane");
+      const wrote = new Promise<void>((resolve) => { written = resolve; });
       type(run, keys);
-      if (keys.endsWith("release@33:2")) await run.until(osc52Of("SELECT-ME"), "the copy at the host");
-      else await run.until(/\x1b\[\?2026l[^]*\x1b\[\?2026l/, "a frame after the press");
+      if (signal === "SIGINT") await run.until(osc52Of("SELECT-ME"), "the copy at the host");
+      // the selection drawn in inverse video: no frame before the drag has it
+      else if (signal === "SIGTERM") await run.until(/\x1b\[0;7(?:;[\d:;]*)?mSELECT-ME/, "the selection drawn");
+      else {
+        let bound: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([wrote, new Promise<never>((_, reject) => { bound = setTimeout(() => reject(new Error("no write of the layout document")), WAIT_MS); })]);
+        clearTimeout(bound);
+        const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
+        expect((doc.value as { workspaces: { tabs: { id: string; root: { ratio?: number } }[] }[] }).workspaces[0]!.tabs.find((one) => one.id === "one")!.root.ratio).toBe(27 / 76);
+      }
+      written = null;
       run.signal(signal);
       const end = await run.ended;
       expect([signal, end.code, end.after?.canonical, end.after?.echo]).toEqual([signal, codes[signal], true, true]);
       expect([signal, run.output().split(LEAVE).length - 1]).toEqual([signal, 1]);
     }
+    events.channel.close();
   }, TEST_MS);
 });

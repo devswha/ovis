@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection, HcError, HcReplyError } from "../server/herdr-core/connection.ts";
+import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_RESIZE, HcConnection, HcError, HcReplyError } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
+import { ending, EXIT_FAILED } from "./start.ts";
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
@@ -20,19 +21,8 @@ const SOAK_MS = 600_000;
 const OWN_HEAP_GROWTH_BYTES = 2 * 1024 * 1024;
 /** the link's code once its line was cut and a retry found no core listening (tui/core/link.ts) */
 const OFFLINE_CODE = "no_core";
-
-// `bun run typecheck` checks the lines marked with ts-expect-error below: each must stay a compile error. The loop's
-// end carries only what a reader takes: the host ends the process with a signal's own exit code, and the entry says
-// itself what a missing core means.
-function typeOnly(): LoopEnd[] {
-  return [
-    // @ts-expect-error a signal's end names no signal
-    { kind: "signal", signal: "SIGINT" },
-    // @ts-expect-error a missing core's end carries no reason
-    { kind: "no_core", code: "no_core", reason: "nothing listens" },
-  ];
-}
-void typeOnly;
+/** the most event-loop turns a test waits for the socket's own work, as tui/testing/run.ts settles */
+const SETTLE_TURNS = 2_000;
 
 const runs: Run[] = [];
 afterEach(async () => {
@@ -223,6 +213,21 @@ describe("the loop", () => {
     await run.keys("k");
     await run.advance(20);
     expect(run.core.program("t1").receivedHex()).toBe(Buffer.from("k").toString("hex"));
+  }, TEST_MS);
+
+  it("a paste begun in the read that ends a refused paste is framed whole, however long it pauses", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    run.type(`\x1b[200~${"a".repeat(PASTE_LIMIT_BYTES + 10)}`);
+    await run.settle();
+    expect(run.loop.model().notices.map((notice) => notice.code)).toContain("paste_refused");
+    // one read: the refused paste's last bytes and end mark, then a new paste that pauses past the wait
+    run.type("aaa\x1b[201~\x1b[200~first ");
+    await run.advance(PASTE_ABANDON_MS * 2);
+    run.type("second\x1b[201~");
+    await run.advance(20);
+    expect([run.loop.report().actions.includes("paste_reset"), Buffer.from(run.core.program("t1").receivedHex(), "hex").toString()]).toEqual([false, "first second"]);
   }, TEST_MS);
 
   it("the loop draws for the host's colour depth: an RGB cell leaves as RGB on a truecolour host, as a palette colour on a 256-colour one", async () => {
@@ -744,6 +749,58 @@ describe("the loop", () => {
     expect(run.sent.filter((frame) => frame.kind === FRAME_CLOSE).length).toBe(3);
   }, TEST_MS);
 
+  it("a terminal gone at the entry's first write: the screen goes no further, ends as gone, and the entry gives the terminal back", async () => {
+    const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "loop-"));
+    const socket = join(folder, "hc.sock");
+    const listener = await oneTab(1).listen(socket);
+    try {
+      const host = new HeadlessHost();
+      host.failWrites("EIO");
+      const clock = new ManualClock();
+      const loop = startLoop({ host, clock, socket, keys: undefined });
+      const ended: { how: LoopEnd | null } = { how: null };
+      void loop.done.then((how) => { ended.how = how; });
+      /** turns of the event loop (the socket's own) until `done` holds, at most SETTLE_TURNS */
+      const turns = async (done: () => boolean) => {
+        for (let turn = 0; turn < SETTLE_TURNS && !done(); turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+      };
+      await turns(() => host.writeAttempts() > 0);
+      expect(host.log()).toEqual(["raw on"]);
+      // the closing is bounded on the loop's clock
+      clock.current = QUIT_BOUND_MS;
+      clock.fireDue();
+      await turns(() => ended.how !== null);
+      const how = ended.how;
+      expect(how).toEqual({ kind: "gone", why: "write-failed" });
+      if (how?.kind !== "gone") return;
+      const said = ending(how, { path: socket, session: "test" });
+      expect([said.leave, said.exit]).toEqual([true, EXIT_FAILED]);
+      host.leave();
+      expect([host.log(), host.writeAttempts(), loop.report().passes, clock.armed()]).toEqual([["raw on", "raw off"], 1, 0, 0]);
+    } finally {
+      await listener.close();
+      rmSync(folder, { recursive: true, force: true });
+    }
+  }, TEST_MS);
+
+  it("another pane's first paint delays nothing typed: a key read while that pane drains reaches the focused live pane at once, and stays there", async () => {
+    const core = oneTab(2);
+    const run = await start({ core });
+    await run.live();
+    await run.advance(1);
+    // a third pane joins the shown tab: once its first paint is drawn, the loop reads stdin before that pane goes live
+    place(core, { space: "w", spaceName: "w", tab: "t", tabName: "t" }, "pane 2\r\n");
+    for (let waited = 0; run.host.timers() === 0 && waited < 1_000; waited++) await run.advance(1);
+    expect(run.host.timers()).toBe(1);
+    run.type("k");
+    await run.settle();
+    expect(run.core.program("t1").receivedHex()).toBe("6b");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+    await run.advance(100);
+    await run.live();
+    expect(["t1", "t2", "t3"].map((terminal) => run.core.program(terminal).receivedHex())).toEqual(["6b", "", ""]);
+  }, TEST_MS);
+
   it("flood does not delay input: a key typed into one pane leaves in its read's turn while another pane floods", async () => {
     const run = await start({ fixture: demo });
     await run.live();
@@ -771,6 +828,91 @@ describe("the loop", () => {
     expect([run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()]).toEqual(["", Buffer.from("z").toString("hex")]);
     await run.keys("ctrl+b,h");
     expect(run.loop.model().focus.panes["t-main"]).toBe("t1");
+  }, TEST_MS);
+
+  it("zoom: a zoom of a pane without the focus moves the focus to it, and what is typed reaches only that pane", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    expect(run.loop.model().focus.panes["t"] ?? "t1").toBe("t1");
+    const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+    await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 0 });
+    await run.advance(1_000);
+    expect([run.loop.panes.view("t1")?.covered, run.loop.panes.view("t2")?.covered]).toEqual([true, false]);
+    await run.live();
+    await run.advance(1);
+    await run.keys("k");
+    await run.advance(20);
+    expect([run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()]).toEqual(["", Buffer.from("k").toString("hex")]);
+    expect(run.loop.model().notices.map((notice) => notice.code)).not.toContain("input_refused");
+  }, TEST_MS);
+
+  it("zoom: text after a focus move under a zoom reaches the zoomed pane, in one read as in two", async () => {
+    /** what each program received after `reads`, with t2 zoomed and cycle_pane_next on prefix+y */
+    const outcome = async (reads: string[]) => {
+      const core = oneTab(2);
+      const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+      core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 1 });
+      const run = await Run.start({ core });
+      try {
+        await run.live();
+        run.loop.dispatch({ type: "keys", keys: { cycle_pane_next: "prefix+y" }, at: run.clock.current });
+        await run.advance(1);
+        for (const read of reads) {
+          run.type(read);
+          await run.advance(20);
+        }
+        return { reads, received: [run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()] };
+      } finally {
+        await run.close();
+      }
+    };
+    const received = ["", Buffer.from("k").toString("hex")];
+    expect(await outcome(["\x02yk"])).toEqual({ reads: ["\x02yk"], received });
+    expect(await outcome(["\x02y", "k"])).toEqual({ reads: ["\x02y", "k"], received });
+  }, TEST_MS);
+
+  it("zoom: a program that asked for focus reports hears the focus leave when a zoom covers its pane and come back when it ends, and keeps its size", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    for (const terminal of ["t1", "t2"]) run.core.program(terminal).output("\x1b[?1004h");
+    await run.advance(50);
+    const heard = { t1: run.core.program("t1").receivedHex().length, t2: run.core.program("t2").receivedHex().length };
+    const since = (terminal: "t1" | "t2") => run.core.program(terminal).receivedHex().slice(heard[terminal]);
+    const channel = channelOf(run, "t1");
+    const size = run.core.size("t1");
+    const sent = run.sent.length;
+    const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+    const zoom = async (zoomed: string | null, version: number) => {
+      await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed }] }] }, version });
+      await run.advance(1_000);
+      await run.live();
+    };
+    await zoom("t2", 0);
+    expect([since("t1"), since("t2")]).toEqual(["1b5b4f", "1b5b49"]);
+    // t2 attached again at the zoom's rectangle, and the fake's first paint does not replay its mode 1004: only t1 is followed
+    await zoom(null, 1);
+    expect(since("t1")).toBe("1b5b4f1b5b49");
+    expect([channelOf(run, "t1"), run.core.size("t1"), framesOf(run, FRAME_RESIZE, sent).filter((frame) => frame.channel === channel)]).toEqual([channel, size, []]);
+  }, TEST_MS);
+
+  it("a size no emulator takes fails that pane alone: drawn as failed, no grid at the refused size, the other pane still typed into", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    const drawn = run.loop.report().grids.find((grid) => grid.pane === "t1");
+    expect(drawn).toBeDefined();
+    // another viewer sizes t1 past what an emulator takes (1000 columns)
+    const rival = new HcConnection(() => run.core.transport());
+    await rival.open("terminal.attach", { terminal: "t1", cols: 1200, rows: 50 }, { onData: () => {}, onClose: () => {} });
+    await run.advance(1_000);
+    expect(run.loop.panes.view("t1")?.state).toMatchObject({ kind: "Failed", code: "size" });
+    expect(run.loop.report().grids.find((grid) => grid.pane === "t1")).toEqual(drawn);
+    expect(run.grid().join("\n")).toContain("failed: size");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+    await run.advance(1);
+    await run.keys("k");
+    await run.advance(20);
+    expect([run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()]).toEqual(["", Buffer.from("k").toString("hex")]);
+    rival.close();
   }, TEST_MS);
 
   it("one read routes as the same bytes split across reads: an action and the text after it in one read", async () => {
@@ -814,6 +956,20 @@ describe("the loop", () => {
     expect([moved.focus.panes["t-main"], moved.received]).toEqual(["t2", { t2: hex("zy\r") }]);
   }, TEST_MS);
 
+  it("bounded memory: tabs visited at one host size leave no grid behind, only the shown tab's panes have one", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    const visits: [tab: string, panes: string[]][] = [["t-logs", ["t3"]], ["t-notes", ["t4"]], ["t-main", ["t1", "t2"]], ["t-notes", ["t4"]]];
+    for (const [tab, panes] of visits) {
+      run.loop.dispatch({ type: "select", target: { kind: "tab", id: tab }, at: run.clock.current });
+      await run.advance(100);
+      await run.live();
+      await run.advance(FRAME_PASS_MS);
+      expect([tab, run.loop.report().grids.map((grid) => grid.pane).sort()]).toEqual([tab, panes]);
+    }
+    expect(run.loop.report().actions).not.toContain("painter_rebuilt");
+  }, TEST_MS);
+
   it("scale: 200 terminals in 50 workspaces draw a frame, and only the shown tab's 16 panes are attached", async () => {
     const run = await start({ fixture: scale });
     await run.live(20_000);
@@ -838,6 +994,8 @@ async function failedPane(): Promise<Resting> {
   const run = await start({ core });
   await run.advance(1_000);
   expect(run.loop.panes.view("t1")?.state).toMatchObject({ kind: "Failed", code: "size" });
+  // it never showed a picture: its grid is its rectangle, never the refused size
+  expect(run.loop.report().grids.filter((grid) => grid.cols > 1_000)).toEqual([]);
   return { run };
 }
 
