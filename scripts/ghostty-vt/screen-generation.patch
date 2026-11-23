@@ -6,6 +6,22 @@ diff --git a/src/terminal/Terminal.zig b/src/terminal/Terminal.zig
 +screen_generation: u64 = 0,
  /// The set of screens behind this terminal (e.g. primary vs alternate).
  screens: ScreenSet,
+@@ -5013,2 +5015,3 @@
+         const charset = alt.charset;
++        self.screen_generation +%= 1;
+         self.screens.switchTo(.primary);
+@@ -5045,2 +5048,3 @@
+         replacement.charset = charset;
++        self.screen_generation +%= 1;
+         self.screens.switchTo(.alternate);
+@@ -5543,2 +5547,3 @@
+     try testing.expectEqual(.G1, alternate.charset.gl);
++    try testing.expectEqual(@as(u64, 3), t.screen_generation);
+     try testing.expectEqual(generation +% 1, t.screens.generation(.alternate));
+@@ -5563,2 +5568,3 @@
+     try testing.expectEqual(.primary, t.screens.active_key);
++    try testing.expectEqual(@as(u64, 2), t.screen_generation);
+     try testing.expectEqual(primary, t.screens.active);
 @@ -5743,2 +5745,3 @@
      // Finalize the switch
 +    self.screen_generation +%= 1;

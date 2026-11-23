@@ -9,7 +9,7 @@
 #   ZIG=/path/to/zig-0.17.1/zig scripts/ghostty-vt/build.sh
 #
 # Expected output sha256 (zig 0.17.1, x86_64-linux):
-#   2ad4d85e5770d6c886f9c69e816eda39a71eec6c0554e03b73194de623815029
+#   20e40e3cdbb33b7206c0b8bc9606fcfb412f01605d3302f1e85975ea832a6c3a
 set -euo pipefail
 GHOSTTY_COMMIT=e95bed63330cc921f3cf2fe3d14e024396b09d43
 here="$(cd "$(dirname "$0")" && pwd)"
