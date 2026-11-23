@@ -135,6 +135,20 @@ Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil Labs, Inc. The M
 below applies. Mapping the tokens onto Ovis's theme roles and drawing the figure as an image are
 Ovis's own.
 
+## oh-my-pi table charts
+
+`src/lib/ompCharts/` vendors the chart engine behind oh-my-pi's `tui.autoGraph` from
+[`can1357/oh-my-pi`](https://github.com/can1357/oh-my-pi): `table-data.ts`, `chart-plan.ts` and
+`chart-svg.ts` of `packages/tui/src/charts/` at commit `dbca46b6f80ad814d334001f54161e30f474cea8`,
+which tag `v19.1.1` (omp 19.1.1) holds unchanged, under MIT, Copyright (c) 2025 Mario Zechner,
+Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil Labs, Inc. The MIT license text
+below applies. The header of each file lists what Ovis changed, none of it changing a result: file
+extensions on the imports, ES2022 spellings of ES2023 array methods, and the lookbehind patterns
+written without lookbehind. `src/lib/ompCharts/index.ts` adapts `chartEntry` and `drawChart` of
+`packages/tui/src/chat/table-chart.ts` (the local guess, as `tui.autoGraph: always` draws it);
+reading a table's cells for it (`src/lib/tableChart.ts`) and drawing the chart as an `svg` figure
+under its table are Ovis's own.
+
 ## oh-my-pi theme dim colors
 
 `server/omp-input.ts` lists the `dim` colors of oh-my-pi's built-in themes (`OMP_DIM_TRUECOLOR`,

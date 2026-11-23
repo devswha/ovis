@@ -17,6 +17,8 @@ import { imageSlotStyle, standaloneImage } from "../lib/imageBox.ts";
 import { formatBytes } from "../lib/bridgeProgress.ts";
 import { MermaidLightbox } from "./MermaidLightbox.tsx";
 import { svgFigurePalette, svgFigureUrl } from "../lib/svgFigure.ts";
+import { tableChartCells, type TableChartCells } from "../lib/tableChart.ts";
+import type { chartLabel, tableChartSvg } from "../lib/ompCharts/index.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { lazyChunk } from "../lib/lazyChunk.ts";
 import type { SkillMatcher } from "../lib/skillMentions.ts";
@@ -66,6 +68,23 @@ function MathExpression({ value, displayMode = false, dollar = false, oneLine = 
 type MermaidRender = typeof import("../lib/mermaid.ts").renderMermaid;
 
 const loadMermaid: () => Promise<MermaidRender> = lazyChunk(() => import("../lib/mermaid.ts").then((module) => module.renderMermaid));
+
+type TableChartEngine = { tableChartSvg: typeof tableChartSvg; chartLabel: typeof chartLabel };
+/** omp's table-chart engine is a chunk of its own: the first table that may chart loads it (lib/ompCharts), and every later one has it at once. */
+let tableChartEngine: TableChartEngine | null = null;
+
+const loadTableChartEngine: () => Promise<TableChartEngine> = lazyChunk(() => import("../lib/ompCharts/index.ts").then((module) => (tableChartEngine = module)));
+
+function useTableChartEngine(): TableChartEngine | null {
+  const [engine, setEngine] = useState(tableChartEngine);
+  useEffect(() => {
+    if (engine) return;
+    let live = true;
+    loadTableChartEngine().then((loaded) => { if (live) setEngine(loaded); }, () => {});
+    return () => { live = false; };
+  }, [engine]);
+  return engine;
+}
 
 function useDarkTheme(): boolean {
   const [dark, setDark] = useState(() => document.documentElement.dataset.theme !== "light");
@@ -118,9 +137,10 @@ function useThemeRevision(): number {
 /**
  * A ```svg fence drawn as the figure it is (lib/svgFigure.ts), as an image so its markup never
  * joins the page. Until it is a whole figure (a reply still streaming) or when it does not draw,
- * it shows as the code block it is.
+ * it shows as the code block it is, or as `fallback` where there is no code worth showing (a chart
+ * the engine made). `alt` names the image for a screen reader, which an image document's own label does not reach.
  */
-function SvgFigure({ value }: { value: string }) {
+function SvgFigure({ value, alt, fallback }: { value: string; alt?: string; fallback?: ReactNode }) {
   const t = useT();
   const revision = useThemeRevision();
   const [zoomed, setZoomed] = useState(false);
@@ -128,11 +148,11 @@ function SvgFigure({ value }: { value: string }) {
   const paletteKey = useMemo(() => JSON.stringify(svgFigurePalette((property) => getComputedStyle(document.documentElement).getPropertyValue(property))), [revision]);
   const palette = useMemo(() => JSON.parse(paletteKey) as ReturnType<typeof svgFigurePalette>, [paletteKey]);
   const src = useMemo(() => svgFigureUrl(value, palette), [value, palette]);
-  if (src === null || failed === src) return <CodeBlock language="svg" value={value} />;
+  if (src === null || failed === src) return fallback === undefined ? <CodeBlock language="svg" value={value} /> : fallback;
   return (
     <div className="markdown-mermaid-frame">
       <div className="markdown-mermaid" onClick={() => setZoomed(true)}>
-        <img src={src} alt={t("Diagram")} draggable={false} onError={() => setFailed(src)} />
+        <img src={src} alt={alt || t("Diagram")} draggable={false} onError={() => setFailed(src)} />
       </div>
       <button type="button" className="icon-button markdown-mermaid-zoom" onClick={() => setZoomed(true)} aria-label={t("Enlarge diagram")} title={t("Enlarge diagram")}>
         <Maximize2 aria-hidden="true" />
@@ -140,6 +160,24 @@ function SvgFigure({ value }: { value: string }) {
       {zoomed && <MermaidLightbox src={src} onClose={() => setZoomed(false)} />}
     </div>
   );
+}
+
+/**
+ * omp's own chart under a table (lib/ompCharts, the engine of its `tui.autoGraph`), drawn as an ```svg figure so it has
+ * the theme, the zoom and the lightbox of one. The engine reads the table's cells as written, so the tables omp charts
+ * in the terminal chart here. A table it declines, a chart too large for a figure, an engine not fetched yet or one
+ * that fails leaves the table as it is: the chart is only ever an addition under it.
+ */
+function TableChart({ header, rows }: { header: InlineNode[][]; rows: InlineNode[][][] }) {
+  const cells = useMemo(() => tableChartCells(header, rows), [header, rows]);
+  // a table without a digit has nothing to chart, and does not fetch the engine
+  return cells === null ? null : <TableChartFigure cells={cells} />;
+}
+
+function TableChartFigure({ cells }: { cells: TableChartCells }) {
+  const engine = useTableChartEngine();
+  const svg = useMemo(() => engine?.tableChartSvg(cells.header, cells.rows) ?? null, [engine, cells]);
+  return engine === null || svg === null ? null : <SvgFigure value={svg} alt={engine.chartLabel(svg)} fallback={null} />;
 }
 
 export type ImageSize = { width: number; height: number };
@@ -387,7 +425,13 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
   );
 }
 
-function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
+/**
+ * What a text's top-level tables get: omp's chart under each (lib/ompCharts), but while the text is still arriving
+ * not under its last block when that is a table, as in omp: more rows may still come, and change what charts.
+ */
+interface TableChartOptions { streaming: boolean }
+
+function Blocks({ blocks, charts = null }: { blocks: MarkdownBlock[]; charts?: TableChartOptions | null }) {
   const visualizations = new Map<string, number>();
   return <>{blocks.map((block, index): ReactNode => {
     const key = `${block.type}-${index}`;
@@ -414,26 +458,33 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
       case "math": return <MathExpression key={key} value={block.value} displayMode dollar={block.dollar} oneLine={block.oneLine} />;
       case "hr": return <hr key={key} />;
       case "table": return (
-        <div className="markdown-table-wrap" key={key}>
-          <table><thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}><Inline nodes={cell} /></th>)}</tr></thead>
-            <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}><Inline nodes={cell} /></td>)}</tr>)}</tbody>
-          </table>
-        </div>
+        <Fragment key={key}>
+          <div className="markdown-table-wrap">
+            <table><thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}><Inline nodes={cell} /></th>)}</tr></thead>
+              <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}><Inline nodes={cell} /></td>)}</tr>)}</tbody>
+            </table>
+          </div>
+          {charts !== null && (!charts.streaming || index < blocks.length - 1) && <TableChart header={block.header} rows={block.rows} />}
+        </Fragment>
       );
     }
   })}</>;
 }
 
-export const Markdown = memo(function Markdown({ children, className, html = false, skills = null, visualizations = false }: {
+export const Markdown = memo(function Markdown({ children, className, html = false, skills = null, visualizations = false, tableCharts = false, streaming = false }: {
   children: string; className?: string; html?: boolean; skills?: SkillMatcher | null;
   visualizations?: boolean;
+  /** omp's own chart under each table it would chart (lib/ompCharts): for the text of an omp pane, whose terminal draws them. */
+  tableCharts?: boolean;
+  /** The text is still arriving: its last table is not charted until a block follows it, as in omp. */
+  streaming?: boolean;
 }) {
   const blocks = useMemo(() => parseMarkdown(children, 0, html, visualizations), [children, html, visualizations]);
   // always a provider, which passes on the names around it when it has none of its own: the pane's skill names
   // load after its text, and a tree that changed shape then would mount every message again, a decoded image
   // dropping back to its loading slot
   const around = useContext(SkillMatcherContext);
-  return <SkillMatcherContext.Provider value={skills ?? around}><ParsedMarkdown blocks={blocks} className={className} /></SkillMatcherContext.Provider>;
+  return <SkillMatcherContext.Provider value={skills ?? around}><ParsedMarkdown blocks={blocks} className={className} tableCharts={tableCharts} streaming={streaming} /></SkillMatcherContext.Provider>;
 });
 
 function withoutLinks(nodes: InlineNode[]): InlineNode[] {
@@ -452,8 +503,8 @@ export const InlineMarkdown = memo(function InlineMarkdown({ children }: { child
   return <Inline nodes={nodes} interactive={false} />;
 });
 
-export const ParsedMarkdown = memo(function ParsedMarkdown({ blocks, className }: { blocks: MarkdownBlock[]; className?: string }) {
-  return <div className={className === undefined ? "markdown" : `markdown ${className}`}><Blocks blocks={blocks} /></div>;
+export const ParsedMarkdown = memo(function ParsedMarkdown({ blocks, className, tableCharts = false, streaming = false }: { blocks: MarkdownBlock[]; className?: string; tableCharts?: boolean; streaming?: boolean }) {
+  return <div className={className === undefined ? "markdown" : `markdown ${className}`}><Blocks blocks={blocks} charts={tableCharts ? { streaming } : null} /></div>;
 });
 
 const BlockChunk = memo(function BlockChunk({ blocks }: { blocks: MarkdownBlock[] }) {

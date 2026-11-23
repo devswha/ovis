@@ -931,6 +931,8 @@ interface TurnProps {
   userSkills?: SkillMatcher | null;
   outcome?: CommandOutcome | null;
   outcomeActions?: OutcomeActions | null;
+  /** omp only: its answers' numeric tables get the chart omp's terminal draws under them */
+  tableCharts?: boolean;
 }
 
 const TASK_RESULT_ICONS: Record<OmoTaskResult["status"], ComponentType<LucideProps>> = { completed: CircleCheck, failed: CircleX, cancelled: CircleSlash };
@@ -1051,7 +1053,7 @@ function GoalWaitRow({ wait }: { wait: GoalWait }) {
   return <p className="chat-goal-wait"><span><Hourglass aria-hidden="true" />{t("Goal waits on {what} · continues around {time}", { what, time })}</span></p>;
 }
 
-export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, showThinking, expandThinking = false, foldWork = false, requestDetails = false, skills = null, userSkills = null, outcome = null, outcomeActions = null }: TurnProps) {
+export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, showThinking, expandThinking = false, foldWork = false, requestDetails = false, skills = null, userSkills = null, outcome = null, outcomeActions = null, tableCharts = false }: TurnProps) {
   const t = useT();
   const memory = useContext(ChatRowMemoryContext);
   const named = useRef<{ runs: Map<number, string>; dormant: Map<number, string> } | null>(null);
@@ -1153,7 +1155,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     {head === undefined && live && answer.length === 0 && block(null)}
     {segments.map((segment) => segment.kind === "work" ? block(segment)
       : answerItems(segment.parts, requestDetails).map((item) => item.kind === "text"
-        ? <Markdown key={`answer:${work.at.get(item.part)}`} skills={skills} visualizations>{item.part.text}</Markdown>
+        ? <Markdown key={`answer:${work.at.get(item.part)}`} skills={skills} visualizations tableCharts={tableCharts} streaming={live && item.part === turn.parts.at(-1)}>{item.part.text}</Markdown>
         : <FailedRequests key={`failed:${work.at.get(item.parts[0]!)}`} at={work.at.get(item.parts[0]!)!} parts={item.parts} followed={work.at.get(item.parts.at(-1)!)! < turn.parts.length - 1} live={live} />))}
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
       {/* a mouse reads one copy glyph and the words "Plain text"; touch reads the two formats */}
@@ -2466,9 +2468,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const live = isLiveWorkTurn(turn, row.index === shownTurns.length - 1, workStatus, finishedBeforeSend);
     return <RenderBoundary resetKey={turnRevision(turn, true)} fallback={() => <p className="chat-inline-state chat-inline-error" data-pane-content-error>{t("This message can't be shown here. The terminal has it.")}</p>}>
       <Turn paneId={paneId} turn={turn} rowKey={row.key} live={live} waiting={isWaitingWorkTurn(live, agentStatus)} showThinking={settings.showThinking}
-        expandThinking={settings.expandThinking} foldWork={settings.foldWork} requestDetails skills={skillMatcher} userSkills={skillMatcher} outcome={row.outcome} outcomeActions={outcomeActions} />
+        expandThinking={settings.expandThinking} foldWork={settings.foldWork} requestDetails skills={skillMatcher} userSkills={skillMatcher} outcome={row.outcome} outcomeActions={outcomeActions} tableCharts={agent === "omp"} />
     </RenderBoundary>;
-  }, [shownTurns.length, workStatus, finishedBeforeSend, t, paneId, agentStatus, settings.showThinking, settings.expandThinking, settings.foldWork, skillMatcher, outcomeActions]);
+  }, [shownTurns.length, workStatus, finishedBeforeSend, t, paneId, agent, agentStatus, settings.showThinking, settings.expandThinking, settings.foldWork, skillMatcher, outcomeActions]);
   const shownTitle = title?.trim() ?? "";
   const logLabel = shownTitle !== "" && shownTitle !== paneId ? t("conversation of {pane}", { pane: shownTitle }) : t("Conversation");
   const header = <>
