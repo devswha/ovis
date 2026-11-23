@@ -14,7 +14,15 @@ export function relayOptions(argv: readonly string[]): { socket: string; launch:
   return socket === null || launch === null ? null : { socket, launch };
 }
 
+/**
+ * Whether Bun was told to load a module before this one (its flags, or BUN_OPTIONS): code from wherever Claude runs the
+ * hook. Such a run answers nothing. A bunfig.toml's preload does not show here; the hook's command keeps Bun from
+ * reading the working folder's (relayCommand in server/claude-permission-hook.ts).
+ */
+export const preloaded = (execArgv: readonly string[]): boolean => execArgv.some((arg) => /^(?:-r|--preload|--require|--import)(?:=|$)/.test(arg));
+
 export async function runClaudeHookRelay(): Promise<void> {
+  if (preloaded(process.execArgv)) return;
   const options = relayOptions(process.argv.slice(2));
   if (options === null) {
     console.error("usage: ovis-server claude-hook --socket <path> --launch <id>");

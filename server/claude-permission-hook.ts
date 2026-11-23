@@ -18,7 +18,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { settingsFile } from "./claude-settings-file.ts";
-import { entryCommand } from "./entries.ts";
+import { COMPILED, entryCommand, ROOT } from "./entries.ts";
 import { jsonResponse } from "./http.ts";
 
 export type PermissionDecision = "allow" | "deny";
@@ -50,13 +50,25 @@ const PANES_MAX = 256;
 /** The most of a card's body the bridge and the card show (finishPrompt, promptWords). */
 const CARD_BODY_MAX = 12_000;
 
-/** A narrow pane wraps a command anywhere, and indents what it wraps. */
-const squeezed = (text: string): string => text.replace(/\s+/g, "");
+const spaced = (text: string): string => text.trim().replace(/\s+/g, " ");
+const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Whether the dialog's text shows this command: its first 40 characters, wherever the pane wrapped them. */
-function shows(body: string, command: string): boolean {
-  const start = squeezed(command).slice(0, 40);
-  return start.length > 0 && squeezed(body).includes(start);
+/**
+ * Whether a Bash dialog whose panel shows `screen` as its command shows this command, whole. Runs of white space count
+ * as one; a line break on the screen is where the pane wrapped, which takes the space it broke at, or breaks a word.
+ */
+function shows(screen: string, command: string): boolean {
+  const lines = screen.split("\n").map(spaced).filter(Boolean);
+  return lines.length > 0 && new RegExp(`^${lines.map(literal).join(" ?")}$`).test(spaced(command));
+}
+
+/**
+ * Whether the card can show this text as it is: no control character but newline and tab, no format character (bidi
+ * controls, zero-width ones) or separator that draws a line break, no lone surrogate, and no run of blank lines or of
+ * spaces long enough to push the rest out of sight.
+ */
+export function showable(text: string): boolean {
+  return !/(?![\n\t])[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(text) && !/(?:^|\n)(?:[^\S\n]*\n){3}/.test(text) && !/[^\S\n]{40,}/.test(text);
 }
 
 /** Computed from the command and words again at each answer: the card's answer settles a request only while it holds what the card showed. */
@@ -120,6 +132,8 @@ export class ClaudePermissionHooks {
    * not be merged, and leaves `args` as they are.
    */
   launchArgs(paneId: string, args: readonly string[] | undefined): string[] | undefined {
+    // whatever ran in the pane before is not this Claude
+    this.forget(paneId);
     if ((this.options.platform ?? process.platform) === "win32" || Buffer.byteLength(this.socket) > SOCKET_PATH_MAX) return args === undefined ? undefined : [...args];
     const given = args ?? [];
     const end = given.indexOf("--");
@@ -149,7 +163,7 @@ export class ClaudePermissionHooks {
       console.error(`claude permission hook: ${error instanceof Error ? error.message : String(error)}`);
       return args === undefined ? undefined : [...given];
     }
-    const [command, ...relay] = this.options.relay ?? entryCommand("claude-hook");
+    const [command, ...relay] = this.options.relay ?? relayCommand();
     const hooks = typeof settings["hooks"] === "object" && settings["hooks"] !== null && !Array.isArray(settings["hooks"])
       ? { ...(settings["hooks"] as Record<string, unknown>) } : {};
     const theirs = Array.isArray(hooks["PermissionRequest"]) ? hooks["PermissionRequest"] as unknown[] : [];
@@ -190,6 +204,8 @@ export class ClaudePermissionHooks {
     if (Number(request.headers.get("content-length") ?? 0) > BODY_MAX) return new Response(null, { status: 413 });
     const text = await request.text();
     if (text.length > BODY_MAX) return new Response(null, { status: 413 });
+    // the pane forgotten while the request came in (forget)
+    if (this.paneOf(request.headers.get("authorization")) !== paneId) return jsonResponse({});
     let input: { hook_event_name?: unknown; tool_name?: unknown; tool_input?: unknown };
     try { input = JSON.parse(text) as typeof input; } catch { return new Response(null, { status: 400 }); }
     const tool = input.tool_input as { command?: unknown; description?: unknown } | null | undefined;
@@ -198,8 +214,9 @@ export class ClaudePermissionHooks {
       || typeof tool.command !== "string" || tool.command.trim() === "") return jsonResponse({});
     const command = tool.command;
     const description = typeof tool.description === "string" && tool.description.trim() !== "" ? tool.description : null;
-    // a command the card could not show whole is the terminal's: a Yes allows only what the card showed
-    if (heldBody({ command, description }).length > CARD_BODY_MAX) return jsonResponse({});
+    // a command the card could not show whole, or as it is, is the terminal's: a Yes allows only what the card showed
+    const body = heldBody({ command, description });
+    if (body.length > CARD_BODY_MAX || !showable(body)) return jsonResponse({});
     const decision = await new Promise<PermissionDecision | null>((resolve) => {
       const list = this.pending.get(paneId) ?? [];
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -233,18 +250,18 @@ export class ClaudePermissionHooks {
     });
   }
 
-  private showing(paneId: string, approval: string | null): Pending[] {
-    return approval === null ? [] : (this.pending.get(paneId) ?? []).filter((entry) => shows(approval, entry.command));
+  private showing(paneId: string, screen: string | null): Pending[] {
+    return screen === null ? [] : (this.pending.get(paneId) ?? []).filter((entry) => shows(screen, entry.command));
   }
 
   /**
-   * What a read of `paneId` found: the text of the Claude approval on its screen, or null for none. A held request
-   * the screen does not show (answered in the terminal, or by another dialog) is released. The one request it shows
-   * is returned, for its card to show whole. When it could be more than one, all of them stay held and none is
-   * returned: the card keeps the screen's text and its keys.
+   * What a read of `paneId` found: the command of the Bash approval on its screen (dialogs/claude.ts), or null for
+   * none. A held request the screen does not show (answered in the terminal, or by another dialog) is released. The one
+   * request it shows is returned, for its card to show whole. When two show the same command, both stay held and none
+   * is returned: the card keeps the screen's text and its keys.
    */
-  shown(paneId: string, approval: string | null): HeldPermission | null {
-    const showing = this.showing(paneId, approval);
+  shown(paneId: string, screen: string | null): HeldPermission | null {
+    const showing = this.showing(paneId, screen);
     for (const entry of this.pending.get(paneId) ?? []) {
       if (!showing.includes(entry) && this.now() - entry.at >= GRACE_MS) entry.settle(null);
     }
@@ -253,34 +270,31 @@ export class ClaudePermissionHooks {
   }
 
   /** The request a card built on `id` showed, while it is still held and still the one request the screen shows. */
-  private bound(paneId: string, approval: string, id: string): Pending | null {
-    const showing = this.showing(paneId, approval);
+  private bound(paneId: string, screen: string, id: string): Pending | null {
+    const showing = this.showing(paneId, screen);
     return showing.length === 1 && idOf(showing[0]!) === id ? showing[0]! : null;
   }
 
-  holds(paneId: string, approval: string, id: string): boolean {
-    return this.bound(paneId, approval, id) !== null;
-  }
-
-  /**
-   * Whether the dialog on the screen is the request a card built on `id` showed, past its first 40 characters: the
-   * dialog's text ends with Claude's words for it and then its whole command (is the command alone, when Claude gave
-   * no words), normalised as `shows` does. Only then may an option of that card go as keys to the dialog.
-   */
-  showsWhole(paneId: string, approval: string, id: string): boolean {
-    const held = this.bound(paneId, approval, id);
-    if (held === null) return false;
-    const text = squeezed(approval);
-    const command = squeezed(held.command);
-    return held.description === null ? text === command : text.endsWith(squeezed(held.description) + command);
+  holds(paneId: string, screen: string, id: string): boolean {
+    return this.bound(paneId, screen, id) !== null;
   }
 
   /** Answers the request a card built on `id` showed. False when that request is no longer bound to the card. */
-  answer(paneId: string, approval: string, id: string, decision: PermissionDecision): boolean {
-    const held = this.bound(paneId, approval, id);
+  answer(paneId: string, screen: string, id: string, decision: PermissionDecision): boolean {
+    const held = this.bound(paneId, screen, id);
     if (held === null) return false;
     held.settle(decision);
     return true;
+  }
+
+  /**
+   * Forgets `paneId`: what a Claude started there asks is no longer this pane's (the pane moved to another ID, ended or
+   * closed, and herdr reuses IDs; or another Claude starts in it). Its held requests are released with no decision,
+   * and its launches' requests get none.
+   */
+  forget(paneId: string): void {
+    for (const entry of [...(this.pending.get(paneId) ?? [])]) entry.settle(null);
+    for (const [key, pane] of this.panes) if (pane === paneId) this.panes.delete(key);
   }
 
   stop(): void {
@@ -295,6 +309,16 @@ export class ClaudePermissionHooks {
 }
 
 const digest = (token: string): string => createHash("sha256").update(token).digest("hex");
+
+/**
+ * What the hook runs. Claude runs it in its working folder, the project, where a model may write files, and a Bun there
+ * reads that folder's bunfig.toml (whose preload could print an allow) and .env. The compiled binary is built to read
+ * neither (scripts/server-artifact.ts); from source, Bun gets Ovis's own config and no env file.
+ */
+export function relayCommand(root = ROOT, compiled = COMPILED): string[] {
+  const [bun, entry] = entryCommand("claude-hook", root, compiled);
+  return compiled ? [bun, entry] : [bun, `--config=${join(root, "bunfig.toml")}`, "--no-env-file", entry];
+}
 
 /** In the order Claude's dialog draws them. */
 export function heldBody(held: Pick<HeldPermission, "command" | "description">): string {

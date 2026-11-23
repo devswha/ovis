@@ -1322,8 +1322,11 @@ export interface PromptRequestOptions {
   beforeKey?: (paneId: string, agent: string, deadline: AbortSignal) => Promise<void>;
 }
 
-const approvalText = (prompt: InteractivePrompt | null): string | null =>
-  prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "claude-approval" ? prompt.body ?? "" : null;
+/** The command of the Claude Bash approval on the screen, whole, which a held hook request must equal: null for any other dialog. */
+const approvalText = (prompt: InteractivePrompt | null): string | null => {
+  const parsed = prompt === null ? undefined : parsedByPublicPrompt.get(prompt);
+  return parsed?.responder === "claude-approval" ? parsed.claudeBashCommand ?? null : null;
+};
 
 /**
  * A Claude command approval with the whole command its held hook request carries, where the screen may have cut it.
@@ -1877,21 +1880,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         }
       }
 
-      if (heldId !== null && parsedPrompt?.responder === "claude-approval") {
-        // Yes or No on a card built on a held hook request is that request's answer, with no key
-        const decision = body.option_index === undefined || body.custom_text !== undefined ? null
-          : permissionDecision(prompt.options[body.option_index]?.label ?? "");
-        if (decision !== null) {
-          // the request left since the read: no key either, as the dialog now on the screen may be another command's
-          if (!options.permissionHooks!.answer(body.pane_id, approvalText(prompt)!, heldId, decision)) return promptChanged();
-          delivered = true;
-          askingEnded(body.pane_id);
-          form.still = claudeStepStill(parsedPrompt);
-          return jsonResponse({ ok: true });
-        }
-        // any other answer goes as keys to the dialog on the screen, not to the request the card showed: only while
-        // that dialog is shown to be this very request, whole
-        if (!options.permissionHooks!.showsWhole(body.pane_id, approvalText(prompt)!, heldId)) return promptChanged();
+      // Yes or No on a card built on a held hook request is that request's answer, with no key. Any other option goes as
+      // keys to the dialog on the screen, which the check above found to be that request's, whole
+      const decision = heldId === null || body.option_index === undefined || body.custom_text !== undefined ? null
+        : permissionDecision(prompt.options[body.option_index]?.label ?? "");
+      if (decision !== null && parsedPrompt?.responder === "claude-approval") {
+        // the request left since the read: no key either, as the dialog now on the screen may be another command's
+        if (!options.permissionHooks!.answer(body.pane_id, approvalText(prompt)!, heldId!, decision)) return promptChanged();
+        delivered = true;
+        askingEnded(body.pane_id);
+        form.still = claudeStepStill(parsedPrompt);
+        return jsonResponse({ ok: true });
       }
 
       let steps: AnswerStep[];
