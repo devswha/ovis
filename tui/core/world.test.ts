@@ -116,6 +116,17 @@ describe("core events reach the world through the shared core model", () => {
     expect(world.view().agents.map((agent) => [agent.paneId, agent.folder])).toEqual([["t1", "api"]]);
   });
 
+  it("foreground: an agent whose program left the front is no agent row at once, before the terminals are read again", () => {
+    const front = (name: string) => ({ argv: [`/home/u/bin/${name}`], cwd: "/home/u/api", name, pid: 4007445 });
+    const { world, tell, pane } = linked([record("t1", "w1", "a", { foreground: front("claude") }), record("t2", "w1", "a", { foreground: front("codex") })]);
+    const rows = () => [world.view().agents.map((agent) => agent.paneId), world.view().world.agents];
+    expect(rows()).toEqual([["t1", "t2"], ["t1", "t2"]]);
+    // claude ended and its shell is in front again: the read this asks for is not answered yet
+    const { read } = tell({ type: "foreground", terminal: "t1", data: front("bash") });
+    expect([read === null, pane("t1")?.agent, pane("t2")?.agent]).toEqual([false, null, "codex"]);
+    expect(rows()).toEqual([["t2"], ["t2"]]);
+  });
+
   it("turn: a turn that ends after the screen first saw the terminal shows the agent done", () => {
     const { tell, pane } = linked([record("t1", "w1", "a", { status: { state: "idle", app: "claude" }, reported: true })]);
     expect(pane("t1")?.status).toBe("idle");

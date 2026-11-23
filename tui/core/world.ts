@@ -310,7 +310,10 @@ export class CoreWorld {
     }
     if (panes.size > 0) this.dated = true;
     const since = new Map([...this.since].map(([address, { at }]) => [address, at]));
-    const agents = buildAgents(snapshot, panes, since);
+    // a status that left a pane with no agent is newer than its record, which the snapshot still lists as an agent's
+    // until the next read: such a pane is no agent row meanwhile
+    const agentless = new Set([...this.told].flatMap(([address, told]) => (told.agent === null ? [address] : [])));
+    const agents = buildAgents({ ...snapshot, agents: snapshot.agents.filter((agent) => !agentless.has(agent.pane_id)) }, panes, since);
     this.shown = {
       tabs,
       panes,
