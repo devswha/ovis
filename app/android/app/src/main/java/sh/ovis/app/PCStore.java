@@ -96,6 +96,17 @@ final class PCStore {
     }
 
     /**
+     * The PC is left (Change PC): none is current. Where an SSH PC did not open (`unopened`: the cover's Change PC,
+     * error.html's), the app's own page comes for it (`manage`): error.html sends the person to Manage there (Forget
+     * host key, Set up again), and the hosted screen has no such thing.
+     */
+    static void leave(Context context, boolean unopened) {
+        String left = current(context);
+        setCurrent(context, null);
+        manage = unopened && left != null && SshPcs.on(context).get(left) != null;
+    }
+
+    /**
      * The hosted app's front page asked for by its address (Home.homeStart): an attempt at the hosted screen, starting
      * at `start`, which makes nothing the current PC. A PC that is current stays the one to go back to.
      */

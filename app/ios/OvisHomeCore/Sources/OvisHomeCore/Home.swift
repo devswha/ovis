@@ -259,14 +259,21 @@ public enum Home {
             && parts.user == nil && parts.password == nil
     }
 
-    /// How long the app's own page may take to finish its first load: its files are in the app.
+    /// How long the app's own page may take to come up at first: its files are in the app.
     public static let ownPageSeconds: TimeInterval = 6
 
     /// Whether the app's own page (the fallback, or a build's first screen) has to be built again in a new web view:
-    /// it has not finished its first load `elapsed` seconds in (time in front). The page that stands in when the
-    /// hosted screen fails must never itself be a dark screen with no way on.
-    public static func ownPageStalled(elapsed: TimeInterval, loaded: Bool) -> Bool {
-        !loaded && elapsed >= ownPageSeconds
+    /// it has not come up `elapsed` seconds in (time in front). `tries`: how often it was built again already, each
+    /// try getting twice the room of the one before, 48 seconds at most, so a phone that is only slow gets its page.
+    /// The page that stands in when the hosted screen fails must never itself be a dark screen with no way on.
+    public static func ownPageStalled(elapsed: TimeInterval, loaded: Bool, tries: Int) -> Bool {
+        !loaded && elapsed >= min(ownPageSeconds * pow(2, Double(min(max(tries, 0), 3))), 48)
+    }
+
+    /// Whether a native cover ("Opening Ovis…", Try again) is over the app's own page: once it has not come up in a
+    /// second and a half, and from the first moment of a web view built again, so the screen is never empty.
+    public static func ownPageCover(elapsed: TimeInterval, loaded: Bool, tries: Int) -> Bool {
+        !loaded && (tries > 0 || elapsed >= 1.5)
     }
 
     /// Whether an open of `text` is the demo: the word "demo" as an address, on home alone. Anywhere else that address

@@ -1148,11 +1148,7 @@ public class MainActivity extends BridgeActivity {
 
     /** Change PC on the cover or on error.html: the PC that did not open is left. */
     void changePc() {
-        // an SSH PC is mended on the app's own page (Manage: Forget host key, Set up again), where error.html sends the
-        // person, and the hosted screen has no such thing
-        String left = PCStore.current(this);
-        PCStore.manage = left != null && SshPcs.on(this).get(left) != null;
-        PCStore.setCurrent(this, null);
+        PCStore.leave(this, true);
         reopen();
     }
 

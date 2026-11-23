@@ -403,11 +403,35 @@ final class HomeTests: XCTestCase {
     func testTheAppsOwnPageThatNeverCameUpIsBuiltAgain() {
         // its files are in the app, so it is up in well under a second; a web view whose content process never ran it
         // (seen after the hosted screen was given up on a starved simulator) stays dark for good unless it is replaced
-        XCTAssertFalse(Home.ownPageStalled(elapsed: 5.9, loaded: false))
-        XCTAssertTrue(Home.ownPageStalled(elapsed: 6, loaded: false))
-        XCTAssertTrue(Home.ownPageStalled(elapsed: 60, loaded: false))
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 5.9, loaded: false, tries: 0))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 6, loaded: false, tries: 0))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 60, loaded: false, tries: 0))
         // a page that came up is never taken from under the person, however long ago
-        XCTAssertFalse(Home.ownPageStalled(elapsed: 6, loaded: true))
-        XCTAssertFalse(Home.ownPageStalled(elapsed: 3600, loaded: true))
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 6, loaded: true, tries: 0))
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 3600, loaded: true, tries: 3))
+    }
+
+    func testEachRebuildOfTheAppsOwnPageGetsMoreRoom() {
+        // a phone that is only slow gets its page on a later try, where a fixed limit would rebuild it for ever
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 11.9, loaded: false, tries: 1))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 12, loaded: false, tries: 1))
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 23.9, loaded: false, tries: 2))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 24, loaded: false, tries: 2))
+        // and no more than 48 seconds between tries, however many there were
+        XCTAssertFalse(Home.ownPageStalled(elapsed: 47.9, loaded: false, tries: 3))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 48, loaded: false, tries: 3))
+        XCTAssertTrue(Home.ownPageStalled(elapsed: 48, loaded: false, tries: 40))
+    }
+
+    func testTheAppsOwnPageNeverLeavesADarkScreenWithNothingOnIt() {
+        // normally the page is there before anything could be drawn over it: no cover flashes
+        XCTAssertFalse(Home.ownPageCover(elapsed: 0, loaded: false, tries: 0))
+        XCTAssertFalse(Home.ownPageCover(elapsed: 1.4, loaded: false, tries: 0))
+        // slow: the cover says the app is opening, with Try again, where the web view shows nothing
+        XCTAssertTrue(Home.ownPageCover(elapsed: 1.5, loaded: false, tries: 0))
+        // built again: the cover stays from the first moment, so the screen is never empty in between
+        XCTAssertTrue(Home.ownPageCover(elapsed: 0, loaded: false, tries: 1))
+        XCTAssertFalse(Home.ownPageCover(elapsed: 1.5, loaded: true, tries: 0))
+        XCTAssertFalse(Home.ownPageCover(elapsed: 0, loaded: true, tries: 2))
     }
 }

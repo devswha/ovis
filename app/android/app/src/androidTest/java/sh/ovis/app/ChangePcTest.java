@@ -6,7 +6,6 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
-import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import org.junit.After;
@@ -14,7 +13,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 /**
- * Change PC where a PC did not open (the cover's, error.html's): an SSH PC is mended on the app's own page, whose
+ * Change PC where a PC did not open (the cover's, error.html's; PCStore.leave, which MainActivity.changePc carries out): an SSH PC is mended on the app's own page, whose
  * Manage holds Forget host key and Set up again, so that page is what comes next, never the hosted Connect a PC
  * screen, which has no such thing. Any other PC is simply left.
  */
@@ -56,23 +55,25 @@ public class ChangePcTest {
         added = pc.origin;
         PCStore.goHome();
         PCStore.open(context, pc.origin, null);
-        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
-            scenario.onActivity(MainActivity::changePc);
-            assertNull(PCStore.current(context));
-            assertTrue(PCStore.manage);
-            assertEquals(Home.Screen.BUNDLED, next(context));
-        }
+        PCStore.leave(context, true);
+        assertNull(PCStore.current(context));
+        assertTrue(PCStore.manage);
+        assertEquals(Home.Screen.BUNDLED, next(context));
+        // Change PC from that PC's own page while it is up (Settings) leaves it as any PC: the hosted screen
+        PCStore.goHome();
+        PCStore.open(context, pc.origin, null);
+        PCStore.leave(context, false);
+        assertFalse(PCStore.manage);
+        assertEquals(Home.Screen.HOME, next(context));
     }
 
     @Test
     public void changePcOnAnyOtherPcLeavesItForTheHostedScreen() {
         PCStore.goHome();
         PCStore.open(context, "http://192.0.2.1:7317", null);
-        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
-            scenario.onActivity(MainActivity::changePc);
-            assertNull(PCStore.current(context));
-            assertFalse(PCStore.manage);
-            assertEquals(Home.Screen.HOME, next(context));
-        }
+        PCStore.leave(context, true);
+        assertNull(PCStore.current(context));
+        assertFalse(PCStore.manage);
+        assertEquals(Home.Screen.HOME, next(context));
     }
 }

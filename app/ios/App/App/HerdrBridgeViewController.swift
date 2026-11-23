@@ -85,6 +85,9 @@ enum PCStore {
     /// asked for), taken once by the view controller that opens it. In memory only.
     static var homeStart: String?
 
+    /// How often the app's own page was built again because it did not come up (Home.ownPageStalled), until it does.
+    static var ownPageTries = 0
+
     /// A web content process died under this attempt at the hosted screen, which was started over once (Home `died`);
     /// until that screen comes up or is asked for again.
     static var homeRetried = false
@@ -98,6 +101,7 @@ enum PCStore {
     static func goHome() {
         homeFailed = false
         homeRetried = false
+        ownPageTries = 0
         demo = false
         sshSetup = nil
         manage = false
@@ -534,8 +538,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     private let homeOver: String?
     private var urlWatch: NSKeyValueObservation?
     private var frontWatch: NSObjectProtocol?
-    /// Looks once a second whether the app's own page came up (watchOwnPage).
+    /// Looks twice a second whether the app's own page came up (watchOwnPage), and whether it answered that it did.
     private var ownPageWatch: Timer?
+    private var ownPageUp = false
     private var openingChange: UIButton?
 
     /// Asked of the hosted screen's page while its cover is up: what the page is, as facts for Home.drawn to judge,
@@ -752,7 +757,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             webView.navigationDelegate = proxy
         }
         super.viewDidLoad()
-        if screen == .bundled { watchOwnPage() }
+        // where this page stands in for the hosted screen; a build whose first screen it is opens it as it always did
+        if screen == .bundled, PCStore.homeHosted, webView != nil { watchOwnPage() }
         if webView != nil, let origin = opened {
             showOpening(origin, home: phase != nil)
             let now = ProcessInfo.processInfo.systemUptime
@@ -769,22 +775,45 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         }
     }
 
-    /// The app's own page is what stands in when the hosted screen fails, so it must never be a dark screen itself:
-    /// a web view that has not finished loading it in Home.ownPageSeconds is built again. Seen in a simulator starved
-    /// of CPU: after the hosted screen was given up, the new web view committed index.html and its content process
-    /// then ran nothing more, for minutes, with this app's main thread idle.
+    /// The app's own page is what stands in when the hosted screen fails, so it must never be a dark screen itself.
+    /// Seen in a simulator starved of CPU: after the hosted screen was given up, the new web view committed index.html
+    /// and its content process then ran nothing more, for minutes, with this app's main thread idle (and the same on
+    /// the cover of a PC, which at least says so). So the page is asked whether it is up: until it answers, a native
+    /// cover says the app is opening, with Try again, and the web view is built again, each time with more room
+    /// (Home.ownPageCover, Home.ownPageStalled).
     private func watchOwnPage() {
         var clock = Home.Clock(now: ProcessInfo.processInfo.systemUptime)
-        ownPageWatch = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
-            guard let self, let webView = self.webView, self.view.window != nil else {
-                timer.invalidate()
+        let tries = PCStore.ownPageTries
+        let look: (Timer?) -> Void = { [weak self] timer in
+            guard let self, let webView = self.webView, self.view.window != nil || timer == nil else {
+                timer?.invalidate()
                 return
             }
-            let loaded = !webView.isLoading && webView.url != nil
-            let stalled = Home.ownPageStalled(elapsed: clock.tick(now: ProcessInfo.processInfo.systemUptime), loaded: loaded)
-            if loaded || stalled { timer.invalidate() }
-            if stalled { HerdrBridgeViewController.reopen() }
+            if self.ownPageUp {
+                timer?.invalidate()
+                PCStore.ownPageTries = 0
+                self.hideOpening()
+                return
+            }
+            let elapsed = clock.tick(now: ProcessInfo.processInfo.systemUptime)
+            if Home.ownPageStalled(elapsed: elapsed, loaded: false, tries: tries) {
+                timer?.invalidate()
+                PCStore.ownPageTries = tries + 1
+                HerdrBridgeViewController.reopen()
+                return
+            }
+            if self.openingView == nil, Home.ownPageCover(elapsed: elapsed, loaded: false, tries: tries) {
+                self.showOpening("", home: true)
+                // Try again here builds the web view again at once
+                self.openingRetry?.isHidden = false
+            }
+            // a content process that runs answers; one that does not never calls back
+            webView.evaluateJavaScript("document.readyState !== 'loading' && location.protocol === 'capacitor:'") { [weak self] up, _ in
+                if (up as? Bool) == true { self?.ownPageUp = true }
+            }
         }
+        look(nil)
+        ownPageWatch = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in look(timer) }
     }
 
     deinit {
