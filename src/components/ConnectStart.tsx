@@ -1,8 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Keyboard, Plus, QrCode } from "lucide-react";
 
 import { useT } from "../lib/i18n.ts";
-import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
+import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
@@ -38,25 +38,29 @@ export function phoneSavedPcs(saved: readonly string[], names: Readonly<Record<s
   });
 }
 
+/** what this device's own check last found of a PC, where it settled it: it answered, or the relay found it off */
+export type CheckedPc = "online" | "off";
+
 /** A relay PC of My PCs: this phone's own pairing (`saved`, by a QR or a code), or one of the account's. */
 export interface RelayTabPc { readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | "update" | "removed" | undefined; readonly saved: boolean }
 
 /**
  * The relay PCs this phone is on: its own pairings, then, signed in, the account's PCs it can open (one its own page can
- * join) that are not among them, so a PC both paired here and in the account is listed once, as this phone's. A PC the
- * account calls too old needs an update; any other account PC is on unless the directory says it is off, whether or not
- * this phone is let into it yet (its own page asks for that); a pairing is as its last check found it, or off when the
- * account says so. One that turned this phone away as removed (`removed`, shellState removedPcs) says so, never on,
- * until this phone opens it again, and is left out once forgotten from the list.
+ * join) that are not among them, so a PC both paired here and in the account is listed once, as this phone's. What this
+ * device knows itself comes before the account's word: a pairing's saved Ovis too old, or what its last check found
+ * (`status`, RelayShell); an account PC's check that settled (`checked`). Then the account: too old needs an update, off
+ * is off, and any other account PC is on, whether or not this phone is let into it yet (its own page asks for that). One
+ * that turned this phone away as removed (`removed`, shellState removedPcs) says so, never on, until this phone opens it
+ * again, and is left out once forgotten from the list.
  */
-export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[] | null, removed: Readonly<Record<string, RemovedPcMark>> = {}): RelayTabPc[] {
+export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[] | null, removed: Readonly<Record<string, RemovedPcMark>> = {}, checked: ReadonlyMap<string, CheckedPc> = new Map()): RelayTabPc[] {
   const listed = new Map((account ?? []).map((pc) => [pc.server_id, pc]));
   const own = devices.map((device): RelayTabPc => {
     const row = listed.get(device.server_id);
-    return { server_id: device.server_id, name: device.name, status: row?.state === "needs-update" ? "update" : device.status ?? (row?.state === "offline" ? "off" : undefined), saved: true };
+    return { server_id: device.server_id, name: device.name, status: device.status ?? (row?.state === "needs-update" ? "update" : row?.state === "offline" ? "off" : undefined), saved: true };
   });
   const more = (account ?? []).filter((pc) => !pc.paired && pc.join !== undefined && !own.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
-    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : pc.state === "offline" ? "off" : "online", saved: false }));
+    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : checked.get(pc.server_id) ?? (pc.state === "offline" ? "off" : "online"), saved: false }));
   return [...own, ...more];
 }
 
@@ -107,24 +111,32 @@ function PcRow({ pc }: { readonly pc: PhonePc }) {
   );
 }
 
+/** how long a front page that waits on what the phone app saved holds its controls back for an answer */
+const READ_WAIT_MS = 1_500;
+
 /**
- * The PCs the phone app saved, read once, with a way to read them again (after a Forget); none outside the app.
- * `read`: the app answered (always, outside it), so a screen chosen by whether any PC is saved does not flash the other.
+ * The PCs the phone app saved, read once, with a way to read them again (after a Forget); none outside the app, nor from
+ * an app with no getState. `read`: the app answered, or `READ_WAIT_MS` went by (a call to a method an app lacks never
+ * settles on iOS), so a screen chosen by whether any PC is saved neither flashes the other nor stays blank; a late answer
+ * still lists its PCs.
  */
 export function usePhoneSaved(native: boolean): { readonly pcs: PhoneSavedPc[]; readonly read: boolean; readonly reread: () => void } {
+  const asks = native && hasNativeMethod(SHELL, "getState");
   const [pcs, setPcs] = useState<PhoneSavedPc[]>([]);
-  const [read, setRead] = useState(!native);
+  const [read, setRead] = useState(!asks);
   const [round, setRound] = useState(0);
   useEffect(() => {
-    if (!native) return;
+    if (!asks) return;
     let live = true;
+    // fixed wait: an app that does not answer holds the front page's controls back no longer than this
+    const waited = setTimeout(() => { if (live) setRead(true); }, READ_WAIT_MS);
     callNative<{ saved?: string[]; names?: Record<string, string> }>(SHELL, "getState").then((state) => {
       if (!live) return;
       setPcs(phoneSavedPcs(state.saved ?? [], state.names ?? {}, window.location.origin));
       setRead(true);
-    }, () => { if (live) setRead(true); });
-    return () => { live = false; };
-  }, [native, round]);
+    }, () => { if (live) setRead(true); }).finally(() => clearTimeout(waited));
+    return () => { live = false; clearTimeout(waited); };
+  }, [asks, round]);
   return { pcs, read, reread: () => setRound((n) => n + 1) };
 }
 
@@ -138,14 +150,19 @@ function BackButton({ onBack }: { readonly onBack: () => void }) {
   return <button type="button" className="relay-add-back" aria-label={t("Back")} onClick={onBack}><ChevronLeft aria-hidden="true" /></button>;
 }
 
-/** A connect screen's sheep and title, Back at its start and the account's menu at its end where they apply. */
-function ConnectHead({ title, onBack, menu }: { readonly title: string; readonly onBack?: (() => void) | undefined; readonly menu?: ReactNode }) {
+/**
+ * A connect screen's sheep and title, Back at its start and the account's menu at its end where they apply; `focused`: the
+ * screen replaced the control that had the focus (Add PC opened it), so its title takes it and a keyboard keeps its place.
+ */
+function ConnectHead({ title, onBack, menu, focused = false }: { readonly title: string; readonly onBack?: (() => void) | undefined; readonly menu?: ReactNode; readonly focused?: boolean }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { if (focused) heading.current?.focus(); }, [focused]);
   return (
     <>
       <SheepMascot screen="header" size={56} />
       <div className="connect-start-head">
         {onBack && <BackButton onBack={onBack} />}
-        <h1 className="relay-shell-title connect-start-title">{title}</h1>
+        <h1 className="relay-shell-title connect-start-title" ref={heading} tabIndex={-1}>{title}</h1>
         {menu}
       </div>
     </>
@@ -160,10 +177,14 @@ function ConnectHead({ title, onBack, menu }: { readonly title: string; readonly
  * keys, from the app's own connect screen). `top`: what the screen says above the list (notices, a PC not answering);
  * `empty`: what it says with nothing listed. Add PC stays at the bottom of the screen while the list scrolls.
  */
-export function MyPcs({ devices, accountPcs = null, phone, onForget, inUse = null, onBack, onAdd, menu, top, empty }: {
+export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, inUse = null, onBack, onAdd, addFocused = false, menu, top, empty }: {
   readonly devices: readonly SavedPc[];
   /** signed in, the account's PCs, which the list adds to this phone's own pairings (relayTabPcs) */
   readonly accountPcs?: readonly MyPc[] | null;
+  /** what this device's own checks settled of the account's PCs (relayTabPcs) */
+  readonly checked?: ReadonlyMap<string, CheckedPc>;
+  /** back from Add a PC, whose Back was the control with the focus: Add PC takes it again */
+  readonly addFocused?: boolean;
   readonly phone: ReturnType<typeof usePhoneSaved>;
   /** forgets one of this phone's pairings */
   readonly onForget?: ((serverId: string) => void) | undefined;
@@ -178,6 +199,8 @@ export function MyPcs({ devices, accountPcs = null, phone, onForget, inUse = nul
   const open = useAddressOpen();
   // the PCs that turned this phone away as removed (relayTabPcs), read again once one is forgotten from the list
   const [removed, setRemoved] = useState(removedPcs);
+  const addButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (addFocused) addButton.current?.focus(); }, [addFocused]);
   const forgetSaved = (pc: PhoneSavedPc) => () => { open.setError(null); callNative(SHELL, "forget", { url: pc.origin }).then(phone.reread, open.failed); };
   const fromPhone = (pc: PhoneSavedPc): PhonePc => ({
     key: pc.origin, name: pc.name, way: pc.way, address: pc.host, ...(pc.way === "tailscale" ? { data: { "data-tailnet-pc": pc.origin } } : {}),
@@ -185,7 +208,7 @@ export function MyPcs({ devices, accountPcs = null, phone, onForget, inUse = nul
     forget: pc.way === "ssh" ? undefined : forgetSaved(pc),
   });
   const rows: PhonePc[] = [
-    ...relayTabPcs(devices, accountPcs, removed).map((pc): PhonePc => ({
+    ...relayTabPcs(devices, accountPcs, removed, checked).map((pc): PhonePc => ({
       key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", word: pc.server_id === inUse ? "in-use" : pc.status, href: serverScopePath(pc.server_id),
       forget: pc.status === "removed" ? () => { markRemovedPc(pc.server_id, "hidden"); setRemoved(removedPcs()); }
         : pc.saved && onForget ? () => onForget(pc.server_id) : undefined,
@@ -199,7 +222,7 @@ export function MyPcs({ devices, accountPcs = null, phone, onForget, inUse = nul
       {top}
       {rows.length > 0 ? <ul className="my-pcs-list">{rows.map((pc) => <PcRow key={pc.key} pc={pc} />)}</ul> : empty}
       <OpenError open={open} />
-      <div className="my-pcs-add"><button type="button" className="btn btn-primary" data-action="add-pc" onClick={onAdd}><Plus aria-hidden="true" />{t("Add PC")}</button></div>
+      <div className="my-pcs-add"><button ref={addButton} type="button" className="btn btn-primary" data-action="add-pc" onClick={onAdd}><Plus aria-hidden="true" />{t("Add PC")}</button></div>
     </div>
   );
 }
@@ -331,13 +354,13 @@ function SshPanel() {
  * SSH, so Tailscale and SSH each take a PC's address (RelayAddPc's AddressForm, which opens that PC's own Ovis); the
  * phone app adds what it knows.
  */
-export function AddPcTabs({ title, relay, onBack }: { readonly title: string; readonly relay: ReactNode; readonly onBack?: (() => void) | undefined }) {
+export function AddPcTabs({ title, relay, onBack, focused = false }: { readonly title: string; readonly relay: ReactNode; readonly onBack?: (() => void) | undefined; readonly focused?: boolean }) {
   const t = useT();
   const [way, setWay] = useState<ConnectWay>("relay");
   const label: Record<ConnectWay, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", ssh: "SSH" };
   return (
     <div className="connect-add" data-view="add-pc">
-      <ConnectHead title={title} onBack={onBack} />
+      <ConnectHead title={title} onBack={onBack} focused={focused} />
       <div className="segmented connect-start-tabs" role="group" aria-label={t("How to connect")}>
         {CONNECT_WAYS.map((each) => <button key={each} type="button" aria-pressed={way === each} data-tab={each} onClick={() => setWay(each)}>{label[each]}</button>)}
       </div>

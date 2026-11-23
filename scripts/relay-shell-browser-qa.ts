@@ -799,10 +799,10 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           await capture(page, `pair-dialog-${width}-${theme}`);
           await page.keyboard.press("Escape");
           await page.locator("[role=dialog]").waitFor({ state: "detached" });
-          await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
-          // the dialog closes back to Add PC, whose Back is My PCs
+          // the dialog closes back to Add PC, whose Back is My PCs: with it goes Add PC's own history entry, after the dialog's
           await front(page).locator('[data-view="add-pc"] .relay-add-back').click();
           await pcLink(page, "Desk PC").waitFor();
+          await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
           // the account is in the ⋮ menu at the top of My PCs: who is signed in, Manage account and Sign out
           assert.equal(await front(page).locator('[data-action="manage-account"]').count(), 0, "no Manage account link on My PCs");
           await front(page).locator('[data-action="account-menu"]').click();

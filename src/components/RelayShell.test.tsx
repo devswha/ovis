@@ -116,6 +116,19 @@ describe("the front page's account part", () => {
     expect(html).not.toContain("Continue with");
   });
 
+  it("says of a PC what this device found first: its Ovis too old, a check that found it off or on, then the account's word", () => {
+    const join = { server_public_key: "k", relay: "wss://relay.example" };
+    const outdated = Object.assign(saved("a".repeat(32), "old-desk"), { observed_version: { version: "0.4.0", outdated: true } });
+    const pcStatus = new Map([["a".repeat(32), { kind: "answered", route: "relay", rttMs: 40 }], ["c".repeat(32), { kind: "offline", reason: "pc" }], ["d".repeat(32), { kind: "answered", route: "relay", rttMs: 40 }]] as const);
+    // desk's heartbeat is recent, but the relay just found it off; attic's heartbeat is old, but it just answered
+    const account = { kind: "signed-in" as const, provider: "github" as const, error: null, pcs: [{ ...pc("c".repeat(32), "desk", "needs-approval"), join }, { ...pc("d".repeat(32), "attic", "offline"), join }] };
+    const html = render({ ...props({ kind: "list", devices: [outdated], account }), scoped: false, onSignIn: none, pcStatus });
+    expect(rowsOf(html)).toEqual([[`/s/${"a".repeat(32)}/`, "old-desk Relay Update needed"], [`/s/${"c".repeat(32)}/`, "desk Relay Off"], [`/s/${"d".repeat(32)}/`, "attic Relay On"]]);
+    // signed out the same: the saved version is this device's own word
+    const out = render({ ...props({ kind: "list", devices: [outdated], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, pcStatus });
+    expect(rowsOf(out)).toEqual([[`/s/${"a".repeat(32)}/`, "old-desk Relay Update needed"]]);
+  });
+
   it("lists on My PCs this device's own PCs and then the account's it can open, each once, by way and state, whatever the address", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
@@ -508,18 +521,101 @@ describe("the hosted front page", () => {
       expect(notices()).toEqual([0, 0, 0]);
     });
 
+    it("draws the front page's controls when the phone app does not answer what it saved, and lists what a late answer brings", async () => {
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      const answer = Promise.withResolvers<unknown>();
+      let asked = 0;
+      const app = (methods: string[]) => ({
+        isNativePlatform: () => true, getPlatform: () => "ios",
+        PluginHeaders: [{ name: "HerdrShell", methods: methods.map((name) => ({ name })) }],
+        nativePromise: async (_plugin: string, method: string) => { if (method === "getState") { asked += 1; return await answer.promise; } return {}; },
+      });
+      const signedOut = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
+      try {
+        // an app with no getState is asked nothing: the controls are there at once
+        Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: app(["open"]) });
+        await mount(signedOut);
+        expect(asked).toBe(0);
+        expect(view()).toBe("add-pc");
+        await act(async () => { renderer!.unmount(); });
+        // one whose getState never settles: the controls once the short wait is over, and a late answer lists its PCs
+        Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: app(["getState", "open"]) });
+        await mount(signedOut);
+        expect(asked).toBe(1);
+        expect(renderer!.root.findAll((node) => typeof node.props["data-view"] === "string")).toHaveLength(0);
+        // the wait is bounded: the controls come by themselves well within it
+        const deadline = Date.now() + 5_000;
+        while (renderer!.root.findAll((node) => typeof node.props["data-view"] === "string").length === 0) {
+          if (Date.now() > deadline) throw new Error("the front page stayed blank while the app did not answer");
+          await act(async () => { await Promise.race([answer.promise, Bun.sleep(25)]); });
+        }
+        expect(view()).toBe("add-pc");
+        expect(buttons("Continue with GitHub")).toHaveLength(1);
+        await act(async () => { answer.resolve({ saved: ["https://desk.tail1e211e.ts.net"], names: {} }); await answer.promise; });
+        expect(view()).toBe("my-pcs");
+        expect(rowTexts().map(([way]) => way)).toEqual(["tailscale"]);
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("keeps a PC's own page on that PC's sign-in whatever the phone saved, and its Back on a relay with no accounts", async () => {
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: [{ name: "getState" }, { name: "open" }] }],
+        nativePromise: async (_plugin: string, method: string) => method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: {} } : {},
+      } });
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), onSignIn: none });
+        expect(view()).toBe("add-pc");
+        expect(title()).toBe("Connect a PC");
+        expect(buttons("Continue with GitHub")).toHaveLength(1);
+        await act(async () => { renderer!.unmount(); });
+        let backed = 0;
+        await mount({ ...props({ kind: "empty" }), onBack: () => { backed += 1; } });
+        expect(view()).toBe("add-pc");
+        await act(async () => { back()[0]!.props.onClick(); });
+        expect(backed).toBe(1);
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("gives Add PC an entry of its own in the history, and moves the focus to its heading and back to Add PC", async () => {
+      const pushed: unknown[] = [];
+      (window.history as unknown as { pushState: (state: unknown) => void }).pushState = (state) => { pushed.push(state); };
+      const focused: string[] = [];
+      const tracking = (element: { type: unknown; props: Record<string, unknown> }) => ({ ...node(), focus: () => { focused.push(element.type === "button" ? String(element.props["data-action"] ?? element.props["aria-label"]) : String(element.type)); } });
+      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) }), { createNodeMock: tracking as never }); });
+      expect(pushed).toHaveLength(0);
+      await act(async () => { action("add-pc").props.onClick(); });
+      expect(view()).toBe("add-pc");
+      expect(pushed).toHaveLength(1);
+      expect(focused.at(-1)).toBe("h1");
+      await act(async () => { back()[0]!.props.onClick(); });
+      expect(view()).toBe("my-pcs");
+      expect(focused.at(-1)).toBe("add-pc");
+      // a tab is no step of the history
+      await act(async () => { action("add-pc").props.onClick(); });
+      await act(async () => { tab("ssh").props.onClick(); });
+      expect(pushed).toHaveLength(2);
+    });
+
     it("never says Needs approval: an account PC this device is not let into yet is On or Off like any other", async () => {
       await mount(signedIn(four()));
       expect(rowTexts()).toEqual([["relay", "Desk PCRelay"], ["relay", "MacBookRelay"], ["relay", "Home serverRelayOff"], ["relay", "Mac miniRelayOn"]]);
       expect(textOf(renderer!.root)).not.toContain("Needs approval");
     });
 
-    it("lists the phone app's own PCs on My PCs after the relay's, each opened as before, Forget on a Tailscale or address one, and no list on the tabs", async () => {
+    it("lists the phone app's own PCs on My PCs after the relay's, each opened at its own address, Forget on a Tailscale or address one, and no list on the tabs", async () => {
       const called: string[] = [];
       const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
         isNativePlatform: () => true, getPlatform: () => "android",
-        PluginHeaders: [{ name: "HerdrShell" }],
+        PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "forget"].map((name) => ({ name })) }],
         nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
           called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
           if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317", "http://127.0.0.1:41234"], names: { "https://desk.tail1e211e.ts.net": "Desk", "http://127.0.0.1:41234": "lab-linux" } };
@@ -527,13 +623,17 @@ describe("the hosted front page", () => {
         },
       } });
       try {
-        // nothing saved by the relay and signed out: the app's own PCs alone make My PCs the front page
-        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "MacBook", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
         expect(view()).toBe("my-pcs");
-        expect(rowTexts()).toEqual([["tailscale", "DeskTailscaledesk.tail1e211e.ts.netForget"], ["address", "192.168.0.5:7317AddressForget"], ["ssh", "lab-linuxSSH127.0.0.1:41234"]]);
+        // the relay's PC first, then the app's: Tailscale, then the others in the order the app saved them
+        expect(rowTexts()).toEqual([["relay", "MacBookRelayForget"], ["tailscale", "DeskTailscaledesk.tail1e211e.ts.netForget"], ["address", "192.168.0.5:7317AddressForget"], ["ssh", "lab-linuxSSH127.0.0.1:41234"]]);
+        expect(renderer!.root.find((node) => node.type === "a" && node.props.className === "relay-add-saved-pc").props.href).toBe(`/s/${ids.mac}/`);
+        const rows = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pc-way"] !== "relay" && typeof node.props["data-pc-way"] === "string");
+        for (const [index, opens] of ["https://desk.tail1e211e.ts.net/", "http://192.168.0.5:7317/", "http://127.0.0.1:41234/"].entries()) {
+          await act(async () => { rows()[index]!.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+          expect(called.filter((call) => call.startsWith("HerdrShell.open")).at(-1)).toBe(`HerdrShell.open ${opens}`);
+        }
         const deskRow = renderer!.root.find((node) => node.type === "li" && node.props["data-tailnet-pc"] === "https://desk.tail1e211e.ts.net");
-        await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
-        expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
         await act(async () => { deskRow.find((node) => node.type === "button" && node.props.className === "btn btn-ghost phone-pc-forget").props.onClick(); });
         expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
         expect(called.filter((call) => call === "HerdrShell.getState")).toHaveLength(2);
@@ -556,7 +656,7 @@ describe("the hosted front page", () => {
       const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
         isNativePlatform: () => true, getPlatform: () => "android",
-        PluginHeaders: [{ name: "HerdrShell" }, { name: "CapacitorBarcodeScanner" }],
+        PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "tailscale", "openTailscale", "open"].map((name) => ({ name })) }, { name: "CapacitorBarcodeScanner" }],
         nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
           called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
           if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317", "http://100.101.1.2:7317"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };

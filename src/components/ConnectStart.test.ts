@@ -23,9 +23,13 @@ describe("the relay PCs of My PCs", () => {
     expect(rows.map((row) => row.status)).toEqual(["online", "off"]);
   });
 
-  it("says an update is needed for a PC the account calls too old, this phone's own pairing too, before what its last check found", () => {
-    const rows = relayTabPcs([{ server_id: id("a"), name: "desk", status: "online" }, { server_id: id("e"), name: "attic" }], [accountPc("a", { paired: true, state: "needs-update" }), accountPc("b", { state: "needs-update" }), accountPc("e", { paired: true, state: "offline" })]);
-    expect(rows.map((row) => [row.name, row.status ?? ""])).toEqual([["desk", "update"], ["attic", "off"], ["pc-b", "update"]]);
+  it("says first what this device knows itself (a pairing's saved Ovis too old, a check that settled), then the account's word", () => {
+    const rows = relayTabPcs([{ server_id: id("a"), name: "desk", status: "update" }, { server_id: id("e"), name: "attic" }, { server_id: id("f"), name: "nuc", status: "online" }],
+      [accountPc("a", { paired: true }), accountPc("b", { state: "needs-update" }), accountPc("e", { paired: true, state: "offline" }), accountPc("f", { paired: true, state: "offline" })]);
+    expect(rows.map((row) => [row.name, row.status ?? ""])).toEqual([["desk", "update"], ["attic", "off"], ["nuc", "online"], ["pc-b", "update"]]);
+    // an account PC a check found off is off, however recent its heartbeat; one that answered is on, however old
+    const checked = relayTabPcs([], [accountPc("c"), accountPc("d", { state: "offline" })], {}, new Map([[id("c"), "off"], [id("d"), "online"]]));
+    expect(checked.map((row) => row.status)).toEqual(["off", "online"]);
   });
 
   it("says Removed, with no state word, for a PC that turned this phone away as removed, and leaves it out once forgotten", () => {
