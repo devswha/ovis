@@ -13,7 +13,11 @@ $ghStandIn = Join-Path ([IO.Path]::GetTempPath()) "herdr-installer-gh-$PID"
 $pluginRoot = Join-Path ([IO.Path]::GetTempPath()) "herdr plugin with spaces $PID"
 $launcher = Join-Path $pluginRoot 'scripts\plugin.ps1'
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
-function Start-Process { $global:herdrInstallOpened += ($args -join ' ') }
+# a browser opened (the app's address), or herdr's server started by the installer itself where Task Scheduler took no task
+function Start-Process {
+    if ($args -contains 'server') { $state.herdrStarts += 'here'; if (-not $state.herdrDies) { $state.running = $true }; return }
+    $global:herdrInstallOpened += ($args -join ' ')
+}
 
 # Tool boundaries only: no downloads, installed plugins, processes or user settings are changed.
 # The commit a ref names: a commit id itself, or a stand-in id for a branch or tag
@@ -67,6 +71,12 @@ function git {
 function bun {
     $global:LASTEXITCODE = 0
     if ($args[0] -eq '--version') { $state.bunVersion }
+    # the add (`bun <plugin.ts> add`, or the binary's run as `bun <exe> add` by a copy of the installer): what it was given,
+    # and whether any input came with it (the add with --account is given none)
+    elseif ($args[1] -eq 'add') {
+        $state.adds += "$($args[1..($args.Count - 1)] -join ' ') <$(@($input).Count) input>"
+        if ($state.addFails) { $global:LASTEXITCODE = 1; 'Could not link this PC: the sign-in ended' } else { 'Added. Open (this PC) from My PCs.' }
+    }
     elseif ($args[-1] -eq 'status') { 'running http://127.0.0.1:7317 (pid 1234)'; 'config: none' }
     elseif ($args[-1] -eq 'stop' -and $args[0] -like '*legacy root*') {
         $state.stopStateDirs += "$env:HERDR_PLUGIN_STATE_DIR"
@@ -157,6 +167,59 @@ function herdr {
         }
     }
 }
+# herdr's start and its sign-in start at their Windows boundaries: Task Scheduler, WMI and the Run key. A start makes the
+# stand-in herdr answer ($state.running) unless it dies at once ($state.herdrDies); nothing reaches the real Task
+# Scheduler, WMI or registry. The explorer of a desktop session this account is signed in to answers a run in session 0.
+$state.herdrStarts = @(); $state.tasks = @(); $state.taskCalls = @(); $state.runValue = $null; $state.taskRefused = $false; $state.herdrDies = $false
+$state.adds = @(); $state.addFails = $false; $state.explorerOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+function New-ScheduledTaskAction { [CmdletBinding()] param($Execute, $Argument) @{ Execute = $Execute; Argument = $Argument } }
+function New-ScheduledTaskPrincipal { [CmdletBinding()] param($UserId, $LogonType, $RunLevel) @{ UserId = $UserId; LogonType = "$LogonType"; RunLevel = "$RunLevel" } }
+function New-ScheduledTaskSettingsSet { [CmdletBinding()] param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit) @{ Limit = $ExecutionTimeLimit } }
+function Register-ScheduledTask {
+    [CmdletBinding()] param($TaskName, $Action, $Principal, $Settings)
+    if ($state.taskRefused) { throw 'Access is denied.' }
+    $state.tasks += $TaskName
+    $state.taskCalls += "register $($Action.Execute) $($Action.Argument) as $($Principal.UserId) $($Principal.LogonType) $($Principal.RunLevel), limit $($Settings.Limit)"
+}
+function Start-ScheduledTask {
+    [CmdletBinding()] param($TaskName)
+    if ($state.tasks -notcontains $TaskName) { throw "No task $TaskName" }
+    $state.herdrStarts += 'desktop'
+    if (-not $state.herdrDies) { $state.running = $true }
+}
+function Unregister-ScheduledTask { [CmdletBinding()] param($TaskName, [switch]$Confirm) $state.tasks = @($state.tasks | Where-Object { $_ -ne $TaskName }) }
+function Get-CimInstance {
+    [CmdletBinding()] param([Parameter(Position = 0)]$ClassName, $Filter)
+    if ("$Filter" -match 'explorer') { return @([pscustomobject]@{ SessionId = 0 }, [pscustomobject]@{ SessionId = 1; Owner = $state.explorerOwner }) }
+    CimCmdlets\Get-CimInstance -ClassName $ClassName -Filter $Filter
+}
+function Invoke-CimMethod {
+    [CmdletBinding()] param($ClassName, $MethodName, $Arguments, $InputObject)
+    if ($MethodName -eq 'GetOwnerSid') { return @{ Sid = $InputObject.Owner } }
+    if ($ClassName -eq 'Win32_Process' -and $MethodName -eq 'Create') {
+        $state.herdrStarts += 'headless'; $state.headlessLine = $Arguments.CommandLine
+        if (-not $state.herdrDies) { $state.running = $true }
+        return @{ ReturnValue = 0 }
+    }
+    throw "Unexpected CIM method: $ClassName $MethodName"
+}
+function Get-ItemProperty {
+    [CmdletBinding()] param($Path, $Name)
+    if ($Path -ne $runKey -or $Name -ne 'Ovis') { throw "Unexpected registry read: $Path $Name" }
+    if ($null -ne $state.runValue) { [pscustomobject]@{ Ovis = $state.runValue } }
+}
+function Set-ItemProperty {
+    [CmdletBinding()] param($Path, $Name, $Value)
+    if ($Path -ne $runKey -or $Name -ne 'Ovis') { throw "Unexpected registry write: $Path $Name" }
+    $state.runValue = $Value
+}
+function Remove-ItemProperty {
+    [CmdletBinding()] param($Path, $Name)
+    if ($Path -ne $runKey -or $Name -ne 'Ovis') { throw "Unexpected registry removal: $Path $Name" }
+    $state.runValue = $null
+}
+
 function Invoke-WebRequest {
     if ("$($args[-1])" -like 'https://raw.githubusercontent.com/devswha/ovis/*/herdr-plugin.toml') {
         if ($state.manifestBlocked) { throw 'Unable to connect to the remote server' }
@@ -215,6 +278,10 @@ exit /b 1
     # herdr's state dir is the test's own (a section that needs another sets it and puts this back): the installer reads
     # a server a start recorded there (scripts/plugin.ts's server.pid and server.owner), and none of this PC's
     $env:XDG_STATE_HOME = Join-Path $ghStandIn 'state home'
+    # and so is %LOCALAPPDATA%, where the installer writes the launcher of herdr's sign-in start (ovis\start-herdr.ps1)
+    $testLocalAppData = Join-Path $ghStandIn 'local app data'
+    $env:LOCALAPPDATA = $testLocalAppData
+    $herdrLauncherFile = Join-Path $testLocalAppData 'ovis\start-herdr.ps1'
     $ghCalls = Join-Path $ghStandIn 'calls.txt'
     $firstInstall = {
         param([string]$Gh, [string]$Source)
@@ -249,9 +316,9 @@ exit /b 1
     Assert $failed 'An unsuccessful Bun bootstrap must stop installation'
     $state.bunVersion = '1.4.2'; $state.failBun = $false
 
-    $state.installed = $false; $state.running = $false; $state.started = $false
+    $state.installed = $false; $state.running = $false; $state.started = $false; $state.herdrStarts = @()
     & $installer -Ref 'feat/windows-install'
-    Assert ($state.ref -eq 'feat/windows-install' -and -not $state.started) 'Explicit ref must install without starting herdr'
+    Assert ($state.ref -eq 'feat/windows-install' -and ($state.herdrStarts -join ',') -eq 'desktop' -and -not $state.started) "Explicit ref with herdr stopped must install, then start herdr once, which starts the app itself (herdr starts: $($state.herdrStarts -join ','))"
     $state.installed = $false; $env:OVIS_FROM_SOURCE = ''
     & $installer -Ref 'feat/windows-install'
     Assert ($state.pluginSource -eq '1' -and -not $env:OVIS_FROM_SOURCE) "A branch must be built from its own sources (herdr's build was told '$($state.pluginSource)')"
@@ -690,9 +757,17 @@ exit /b 1
             }
             Remove-Item "Env:$gate" -ErrorAction SilentlyContinue
         }
-        $state.installed = $false; $state.running = $false; $global:herdrInstallOpened = @()
+        $state.installed = $false; $state.running = $false; $global:herdrInstallOpened = @(); $state.herdrStarts = @()
         $stoppedOutput = & $installer -Ref 'test' 6>&1 | Out-String
-        Assert ($global:herdrInstallOpened.Count -eq 0 -and $stoppedOutput -notmatch 'opened ') 'A fresh install must not open the app when herdr is stopped'
+        Assert ($global:herdrInstallOpened.Count -eq 1 -and ($state.herdrStarts -join ',') -eq 'desktop') "A fresh install where herdr was stopped must start herdr, then open the app once: $stoppedOutput"
+        # run in session 0 (SSH) with nobody of this account signed in, herdr is not started, so nothing opens
+        $desktopSession = 'function Test-DesktopSession { [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 0 }'
+        Assert ((Get-Content -Raw $installer).Contains($desktopSession)) 'control: whether the installer runs in a desktop session is one function'
+        $inSession0 = (Get-Content -Raw $installer).Replace($desktopSession, 'function Test-DesktopSession { $false }')
+        $state.installed = $false; $state.running = $false; $global:herdrInstallOpened = @(); $state.explorerOwner = 'S-1-5-21-1-2-3-1001'
+        try { $nobodyOutput = & ([scriptblock]::Create($inSession0)) -Ref 'test' 6>&1 | Out-String }
+        finally { $state.explorerOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+        Assert ($global:herdrInstallOpened.Count -eq 0 -and $nobodyOutput -notmatch 'opened ' -and -not $state.running) "A fresh install whose herdr was not started must not open the app: $nobodyOutput"
         $state.running = $true
         Write-Host 'PASS Windows app opening: fresh install, rerun, OVIS_NO_OPEN, SSH tunnel and Tailscale, and CI'
     } finally {
@@ -702,6 +777,173 @@ exit /b 1
         }
         $global:herdrInstallOpened = @()
     }
+
+    # herdr where it was not running, as install.sh leaves Linux and macOS (INSTALL.md, method C): started once in this
+    # account's desktop by a one-shot task that is removed again, which runs the launcher herdr's sign-in start runs too
+    # (the value Ovis under HKCU's Run key), unless -NoService; a herdr that runs is left as it is. `irm | iex` takes no
+    # arguments, so the installer runs here as a script block, the way INSTALL.md gives them.
+    $source = Get-Content -Raw $installer
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $launcherArguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$herdrLauncherFile`""
+    $ourSignIn = "`"$powershellExe`" $launcherArguments"
+    $appSignIn = '"C:\Users\someone\AppData\Local\Programs\Ovis\Ovis.exe" --start'
+    $run = {
+        param([hashtable]$Options = @{}, [string]$Text = $source)
+        $state.herdrStarts = @(); $state.taskCalls = @(); $state.adds = @(); $state.started = $false
+        $message = ''; $said = ''
+        try { $said = & ([scriptblock]::Create($Text)) -Ref 'test' @Options 6>&1 | Out-String -Width 4096 } catch { $message = $_.Exception.Message }
+        @{ Said = $said; Message = $message; Starts = $state.herdrStarts -join ',' }
+    }
+    $state.installed = $false; $state.running = $false; $state.runValue = $null
+    Remove-Item -LiteralPath $herdrLauncherFile -Force -ErrorAction SilentlyContinue
+    $out = & $run
+    Assert (-not $out.Message -and $out.Starts -eq 'desktop' -and -not $state.started -and $state.tasks.Count -eq 0) "herdr stopped: it must be started once, by a task that is removed again, and start the app itself (starts: $($out.Starts); tasks left: $($state.tasks -join ',')): $($out.Message)"
+    Assert (@($state.taskCalls).Count -eq 1 -and $state.taskCalls[0] -eq "register $powershellExe $launcherArguments as $($me.Name) Interactive Limited, limit 00:00:00") "The task must run the launcher hidden, as this account with its ordinary rights and its interactive token, with no time limit: $($state.taskCalls -join ' | ')"
+    Assert ($state.runValue -eq $ourSignIn -and (Test-Path -LiteralPath $herdrLauncherFile)) "herdr's sign-in start must run the launcher: $($state.runValue)"
+    Assert ($out.Said -match 'herdr was started in your desktop for Ovis, and it starts at your sign-in' -and $out.Said -match 'signing out of Windows ends herdr' -and $out.Said -match "see them: bun '[^']+' status, herdr status server") "The closing lines must say what runs and what starts it again: $($out.Said)"
+    $out = & $run
+    Assert (-not $out.Message -and -not $out.Starts -and $state.started -and $state.runValue -eq $ourSignIn -and $out.Said -notmatch 'was started in your desktop') "A herdr that runs must be left as it is, the app started by its action and the sign-in start kept: $($out.Message) $($out.Said)"
+    $out = & $run @{ NoService = $true }
+    Assert (-not $out.Message -and -not $out.Starts -and $null -eq $state.runValue -and $out.Said -match 'removed the sign-in start an earlier run set up, as -NoService asks') "-NoService must remove the sign-in start an earlier run set up, starting or stopping nothing: $($out.Message) $($out.Said)"
+    $state.runValue = $ourSignIn; $state.running = $false; $env:OVIS_NO_SERVICE = '1'
+    try { $out = & $run } finally { Remove-Item Env:\OVIS_NO_SERVICE }
+    Assert (-not $out.Message -and $out.Starts -eq 'desktop' -and $null -eq $state.runValue -and $out.Said -match 'started in your desktop for now, with no sign-in start \(-NoService\)') "OVIS_NO_SERVICE=1 with herdr stopped must start herdr once and leave no sign-in start: $($out.Message) $($out.Said)"
+    foreach ($case in @(
+        @{ value = $appSignIn; said = 'herdr was started in your desktop for Ovis, and the Ovis app starts it at your sign-in' },
+        @{ value = $appSignIn; noService = $true; said = "the Ovis app's sign-in start is still there.*Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name Ovis" },
+        @{ value = 'C:\tools\other.exe --ovis'; said = "a Run value named Ovis that is not Ovis's own is there" },
+        @{ value = 'C:\tools\other.exe --ovis'; noService = $true; said = "a Run value named Ovis that is not Ovis's own is there" }
+    )) {
+        $state.runValue = $case.value; $state.running = $false
+        $out = & $run $(if ($case.noService) { @{ NoService = $true } } else { @{} })
+        Assert (-not $out.Message -and $out.Starts -eq 'desktop' -and $state.runValue -eq $case.value -and $out.Said -match $case.said) "A sign-in start not this installer's ($($case.value), -NoService: $([bool]$case.noService)) must be left as it is, and said: $($out.Message) $($out.Said)"
+    }
+    # a task Task Scheduler refuses (a policy can forbid them): in its own desktop the installer starts herdr itself, and
+    # from session 0 it cannot
+    $inDesktop = $source.Replace($desktopSession, 'function Test-DesktopSession { $true }')
+    $state.runValue = $null; $state.running = $false; $state.taskRefused = $true
+    try { $out = & $run @{} $inDesktop } finally { $state.taskRefused = $false }
+    Assert (-not $out.Message -and $out.Starts -eq 'here' -and $state.running -and $out.Said -match 'Task Scheduler did not take the task' -and $out.Said -match 'herdr was started in your desktop for Ovis') "A task Task Scheduler refuses must be said, and herdr started by the installer in its own desktop: $($out.Starts) $($out.Message) $($out.Said)"
+    $state.running = $false; $state.taskRefused = $true
+    try { $out = & $run @{} ($source.Replace($desktopSession, 'function Test-DesktopSession { $false }')) } finally { $state.taskRefused = $false }
+    Assert (-not $out.Message -and -not $out.Starts -and -not $state.running -and $out.Said -match 'Task Scheduler did not take the task' -and $out.Said -match 'herdr did not start, so neither did the app; to see why, run: herdr server') "From session 0, a task Task Scheduler refuses must be said, and herdr not started: $($out.Starts) $($out.Message) $($out.Said)"
+    $quick = $source.Replace('$herdrWaitSeconds = 20', '$herdrWaitSeconds = 1')
+    Assert ($quick -ne $source) 'control: how long herdr has to answer is one line'
+    $state.herdrDies = $true
+    try { $out = & $run @{} $quick } finally { $state.herdrDies = $false }
+    Assert (-not $out.Message -and $out.Starts -eq 'desktop' -and $state.tasks.Count -eq 0 -and $out.Said -match 'herdr did not start') "A herdr that never answers must be said, its task removed: $($out.Message) $($out.Said)"
+    # run in session 0 (SSH, remoting): herdr starts in the desktop this account is signed in to; with nobody of it signed in,
+    # only given -Headless (or OVIS_HEADLESS=1), through WMI, without a desktop, and otherwise not, the sign-in start set up
+    $inSession0 = $source.Replace($desktopSession, 'function Test-DesktopSession { $false }')
+    $state.running = $false
+    $out = & $run @{} $inSession0
+    Assert (-not $out.Message -and $out.Starts -eq 'desktop') "From session 0 with this account signed in, herdr must start in its desktop: $($out.Message) $($out.Said)"
+    $state.explorerOwner = 'S-1-5-21-1-2-3-1001'
+    try {
+        $state.running = $false; $state.runValue = $null
+        $out = & $run @{} $inSession0
+        Assert (-not $out.Message -and -not $out.Starts -and $state.runValue -eq $ourSignIn -and $out.Said -match 'nobody of this account is signed in at this PC, so herdr was not started, nor the app with it; it starts at your sign-in' -and $out.Said -match 'run this again with -Headless') "From session 0 with nobody signed in, herdr must not start, the sign-in start set up and -Headless named: $($out.Message) $($out.Said)"
+        foreach ($way in 'switch', 'variable') {
+            $state.running = $false
+            if ($way -eq 'variable') { $env:OVIS_HEADLESS = '1' }
+            try { $out = & $run $(if ($way -eq 'switch') { @{ Headless = $true } } else { @{} }) $inSession0 } finally { Remove-Item Env:\OVIS_HEADLESS -ErrorAction SilentlyContinue }
+            Assert (-not $out.Message -and $out.Starts -eq 'headless' -and $state.headlessLine -match '^"[^"]+" server$' -and $out.Said -match 'herdr was started without a desktop') "-Headless ($way) from session 0 with nobody signed in must start herdr through WMI: $($state.headlessLine) $($out.Message) $($out.Said)"
+        }
+    } finally { $state.explorerOwner = $me.User.Value }
+    Write-Host 'PASS herdr where it was not running: started once in the desktop by a task removed again, the sign-in start set up, kept, removed by -NoService, or left when it is not ours; from session 0 only into a signed-in desktop, or with -Headless'
+
+    # The add, after the install: with -Account (or OVIS_ADD_ACCOUNT) run with that account and no input, failing the
+    # install when the PC was not added, and only on a release whose add checks it; -Add alone runs `ovis add` at a
+    # terminal and otherwise says what to run; an account id of another shape is refused before anything is installed
+    $linkScript = Join-Path $pluginRoot 'scripts\plugin-link.ts'
+    $bothReads = @('const pinned = flagValue(args, "--account");', 'export function answerOf(input) {}')
+    Set-Content -LiteralPath $linkScript -Value $bothReads
+    $state.running = $true
+    $out = & $run @{ Account = 'acct_1-A' }
+    Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add --account acct_1-A <0 input>' -and $out.Said -match 'set OVIS_TOKEN first') "-Account must run the add with that account and no input: $($state.adds -join '|') $($out.Message)"
+    $env:OVIS_ADD_ACCOUNT = 'acct_2'
+    try { $out = & $run } finally { Remove-Item Env:\OVIS_ADD_ACCOUNT }
+    Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add --account acct_2 <0 input>') "OVIS_ADD_ACCOUNT must do what -Account does: $($state.adds -join '|') $($out.Message)"
+    $state.addFails = $true
+    try { $out = & $run @{ Account = 'acct_1' } } finally { $state.addFails = $false }
+    Assert ($out.Message -match 'was not added to your Ovis account' -and ($state.adds -join '|') -eq 'add --account acct_1 <0 input>') "An add with -Account that fails must fail the install: $($out.Message)"
+    Set-Content -LiteralPath $linkScript -Value $bothReads[1]
+    $out = & $run @{ Account = 'acct_1' }
+    Assert ($out.Message -match 'was not added' -and $state.adds.Count -eq 0) "An add that does not check --account must not be run with it, and the install fail: $($state.adds -join '|') $($out.Message)"
+    Set-Content -LiteralPath $linkScript -Value $bothReads
+    $state.explorerOwner = 'S-1-5-21-1-2-3-1001'; $state.running = $false
+    try { $out = & $run @{ Account = 'acct_1' } $inSession0 } finally { $state.explorerOwner = $me.User.Value }
+    Assert ($out.Message -match 'was not added' -and $state.adds.Count -eq 0) "With the app not running, -Account must add nothing and fail the install: $($out.Message)"
+    $state.running = $true
+    $givenCi = $env:CI; $env:CI = 'true'
+    try { $out = & $run @{ Add = $true } } finally { $env:CI = $givenCi }
+    Assert (-not $out.Message -and $state.adds.Count -eq 0 -and $out.Said -match "to add this PC to your Ovis account, run in a terminal on this PC: bun '[^']+' add\. Where nobody can answer") "-Add with no terminal must say what to run: $($out.Message) $($out.Said)"
+    $atTerminal = $source.Replace('function Test-Terminal { -not ($env:CI -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) }', 'function Test-Terminal { $true }')
+    Assert ($atTerminal -ne $source) 'control: whether a terminal is there is one function'
+    $givenNoOpen = $env:OVIS_NO_OPEN; Remove-Item Env:\OVIS_NO_OPEN -ErrorAction SilentlyContinue
+    try {
+        $out = & $run @{ Add = $true } $atTerminal
+        Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add <0 input>') "-Add at a terminal must run the add, which asks there: $($state.adds -join '|') $($out.Message)"
+        Set-Content -LiteralPath $linkScript -Value $bothReads[0]
+        $out = & $run @{ Add = $true } $atTerminal
+        Assert (-not $out.Message -and $state.adds.Count -eq 0 -and $out.Said -match 'would take a line typed ahead as its answer') "-Add must not run an add that takes a line typed ahead: $($out.Message) $($out.Said)"
+    } finally { if ($null -ne $givenNoOpen) { $env:OVIS_NO_OPEN = $givenNoOpen } }
+    $installs = $state.installs
+    foreach ($bad in '-x', 'a b', ('a' * 65), 'acct;x') {
+        $state.installed = $false; $state.running = $false
+        $out = & $run @{ Account = $bad }
+        Assert ($out.Message -match '-Account \(or OVIS_ADD_ACCOUNT\) takes your Ovis account' -and $state.installs -eq $installs -and -not $out.Starts) "An account id of another shape ($bad) must be refused before anything is installed: $($out.Message)"
+    }
+    $env:OVIS_ADD_ACCOUNT = '-x'
+    try { $out = & $run } finally { Remove-Item Env:\OVIS_ADD_ACCOUNT }
+    Assert ($out.Message -match 'takes your Ovis account' -and $state.installs -eq $installs) "OVIS_ADD_ACCOUNT of another shape must be refused before anything is installed: $($out.Message)"
+    Remove-Item -LiteralPath $linkScript -Force
+    $state.running = $true
+    Write-Host 'PASS the add: -Account and OVIS_ADD_ACCOUNT run it with no input and fail the install when not added, never on an add that does not check the account; -Add asks at a terminal only; other ids refused before installing'
+
+    # The launcher herdr's sign-in start and the task run, as Windows PowerShell runs it: written for a herdr in a folder
+    # with an apostrophe, into a user folder outside ASCII (read whole only with its byte order mark), it starts herdr's
+    # server only while herdr lists Ovis's plugin and no server runs, and finds herdr by name once that one is gone
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $installer).Path, [ref]$null, [ref]$null)
+    Invoke-Expression $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-HerdrLauncher' }, $true).Extent.Text
+    $fakeHerdrDir = Join-Path $ghStandIn ("herdr's bin " + [char]0x6771 + [char]0x4eac)
+    New-Item -ItemType Directory -Force -Path $fakeHerdrDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $fakeHerdrDir 'herdr.cmd') -Encoding Ascii -Value @'
+@echo off
+echo %*>>"%~dp0calls.txt"
+if "%1"=="plugin" type "%~dp0plugins.json"
+if "%1"=="status" type "%~dp0status.json"
+exit /b 0
+'@
+    $ovisHome = Join-Path $ghStandIn ('user ' + [char]0x6771 + [char]0x4eac + '\ovis')
+    $herdrLauncher = Join-Path $ovisHome 'start-herdr.ps1'
+    $launcherCalls = Join-Path $fakeHerdrDir 'calls.txt'
+    $listed = '{"result":{"plugins":[{"plugin_id":"devswha.ovis"}]}}'
+    $launch = {
+        param([string]$Plugins, [bool]$Running)
+        Set-Content -LiteralPath (Join-Path $fakeHerdrDir 'plugins.json') -Encoding Ascii -Value $Plugins
+        Set-Content -LiteralPath (Join-Path $fakeHerdrDir 'status.json') -Encoding Ascii -Value "{`"running`":$("$Running".ToLowerInvariant())}"
+        Remove-Item -LiteralPath $launcherCalls -Force -ErrorAction SilentlyContinue
+        & $powershellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $herdrLauncher
+        # the server's start is a process of its own: its line comes within the bound, or never
+        for ($i = 0; $i -lt 30 -and @(Get-Content -LiteralPath $launcherCalls -ErrorAction SilentlyContinue) -notcontains 'server'; $i++) { Start-Sleep -Milliseconds 100 }
+        @(Get-Content -LiteralPath $launcherCalls -ErrorAction SilentlyContinue | ForEach-Object { "$_".Trim() }) -join ','
+    }
+    Write-HerdrLauncher (Join-Path $fakeHerdrDir 'herdr.cmd')
+    Assert ((Get-Content -LiteralPath $herdrLauncher -Encoding UTF8 -Raw).Contains($fakeHerdrDir.Replace("'", "''"))) 'control: the launcher must name the herdr it was written for'
+    $calls = & $launch $listed $false
+    Assert ($calls -eq 'plugin list --json,status server --json,server') "The launcher must start herdr's server where Ovis is installed and none runs: $calls"
+    $calls = & $launch $listed $true
+    Assert ($calls -eq 'plugin list --json,status server --json') "The launcher must leave a herdr that runs alone: $calls"
+    $calls = & $launch '{"result":{"plugins":[]}}' $false
+    Assert ($calls -eq 'plugin list --json') "The launcher must start nothing once Ovis is not installed: $calls"
+    Write-HerdrLauncher (Join-Path $ghStandIn 'gone\herdr.exe')
+    $givenPath = $env:PATH; $env:PATH = "$fakeHerdrDir;$env:PATH"
+    try { $calls = & $launch $listed $false } finally { $env:PATH = $givenPath }
+    Assert ($calls -eq 'plugin list --json,status server --json,server') "The launcher must find herdr by name once the one it names is gone: $calls"
+    Remove-Item -LiteralPath (Split-Path $ovisHome), $fakeHerdrDir -Recurse -Force
+    Write-Host 'PASS the launcher of the sign-in start: starts herdr only with Ovis installed and none running, in a user folder outside ASCII, finding herdr by name once its path is gone'
 
     # The star: mentioned once on a first install, asked only at a terminal, given only on "y".
     $mention = 'a GitHub star helps other herdr users find it'
@@ -921,19 +1163,25 @@ console.log(key.publicKey);
     $keyLine = [regex]::Match($shipped, '(?m)^\$releasePublicKey = ''[^'']+''(?=\r?$)').Value
     Assert ([bool]$keyLine) 'install.ps1 must pin its key on one $releasePublicKey line'
     $copy = Join-Path $binaryScratch 'install.ps1'
-    Set-Content -LiteralPath $copy -Encoding UTF8 -Value $shipped.Replace($keyLine, "`$releasePublicKey = '$testKey'").Replace('[int]$WaitSeconds = 600', '[int]$WaitSeconds = 2')
+    # and whose release binary (a stand-in file here) is run as the stand-in bun runs a script: its status and its add
+    $binaryCli = '$ovisCli = @($exe, ''plugin'')'
+    Assert ($shipped.Contains($binaryCli)) 'control: the release binary is run through one command line'
+    Set-Content -LiteralPath $copy -Encoding UTF8 -Value $shipped.Replace($keyLine, "`$releasePublicKey = '$testKey'").Replace('[int]$WaitSeconds = 600', '[int]$WaitSeconds = 2').Replace($binaryCli, '$ovisCli = @(''bun'', $exe)')
     $env:OVIS_FROM_SOURCE = ''
     $env:OVIS_RELEASES_URL = ([Uri]$releaseDir).AbsoluteUri
     $env:LOCALAPPDATA = Join-Path $binaryScratch 'local app data'
-    $state.installed = $false; $state.running = $false; $state.linkedRoot = ''
+    $state.installed = $false; $state.running = $false; $state.linkedRoot = ''; $state.herdrStarts = @()
     $ovisHome = Join-Path $env:LOCALAPPDATA 'ovis'
     $exe = Join-Path $ovisHome 'bin\ovis-server.exe'
     & $copy -Ref 'v1.2.3'
     Assert ((Get-FileHash $exe).Hash -eq (Get-FileHash (Join-Path $releaseDir 'v1.2.3\ovis-server-windows-x64.exe')).Hash) 'The checked binary must be installed in bin'
     Assert ((Get-Content -Raw (Join-Path $ovisHome 'bin\dist\index.html')) -match '1\.2\.3') 'The client must be unpacked beside it'
     Assert ($state.linkedRoot -eq (Join-Path $ovisHome 'plugin') -and (Test-Path (Join-Path $ovisHome 'plugin\herdr-plugin.toml'))) 'The plugin that runs it must be linked into herdr'
-    $again = & $copy -Ref 'v1.2.3' 6>&1 | Out-String
+    Assert (($state.herdrStarts -join ',') -eq 'desktop' -and $state.runValue -eq "`"$powershellExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $ovisHome 'start-herdr.ps1')`"") "The release's binary must start herdr where it was stopped, with its sign-in start: $($state.herdrStarts -join ',') $($state.runValue)"
+    $state.adds = @()
+    $again = & $copy -Ref 'v1.2.3' -Account 'acct_bin' 6>&1 | Out-String
     Assert ($again -match 'nothing to do') "A second run must have nothing to do: $again"
+    Assert (($state.adds -join '|') -eq 'add --account acct_bin <0 input>') "On the release's binary, -Account must run its add: $($state.adds -join '|') $again"
     Remove-Item -LiteralPath (Join-Path $ovisHome 'bin\dist\index.html')
     $restored = & $copy -Ref 'v1.2.3' 6>&1 | Out-String
     Assert ($restored -notmatch 'nothing to do' -and ((Get-Content -Raw (Join-Path $ovisHome 'bin\dist\index.html')) -match '1\.2\.3')) "A missing client must be installed again: $restored"
@@ -966,7 +1214,7 @@ console.log(key.publicKey);
     try { & $copy -Ref 'v1.3.0' } catch { $message = $_.Exception.Message }
     Assert ($message -match 'schema this installer does not know') "A manifest of schema 2 must be refused: $message"
     $state.installed, $state.running, $state.linkedRoot = $before
-    $env:OVIS_FROM_SOURCE = '1'; $env:LOCALAPPDATA = $originalLocalAppData; Remove-Item Env:\OVIS_RELEASES_URL
+    $env:OVIS_FROM_SOURCE = '1'; $env:LOCALAPPDATA = $testLocalAppData; Remove-Item Env:\OVIS_RELEASES_URL
     $state.linkedRoot = ''; $state.running = $true
     Write-Host 'PASS the release binary: installed and linked once checked, nothing to do again; a release of the old manifest shape goes to source; a corrupt binary, another key, another version and plain http refused, leaving the install as it was'
 
@@ -1019,7 +1267,7 @@ try { $null = Install-OvisBinary $Version; exit 0 } catch { Write-Output $_.Exce
         Assert (-not (Test-Path $lock)) "Pair ${pair}: the lock must be released"
     }
     $state.linkedRoot = ''; $state.running = $true
-    $env:OVIS_FROM_SOURCE = '1'; $env:LOCALAPPDATA = $originalLocalAppData; Remove-Item Env:\OVIS_RELEASES_URL
+    $env:OVIS_FROM_SOURCE = '1'; $env:LOCALAPPDATA = $testLocalAppData; Remove-Item Env:\OVIS_RELEASES_URL
     Write-Host 'PASS one install at a time: a live holder waited out and named, a dead holder''s lock taken over, overlapping installs in two processes leave one whole release'
 
     $scratch = Join-Path ([IO.Path]::GetTempPath()) "herdr-installer-test-$PID"

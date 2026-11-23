@@ -5,13 +5,43 @@
 # No Bun is installed. OVIS_FROM_SOURCE=1, a branch (-Ref / OVIS_REF), a plugin installed from source, or a release
 # from before the compiled server install from source instead (Bun, and herdr's plugin checkout).
 # OVIS_RELEASES_URL names another place for releases: https://, or a file:// folder laid out as GitHub's.
-param([string]$Ref = $(if ($env:OVIS_REF) { $env:OVIS_REF } else { $env:HERDR_WEB_UI_REF }))
+# Where herdr is not running, it starts herdr's server with no window, and the app with it, in this account's signed-in
+# desktop, and has the account's sign-in start it again (Set-SignInStart); -NoService sets up no sign-in start. -Add ends
+# the install with `ovis add`, and -Account <id> names the account, so nothing is asked and a script or an agent can run
+# it: the installer then fails when the PC was not added. Each also has a variable, for `irm | iex`, which takes no
+# arguments: OVIS_ADD=1, OVIS_ADD_ACCOUNT=<id>, OVIS_NO_SERVICE=1, OVIS_HEADLESS=1 (-Headless: with nobody of this account
+# signed in at this PC, start herdr without a desktop).
+param(
+    [string]$Ref = $(if ($env:OVIS_REF) { $env:OVIS_REF } else { $env:HERDR_WEB_UI_REF }),
+    [switch]$Add,
+    [string]$Account = $env:OVIS_ADD_ACCOUNT,
+    [switch]$NoService,
+    [switch]$Headless
+)
 
 & {
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT' -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
     throw 'Ovis supports Windows x64. Use install.sh on Linux or macOS.'
 }
+# before anything is installed: a misspelt account must not install without the add it asked for. The shape is the one
+# `ovis add --account` takes (scripts/plugin-link.ts, ACCOUNT_SHAPE), never starting with '-', as install.sh refuses it
+$usage = 'usage: & ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) [-Add [-Account <id>]] [-NoService] [-Headless]'
+if ($Account -and $Account -cnotmatch '^(?!-)[A-Za-z0-9_-]{1,64}$') {
+    throw "-Account (or OVIS_ADD_ACCOUNT) takes your Ovis account's id: ovis status on a PC already in it shows it. $usage"
+}
+# the account named is the add asked for
+$addAccount = $Account
+$wantAdd = $Add -or $env:OVIS_ADD -eq '1' -or [bool]$addAccount
+$skipService = $NoService -or $env:OVIS_NO_SERVICE -eq '1'
+$allowHeadless = $Headless -or $env:OVIS_HEADLESS -eq '1'
+# what the add step needs, set by whichever install below runs: the Ovis command line, whether it runs now, the command a
+# person types for it, and whether the add of the release that runs checks --account and reads answers safely
+$ovisCli = $null
+$ovisRunning = $false
+$addCommand = ''
+$takesAccount = $false
+$readsAnswers = $false
 
 function Run-Tool([string]$Tool, [string[]]$Arguments) {
     & $Tool @Arguments
@@ -424,6 +454,198 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "$pluginId", "--entryp
     Move-Item -Force -LiteralPath (Join-Path $dir 'herdr-plugin.toml.new') -Destination (Join-Path $dir 'herdr-plugin.toml')
 }
 
+# herdr's start at this account's sign-in, Windows' counterpart of the LaunchAgent install.sh sets up on a Mac: the value
+# Ovis under HKCU's Run key, the one the Ovis app sets (app/windows/src/LoginItem.cs), so there is one start whichever of
+# the two wrote it. It needs no administrator, runs inside the signed-in desktop, so herdr's terminals have it, and shows
+# in Task Manager's Startup apps, where it can be turned off. Ours runs start-herdr.ps1 (Write-HerdrLauncher) in a hidden
+# Windows PowerShell; the app's runs Ovis.exe --start, which does the same with no console, and is left as it is.
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$signInName = 'Ovis'
+$herdrLauncher = Join-Path $ovisHome 'start-herdr.ps1'
+$windowsPowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+# how long a herdr just started has to answer
+$herdrWaitSeconds = 20
+function Get-LauncherArguments { "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$herdrLauncher`"" }
+# The launcher the sign-in start and Start-HerdrInDesktop run, written on every run so it names the herdr found now
+# (read again by name when that one is gone). It starts herdr only while herdr lists Ovis's plugin and no herdr server
+# runs, as Ovis.exe --start does, and never stops one. With a byte order mark, so Windows PowerShell reads a user folder
+# outside ASCII as it is.
+function Write-HerdrLauncher([string]$Herdr) {
+    New-Item -ItemType Directory -Force -Path $ovisHome | Out-Null
+    $text = @'
+# herdr's server with no window, written by install.ps1 (and again on every run): run at this account's sign-in by the
+# value Ovis under HKCU\Software\Microsoft\Windows\CurrentVersion\Run, and by the installer to start herdr. It starts herdr
+# only while herdr lists Ovis's plugin and no herdr server runs, and never stops one.
+$herdr = '__HERDR__'
+if (-not (Test-Path -LiteralPath $herdr)) { $herdr = (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+if (-not $herdr) { exit 0 }
+$plugins = try { @((& $herdr plugin list --json | ConvertFrom-Json).result.plugins) } catch { @() }
+if (-not ($plugins | Where-Object { $_.plugin_id -in 'devswha.ovis', 'devswha.herdr-web-ui' })) { exit 0 }
+$running = try { (& $herdr status server --json | ConvertFrom-Json).running } catch { $false }
+if ($running) { exit 0 }
+Start-Process -FilePath $herdr -ArgumentList 'server' -WindowStyle Hidden -WorkingDirectory $HOME
+'@.Replace('__HERDR__', $Herdr.Replace("'", "''"))
+    $staged = "$herdrLauncher.new"
+    [IO.File]::WriteAllText($staged, $text.Replace("`r`n", "`n").Replace("`n", "`r`n"), (New-Object Text.UTF8Encoding $true))
+    Move-Item -Force -LiteralPath $staged -Destination $herdrLauncher
+}
+# What the value Ovis under the Run key is: 'ours' (it runs our launcher), 'app' (the Ovis app's), 'other' (anything else,
+# never touched), or 'none'
+function Get-SignInStart {
+    $value = (Get-ItemProperty -Path $runKey -Name $signInName -ErrorAction SilentlyContinue).$signInName
+    if ($null -eq $value) { return 'none' }
+    if ("$value" -match '(?i)[\\/]powershell\.exe" .*-File "[^"]*[\\/]ovis[\\/]start-herdr\.ps1"$') { return 'ours' }
+    if ("$value" -match '(?i)\\Ovis\.exe"? --start$') { return 'app' }
+    'other'
+}
+# The sign-in start, ours unless one is there already: 'ours', 'app' or 'other' (left as they are), or 'failed'
+function Set-SignInStart([string]$Herdr) {
+    $kind = Get-SignInStart
+    if ($kind -in 'app', 'other') { return $kind }
+    try {
+        Write-HerdrLauncher $Herdr
+        Set-ItemProperty -Path $runKey -Name $signInName -Value "`"$windowsPowerShell`" $(Get-LauncherArguments)" -ErrorAction Stop
+        'ours'
+    } catch {
+        Write-Host "Ovis: could not set herdr to start at your sign-in: $($_.Exception.Message)"
+        'failed'
+    }
+}
+# -NoService: the sign-in start an earlier run wrote goes ('removed'), never stopping herdr; the Ovis app's ('app') and
+# anyone else's ('other') stay, as install.sh leaves a Mac's LaunchAgent, which the Mac app shares
+function Clear-SignInStart {
+    $kind = Get-SignInStart
+    if ($kind -ne 'ours') { return $kind }
+    Remove-ItemProperty -Path $runKey -Name $signInName -ErrorAction SilentlyContinue
+    'removed'
+}
+function Test-HerdrRunning {
+    try { [bool](Run-Tool herdr @('status', 'server', '--json') | ConvertFrom-Json).running } catch { $false }
+}
+function Wait-Herdr {
+    for ($second = 0; $second -lt $herdrWaitSeconds; $second++) {
+        if (Test-HerdrRunning) { return $true }
+        Start-Sleep -Seconds 1
+    }
+    Test-HerdrRunning
+}
+# Whether this process runs in a desktop session: an SSH or remoting session, as a service, runs in session 0
+function Test-DesktopSession { [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 0 }
+# Where herdr can start for this account: 'desktop' where it is signed in at this PC (this process runs in its desktop
+# session, or an explorer of its own runs in one: a locked desktop counts), else 'none' (nobody of it signed in)
+function Get-HerdrStartPlace {
+    if (Test-DesktopSession) { return 'desktop' }
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    foreach ($shell in @(Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue)) {
+        if ($shell.SessionId -eq 0) { continue }
+        if ("$((Invoke-CimMethod -InputObject $shell -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid)" -eq $me) { return 'desktop' }
+    }
+    'none'
+}
+# herdr in this account's signed-in desktop session, out of this process's tree and of any job it is in (an SSH session
+# ends its processes with it, and an agent's tool may end what its command started): a task of this account's, with its
+# ordinary rights and its interactive token (no password kept), runs the launcher once and is removed, as Ovis's SSH setup
+# starts herdr (server/windows-herdr-start.ts); removing it leaves what it started running. 'started', 'refused' (Task
+# Scheduler did not take or start it, so nothing ran) or 'silent' (herdr did not answer).
+function Start-HerdrInDesktop([string]$Herdr) {
+    Write-HerdrLauncher $Herdr
+    $task = 'Ovis herdr start ' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    try {
+        $action = New-ScheduledTaskAction -Execute $windowsPowerShell -Argument (Get-LauncherArguments)
+        $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+        Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Host "Ovis: Task Scheduler did not take the task that starts herdr: $($_.Exception.Message)"
+        return 'refused'
+    }
+    try {
+        try { $null = Start-ScheduledTask -TaskName $task -ErrorAction Stop }
+        catch {
+            Write-Host "Ovis: Task Scheduler did not start herdr: $($_.Exception.Message)"
+            return 'refused'
+        }
+        if (Wait-Herdr) { 'started' } else { 'silent' }
+    } finally { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue }
+}
+# herdr started by this process, where Task Scheduler takes no task and this process runs in the desktop itself
+function Start-HerdrHere([string]$Herdr) {
+    Start-Process -FilePath $Herdr -ArgumentList 'server' -WindowStyle Hidden -WorkingDirectory $HOME
+    Wait-Herdr
+}
+# -Headless, with nobody of this account signed in: herdr through WMI, outside the session's job, in no desktop, as Ovis's
+# SSH setup starts it on a "Start without Windows sign-in" (server/windows-herdr-start.ts), with this run's environment
+function Start-HerdrHeadless([string]$Herdr) {
+    $environment = [string[]]@(Get-ChildItem Env: | Where-Object { $_.Name -notmatch '[=\r\n\0]' -and "$($_.Value)" -notmatch '[\r\n\0]' } | ForEach-Object { "$($_.Name)=$($_.Value)" })
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; EnvironmentVariables = $environment }
+    $made = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$Herdr`" server"; CurrentDirectory = $HOME; ProcessStartupInformation = $startup }
+    if ($made.ReturnValue -ne 0) {
+        Write-Host "Ovis: Windows did not start herdr (Win32_Process.Create answered $($made.ReturnValue))"
+        return $false
+    }
+    Wait-Herdr
+}
+# herdr, running for Ovis, as install.sh leaves it on Linux and macOS (INSTALL.md, method C): a herdr that runs is left as
+# it is (-NoService takes away only the sign-in start an earlier run wrote). Where none runs, the sign-in start is set up
+# (none with -NoService), and herdr's server is started with no window in this account's desktop, or with nobody signed
+# in, given -Headless, without one; the plugin's startup hook then starts Ovis. Started: '' (herdr ran already), 'desktop',
+# 'headless', 'nobody' (not started: nobody signed in) or 'failed'. SignIn: what Get-SignInStart, Set-SignInStart or
+# Clear-SignInStart said. Wait: how long Ovis has to answer.
+function Start-HerdrForOvis {
+    $result = @{ Running = $false; Started = ''; SignIn = ''; Wait = 25 }
+    if (Test-HerdrRunning) {
+        $result.Running = $true
+        $result.SignIn = if ($skipService) { Clear-SignInStart } else { Get-SignInStart }
+        return $result
+    }
+    $herdr = (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $herdr) { $herdr = 'herdr' }
+    $result.SignIn = if ($skipService) { Clear-SignInStart } else { Set-SignInStart $herdr }
+    $place = Get-HerdrStartPlace
+    $result.Started = if ($place -eq 'desktop') {
+            $task = Start-HerdrInDesktop $herdr
+            if ($task -eq 'started' -or ($task -eq 'refused' -and (Test-DesktopSession) -and (Start-HerdrHere $herdr))) { 'desktop' } else { 'failed' }
+        }
+        elseif ($allowHeadless) { if (Start-HerdrHeadless $herdr) { 'headless' } else { 'failed' } }
+        else { 'nobody' }
+    $result.Running = $result.Started -in 'desktop', 'headless'
+    $result.Wait = 60
+    $result
+}
+# What runs now and what starts herdr again, as install.sh's closing lines say it; $Ovis is the command that runs Ovis
+function Write-HerdrLines($Herdr, [string]$Ovis) {
+    $signIn = switch ($Herdr.SignIn) {
+        'ours' { 'it starts at your sign-in (Ovis in Task Manager''s Startup apps)' }
+        'app' { 'the Ovis app starts it at your sign-in' }
+        default { '' }
+    }
+    $leftOther = "a Run value named Ovis that is not Ovis's own is there, so nothing else was set to start herdr at your sign-in"
+    switch ($Herdr.Started) {
+        'desktop' {
+            if ($signIn) { Write-Host "Ovis: herdr was started in your desktop for Ovis, and $signIn" }
+            elseif ($skipService) { Write-Host 'Ovis: herdr was started in your desktop for now, with no sign-in start (-NoService): after a restart herdr starts when you open it' }
+            else { Write-Host 'Ovis: herdr was started in your desktop for now' }
+        }
+        'headless' {
+            Write-Host "Ovis: herdr was started without a desktop (-Headless; nobody of this account is signed in at this PC), until this PC restarts: programs in its terminals cannot use the desktop, and Codex commands that need their sandbox's own desktop can fail there. Signing in later does not move it into your desktop$(if ($signIn) { "; after a restart, $signIn" })"
+        }
+        'nobody' {
+            Write-Host "Ovis: nobody of this account is signed in at this PC, so herdr was not started, nor the app with it$(if ($signIn) { "; $signIn" })"
+            Write-Host 'Ovis: to start it now without a desktop, run this again with -Headless (OVIS_HEADLESS=1): programs in its terminals then cannot use the desktop, and Codex commands that need their sandbox''s own desktop can fail there'
+        }
+        'failed' { Write-Host "Ovis: herdr did not start, so neither did the app; to see why, run: herdr server" }
+    }
+    if ($Herdr.SignIn -eq 'other') { Write-Host "Ovis: $leftOther" }
+    if ($Herdr.SignIn -eq 'removed') { Write-Host 'Ovis: removed the sign-in start an earlier run set up, as -NoService asks: nothing starts herdr at your sign-in now; herdr runs on until you stop it' }
+    if ($skipService -and $Herdr.SignIn -eq 'app') { Write-Host "Ovis: the Ovis app's sign-in start is still there and starts herdr at your sign-in: -NoService leaves it, since the app sets up the same one. To have none: Remove-ItemProperty -Path '$runKey' -Name $signInName" }
+    if ($Herdr.Running) {
+        Write-Host "Ovis: see them: $Ovis status, herdr status server. Stop Ovis: $Ovis stop (it starts again with herdr). Stop herdr and every terminal in it: herdr server stop"
+    }
+    if ($Herdr.Started -eq 'desktop') {
+        Write-Host "Ovis: signing out of Windows ends herdr and every terminal in it (lock the PC instead); a herdr that stops or crashes is not started again until $(if ($signIn) { 'your next sign-in, or ' })this installer runs again"
+    }
+}
+
 # `ovis` in any new terminal, as install.sh's launcher gives Linux and macOS: cmd\ovis.cmd runs the release's server as
 # `ovis-server plugin <command>`. It is kept beside bin\, not in it, since an update replaces bin\ whole; its folder is
 # put on the user's PATH once. The shim names the server relative to itself (%~dp0), so a user folder outside ASCII
@@ -507,19 +729,26 @@ if (-not $fromSource) {
                 $newInstall = $true
             }
             $exe = Join-Path $ovisHome 'bin\ovis-server.exe'
-            $server = Run-Tool herdr @('status', 'server', '--json') | ConvertFrom-Json
-            if ($server.running) {
-                Run-Tool herdr @('plugin', 'action', 'invoke', "$pluginId.start-windows") | Out-Null
+            $ovisCli = @($exe, 'plugin')
+            $addCommand = 'ovis add'
+            $takesAccount = [version]$version -ge [version]'0.5.10'
+            $readsAnswers = $true
+            $herdrNow = Start-HerdrForOvis
+            if ($herdrNow.Running) {
+                # a herdr started just now starts the app itself (the plugin's startup hook)
+                if (-not $herdrNow.Started) { Run-Tool herdr @('plugin', 'action', 'invoke', "$pluginId.start-windows") | Out-Null }
                 $status = $null
-                for ($attempt = 0; $attempt -lt 25; $attempt++) {
-                    $status = & $exe plugin status | Where-Object { $_ -match '^running ' } | Select-Object -First 1
+                for ($attempt = 0; $attempt -lt $herdrNow.Wait; $attempt++) {
+                    $status = & $ovisCli[0] $ovisCli[1] status | Where-Object { $_ -match '^running ' } | Select-Object -First 1
                     if ($status) { break }
                     Start-Sleep -Seconds 1
                 }
-                if (-not $status) { throw "The app did not start within 25 seconds.`nSee: herdr plugin log list" }
+                if (-not $status) { throw "The app did not start within $($herdrNow.Wait) seconds.`nSee: herdr plugin log list" }
+                $ovisRunning = $true
                 Write-Host $status
                 if ($newInstall -and $status) { Write-Host "Ovis: open $([regex]::Match($status, '^running (\S+)').Groups[1].Value) in your browser and click Install in the address bar" }
-            } else { Write-Host 'Ovis: starts with herdr. Open a new terminal and run: herdr' }
+            }
+            Write-HerdrLines $herdrNow 'ovis'
             Write-Host 'Ovis: open Phone setup in herdr for phone access.'
             $binaryDone = $true
         } else {
@@ -868,12 +1097,19 @@ if ($legacy) {
     Run-Tool herdr @('plugin', 'uninstall', $legacyId) | Out-Null
 }
 
-$server = Run-Tool herdr @('status', 'server', '--json') | ConvertFrom-Json
-if ($server.running) {
-    Run-Tool herdr @('plugin', 'action', 'invoke', "$pluginId.start-windows") | Out-Null
-    $script = Join-Path $plugin.plugin_root 'scripts\plugin.ts'
+$script = Join-Path $plugin.plugin_root 'scripts\plugin.ts'
+$ovisCli = @('bun', $script)
+$addCommand = "bun '$($script -replace "'", "''")' add"
+# the add a checkout runs is its own or a newer release's (Settings -> Updates), which reads at least what the checkout's does
+$linkScript = Join-Path $plugin.plugin_root 'scripts\plugin-link.ts'
+$takesAccount = [bool](Select-String -LiteralPath $linkScript -SimpleMatch '"--account"' -Quiet -ErrorAction SilentlyContinue)
+$readsAnswers = [bool](Select-String -LiteralPath $linkScript -SimpleMatch 'export function answerOf' -Quiet -ErrorAction SilentlyContinue)
+$herdrNow = Start-HerdrForOvis
+if ($herdrNow.Running) {
+    # a herdr started just now starts the app itself (the plugin's startup hook)
+    if (-not $herdrNow.Started) { Run-Tool herdr @('plugin', 'action', 'invoke', "$pluginId.start-windows") | Out-Null }
     $ready = $false
-    for ($attempt = 0; $attempt -lt 25; $attempt++) {
+    for ($attempt = 0; $attempt -lt $herdrNow.Wait; $attempt++) {
         $status = Run-Tool bun @($script, 'status')
         if ($status -match '^running ') { $ready = $true; break }
         Start-Sleep -Seconds 1
@@ -886,8 +1122,9 @@ if ($server.running) {
                 Where-Object { $_.plugin_id -eq $pluginId -and $_.stderr } | Select-Object -Last 1
             if ($failed) { $why = "`n" + $failed.stderr.Trim() }
         } catch { $why = '' }
-        throw "The app did not start within 25 seconds.$why`nSee: herdr plugin log list"
+        throw "The app did not start within $($herdrNow.Wait) seconds.$why`nSee: herdr plugin log list"
     }
+    $ovisRunning = $true
     Write-Host ($status | Where-Object { $_ -match '^running ' })
     $origin = [regex]::Match(($status | Where-Object { $_ -match '^running ' } | Select-Object -First 1), '^running (\S+)').Groups[1].Value
     $opened = $false
@@ -915,7 +1152,8 @@ if ($server.running) {
             Write-Host "Ovis: open $origin in your browser"
         }
     }
-} else { Write-Host 'Ovis: starts with herdr. Open a new terminal and run: herdr' }
+}
+Write-HerdrLines $herdrNow "bun '$($script -replace "'", "''")'"
 Write-Host 'Ovis: open Phone setup in herdr for phone access.'
 }
 
@@ -1149,6 +1387,44 @@ function Read-Answer {
     Write-Host ''
     return $null
 }
+# The add, with the account named (-Account): run with no terminal and an empty input, as install.sh runs it, only where
+# the add of the release that runs checks that account (an older one would not); at a terminal without it, `ovis add`
+# itself, whose answers are read only once its question shows (scripts/plugin-link.ts, askLine); anywhere else, the
+# command to run. $addResult: done, failed, old (a release whose add does not do it), waits (Ovis is not running) or the
+# terminal it lacks (terminal).
+$addResult = 'none'
+if ($wantAdd) {
+    if (-not $ovisRunning) { $addResult = 'waits' }
+    elseif ($addAccount) {
+        if (-not $takesAccount) { $addResult = 'old' }
+        else {
+            Write-Host ''
+            Write-Host "Ovis: on a PC other people sign in to, set OVIS_TOKEN first: without it any local user counts as this PC (https://github.com/devswha/ovis/blob/main/docs/relay.md#a-pc-with-no-screen)"
+            @() | & $ovisCli[0] $ovisCli[1] add --account $addAccount
+            $addResult = if ($LASTEXITCODE -eq 0) { 'done' } else { 'failed' }
+        }
+    }
+    elseif (-not (Test-Terminal) -or $env:OVIS_NO_OPEN -or $env:HERDR_WEB_NO_OPEN) { $addResult = 'terminal' }
+    elseif (-not $readsAnswers) { $addResult = 'old' }
+    else {
+        Write-Host ''
+        # what was typed while the installer worked answers nothing
+        try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
+        & $ovisCli[0] $ovisCli[1] add
+        $addResult = if ($LASTEXITCODE -eq 0) { 'done' } else { 'failed' }
+    }
+    $retry = if ($addAccount) { "$addCommand --account $addAccount" } else { $addCommand }
+    switch ($addResult) {
+        'waits' { Write-Host "Ovis: the app is not running, so this PC was not added to your Ovis account. Once it runs, run on this PC: $retry" }
+        'old' {
+            if ($addAccount) { Write-Host "Ovis: this Ovis release does not check the account -Account names, so the installer does not add this PC with it. Update Ovis in Settings -> Updates, then run on this PC: $retry" }
+            else { Write-Host "Ovis: this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings -> Updates, then run in a terminal on this PC: $retry" }
+        }
+        'failed' { Write-Host "Ovis: this PC was not added to your Ovis account; what the add said is above. To try again, run on this PC: $retry" }
+        'terminal' { Write-Host "Ovis: to add this PC to your Ovis account, run in a terminal on this PC: $retry. Where nobody can answer, as in a script or for a coding agent, name the account: -Account <id> (OVIS_ADD_ACCOUNT)" }
+    }
+}
+
 # Once, on the first install, and not to an account that already starred (204). It asks only when
 # GitHub says the account has not (404), only at a terminal, and stars only on "y".
 if ($newInstall) {
@@ -1169,4 +1445,7 @@ if ($newInstall) {
         }
     } catch { }
 }
+# -Account is a script's add, or an agent's: the installer fails, as install.sh exits 1, when this PC was not added (a
+# throw, not exit, which would close the PowerShell that ran irm | iex)
+if ($addAccount -and $addResult -ne 'done') { throw "This PC was not added to your Ovis account: the lines above say why." }
 }
