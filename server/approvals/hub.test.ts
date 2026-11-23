@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import { CLAUDE_HOOK_MIN_VERSION, claudeApprovals } from "./claude.ts";
 import { ApprovalHub, hubAddress, type ApprovalAdapter } from "./hub.ts";
-import { keyDigest, signed } from "./relay.ts";
+import { keyDigest, newNonce, seal, unseal } from "./relay.ts";
 
 const roots: string[] = [];
 const started: ApprovalHub[] = [];
@@ -107,26 +107,55 @@ describe("the channel", () => {
     expect(await Promise.race([ask(hook, { other: true })(), held().then(() => "held")])).toEqual({ decision: null });
   });
 
-  it("holds nothing for a request not signed with the launch's key", async () => {
-    const { hub } = hubIn();
+  /** What the hub says to one raw line: its reply, or "" when it closed the connection without one. */
+  const sent = (address: string, line: string) => new Promise<string>((resolve) => {
+    let text = "";
+    const socket = connect(address);
+    socket.on("connect", () => socket.write(line));
+    socket.on("data", (chunk) => { text += String(chunk); });
+    socket.on("close", () => resolve(text));
+    socket.on("error", () => undefined);
+  });
+
+  it("holds nothing for a request not sealed with the launch's key, nor for a line that is no request", async () => {
+    const { hub, held } = hubIn();
     const hook = hookOf(hub.launchArgs("fake", "p1", undefined, "1.0.0")!);
     const key = keyOf(hook);
     const event = JSON.stringify({ command: "make deploy" });
-    const reply = await new Promise<string>((resolve) => {
-      let text = "";
-      const socket = connect(hub.address);
-      socket.on("connect", () => socket.write(`${JSON.stringify({ launch: keyDigest(key), nonce: "n", proof: signed("another key", "request", "n", event), event })}\n`));
-      socket.on("data", (chunk) => { text += String(chunk); });
-      socket.on("close", () => resolve(text));
-      socket.on("error", () => undefined);
-    });
-    // the hub reads a request whole before it closes the connection on it
-    expect(reply).toBe("");
+    const nonce = newNonce();
+    const lines = [
+      { launch: keyDigest(key), nonce, sealed: seal("another key", "request", nonce, event) },
+      { launch: keyDigest(key), nonce, sealed: seal(key, "answer", nonce, event) },
+      { launch: keyDigest(key), nonce: newNonce(), sealed: seal(key, "request", nonce, event) },
+      { launch: keyDigest(key), nonce: "n\nrequest", sealed: seal(key, "request", "n\nrequest", event) },
+      { launch: keyDigest(key), nonce, sealed: "é".repeat(64) },
+      { launch: keyDigest(key), nonce, sealed: 7 },
+      { launch: ["x"], nonce, sealed: "" },
+    ].map((envelope) => `${JSON.stringify(envelope)}\n`);
+    for (const line of [...lines, "null\n", "[]\n", "7\n", "{\n", `${"x".repeat(3 * 1024 * 1024)}`]) {
+      // the hub reads a request whole before it closes the connection on it
+      expect(await sent(hub.address, line), line.slice(0, 80)).toBe("");
+    }
     expect(hub.held("p1")).toEqual([]);
+    // and goes on answering
+    const holding = held();
+    const answer = ask(hook, { command: "make deploy" });
+    await holding;
+    expect(hub.settle("p1", hub.held("p1")[0]!.id, "deny")).toBe(true);
+    expect(await answer()).toEqual({ decision: "deny" });
+  });
+
+  // main's hub took 256 KiB of the request's body, in bytes (its Content-Length)
+  it("reads no event over 256 KiB of UTF-8, which the agent's terminal answers", async () => {
+    const { hub, held } = hubIn();
+    const hook = hookOf(hub.launchArgs("fake", "p1", undefined, "1.0.0")!);
+    const command = "é".repeat(140 * 1024);
+    expect(JSON.stringify({ command }).length).toBeLessThan(256 * 1024);
+    expect(await Promise.race([ask(hook, { command })(), held().then(() => "held")])).toBeNull();
   });
 
   // a named pipe's name is anyone's to take once the hub has stopped, as a loopback port would be
-  it("takes no answer from a listener at its address that does not hold the key, and never tells it the key", async () => {
+  it("takes no answer from a listener at its address that does not hold the key, and tells it neither the key nor the command", async () => {
     const { hub } = hubIn();
     const hook = hookOf(hub.launchArgs("fake", "p1", undefined, "1.0.0")!);
     const key = keyOf(hook);
@@ -134,15 +163,16 @@ describe("the channel", () => {
     const heard: string[] = [];
     const squatter = createServer((socket) => socket.on("data", (chunk) => {
       heard.push(String(chunk));
-      const { nonce, launch } = JSON.parse(String(chunk).split("\n")[0]!) as { nonce: string; launch: string };
-      const answer = JSON.stringify({ decision: "allow" });
-      // all it could sign with: what it heard
-      socket.end(`${JSON.stringify({ answer, proof: signed(launch, "answer", nonce, answer) })}\n`);
+      const { nonce, launch, sealed } = JSON.parse(String(chunk).split("\n")[0]!) as { nonce: string; launch: string; sealed: string };
+      // all it could seal with, or read with: what it heard
+      expect(unseal(launch, "request", nonce, sealed)).toBeNull();
+      socket.end(`${JSON.stringify({ sealed: seal(launch, "answer", nonce, JSON.stringify({ decision: "allow" })) })}\n`);
     }));
     squatters.push(squatter);
     await new Promise<void>((resolve) => squatter.listen(hub.address, resolve));
     expect(await ask(hook, { command: "make deploy" })()).toBeNull();
     expect(heard.join("")).not.toContain(key);
+    expect(heard.join("")).not.toContain("make deploy");
     expect(heard.join("")).toContain(keyDigest(key));
   });
 });

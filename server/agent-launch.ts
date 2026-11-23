@@ -134,10 +134,13 @@ export function withBrowserTool(kind: string, args: string[] | undefined, platfo
 export async function agentLaunch(paneId: string, agent: AgentPayload, launched?: (pid: number) => void, locator?: ShellAgentLocator, options: { platform?: string; settingsDir?: string; home?: string } = {}): Promise<{ agent_started: true } | { agent_started: false; error: { code: string; message: string } }> {
   try {
     const kind = agent.kind as string;
-    const args = agent.args as string[] | undefined;
-    if (isShellAgentKind(kind)) {
-      // another machine of the core: its path would be this PC's, and its start is never seen there (no pids)
-      if (hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
+    const shell = isShellAgentKind(kind);
+    // another machine of the core: its path would be this PC's, and its start is never seen there (no pids)
+    if (shell && hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
+    // an agent another machine of the core starts could not reach this PC's hub
+    const args = approvals !== null && approvals.hub.handles(kind) && hcMachine() === null
+      ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind)) : agent.args as string[] | undefined;
+    if (shell) {
       const shellOptions = locator ? { locator } : {};
       const pid = kind === "dsh-tui" && args !== undefined
         ? await startDshTui(paneId, args, shellOptions, options.home ?? userHome())
@@ -147,10 +150,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
     else {
       const given = typeof agent.name === "string" && agent.name.length > 0 ? agent.name : null;
       // on Windows a Claude Code's inline JSON --settings goes as a file's path (server/claude-settings-file.ts)
-      // an agent another machine of the core starts could not reach this PC's hub
-      const hooked = approvals !== null && approvals.hub.handles(kind) && hcMachine() === null
-        ? approvals.hub.launchArgs(kind, paneId, args, await approvals.version(kind)) : args;
-      const launchArgs = withBrowserTool(kind, hooked, options.platform ?? process.platform);
+      const launchArgs = withBrowserTool(kind, args, options.platform ?? process.platform);
       const startArgs = launchArgs === undefined ? undefined : agentStartArgs(kind, launchArgs, { platform: options.platform, dir: options.settingsDir });
       // herdr refuses a name another agent holds. Two creations at once can pick the same
       // free one: the refused one picks again. It also refuses a pane whose shell is not up

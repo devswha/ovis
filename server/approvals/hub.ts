@@ -5,9 +5,9 @@
  * The hub owns the channel and everything about a request once it arrives: the listener (a unix socket in a 0700
  * folder of this server's state, a named pipe on Windows), a key per launch that names the pane the agent was started
  * in, the held requests and their ids, releasing them, and answering them. The hook runs `ovis-server approval-hook`
- * (server/approvals/relay.ts), which signs its request with the launch's key and takes only an answer signed with it.
+ * (server/approvals/relay.ts), which seals its request with the launch's key and takes only an answer sealed with it.
  * A loopback port would not do: once this server stopped, another account could take the port and answer for it; a
- * named pipe's name can be taken the same way, which the signed answer covers. The unix socket's path stays the same
+ * named pipe's name can be taken the same way, which the sealing covers. The unix socket's path stays the same
  * across restarts; a request under a key a restarted server does not know gets no decision.
  *
  * Whatever the hub cannot be sure of gets no decision, and the agent's own terminal dialog stands: an agent without an
@@ -23,7 +23,7 @@ import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { COMPILED, entryCommand, ROOT } from "../entries.ts";
-import { keyDigest, LINE_MAX, sameSignature, signed } from "./relay.ts";
+import { isNonce, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
 
 export type ApprovalDecision = "allow" | "deny";
 
@@ -72,7 +72,7 @@ interface Pending extends ApprovalRequest {
   settle: (decision: ApprovalDecision | null) => void;
 }
 
-/** The most of an event the hub reads. */
+/** The most of an event the hub reads, in UTF-8 bytes. */
 const EVENT_MAX = 256 * 1024;
 /** A read of the screen just before the agent draws its dialog must not release the hook it sent with it. */
 const GRACE_MS = 3_000;
@@ -179,6 +179,9 @@ export class ApprovalHub {
     // socket of that run is in the way of this one's
     for (const name of readdirSync(this.dir)) if (name.endsWith(".json") || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
     const listener = createServer((socket) => this.receive(socket));
+    // a bind that fails comes as an event on the next tick (a pipe's name taken, a folder it may not bind in): no
+    // hook works then, as its relay finds no answer, and the server goes on
+    listener.on("error", (error) => console.error(`approval hub: ${error.message}`));
     // the socket gets the umask's mode, and node:net binds it before listen returns
     const umask = this.platform === "win32" ? null : process.umask(0o077);
     try {
@@ -190,8 +193,6 @@ export class ApprovalHub {
     } finally {
       if (umask !== null) process.umask(umask);
     }
-    // a failure after the bind (the pipe's name taken) leaves no hook: its relay finds no answer
-    listener.on("error", (error) => console.error(`approval hub: ${error.message}`));
     this.listener = listener;
   }
 
@@ -243,18 +244,17 @@ export class ApprovalHub {
     });
   }
 
-  /** One request: refused (the connection closed, no answer) unless signed with a known launch's key. */
+  /** One request: refused (the connection closed, no answer) unless sealed with a known launch's key. */
   private request(socket: Socket, line: string): void {
-    let envelope: { launch?: unknown; nonce?: unknown; proof?: unknown; event?: unknown };
-    try { envelope = JSON.parse(line) as typeof envelope; } catch { return void socket.destroy(); }
-    const { nonce, event } = envelope;
-    const launch = typeof envelope.launch === "string" ? this.launches.get(envelope.launch) : undefined;
-    if (launch === undefined || typeof nonce !== "string" || typeof event !== "string" || event.length > EVENT_MAX
-      || !sameSignature(envelope.proof, signed(launch.key, "request", nonce, event))) return void socket.destroy();
+    const envelope = lineObject(line);
+    const nonce = envelope?.["nonce"];
+    const launch = typeof envelope?.["launch"] === "string" ? this.launches.get(envelope["launch"]) : undefined;
+    if (launch === undefined || !isNonce(nonce)) return void socket.destroy();
+    const event = unseal(launch.key, "request", nonce, envelope!["sealed"]);
+    if (event === null || Buffer.byteLength(event) > EVENT_MAX) return void socket.destroy();
     const reply = (decision: ApprovalDecision | null) => {
       if (socket.destroyed) return;
-      const answer = launch.adapter.toAnswer(decision);
-      socket.end(`${JSON.stringify({ answer, proof: signed(launch.key, "answer", nonce, answer) })}\n`);
+      socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, launch.adapter.toAnswer(decision)) })}\n`);
     };
     let parsed: unknown;
     try { parsed = JSON.parse(event); } catch { return void socket.destroy(); }
