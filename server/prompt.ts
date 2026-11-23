@@ -1927,7 +1927,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       }
 
       // Yes or No on a card built on a held hook request is that request's answer, with no key. Any other option goes as
-      // keys to the dialog on the screen, only where the check above found it showing that request's command, whole
+      // keys to the dialog on the screen, only where it shows that request's command, whole, and no other's
       const decision = heldId === null || body.option_index === undefined || body.custom_text !== undefined ? null
         : options.approvals!.decision(agent, prompt.options[body.option_index]?.label ?? "");
       if (decision !== null && parsedPrompt?.responder === "claude-approval") {
@@ -1938,7 +1938,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         form.still = claudeStepStill(parsedPrompt);
         return jsonResponse({ ok: true });
       }
-      if (heldId !== null && approvalDialog(prompt)!.command === null) return promptChanged();
+      if (heldId !== null && !options.approvals!.showsOnly(body.pane_id, approvalDialog(prompt)!, heldId)) return promptChanged();
 
       let steps: AnswerStep[];
       try {

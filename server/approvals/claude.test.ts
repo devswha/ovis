@@ -245,6 +245,14 @@ describe("the hook relay", () => {
     expect(await asked.answer()).toEqual({});
   });
 
+  // gate review: the same dialog with its panel's top above the pane's read a piece of the command as its title
+  it("says a dialog that requires approval, its panel's top above the pane, shows a command it cannot read whole", () => {
+    const lines = readFileSync(new URL("../fixtures/claude-bash-requires-approval-2.1.330-47.txt", import.meta.url), "utf8").split("\n");
+    const clipped = parseInteractivePrompt("claude", lines.slice(17).join("\n"))!;
+    expect(clipped).toMatchObject({ kind: "approval", title: "Command approval" });
+    expect(parsedByPublicPrompt.get(clipped)?.claudeBashCommand).toBeNull();
+  });
+
   it("says a dialog whose panel is taller than the pane shows a command it cannot read whole", () => {
     const scrolled = parseInteractivePrompt("claude", [" │ cat <<'EOF' > notes.txt", " │ line 2", " │ EOF", "╌".repeat(40),
       " Do you want to proceed?", " ❯ 1. Yes", "   2. Yes, and don't ask again for: cat", "   3. No", "", " Esc to cancel · Tab to amend"].join("\n"))!;
@@ -373,8 +381,11 @@ describe("the hook relay", () => {
     const latest = hooks.shown("p1", on("npm test"))!;
     expect(latest.command).toBe("npm  test");
     expect(released).toEqual([]);
+    // its other options are keys to the dialog, which may be either request's
+    expect(hooks.showsOnly("p1", on("npm test"), latest.id)).toBe(false);
     expect(hooks.answer("p1", on("npm test"), latest.id, "allow")).toBe(true);
     expect(await second.answer()).toEqual(ALLOW);
+    expect(hooks.showsOnly("p1", on("npm test"), hooks.shown("p1", on("npm test"))!.id)).toBe(true);
     const earlier = hooks.shown("p1", on("npm test"))!;
     expect(earlier.command).toBe("npm test");
     expect(hooks.answer("p1", on("npm test"), latest.id, "deny")).toBe(false);
@@ -395,6 +406,9 @@ describe("the hook relay", () => {
     expect(card).toMatchObject({ command, description: "Write the notes" });
     expect(released).toEqual([]);
     expect(hooks.holds("p1", on(null), card.id)).toBe(true);
+    // its other options are keys to a dialog not shown to be this command
+    expect(hooks.showsOnly("p1", on(null), card.id)).toBe(false);
+    expect(hooks.showsOnly("p1", on(command), card.id)).toBe(true);
     // a dialog that shows another command whole is another request's
     expect(hooks.holds("p1", on("ls"), card.id)).toBe(false);
     expect(hooks.answer("p1", on(null), card.id, "allow")).toBe(true);

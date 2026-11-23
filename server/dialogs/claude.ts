@@ -594,9 +594,15 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
     // Claude Code 2.1.3xx can draw this line under a Bash panel's command: the panel under its rule names the tool
     const panelRule = requiredIndex === approvalIndex ? findLastIndex(lines.slice(0, approvalIndex), (line) => SOLID_RULE_RE.test(cleanLine(line))) : -1;
     const panelHead = panelRule < 0 || approvalIndex - panelRule > 60 ? undefined : lines.slice(panelRule + 1, approvalIndex).map(cleanLine).find(Boolean);
+    // or that panel's top is above the pane: no rule over it, its `│` command block and dashed rule right over the line
+    const clipped = requiredIndex === approvalIndex && panelRule < 0 && approvalIndex >= 2
+      && /^╌{8,}$/.test(cleanLine(lines[approvalIndex - 1]!)) && /^│\s/.test(lines[approvalIndex - 2]!.replace(ANSI_RE, "").trim());
     if (panelHead !== undefined && /^Bash command\b/.test(panelHead)) {
       title = panelHead;
       bashCommand = dashedCommand(lines, panelRule, approvalIndex);
+    } else if (clipped) {
+      title = own("Command approval");
+      bashCommand = null;
     } else title = nearestQuestion(lines, approvalIndex) ?? own("Command approval");
     const bodyEnd = dangerousRmIndex > requiredIndex ? questionIndex : approvalIndex;
     body = lines.slice(Math.max(0, approvalIndex - 8), bodyEnd).map(cleanLine).filter((line) => line && !isDivider(line)).join("\n");
