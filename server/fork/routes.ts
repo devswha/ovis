@@ -42,15 +42,14 @@ export function routeForkApi(request: Request, url: URL, ctx: ServerContext, cal
   if (pathname === "/api/speech") { ctx.timeout(request, 0); return handleSpeechRequest(request, ctx.services.speech); }
   if (pathname !== PI_VOICE_PATH && pathname !== PI_VOICE_STATUS_PATH) return null;
   return (async () => {
-    if (!ctx.server) return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
     const machines = ctx.services.core.machines;
     const machineId = pathname === PI_VOICE_PATH ? url.searchParams.get("machine_id") : null;
     if (machineId && machineId !== "local") {
       const endpoint = machines?.endpoint(machineId);
       if (!endpoint) return jsonResponse({ error: { code: "machine_offline", message: "This PC is disconnected" } }, 503);
       const machine = { endpoint, track: (close: () => void) => machines!.trackTerminal(machineId, close) };
-      return handlePiVoiceRequest(request, url, ctx.server, ctx.services.piVoice, { ...caller, machine });
+      return handlePiVoiceRequest(request, url, ctx.upgrade, ctx.services.piVoice, { ...caller, machine });
     }
-    return handlePiVoiceRequest(request, url, ctx.server, ctx.services.piVoice, caller);
+    return handlePiVoiceRequest(request, url, ctx.upgrade, ctx.services.piVoice, caller);
   })();
 }

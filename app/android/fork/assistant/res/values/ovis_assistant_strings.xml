@@ -1,0 +1,5 @@
+<resources>
+    <string name="overlay_parked">Still working on it</string>
+    <string name="overlay_parked_hint">The voice comes back with the result. Tap to talk now.</string>
+    <string name="overlay_resume">Talk now</string>
+</resources>

@@ -42,6 +42,7 @@ public class LiveCallService extends Service {
     static Consumer<String> onAction;
     // the service whose notification is up, which the page's mute updates
     private static LiveCallService shown;
+    private static boolean overlayVisible;
     private String title = "Ovis";
     private String body = "";
     private String muteLabel = "Mute";
@@ -144,14 +145,34 @@ public class LiveCallService extends Service {
         }
     }
 
-    /** The window (its activity) whose page has the call: another window's page loading or closing leaves it alone. */
+    /** The activity or voice session that owns the call. Closing a different window leaves it alone. */
     private static Context owner;
 
     /** Throws when the app is no longer in view, where Android starts no service. */
     static void start(Context context, String title, String body, String mute, String unmute) {
+        start(context, title, body, mute, unmute, false);
+    }
+
+    static void start(Context context, String title, String body, String mute, String unmute, boolean foreground) {
+        Intent intent = new Intent(context, LiveCallService.class).putExtra("title", title).putExtra("body", body)
+            .putExtra("mute", mute).putExtra("unmute", unmute);
+        if (foreground) context.startForegroundService(intent);
+        else context.startService(intent);
         owner = context;
-        context.startService(new Intent(context, LiveCallService.class).putExtra("title", title).putExtra("body", body)
-            .putExtra("mute", mute).putExtra("unmute", unmute));
+    }
+
+    static void updateText(Context context, String title, String mute, String unmute) {
+        if (owner != context || shown == null) return;
+        shown.title = title;
+        shown.muteLabel = mute;
+        shown.unmuteLabel = unmute;
+        shown.post();
+    }
+
+    static void setOverlayVisible(boolean visible) {
+        if (overlayVisible == visible) return;
+        overlayVisible = visible;
+        if (shown != null) shown.post();
     }
 
     /** The page's call muted or unmuted: the notification's button turns to match. */
@@ -224,23 +245,24 @@ public class LiveCallService extends Service {
     private void post() {
         // a tap goes back to the app as its launcher icon does
         Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
-        Person caller = new Person.Builder().setName(title).setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher)).setImportant(true).build();
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL)
+        if (overlayVisible) AssistantCallNotification.createChannel(getSystemService(NotificationManager.class), title);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, overlayVisible ? AssistantCallNotification.CHANNEL : CHANNEL)
             .setSmallIcon(sh.ovis.push.R.drawable.ic_stat_ovis)
             .setContentText(body)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            // as ChatGPT's voice: a live update, the call card on the lock screen and the status bar's
-            // chip, with no banner over the app the call started in
-            .setRequestPromotedOngoing(true)
             .setSilent(true)
             .setShowWhen(false)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .setContentIntent(open == null ? null : PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE))
-            .setStyle(NotificationCompat.CallStyle.forOngoingCall(caller, button(HANG_UP)))
-            .addAction(new NotificationCompat.Action.Builder(
+            .setContentIntent(open == null ? null : PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE));
+        if (overlayVisible) AssistantCallNotification.quiet(builder, title);
+        else {
+            // The public card carries Hang up and a status-bar chip, without a banner.
+            Person caller = new Person.Builder().setName(title).setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher)).setImportant(true).build();
+            builder.setRequestPromotedOngoing(true).setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setCategory(NotificationCompat.CATEGORY_CALL).setStyle(NotificationCompat.CallStyle.forOngoingCall(caller, button(HANG_UP)));
+        }
+        Notification notification = builder.addAction(new NotificationCompat.Action.Builder(
                 IconCompat.createWithResource(this, muted ? R.drawable.ic_call_mic : R.drawable.ic_call_mic_off),
                 muted ? unmuteLabel : muteLabel, button(TOGGLE_MUTE)).build())
             .build();
@@ -267,10 +289,10 @@ public class LiveCallService extends Service {
         return value == null ? fallback : value;
     }
 
-    /** Swiped away from the recent apps: the page, and its call, are gone. */
+    /** Swiping Ovis away from Recents removes the activity's page, not the voice session's. */
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        stopSelf();
+        if (owner == null || owner instanceof android.app.Activity) stopSelf();
     }
 
     @Override

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 
+import { bootAssistantCall } from "../fork/assistant/callPage.ts";
 import { ENDED_SHOWN_MS, endPiVoice, formatPiVoiceTime, piVoiceState, resumePiVoice, startPiVoice } from "./piVoiceSession.ts";
 
 /** What the call touches of the browser: a microphone whose permission prompt the test settles, and sockets it can drive. */
@@ -68,6 +69,66 @@ afterEach(() => {
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+function openAssistantPage(muted = false): (action: string) => void {
+  const host = { postMessage() {}, onmessage: null as ((event: { data: string }) => void) | null };
+  Object.assign(window, { OvisAssistantHost: host });
+  expect(bootAssistantCall()).toBe(true);
+  host.onmessage?.({ data: JSON.stringify({ action: "start", muted, target: { machineId: "local", paneId: "w1:p1", label: "cwd" } }) });
+  return (action) => host.onmessage?.({ data: JSON.stringify({ action }) });
+}
+
+it.each([true, false])("keeps the assistant mic muted through startup (before the page is ready: %s)", async (beforeReady) => {
+  const command = openAssistantPage(beforeReady);
+  if (!beforeReady) command("mute");
+  try {
+    grant?.();
+    await flush();
+    const socket = FakeSocket.all[0]!;
+    expect(tracks[0]?.enabled).toBe(false);
+    socket.open();
+    expect(socket.sent.map((text) => JSON.parse(text))).toMatchObject([{ type: "hello" }, { type: "set-muted", muted: true }]);
+    socket.receive({ type: "mute", muted: false });
+    socket.receive({ type: "activate" });
+    expect(tracks[0]?.enabled).toBe(false);
+    socket.receive({ type: "mute", muted: true });
+    socket.receive({ type: "phase", phase: "muted" });
+    expect(piVoiceState()).toMatchObject({ muted: true, status: "live", phase: "connecting" });
+    command("mute");
+    socket.receive({ type: "mute", muted: false });
+    expect(tracks[0]?.enabled).toBe(true);
+  } finally { command("hangup"); }
+});
+
+it("never opens the assistant mic on delayed replies to rapid mute changes", async () => {
+  const command = openAssistantPage();
+  try {
+    grant?.();
+    await flush();
+    const socket = FakeSocket.all[0]!;
+    socket.open();
+    socket.receive({ type: "activate" });
+    command("mute");
+    command("mute");
+    command("mute");
+    const sentMutes = () => socket.sent.map((text) => JSON.parse(text)).filter((frame) => frame.type === "set-muted").map((frame) => frame.muted);
+    expect(sentMutes()).toEqual([true]);
+    socket.receive({ type: "mute", muted: true });
+    expect(sentMutes()).toEqual([true]);
+    // This time the unmute request has already gone out when the user mutes again.
+    command("mute");
+    command("mute");
+    expect(sentMutes()).toEqual([true, false]);
+    socket.receive({ type: "mute", muted: false });
+    expect(sentMutes()).toEqual([true, false, true]);
+    expect(tracks[0]?.enabled).toBe(false);
+    expect(piVoiceState().muted).toBe(true);
+    socket.receive({ type: "mute", muted: true });
+    command("mute");
+    socket.receive({ type: "mute", muted: false });
+    expect(tracks[0]?.enabled).toBe(true);
+  } finally { command("hangup"); }
+});
+
 describe("starting a call from the phone", () => {
   it("opens the connection only once the microphone is allowed, and listens to it from its first frame", async () => {
     startPiVoice({ machineId: "local", paneId: "w1:p1", label: "cwd" });
@@ -122,6 +183,44 @@ describe("starting a call from the phone", () => {
     expect(tracks.every((track) => track.stopped)).toBe(true);
     expect(FakeSocket.all).toHaveLength(0);
   });
+});
+
+it.each(["listening", "working"] as const)("keeps the last %s phase when muted and only times out while listening", async (phase) => {
+  let now = 0;
+  const previous = Object.getOwnPropertyDescriptor(performance, "now");
+  Object.defineProperty(performance, "now", { configurable: true, value: () => now });
+  jest.useFakeTimers();
+  try {
+    openAssistantPage();
+    grant?.();
+    await Promise.resolve();
+    const socket = FakeSocket.all[0]!;
+    socket.open();
+    socket.receive({ type: "phase", phase });
+    socket.receive({ type: "phase", phase: "muted" });
+    socket.receive({ type: "mute", muted: true });
+    const advance = (milliseconds: number) => {
+      for (let elapsed = 0; elapsed < milliseconds; elapsed += 250) {
+        now += 250;
+        if (now % 5_000 === 0) socket.receive({ type: "ping" });
+        jest.advanceTimersByTime(250);
+      }
+    };
+    expect(piVoiceState()).toMatchObject({ phase, muted: true });
+    advance(5 * 60_000 - 250);
+    expect(socket.closed).toBe(false);
+    socket.receive({ type: "transcript", role: "assistant", text: "Still here", turn: 1, final: true });
+    advance(5 * 60_000 - 250);
+    expect(socket.closed).toBe(false);
+    advance(250);
+    expect(socket.closed).toBe(phase === "listening");
+  } finally {
+    endPiVoice();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    if (previous) Object.defineProperty(performance, "now", previous);
+    else Reflect.deleteProperty(performance, "now");
+  }
 });
 
 async function liveOn(paneId: string): Promise<FakeSocket> {

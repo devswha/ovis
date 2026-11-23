@@ -18,6 +18,7 @@ import { handleRequest } from "../dispatch.ts";
 import type { RequestServices, ServerContext } from "../dispatch.ts";
 import { jsonResponse } from "../http.ts";
 import type { EventStreamBudget } from "../machine-api.ts";
+import { forkRelayVoice } from "../fork/services.ts";
 import { VirtualSocket, type RelaySocketHandlers } from "./virtual-socket.ts";
 
 export const RELAY_ORIGIN = "https://relay.ovis.invalid";
@@ -107,6 +108,11 @@ export interface RelayWebSocketRequest {
   upgrade?: Parameters<ServerContext["upgrade"]>[1];
 }
 
+function closePendingRelay(exchange: RelayWebSocketRequest): void {
+  const data = exchange.upgrade?.data;
+  if (data && "relay" in data) data.relay?.close();
+}
+
 /**
  * One protected carrier, one immutable principal, no replay. The carrier wires its plaintext
  * onmessage callback to receive(); construction requires the Noise handshake to have completed.
@@ -146,7 +152,7 @@ export class RelaySession {
   private sourceBytes = 0;
   private readonly clock: MuxClock;
   private readonly activity = new Map<number, () => void>();
-  private readonly sockets = new Map<WsStream, VirtualSocket | undefined>();
+  private readonly sockets = new Map<WsStream, Pick<VirtualSocket, "close" | "closed" | "drain"> | undefined>();
   private readonly requests = new Set<HttpStream>();
   /** The row went before it linked (leave): set while the answers on their way go out, to what calls off their deadline; then the session ends. */
   private leaving: (() => void) | undefined;
@@ -218,7 +224,7 @@ export class RelaySession {
         stream.onDispose = () => {
           timer?.();
           abort.abort();
-          exchange.upgrade?.data.relay?.close();
+          closePendingRelay(exchange);
           this.sockets.delete(stream);
         };
         if (options.onWs) options.onWs(stream, exchange);
@@ -656,15 +662,18 @@ export class RelaySession {
     try {
       const response = await (this.options.dispatch ?? handleRequest)(exchange.request, exchange.context);
       if (!stream.live || this.state !== "ready") {
-        exchange.upgrade?.data.relay?.close();
+        closePendingRelay(exchange);
         await response?.body?.cancel();
         return;
       }
       const handlers = this.options.websocket;
-      if (exchange.upgrade && handlers) {
-        const id = exchange.upgrade.data.deviceId;
+      const data = exchange.upgrade?.data;
+      if (data && handlers) {
+        const id = "piVoice" in data ? data.piVoice.deviceId : data.deviceId;
         const listed = id !== undefined && this.options.services.accountRows?.row(id) != null;
-        const socket = new VirtualSocket(exchange.upgrade.data, stream, handlers, listed);
+        const socket = "piVoice" in data
+          ? new VirtualSocket(data, stream, forkRelayVoice(this.options.services.piVoice), listed)
+          : new VirtualSocket(data, stream, handlers, listed);
         this.sockets.set(stream, socket);
         socket.open();
         return;
@@ -672,7 +681,7 @@ export class RelaySession {
       if (!response) { stream.reset("internal_error"); return; }
       await this.refuseSocket(stream, response);
     } catch (error) {
-      exchange.upgrade?.data.relay?.close();
+      closePendingRelay(exchange);
       if (stream.live) stream.reset(error instanceof MuxStreamError ? error.code : "internal_error");
     }
   }

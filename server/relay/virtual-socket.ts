@@ -1,20 +1,27 @@
 import type { WsStream } from "../../shared/relay-mux-engine.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
-import type { createCore, SocketData } from "../core/index.ts";
+import type { createCore } from "../core/index.ts";
 import { LARGE_REPLY_BYTES } from "../herdr/client.ts";
 import { OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES } from "../output-window.ts";
 
 export type RelaySocketHandlers = ReturnType<typeof createCore>["socketHandlers"];
 type SocketLike = Parameters<RelaySocketHandlers["open"]>[0];
 
-export class VirtualSocket implements SocketLike {
+export interface VirtualSocketHandlers<T extends object> {
+  open(socket: VirtualSocket<T>): void | Promise<void>;
+  message(socket: VirtualSocket<T>, message: string | Buffer): void | Promise<void>;
+  close(socket: VirtualSocket<T>, code: number, reason: string): void;
+  drain?(socket: VirtualSocket<T>): void;
+}
+
+export class VirtualSocket<T extends object = SocketLike["data"]> {
   private closing = false;
   private ended = false;
   private detached = false;
   private aboveLow = false;
   readonly closed: Promise<void>;
 
-  constructor(readonly data: SocketData, private readonly stream: WsStream, private readonly handlers: RelaySocketHandlers, private readonly listed: boolean) {
+  constructor(readonly data: T, private readonly stream: WsStream, private readonly handlers: VirtualSocketHandlers<T>, private readonly listed: boolean) {
     const closed = Promise.withResolvers<void>();
     this.closed = closed.promise;
     stream.onClose = ({ code, reason }) => {
@@ -77,13 +84,13 @@ export class VirtualSocket implements SocketLike {
   drain(): void {
     if (this.readyState !== WebSocket.OPEN || !this.aboveLow || this.getBufferedAmount() >= OUTPUT_LOW_BYTES) return;
     this.aboveLow = false;
-    this.handlers.drain(this);
+    this.handlers.drain?.(this);
   }
 
   close(code = 1000, reason = ""): void {
     if (this.closing || this.ended || this.detached || !this.stream.live) return;
     this.closing = true;
-    if (code === 1006 || code === 1012 && this.data.relay) this.stream.reset("upstream_lost");
+    if (code === 1006 || code === 1012 && "relay" in this.data && this.data.relay) this.stream.reset("upstream_lost");
     // A listed principal's policy close must not drain its stale events; ordinary sockets keep their bounded close handshake.
     else this.stream.close(code, reason, (this.listed && code === 1008) || code === OUTPUT_STALLED_CLOSE_CODE);
     this.detach(code, reason);

@@ -56,6 +56,23 @@
             android:exported="false"
             android:foregroundServiceType="microphone|phoneCall" />
 
+        <!-- Fork: Android's digital assistant role, side-button session and shell-only control glow. -->
+        <receiver android:name=".fork.assistant.control.ControlReceiver" android:exported="true"
+            android:enabled="@bool/ovis_assistant_supported" android:permission="android.permission.DUMP" />
+        <service android:name=".fork.assistant.session.AssistantService" android:exported="true"
+            android:enabled="@bool/ovis_assistant_supported"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <meta-data android:name="android.voice_interaction" android:resource="@xml/ovis_assistant_service" />
+            <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
+        </service>
+        <service android:name=".fork.assistant.session.AssistantSessionService" android:exported="true"
+            android:enabled="@bool/ovis_assistant_supported"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <service android:name=".fork.assistant.session.AssistantRecognitionService" android:exported="true"
+            android:enabled="@bool/ovis_assistant_supported">
+            <intent-filter><action android:name="android.speech.RecognitionService" /></intent-filter>
+        </service>
+
         <!-- Add over SSH (OvisSshPlugin): not exported, only the app opens it. Its work runs on a thread that
              waits on its dialogs and returns its result to this instance, so a rotation or a theme or language
              change must not recreate it -->
@@ -83,6 +100,7 @@
     <!-- the page's microphone (dictation, live voice): Capacitor asks for both when it calls getUserMedia -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- a live call as Android's own phone call, which the lock screen shows (TelecomCall.java) -->

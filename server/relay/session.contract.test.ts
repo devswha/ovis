@@ -415,7 +415,9 @@ it("captures the real dispatcher upgrade for an injected WebSocket adapter", asy
     onWs: (stream, exchange) => {
       void handleRequest(exchange.request, exchange.context).then((response) => {
         expect(response).toBeUndefined();
-        expect(exchange.upgrade?.data.deviceId).toBe(stream.request.device_id);
+        const data = exchange.upgrade?.data;
+        if (data && "piVoice" in data) throw new Error("Unexpected Pi voice upgrade");
+        expect(data?.deviceId).toBe(stream.request.device_id);
         expect(exchange.context.requestIP(exchange.request)).toBeNull();
         captured.resolve();
         stream.reset("refused");

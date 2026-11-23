@@ -1,0 +1,3 @@
+<resources>
+    <bool name="ovis_assistant_supported">true</bool>
+</resources>

@@ -3,7 +3,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 
 import { useT } from "../../lib/i18n.ts";
 import { storedOrbPlace, useOrbPlacement, type OrbPlace } from "./orbPlace.ts";
-import { endPiVoice, formatPiVoiceTime, piVoiceLevels, resumePiVoice, setPiVoiceMuted, usePiVoice, type PiVoiceEnd, type PiVoiceState } from "./piVoiceSession.ts";
+import { endPiVoice, endText, formatPiVoiceTime, piVoiceLevels, resumePiVoice, setPiVoiceMuted, usePiVoice, type PiVoiceState } from "./piVoiceSession.ts";
 import { VoiceOrb } from "./VoiceOrb.tsx";
 import "./PiVoiceView.css";
 
@@ -137,19 +137,5 @@ function phaseText(voice: PiVoiceState, t: ReturnType<typeof useT>): string {
     case "speaking": return t("Speaking");
     case "muted": return t("Muted");
     default: return t("Connecting…");
-  }
-}
-
-function endText(end: PiVoiceEnd, t: ReturnType<typeof useT>): string {
-  switch (end.kind) {
-    case "error": return end.message;
-    case "denied": return t("Microphone access was denied.");
-    case "no_mic": return t("No microphone found");
-    case "unsupported": return t("This browser cannot make a voice call.");
-    case "failed": return t("The call stopped working.");
-    case "not_pi": return t("This pane is not running Pi.");
-    case "unavailable": return t("Pi did not answer in this pane. Run /reload in Pi and try again.");
-    case "busy": return t("A call is already on in this pane.");
-    default: return t("The call was cut off.");
   }
 }

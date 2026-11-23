@@ -1,4 +1,5 @@
 apply plugin: 'com.android.application'
+apply from: '../fork/assistant/assistant.gradle'
 
 android {
     namespace = "sh.ovis.app"

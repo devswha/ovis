@@ -45,6 +45,8 @@ jobs:
         with:
           node: 'true'
       - run: bun install --frozen-lockfile
+      - name: Fetch the pinned upgrade fixtures
+        run: git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7
       - run: bun scripts/fork-unit-shard.ts --shard ${{ matrix.shard }}/4
   browser:
     name: Fork browser

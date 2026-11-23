@@ -24,6 +24,7 @@ import { shellMode } from "./lib/shellMode.ts";
 import { isReportableWindowError } from "./lib/uncaughtErrors.ts";
 import "./lib/viewport.ts";
 import { watchSheetExits } from "./lib/sheets.ts";
+import { bootAssistantCall } from "./fork/assistant/callPage.ts";
 import "./fork/styles.css";
 
 watchSheetExits();
@@ -47,6 +48,7 @@ window.addEventListener("unhandledrejection", (event) => console.error("Ovis: un
 // SettingsProvider, which may be what threw.
 function renderApp(): Root {
   const root = createRoot(mount);
+  if (bootAssistantCall()) return root;
   root.render(
     <StrictMode>
       <RenderBoundary resetKey={null} fallback={(_retry, error) => <AppCrash error={error} />}>

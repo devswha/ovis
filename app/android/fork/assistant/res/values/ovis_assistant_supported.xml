@@ -1,0 +1,5 @@
+<resources>
+    <bool name="ovis_assistant_supported">false</bool>
+    <string name="ovis_assistant_unreachable">Can’t reach the assistant’s PC.</string>
+    <string name="ovis_assistant_microphone">Allow the microphone in Ovis.</string>
+</resources>

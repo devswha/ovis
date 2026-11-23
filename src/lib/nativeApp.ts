@@ -47,6 +47,10 @@ export async function callNative<T>(plugin: string, method: string, options: Rec
   return await call(plugin, method, options) as T;
 }
 
+export function onNativeEvent(plugin: string, eventName: string, listener: (data: unknown) => void): void {
+  bridge()?.nativeCallback?.(plugin, "addListener", { eventName }, listener);
+}
+
 export async function changePc(): Promise<void> {
   await bridge()?.nativePromise?.("HerdrShell", "disconnect", {});
 }
@@ -87,10 +91,9 @@ let liveCallActions = false;
 
 /** Hang up or Mute tapped on the call's notification, the lock screen's included. Listens once. */
 export function onNativeLiveCallAction(act: (action: "hangup" | "mute") => void): void {
-  const callback = bridge()?.nativeCallback;
-  if (liveCallActions || !inAndroidApp() || !callback) return;
+  if (liveCallActions || !inAndroidApp() || !bridge()?.nativeCallback) return;
   liveCallActions = true;
-  callback("HerdrShell", "addListener", { eventName: "liveCallAction" }, (data) => {
+  onNativeEvent("HerdrShell", "liveCallAction", (data) => {
     const action = (data as { action?: string } | undefined)?.action;
     if (action === "hangup" || action === "mute") act(action);
   });
@@ -119,7 +122,7 @@ export function nativeAlertTaps(): { addEventListener: (type: string, listener: 
   if (!nativeAlerts() || !callback) return undefined;
   return {
     addEventListener: (_type, listener) => {
-      callback("HerdrShell", "addListener", { eventName: "alertTap" }, (data) => {
+      onNativeEvent("HerdrShell", "alertTap", (data) => {
         listener(new MessageEvent("message", { data: { ...(data as object), type: "select-pane", view: "chat" } }));
       });
     },

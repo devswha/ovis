@@ -126,6 +126,7 @@ export interface SettingsDialogProps {
   onRetrySave: () => void;
   overPreview?: boolean;
   machines?: readonly Machine[];
+  assistantMachines?: readonly Machine[];
 }
 
 /**
@@ -1737,7 +1738,7 @@ function matchedGroups(result: Element | null, words: readonly string[]): string
   return [...groups.filter(holdsAll), ...groups.filter((group) => !holdsAll(group))].map((group) => group.dataset["section"]).filter((name): name is string => name !== undefined);
 }
 
-function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [], opensAll, withdrawn }: SettingsDialogProps) {
+function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [], assistantMachines, opensAll, withdrawn }: SettingsDialogProps) {
   const t = useT();
   const narrow = useNarrow();
   const pcExit = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
@@ -1921,7 +1922,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "devices": return <DevicesPage opensAll={opensAll} withdrawn={withdrawn} auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc} connectPc={actions.connectPc}
         machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
       case "experimental": return <ExperimentalPage />;
-      case "fork": return <ForkPage />;
+      case "fork": return <ForkPage assistantMachines={auth?.role === "watch" ? undefined : assistantMachines} />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} herdrRuntime={herdrRuntime} herdrCore={herdrCore} herdrRuntimeFacts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} onOpenPane={onOpenPane} bridgesFollow={pcSettings?.auto_update_bridges === true} />;
       default: return null;
     }

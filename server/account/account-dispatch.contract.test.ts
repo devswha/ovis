@@ -158,7 +158,10 @@ test("R7: a local terminal upgrade grants no multi-PC event document", async () 
     expect(ctx.services.core.machines).not.toBeNull();
     const grants: boolean[] = [];
     const response = await handleRequest(new Request("https://relay.ovis.invalid/ws"), {
-      ...ctx, upgrade: (_request, { data }) => { grants.push(data.machineEvents !== undefined); return false; },
+      ...ctx, upgrade: (_request, { data }) => {
+        if ("piVoice" in data) throw new Error("Unexpected Pi voice upgrade");
+        grants.push(data.machineEvents !== undefined); return false;
+      },
     });
     expect(response?.status).toBe(426);
     expect(grants).toEqual([false]);

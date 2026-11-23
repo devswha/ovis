@@ -3,11 +3,13 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { LOCAL_MACHINE } from "../../../shared/machines.ts";
 import { encodePiVoiceFrame, parsePiFrame, PI_VOICE_PATH, type PhoneToPiFrame, type PiToPhoneFrame, type PiVoice, type PiVoiceEndCode, type PiVoicePhase } from "../../../shared/pi-voice.ts";
 import { fetchPiVoiceStatus } from "../../lib/api.ts";
-import { t } from "../../lib/i18n.ts";
+import { t, type Translate } from "../../lib/i18n.ts";
 import { useMachineId } from "../../lib/machineContext.tsx";
 import { useSettings } from "../../lib/settings.ts";
 import { nativeLiveCall, nativeLiveCallMuted, onNativeLiveCallAction } from "../../lib/nativeApp.ts";
 import { BrowserLiveMedia } from "../../lib/piVoiceMedia.ts";
+import { getTransport, type WebSocketLike } from "../../lib/transport.ts";
+import { appCallReady, claimAppCall, hasAssistantPlugin, type CallMirror } from "../assistant/callMirror.ts";
 import { micErrorReason } from "../../lib/voice.ts";
 import { playVoiceChime, primeVoiceChime } from "../../lib/voiceChime.ts";
 
@@ -15,17 +17,32 @@ import { playVoiceChime, primeVoiceChime } from "../../lib/voiceChime.ts";
  * The live voice call with the Pi in a pane, one per tab, kept outside React so the composer
  * remounting (a pane switch, a layout change) does not end it. The phone is the call's
  * microphone and speaker (piVoiceMedia.ts); this server relays Pi's frames (server/pi-voice.ts).
- * A call is started by a tap: the browser asks for the microphone and lets the reply play on the
- * strength of that gesture, so `startPiVoice` does its browser calls before it waits for anything.
+ * A browser call asks for its media on the tap. Android first claims the phone's call slot; its
+ * WebView allows media to start without a gesture.
  * It stays on the pane it started in, whatever is selected meanwhile, until End or until Pi ends it.
  */
 
 /** why a call is over, when it did not end by a tap on End or by Pi's own account of a normal end */
 export type PiVoiceEnd =
   | { kind: PiVoiceEndCode }
-  | { kind: "denied" | "no_mic" | "unsupported" | "failed" }
+  | { kind: "denied" | "no_mic" | "unsupported" | "failed" | "phone_busy" }
   /** Pi's own words: why it could not start or keep the call */
   | { kind: "error"; message: string };
+
+export function endText(end: PiVoiceEnd, t: Translate): string {
+  switch (end.kind) {
+    case "error": return end.message;
+    case "denied": return t("Microphone access was denied.");
+    case "no_mic": return t("No microphone found");
+    case "unsupported": return t("This browser cannot make a voice call.");
+    case "failed": return t("The call stopped working.");
+    case "not_pi": return t("This pane is not running Pi.");
+    case "unavailable": return t("Pi did not answer in this pane. Run /reload in Pi and try again.");
+    case "busy": return t("A call is already on in this pane.");
+    case "phone_busy": return t("Ovis already has a voice call on this phone.");
+    default: return t("The call was cut off.");
+  }
+}
 
 export interface PiVoiceState {
   /** `idle`: no call; `starting`: reaching Pi; `live`: the call is on; `ended`: it just stopped, with `end` saying why */
@@ -55,7 +72,7 @@ const RELEASE_AFTER_MS = 500;
 
 interface Call {
   /** opened only once the microphone is allowed (see `connect`) */
-  socket: WebSocket | null;
+  socket: WebSocketLike | null;
   media: BrowserLiveMedia | null;
   stream: MediaStream | null;
   audio: HTMLAudioElement;
@@ -65,6 +82,8 @@ interface Call {
   keepAwake: () => void;
   /** the tap on End: the socket closing after it is not a loss */
   userEnded: boolean;
+  /** One assistant mute request at a time; state.muted keeps the latest local choice. */
+  muteInFlight?: boolean;
 }
 
 /**
@@ -75,12 +94,16 @@ const SPEAKING_HOLD_MS = 600;
 
 let state: PiVoiceState = IDLE;
 let call: Call | null = null;
+let mirror: CallMirror | null = null;
+let claiming = false;
+let metering: ReturnType<typeof setInterval> | undefined;
 let settling: ReturnType<typeof setTimeout> | undefined;
 let ending: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<() => void>();
 
 function update(patch: Partial<PiVoiceState>): void {
   state = { ...state, ...patch };
+  publish();
   notify();
 }
 
@@ -88,8 +111,28 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
+function publish(): void {
+  mirror?.state({ status: state.status, phase: state.phase, muted: state.muted,
+    ...(state.end ? { notice: endText(state.end, t) } : {}), ...piVoiceLevels() });
+}
+
+/** UI commands from the assistant surface, never protocol frames. */
+export function assistantCallCommand(action: string): void {
+  switch (action) {
+    case "hangup": endPiVoice(); break;
+    case "resume": resumePiVoice(); break;
+    case "mute": setPiVoiceMuted(!state.muted); break;
+    case "unwatch": clearInterval(metering); metering = undefined; break;
+    case "watch":
+      if (mirror && metering === undefined) metering = setInterval(publish, 33);
+      publish();
+      break;
+  }
+}
+
 function send(frame: PhoneToPiFrame): void {
-  if (call?.socket?.readyState === WebSocket.OPEN) call.socket.send(encodePiVoiceFrame(frame));
+  const socket = call?.socket;
+  if (socket?.readyState === WebSocket.OPEN) socket.send(encodePiVoiceFrame(frame));
 }
 
 function callUrl(machineId: string, paneId: string, voice: PiVoice | undefined): string {
@@ -105,7 +148,10 @@ function callUrl(machineId: string, paneId: string, voice: PiVoice | undefined):
  */
 function finish(end: PiVoiceEnd | null): void {
   const over = call;
+  const finished = mirror;
   call = null;
+  clearInterval(metering);
+  metering = undefined;
   clearTimeout(settling);
   clearTimeout(ending);
   if (over) {
@@ -121,15 +167,17 @@ function finish(end: PiVoiceEnd | null): void {
       // a call that never got as far as its media still holds what the tap asked for
       for (const track of over.stream?.getTracks() ?? []) track.stop();
       void over.audioContext?.close().catch(() => undefined);
-      if (over.stream) nativeLiveCall(null);
+      if (over.stream && !finished?.notice) nativeLiveCall(null);
+      finished?.release();
     }, RELEASE_AFTER_MS);
   }
-  if (!end) {
-    update({ ...IDLE });
-    return;
+  if (!end) update({ ...IDLE });
+  else {
+    update({ ...IDLE, status: "ended", machineId: state.machineId, paneId: state.paneId, label: state.label, end });
+    ending = setTimeout(() => update({ ...IDLE }), ENDED_SHOWN_MS);
   }
-  update({ ...IDLE, status: "ended", machineId: state.machineId, paneId: state.paneId, label: state.label, end });
-  ending = setTimeout(() => update({ ...IDLE }), ENDED_SHOWN_MS);
+  mirror = null;
+  if (!over) finished?.release();
 }
 
 function showPhase(phase: PiVoicePhase): void {
@@ -142,23 +190,58 @@ function showPhase(phase: PiVoicePhase): void {
     update({ phase });
     return;
   }
+  showLive(phase);
+}
+
+function showLive(phase: PiVoicePhase): void {
   // ready to talk, on the opening chime. The phone's sound is a call's by now, so the chime is not
   // cut off switching to it
   playVoiceChime("open");
   update({ phase, status: "live" });
 }
 
+function showMute(muted: boolean): void {
+  update({ muted });
+  if (mirror?.muted) mirror.muted(muted);
+  else nativeLiveCallMuted(muted);
+}
+
+function syncAssistantMute(active: Call, confirmed: boolean): void {
+  if (active.muteInFlight !== undefined || state.muted === confirmed || active.socket?.readyState !== WebSocket.OPEN) return;
+  active.muteInFlight = state.muted;
+  send({ type: "set-muted", muted: state.muted });
+}
+
 function onFrame(frame: PiToPhoneFrame): void {
+  const active = call;
+  if (frame.type === "mute" && active && active.muteInFlight !== undefined) {
+    if (frame.muted === active.muteInFlight) {
+      active.muteInFlight = undefined;
+      syncAssistantMute(active, frame.muted);
+    }
+    // Acknowledgements must not override a newer local choice or touch the track.
+    return;
+  }
   call?.media?.receive(frame);
   switch (frame.type) {
+    case "activate":
+      // A call started muted may never get a listening phase until the user unmutes.
+      if (mirror?.notice && state.muted && state.status === "starting") showLive(state.phase);
+      break;
     case "phase":
-      showPhase(frame.phase);
+      if (mirror?.notice && frame.phase === "muted") {
+        // Older Pi sends this in place of the work phase. Preserve that phase, as the Fold did.
+        if (active?.muteInFlight === undefined) {
+          active?.media?.setMuted(true);
+          showMute(true);
+        }
+      } else showPhase(frame.phase);
       break;
     case "mute":
-      update({ muted: frame.muted });
-      nativeLiveCallMuted(frame.muted);
+      showMute(frame.muted);
       break;
     case "transcript":
+      mirror?.transcript?.();
       // only the reply shows; what was said to it is in the chat once the call ends
       if (frame.role === "assistant") update({ assistantText: frame.text });
       break;
@@ -187,21 +270,27 @@ function onFrame(frame: PiToPhoneFrame): void {
 function connect(active: Call, machineId: string, paneId: string, voice: PiVoice | undefined): void {
   const { stream, audio, audioContext } = active;
   if (!stream) return;
-  const socket = new WebSocket(callUrl(machineId, paneId, voice));
+  const socket = getTransport().openSocket(callUrl(machineId, paneId, voice));
   active.socket = socket;
   const media = new BrowserLiveMedia({
     stream,
     audio,
     audioContext,
     createPeer: () => new RTCPeerConnection(),
-    send,
+    callAudio: Boolean(mirror?.notice),
+    send: (frame) => { if (call === active) send(frame); },
     // a call that has ended still holds its media for a moment: its failing then is not this call's
     onFailed: () => {
       if (call === active) finish({ kind: "failed" });
     },
   });
   active.media = media;
-  socket.onopen = () => media.hello();
+  if (mirror?.notice && state.muted) media.setMuted(true);
+  socket.onopen = () => {
+    if (call !== active) return;
+    media.hello();
+    if (mirror?.notice) syncAssistantMute(active, false); // Pi starts unmuted.
+  };
   socket.onmessage = (event) => {
     if (call !== active || typeof event.data !== "string") return;
     let frame;
@@ -218,7 +307,7 @@ function connect(active: Call, machineId: string, paneId: string, voice: PiVoice
   };
 }
 
-interface CallTarget { machineId: string; paneId: string; label: string; voice?: PiVoice }
+export interface CallTarget { machineId: string; paneId: string; label: string; voice?: PiVoice }
 
 /**
  * Starts a call with the Pi in `paneId` on `machineId`, in `voice` if given and otherwise the one
@@ -226,14 +315,33 @@ interface CallTarget { machineId: string; paneId: string; label: string; voice?:
  * the speaker element and the audio context are made, and the screen kept awake, all before
  * anything is waited for.
  */
-export function startPiVoice(target: CallTarget): void {
-  if (state.status === "starting" || state.status === "live") return;
-  open(target);
+export function startPiVoice(target: CallTarget, host?: CallMirror, muted = false): void {
+  if (claiming || state.status === "starting" || state.status === "live") return;
+  if (host || !hasAssistantPlugin()) {
+    mirror = host ?? null;
+    open(target, muted);
+    return;
+  }
+  claiming = true;
+  const refused = (kind: "phone_busy" | "failed") => {
+    update({ ...IDLE, machineId: target.machineId, paneId: target.paneId, label: target.label });
+    finish({ kind });
+  };
+  void claimAppCall(assistantCallCommand).then((claimed) => {
+    claiming = false;
+    if (claimed === null) { refused("phone_busy"); return; }
+    mirror = claimed;
+    open(target);
+    appCallReady();
+  }, () => {
+    claiming = false;
+    refused("failed");
+  });
 }
 
-function open({ machineId, paneId, label, voice }: CallTarget): void {
+function open({ machineId, paneId, label, voice }: CallTarget, muted = false): void {
   clearTimeout(ending);
-  update({ ...IDLE, status: "starting", machineId, paneId, label });
+  update({ ...IDLE, status: "starting", machineId, paneId, label, muted });
   // the opening chime plays once the call is ready to talk; only a tap lets sound start
   primeVoiceChime();
   const getUserMedia = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
@@ -265,9 +373,14 @@ function open({ machineId, paneId, label, voice }: CallTarget): void {
         return;
       }
       started.stream = stream;
-      onNativeLiveCallAction((action) => action === "hangup" ? endPiVoice() : setPiVoiceMuted(!state.muted));
-      nativeLiveCall({ title: t("Live voice"), body: label, mute: t("Mute"), unmute: t("Unmute") });
-      connect(started, machineId, paneId, voice);
+      const notice = { title: t("Live voice"), body: label, mute: t("Mute"), unmute: t("Unmute") };
+      if (mirror?.notice) mirror.notice(notice);
+      else {
+        onNativeLiveCallAction(assistantCallCommand);
+        nativeLiveCall(notice);
+      }
+      try { connect(started, machineId, paneId, voice); }
+      catch { finish({ kind: "closed" }); }
     },
     (error: unknown) => {
       // a refusal reads as one, a missing or busy microphone as that, as dictation tells them apart
@@ -309,9 +422,14 @@ export function piVoiceLabel(cwd: string | null | undefined): string {
   return cwd?.split("/").filter(Boolean).at(-1) ?? "Pi";
 }
 
-/** Asks Pi to mute or unmute; the answer comes back as a `mute` frame, which is what the view shows. */
+/** The assistant notification must mute locally even if Pi cannot receive the request yet. */
 export function setPiVoiceMuted(muted: boolean): void {
-  send({ type: "set-muted", muted });
+  if (call && mirror?.notice) {
+    const previous = state.muted;
+    call.media?.setMuted(muted);
+    showMute(muted);
+    syncAssistantMute(call, previous);
+  } else send({ type: "set-muted", muted });
 }
 
 /** Linear 0..1 levels of the microphone and the reply, read each frame by the orb. */

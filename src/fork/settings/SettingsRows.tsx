@@ -1,13 +1,15 @@
+import type { Machine } from "../../../shared/machines.ts";
 import { isPiVoice, PI_VOICES } from "../../../shared/pi-voice.ts";
 import { SPEECH_VOICES, type SpeechVoice } from "../../../shared/speech.ts";
 import { useT } from "../../lib/i18n.ts";
 import { useSettings } from "../../lib/settings.ts";
 import { AudioLines, BellOff, Cpu, GitPullRequest, ListCollapse, Monitor, Notebook, PanelLeft, Smile, Sparkles, Square, SquareTerminal, Volume2, type LucideIcon } from "lucide-react";
 import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Toggle } from "../../components/SettingsControls.tsx";
+import { AssistantSettings } from "../assistant/AssistantSettings.tsx";
 import { NAVIGATIONS, type ForkSettings } from "./settings.ts";
 
 /** Settings → Fork: the rows only this fork has, by what they change, kept apart from SettingsDialog.tsx. */
-export function ForkPage() {
+export function ForkPage({ assistantMachines }: { assistantMachines?: readonly Machine[] }) {
   const { settings, update } = useSettings();
   const t = useT();
   const toggle = (key: ForkSwitch, label: string, icon: LucideIcon, description: string) => <SettingsRow icon={icon} label={label} description={description} reset={[key]}>
@@ -32,6 +34,7 @@ export function ForkPage() {
       {toggle("piModelPicker", t("Pi model picker"), Cpu, t("A menu in a Pi pane's message box that switches its model."))}
       {toggle("piLiveVoice", t("Pi live voice"), AudioLines, t("A call button in a Pi pane, to talk with it live."))}
       {settings.piLiveVoice && <LiveVoiceRow />}
+      {assistantMachines && <AssistantSettings machines={assistantMachines} />}
     </SettingsGroup>
     <SettingsGroup title={t("Agents")} section="fork-agents">
       {toggle("agentFriends", t("Agent friends"), Smile, t("Each agent has a friend's face and name in the lists and its alerts."))}

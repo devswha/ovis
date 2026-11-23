@@ -4,6 +4,7 @@ import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
 import type { Server } from "bun";
 import { routeForkApi, routeForkScreen } from "./fork/routes.ts";
+import type { PiVoiceSocketData } from "./fork/pi-voice.ts";
 import type { ForkServices, ForkSocketData } from "./fork/services.ts";
 import { PI_VOICE_PATH } from "../shared/pi-voice.ts";
 import type { ClientConnectionLog } from "./client-connection-log.ts";
@@ -164,13 +165,13 @@ export interface RequestServices extends ForkServices {
 export interface ServerContext {
   requestIP(request: Request): { address: string } | null;
   timeout(request: Request, seconds: number): void;
-  upgrade(request: Request, options: { headers?: HeadersInit; data: SocketData }): boolean;
+  upgrade(request: Request, options: { headers?: HeadersInit; data: SocketData | PiVoiceSocketData }): boolean;
   readonly port: number | undefined;
   /** `serverId`: the relay identity the device signed in to, which a `link` must name (docs/account.md). */
   readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string; serverId: string; key: string };
   readonly services: RequestServices;
   readonly relayBodyBudget?: EventStreamBudget;
-  /** the Bun server itself, for the routes that upgrade to sockets of their own (the Computer view, a Pi voice call); none over a relay */
+  /** The Bun server itself, for Computer view proxying; none over a relay. */
   readonly server?: Server<SocketData | ForkSocketData>;
   /**
    * The request came in on the machine profile's owner socket (`<state folder>/serve.sock`): set by the

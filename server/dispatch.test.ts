@@ -118,6 +118,7 @@ it("uses only the relay principal, even with valid driving cookies, bridge token
     requestIP: () => { throw new Error("Relay must not inspect the socket"); },
     timeout: () => {},
     upgrade: (_request, options) => {
+      if ("piVoice" in options.data) throw new Error("Unexpected Pi voice upgrade");
       expect(options.data.readOnly).toBe(true);
       expect(options.data.bridge).toBe(false);
       expect(options.data.deviceId).toBe(principal.id);
@@ -176,7 +177,10 @@ it("scopes a remote PC's receipt identity to the Portal user, not only to a brow
   const relays: MachineRelay[] = [];
   const ctx: ServerContext = {
     ...app.context, requestIP: () => ({ address: "127.0.0.1" }), timeout: () => {},
-    upgrade: (_request, options) => { relays.push(options.data.relay!); return true; },
+    upgrade: (_request, { data }) => {
+      if ("piVoice" in data || !data.relay) throw new Error("Expected a terminal relay upgrade");
+      relays.push(data.relay); return true;
+    },
   };
   const browser = crypto.randomUUID();
   const attachAs = async (user: string) => {
@@ -260,7 +264,10 @@ it("marks a socket that only the open LAN let in, one relayed to another PC too,
   const taken: { open?: boolean; bridge?: boolean; relay?: MachineRelay }[] = [];
   const from = (address: string): ServerContext => ({
     ...app.context, requestIP: () => ({ address }), timeout: () => {},
-    upgrade: (_request, options) => { taken.push(options.data); return true; },
+    upgrade: (_request, { data }) => {
+      if ("piVoice" in data) throw new Error("Unexpected Pi voice upgrade");
+      taken.push(data); return true;
+    },
   });
   const upgrade = async (ctx: ServerContext, path: string, headers: Record<string, string> = {}) => {
     const response = await handleRequest(new Request(`http://127.0.0.1:${app.port}${path}`, { headers: { host: `127.0.0.1:${app.port}`, origin: `http://127.0.0.1:${app.port}`, ...headers } }), ctx);
@@ -298,7 +305,10 @@ it("names a visit's way in from what the server knows, its relay session or Port
   const taken: (string | undefined)[] = [];
   const local: ServerContext = {
     ...app.context, requestIP: () => ({ address: "127.0.0.1" }), timeout: () => {},
-    upgrade: (_request, options) => { taken.push(options.data.ingress); return true; },
+    upgrade: (_request, { data }) => {
+      if ("piVoice" in data) throw new Error("Unexpected Pi voice upgrade");
+      taken.push(data.ingress); return true;
+    },
   };
   const relay: ServerContext = { ...local, requestIP: () => null,
     peer: { kind: "relay", device: { id: "0123456789abcdef", label: "Relay phone", role: "drive" }, sessionId: "session-a", serverId: "0123456789abcdef0123456789abcdef", key: "" } };

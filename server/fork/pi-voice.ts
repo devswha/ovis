@@ -1,5 +1,5 @@
 import net from "node:net";
-import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
+import type { ServerWebSocket, WebSocketHandler } from "bun";
 import {
   encodePiVoiceFrame,
   isPiVoice,
@@ -36,7 +36,8 @@ export interface PiVoiceSocket {
   data: PiVoiceSocketData;
   send(text: string): unknown;
   close(): unknown;
-  ping(): unknown;
+  /** Omitted on virtual sockets: their relay carrier owns the heartbeat and closes its streams. */
+  ping?(): unknown;
 }
 
 export interface PiVoiceSocketData {
@@ -182,9 +183,10 @@ export class PiVoiceRelay {
  * own ping is what a browser answers without any script running. Returns the way to stop.
  */
 function leaseOf(phone: PiVoiceSocket, clock: { every: (run: () => void, ms: number) => () => void; now: () => number }, lastSeen: () => number, lapsed: () => void): () => void {
+  if (!phone.ping) return () => {};
   return clock.every(() => {
     if (clock.now() - lastSeen() > LEASE_MS) lapsed();
-    else phone.ping();
+    else phone.ping?.();
   }, PING_MS);
 }
 
@@ -484,7 +486,7 @@ const PANE_ID = /^[\w.:-]{1,64}$/;
 export async function handlePiVoiceRequest(
   request: Request,
   url: URL,
-  server: Server<PiVoiceSocketData>,
+  upgrade: (request: Request, options: { headers: Headers; data: PiVoiceSocketData }) => boolean,
   hub: PiVoiceHub,
   caller: { readOnly: boolean; deviceId: string | undefined; headers: Headers; machine?: PiVoiceMachine },
 ): Promise<Response | undefined> {
@@ -503,6 +505,6 @@ export async function handlePiVoiceRequest(
   if (!PANE_ID.test(paneId)) return badRequest("invalid_pane_id", "pane_id is not a pane id");
   const voice = url.searchParams.get("voice");
   if (voice !== null && !isPiVoice(voice)) return badRequest("invalid_voice", "voice is not a live voice");
-  if (server.upgrade(request, { headers: caller.headers, data: { piVoice: { paneId, deviceId: caller.deviceId, ...(voice ? { voice } : {}), ...(caller.machine ? { machine: caller.machine } : {}) } } })) return undefined;
+  if (upgrade(request, { headers: caller.headers, data: { piVoice: { paneId, deviceId: caller.deviceId, ...(voice ? { voice } : {}), ...(caller.machine ? { machine: caller.machine } : {}) } } })) return undefined;
   return new Response("websocket upgrade required", { status: 426 });
 }
