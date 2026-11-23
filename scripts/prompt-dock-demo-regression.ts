@@ -176,12 +176,14 @@ try {
   const form = `<script>(() => {
     const demo = window.fetch;
     const web = ${JSON.stringify(panes.web)};
-    const DemoWebSocket = window.WebSocket;
-    window.WebSocket = Object.assign(function (...args) {
-      const socket = new DemoWebSocket(...args);
-      if (new URL(String(args[0]), location.href).pathname === "/ws") window.formSocket = socket;
-      return socket;
-    }, Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED"].map((key) => [key, DemoWebSocket[key]])));
+    if (window.testApprovalReflow) {
+      const DemoWebSocket = window.WebSocket;
+      window.WebSocket = Object.assign(function (...args) {
+        const socket = new DemoWebSocket(...args);
+        if (new URL(String(args[0]), location.href).pathname === "/ws") window.formSocket = socket;
+        return socket;
+      }, Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED"].map((key) => [key, DemoWebSocket[key]])));
+    }
     window.formPrompt = null;
     window.panePrompts = {};
     window.formAnswers = [];
@@ -204,7 +206,10 @@ try {
         if (window.formReadFails) { window.formFailedReads += 1; if (window.formHoldAfterFailure) window.formReadHold = true; return Promise.reject(new TypeError("Failed to fetch")); }
         const prompt = promptOf(url.searchParams.get("pane_id"));
         if (prompt !== null) {
-          if (window.formReflowGate) return window.formReflowGate.then(() => json({ prompt, suggestion: null }));
+          if (window.formReflowGate) {
+            window.formReflowReadStarted = true;
+            return window.formReflowGate.then(() => json({ prompt, suggestion: null }));
+          }
           return json({ prompt, suggestion: null });
         }
       }
@@ -242,7 +247,7 @@ try {
         throw error;
       };
       let evidenceSequence = 0;
-      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, waitForFonts = true, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; waitForFonts?: boolean; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
+      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, approvalReflow = false, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; approvalReflow?: boolean; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
         const context = await browser.newContext({ viewport: { width, height }, locale: "en-US", hasTouch: touch, isMobile: touch && !finePointer });
         // a laptop with a touch screen: Chromium calls any screen with touch a coarse pointer, and
         // such a laptop's mouse is its first one. The app asks through matchMedia (useMediaQuery)
@@ -265,6 +270,7 @@ try {
           Object.defineProperty(keyboard, "boundingRect", { get: () => new DOMRect(0, 0, 390, keyboard.height) });
           Object.defineProperty(navigator, "virtualKeyboard", { configurable: true, value: keyboard });
         });
+        if (approvalReflow) await context.addInitScript(() => { Reflect.set(window, "testApprovalReflow", true); });
         if (prompt !== null) await context.addInitScript((next) => { window.addEventListener("DOMContentLoaded", () => { (window as unknown as { formPrompt: unknown }).formPrompt = next; }); }, prompt);
         const page = await context.newPage();
         const evidence = evidenceDirectory ? await startBrowserEvidence({
@@ -285,7 +291,7 @@ try {
           if (prompt !== null) await setPrompt(page, prompt);
           await page.locator(".prompt-card").waitFor();
           if (prompt !== null) await page.locator(".prompt-card").getByText((prompt as { question: string }).question).waitFor();
-          if (waitForFonts) await appFaces(page);
+          if (!approvalReflow) await appFaces(page);
           return {
             page,
             errors,
@@ -348,7 +354,7 @@ try {
           body: "touch probe.txt", multi_select: false, custom_option_index: null,
           options: ["Yes", "Yes, and always allow access to /projects/demo from this project", "No"].map((label) => ({ label, description: null })),
         };
-        const { page, errors, close } = await open({ width: 1440, height: 900, prompt: approval, waitForFonts: false });
+        const { page, errors, close } = await open({ width: 1440, height: 900, prompt: approval, approvalReflow: true });
         try {
           const card = page.locator(".prompt-card");
           const option = card.locator(".prompt-card-option").nth(optionIndex);
@@ -363,6 +369,7 @@ try {
               type: "pane-geometry", pane_id: pane, cols: 40, rows: 44,
             }) }));
           }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }] as const);
+          await page.waitForFunction(() => (window as unknown as { formReflowReadStarted?: boolean }).formReflowReadStarted === true);
           await card.locator('.prompt-card-option:disabled').nth(optionIndex).waitFor();
           assert.ok(await option.isDisabled());
           assert.deepEqual(await answersOf(page), []);
