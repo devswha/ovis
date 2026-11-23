@@ -561,14 +561,15 @@ function focusTo(acc: Acc, focus: Focus): void {
   const requested = tab && focus.panes[tab.id];
   const zoom = shownZoom(tab);
   if (tab && requested && zoom && requested !== zoom && s.host.cols > 0) {
+    // the pane this move leaves, read before focus changes: in another tab, `focus` already shows that tab's zoomed pane
+    const before = focused(s.world, s.focus).pane?.id ?? null;
     if (s.host.cols <= NARROW_COLUMNS) {
-      const before = focused(s.world, s.focus).pane?.id;
       acc.s = { ...s, following: null, focus: { ...focus, localZoom: { tab: tab.id, zoom }, previous: before && before !== requested ? before : focus.previous } };
       return;
     }
     // Remember the move only when the document confirms it. A refused or lost write must not change what unzoom restores.
     acc.s = { ...s, focus: { ...focus, panes: s.focus.panes }, following: null };
-    acc.effects.push({ type: "run", action: "zoom_follow", target: { kind: "pane", id: requested }, zoomTab: tab.id, index: null, name: null });
+    acc.effects.push({ type: "run", action: "zoom_follow", target: { kind: "pane", id: requested }, zoomTab: tab.id, zoomFrom: before, index: null, name: null });
   } else acc.s = { ...s, focus, following: null };
 }
 

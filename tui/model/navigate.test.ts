@@ -290,6 +290,23 @@ describe("navigate mode on screen", () => {
     expect(zoomWrites(run)).toEqual(["t2"]);
   }, TEST_MS);
 
+  it("a zoom move the document confirmed after the screen narrowed is remembered: widened and unzoomed, the pane moved to stays", async () => {
+    const run = await start(twoWorkspaces("t1"), 120);
+    run.type("\x02l");
+    // the screen narrows while the write is under way, and stays narrow through its answer
+    run.host.resize(64, 40);
+    await run.settle();
+    await run.live();
+    await run.advance(1);
+    expect([sharedZoom(run), run.loop.model().focus.previous, zoomWrites(run)]).toEqual([["t2", "t2"], "t1", ["t2"]]);
+    run.host.resize(120, 40);
+    await run.advance(20);
+    await run.keys("ctrl+b,z");
+    await run.live();
+    await run.advance(1);
+    expect([focused(run.loop.model().world, run.loop.model().focus).pane?.id, sharedZoom(run)]).toEqual(["t2", ["t2", null]]);
+  }, TEST_MS);
+
   it("Enter read during a zoom write cannot commit the workspace preview", async () => {
     const run = await start(twoWorkspaces("t1"));
     await run.keys("ctrl+b,w,down");

@@ -15,7 +15,6 @@ import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts"
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import { SeenMarker } from "../server/herdr-core/seen-label.ts";
 import { SeenWrites } from "./core/seen.ts";
-import { NARROW_COLUMNS } from "./model/screen-size.ts";
 import { alertsOf } from "./model/look.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
@@ -479,8 +478,9 @@ export function startLoop(options: LoopOptions): Loop {
             guard(() => {
               if (behindWrite?.awaiting !== wait) return;
               if (ok && line === link.state && clock.now() < until) {
+                // The move was issued on a wide screen: the document showing its pane confirms it, whatever the width is now.
                 const { tab, pane } = focused(state.world, state.focus);
-                if (zoom && tab?.id === zoom.tab && tab.zoomed === zoom.pane && pane?.id === zoom.pane && state.host.cols > NARROW_COLUMNS) {
+                if (zoom && tab?.id === zoom.tab && tab.zoomed === zoom.pane && pane?.id === zoom.pane) {
                   dispatch({ type: "zoom_followed", pane: pane.id, from: zoom.from, at: clock.now() });
                 }
                 release();
@@ -633,8 +633,9 @@ export function startLoop(options: LoopOptions): Loop {
         }
         const writing = layout.run(effect);
         if (writing !== null) {
+          // the pane the move left is the reducer's, taken before focus changed tabs: the state here already shows the new tab
           holdUntil(writing, effect.zoomTab && effect.target?.kind === "pane"
-            ? { tab: effect.zoomTab, pane: effect.target.id, from: focused(state.world, state.focus).pane?.id ?? null } : undefined);
+            ? { tab: effect.zoomTab, pane: effect.target.id, from: effect.zoomFrom ?? null } : undefined);
           return;
         }
         // An action without a performer is reported, never silently swallowed.

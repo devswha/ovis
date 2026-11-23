@@ -57,6 +57,17 @@ function agentPair(): FakeHcCore {
   return core;
 }
 
+/** One pane in workspace a (t1) and, in workspace b, t2 beside t3 with the zoom on t2; t3's agent needs the user. */
+function zoomedElsewhere(): FakeHcCore {
+  const core = new FakeHcCore();
+  place(core, { space: "a", spaceName: "a", tab: "atab", tabName: "atab" }, "a\r\n");
+  for (const n of [0, 1]) place(core, { space: "b", spaceName: "b", tab: "btab", tabName: "btab" }, `b ${n}\r\n`);
+  core.reportStatus("t3", { state: "blocked", app: "claude" });
+  const beside = { split: "right", ratio: 0.5, first: { leaf: "t2" }, second: { leaf: "t3" } };
+  core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: 1, workspaces: [{ id: "a", tabs: [{ id: "atab", root: { leaf: "t1" }, zoomed: null }] }, { id: "b", tabs: [{ id: "btab", root: beside, zoomed: "t2" }] }] }, version: 1 });
+  return core;
+}
+
 /** The agent in `terminal` works, then rests: its turn ends. */
 async function endTurn(run: Run, terminal: string): Promise<void> {
   run.core.reportStatus(terminal, { state: "working", app: "claude" });
@@ -798,8 +809,8 @@ describe("the loop", () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    /** Where a sequence is read: the core, and what happened on the screen before its first read. */
-    interface Scene { readonly options: () => RunOptions; readonly given?: (run: Run) => Promise<void> }
+    /** Where a sequence is read: the core, what happened on the screen before its first read, and what is typed once it settled. */
+    interface Scene { readonly options: () => RunOptions; readonly given?: (run: Run) => Promise<void>; readonly then?: string }
     const DEMO: Scene = { options: () => ({ fixture: demo }) };
     const ZOOMED: Scene = { options: () => ({ core: oneTab(3, true) }) };
     const outcome = async (prefix: string, reads: Uint8Array[], scene = DEMO, settleBetween = scene === DEMO) => {
@@ -822,6 +833,10 @@ describe("the loop", () => {
             if (inside) await run.advance(1);
             else await settled(run);
           }
+        }
+        if (scene.then !== undefined) {
+          run.type(scene.then);
+          await settled(run);
         }
         const model = run.loop.model();
         const layout = run.core.docs.get(OVIS_LAYOUT_DOC)?.value as OvisLayout | undefined;
@@ -909,8 +924,8 @@ describe("the loop", () => {
       expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), ZOOMED)) }).toEqual({ pinned, outcome: whole });
       for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], ZOOMED)) }).toEqual({ pinned, cut, outcome: whole });
     }
-    // What a person was shown is named, not only compared: reads that all agree on a turn nobody saw being read fail
-    // too. No frame comes between the reads.
+    // What a person was shown and what the document confirmed are named, not only compared: reads that all agree on a
+    // turn nobody saw being read, or on the wrong pane to go back to, fail too. No frame comes between the reads.
     const told: [name: string, scene: Scene, typed: string, leaves: Record<string, unknown>][] = [
       ["a pane passed over in navigate mode was never shown focused: its turn stays unread", UNREAD, "lh", { shown: "t1", mode: "navigate", seen: { t1: "0", t2: null } }],
       ["an agent list closed and opened again uncovered nothing: the turn that ended under it stays unread",
@@ -925,6 +940,9 @@ describe("the loop", () => {
       ["the host's focus coming back between a move and the move back finds the pane moved to not on the screen",
         agents(async (run) => { await hostFocus(run, FOCUS_OUT); await endTurn(run, "t2"); await run.keys("ctrl+b,w"); }),
         `l${FOCUS_IN}h`, { shown: "t1", seen: { t1: "0", t2: null } }],
+      ["a jump onto a pane another tab's zoom covers, then the last pane: back to the pane it left, the zoom where the jump put it",
+        { options: () => ({ core: zoomedElsewhere() }), given: async (run) => { run.loop.dispatch({ type: "keys", keys: { last_pane: "prefix+y" }, at: run.clock.current }); await run.advance(1); }, then: "\x02y" },
+        "\x02gclaude\r", { shown: "t1", focus: { previous: "t3" }, zoomed: [null, "t3"] }],
     ];
     for (const [name, scene, typed, leaves] of told) {
       const bytes = new TextEncoder().encode(typed);

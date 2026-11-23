@@ -39,6 +39,8 @@ export interface RunEffect {
   readonly to?: string;
   /** For zoom_follow, the tab whose existing shared zoom must follow the target pane. */
   readonly zoomTab?: string;
+  /** For zoom_follow, the pane shown when the move was made (null: none): the last pane once the document confirms the move. */
+  readonly zoomFrom?: string | null;
 }
 
 export interface UnreadEffect { readonly type: "unread"; readonly pane: string }
