@@ -575,6 +575,82 @@ describe("the loop", () => {
       expect(received(run)).toEqual({ t1: "7a" });
     }, TEST_MS);
 
+  it.each([
+    ["refused", "joined"], ["refused", "split"], ["unknown", "joined"], ["unknown", "split"],
+    ["success", "joined"], ["success", "split"],
+  ] as const)("empty-core input belongs to its creation when another client arrives first: %s, %s", async (outcome, ordering) => {
+    const run = await start({ core: new FakeHcCore() });
+    await run.advance(1);
+    const entered = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    const call = run.loop.link.call.bind(run.loop.link);
+    let requests = 0;
+    let created: string | null = null;
+    // Observe the real pane-input boundary without bypassing its opening/attachment checks.
+    const focusPane = run.loop.panes.focus.bind(run.loop.panes);
+    const inputPane = run.loop.panes.input.bind(run.loop.panes);
+    let destination: string | null = null;
+    const attempts: (string | null)[] = [];
+    run.loop.panes.focus = (pane) => { destination = pane; focusPane(pane); };
+    run.loop.panes.input = (input) => {
+      if (input.type === "text" && input.text === "abc") attempts.push(destination);
+      return inputPane(input);
+    };
+    run.loop.link.call = async (method, params, timeout) => {
+      if (method === "terminal.run") {
+        run.loop.link.call = call;
+        requests++;
+        entered.resolve();
+        await answer.promise;
+        if (outcome === "refused") throw new HcReplyError("blocked", "create refused");
+        if (outcome === "unknown") throw new HcError("timeout", "create answer lost");
+        const result = await call(method, params, timeout);
+        if (!("address" in result) || typeof result.address !== "string") throw new Error("creation returned no address");
+        created = result.address;
+        return result;
+      }
+      return call(method, params, timeout);
+    };
+    try {
+      run.type("\x02\r");
+      await run.advance(FRAME_PASS_MS);
+      const menu = run.loop.model().overlays.at(-1);
+      if (menu?.kind !== "menu") throw new Error("menu did not open");
+      const create = menu.entries.find((entry) => entry.kind === "action" && entry.action === "new_workspace");
+      if (!create?.label) throw new Error("New workspace has no label");
+      if (ordering === "joined") run.type(create.label + "abc");
+      else { run.type(create.label); run.type("abc"); }
+      await entered.promise;
+      expect(run.loop.model().focus.workspace).toBeNull();
+      const rival = place(run.core, { space: "rival", spaceName: "rival", tab: "rival-tab", tabName: "rival" }, "$ ");
+      await run.live();
+      await settled(run);
+      expect(run.loop.model().focus.panes["rival-tab"]).toBe(rival);
+      expect(run.core.program(rival).receivedHex()).toBe("");
+      answer.resolve();
+      await settled(run);
+      expect(requests).toBe(1);
+      expect(run.core.program(rival).receivedHex()).toBe("");
+      expect(attempts).toEqual(outcome === "success" ? [created] : []);
+      const notices = run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]);
+      if (outcome === "success") {
+        expect(created).not.toBeNull();
+        expect(created).not.toBe(rival);
+        expect(notices).toEqual([["input_refused", "opening"]]);
+      } else {
+        expect(notices).toEqual(outcome === "unknown"
+          ? [["layout_unknown", undefined], ["input_dropped", "layout_unknown"]]
+          : [["layout_refused", "blocked"], ["input_dropped", "not_shown"]]);
+      }
+      await run.live();
+      run.type("z");
+      await settled(run);
+      expect(received(run)).toEqual({ [outcome === "success" ? created! : rival]: "7a" });
+    } finally {
+      answer.resolve();
+    }
+  }, TEST_MS);
+
   it("what waits behind a layout write is bounded: past its bytes or events nothing more waits, no paste is cut, and a detach still leaves", async () => {
     const hex = (text: string) => Buffer.from(text).toString("hex");
     const dropped = (run: Run) => run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"]);

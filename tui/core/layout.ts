@@ -26,7 +26,13 @@ export type LayoutAnswer =
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null };
 
 /** What a layout write did that the screen is still to show: the terminals a close ended (none for any other write). */
-export interface LayoutDone { readonly ended: readonly string[]; readonly dropInput?: "layout_unknown" | "not_closed"; readonly refreshZoom?: true }
+export interface LayoutDone {
+  readonly ended: readonly string[];
+  readonly dropInput?: "layout_unknown" | "not_closed";
+  readonly refreshZoom?: true;
+  /** The destination this successful create or move established, independent of subsequent focus changes. */
+  readonly inputTarget?: string;
+}
 
 const NOTHING_ENDED: LayoutDone = { ended: [] };
 
@@ -203,8 +209,9 @@ export class LayoutWrites {
     return dropInput ? { ended, dropInput } : { ended };
   }
 
-  private follow(pane: string, away: string | null): void {
+  private follow(pane: string, away: string | null): LayoutDone {
     this.options.answer({ type: "follow", target: { kind: "pane", id: pane }, away });
+    return { ended: [], inputTarget: pane };
   }
 
   private notice(code: string, data: Readonly<Record<string, string>>, calm = false): void {

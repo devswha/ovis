@@ -332,6 +332,8 @@ export function startLoop(options: LoopOptions): Loop {
     /** Only a prefix begun in terminal context may survive release; overlay prefixes recognize held detach only. */
     terminalArmed: boolean;
     readonly mouse: ReturnType<Pointer["defer"]>;
+    /** Only the owning write's success can supply a recipient for input read without a pane. */
+    inputTarget: string | null;
     awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone } | { readonly kind: "zoom"; readonly read: AbortController }) & { readonly until: number } | null;
     bytes: number;
     full: boolean;
@@ -340,7 +342,7 @@ export function startLoop(options: LoopOptions): Loop {
   /** what waited behind a write is going through: a layout action in it was refused when it was read */
   let replaying = false;
   let busyReported = false;
-  type HeldInput = Extract<Effect, { type: "held_pane" }>
+  type HeldInput = (Extract<Effect, { type: "held_pane" }> & { readonly unassigned: boolean })
     | { type: "held_mouse"; input: MouseInput; continuation: boolean; route: DeferredMouse };
 
   /**
@@ -397,7 +399,7 @@ export function startLoop(options: LoopOptions): Loop {
         }
         if (effect.type === "input") units.push(effect.event);
         if (effect.type === "busy") busy(effect.action);
-        if (effect.type === "held_pane") pieces.push(effect);
+        if (effect.type === "held_pane") pieces.push({ ...effect, unassigned: focused(before.world, before.focus).pane === null });
       }
     }
     // the host's focus is no pane input: the screen takes it now, after the hold's prefix state took it in order
@@ -429,14 +431,16 @@ export function startLoop(options: LoopOptions): Loop {
    */
   function holdUntil(writing: Promise<LayoutDone>): void {
     if (behindWrite === null) {
-      behindWrite = { events: [], armed: state.armed, terminalArmed: state.armed, mouse: pointer.defer(), awaiting: null, bytes: 0, full: false, ready: false };
+      behindWrite = { events: [], armed: state.armed, terminalArmed: state.armed, mouse: pointer.defer(), inputTarget: null, awaiting: null, bytes: 0, full: false, ready: false };
       busyReported = false;
     }
+    const held = behindWrite;
     const before = state.following;
     const line = link.state;
     void writing.then((done) => {
       guard(() => {
-        if (behindWrite === null) return;
+        if (behindWrite !== held) return;
+        held.inputTarget = done.inputTarget ?? null;
         const until = clock.now() + LAYOUT_SHOWN_WAIT_MS;
         if (!closedShown(done.ended)) behindWrite.awaiting = { kind: "gone", done, until };
         else if (done.dropInput) drop(done.dropInput);
@@ -479,15 +483,24 @@ export function startLoop(options: LoopOptions): Loop {
     const waited = behindWrite?.events ?? [];
     const full = behindWrite?.full === true;
     const armed = behindWrite?.armed === true && behindWrite.terminalArmed;
+    const inputTarget = behindWrite?.inputTarget ?? null;
     behindWrite = null;
     replaying = true;
     try {
+      let unassigned = 0;
       for (const event of waited) {
         if (event.type === "held_pane") {
-          perform(event);
+          if (event.unassigned) {
+            if (inputTarget === null || !exists(state.world, { kind: "pane", id: inputTarget })) {
+              unassigned++;
+              continue;
+            }
+            perform({ type: "pane", pane: inputTarget, input: event.input });
+          } else perform(event);
         } else if (event.continuation) routeMouse(event.input, "screen", event.route);
         else dispatch(event.input, event.route);
       }
+      if (unassigned > 0) dispatch({ type: "notice", code: "input_dropped", data: { reason: "not_shown", events: unassigned }, at: clock.now() });
       // what came after the queue filled went nowhere, possibly the key a prefix waited for: the prefix returns to Idle
       dispatch({ type: "armed", armed: armed && !full, at: clock.now() });
     } finally {
