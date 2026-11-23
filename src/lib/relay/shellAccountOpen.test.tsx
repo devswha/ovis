@@ -312,6 +312,35 @@ it("a new PC that holds the pressed account sign-in shows its hold, then opens w
   expect({ attempts, apps: run.apps(), navigations: run.navigations.length }).toEqual({ attempts: [true, true], apps: 1, navigations: 1 });
 });
 
+it("a PC past its 24 hours that answers its page's account sign-in with auth_failed says this device was removed, as before: only a press on a new PC's sheet goes on to the join", async () => {
+  let attempts = 0;
+  const run = await accountPc({ open: async () => { attempts++; throw new MuxProtocolError("auth_failed", ""); } });
+  await run.openPage();
+  expect({ attempts, state: run.current().state, navigations: run.navigations, removed: removedPcs()[run.serverId] }).toEqual({
+    attempts: 1, state: expect.objectContaining({ kind: "failed", failure: "revoked", server_id: run.serverId }), navigations: [], removed: "removed",
+  });
+});
+
+it("a new PC opened by the press that later ends its session with auth_failed says this device was removed, and asks to join by nothing", async () => {
+  let fatal: ((error: Error) => void) | undefined;
+  const attempts: boolean[] = [];
+  const run = await accountPc({ newUntil: inADay(), open: async (offer, options) => {
+    attempts.push(options?.accountOpensAll === true);
+    fatal = options?.onFatal;
+    return new Admitted(offer);
+  } });
+  const sheet = await newPcSheet(run);
+  run.current().onPair();
+  await run.appOpened;
+  if (fatal === undefined) throw new TypeError("the open session was given no way to end");
+  fatal(new MuxProtocolError("auth_failed", ""));
+  await run.settled(() => run.current().state.kind === "failed");
+  for (let turn = 0; turn < 500; turn++) await Promise.resolve();
+  expect({ attempts, state: run.current().state, navigations: run.navigations, removed: removedPcs()[run.serverId] }).toEqual({
+    attempts: [true], state: expect.objectContaining({ kind: "failed", failure: "revoked", server_id: run.serverId }), navigations: [sheet], removed: "removed",
+  });
+});
+
 it("a press made while the sheet's page still reads the account's PCs waits for them, then signs in by the account key", async () => {
   const attempts: boolean[] = [];
   const run = await accountPc({ newUntil: inADay(), open: async (offer, options) => { attempts.push(options?.accountOpensAll === true); return new Admitted(offer); } });

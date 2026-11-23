@@ -166,7 +166,8 @@ function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn =
  * The account's PCs a launch with no saved PC to open may go to, to ask to join one on its own page (approved on that PC
  * or a device already in): those this device has no pairing for, that have a way to join and were seen lately, the one
  * opened last first, then the one seen most recently. The launch asks the first its check does not find off. A PC new in the account (new_until) is asked
- * too (security-triage, #16): the request grants nothing, and its approval opens no session without a tap (App).
+ * too (security-triage, #16): the request grants nothing, and its approval opens no session without a tap (App). One
+ * this device may sign in to by the account's key is not asked: its sheet waits for the press that opens it that way.
  */
 function accountLaunchPcs(pcs: readonly MyPc[]): (MyPc & { readonly join: NonNullable<MyPc["join"]> })[] {
   const open = pcs.filter((pc): pc is MyPc & { readonly join: NonNullable<MyPc["join"]> } => !pc.paired && pc.join !== undefined && pc.state !== "offline");
@@ -499,6 +500,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         const on = await reachable(order.map((row) => ({ server_id: row.server_id, server_public_key: row.join.server_public_key, relay: row.join.relay, name: row.name })));
         if (entries !== loaded || shown !== asking || left) return;
         pc = order.find((row) => row.server_id === on) ?? null;
+      }
+      // a PC new in the account that this device may sign in to by the account's key gets its sheet and is asked nothing:
+      // the person's one press opens it that way (pressedAccountOpen), where a join asked by itself would wait, on a PC no
+      // device is in yet, for its own window's Allow. Its page opens nothing by itself, a reload included
+      if (pc !== null && isNewAccountPc(pc, Date.now()) && accountOpenOf(pc) !== null) {
+        newnessOf(pc.server_id);
+        left = true; joinPc(pc, { sheet: "join", alone: true }); return;
       }
       // its join, asked at once (#16: the PC pops its approval by itself), on the PC's own page: never the PC's bare page,
       // which opens a PC the account lets this device into by itself (security-triage condition 3)
