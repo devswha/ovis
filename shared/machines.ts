@@ -352,8 +352,11 @@ export interface AccountAddTarget { server_id: string; public_key: string; relay
  * come online (docs/account.md, "Adding a PC over SSH"). `blocked`: why it may not run there.
  */
 export interface AccountAddRelay { phase: "off" | "connecting" | "online" | "error"; blocked: "serve_only" | "identity_unreadable" | null }
-/** POST /api/account/ssh-add's answer: that PC is in `account`; `relay` is null where its Ovis did not say (one from before this). */
-export interface AccountAddTaken { account: string; server_id: string; relay: AccountAddRelay | null }
+/**
+ * POST /api/account/ssh-add's answer: that PC is in `account`; `relay` is null where its Ovis did not say (one from before
+ * this), or where the take's answer was lost and a second inspect found that PC in the account (`unanswered`).
+ */
+export interface AccountAddTaken { account: string; server_id: string; relay: AccountAddRelay | null; unanswered?: true }
 
 const RELAY_PHASES: readonly unknown[] = ["off", "connecting", "online", "error"];
 const RELAY_BLOCKS: readonly unknown[] = ["serve_only", "identity_unreadable", null];

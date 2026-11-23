@@ -4,7 +4,6 @@
  * its owner that adds it over SSH, through this PC's recovery socket (docs/account.md, "Adding a PC over SSH").
  */
 import type { AccountAddRelay } from "../../shared/machines.ts";
-import type { RelayStatus } from "../../shared/protocol.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayService } from "../relay/service.ts";
 import type { AccountMailbox } from "./mailbox.ts";
@@ -67,7 +66,8 @@ export async function pressOnce(services: PressServices, account: string): Promi
  * Over SSH, another PC of the owner names only the account (its own binding's) and this PC's ID as it read it a moment
  * before: this PC names itself for that account and presses, on its own proof to the service. A PC already in that
  * account answers as added (a lost answer asked again); one in another account binds nothing. Once in the account it
- * turns its relay on (relayForAdd) and answers with it: within `onlineWithinMs` of that.
+ * turns its relay on (relayForAdd) and answers with it: within `onlineWithinMs` of that. A PC that left the account, or
+ * whose relay identity was reset, while it waited for its relay answers as pressOnce does for those.
  */
 export async function takeForAccount(services: PressServices, account: string, serverId: string, onlineWithinMs = ADDED_RELAY_ONLINE_MS): Promise<TakeOutcome> {
   if ((services.relay.currentIdentity()?.server_id ?? null) !== serverId) return refuse("identity_changed", "This PC's relay identity changed since it was read. Add it again.", 409);
@@ -78,7 +78,11 @@ export async function takeForAccount(services: PressServices, account: string, s
     const pressed = await pressOnce(services, account);
     if ("refused" in pressed) return pressed;
   }
-  return { account, relay: await relayForAdd(services.relay, account, onlineWithinMs) };
+  const binding = services.devices.serviceBinding();
+  const relay = await relayForAdd(services.relay, account, onlineWithinMs, bound === null);
+  if (services.devices.account() !== account || services.devices.serviceBinding() !== binding) return refuse("not_listed", "The account removed this PC while it was being added", 409);
+  if ((services.relay.currentIdentity()?.server_id ?? null) !== serverId) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
+  return { account, relay };
 }
 
 /**
@@ -86,14 +90,19 @@ export async function takeForAccount(services: PressServices, account: string, s
  * never opened), so the add ends as `ovis add` ends: named for the account again (a relay pass refused while this PC was
  * unlisted is asked for again), its relay turned on when it is off, as its own Settings switch does (RelayService.start:
  * the switch's state is saved, and a device gate still open closes), then waited for until it is online, `within` at most.
- * Nothing else is turned on, and a relay that may not run here is reported as it stands.
+ * A PC already in the account (`firstBind` false) whose owner set that switch keeps it as set: only one whose switch was
+ * never set is turned on. Nothing else is turned on, and a relay that may not run here is reported as it stands; nothing
+ * here throws, so a bind already made is never answered as a failure.
  */
-async function relayForAdd(relay: RelayService, account: string, within: number): Promise<AccountAddRelay> {
-  relay.setRelayAccount(account);
-  let status: RelayStatus;
+async function relayForAdd(relay: RelayService, account: string, within: number, firstBind: boolean): Promise<AccountAddRelay> {
+  try { relay.setRelayAccount(account); }
+  catch (error) { console.warn("[account] the account an added PC asks its relay pass under was not saved", error instanceof Error ? error.message : error); }
+  let status = relay.status();
   // a shutdown or an identity reset under way refuses the start: the relay is reported as it is
-  try { status = relay.status().phase === "off" ? relay.start() : relay.status(); }
-  catch { status = relay.status(); }
+  if (status.phase === "off" && (firstBind || !relay.switchSet())) {
+    try { status = relay.start(); }
+    catch { status = relay.status(); }
+  }
   const deadline = Date.now() + within;
   while (status.phase !== "online" && status.phase !== "off" && status.blocked === null && Date.now() < deadline) {
     await Bun.sleep(Math.min(RELAY_POLL_MS, Math.max(0, deadline - Date.now())));

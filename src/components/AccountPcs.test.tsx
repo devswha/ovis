@@ -227,7 +227,7 @@ describe("listedPcStateText", () => {
 
   // r14b: an SSH add refused for an old sign-in left the PC listed, and this list already said it was in the account
   it("never says in your account for a PC that is only listed or admitted: it has not taken its place there", () => {
-    expect(listedPcStateText(pc("needs-approval", false, false), t as never)).toBe("Not added yet");
+    expect(listedPcStateText(pc("needs-approval", false, false), t as never)).toBe("Waiting to be added");
   });
 
   it("keeps what the directory itself knows", () => {

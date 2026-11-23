@@ -16,17 +16,26 @@ import type { AccountSession } from "./store.ts";
 /**
  * - `added`: that PC took the admission, is in the account, and its relay is online.
  * - `already`: that PC is in this account already, and its relay is online; nothing was listed or admitted.
- * - `not-online`: that PC is in this account, but its relay was not online when it answered (or its Ovis did not say).
+ * - `added-unchecked`, `already-unchecked`: in the account, but its Ovis did not say how its relay stands (an Ovis from
+ *   before that); `added-unanswered`, `already-unanswered`: in the account, as a second look found once the take's own
+ *   answer was lost, its relay not known.
+ * - `not-online`: that PC is in this account, but its relay was not online when it answered.
+ * - `relay-off`: that PC is in this account already, and its owner turned its relay off there, which an add leaves so.
+ * - `maybe`: the take went out (or may have) and no answer came, not even to a second look: it may have been added.
  * - `other-account`: that PC is in another account; nothing was listed.
  * - `number`: the service refused the admission for want of two-step sign-in: that PC adds itself with its number.
  * - `sign-in-again`: the service refused this sign-in (not fresh, or not this device's own).
- * - `disconnected`: the SSH connection the take needs ended (or the job is gone): connecting again goes on.
+ * - `disconnected`: the SSH connection the take needs ended before it was sent (or the job is gone): connecting again goes on.
  * - `refused`: anything else, the attempt given up or the sign-in changed included.
  */
-export type SshAddOutcome = "added" | "already" | "not-online" | "other-account" | "number" | "sign-in-again" | "disconnected" | "refused";
+export type SshAddOutcome = "added" | "already" | "added-unchecked" | "already-unchecked" | "added-unanswered" | "already-unanswered"
+  | "not-online" | "relay-off" | "maybe" | "other-account" | "number" | "sign-in-again" | "disconnected" | "refused";
 
-/** What this PC said of the take: that PC's relay as it answered (null: its Ovis did not say), or the refusal's code. */
-export type SshTake = { readonly relay: AccountAddRelay | null } | { readonly refused: string };
+/**
+ * What this PC said of the take: that PC's relay as it answered (null: not said; `unanswered`: the take's answer was lost and
+ * a second look found that PC in the account), or the refusal's code.
+ */
+export type SshTake = { readonly relay: AccountAddRelay | null; readonly unanswered?: true } | { readonly refused: string };
 
 /** Whether this window may offer it: this PC's own window, signed in to the very account this PC is bound to. */
 export function sshAddOffered(here: { ownWindow: boolean; signedInAccount: string | null; pcAccount: string | null }): boolean {
@@ -50,21 +59,32 @@ const hex = (key: string): string => Array.from(importPublicKey(key), (byte) => 
 
 async function takeHere(jobId: string, serverId: string): Promise<SshTake> {
   const answer = await apiFetch("/api/account/ssh-add", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ job_id: jobId, server_id: serverId }) });
-  const body = await answer.json().catch(() => null) as { relay?: unknown; error?: { code?: unknown } } | null;
+  const body = await answer.json().catch(() => null) as { relay?: unknown; unanswered?: unknown; error?: { code?: unknown } } | null;
+  // this PC failed on its own side: the take may have gone out already
+  if (answer.status >= 500) return { refused: "take_unanswered" };
   if (!answer.ok) return { refused: typeof body?.error?.code === "string" ? body.error.code : "refused" };
-  return { relay: accountAddRelay(body?.relay) };
+  return { relay: accountAddRelay(body?.relay), ...(body?.unanswered === true ? { unanswered: true as const } : {}) };
 }
 
-/** The take, and what it came to: `online` when that PC is in the account and says its relay is online. */
-async function taken(take: (jobId: string, serverId: string) => Promise<SshTake>, jobId: string, serverId: string, online: SshAddOutcome): Promise<SshAddOutcome> {
+/** The take, and what it came to; `already`: inspect found that PC in this account before it. */
+async function taken(take: (jobId: string, serverId: string) => Promise<SshTake>, jobId: string, serverId: string, already: boolean): Promise<SshAddOutcome> {
   let said: SshTake;
   try { said = await take(jobId, serverId); }
   catch (error) {
-    console.warn("Ovis: this PC could not hand that PC the account", error instanceof Error ? error.name : error);
-    return "refused";
+    // no answer from this PC: it may have sent the take, so this is never "not added"
+    console.warn("Ovis: this PC gave no answer to handing that PC the account", error instanceof Error ? error.name : error);
+    return "maybe";
   }
-  if ("refused" in said) return said.refused === "disconnected" || said.refused === "job_not_found" ? "disconnected" : "refused";
-  return said.relay?.phase === "online" ? online : "not-online";
+  if ("refused" in said) {
+    if (said.refused === "disconnected" || said.refused === "job_not_found") return "disconnected";
+    return said.refused === "take_unanswered" ? "maybe" : "refused";
+  }
+  if (said.unanswered === true) return already ? "already-unanswered" : "added-unanswered";
+  if (said.relay === null) return already ? "already-unchecked" : "added-unchecked";
+  if (said.relay.phase === "online") return already ? "already" : "added";
+  // its owner turned its relay off there: an add that found it in the account already leaves the switch as it is
+  if (already && said.relay.phase === "off" && said.relay.blocked === null) return "relay-off";
+  return "not-online";
 }
 
 export async function addOverSsh(service: AccountService, job: { readonly id: string; readonly account_add: AccountAddTarget }, options: {
@@ -78,7 +98,7 @@ export async function addOverSsh(service: AccountService, job: { readonly id: st
   const target = job.account_add;
   const take = options.take ?? takeHere;
   // in this account already: nothing is listed or admitted, but it is taken all the same, which turns its relay on
-  if (target.account === options.account) return options.running() ? await taken(take, job.id, target.server_id, "already") : "refused";
+  if (target.account === options.account) return options.running() ? await taken(take, job.id, target.server_id, true) : "refused";
   if (target.account !== null) return "other-account";
   // pinned to the sign-in read now: one stored meanwhile (another tab signed out and in) is never written with
   const stored = await service.session();
@@ -99,5 +119,5 @@ export async function addOverSsh(service: AccountService, job: { readonly id: st
   }
   const still = await service.session();
   if (still === undefined || !sameSignIn(still, session) || !options.running()) return "refused";
-  return await taken(take, job.id, target.server_id, "added");
+  return await taken(take, job.id, target.server_id, false);
 }

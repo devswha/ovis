@@ -74,21 +74,37 @@ describe("adding another PC to the account over SSH, from this PC's own window",
       [ONLINE, "added"],
       [{ relay: { phase: "connecting", blocked: null } }, "not-online"],
       [{ relay: { phase: "off", blocked: "serve_only" } }, "not-online"],
-      // an Ovis there from before this says nothing of its relay: never taken for online
-      [{ relay: null }, "not-online"],
+      // an Ovis there from before this says nothing of its relay: in the account, never taken for online
+      [{ relay: null }, "added-unchecked"],
+      // the take's answer was lost and a second look found it in the account
+      [{ relay: null, unanswered: true }, "added-unanswered"],
     ] as const) {
       const { service, take } = await window({ twoStep: true, said });
       expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe(outcome);
     }
-    const { service, take } = await window({ twoStep: true, said: { relay: { phase: "connecting", blocked: null } } });
-    expect(await addOverSsh(service, { id: "job-1", account_add: pcFields(ACCOUNT) }, { account: ACCOUNT, running: () => true, take })).toBe("not-online");
+    for (const [said, outcome] of [
+      [{ relay: { phase: "connecting", blocked: null } }, "not-online"],
+      [{ relay: null }, "already-unchecked"],
+      [{ relay: null, unanswered: true }, "already-unanswered"],
+      // its owner turned its relay off there: said so, not "not online yet"
+      [{ relay: { phase: "off", blocked: null } }, "relay-off"],
+    ] as const) {
+      const { service, take } = await window({ twoStep: true, said });
+      expect(await addOverSsh(service, { id: "job-1", account_add: pcFields(ACCOUNT) }, { account: ACCOUNT, running: () => true, take })).toBe(outcome);
+    }
   });
 
   it("a take whose SSH connection ended says so, apart from any other refusal", async () => {
-    for (const [code, outcome] of [["disconnected", "disconnected"], ["job_not_found", "disconnected"], ["no_admission", "refused"]] as const) {
+    for (const [code, outcome] of [["disconnected", "disconnected"], ["job_not_found", "disconnected"], ["no_admission", "refused"], ["take_unanswered", "maybe"]] as const) {
       const { service, take } = await window({ twoStep: true, said: { refused: code } });
       expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe(outcome);
     }
+  });
+
+  it("a take this PC gave no answer to may have gone out: maybe, never refused", async () => {
+    const { service } = await window({ twoStep: true });
+    const take = async (): Promise<SshTake> => { throw new TypeError("Failed to fetch"); };
+    expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("maybe");
   });
 
   it("a sign-in too old to admit asks for a fresh one; the fresh one, as it was handed in, then adds it", async () => {

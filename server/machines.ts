@@ -1299,7 +1299,7 @@ export class MachineManager {
    * reconnected since, and the PC it answered for is `serverId`. The PC takes the admission on its own proof, turns its
    * relay on and answers with it (`relay`: null where its Ovis did not say).
    */
-  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string; relay: AccountAddRelay | null }> {
+  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true }> {
     const job = this.jobs.get(jobId);
     const reached = job?.accountAdd?.reached;
     if (!job || !reached || job.public.phase !== "connected") throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.");
@@ -1310,10 +1310,35 @@ export class MachineManager {
       throw new AccountAddError("disconnected", "The SSH connection to that PC ended. Connect to it again.");
     }
     // one take per inspect: the channel closes the forward once it answers, whatever it answers
-    const answer = await reached.channel.take(account, serverId) as Record<string, unknown> | null;
+    let answer: Record<string, unknown> | null;
+    try { answer = await reached.channel.take(account, serverId) as Record<string, unknown> | null; }
+    catch {
+      // the take may have gone out and its answer been lost (the forward or the connection dropped while that PC waited
+      // for its relay): it may be bound, so this PC asks it once more which account it is in, and never says "not added"
+      // on a take that got no answer
+      const seen = await this.inspectAgain(job, reached);
+      if (seen === account) return { account, relay: null, unanswered: true };
+      if (seen === undefined) throw new AccountAddError("take_unanswered", "It may have been added. Connect again to check.");
+      throw new AccountAddError("refused", "That PC did not take the account");
+    }
     if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
     if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
     return { account, relay: accountAddRelay(answer.relay) };
+  }
+  /**
+   * The account the PC a take got no answer from says it is in, asked once on a forward of its own over the same
+   * connection: undefined when it cannot be asked or does not answer for the PC the add reached.
+   */
+  private async inspectAgain(job: JobState, reached: { ssh: SshConnection; serverId: string }): Promise<string | null | undefined> {
+    const remote = job.accountAdd?.remoteSocket;
+    if (remote === undefined || !reached.ssh.connected()) return undefined;
+    let channel: AccountAddChannel | undefined;
+    try {
+      channel = await AccountAddChannel.open(reached.ssh, remote);
+      const fields = accountAddTarget(await channel.inspect());
+      return fields !== null && fields.server_id === reached.serverId ? fields.account : undefined;
+    } catch { return undefined; }
+    finally { await channel?.close(); }
   }
   /** a step by its code (its English beside it), or by words with no code: a PC's own notice */
   private step(job: JobState, step: SetupStepCode | string): void {

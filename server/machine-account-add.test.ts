@@ -55,6 +55,33 @@ function recorded(pc: Pc, answer: (request: unknown, said: unknown) => unknown =
   return { path: proxy.path, seen };
 }
 
+/**
+ * That PC's recovery socket behind a forward that drops the take's answer: the take reaches that PC (which binds), then
+ * the connection closes with nothing said, as when SSH drops while that PC waits for its relay. After that, `later`
+ * says whether an inspect is answered or dropped too.
+ */
+function lossy(pc: Pc, later: "answer" | "drop"): { path: string; seen: string[] } {
+  const seen: string[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "ovis-account-add-lossy-"));
+  const path = join(dir, "r.sock");
+  let took = false;
+  const listener = Bun.listen<{ buffered: string }>({ unix: path, socket: {
+    open(socket) { socket.data = { buffered: "" }; },
+    async data(socket, chunk) {
+      socket.data.buffered += new TextDecoder().decode(chunk);
+      const newline = socket.data.buffered.indexOf("\n");
+      if (newline < 0) return;
+      const request = JSON.parse(socket.data.buffered.slice(0, newline)) as { act: string };
+      seen.push(request.act);
+      if (request.act === "account_add_take") { await askRecovery(pc.stateDir, request); took = true; socket.end(); return; }
+      if (took && later === "drop") { socket.end(); return; }
+      socket.write(`${JSON.stringify(await askRecovery(pc.stateDir, request))}\n`);
+    },
+  } });
+  cleanups.push(() => { listener.stop(true); rmSync(dir, { recursive: true, force: true }); });
+  return { path, seen };
+}
+
 /** What the owner's signed-in window does with the fields the job read: lists that PC, then admits it (S1). */
 async function listAndAdmit(pc: Pc, account: string, fields: NonNullable<SetupJob["account_add"]>, twoStep: boolean | null = true): Promise<Response> {
   const token = pc.account.issueToken(account, { twoStep });
@@ -192,6 +219,27 @@ test("a relay word that PC's Ovis gives in another shape is not passed on", asyn
   const job = await settled({ destination: "fixture-pc", account_add: true });
   expect((await listAndAdmit(b, "acct_1", job.account_add!)).ok).toBe(true);
   expect(await manager.accountTake(job.id, job.account_add!.server_id, "acct_1")).toEqual({ account: "acct_1", relay: null });
+});
+
+test("a take whose answer is lost (SSH dropped during that PC's wait) asks that PC once more, and says added when it is in the account", async () => {
+  const b = await otherPc({ server: { accountAddRelayMs: 300 } });
+  const socket = lossy(b, "answer");
+  const { manager, settled } = fixture({ descriptor: "own", socketPath: socket.path });
+  const job = await settled({ destination: "fixture-pc", account_add: true });
+  expect((await listAndAdmit(b, "acct_1", job.account_add!)).ok).toBe(true);
+  expect(await manager.accountTake(job.id, job.account_add!.server_id, "acct_1")).toEqual({ account: "acct_1", relay: null, unanswered: true });
+  expect(b.devices.account()).toBe("acct_1");
+  // still nothing but inspects and the one take
+  expect(socket.seen).toEqual(["account_add_inspect", "account_add_take", "account_add_inspect"]);
+});
+
+test("a take whose answer is lost, and that PC unreachable after it: may have been added, never not added", async () => {
+  const b = await otherPc({ server: { accountAddRelayMs: 300 } });
+  const socket = lossy(b, "drop");
+  const { manager, settled } = fixture({ descriptor: "own", socketPath: socket.path });
+  const job = await settled({ destination: "fixture-pc", account_add: true });
+  expect((await listAndAdmit(b, "acct_1", job.account_add!)).ok).toBe(true);
+  await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1")).rejects.toMatchObject({ code: "take_unanswered" });
 });
 
 test("nothing but an account add's inspect and take is ever sent on the forwarded recovery socket", async () => {

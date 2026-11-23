@@ -61,8 +61,11 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   // this PC's own window signed in to the account this PC is in; nobody else gets the option
   const [accountAdd, setAccountAdd] = useState<string | null>(null);
   const [vouch, setVouch] = useState(true);
-  const [added, setAdded] = useState<SshAddOutcome | "adding" | null>(null);
+  // `other-pc`: a connection made again for the add reached another PC than the one it was for, so nothing was added
+  const [added, setAdded] = useState<SshAddOutcome | "adding" | "other-pc" | null>(null);
   const addedFor = useRef<string | null>(null);
+  // the PC a connection made again for the add must reach: the one the first inspect read
+  const addingPc = useRef<string | null>(null);
   // a sign-in the account service refused as too old: this page's own sign-in again, offered in place (`from`: the sign-in
   // stored when it was refused), then under way (`link`: the page to open where the browser would not open it itself)
   const signInAgain = useSignInAgainHere();
@@ -117,9 +120,9 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     else setSession(value);
   };
 
-  const begin = async (choice?: HerdrChoice, installedId?: string) => {
+  const begin = async (choice?: HerdrChoice, installedId?: string, samePc?: string) => {
     if (pending) return;
-    addedFor.current = null; setAdded(null); addAfterUpdate.current = null;
+    addedFor.current = null; setAdded(null); addAfterUpdate.current = null; addingPc.current = samePc ?? null;
     againRun.current?.abort(); againRun.current = null; setAgain(null);
     const updating = needsBridgeUpdate || updateRemote;
     const asAccountAdd = accountAdd !== null && vouch && !updating;
@@ -150,7 +153,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     void addOverSsh(service, { id, account_add: current.account_add }, { account: accountAdd, running: () => mounted.current && jobRef.current?.id === id, ...(signIn === undefined ? {} : { signIn }) })
       .then(async (outcome) => {
         if (!mounted.current || addedFor.current !== id) return;
-        if (outcome === "disconnected" && signIn !== undefined) { void begin(undefined, current.machine_id); return; }
+        if (outcome === "disconnected" && signIn !== undefined) { void begin(undefined, current.machine_id, current.account_add!.server_id); return; }
         const from = outcome === "sign-in-again" && signInAgain !== undefined ? await service.session().catch(() => undefined) : undefined;
         if (!mounted.current || addedFor.current !== id) return;
         setAdded(outcome);
@@ -159,6 +162,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   };
   useEffect(() => {
     if (!job || job.phase !== "connected" || !job.account_add || accountAdd === null || addedFor.current === job.id) return;
+    // that address answers for another PC now: the add was for the one read first, and nothing is listed for this one
+    if (addingPc.current !== null && job.account_add.server_id !== addingPc.current) { addedFor.current = job.id; setAdded("other-pc"); return; }
     addOn(job);
   }, [job?.id, job?.phase]);
   /**
@@ -303,12 +308,19 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
 }
 
 /** What the account add over SSH came to; only `added` says that PC is in the account */
-function addedWords(outcome: SshAddOutcome | "adding", t: ReturnType<typeof useT>): string {
+function addedWords(outcome: SshAddOutcome | "adding" | "other-pc", t: ReturnType<typeof useT>): string {
   switch (outcome) {
     case "adding": return t("Adding it to your account…");
     case "added": return t("Added to your account.");
     case "already": return t("It is already in your account.");
+    case "added-unchecked": return `${t("Added to your account.")} ${t("Update Ovis on that PC to check its relay.")}`;
+    case "already-unchecked": return `${t("It is already in your account.")} ${t("Update Ovis on that PC to check its relay.")}`;
+    case "added-unanswered": return `${t("Added to your account.")} ${t("Connect again to check its relay.")}`;
+    case "already-unanswered": return `${t("It is already in your account.")} ${t("Connect again to check its relay.")}`;
     case "not-online": return t("It is in your account, but its relay is not online yet, so your devices cannot open it. Run ovis status on that PC to see why.");
+    case "relay-off": return `${t("It is already in your account.")} ${t("Its relay is turned off on that PC.")}`;
+    case "maybe": return t("It may have been added. Connect again to check.");
+    case "other-pc": return t("That address now reaches another PC. Nothing was added.");
     case "other-account": return t("That PC is in another account.");
     case "number": return t("Add it with the number on the server's Ovis page.");
     case "sign-in-again": return t("Sign in again on this PC, then add it again.");

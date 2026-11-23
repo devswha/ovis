@@ -4,7 +4,7 @@
  * relay fields, and binds only on its own admission for that account.
  */
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { startBunRelay, type BunRelay } from "../../relay/bun.ts";
@@ -73,12 +73,41 @@ test.skipIf(process.platform === "win32")("a relay not online within the wait: t
   expect(b.devices.account()).toBe("acct_1");
 });
 
-test.skipIf(process.platform === "win32")("a PC already in that account turns its relay on again when it is added once more", async () => {
+test.skipIf(process.platform === "win32")("a PC already in that account keeps a relay its owner turned off: a re-add leaves it off and says so", async () => {
   const b = await pc({ relayPort: localRelay(), startRelay: false });
   await inspectAndTake(b, "acct_1");
   expect((await b.local("/api/relay/stop", { method: "POST", headers: { "x-herdr-update": "1" } })).status).toBe(200);
   expect(await relayPhase(b)).toBe("off");
-  expect(await inspectAndTake(b, "acct_1", false)).toEqual({ account: "acct_1", relay: { phase: "online", blocked: null } });
+  expect(await inspectAndTake(b, "acct_1", false)).toEqual({ account: "acct_1", relay: { phase: "off", blocked: null } });
+  expect(await relayPhase(b)).toBe("off");
+});
+
+test.skipIf(process.platform === "win32")("a PC already in that account whose relay switch was never set has it turned on by a re-add", async () => {
+  // in the account by its own page's one press, its relay never turned on: no switch saved
+  const b = await pc({ relayPort: localRelay(), startRelay: false });
+  const { server_id } = await askRecovery(b.stateDir, { act: "account_add_inspect" }) as { server_id: string };
+  await setUpFor(b, "acct_1");
+  await admitAt(b, "acct_1");
+  expect((await b.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account: "acct_1" } })).status).toBe(200);
+  expect(existsSync(join(b.stateDir, "relay", "state.json"))).toBe(false);
+  expect(await askRecovery(b.stateDir, { act: "account_add_take", account: "acct_1", server_id })).toEqual({ account: "acct_1", relay: { phase: "online", blocked: null } });
+  expect(await relayPhase(b)).toBe("online");
+});
+
+test.skipIf(process.platform === "win32")("a take refused as another account's PC, for another identity, or on a bridge turns nothing on", async () => {
+  const b = await pc({ relayPort: localRelay(), startRelay: false });
+  const { server_id } = await askRecovery(b.stateDir, { act: "account_add_inspect" }) as { server_id: string };
+  expect(await askRecovery(b.stateDir, { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32) })).toMatchObject({ code: "identity_changed" });
+  const before = process.env["OVIS_REMOTE"];
+  process.env["OVIS_REMOTE"] = "1";
+  try { expect(await askRecovery(b.stateDir, { act: "account_add_take", account: "acct_1", server_id })).toMatchObject({ code: "managed" }); }
+  finally { if (before === undefined) delete process.env["OVIS_REMOTE"]; else process.env["OVIS_REMOTE"] = before; }
+  await setUpFor(b, "acct_other");
+  await admitAt(b, "acct_other");
+  expect((await b.local("/api/account/one-press", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account: "acct_other" } })).status).toBe(200);
+  expect(await askRecovery(b.stateDir, { act: "account_add_take", account: "acct_1", server_id })).toMatchObject({ code: "other_account" });
+  expect(await relayPhase(b)).toBe("off");
+  expect(existsSync(join(b.stateDir, "relay", "state.json"))).toBe(false);
 });
 
 test.skipIf(process.platform === "win32")("a take that binds nothing turns nothing on", async () => {
