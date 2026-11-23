@@ -175,15 +175,21 @@ describe("the pointer", () => {
     expect(pointer.mouse("screen", ev(["motion", null, 3, 2]), sceneOf("a", lookA(true)))).toEqual([{ kind: "forward", pane: "a", event: ev(["motion", null, 3, 3]) }]);
   });
 
-  it("a drag report with a new focus drops the old forward grab even without a focus notification", () => {
+  for (const mismatch of ["focus", "attachment", "screen generation"] as const) it(`a change of ${mismatch} cancels a forwarded drag or an overlay release`, () => {
     const pointer = new Pointer();
     const look = lookA(true);
-    expect(pointer.mouse("screen", ev(["press", "left", 3, 2]), sceneOf("a", look))).toEqual([
+    const original = sceneOf("a", look);
+    const changed = mismatch === "focus" ? sceneOf("b", look) : sceneOf("a", {
+      ...look, ...(mismatch === "attachment" ? { emulator: {} } : { screen: look.screen + 2 }),
+    });
+    expect(pointer.mouse("screen", ev(["press", "left", 3, 2]), original)).toEqual([
       { kind: "forward", pane: "a", event: ev(["press", "left", 3, 3]) },
     ]);
-    expect(pointer.mouse("screen", ev(["motion", "left", 4, 2]), sceneOf("b", look))).toEqual([]);
-    // With focus back on a, the original release still belongs to the canceled gesture.
-    expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), sceneOf("a", look))).toEqual([]);
+    expect(pointer.mouse("screen", ev(["motion", "left", 4, 2]), changed)).toEqual([]);
+    // Seeing the original again cannot revive a grab that the drag canceled.
+    expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), original)).toEqual([]);
+    pointer.mouse("screen", ev(["press", "left", 3, 2]), original);
+    expect(pointer.mouse("overlay", ev(["release", "left", 4, 2]), changed)).toEqual([]);
   });
 
   it("moving focus away and back mid-selection keeps the drag's original anchor", () => {
@@ -699,19 +705,38 @@ describe("mouse on the whole screen", () => {
     }, TEST_MS);
   }
 
-  for (const switchScreens of [false, true]) it(`a held rename binds a forwarded grab to its original cell and screen: ${switchScreens ? "screen round trip" : "repaint"}`, async () => {
+  it.each(["unchanged", "repaint after release", "switch before rename", "switch before queued drag",
+    "switch after queued press", "switch between queued drag and release", "switch after queued release"] as const)("a held rename binds a forwarded grab to its press-time screen: %s", async (order) => {
     const run = await demo120();
-    run.core.program("t1").output("\x1b[?1000h\x1b[?1006h");
+    const program = run.core.program("t1");
+    program.output("\x1b[?1002h\x1b[?1006h"); // report drags as well as button presses and releases
     await run.advance(20);
     const from = run.sent.length;
-    await run.keys("press@25:2");
+    const roundTrip = async () => {
+      program.output("\x1b[?1049h\x1b[?1049l");
+      await run.advance(20);
+    };
+    const queuedPress = order === "switch after queued press";
+    if (!queuedPress) await run.keys("press@25:2");
+    if (order === "switch before rename") await roundTrip();
     const answer = await holdRename(run);
-    await run.keys("drag@30:3,release@30:3");
-    run.core.program("t1").output(switchScreens ? "\x1b[?1049h\x1b[?1049l" : "new content");
-    await run.advance(20);
+    if (queuedPress) await run.keys("press@25:2");
+    if (queuedPress || order === "switch before queued drag") await roundTrip();
+    await run.keys("drag@30:3");
+    if (order === "switch between queued drag and release") await roundTrip();
+    await run.keys("release@30:3");
+    if (order === "switch after queued release") await roundTrip();
+    if (order === "repaint after release") {
+      program.output("new content");
+      await run.advance(20);
+    }
+    const press = "\x1b[<0;1;1M";
+    const heard = () => dataTo(run, "t1", from).map((frame) => new TextDecoder().decode(frame.payload));
+    expect(heard()).toEqual(queuedPress ? [] : [press]);
     answer();
     await run.advance(20);
-    expect(dataTo(run, "t1", from).map((frame) => new TextDecoder().decode(frame.payload))).toEqual(switchScreens ? ["\x1b[<0;1;1M"] : ["\x1b[<0;1;1M", "\x1b[<0;1;1m"]);
+    const continuation = order === "unchanged" ? ["\x1b[<32;6;2M", "\x1b[<0;6;2m"] : order === "repaint after release" ? ["\x1b[<0;1;1m"] : [];
+    expect(heard()).toEqual(queuedPress ? [] : [press, ...continuation]);
     expect(dataTo(run, "t2", from)).toEqual([]);
   }, TEST_MS);
 

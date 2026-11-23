@@ -119,6 +119,12 @@ export class Pointer {
     if (this.grab.kind === "forward" && this.grab.pane !== pane) this.grab = NONE;
   }
 
+  /** A report belongs to the program screen that got the press, not merely the one seen when the report was read. */
+  private pressedScreen(grab: Extract<Grab, { kind: "forward" }>, scene: PointerScene): PaneLook | null {
+    const live = grab.pane === scene.focus ? scene.look(grab.pane) : null;
+    return live?.programMouse && live.screen === grab.screen && this.identity(live.emulator) === grab.attachment ? live : null;
+  }
+
   /** Bind a deferred report without retaining a frame's hit map, tree or grids. A redraw of the same
    * cells is harmless. A different hit, named divider, viewport, screen or program route is not. */
   bind(event: MouseInput, scene: PointerScene): (now: PointerScene) => boolean {
@@ -146,11 +152,8 @@ export class Pointer {
     this.grab = NONE;
     // Balance a press already delivered, on its original attachment at its last valid cell. A stale
     // queued press never reached a program, so it has no forward grab to release.
-    if (grab.kind === "forward" && grab.pane === scene.focus) {
-      const live = scene.look(grab.pane);
-      if (live?.programMouse && live.screen === grab.screen && this.identity(live.emulator) === grab.attachment) {
-        acts.push({ kind: "forward", pane: grab.pane, event: { ...grab.last, action: "release", at } });
-      }
+    if (grab.kind === "forward" && this.pressedScreen(grab, scene)) {
+      acts.push({ kind: "forward", pane: grab.pane, event: { ...grab.last, action: "release", at } });
     }
     if (this.selection) acts.push({ kind: "redraw" });
     this.selection = null;
@@ -168,7 +171,7 @@ export class Pointer {
         const grab = this.grab;
         this.grab = NONE;
         if (grab.kind === "divider") return finished(grab);
-        const look = grab.kind === "forward" && grab.pane === scene.focus ? scene.look(grab.pane) : null;
+        const look = grab.kind === "forward" ? this.pressedScreen(grab, scene) : null;
         return grab.kind === "forward" && look ? [{ kind: "forward", pane: grab.pane, event: inGrid(event, look) }] : [];
       }
       if (event.action !== "press") return [];
@@ -183,12 +186,11 @@ export class Pointer {
     if (event.action === "release") this.grab = NONE;
     switch (grab.kind) {
       case "forward": {
-        if (grab.pane !== scene.focus) {
+        const look = this.pressedScreen(grab, scene);
+        if (!look) {
           this.grab = NONE;
           return [];
         }
-        const look = scene.look(grab.pane);
-        if (!look) return [];
         grab.last = inGrid(event, look);
         return [{ kind: "forward", pane: grab.pane, event: grab.last }];
       }
