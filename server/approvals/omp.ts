@@ -8,8 +8,14 @@
  *
  * `approve` is given only the prompt's text (`Allow tool: bash`, an optional `Reason:` line, `Command: <command>`), so
  * the extension ties it to a `bash` call it saw (`tool_call`, the command as omp runs it, after any extension revised
- * it): only a prompt that is exactly that call's goes to the hub. Any other prompt (another tool, a command omp cut in
- * the prompt past its length, one offering grants to remember, a provider safety check) is left to omp's dialog alone.
+ * it): only a prompt that is exactly that call's goes to the hub, its `Reason:` as the card's words. Any other prompt
+ * (another tool, a command omp cut past its length, `[…Nch elided…]`, which another call's whole command could read as,
+ * one offering grants to remember, a provider safety check) is left to omp's dialog alone.
+ *
+ * omp shows one dialog at a time and queues the rest in the order they were asked; so the extension asks the hub for
+ * one approval at a time, in that order, each once the one before it is answered: what the hub holds is the dialog on
+ * the screen, never one still queued behind it. (A dialog of another kind ahead of it in omp's queue is not seen: the
+ * hub then releases the request, and omp's dialog is answered alone, as one Ovis did not start.)
  *
  * Chosen over omp's Collab (a second client of the session, answering its dialogs the same way): Collab needs a relay
  * the session's host connects to, which Ovis would have to run (omp's own is a hosted service) and speak omp's guest
@@ -31,14 +37,14 @@ const CALLS_MAX = 64;
 const GLUE = `
 const CALLS_MAX = ${CALLS_MAX};
 
-/** The command of a call seen whose approval prompt this is, exactly, or null. */
-function heldCommand(prompt, calls) {
-  if (typeof prompt?.full !== "string" || prompt.grants?.length) return null;
+/** The request of a call seen whose approval prompt this is, exactly, or null (see the adapter's header). */
+function heldRequest(prompt, calls) {
+  if (typeof prompt?.full !== "string" || prompt.grants?.length || /\\[…\\d+ch elided…\\]$/.test(prompt.full)) return null;
   for (const command of calls.values()) {
     const details = "\\nCommand: " + command;
     if (!prompt.full.endsWith(details)) continue;
-    const head = prompt.full.slice(0, -details.length);
-    if (head === "Allow tool: bash" || /^Allow tool: bash\\nReason: [^\\n]*$/.test(head)) return command;
+    const head = /^Allow tool: bash(?:\\nReason: ([^\\n]*))?$/.exec(prompt.full.slice(0, -details.length));
+    if (head !== null) return { tool: "bash", command, description: head[1]?.trim() ? head[1] : null };
   }
   return null;
 }
@@ -62,18 +68,25 @@ export default function ovisApprovals(pi) {
     if (ctx?.mode !== "tui" || !ctx.hasUI || typeof ui?.approve !== "function" || wrapped.has(ui)) return;
     wrapped.add(ui);
     const approve = ui.approve.bind(ui);
+    // answered when every approval asked before it is: the turn of the next one
+    let asked = Promise.resolve();
     ui.approve = async (prompt, opts) => {
-      const command = heldCommand(prompt, calls);
-      if (command === null) return approve(prompt, opts);
+      const request = heldRequest(prompt, calls);
+      if (request === null) return approve(prompt, opts);
       const closing = new AbortController();
       const signal = opts?.signal ? AbortSignal.any([closing.signal, opts.signal]) : closing.signal;
+      const before = asked;
+      let answered;
+      const mine = new Promise((resolve) => { answered = resolve; });
+      asked = before.then(() => mine);
       try {
         return await Promise.race([
           approve(prompt, { ...opts, signal }),
-          hubDecision({ tool: "bash", command, description: null }, signal).then((decision) => decision === "allow" ? "once" : "deny"),
+          before.then(() => hubDecision(request, signal)).then((decision) => decision === "allow" ? "once" : "deny"),
         ]);
       } finally {
         closing.abort();
+        answered();
       }
     };
   });

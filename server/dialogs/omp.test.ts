@@ -178,6 +178,8 @@ describe("omp tool approval (#2059)", () => {
     const tall = shown.replace(command, Array.from({ length: 8 }, () => command).join("\n"));
     // scrolling details: a card only for the request the approval hub holds, never read off the screen
     expect(parsedByPublicPrompt.get(parseInteractivePrompt("omp", tall)!)).toMatchObject({ approvalCommand: null, approvalHeldOnly: true });
+    // and offers only what the hub answers: the session row would go as keys to a dialog it cannot tell from another
+    expect(labels(parseInteractivePrompt("omp", tall))).toEqual(["Approve", "Deny"]);
     expect(parseInteractivePrompt("omp", shown.replace(command, Array.from({ length: 7 }, () => command).join("\n")))).not.toBeNull();
   });
 

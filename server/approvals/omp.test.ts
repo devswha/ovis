@@ -54,7 +54,8 @@ async function loaded(args: string[], mode = "tui") {
     handlers.get("tool_call")!({ toolName: "bash", toolCallId: id, input: { command } });
     return ui.approve(prompt, {});
   };
-  return { call, dialogs, ui, resolved: (id = "call-1") => handlers.get("tool_approval_resolved")!({ toolCallId: id }) };
+  const seen = (command: string, id: string) => handlers.get("tool_call")!({ toolName: "bash", toolCallId: id, input: { command } });
+  return { call, seen, dialogs, ui, resolved: (id = "call-1") => handlers.get("tool_approval_resolved")!({ toolCallId: id }) };
 }
 
 describe.skipIf(!posix)("omp's approval hook", () => {
@@ -87,6 +88,25 @@ describe.skipIf(!posix)("omp's approval hook", () => {
     }
   });
 
+  it("asks the hub for one approval at a time, the one omp shows, with omp's reason as its words", async () => {
+    const { hub, held } = hubIn();
+    const omp = await loaded(hub.launchArgs("omp", "p1", undefined, "18.14.0")!);
+    const first = held();
+    const shown = omp.call("touch a", bashPrompt("touch a", "Prompt required by bash pattern: touch*"), "call-1");
+    const queued = omp.call("touch b", bashPrompt("touch b"), "call-2");
+    await first;
+    expect(hub.held("p1")).toEqual([expect.objectContaining({ command: "touch a", description: "Prompt required by bash pattern: touch*" })]);
+    // omp's queued dialog is not held until the one before it is answered
+    const second = held();
+    omp.dialogs[0]!.choose("deny");
+    expect(await shown).toBe("deny");
+    await second;
+    const [request] = hub.held("p1");
+    expect(request).toMatchObject({ command: "touch b", description: null });
+    hub.settle("p1", request!.id, "allow");
+    expect(await queued).toBe("once");
+  });
+
   it("takes any answer given in the terminal, and releases the held request at once", async () => {
     const { hub, held, settled } = hubIn();
     const omp = await loaded(hub.launchArgs("omp", "p1", undefined, "18.14.0")!);
@@ -115,15 +135,25 @@ describe.skipIf(!posix)("omp's approval hook", () => {
     ];
     for (const [command, prompt] of cases) {
       const choice = omp.call(command, prompt);
-      omp.dialogs.at(-1)!.choose("deny");
+      const dialog = omp.dialogs.at(-1)!;
+      // omp's dialog as omp opened it, with no race against the hub
+      expect(dialog.signal, prompt.full.slice(0, 40)).toBeUndefined();
+      dialog.choose("deny");
       expect(await choice).toBe("deny");
       omp.resolved();
     }
+    // a call whose whole command reads as another's cut one: the cut call's prompt is never the other's
+    const cut = `${"x".repeat(2000)}[…1000ch elided…]`;
+    omp.seen(cut, "call-2");
+    const elided = omp.call("x".repeat(3000), bashPrompt(cut));
+    expect(omp.dialogs.at(-1)!.signal).toBeUndefined();
+    omp.dialogs.at(-1)!.choose("deny");
+    expect(await elided).toBe("deny");
     expect(hub.held("p1")).toEqual([]);
     const rpc = await loaded(hub.launchArgs("omp", "p2", undefined, "18.14.0")!, "rpc");
-    const choice = rpc.call("touch a");
+    const inRpc = rpc.call("touch a");
     rpc.dialogs.at(-1)!.choose("once");
-    expect(await choice).toBe("once");
+    expect(await inRpc).toBe("once");
     expect(hub.held("p2")).toEqual([]);
   });
 

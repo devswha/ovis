@@ -564,8 +564,9 @@ function parseOmpApprovalPanel(screen: string): ParsedPrompt | null {
   const command = title[1] === OMP_BASH_TITLE ? ompBashCommand(rows.slice(0, first), cut) : undefined;
   if (cut && command === undefined) return null;
   const cursor = choices.findIndex((choice) => choice.cursor);
-  // the toggle answers nothing: it changes which grants the rows under it record
-  const offered = choices.flatMap((choice, row) => choice.toggle ? [] : [{ ...choice, row }]);
+  // the toggle answers nothing: it changes which grants the rows under it record. A held-only card answers through the
+  // hub alone, which takes Approve and Deny: a row it would send as keys could land on another call's dialog
+  const offered = choices.flatMap((choice, row) => choice.toggle || (cut && row !== approve && row !== choices.length - 1) ? [] : [{ ...choice, row }]);
   return finishPrompt("omp", {
     ...card, body: rows.slice(0, first).join("\n").trim() || null,
     options: offered.map((choice) => ({ label: choice.label, description: null })),
