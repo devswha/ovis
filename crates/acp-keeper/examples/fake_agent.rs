@@ -63,7 +63,11 @@ fn main() {
         if method.is_empty() {
             if id == json!("perm-1") {
                 if let Some(prompt) = asked.take() {
-                    let outcome = msg.pointer("/result/outcome/optionId").or(msg.pointer("/result/outcome/outcome")).and_then(Value::as_str).unwrap_or("error");
+                    let outcome = msg
+                        .pointer("/result/outcome/optionId")
+                        .or(msg.pointer("/result/outcome/outcome"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("error");
                     send(&mut out, &chunk(&session, &format!("answered {outcome}")));
                     send(&mut out, &end_turn(&prompt));
                 }

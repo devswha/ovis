@@ -15,7 +15,12 @@ pub const WAIT: Duration = Duration::from_secs(30);
 
 pub fn fake_agent() -> PathBuf {
     let exe = std::env::current_exe().expect("test binary path");
-    let path = exe.parent().and_then(Path::parent).expect("target profile dir").join("examples").join(format!("fake_agent{}", std::env::consts::EXE_SUFFIX));
+    let path = exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("target profile dir")
+        .join("examples")
+        .join(format!("fake_agent{}", std::env::consts::EXE_SUFFIX));
     assert!(path.exists(), "{} is missing: `cargo test` builds it", path.display());
     path
 }
@@ -135,7 +140,12 @@ impl Drop for Reap {
 /// Whether this PC's user systemd can hold a transient scope (the keeper's way to end an agent's
 /// helpers that leave its process group).
 pub fn scope_available() -> bool {
-    Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--collect", "true"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+    Command::new("systemd-run")
+        .args(["--user", "--scope", "--quiet", "--collect", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 pub fn process_json(root: &Root) -> Value {
@@ -159,7 +169,11 @@ impl Client {
     pub fn connect(root: &Root) -> Client {
         let mut writer = UnixStream::connect(root.0.join("acp.sock")).expect("connect to acp.sock");
         writer.write_all(b"{\"replay\":1}\n").expect("replay request");
-        Client { reader: BufReader::new(writer.try_clone().expect("clone stream")), writer, conn: None }
+        Client {
+            reader: BufReader::new(writer.try_clone().expect("clone stream")),
+            writer,
+            conn: None,
+        }
     }
 
     pub fn send(&mut self, msg: &Value) {
@@ -208,8 +222,12 @@ impl Client {
     }
 
     pub fn answer(&mut self, id: Value) -> Value {
-        let conn = self.conn;
-        self.wait(&format!("the answer to id {id}"), move |r| r["dir"] == "to-client" && conn.is_some() && r["client"].as_u64() == conn && r["msg"]["id"] == id)
+        loop {
+            let row = self.wait(&format!("the answer to id {id}"), |r| r["dir"] == "to-client");
+            if self.conn.is_some() && row["client"].as_u64() == self.conn && row["msg"]["id"] == id {
+                return row;
+            }
+        }
     }
 }
 

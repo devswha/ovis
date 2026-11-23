@@ -1,6 +1,6 @@
 //! What the screen draws, kept up to date from the ACP traffic the keeper sees in both directions.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use serde_json::{Map, Value};
 
@@ -54,6 +54,46 @@ pub struct Pending {
     pub options: Vec<Choice>,
 }
 
+impl Entry {
+    fn bytes(&self) -> usize {
+        match self {
+            Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) | Entry::Note(s) | Entry::Error(s) => s.len(),
+            Entry::Tool(tool) => tool.title.len() + tool.text.len(),
+            Entry::Plan(items) => items.iter().map(|(c, s)| c.len() + s.len()).sum(),
+        }
+    }
+}
+
+/// The screen keeps the newest entries within these bounds, so a long session or a flood of
+/// output costs bounded memory and bounded drawing; the archive keeps everything.
+const KEEP_BYTES: usize = 1 << 20;
+const KEEP_ENTRIES: usize = 1000;
+const ENTRY_BYTES: usize = 256 << 10;
+const CUT: &str = "… ";
+
+/// A growing text past ENTRY_BYTES keeps its newer half, so streaming into it stays amortized O(1).
+fn keep_tail(text: &mut String) {
+    if text.len() > ENTRY_BYTES {
+        let mut cut = text.len() - ENTRY_BYTES / 2;
+        while !text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        text.replace_range(..cut, CUT);
+    }
+}
+
+fn keep_head(mut text: String) -> String {
+    if text.len() > ENTRY_BYTES {
+        let mut cut = ENTRY_BYTES;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str(" …");
+    }
+    text
+}
+
 pub struct Selector {
     pub current: String,
     pub options: Vec<(String, String)>,
@@ -66,7 +106,9 @@ pub struct Model {
     pub cwd: String,
     pub session: Option<String>,
     pub resume: Option<String>,
-    pub entries: Vec<Entry>,
+    pub entries: VecDeque<Entry>,
+    /// How many entries were dropped from the front: `tools` holds positions counted from the first entry ever.
+    dropped: usize,
     tools: HashMap<String, usize>,
     pub commands: Vec<(String, String)>,
     pub modes: Option<Selector>,
@@ -89,7 +131,11 @@ pub fn text_of(block: &Value) -> String {
         Some("resource_link") => format!("[{}]", block.get("uri").and_then(Value::as_str).unwrap_or("link")),
         Some("resource") => {
             let resource = block.get("resource").unwrap_or(&Value::Null);
-            resource.get("text").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("[{}]", resource.get("uri").and_then(Value::as_str).unwrap_or("resource")))
+            resource
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("[{}]", resource.get("uri").and_then(Value::as_str).unwrap_or("resource")))
         }
         _ => String::new(),
     }
@@ -154,7 +200,12 @@ fn diffs_of(content: &Value) -> Vec<Diff> {
         .map(|item| {
             let old = item.get("oldText").and_then(Value::as_str);
             let (added, removed) = line_changes(old.unwrap_or(""), item.get("newText").and_then(Value::as_str).unwrap_or(""));
-            Diff { path: item.get("path").and_then(Value::as_str).unwrap_or("?").to_string(), added, removed, new_file: old.is_none() }
+            Diff {
+                path: item.get("path").and_then(Value::as_str).unwrap_or("?").to_string(),
+                added,
+                removed,
+                new_file: old.is_none(),
+            }
         })
         .collect()
 }
@@ -174,7 +225,12 @@ fn texts_of(content: &Value) -> String {
 }
 
 fn locations_of(value: Option<&Value>) -> Vec<String> {
-    value.and_then(Value::as_array).into_iter().flatten().filter_map(|l| l.get("path").and_then(Value::as_str).map(str::to_string)).collect()
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l.get("path").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
@@ -190,33 +246,56 @@ impl Model {
         self.revision += 1;
     }
 
+    /// Adds an entry and drops the oldest ones past the screen's bounds; the archive keeps them all.
+    fn push(&mut self, entry: Entry) {
+        self.entries.push_back(entry);
+        self.trim();
+    }
+
+    fn trim(&mut self) {
+        let mut kept: usize = self.entries.iter().map(Entry::bytes).sum();
+        while self.entries.len() > 1 && (self.entries.len() > KEEP_ENTRIES || kept > KEEP_BYTES) {
+            if let Some(gone) = self.entries.pop_front() {
+                kept -= gone.bytes();
+                self.dropped += 1;
+            }
+        }
+        let dropped = self.dropped;
+        self.tools.retain(|_, at| *at >= dropped);
+    }
+
+    fn tool_at(&self, id: &str) -> Option<usize> {
+        self.tools.get(id).map(|at| at - self.dropped)
+    }
+
     pub fn note(&mut self, text: impl Into<String>) {
-        self.entries.push(Entry::Note(text.into()));
+        self.push(Entry::Note(text.into()));
         self.touch();
     }
 
     pub fn error(&mut self, text: impl Into<String>) {
-        self.entries.push(Entry::Error(text.into()));
+        self.push(Entry::Error(text.into()));
         self.touch();
     }
 
     fn append(&mut self, text: &str, same: fn(&Entry) -> bool, make: fn(String) -> Entry) {
-        if let Some(last) = self.entries.last_mut() {
+        if let Some(last) = self.entries.back_mut() {
             if same(last) {
-                match last {
-                    Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) => s.push_str(text),
-                    _ => {}
+                if let Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) = last {
+                    s.push_str(text);
+                    keep_tail(s);
                 }
+                self.trim();
                 self.touch();
                 return;
             }
         }
-        self.entries.push(make(text.to_string()));
+        self.push(make(keep_head(text.to_string())));
         self.touch();
     }
 
     pub fn user(&mut self, text: &str, sent: &str) {
-        self.entries.push(Entry::User(text.to_string()));
+        self.push(Entry::User(keep_head(text.to_string())));
         self.echo = Some((sent.to_string(), String::new()));
         self.touch();
     }
@@ -263,24 +342,30 @@ impl Model {
                     kind: str_field(update, "kind").unwrap_or_else(|| "other".into()),
                     status: str_field(update, "status").unwrap_or_else(|| "pending".into()),
                     raw_input: update.get("rawInput").cloned(),
-                    text: texts_of(update.get("content").unwrap_or(&Value::Null)),
+                    text: keep_head(texts_of(update.get("content").unwrap_or(&Value::Null))),
                     diffs: diffs_of(update.get("content").unwrap_or(&Value::Null)),
                     locations: locations_of(update.get("locations")),
                 };
-                self.tools.insert(id, self.entries.len());
-                self.entries.push(Entry::Tool(tool));
+                self.tools.insert(id, self.dropped + self.entries.len());
+                self.push(Entry::Tool(tool));
                 self.touch();
             }
             "tool_call_update" => {
                 let id = str_field(update, "toolCallId").unwrap_or_default();
-                let at = match self.tools.get(&id) {
-                    Some(at) => *at,
-                    None => {
-                        self.tools.insert(id.clone(), self.entries.len());
-                        self.entries.push(Entry::Tool(Tool { id, title: String::new(), kind: "other".into(), status: "pending".into(), raw_input: None, text: String::new(), diffs: vec![], locations: vec![] }));
-                        self.entries.len() - 1
-                    }
-                };
+                if self.tool_at(&id).is_none() {
+                    self.tools.insert(id.clone(), self.dropped + self.entries.len());
+                    self.push(Entry::Tool(Tool {
+                        id: id.clone(),
+                        title: String::new(),
+                        kind: "other".into(),
+                        status: "pending".into(),
+                        raw_input: None,
+                        text: String::new(),
+                        diffs: vec![],
+                        locations: vec![],
+                    }));
+                }
+                let at = self.tool_at(&id).unwrap_or(self.entries.len() - 1);
                 if let Some(Entry::Tool(tool)) = self.entries.get_mut(at) {
                     if let Some(v) = str_field(update, "title") {
                         tool.title = v;
@@ -295,7 +380,7 @@ impl Model {
                         tool.raw_input = Some(v.clone());
                     }
                     if let Some(content) = update.get("content").filter(|c| !c.is_null()) {
-                        tool.text = texts_of(content);
+                        tool.text = keep_head(texts_of(content));
                         tool.diffs = diffs_of(content);
                     }
                     if update.get("locations").is_some() {
@@ -312,10 +397,10 @@ impl Model {
                     .flatten()
                     .map(|e| (str_field(e, "content").unwrap_or_default(), str_field(e, "status").unwrap_or_default()))
                     .collect();
-                if let Some(Entry::Plan(old)) = self.entries.last_mut() {
+                if let Some(Entry::Plan(old)) = self.entries.back_mut() {
                     *old = entries;
                 } else {
-                    self.entries.push(Entry::Plan(entries));
+                    self.push(Entry::Plan(entries));
                 }
                 self.touch();
             }
@@ -362,14 +447,26 @@ impl Model {
         if let Some(modes) = result.get("modes").filter(|m| m.is_object()) {
             self.modes = Some(Selector {
                 current: str_field(modes, "currentModeId").unwrap_or_default(),
-                options: modes.get("availableModes").and_then(Value::as_array).into_iter().flatten().map(|m| (str_field(m, "id").unwrap_or_default(), str_field(m, "name").unwrap_or_default())).collect(),
+                options: modes
+                    .get("availableModes")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|m| (str_field(m, "id").unwrap_or_default(), str_field(m, "name").unwrap_or_default()))
+                    .collect(),
                 config_id: None,
             });
         }
         if let Some(models) = result.get("models").filter(|m| m.is_object()) {
             self.models = Some(Selector {
                 current: str_field(models, "currentModelId").unwrap_or_default(),
-                options: models.get("availableModels").and_then(Value::as_array).into_iter().flatten().map(|m| (str_field(m, "modelId").unwrap_or_default(), str_field(m, "name").unwrap_or_default())).collect(),
+                options: models
+                    .get("availableModels")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|m| (str_field(m, "modelId").unwrap_or_default(), str_field(m, "name").unwrap_or_default()))
+                    .collect(),
                 config_id: None,
             });
         }
@@ -397,7 +494,11 @@ impl Model {
                     choices.push((str_field(item, "value").unwrap_or_default(), str_field(item, "name").unwrap_or_default()));
                 }
             }
-            *slot = Some(Selector { current: str_field(option, "currentValue").unwrap_or_default(), options: choices, config_id: Some(id) });
+            *slot = Some(Selector {
+                current: str_field(option, "currentValue").unwrap_or_default(),
+                options: choices,
+                config_id: Some(id),
+            });
         }
         self.touch();
     }
@@ -407,7 +508,7 @@ impl Model {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
         let call = params.get("toolCall").cloned().unwrap_or(Value::Null);
         let tool_call_id = str_field(&call, "toolCallId").unwrap_or_default();
-        let known = self.tools.get(&tool_call_id).and_then(|at| match &self.entries[*at] {
+        let known = self.tool_at(&tool_call_id).and_then(|at| match &self.entries[at] {
             Entry::Tool(tool) => Some(tool),
             _ => None,
         });
@@ -426,7 +527,16 @@ impl Model {
         let mut diffs = diffs_of(call.get("content").unwrap_or(&Value::Null));
         if diffs.is_empty() {
             if let Some(tool) = known {
-                diffs = tool.diffs.iter().map(|d| Diff { path: d.path.clone(), added: d.added, removed: d.removed, new_file: d.new_file }).collect();
+                diffs = tool
+                    .diffs
+                    .iter()
+                    .map(|d| Diff {
+                        path: d.path.clone(),
+                        added: d.added,
+                        removed: d.removed,
+                        new_file: d.new_file,
+                    })
+                    .collect();
             }
         }
         let options = params
@@ -434,7 +544,11 @@ impl Model {
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .map(|o| Choice { id: str_field(o, "optionId").unwrap_or_default(), name: str_field(o, "name").unwrap_or_default(), kind: str_field(o, "kind").unwrap_or_default() })
+            .map(|o| Choice {
+                id: str_field(o, "optionId").unwrap_or_default(),
+                name: str_field(o, "name").unwrap_or_default(),
+                kind: str_field(o, "kind").unwrap_or_default(),
+            })
             .collect();
         self.pending.push(Pending {
             key,
@@ -472,14 +586,6 @@ mod tests {
         model.update(&json!({"sessionId": "s", "update": update}));
     }
 
-    fn bytes(entry: &Entry) -> usize {
-        match entry {
-            Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) | Entry::Note(s) | Entry::Error(s) => s.len(),
-            Entry::Tool(tool) => tool.title.len() + tool.text.len(),
-            Entry::Plan(items) => items.iter().map(|(c, s)| c.len() + s.len()).sum(),
-        }
-    }
-
     #[test]
     fn keeps_a_bounded_tail_of_a_long_conversation() {
         let mut model = Model::new("agent".into(), "/".into());
@@ -497,7 +603,7 @@ mod tests {
         model.request("1".into(), json!(1), 1, ask.as_object().unwrap());
         update(&mut model, "agent_message_chunk", json!({"content": {"type": "text", "text": "the end"}}));
 
-        let kept: usize = model.entries.iter().map(bytes).sum();
+        let kept: usize = model.entries.iter().map(Entry::bytes).sum();
         assert!(kept <= 1 << 20, "the screen keeps {kept} bytes of a 10 MB conversation");
         assert!(model.entries.len() <= 1000, "the screen keeps {} entries", model.entries.len());
         assert!(matches!(model.entries.iter().last(), Some(Entry::Agent(text)) if text == "the end"));

@@ -56,7 +56,12 @@ pub struct Screen {
 
 pub fn restore_terminal() {
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(std::io::stdout(), ratatui::crossterm::event::DisableBracketedPaste, terminal::LeaveAlternateScreen, ratatui::crossterm::cursor::Show);
+    let _ = execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableBracketedPaste,
+        terminal::LeaveAlternateScreen,
+        ratatui::crossterm::cursor::Show
+    );
 }
 
 /// Control and invisible formatting characters become visible symbols, so an approval card can never
@@ -149,11 +154,23 @@ fn chat(model: &Model, width: u16, details: bool) -> Vec<Line<'static>> {
     let dim = Style::new().fg(Color::DarkGray);
     for entry in &model.entries {
         match entry {
-            Entry::User(text) => block(&mut out, text, Style::new().fg(Color::Cyan), width, "❯ ", "  ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Entry::User(text) => block(
+                &mut out,
+                text,
+                Style::new().fg(Color::Cyan),
+                width,
+                "❯ ",
+                "  ",
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
             Entry::Agent(text) => block(&mut out, text.trim_end_matches('\n'), Style::new(), width, "● ", "  ", Style::new().fg(Color::Magenta)),
             Entry::Thought(text) => {
                 let lines: Vec<&str> = text.trim_end().split('\n').collect();
-                let shown = if details || lines.len() <= 3 { lines.join("\n") } else { format!("… {}줄 접힘\n{}", lines.len() - 3, lines[lines.len() - 3..].join("\n")) };
+                let shown = if details || lines.len() <= 3 {
+                    lines.join("\n")
+                } else {
+                    format!("… {}줄 접힘\n{}", lines.len() - 3, lines[lines.len() - 3..].join("\n"))
+                };
                 block(&mut out, &shown, dim.add_modifier(Modifier::ITALIC), width, "∴ ", "  ", dim);
             }
             Entry::Tool(tool) => {
@@ -178,7 +195,11 @@ fn chat(model: &Model, width: u16, details: bool) -> Vec<Line<'static>> {
                         block(&mut out, &command, Style::new().fg(Color::Yellow), width, "    $ ", "      ", dim);
                     }
                     let lines: Vec<&str> = tool.text.split('\n').collect();
-                    let shown = if lines.len() > 30 { format!("{}\n… {}줄 더", lines[..30].join("\n"), lines.len() - 30) } else { tool.text.clone() };
+                    let shown = if lines.len() > 30 {
+                        format!("{}\n… {}줄 더", lines[..30].join("\n"), lines.len() - 30)
+                    } else {
+                        tool.text.clone()
+                    };
                     if !shown.is_empty() {
                         block(&mut out, &shown, dim, width, "    │ ", "    │ ", dim);
                     }
@@ -224,7 +245,14 @@ fn short(text: &str, max: usize) -> String {
 fn selector_name(selector: &Option<Selector>) -> String {
     selector
         .as_ref()
-        .map(|s| s.options.iter().find(|(id, _)| *id == s.current).map(|(_, name)| name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| s.current.clone()))
+        .map(|s| {
+            s.options
+                .iter()
+                .find(|(id, _)| *id == s.current)
+                .map(|(_, name)| name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| s.current.clone())
+        })
         .unwrap_or_else(|| "-".into())
 }
 
@@ -530,7 +558,10 @@ impl Screen {
             if p.options.is_empty() {
                 vec![Action::Answer { key: p.key.clone(), option: None }]
             } else {
-                vec![Action::Answer { key: p.key.clone(), option: Some(p.options[index].id.clone()) }]
+                vec![Action::Answer {
+                    key: p.key.clone(),
+                    option: Some(p.options[index].id.clone()),
+                }]
             }
         };
         let by_kind = |kind: &str| p.options.iter().position(|o| o.kind == kind);
@@ -576,7 +607,9 @@ impl Screen {
                     KeyCode::Up => (at + count - 1) % count,
                     KeyCode::Down => (at + 1) % count,
                     KeyCode::Enter => {
-                        let Some((id, _)) = selector.as_ref().and_then(|s| s.options.get(at)).cloned() else { return vec![] };
+                        let Some((id, _)) = selector.as_ref().and_then(|s| s.options.get(at)).cloned() else {
+                            return vec![];
+                        };
                         return vec![if is_mode { Action::SetMode(id) } else { Action::SetModel(id) }];
                     }
                     KeyCode::Esc => return vec![],
@@ -630,14 +663,21 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
     let mut spans = vec![
         Span::styled(" ACP 보관 ", Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::raw(format!(" {} ", model.agent)),
-        Span::styled(format!("세션 {} ", model.session.as_deref().map(|s| short(s, 12)).unwrap_or_else(|| "-".into())), Style::new().fg(Color::DarkGray)),
+        Span::styled(
+            format!("세션 {} ", model.session.as_deref().map(|s| short(s, 12)).unwrap_or_else(|| "-".into())),
+            Style::new().fg(Color::DarkGray),
+        ),
         Span::raw(format!("모드 {} · 모델 {} ", short(&selector_name(&model.modes), 18), short(&selector_name(&model.models), 24))),
         Span::styled(format!("클라이언트 {} ", model.clients), Style::new().fg(Color::DarkGray)),
     ];
     if let Some(usage) = &model.usage {
         spans.push(Span::styled(format!("{usage} "), Style::new().fg(Color::DarkGray)));
     }
-    spans.push(if model.working { Span::styled("● 일하는 중 ", Style::new().fg(Color::Yellow)) } else { Span::styled("○ 대기 ", Style::new().fg(Color::Green)) });
+    spans.push(if model.working {
+        Span::styled("● 일하는 중 ", Style::new().fg(Color::Yellow))
+    } else {
+        Span::styled("○ 대기 ", Style::new().fg(Color::Green))
+    });
     if !model.pending.is_empty() {
         spans.push(Span::styled(format!(" 승인 대기 {} ", model.pending.len()), Style::new().fg(Color::Black).bg(Color::Yellow)));
     }
@@ -663,7 +703,10 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
     if v.scroll > 0 {
         let tag = format!(" ↑ {}줄 위 · PgDn ", v.scroll);
         let w = tag.chars().map(width_of).sum::<usize>() as u16;
-        f.render_widget(Paragraph::new(Span::styled(tag, Style::new().fg(Color::Black).bg(Color::DarkGray))), Rect::new(body.right().saturating_sub(w), body.bottom() - 1, w.min(body.width), 1));
+        f.render_widget(
+            Paragraph::new(Span::styled(tag, Style::new().fg(Color::Black).bg(Color::DarkGray))),
+            Rect::new(body.right().saturating_sub(w), body.bottom() - 1, w.min(body.width), 1),
+        );
     }
 
     let matches = slash_matches(model, &v.input);
@@ -676,19 +719,29 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
             .enumerate()
             .map(|(i, (name, desc))| {
                 let style = if i == sel { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
-                Line::from(vec![Span::styled(format!("/{name}"), style.fg(Color::Cyan)), Span::styled(format!("  {}", short(&clean(desc), 60)), style)])
+                Line::from(vec![
+                    Span::styled(format!("/{name}"), style.fg(Color::Cyan)),
+                    Span::styled(format!("  {}", short(&clean(desc), 60)), style),
+                ])
             })
             .collect();
         clear_popup(f, r);
         f.render_widget(Paragraph::new(lines).block(Block::bordered().title(" 슬래시 명령 · Tab 채우기 ")), r);
     }
 
-    let title = if model.working { " 입력 · 일하는 중 (Esc 취소) " } else { " 입력 · Enter 보내기 · Alt+Enter 줄바꿈 " };
+    let title = if model.working {
+        " 입력 · 일하는 중 (Esc 취소) "
+    } else {
+        " 입력 · Enter 보내기 · Alt+Enter 줄바꿈 "
+    };
     let (lines, (cur_row, cur_col)) = input_rows;
     let visible = input_height as usize - 2;
     let first = (cur_row + 1).saturating_sub(visible);
     let shown: Vec<Line> = lines.into_iter().skip(first).take(visible).map(Line::from).collect();
-    f.render_widget(Paragraph::new(shown).block(Block::bordered().title(title).border_style(Style::new().fg(if model.working { Color::Yellow } else { Color::Cyan }))), input);
+    f.render_widget(
+        Paragraph::new(shown).block(Block::bordered().title(title).border_style(Style::new().fg(if model.working { Color::Yellow } else { Color::Cyan }))),
+        input,
+    );
 
     let hint = v.flash.clone().unwrap_or_else(|| {
         if !model.pending.is_empty() && v.card_hidden {
@@ -719,14 +772,27 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
         let needed = (lines.len() + p.options.len().max(1) + 4) as u16;
         let r = centered(area, width, needed.clamp(8, area.height.saturating_sub(2).max(8)));
         let options: Vec<Line> = if p.options.is_empty() {
-            vec![Line::from(Span::styled("[1] 지원하지 않는 요청으로 답하기 (오류 -32601)", Style::new().add_modifier(Modifier::REVERSED)))]
+            vec![Line::from(Span::styled(
+                "[1] 지원하지 않는 요청으로 답하기 (오류 -32601)",
+                Style::new().add_modifier(Modifier::REVERSED),
+            ))]
         } else {
             p.options
                 .iter()
                 .enumerate()
                 .map(|(i, o)| {
-                    let color = if o.kind.starts_with("allow") { Color::Green } else if o.kind.starts_with("reject") { Color::Red } else { Color::White };
-                    let style = if i == v.card_choice { Style::new().fg(color).add_modifier(Modifier::REVERSED | Modifier::BOLD) } else { Style::new().fg(color) };
+                    let color = if o.kind.starts_with("allow") {
+                        Color::Green
+                    } else if o.kind.starts_with("reject") {
+                        Color::Red
+                    } else {
+                        Color::White
+                    };
+                    let style = if i == v.card_choice {
+                        Style::new().fg(color).add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                    } else {
+                        Style::new().fg(color)
+                    };
                     Line::from(Span::styled(format!("[{}] {}  ({})", i + 1, clean(&o.name), o.kind), style))
                 })
                 .collect()
@@ -741,7 +807,10 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
         }
         all.push(Line::from(Span::styled(if more { "──── ↓ 더 있음 (PgDn) ────" } else { "────" }, Style::new().fg(Color::DarkGray))));
         all.extend(options);
-        all.push(Line::from(Span::styled("1-9 또는 ↑↓ Enter 고르기 · y 허용 · n 거절 · PgUp/PgDn 내용 · Ctrl+T 원본 · Esc 접기", Style::new().fg(Color::DarkGray))));
+        all.push(Line::from(Span::styled(
+            "1-9 또는 ↑↓ Enter 고르기 · y 허용 · n 거절 · PgUp/PgDn 내용 · Ctrl+T 원본 · Esc 접기",
+            Style::new().fg(Color::DarkGray),
+        )));
         let title = if p.method == "session/request_permission" {
             format!(" 승인 요청 1/{} · {} ", model.pending.len(), if p.kind.is_empty() { "?" } else { &p.kind })
         } else {
@@ -772,7 +841,11 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
                 .collect(),
             ),
             Popup::Modes(at) | Popup::Models(at) => {
-                let (name, selector) = if matches!(popup, Popup::Modes(_)) { (" 모드 ", &model.modes) } else { (" 모델 ", &model.models) };
+                let (name, selector) = if matches!(popup, Popup::Modes(_)) {
+                    (" 모드 ", &model.modes)
+                } else {
+                    (" 모델 ", &model.models)
+                };
                 let lines = selector
                     .as_ref()
                     .map(|s| {
@@ -809,7 +882,10 @@ fn render(f: &mut Frame, model: &Model, v: &mut View) {
             Popup::Quit => (" 닫기 ".into(), vec![("이 칸을 닫으면 에이전트도 끝납니다. 닫을까요? y 닫기 · 다른 키 취소".into(), plain)]),
         };
         let width = area.width.saturating_sub(4).min(100);
-        let lines: Vec<Line> = items.iter().flat_map(|(text, style)| wrap(&[(text.clone(), *style)], width.saturating_sub(2), "", "", *style)).collect();
+        let lines: Vec<Line> = items
+            .iter()
+            .flat_map(|(text, style)| wrap(&[(text.clone(), *style)], width.saturating_sub(2), "", "", *style))
+            .collect();
         let height = (lines.len() as u16 + 2).min(area.height);
         let r = centered(area, width, height);
         clear_popup(f, r);
