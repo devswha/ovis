@@ -17,6 +17,8 @@ it.each([
   ["Enter after refresh", "refresh after"],
   ["digit", "closed after"],
   ["digit with release", "closed after"],
+  ["unassigned", "refresh after"], ["unassigned then valid", "refresh after"],
+  ["unassigned then refreshed valid", "refresh after"],
 ] as const)("a held menu choice stays bound to its presented target: %s, %s", async (input, ordering) => {
   const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });
   runs.push(run);
@@ -62,7 +64,10 @@ it.each([
     } else {
       expect(run.grid().some((line) => line.includes("6 · pane") && line.includes(ordering === "refresh before" ? "renamed" : "files"))).toBe(true);
       if (input === "Enter" || input === "Enter after refresh") run.type("\x1b[B".repeat(5));
-      if (input !== "Enter after refresh") run.type(input === "Enter" ? "\rz" : input === "split digit" ? "6" : "6z");
+      if (input.startsWith("unassigned")) {
+        expect(run.grid().some((line) => line.includes("7 · pane"))).toBe(false);
+        run.type(input === "unassigned then valid" ? "76z" : "7");
+      } else if (input !== "Enter after refresh") run.type(input === "Enter" ? "\rz" : input === "split digit" ? "6" : "6z");
     }
     await run.settle();
     expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
@@ -81,15 +86,23 @@ it.each([
     if (input === "split digit") run.type("z");
     if (input === "Enter after refresh") run.type("\rz");
     if (input === "digit with release") run.type("\x1b[<0;32;6m");
+    if (input === "unassigned then refreshed valid") run.type("7z");
     answer.resolve();
     await run.advance(200);
     const refused = ordering === "removed after" || ordering === "closed after" || (input === "click" && ordering === "refresh after");
     expect(run.loop.model().focus.tabs["w-ovis"]).toBe(input === "click" && !refused ? "t-logs" : "t-main");
-    expect(run.loop.report().mode.overlays).toEqual(refused && ordering !== "closed after" ? ["menu"] : []);
+    expect(run.loop.report().mode.overlays).toEqual(input === "unassigned" || (refused && ordering !== "closed after") ? ["menu"] : []);
     expect(run.core.program("t1").receivedHex()).toBe(input === "digit with release"
       ? Buffer.from("\x1b[<0;6;4M\x1b[<0;7;4m").toString("hex")
       : input !== "click" && ordering === "refresh before" ? "7a" : "");
-    if (ordering !== "removed after") expect(run.core.program("t2").receivedHex()).toBe(input !== "click" && ordering !== "refresh before" && !refused ? "7a" : "");
+    if (ordering !== "removed after") expect(run.core.program("t2").receivedHex()).toBe(input !== "click" && input !== "unassigned" && ordering !== "refresh before" && !refused ? "7a" : "");
+    if (input === "unassigned") {
+      expect(run.loop.model().focus.panes["t-main"]).toBe("t1");
+      run.type("7z");
+      await run.advance(20);
+      expect(run.loop.report().mode.overlays).toEqual([]);
+      expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(["", "7a"]);
+    }
   } finally {
     answer.resolve();
   }

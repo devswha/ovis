@@ -103,9 +103,9 @@ export interface Step {
   readonly state: ModelState;
   readonly effects: readonly Effect[];
   readonly levels: readonly Level[];
-  /** Where the character that chose an external action began, in the read and in the input ladder. */
+  /** Where the character that handed its tail back began, in the read and in the input ladder. */
   readonly textAction?: { readonly offset: number; readonly before: ModelState };
-  /** The presented identity chosen by this input, including a refused stale choice. */
+  /** The presented menu's choice or explicit no-op, including a refused stale choice. */
   readonly menuSelection?: MenuSelection;
 }
 
@@ -377,15 +377,14 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
 }
 
 /**
- * After an action the caller performs (a run effect, such as a directional focus), the rest of the text run waits
- * for it: it goes back to the caller as an `input` effect behind the run, and the caller dispatches it once the run
- * is performed, so it meets the focus the action left. One read then routes as the same bytes split across reads do.
+ * After an action the caller performs (a run or key reload), the rest of the text run waits for it: it goes back
+ * as an `input` effect, so it meets the focus and keymap the action left. One read then routes as split reads do.
  * After a detach the rest is dropped. True when the run handed the rest back or dropped it.
  */
 function handBack(acc: Acc, from: number, rest: string, at: number, closedMenu = false): boolean {
   // nothing typed after a detach goes anywhere: the rest of the run ends with it, as a later read would
   if (acc.effects.slice(from).some((effect) => effect.type === "quit")) return true;
-  if (!closedMenu && !acc.effects.slice(from).some((effect) => effect.type === "run")) return false;
+  if (!closedMenu && !acc.effects.slice(from).some((effect) => effect.type === "run" || effect.type === "reload_keys")) return false;
   if (rest.length > 0) acc.effects.push({ type: "input", event: { type: "text", text: rest, at } });
   return true;
 }

@@ -6,7 +6,7 @@ import { HeadlessHost } from "../testing/headless-host.ts";
 import { ManualClock } from "../testing/run.ts";
 
 // The loop must perform Reload before interpreting the rest of the same read with the new keymap.
-it.each(["joined", "split", "before first paint", "held joined", "held split"])("Reload applies its new printable prefix before the following action: %s", async (ordering) => {
+it.each(["joined", "split", "before first paint", "held joined", "held split", "held shortcut joined", "held shortcut split", "held click"])("Reload applies its new printable prefix before the following action: %s", async (ordering) => {
   const core = new FakeHcCore();
   demo.build(core);
   const host = new HeadlessHost({ cols: 120, rows: 80, answer: "\x1b[?1u\x1b[?2026;2$y\x1b[?62;22c" });
@@ -56,13 +56,35 @@ it.each(["joined", "split", "before first paint", "held joined", "held split"])(
       };
       host.feed("~Prenamed\r");
       await written.promise;
-      host.feed("~\r");
-      if (ordering === "held split") {
-        host.feed(reload.label);
-        host.feed("~q");
-      } else host.feed(`${reload.label}~q`);
+      if (ordering === "held click") {
+        await until(() => loop.model().world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes))
+          .some((pane) => pane.id === "t1" && pane.name === "renamed"));
+        loop.dispatch({ type: "action", action: "menu", at: clock.current });
+        await until(() => loop.screen()?.text.join("").includes(`${reload.label} reload`) === true);
+        const screen = loop.screen()!;
+        const label = `${reload.label} reload`;
+        const at = screen.text.findIndex((_, index) => screen.text.slice(index, index + label.length).join("") === label);
+        expect(at).toBeGreaterThanOrEqual(0);
+        const row = Math.floor(at / screen.cols);
+        const col = at % screen.cols;
+        host.feed(`\x1b[<0;${col + 1};${row + 1}M\x1b[<0;${col + 1};${row + 1}m`);
+        expect(reads).toBe(0);
+      } else {
+        const shortcut = ordering.includes("shortcut");
+        if (!shortcut) host.feed("~\r");
+        const trigger = shortcut ? "~R" : reload.label;
+        if (ordering.endsWith("split")) {
+          host.feed(trigger);
+          host.feed("~q");
+        } else host.feed(`${trigger}~q`);
+      }
       expect(loop.report().actions).not.toContain("quit");
       answer.resolve();
+      if (ordering === "held click") {
+        await until(() => loop.model().overlays.length === 0);
+        expect(reads).toBe(1);
+        host.feed("~q");
+      }
       await until(() => core.program("t1").receivedHex() !== "" || loop.report().actions.includes("quit"));
       expect(loop.report().actions).not.toContain("quit");
       expect(["t1", "t2"].map((id) => core.program(id).receivedHex())).toEqual(["7e71", ""]);

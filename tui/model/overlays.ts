@@ -28,8 +28,9 @@ export type Overlay =
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
+/** A choice's identity and acceptance, or input the presented menu consumed without choosing anything. */
+export type MenuSelection = "ignored" | { readonly entry: string | null; readonly accepted: boolean };
 /** The overlay after the input (null: closed), what it asks of the caller, and what the reducer does once it closed. */
-export interface MenuSelection { readonly entry: string | null; readonly accepted: boolean }
 export interface OverlayAnswer { readonly overlay: Overlay | null; readonly effects: readonly RunEffect[]; readonly choice?: OverlayChoice; readonly selection?: MenuSelection }
 
 interface OverlayEntry<O extends Overlay> {
@@ -200,7 +201,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: () => null,
     input: (overlay, input) => {
       const presented = overlay.presented;
-      if (presented === null) return { overlay, effects: [] };
+      if (presented === null) return { overlay, effects: [], selection: "ignored" };
       const current = (at: number) => {
         const shown = presented.entries[at];
         return shown === undefined ? -1 : indexOfEntry(overlay.entries, shown);
@@ -220,7 +221,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
       // a label is one character typed as it is: under an input method a letter arrives composed and chooses nothing
       const typed = input.kind === "paste" || (input.kind === "key" && (input.event.mods.alt || input.event.mods.ctrl)) ? "" : input.event.text ?? "";
       const at = labelled(presented.entries, [...typed][0] ?? "");
-      return at < 0 ? { overlay, effects: [] } : choose(at);
+      return at < 0 ? { overlay, effects: [], selection: "ignored" } : choose(at);
     },
   },
 };

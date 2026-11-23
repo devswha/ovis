@@ -29,7 +29,7 @@ import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect, MouseInput } from "./model/effects.ts";
-import { buildKeymap } from "./model/keymap.ts";
+import { buildKeymap, type Keymap } from "./model/keymap.ts";
 import { exists, focused } from "./model/focus.ts";
 import { type Following, initialState, type ModelEvent, type ModelState, presentedMenu, reduce, type Step } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
@@ -312,6 +312,7 @@ export function startLoop(options: LoopOptions): Loop {
     owePass();
   }
 
+  type HeldInput = ModelEvent | { type: "held_reload"; input: ModelEvent; keymap: Keymap };
   /**
    * What the user typed, pasted or clicked while a layout write that one of their actions started is under way: it
    * waits behind that write, in order, and goes through once the write is done, so it meets the layout the write
@@ -325,7 +326,7 @@ export function startLoop(options: LoopOptions): Loop {
    * BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
    */
   let behindWrite: {
-    readonly events: (ModelEvent | { type: "held_mouse"; input: MouseInput; matches: (scene: PointerScene) => boolean })[];
+    readonly events: (HeldInput | { type: "held_mouse"; input: MouseInput; matches: (scene: PointerScene) => boolean })[];
     ahead: ModelState;
     awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone } | { readonly kind: "zoom"; readonly read: AbortController }) & { readonly until: number } | null;
     bytes: number;
@@ -339,12 +340,12 @@ export function startLoop(options: LoopOptions): Loop {
    * wait leaves at once: a user leaving never waits for a write (what waited, typed before it, goes nowhere). A layout
    * action among it is refused now: once the write is done it would meet another layout and act on another target.
    */
-  function userInput(event: ModelEvent): void {
+  function userInput(event: ModelEvent, captured?: Keymap): void {
     // nothing after a detach goes anywhere, from the same read either: the screen is leaving
     if (closing) return;
     // the host's focus waits in order too: a focus loss returns an armed prefix to Idle, for the read-ahead and the replay alike
     if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse" || event.type === "focus")) {
-      dispatch(event);
+      dispatch(event, undefined, captured);
       return;
     }
     // The world or a command may have changed the displayed menu since the write started.
@@ -352,7 +353,7 @@ export function startLoop(options: LoopOptions): Loop {
     // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order. What waits is
     // what the read-ahead took in each step (a text run cut where it handed its rest back, as split reads give it), and
     // a layout action refused here waits as `consumed`: its keys are taken, and never chose anything in another layout
-    const pieces: ModelEvent[] = [];
+    const pieces: HeldInput[] = [];
     const units = [event];
     for (let next = units.shift(); next !== undefined; next = units.shift()) {
       const before = behindWrite.ahead;
@@ -382,11 +383,15 @@ export function startLoop(options: LoopOptions): Loop {
       }
       const taken = next.type === "text" ? next.text.slice(0, next.text.length - rest.length) : "";
       if (!refused) {
+        let piece: ModelEvent;
         if (step.menuSelection) {
           if (next.type === "text" && step.textAction && step.textAction.offset > 0) pieces.push({ ...next, text: next.text.slice(0, step.textAction.offset) });
-          pieces.push({ type: "choose", entry: step.menuSelection.accepted ? step.menuSelection.entry : null, at: next.at });
-        } else pieces.push(next.type === "text" ? { ...next, text: taken } : next);
-        if (reloaded) pieces.push(reloaded);
+          // An ignored key has already been consumed. It needs no replay payload and cannot acquire a label later.
+          if (step.menuSelection === "ignored") continue;
+          piece = { type: "choose", entry: step.menuSelection.accepted ? step.menuSelection.entry : null, at: next.at };
+        } else piece = next.type === "text" ? { ...next, text: taken } : next;
+        // Only this input has already resolved Reload. A held mouse choice can first reload during replay.
+        pieces.push(reloaded ? { type: "held_reload", input: piece, keymap: reloaded.keymap } : piece);
         continue;
       }
       // the action was chosen by the last code point taken: what came before it in the run waits as typed
@@ -396,7 +401,10 @@ export function startLoop(options: LoopOptions): Loop {
     }
     if (behindWrite.full) return;
     // the text a key typed (a kitty key reports it) costs its bytes too, as the same text read as text does
-    const bytes = pieces.reduce((sum, piece) => sum + (piece.type === "text" || piece.type === "paste" || piece.type === "key" ? Buffer.byteLength(piece.text ?? "") : 0), 0);
+    const bytes = pieces.reduce((sum, piece) => {
+      const input = piece.type === "held_reload" ? piece.input : piece;
+      return sum + (input.type === "text" || input.type === "paste" || input.type === "key" ? Buffer.byteLength(input.text ?? "") : 0);
+    }, 0);
     if (behindWrite.events.length + pieces.length > BEHIND_WRITE_EVENTS || behindWrite.bytes + bytes > BEHIND_WRITE_BYTES) {
       // nothing more waits, so what goes through later keeps its order and no paste is cut; a detach still leaves above
       behindWrite.full = true;
@@ -474,8 +482,12 @@ export function startLoop(options: LoopOptions): Loop {
           // Reject new input after a stale choice, but still finish a gesture already delivered.
           if (accepting || event.input.action === "release") dispatch(event.input, event.matches);
         } else if (accepting) {
-          if (event.type === "choose") accepting = dispatch(event).menuSelection?.accepted === true;
-          else userInput(event);
+          const input = event.type === "held_reload" ? event.input : event;
+          const reloaded = event.type === "held_reload" ? event.keymap : undefined;
+          if (input.type === "choose") {
+            const selection = dispatch(input, undefined, reloaded).menuSelection;
+            accepting = selection !== "ignored" && selection?.accepted === true;
+          } else userInput(input, reloaded);
         }
       }
       // what came after the queue filled went nowhere, a focus loss or the key after a prefix among it: a prefix the
@@ -513,12 +525,12 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** One event through the state core, and its effects performed in order, now. */
-  function dispatch(event: ModelEvent, matches?: (scene: PointerScene) => boolean): Step {
+  function dispatch(event: ModelEvent, matches?: (scene: PointerScene) => boolean, reloaded?: Keymap): Step {
     const before = state;
     const step = reduce(state, event);
     state = step.state;
     if (behindWrite && (event.type === "world" || event.type === "restore")) behindWrite.ahead = reduce(behindWrite.ahead, event).state;
-    for (const effect of step.effects) perform(effect, matches);
+    for (const effect of step.effects) perform(effect, matches, reloaded);
     if (state !== before) {
       keepView();
       reshow();
@@ -534,7 +546,7 @@ export function startLoop(options: LoopOptions): Loop {
     if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
   }
 
-  function perform(effect: Effect, matches?: (scene: PointerScene) => boolean): void {
+  function perform(effect: Effect, matches?: (scene: PointerScene) => boolean, reloaded?: Keymap): void {
     switch (effect.type) {
       case "pane":
         for (const step of pointer.typed(effect.pane, lookOf(effect.pane))) performPointer(step);
@@ -577,7 +589,7 @@ export function startLoop(options: LoopOptions): Loop {
         return;
       case "reload_keys":
         act("reload_keys");
-        if (!replaying) dispatch({ type: "keymap", keymap: buildKeymap(options.readKeys ? options.readKeys() : options.keys), at: clock.now() });
+        dispatch({ type: "keymap", keymap: reloaded ?? buildKeymap(options.readKeys ? options.readKeys() : options.keys), at: clock.now() });
         return;
       case "mouse": {
         act(`mouse:${effect.over}`);
