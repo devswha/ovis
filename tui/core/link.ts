@@ -34,10 +34,11 @@ import { type Deadlines, LINE_SILENCE_MS, LINE_STABLE_MS, NO_DEADLINES, RECONNEC
 
 /**
  * The calls the screen makes, which a core's hello must name: the event stream, documents, attach,
- * and reading, labelling, starting and closing terminals. `doc.set` is not among them: a core that
- * writes no documents still shows the screen, without layout edits (layout-ops.ts `layoutCalls`).
+ * and listing, reading, labelling, starting and closing terminals (the layout's reads list them:
+ * layout-ops.ts). `doc.set` is not among them: a core that writes no documents still shows the
+ * screen, without layout edits (layout-ops.ts `layoutCalls`).
  */
-export const SCREEN_METHODS = ["events.subscribe", "doc.get", "terminal.attach", "terminal.get", "terminal.label", "terminal.run", "terminal.kill", "terminal.rm"] as const satisfies readonly HcMethod[];
+export const SCREEN_METHODS = ["events.subscribe", "doc.get", "terminal.attach", "terminal.list", "terminal.get", "terminal.label", "terminal.run", "terminal.kill", "terminal.rm"] as const satisfies readonly HcMethod[];
 
 /** The documents read on every new line and after every `missed`: the Herdr app's layout, then Ovis's own. */
 export const LINK_DOCS = [LAYOUT_DOC, OVIS_LAYOUT_DOC] as const;
@@ -66,7 +67,8 @@ export type NoCoreCode = "no_core" | "refused" | "unreachable";
  * - a call the link needs failed while the line stayed: `timeout` (unanswered, while other lines
  *   kept coming), `call_failed` (the core refused it: `events.subscribe`, either `doc.get`, a re-read);
  * - the line stayed but its event stream cannot be read on: `bad_line` (hc closed the stream, or sent
- *   a line that is not JSON or too long, a `missed` without its snapshot, a subscribe answer without one);
+ *   a line that is not JSON or too long, a `missed` without its snapshot, a subscribe answer without one
+ *   or without its channel);
  * - the link's own: `silent` (LINE_SILENCE_MS without a whole line on the event stream, reached by
  *   `fire` before any call's own timeout ended the line), `notify_failed` (the owner's `notify`
  *   threw), `link_closed` (closed by its owner, never retried).
@@ -137,7 +139,7 @@ export interface CoreLink {
   call<M extends HcMethod>(method: M, params: HcMethods[M]["params"], timeoutMs?: number): Promise<HcMethods[M]["result"]>;
   hello(): Promise<HelloInfo>;
   /** Publish the current Ovis layout before settling its write; false if the line ended. */
-  refreshLayout(): Promise<boolean>;
+  refreshLayout(signal?: AbortSignal): Promise<boolean>;
   /** Attaches on the current line; the channel hears `connection_lost` when that line ends, and is never reopened here. */
   attach(params: TerminalAttachParams, handlers: ChannelHandlers): Promise<{ result: HcMethods["terminal.attach"]["result"]; channel: Channel }>;
   /** Closes the event stream, then the line, and opens none again. */
@@ -265,18 +267,18 @@ class Link implements CoreLink {
     return this.online().hello!;
   }
 
-  async refreshLayout(): Promise<boolean> {
+  async refreshLayout(signal?: AbortSignal): Promise<boolean> {
     const line = this.line;
     if (line === null || this.current.kind !== "Online") return false;
     // A missed-event snapshot must finish publishing before we confirm a document to its writer.
     do {
-      while (!line.over && line.resyncing) await line.resyncing;
-      if (line.over) return false;
+      while (!line.over && !signal?.aborted && line.resyncing) await line.resyncing;
+      if (line.over || signal?.aborted) return false;
       const round = line.round;
       await this.readDoc(line, OVIS_LAYOUT_DOC);
       if (line.round === round) break;
     } while (!line.over);
-    return !line.over;
+    return !line.over && !signal?.aborted;
   }
 
   async attach(params: TerminalAttachParams, handlers: ChannelHandlers): Promise<{ result: HcMethods["terminal.attach"]["result"]; channel: Channel }> {
@@ -403,8 +405,14 @@ class Link implements CoreLink {
       return;
     }
     if (line.over) return;
+    const { channel, seq, terminals } = subscribed.result as { channel: unknown; seq: unknown; terminals: unknown };
+    // the connection takes hc's channel as given and routes frames only to a numeric one; channel 0 is JSON-RPC's,
+    // and a frame names its channel in 32 bits, so a larger one could never be heard
+    if (!Number.isInteger(channel) || (channel as number) < 1 || (channel as number) > 0xffff_ffff) {
+      this.lineEnded(line, "bad_line", "herdr-core answered events.subscribe without an event channel");
+      return;
+    }
     line.events = subscribed.channel;
-    const { seq, terminals } = subscribed.result as { seq: unknown; terminals: unknown };
     if (typeof seq !== "number" || !Array.isArray(terminals)) {
       this.lineEnded(line, "bad_line", "herdr-core answered events.subscribe without a snapshot");
       return;
@@ -445,6 +453,8 @@ class Link implements CoreLink {
     try {
       docs = await Promise.all(LINK_DOCS.map((name) => line.hc.call("doc.get", { name })));
     } catch (error) {
+      // a newer resync took over this line: its own reads decide, and a failure here ends nothing
+      if (line.over || round !== line.round) return;
       this.lineEnded(line, callCode(error), `herdr-core's layout documents could not be read: ${messageOf(error)}`);
       return;
     }

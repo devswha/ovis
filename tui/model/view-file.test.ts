@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
+import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
+import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
-import { ViewStore } from "../view-store.ts";
+import { type ViewFiles, ViewStore } from "../view-store.ts";
 import { type Focus, nextFocus, type World } from "./focus.ts";
 import { initialState, type ModelState, reduce } from "./reduce.ts";
 import { readView, restoredFocus, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./view-file.ts";
 
 const TEST_MS = 120_000;
+/** how long the child that opens a FIFO in the view file's place may take; it starts in well under a second */
+const PROBE_DEADLINE_MS = 20_000;
 const folders: string[] = [];
 const runs: Run[] = [];
 afterEach(async () => {
@@ -108,18 +112,29 @@ describe("reopening the same place", () => {
 
   it("the reducer applies a kept view once the world has something in it, and says so when the place moved", () => {
     const empty = initialState(undefined);
-    const waiting = reduce(empty, { type: "restore", view: saved(WORLD, AT_P2), problem: null, at: 1 }).state;
+    const waiting = reduce(empty, { type: "restore", core: "A", view: saved(WORLD, AT_P2), problem: null, at: 1 }).state;
     expect(waiting.restoring).not.toBeNull();
-    const shown = reduce(waiting, { type: "world", world: WORLD, at: 2 }).state;
+    const shown = reduce(waiting, { type: "world", core: "A", world: WORLD, at: 2 }).state;
     expect([shown.restoring, shown.focus, shown.notices]).toEqual([null, AT_P2, []]);
-    const moved = reduce(waiting, { type: "world", world: without(WORLD, "p2"), at: 2 }).state;
+    const moved = reduce(waiting, { type: "world", core: "A", world: without(WORLD, "p2"), at: 2 }).state;
     expect([moved.focus.panes["t1"], moved.notices.map((notice) => [notice.code, notice.calm])]).toEqual(["p3", [["view_moved", true]]]);
   });
 
   it("a file that could not be used is said so, and the screen opens where it would without one", () => {
     const base = stateOf(WORLD, { workspace: null, tabs: {}, panes: {}, previous: null });
-    const step = reduce(base, { type: "restore", view: null, problem: "not_json", at: 1 }).state;
+    const step = reduce(base, { type: "restore", core: "A", view: null, problem: "not_json", at: 1 }).state;
     expect([step.focus, step.notices.map((notice) => [notice.code, notice.data, notice.calm])]).toEqual([base.focus, [["view_unread", { reason: "not_json" }, true]]]);
+  });
+
+  it("an unidentified replacement snapshot neither consumes nor reports a move for the old core's view", () => {
+    const waiting = reduce(initialState(undefined), { type: "restore", core: "A", view: saved(WORLD, AT_P2), problem: null, at: 0 }).state;
+    const replacement = reduce(waiting, { type: "world", core: null, world: without(WORLD, "p2"), at: 1 }).state;
+    expect(replacement.notices).toEqual([]);
+    expect(replacement.restoring?.core).toBe("A");
+    const same = reduce(replacement, { type: "restore", core: "A", view: null, problem: null, at: 2 }).state;
+    expect([same.focus.panes["t1"], same.notices.map(({ code }) => code)]).toEqual(["p3", ["view_moved"]]);
+    const other = reduce(replacement, { type: "restore", core: "B", view: null, problem: null, at: 2 }).state;
+    expect([other.focus.panes["t1"], other.notices, other.restoring]).toEqual(["p1", [], null]);
   });
 });
 
@@ -180,7 +195,7 @@ describe("the file on disk", () => {
     store.keep(stateOf(WORLD, AT_P2));
     expect(readdirSync(folder)).toEqual([]);
     store.open("core1");
-    store.keep({ ...stateOf(WORLD, AT_P2), restoring: saved(WORLD, AT_P2) });
+    store.keep({ ...stateOf(WORLD, AT_P2), restoring: { core: "core1", view: saved(WORLD, AT_P2) } });
     expect(readdirSync(folder)).toEqual([]);
   });
 
@@ -213,7 +228,102 @@ describe("the file on disk", () => {
     expect(await made.exited).toBe(0);
     symlinkSync("/dev/zero", join(folder, "view-zero.json"));
     mkdirSync(join(folder, "view-folder.json"));
-    for (const core of ["fifo", "zero", "folder"]) expect({ core, read: new ViewStore(folder).open(core) }).toEqual({ core, read: { view: null, problem: "not_a_file" } });
+    // the reads run in a child this test ends by its own handle at a deadline: an open that waited on the FIFO would
+    // fail the test there, not hold the test run for ever
+    const store = join(import.meta.dir, "..", "view-store.ts");
+    const probe = Bun.spawn([process.execPath, "-e", [
+      `const { ViewStore } = await import(${JSON.stringify(store)});`,
+      `console.log(JSON.stringify(["fifo", "zero", "folder"].map((core) => new ViewStore(${JSON.stringify(folder)}).open(core))));`,
+    ].join("\n")], { env: { PATH: "/usr/bin:/bin", HOME: folder, TMPDIR: folder }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: PROBE_DEADLINE_MS, killSignal: "SIGKILL" });
+    const [out, err, exit] = await Promise.all([new Response(probe.stdout).text(), new Response(probe.stderr).text(), probe.exited]);
+    const refused = { view: null, problem: "not_a_file" };
+    expect({ exit, signal: probe.signalCode, err, out }).toEqual({ exit: 0, signal: null, err: "", out: `${JSON.stringify([refused, refused, refused])}\n` });
+  }, TEST_MS);
+
+  it("the writer keeps the reader's limits: a file of 1 MiB and an id of 256 characters are written, one byte or character more is refused and the good file stays", () => {
+    const folder = scratch();
+    const file = join(folder, "view-core1.json");
+    /** a view whose file is exactly `bytes` long: panes of 200-character ids, the last one's id sized to land on it */
+    const sized = (bytes: number): ModelState => {
+      const panes: { id: string; name: string }[] = [{ id: "p0", name: "" }];
+      const world = (): World => ({ workspaces: [{ id: "w1", name: "", tabs: [{ id: "t1", name: "", panes }] }] });
+      const focus: Focus = { workspace: "w1", tabs: { w1: "t1" }, panes: { t1: "p0" }, previous: null };
+      const length = () => Buffer.byteLength(viewText(world(), focus)!);
+      // each pane adds `,{"id":"<id>"}`: 10 bytes and its id; the last one's id is left 1 to 210 characters
+      const count = Math.floor((bytes - length() - 11) / 210);
+      for (let n = 0; n < count; n++) panes.push({ id: `${panes.length}-`.padEnd(200, "x"), name: "" });
+      panes.push({ id: `${panes.length}-`.padEnd(bytes - length() - 10, "x"), name: "" });
+      expect(length()).toBe(bytes);
+      return stateOf(world(), focus);
+    };
+    const store = new ViewStore(folder);
+    store.open("core1");
+    const long = (chars: number) => stateOf(WORLD, { ...AT_P2, panes: { ...AT_P2.panes, ["t".repeat(chars)]: "p1" } });
+    expect(store.keep(long(256))).toBeNull();
+    expect(new ViewStore(folder).open("core1").view?.focus.panes["t".repeat(256)]).toBe("p1");
+    const good = readFileSync(file, "utf8");
+    expect(store.keep(long(257))).toBe("shape");
+    expect(readFileSync(file, "utf8")).toBe(good);
+    expect(store.keep(sized(VIEW_FILE_MAX_BYTES + 1))).toBeNull();
+    expect(readFileSync(file, "utf8")).toBe(good);
+    expect(store.keep(sized(VIEW_FILE_MAX_BYTES))).toBeNull();
+    expect([statSync(file).size, new ViewStore(folder).open("core1").problem]).toEqual([VIEW_FILE_MAX_BYTES, null]);
+    // the first refusal is said, by the reader's own problem
+    const fresh = new ViewStore(scratch());
+    fresh.open("core1");
+    expect(fresh.keep(sized(VIEW_FILE_MAX_BYTES + 1))).toBe("too_large");
+  });
+
+  describe("a write that fails part-way leaves the good file", () => {
+    const DISK: ViewFiles = { write: (fd, bytes, offset) => writeSync(fd, bytes, offset), rename: renameSync, remove: (path) => rmSync(path, { force: true }) };
+    /** a store over a folder that already holds a good file for core1 (AT_P2) */
+    const withGood = (files: Partial<ViewFiles>) => {
+      const folder = scratch();
+      const before = new ViewStore(folder);
+      before.open("core1");
+      before.keep(stateOf(WORLD, AT_P2));
+      const store = new ViewStore(folder, { ...DISK, ...files });
+      store.open("core1");
+      return { store, held: () => ({ files: readdirSync(folder), text: readFileSync(join(folder, "view-core1.json"), "utf8") }) };
+    };
+    const MOVED = { ...AT_P2, workspace: "w2" };
+
+    it("a write that takes a few bytes at a time: the rest follows, and the whole view is renamed in", () => {
+      const { store, held } = withGood({ write: (fd, bytes, offset) => writeSync(fd, bytes, offset, Math.min(7, bytes.length - offset)) });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBeNull();
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, MOVED)! });
+    });
+
+    it("a write that takes nothing more: refused by code, the good file kept, the temp file gone", () => {
+      const { store, held } = withGood({ write: (fd, bytes, offset) => (offset === 0 ? writeSync(fd, bytes, 0, 7) : 0) });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBe("short_write");
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, AT_P2)! });
+    });
+
+    it("a rename that fails: refused by code, the good file kept, and the same view written once a rename works", () => {
+      let failing = true;
+      const { store, held } = withGood({
+        rename: (from, to) => {
+          if (failing) throw Object.assign(new Error("cross-device"), { code: "EXDEV" });
+          renameSync(from, to);
+        },
+      });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBe("EXDEV");
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, AT_P2)! });
+      failing = false;
+      expect(store.keep(stateOf(WORLD, MOVED))).toBeNull();
+      expect(held()).toEqual({ files: ["view-core1.json"], text: viewText(WORLD, MOVED)! });
+    });
+
+    it("a rename that fails and a temp file that cannot be removed: the rename's code is said, nothing thrown", () => {
+      const { store, held } = withGood({
+        rename: () => { throw Object.assign(new Error("cross-device"), { code: "EXDEV" }); },
+        remove: () => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); },
+      });
+      expect(store.keep(stateOf(WORLD, MOVED))).toBe("EXDEV");
+      const { files, text } = held();
+      expect([files.length, text]).toEqual([2, viewText(WORLD, AT_P2)!]);
+    });
   });
 
   it("a write that fails is told once, by its code", () => {
@@ -239,6 +349,29 @@ describe("a rerun of the screen on the same core", () => {
     runs.splice(runs.indexOf(run), 1);
     await run.close();
   };
+
+  it.each([45, 120])("an unchanged zoomed restart keeps remembered focus without view_moved at %s columns", async (cols) => {
+    const folder = scratch();
+    const core = new FakeHcCore();
+    demo.build(core);
+    const layout = (zoomed: string | null) => ({ schema: 1, workspaces: [{ id: "w-ovis", tabs: [{
+      id: "t-main", root: { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } }, zoomed,
+    }] }] });
+    core.docs.set(OVIS_LAYOUT_DOC, { value: layout("t2"), version: 1 });
+    const before = await first(core, folder, cols);
+    expect(before.loop.model().focus.panes["t-main"]).toBe("t1");
+    await close(before);
+    const again = await first(core, folder, cols);
+    expect(again.loop.panes.views().filter((view) => !view.covered).map((view) => view.terminal)).toEqual(["t2"]);
+    expect(again.loop.model().notices.map((notice) => notice.code)).not.toContain("view_moved");
+    expect(again.loop.model().focus.panes["t-main"]).toBe("t1");
+    await again.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: layout(null), version: 1 });
+    await again.advance(200);
+    await again.live();
+    again.type("z");
+    await again.settle();
+    expect(["t1", "t2"].map((id) => core.program(id).receivedHex())).toEqual(["7a", ""]);
+  }, TEST_MS);
 
   it("a rerun with the saved file focuses the same pane, at 45 columns too, and its file holds nothing private", async () => {
     const folder = scratch();
@@ -276,6 +409,113 @@ describe("a rerun of the screen on the same core", () => {
     expect(run.loop.model().notices.map((notice) => [notice.code, notice.data])).toEqual([["view_unread", { reason: "unreadable" }], ["view_unsaved", { reason: "EEXIST" }]]);
   }, TEST_MS);
 
+  it("a line back to another core on the same socket never writes that core's world into the first core's file", async () => {
+    const folder = scratch();
+    const one = new FakeHcCore({ core: { id: "coreone", name: "one" } });
+    demo.build(one);
+    const run = await first(one, folder);
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    const kept = readFileSync(join(folder, "view-coreone.json"), "utf8");
+    expect(JSON.parse(kept).focus.tabs["w-ovis"]).toBe("t-logs");
+    await run.cutLine();
+    await run.advance(1_000);
+    const other = new FakeHcCore({ core: { id: "coretwo", name: "two" } });
+    agents.build(other);
+    const listener = await other.listen(run.socket);
+    try {
+      await run.advance(10_000);
+      expect(run.loop.link.state).toMatchObject({ kind: "Online", epoch: 2 });
+      expect(run.loop.model().focus.workspace).not.toBe("w-ovis");
+      expect(readFileSync(join(folder, "view-coreone.json"), "utf8")).toBe(kept);
+      // the second core's world went to its own file once its hello said whose it is
+      expect(JSON.parse(readFileSync(join(folder, "view-coretwo.json"), "utf8")).focus.workspace).toBe(run.loop.model().focus.workspace);
+    } finally {
+      await close(run);
+      await listener.close();
+    }
+  }, TEST_MS);
+
+  it("a line back to the same core keeps writing its file, the change made while the line was down included", async () => {
+    const folder = scratch();
+    const core = new FakeHcCore();
+    demo.build(core);
+    const run = await first(core, folder);
+    const file = () => JSON.parse(readFileSync(join(folder, "view-fake0000.json"), "utf8")).focus;
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    expect(file().tabs["w-ovis"]).toBe("t-logs");
+    await run.cutLine();
+    await run.advance(1_000);
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+    await run.listen();
+    await run.advance(10_000);
+    expect(run.loop.link.state).toMatchObject({ kind: "Online", epoch: 2 });
+    expect(file().tabs["w-ovis"]).toBe("t-main");
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    expect(file().tabs["w-ovis"]).toBe("t-logs");
+    expect(run.loop.model().notices.map((notice) => notice.code)).toEqual([]);
+  }, TEST_MS);
+
+  it("exiting offline keeps the tab selected on the last known core", async () => {
+    const folder = scratch();
+    const core = new FakeHcCore();
+    demo.build(core);
+    const before = await first(core, folder);
+    await before.keys("ctrl+b,n");
+    expect(before.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
+    await before.cutLine();
+    await before.advance(1_000);
+    await before.keys("ctrl+b,n");
+    expect(before.loop.link.state.kind).toBe("Offline");
+    expect(before.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+    await close(before);
+    const again = await first(core, folder);
+    expect(again.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+  }, TEST_MS);
+
+  it.each([["coreone", false], ["coretwo", false], ["coreone", true], ["coretwo", true]] as const)("an empty core's pending Logs view only follows its own core (reconnect: %s, initially empty: %s)", async (id, initiallyEmpty) => {
+    const folder = scratch();
+    const options = (id: string) => ({ core: { id, name: id } });
+    const original = new FakeHcCore(options("coreone"));
+    demo.build(original);
+    const before = await first(original, folder);
+    await before.keys("ctrl+b,n");
+    await close(before);
+    const file = join(folder, "view-coreone.json");
+    const kept = readFileSync(file, "utf8");
+    expect(JSON.parse(kept).focus.tabs["w-ovis"]).toBe("t-logs");
+    const empty = await Run.start({ core: new FakeHcCore(options("coreone")), views: new ViewStore(folder) });
+    runs.push(empty);
+    expect(empty.loop.model().world.workspaces).toEqual([]);
+    await empty.cutLine();
+    await empty.advance(1_000);
+    const other = id === "coreone" && !initiallyEmpty ? original : new FakeHcCore(options(id));
+    if (!initiallyEmpty && other !== original) demo.build(other); // another core can issue the same addresses
+    const listener = await other.listen(empty.socket);
+    try {
+      await empty.advance(10_000);
+      expect(empty.loop.link.state).toMatchObject({ kind: "Online", epoch: 2 });
+      if (initiallyEmpty) {
+        expect(empty.loop.model().world.workspaces).toEqual([]);
+        demo.build(other);
+        await empty.advance(100);
+      }
+      const tab = id === "coreone" ? "t-logs" : "t-main";
+      expect(empty.loop.model().focus.tabs["w-ovis"]).toBe(tab);
+      expect(JSON.parse(readFileSync(join(folder, `view-${id}.json`), "utf8")).focus.tabs["w-ovis"]).toBe(tab);
+      if (id !== "coreone") expect(readFileSync(file, "utf8")).toBe(kept);
+      // When A creates new terminals after its empty snapshot, their addresses match but their birth times do not.
+      expect(empty.loop.model().notices.some(({ code }) => code === "view_moved")).toBe(initiallyEmpty && id === "coreone");
+    } finally {
+      await close(empty);
+      await listener.close();
+    }
+  }, TEST_MS);
+
   it("the saved pane gone on the core: the screen opens on the next one and says so", async () => {
     const folder = scratch();
     const core = new FakeHcCore();
@@ -289,6 +529,5 @@ describe("a rerun of the screen on the same core", () => {
     await again.advance(10);
     expect(again.loop.model().focus.panes["t-main"]).toBe("t1");
     expect(again.loop.model().notices.map((notice) => notice.code)).toEqual(["view_moved"]);
-    expect(again.grid()[39]).toContain("view_moved: the place this core was left at is gone");
   }, TEST_MS);
 });

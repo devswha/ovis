@@ -17,7 +17,7 @@ import type { ColorDepth } from "../host/index.ts";
 import { focused } from "../model/focus.ts";
 import { helpRows, modeBar, shownRefusals } from "../model/hints.ts";
 import type { KeymapNote } from "../model/keymap.ts";
-import type { MenuEntry } from "../model/menu.ts";
+import { entryKey, type MenuEntry } from "../model/menu.ts";
 import { type Field, type Overlay, OVERLAYS } from "../model/overlays.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
@@ -519,27 +519,27 @@ function modeBarPart(input: ChromeInput, colors: Colors, look: string): Part {
     canvas.fill(canvas.style({ fg: colors.text, bg: colors.bgPanel }));
     const row = rect.y;
     const right = rect.x + rect.width;
+    // the notice takes the row's right end; what is left of it is fitted into the cells before it, never painted over
+    const noticeWidth = notice === null ? 0 : Math.min(measure(notice).width, Math.floor(rect.width * 0.65));
+    const end = right - noticeWidth;
     const badge = ` ${MODE_LABELS[mode]} `;
     const terminal = mode === "terminal";
     const badgeBg = mode === "prefix" ? colors.accent : mode === "locked" ? colors.statusBlocked : terminal ? colors.bgElevated : colors.statusWorking;
     let col = printFit(canvas, rect.x, row, badge, rect.width, canvas.style({ fg: terminal ? colors.textStrong : colors.primaryText, bg: badgeBg, flags: STYLE_BOLD }));
-    if (offline !== null) col = printFit(canvas, col, row, ` ${offline} `, right - col, canvas.style({ fg: colors.notice, bg: colors.bgPanel, flags: STYLE_BOLD }), true);
-    for (const code of unreachable) col = printFit(canvas, col, row, ` [${code}] `, right - col, canvas.style({ fg: colors.dangerText, bg: colors.bgPanel, flags: STYLE_BOLD }), true);
+    if (offline !== null) col = printFit(canvas, col, row, ` ${offline} `, end - col, canvas.style({ fg: colors.notice, bg: colors.bgPanel, flags: STYLE_BOLD }), true);
+    for (const code of unreachable) col = printFit(canvas, col, row, ` [${code}] `, end - col, canvas.style({ fg: colors.dangerText, bg: colors.bgPanel, flags: STYLE_BOLD }), true);
     const keyStyle = canvas.style({ fg: colors.accent, bg: colors.bgPanel, flags: STYLE_BOLD });
     const labelStyle = canvas.style({ fg: colors.textDim, bg: colors.bgPanel });
     // a hint is drawn whole or not at all, so the keys shown are never a cut-off key
     for (const hint of hints) {
-      if (col + measure(` ${hint.keys} ${hint.label}`).width > right) break;
-      col = printFit(canvas, col, row, ` ${hint.keys}`, right - col, keyStyle);
-      col = printFit(canvas, col, row, ` ${hint.label}`, right - col, labelStyle);
+      if (col + measure(` ${hint.keys} ${hint.label}`).width > end) break;
+      col = printFit(canvas, col, row, ` ${hint.keys}`, end - col, keyStyle);
+      col = printFit(canvas, col, row, ` ${hint.label}`, end - col, labelStyle);
     }
-    if (notice !== null) {
-      const width = Math.min(measure(notice).width, Math.floor(rect.width * 0.65));
-      if (width > 0) {
-        const style = canvas.style({ fg: colors.dangerText, bg: colors.bgElevated, flags: STYLE_BOLD });
-        fillSpan(canvas, right - width, row, width, style);
-        printFit(canvas, right - width, row, notice, width, style, true);
-      }
+    if (notice !== null && noticeWidth > 0) {
+      const style = canvas.style({ fg: colors.dangerText, bg: colors.bgElevated, flags: STYLE_BOLD });
+      fillSpan(canvas, end, row, noticeWidth, style);
+      printFit(canvas, end, row, notice, noticeWidth, style, true);
     }
   });
 }
@@ -747,7 +747,8 @@ function menuPart(width: number, height: number, menu: Extract<Overlay, { kind: 
         const room = end - col > keysWidth + 8 ? end - col - keysWidth : end - col;
         col = printFit(canvas, col, y, line.text, room, text, true);
         if (keys && end - col >= keysWidth) printFit(canvas, end - keysWidth, y, keys, keysWidth, canvas.style({ fg: colors.textDim, bg }));
-        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${index}`);
+        // the entry's key, not its index: a world update before the next paint shifts the indices under the click
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${entryKey(menu.entries[index]!)}`);
       });
     },
   };

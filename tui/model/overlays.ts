@@ -4,14 +4,16 @@
  * A new overlay is one entry here and one variant of `Overlay`.
  */
 import { parseHerdrBinding } from "../../shared/herdr-keys.ts";
-import { TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
+import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
-import { chooseEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
+import { chooseEntry, entryKey, indexOfEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
 
-/** A one-line text field of graphemes. `fresh`: still the suggested text, replaced by the first character typed. */
-export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly fresh: boolean; readonly original: string }
+interface MenuList { readonly entries: readonly MenuEntry[]; readonly cursor: number }
+
+/** `fresh`: typing replaces the suggestion. Moving the cursor clears `fresh` without editing the name. */
+export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly fresh: boolean; readonly edited: boolean; readonly original: string }
 
 export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab";
 
@@ -21,8 +23,8 @@ export type Overlay =
   /** `seen`: the terminals the close ends, as the screen showed them when the dialog opened */
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
   | { readonly kind: "goto"; readonly field: Field }
-  /** `cursor`: the index of the entry Enter chooses */
-  | { readonly kind: "menu"; readonly entries: readonly MenuEntry[]; readonly cursor: number };
+  /** `presented` is null after a stale choice: input waits for an accepted menu frame, never queued. */
+  | ({ readonly kind: "menu"; readonly presented: MenuList | null } & MenuList);
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
@@ -42,9 +44,23 @@ export function graphemes(text: string): string[] {
   return [...segmenter.segment(text)].map(({ segment }) => segment);
 }
 
+/** How many code points `text` holds. */
+function codePoints(text: string): number {
+  let count = 0;
+  for (let at = 0; at < text.length; at += text.codePointAt(at)! > 0xffff ? 2 : 1) count++;
+  return count;
+}
+
+/** The first `count` code points of `text`. */
+function firstCodePoints(text: string, count: number): string {
+  let at = 0;
+  for (let n = 0; n < count && at < text.length; n++) at += text.codePointAt(at)! > 0xffff ? 2 : 1;
+  return text.slice(0, at);
+}
+
 export function field(text: string): Field {
-  const all = graphemes(text).slice(0, TEXT_FIELD_MAX_GRAPHEMES);
-  return { graphemes: all, cursor: all.length, fresh: all.length > 0, original: text };
+  const all = graphemes(firstCodePoints(text, TEXT_FIELD_MAX_CODE_POINTS)).slice(0, TEXT_FIELD_MAX_GRAPHEMES);
+  return { graphemes: all, cursor: all.length, fresh: all.length > 0, edited: false, original: text };
 }
 
 /** `text` typed or pasted at the cursor: line breaks, tabs and other control characters become spaces. */
@@ -56,8 +72,13 @@ function insert(current: Field, text: string): Field {
   const head = base.graphemes.slice(0, base.cursor - (before === "" ? 0 : 1));
   const tail = base.graphemes.slice(base.cursor);
   const room = TEXT_FIELD_MAX_GRAPHEMES - head.length - tail.length;
-  const added = graphemes(before + text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
-  return { ...base, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length, fresh: false };
+  // cut to the code-point budget before it is segmented: a grapheme that never ends (a letter and endless marks, read
+  // apart or at once) costs no more than the budget, and the graphemes the field holds already stay whole; the code
+  // points past it are refused, as when they are read one at a time (a text run reaches a field one code point at a time)
+  const points = TEXT_FIELD_MAX_CODE_POINTS - codePoints(head.join("")) - codePoints(before) - codePoints(tail.join(""));
+  const added = graphemes(before + firstCodePoints(text, Math.max(0, points)).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
+  if (!current.fresh && added.join("") === before) return current; // nothing fit
+  return { ...base, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length, fresh: false, edited: true };
 }
 
 function wordStart(chars: readonly string[], from: number): number {
@@ -83,7 +104,8 @@ function edit(current: Field, event: KeyInput): Field | null {
   const chars = current.graphemes;
   const at = current.cursor;
   const moved = (cursor: number): Field => ({ ...current, cursor: Math.max(0, Math.min(chars.length, cursor)), fresh: false });
-  const cut = (from: number, to: number, cursor: number): Field => ({ ...current, graphemes: [...chars.slice(0, from), ...chars.slice(to)], cursor, fresh: false });
+  const cut = (from: number, to: number, cursor: number): Field => from >= Math.min(to, chars.length) ? moved(cursor)
+    : { ...current, graphemes: [...chars.slice(0, from), ...chars.slice(to)], cursor, fresh: false, edited: true };
   if (event.key === "ARROW_LEFT" || (ctrl && letter === "b")) return moved(at - 1);
   if (event.key === "ARROW_RIGHT" || (ctrl && letter === "f")) return moved(at + 1);
   if (event.key === "HOME" || (ctrl && letter === "a")) return moved(0);
@@ -96,7 +118,7 @@ function edit(current: Field, event: KeyInput): Field | null {
   if (ctrl && letter === "k") return cut(at, chars.length, at);
   if (ctrl && letter === "w") return cut(wordStart(chars, at), at, wordStart(chars, at));
   if (alt && letter === "d") return cut(at, wordEnd(chars, at), at);
-  if (ctrl && letter === "c") return { ...current, graphemes: [], cursor: 0, fresh: false };
+  if (ctrl && letter === "c") return cut(0, chars.length, 0);
   return null;
 }
 
@@ -131,11 +153,14 @@ function fieldInput<O extends Extract<Overlay, { field: Field }>>(overlay: O, in
 
 const run = (action: RunEffect["action"], target: Target | null, name: string | null): RunEffect => ({ type: "run", action, target, index: null, name });
 
-/** The menu's answer to choosing entry `at`: the cursor moved there and kept open, or closed with the choice. */
-export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
-  const chosen = chooseEntry(overlay.entries, at);
-  if (chosen === null) return { overlay, effects: [] };
-  return "cursor" in chosen ? { overlay: { ...overlay, cursor: chosen.cursor }, effects: [] } : { overlay: null, effects: [], choice: chosen.choice };
+/** Choose a presented identity: move the cursor, close with its choice, or refuse it without retargeting. */
+export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, entry: string | null): OverlayAnswer & { readonly accepted: boolean } {
+  const at = overlay.entries.findIndex((candidate) => entryKey(candidate) === entry);
+  const chosen = overlay.presented === null ? null : chooseEntry(overlay.entries, at);
+  if (chosen === null || overlay.presented === null) return { overlay: { ...overlay, presented: null }, effects: [], accepted: false };
+  if (!("cursor" in chosen)) return { overlay: null, effects: [], choice: chosen.choice, accepted: true };
+  const cursor = indexOfEntry(overlay.presented.entries, overlay.entries[chosen.cursor]!);
+  return { overlay: { ...overlay, cursor: chosen.cursor, presented: { ...overlay.presented, cursor } }, effects: [], accepted: true };
 }
 
 export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<Overlay, { kind: K }>> } = {
@@ -149,8 +174,10 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: (overlay) => overlay.target,
     input: (overlay, input) => fieldInput(overlay, input, (name) => {
       if (overlay.purpose === "new_tab") return { overlay: null, effects: [run("new_tab", overlay.target, name)] };
-      // herdr sends a rename only when the name changed
-      return { overlay: null, effects: name === overlay.field.original ? [] : [run(overlay.purpose, overlay.target, name)] };
+      // herdr sends a rename only when the name changed; a name past the field's bounds shows cut, and that cut value
+      // accepted as shown is no change either: Enter never shortens a name nobody edited
+      const unchanged = !overlay.field.edited || name === overlay.field.original;
+      return { overlay: null, effects: unchanged ? [] : [run(overlay.purpose, overlay.target, name)] };
     }),
   },
   confirm: {
@@ -170,15 +197,28 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     closeKeys: ["esc"],
     target: () => null,
     input: (overlay, input) => {
-      if (isEnter(input)) return menuChoice(overlay, overlay.cursor);
+      const presented = overlay.presented;
+      if (presented === null) return { overlay, effects: [] };
+      const current = (at: number) => {
+        const shown = presented.entries[at];
+        return shown === undefined ? -1 : indexOfEntry(overlay.entries, shown);
+      };
+      const choose = (at: number) => {
+        const entry = presented.entries[at];
+        return menuChoice(overlay, entry === undefined ? null : entryKey(entry));
+      };
+      if (isEnter(input)) return choose(presented.cursor);
       if (input.kind === "key") {
-        const cursor = movedCursor(overlay.entries, overlay.cursor, input.event);
-        if (cursor !== null) return { overlay: { ...overlay, cursor }, effects: [] };
+        const cursor = movedCursor(presented.entries, presented.cursor, input.event);
+        if (cursor !== null) {
+          const next = current(cursor);
+          return { overlay: { ...overlay, cursor: next < 0 ? overlay.cursor : next, presented: { ...presented, cursor } }, effects: [] };
+        }
       }
       // a label is one character typed as it is: under an input method a letter arrives composed and chooses nothing
       const typed = input.kind === "paste" || (input.kind === "key" && (input.event.mods.alt || input.event.mods.ctrl)) ? "" : input.event.text ?? "";
-      const at = labelled(overlay.entries, [...typed][0] ?? "");
-      return at < 0 ? { overlay, effects: [] } : menuChoice(overlay, at);
+      const at = labelled(presented.entries, [...typed][0] ?? "");
+      return at < 0 ? { overlay, effects: [] } : choose(at);
     },
   },
 };

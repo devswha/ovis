@@ -1,7 +1,7 @@
 import type { PortalSignIn } from "./portal.ts";
 
 export type AccessVia = "local" | "tailscale" | "device" | "token" | "open" | "portal" | "relay";
-export type AccessRefusal = "other_user" | "pairing_required" | "token_required" | "locked" | "strict";
+export type AccessRefusal = "other_user" | "pairing_required" | "token_required" | "locked" | "strict" | "tailnet_blocked";
 /** What a paired device may do: drive (type, answer, manage) or only watch. */
 export type DeviceRole = "drive" | "watch";
 
@@ -102,6 +102,8 @@ export interface PairedDevice {
   readonly added_by?: string;
   /** how it reaches this PC right now, while one of its encrypted sessions is up; absent while none is */
   readonly connection?: DeviceConnection;
+  /** To the PC's own window: a signed Not me is waiting for this exact device's account order. */
+  readonly not_me_waiting?: true;
   /**
    * account-opens-all/1, to a remote caller only: whether it may Revoke this row from afar (device table T19 in 2d).
    * `allowed`: the entire Revoke is in scope; `older` and `unorderable` require a different caller;
@@ -187,6 +189,8 @@ export type AccountPairingState =
 export interface RemoteAccess {
   /** the port this server listens on; the tailscale command names it */
   readonly port: number;
+  /** the server's `process.platform` (darwin, win32, linux...): which Tailscale download and app this PC takes; older servers omit it */
+  readonly platform?: string;
   readonly tailscale: TailscaleAccess;
 }
 

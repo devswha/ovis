@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, HcConnection } from "../server/herdr-core/connection.ts";
+import { FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_RESIZE, HcConnection, HcError, HcReplyError } from "../server/herdr-core/connection.ts";
 import { CREDIT_WINDOW, FakeHcCore } from "../server/herdr-core/core.fake.ts";
 import { OVIS_LAYOUT_DOC } from "../server/herdr-core/layout-doc.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
-import { FRAME_PASS_MS, HOLD_RELEASE_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
+import { ending, EXIT_FAILED } from "./start.ts";
+import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
 import { SCALE_LARGEST_TAB, SCALE_TERMINALS, SCALE_WORKSPACES, scale } from "./testing/fixtures/scale.ts";
@@ -21,19 +22,8 @@ const SOAK_MS = 600_000;
 const OWN_HEAP_GROWTH_BYTES = 2 * 1024 * 1024;
 /** the link's code once its line was cut and a retry found no core listening (tui/core/link.ts) */
 const OFFLINE_CODE = "no_core";
-
-// `bun run typecheck` checks the lines marked with ts-expect-error below: each must stay a compile error. The loop's
-// end carries only what a reader takes: the host ends the process with a signal's own exit code, and the entry says
-// itself what a missing core means.
-function typeOnly(): LoopEnd[] {
-  return [
-    // @ts-expect-error a signal's end names no signal
-    { kind: "signal", signal: "SIGINT" },
-    // @ts-expect-error a missing core's end carries no reason
-    { kind: "no_core", code: "no_core", reason: "nothing listens" },
-  ];
-}
-void typeOnly;
+/** the most event-loop turns a test waits for the socket's own work, as tui/testing/run.ts settles */
+const SETTLE_TURNS = 2_000;
 
 const runs: Run[] = [];
 afterEach(async () => {
@@ -62,6 +52,10 @@ const channelOf = (run: Run, terminal: string): number => run.core.viewers(termi
 /** every byte the screen sent a terminal's program, as hex, read from the fake's log: kept after the terminal is removed */
 const sentTo = (run: Run, terminal: string): string => Buffer.concat(run.core.log.flatMap((entry) =>
   entry.what === "frame" && entry.from === "viewer" && entry.terminal === terminal && (entry.kind === FRAME_DATA || entry.kind === FRAME_AUTOMATIC_INPUT) ? [entry.payload] : [])).toString("hex");
+/** what the screen sent each terminal's program, by terminal, for every terminal it sent anything (one a split or a new
+ * tab made too), so a destination outside the fixture's own terminals is seen */
+const received = (run: Run): Record<string, string> => Object.fromEntries([...new Set(run.core.log.flatMap((entry) =>
+  entry.what === "frame" && entry.from === "viewer" && (entry.kind === FRAME_DATA || entry.kind === FRAME_AUTOMATIC_INPUT) && entry.terminal !== null ? [entry.terminal] : []))].sort().map((terminal) => [terminal, sentTo(run, terminal)]));
 /** each read once the screen settled from the one before: the core answers a write, then tells of what it did, and the
  * screen draws it over its own clock; a read after the instant a pane went live */
 async function settled(run: Run): Promise<void> {
@@ -222,6 +216,21 @@ describe("the loop", () => {
     expect(run.core.program("t1").receivedHex()).toBe(Buffer.from("k").toString("hex"));
   }, TEST_MS);
 
+  it("a paste begun in the read that ends a refused paste is framed whole, however long it pauses", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    run.type(`\x1b[200~${"a".repeat(PASTE_LIMIT_BYTES + 10)}`);
+    await run.settle();
+    expect(run.loop.model().notices.map((notice) => notice.code)).toContain("paste_refused");
+    // one read: the refused paste's last bytes and end mark, then a new paste that pauses past the wait
+    run.type("aaa\x1b[201~\x1b[200~first ");
+    await run.advance(PASTE_ABANDON_MS * 2);
+    run.type("second\x1b[201~");
+    await run.advance(20);
+    expect([run.loop.report().actions.includes("paste_reset"), Buffer.from(run.core.program("t1").receivedHex(), "hex").toString()]).toEqual([false, "first second"]);
+  }, TEST_MS);
+
   it("the loop draws for the host's colour depth: an RGB cell leaves as RGB on a truecolour host, as a palette colour on a 256-colour one", async () => {
     for (const [colorTerm, written, never] of [["truecolor", "38;2;95;135;175", "38;5;67"], ["", "38;5;67", "38;2;"]] as const) {
       const run = await start({ fixture: demo, colorTerm });
@@ -344,12 +353,400 @@ describe("the loop", () => {
         await run.close();
       }
     };
-    // the prefix and Enter open the menu; 5 is a place in the shown tab; z and Enter go to the focused pane after it
-    const bytes = "\x02\r5z\r";
+    // the prefix and Enter open the menu; 6 is the shown tab's second pane (t2, not the focused t1); z and Enter go to it
+    const bytes = "\x02\r6z\r";
     const joined = await outcome([bytes]);
-    expect(joined.received[0]).toBe(Buffer.from("z\r").toString("hex"));
+    expect(joined.received).toEqual(["", Buffer.from("z\r").toString("hex"), "", ""]);
     expect({ outcome: await outcome([...bytes]) }).toEqual({ outcome: joined });
     for (let cut = 1; cut < bytes.length; cut++) expect({ cut, outcome: await outcome([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ cut, outcome: joined });
+  }, TEST_MS);
+
+  it("a second layout action read while one is under way is refused as busy: a close pressed twice ends only the pane it was pressed on", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    // two reads before the first close's write could be answered: the second meets the layout the user saw too
+    run.type("\x02x");
+    run.type("\x02x");
+    await settled(run);
+    expect(run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"])).toEqual(["t1"]);
+    expect(run.core.terminal("t2").state).toBe("live");
+    expect(run.loop.model().notices.map(({ code, data }) => [code, data["action"]])).toEqual([["layout_busy", "close_pane"]]);
+  }, TEST_MS);
+
+  it("a refused layout action's keys are taken, not replayed: with two panes, close twice, then Enter reaches the survivor", async () => {
+    // the second press in the same read as the first, and in a read of its own; the core telling of the close before
+    // it answers, or answering first
+    for (const [reads, answerFirst] of [[["\x02x\x02x"], false], [["\x02x", "\x02x"], false], [["\x02x\x02x"], true], [["\x02x", "\x02x"], true]] as const) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      run.core.holdingEvents = answerFirst;
+      for (const read of reads) run.type(read);
+      await settled(run);
+      run.core.releaseEvents();
+      await settled(run);
+      // once t1 is gone, the same keys replayed would open the close-workspace dialog, and Enter would end t2
+      run.type("\r");
+      await settled(run);
+      expect([reads, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), run.loop.report().mode.overlays, sentTo(run, "t2")])
+        .toEqual([reads, ["t1"], [], Buffer.from("\r").toString("hex")]);
+      expect(run.loop.model().notices.map(({ code }) => code)).toContain("layout_busy");
+    }
+  }, TEST_MS);
+
+  it("refusing a dialog or mode opener leaves its plain tail for the survivor", async () => {
+    // No dialog or navigate mode opens during the hold, so y and m remain plain pane input.
+    for (const [keys, tail] of [[["\x02Dy"], "y"], [["\x02D", "y"], "y"], [["\x02wm"], "m"], [["\x02w", "m"], "m"]] as const) {
+      for (const answerFirst of [false, true]) {
+        const label = { keys, answerFirst };
+        const run = await start({ core: oneTab(2) });
+        await run.live();
+        await run.advance(1);
+        run.core.holdingEvents = answerFirst;
+        run.type("\x02x");
+        for (const key of keys) run.type(key);
+        await settled(run);
+        run.core.releaseEvents();
+        await settled(run);
+        expect([label, run.loop.report().mode.overlays, run.loop.model().mode.name]).toEqual([label, [], "terminal"]);
+        run.type("\r");
+        await settled(run);
+        expect([label, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), sentTo(run, "t2")])
+          .toEqual([label, ["t1"], Buffer.from(tail + "\r").toString("hex")]);
+        await run.close();
+      }
+    }
+  }, TEST_MS);
+
+  it("input behind a close goes to the pane focus moves to once the closed pane left the world, whichever came first", async () => {
+    // two and three panes; the core tells of the close before it answers, or answers first; the text in the close's
+    // own read or in a read of its own
+    for (const panes of [2, 3]) {
+      for (const answerFirst of [false, true]) {
+        for (const reads of [["\x02xabc"], ["\x02x", "abc"]]) {
+          const run = await start({ core: oneTab(panes) });
+          await run.live();
+          await run.advance(1);
+          const label = { panes, answerFirst, reads };
+          run.core.holdingEvents = answerFirst;
+          for (const read of reads) run.type(read);
+          await settled(run);
+          expect([label, run.core.calls().filter(({ method }) => method === "terminal.rm").length, sentTo(run, "t1")]).toEqual([label, 1, ""]);
+          run.core.releaseEvents();
+          await settled(run);
+          const state = run.loop.model();
+          expect([label, state.focus.panes["t"], sentTo(run, "t1"), sentTo(run, "t2"), state.notices.map(({ code }) => code)])
+            .toEqual([label, "t2", "", Buffer.from("abc").toString("hex"), []]);
+          await run.close();
+        }
+      }
+    }
+  }, TEST_MS);
+
+  it("input behind a close whose pane never leaves the world is refused once the wait ends, and reaches no pane", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    await run.advance(1);
+    run.core.holdingEvents = true;
+    run.type("\x02xabc");
+    await settled(run);
+    await run.advance(LAYOUT_SHOWN_WAIT_MS);
+    expect([sentTo(run, "t1"), sentTo(run, "t2"), run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])]).toEqual(["", "", [["input_dropped", "not_closed"]]]);
+    run.core.releaseEvents();
+    await settled(run);
+    // the screen catches up, and what comes after goes to the survivor as usual
+    run.type("d");
+    await settled(run);
+    expect([sentTo(run, "t1"), sentTo(run, "t2")]).toEqual(["", Buffer.from("d").toString("hex")]);
+  }, TEST_MS);
+
+  it("a close preflight timeout releases held text to the original pane without ending any terminal", async () => {
+    for (const reads of [["\x02xabc"], ["\x02x", "abc"]]) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      const call = run.loop.link.call.bind(run.loop.link);
+      run.loop.link.call = async (method, params, timeout) => {
+        if (method === "terminal.list") {
+          run.loop.link.call = call;
+          throw new HcError("timeout", "no answer to the preflight read");
+        }
+        return call(method, params, timeout);
+      };
+      for (const read of reads) run.type(read);
+      await settled(run);
+      expect(run.core.calls().filter(({ method }) => method === "terminal.kill" || method === "terminal.rm")).toEqual([]);
+      expect(received(run)).toEqual({ t1: Buffer.from("abc").toString("hex") });
+      expect(run.loop.link.state.kind).toBe("Online");
+      expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])).toEqual([["layout_refused", "timeout"]]);
+      await run.close();
+    }
+  }, TEST_MS);
+
+  it.each(["removed", "already gone", "rm refused", "answer lost", "remote timeout"] as const)("a partial close with a sibling %s routes held input independently of event order", async (third) => {
+    for (const answerFirst of [false, true]) {
+      const run = await start({ core: oneTab(3) });
+      await run.live();
+      await run.advance(1);
+      run.core.holdingEvents = answerFirst;
+      const call = run.loop.link.call.bind(run.loop.link);
+      run.loop.link.call = async (method, params, timeout) => {
+        if ("terminal" in params) {
+          if (method === "terminal.kill" && params.terminal === "t2") throw new HcReplyError("blocked", "kill refused");
+          if (method === "terminal.kill" && params.terminal === "t3" && third === "remote timeout") throw new HcReplyError("timeout", "machine did not answer");
+          if (method === "terminal.rm" && params.terminal === "t3") {
+            if (third === "rm refused") throw new HcReplyError("blocked", "remove refused");
+            if (third === "already gone") await call(method, params, timeout); // the record is gone when our call arrives
+            if (third === "answer lost") {
+              await call(method, params, timeout); // it ran, but this client cannot know that
+              throw new HcError("timeout", "no answer");
+            }
+          }
+        }
+        return call(method, params, timeout);
+      };
+      run.type("\x02Dyabc");
+      await settled(run);
+      if (answerFirst) expect(received(run)).toEqual({});
+      run.core.releaseEvents();
+      await settled(run);
+      const reason = third === "answer lost" || third === "remote timeout" ? "layout_unknown" : third === "rm refused" ? "not_closed" : null;
+      expect(received(run)).toEqual(reason ? {} : { t2: Buffer.from("abc").toString("hex") });
+      expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])).toEqual([
+        reason === "layout_unknown" ? ["layout_unknown", undefined] : ["layout_refused", "blocked"],
+        ...(reason ? [["input_dropped", reason]] : []),
+      ]);
+      await run.close();
+    }
+  }, TEST_MS);
+
+  it("input behind a write that makes a pane waits until the screen shows that pane, and never reaches the pane before", async () => {
+    const focusOf = (run: Run) => { const state = run.loop.model(); return state.focus.panes[state.focus.tabs[state.focus.workspace!]!]; };
+    const notices = (run: Run) => run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]);
+    for (const shown of [true, false]) {
+      const run = await start({ fixture: demo });
+      await run.live();
+      await run.advance(1);
+      run.type("\x02c");
+      await settled(run);
+      // the core answers the new tab's write before it tells of the new pane
+      run.core.holdingEvents = true;
+      // the name, Enter and text in one read: the text waits behind the new tab's write
+      run.type("logs\rabc");
+      await settled(run);
+      expect([shown, "answered", run.core.calls().some(({ method }) => method === "terminal.run"), focusOf(run), sentTo(run, "t1")]).toEqual([shown, "answered", true, "t1", ""]);
+      // never shown in time: the text is refused; shown in time: it goes to the new pane (which refuses it while it opens)
+      if (!shown) await run.advance(LAYOUT_SHOWN_WAIT_MS);
+      run.core.releaseEvents();
+      await settled(run);
+      expect([shown, focusOf(run), sentTo(run, "t1"), sentTo(run, "t5"), notices(run)])
+        .toEqual([shown, "t5", "", "", [shown ? ["input_refused", "opening"] : ["input_dropped", "not_shown"]]]);
+    }
+  }, TEST_MS);
+
+  it.each([[true, "joined"], [true, "split"], [false, "joined"], [false, "split"]] as const)(
+    "empty-core creation classifies pane input before any pane exists: shown=%s, %s", async (shown, ordering) => {
+      const run = await start({ core: new FakeHcCore() });
+      await run.advance(1);
+      expect(run.loop.model().world.workspaces).toEqual([]);
+      run.type("\x02\r");
+      await run.advance(FRAME_PASS_MS);
+      const menu = run.loop.model().overlays.at(-1);
+      if (menu?.kind !== "menu") throw new Error("menu did not open");
+      const create = menu.entries.find((entry) => entry.kind === "action" && entry.action === "new_workspace");
+      if (!create?.label) throw new Error("New workspace has no label");
+      run.core.holdingEvents = true;
+      if (ordering === "joined") run.type(create.label + "abc");
+      else { run.type(create.label); run.type("abc"); }
+      await settled(run);
+      expect(run.core.calls().some((call) => call.method === "terminal.run")).toBe(true);
+      expect(run.loop.model().focus.workspace).toBeNull();
+      expect(received(run)).toEqual({});
+      if (!shown) await run.advance(LAYOUT_SHOWN_WAIT_MS);
+      run.core.releaseEvents();
+      await settled(run);
+      expect(received(run)).toEqual({});
+      expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]))
+        .toEqual([[shown ? "input_refused" : "input_dropped", shown ? "opening" : "not_shown"]]);
+      await run.live();
+      run.type("z");
+      await settled(run);
+      expect(received(run)).toEqual({ t1: "7a" });
+    }, TEST_MS);
+
+  it.each([
+    ["refused", "joined"], ["refused", "split"], ["unknown", "joined"], ["unknown", "split"],
+    ["success", "joined"], ["success", "split"],
+  ] as const)("empty-core input belongs to its creation when another client arrives first: %s, %s", async (outcome, ordering) => {
+    const run = await start({ core: new FakeHcCore() });
+    await run.advance(1);
+    const entered = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    const call = run.loop.link.call.bind(run.loop.link);
+    let requests = 0;
+    let created: string | null = null;
+    // Observe the real pane-input boundary without bypassing its opening/attachment checks.
+    const focusPane = run.loop.panes.focus.bind(run.loop.panes);
+    const inputPane = run.loop.panes.input.bind(run.loop.panes);
+    let destination: string | null = null;
+    const attempts: (string | null)[] = [];
+    run.loop.panes.focus = (pane) => { destination = pane; focusPane(pane); };
+    run.loop.panes.input = (input) => {
+      if (input.type === "text" && input.text === "abc") attempts.push(destination);
+      return inputPane(input);
+    };
+    run.loop.link.call = async (method, params, timeout) => {
+      if (method === "terminal.run") {
+        run.loop.link.call = call;
+        requests++;
+        entered.resolve();
+        await answer.promise;
+        if (outcome === "refused") throw new HcReplyError("blocked", "create refused");
+        if (outcome === "unknown") throw new HcError("timeout", "create answer lost");
+        const result = await call(method, params, timeout);
+        if (!("address" in result) || typeof result.address !== "string") throw new Error("creation returned no address");
+        created = result.address;
+        return result;
+      }
+      return call(method, params, timeout);
+    };
+    try {
+      run.type("\x02\r");
+      await run.advance(FRAME_PASS_MS);
+      const menu = run.loop.model().overlays.at(-1);
+      if (menu?.kind !== "menu") throw new Error("menu did not open");
+      const create = menu.entries.find((entry) => entry.kind === "action" && entry.action === "new_workspace");
+      if (!create?.label) throw new Error("New workspace has no label");
+      if (ordering === "joined") run.type(create.label + "abc");
+      else { run.type(create.label); run.type("abc"); }
+      await entered.promise;
+      expect(run.loop.model().focus.workspace).toBeNull();
+      const rival = place(run.core, { space: "rival", spaceName: "rival", tab: "rival-tab", tabName: "rival" }, "$ ");
+      await run.live();
+      await settled(run);
+      expect(run.loop.model().focus.panes["rival-tab"]).toBe(rival);
+      expect(run.core.program(rival).receivedHex()).toBe("");
+      answer.resolve();
+      await settled(run);
+      expect(requests).toBe(1);
+      expect(run.core.program(rival).receivedHex()).toBe("");
+      expect(attempts).toEqual(outcome === "success" ? [created] : []);
+      const notices = run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]);
+      if (outcome === "success") {
+        expect(created).not.toBeNull();
+        expect(created).not.toBe(rival);
+        expect(notices).toEqual([["input_refused", "opening"]]);
+      } else {
+        expect(notices).toEqual(outcome === "unknown"
+          ? [["layout_unknown", undefined], ["input_dropped", "layout_unknown"]]
+          : [["layout_refused", "blocked"], ["input_dropped", "not_shown"]]);
+      }
+      await run.live();
+      run.type("z");
+      await settled(run);
+      expect(received(run)).toEqual({ [outcome === "success" ? created! : rival]: "7a" });
+    } finally {
+      answer.resolve();
+    }
+  }, TEST_MS);
+
+  it("what waits behind a layout write is bounded: past its bytes or events nothing more waits, no paste is cut, and a detach still leaves", async () => {
+    const hex = (text: string) => Buffer.from(text).toString("hex");
+    const dropped = (run: Run) => run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"]);
+    // bytes: a paste that would pass the bound is refused whole, and what follows it waits no more
+    const bytes = await start({ fixture: demo });
+    await bytes.live();
+    await bytes.advance(1);
+    // every read before the close's write could be answered
+    bytes.type("\x02x");
+    bytes.type("xyz");
+    bytes.type(`\x1b[200~${"a".repeat(BEHIND_WRITE_BYTES - 2)}\x1b[201~`);
+    bytes.type("b");
+    await settled(bytes);
+    expect([sentTo(bytes, "t1"), sentTo(bytes, "t2"), dropped(bytes)]).toEqual(["", hex("xyz"), ["full"]]);
+    // events: the one past the bound and all after it go nowhere
+    const events = await start({ fixture: demo });
+    await events.live();
+    await events.advance(1);
+    events.type("\x02x");
+    for (let n = 0; n < BEHIND_WRITE_EVENTS; n++) events.type("a");
+    events.type("c");
+    await settled(events);
+    expect([sentTo(events, "t1"), sentTo(events, "t2") === hex("a".repeat(BEHIND_WRITE_EVENTS)), dropped(events)]).toEqual(["", true, ["full"]]);
+    // full, with a core that never answers: the prefix and q still leave at once
+    for (const overflow of ["events", "first text"]) {
+      const full = await start({ fixture: demo });
+      await full.live();
+      await full.advance(1);
+      full.muted = true;
+      let ended = false;
+      void full.loop.done.then(() => { ended = true; });
+      full.type("\x02x");
+      if (overflow === "events") for (let n = 0; n <= BEHIND_WRITE_EVENTS; n++) full.type("a");
+      else full.type("a".repeat(BEHIND_WRITE_BYTES + 1));
+      full.type("\x02");
+      full.type("q");
+      await full.advance(QUIT_BOUND_MS + 100);
+      expect([overflow, dropped(full), ended]).toEqual([overflow, ["full"], true]);
+    }
+  }, TEST_MS);
+
+  it("a key's own text counts against the bytes that wait: a paste at the bound fits, a kitty key with text after it does not", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    // every read before the close's write could be answered; the kitty key reports the text it typed (CSI code;mods;text u)
+    run.type("\x02x");
+    run.type(`\x1b[200~${"a".repeat(BEHIND_WRITE_BYTES)}\x1b[201~`);
+    run.type("\x1b[98;1;98u");
+    await settled(run);
+    const sent = sentTo(run, "t2");
+    expect([sent.length / 2, sent.endsWith(Buffer.from("b").toString("hex")), run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"])])
+      .toEqual([BEHIND_WRITE_BYTES, false, ["full"]]);
+  }, TEST_MS);
+
+  it("a prefix read once the queue is full leaves no prefix armed: alone, before a focus loss or before a refused key, and q after the release is typed", async () => {
+    // the prefix takes no place in what waits; what waits is past its bound, so the key it waited for may be gone
+    for (const after of ["", "\x1b[O", "z"]) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      let ended = false;
+      void run.loop.done.then(() => { ended = true; });
+      // every read before the close's write could be answered: the last a goes past the bound
+      run.type("\x02x");
+      for (let n = 0; n <= BEHIND_WRITE_EVENTS; n++) run.type("a");
+      run.type("\x02");
+      if (after !== "") run.type(after);
+      await settled(run);
+      expect([after, run.loop.model().armed, run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"])]).toEqual([after, false, ["full"]]);
+      // after the release: q is typed into the survivor, not a detach
+      run.type("q");
+      await settled(run);
+      expect([after, ended, sentTo(run, "t2") === Buffer.from(`${"a".repeat(BEHIND_WRITE_EVENTS)}q`).toString("hex")]).toEqual([after, false, true]);
+    }
+  }, TEST_MS);
+
+  it("a focus loss behind a layout write disarms the prefix in order: q after it is typed, not a detach; without it, q detaches", async () => {
+    for (const focus of [true, false]) {
+      const run = await start({ fixture: demo });
+      await run.live();
+      await run.advance(1);
+      let ended = false;
+      void run.loop.done.then(() => { ended = true; });
+      // every read before the close's write could be answered
+      run.type("\x02x");
+      run.type("\x02");
+      if (focus) {
+        run.type("\x1b[O");
+        run.type("\x1b[I");
+      }
+      run.type("q");
+      await settled(run);
+      expect([focus, ended]).toEqual([focus, !focus]);
+      if (focus) expect([sentTo(run, "t1"), sentTo(run, "t2")]).toEqual(["", Buffer.from("q").toString("hex")]);
+    }
   }, TEST_MS);
 
   it("random key sequences route alike read whole, split at every byte, and a byte at a time", async () => {
@@ -385,9 +782,9 @@ describe("the loop", () => {
         }
         const model = run.loop.model();
         return {
-          ended, focus: model.focus, mode: model.mode.name,
+          ended, busy: model.notices.some((notice) => notice.code === "layout_busy"), focus: model.focus, mode: model.mode.name,
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
-          received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)),
+          received: received(run),
         };
       } finally {
         await run.close();
@@ -397,12 +794,29 @@ describe("the loop", () => {
     // or may not have landed: for a run that detached, only that it left and what each program was sent are compared.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
     const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
+    // A hold refuses every action except detach, and every overlay or mode input, so a read with one after a possible
+    // layout write differs by design from split reads, where the write may finish first. Such a sequence is marked
+    // generously from tokens: any possible write followed by a non-detach action. Any other must never be refused.
+    const refusesInHold = (picked: readonly string[], prefix: string) => {
+      let resize = false;
+      let wrote = false;
+      return picked.some((token) => {
+        if (wrote && token.startsWith(prefix) && token !== `${prefix}q`) return true;
+        if (token === `${prefix}r`) resize = true;
+        wrote ||= token === `${prefix}z` || token === `${prefix}x` || token === "\r" || (resize && (token === `${prefix}h` || token === `${prefix}l`));
+        return false;
+      });
+    };
     for (const prefix of ["\x02", "-"]) {
       const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
       for (let n = 0; n < 10; n++) {
-        const text = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!).join("");
+        const picked = Array.from({ length: 3 + Math.floor(random() * 3) }, () => tokens[Math.floor(random() * tokens.length)]!);
+        const text = picked.join("");
         const bytes = new TextEncoder().encode(text);
-        const joined = compared(await outcome(prefix, [bytes]));
+        const whole = await outcome(prefix, [bytes]);
+        if (refusesInHold(picked, prefix)) continue;
+        expect({ text, busy: whole.busy }).toEqual({ text, busy: false });
+        const joined = compared(whole);
         expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)))) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
           expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)])) }).toEqual({ text, cut, outcome: joined });
@@ -475,6 +889,58 @@ describe("the loop", () => {
     expect(run.sent.filter((frame) => frame.kind === FRAME_CLOSE).length).toBe(3);
   }, TEST_MS);
 
+  it("a terminal gone at the entry's first write: the screen goes no further, ends as gone, and the entry gives the terminal back", async () => {
+    const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "loop-"));
+    const socket = join(folder, "hc.sock");
+    const listener = await oneTab(1).listen(socket);
+    try {
+      const host = new HeadlessHost();
+      host.failWrites("EIO");
+      const clock = new ManualClock();
+      const loop = startLoop({ host, clock, socket, keys: undefined });
+      const ended: { how: LoopEnd | null } = { how: null };
+      void loop.done.then((how) => { ended.how = how; });
+      /** turns of the event loop (the socket's own) until `done` holds, at most SETTLE_TURNS */
+      const turns = async (done: () => boolean) => {
+        for (let turn = 0; turn < SETTLE_TURNS && !done(); turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+      };
+      await turns(() => host.writeAttempts() > 0);
+      expect(host.log()).toEqual(["raw on"]);
+      // the closing is bounded on the loop's clock
+      clock.current = QUIT_BOUND_MS;
+      clock.fireDue();
+      await turns(() => ended.how !== null);
+      const how = ended.how;
+      expect(how).toEqual({ kind: "gone", why: "write-failed" });
+      if (how?.kind !== "gone") return;
+      const said = ending(how, { path: socket, session: "test" });
+      expect([said.leave, said.exit]).toEqual([true, EXIT_FAILED]);
+      host.leave();
+      expect([host.log(), host.writeAttempts(), loop.report().passes, clock.armed()]).toEqual([["raw on", "raw off"], 1, 0, 0]);
+    } finally {
+      await listener.close();
+      rmSync(folder, { recursive: true, force: true });
+    }
+  }, TEST_MS);
+
+  it("another pane's first paint delays nothing typed: a key read while that pane drains reaches the focused live pane at once, and stays there", async () => {
+    const core = oneTab(2);
+    const run = await start({ core });
+    await run.live();
+    await run.advance(1);
+    // a third pane joins the shown tab: once its first paint is drawn, the loop reads stdin before that pane goes live
+    place(core, { space: "w", spaceName: "w", tab: "t", tabName: "t" }, "pane 2\r\n");
+    for (let waited = 0; run.host.timers() === 0 && waited < 1_000; waited++) await run.advance(1);
+    expect(run.host.timers()).toBe(1);
+    run.type("k");
+    await run.settle();
+    expect(run.core.program("t1").receivedHex()).toBe("6b");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+    await run.advance(100);
+    await run.live();
+    expect(["t1", "t2", "t3"].map((terminal) => run.core.program(terminal).receivedHex())).toEqual(["6b", "", ""]);
+  }, TEST_MS);
+
   it("flood does not delay input: a key typed into one pane leaves in its read's turn while another pane floods", async () => {
     const run = await start({ fixture: demo });
     await run.live();
@@ -504,6 +970,151 @@ describe("the loop", () => {
     expect(run.loop.model().focus.panes["t-main"]).toBe("t1");
   }, TEST_MS);
 
+  it("zoom: a zoom of a pane without the focus moves the focus to it, and what is typed reaches only that pane", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    expect(run.loop.model().focus.panes["t"] ?? "t1").toBe("t1");
+    const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+    await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 0 });
+    await run.advance(1_000);
+    expect([run.loop.panes.view("t1")?.covered, run.loop.panes.view("t2")?.covered]).toEqual([true, false]);
+    await run.live();
+    await run.advance(1);
+    await run.keys("k");
+    await run.advance(20);
+    expect([run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()]).toEqual(["", Buffer.from("k").toString("hex")]);
+    expect(run.loop.model().notices.map((notice) => notice.code)).not.toContain("input_refused");
+  }, TEST_MS);
+
+  it("zoom: text after a focus move under a zoom reaches the zoomed pane, in one read as in two", async () => {
+    /** what each program received after `reads`, with t2 zoomed and cycle_pane_next on prefix+y */
+    const outcome = async (reads: string[]) => {
+      const core = oneTab(2);
+      const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+      core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 1 });
+      const run = await Run.start({ core });
+      try {
+        await run.live();
+        run.loop.dispatch({ type: "keys", keys: { cycle_pane_next: "prefix+y" }, at: run.clock.current });
+        await run.advance(1);
+        for (const read of reads) {
+          run.type(read);
+          await run.advance(20);
+        }
+        return { reads, received: [run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()] };
+      } finally {
+        await run.close();
+      }
+    };
+    const received = ["", Buffer.from("k").toString("hex")];
+    expect(await outcome(["\x02yk"])).toEqual({ reads: ["\x02yk"], received });
+    expect(await outcome(["\x02y", "k"])).toEqual({ reads: ["\x02y", "k"], received });
+  }, TEST_MS);
+
+  it("zoom: a program that asked for focus reports hears the focus leave when a zoom covers its pane and come back when it ends, and keeps its size", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    for (const terminal of ["t1", "t2"]) run.core.program(terminal).output("\x1b[?1004h");
+    await run.advance(50);
+    const heard = { t1: run.core.program("t1").receivedHex().length, t2: run.core.program("t2").receivedHex().length };
+    const since = (terminal: "t1" | "t2") => run.core.program(terminal).receivedHex().slice(heard[terminal]);
+    const channel = channelOf(run, "t1");
+    const size = run.core.size("t1");
+    const sent = run.sent.length;
+    const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+    const zoom = async (zoomed: string | null, version: number) => {
+      await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed }] }] }, version });
+      await run.advance(1_000);
+      await run.live();
+    };
+    await zoom("t2", 0);
+    expect([since("t1"), since("t2")]).toEqual(["1b5b4f", "1b5b49"]);
+    // t2 attached again at the zoom's rectangle, and the fake's first paint does not replay its mode 1004: only t1 is followed
+    await zoom(null, 1);
+    expect(since("t1")).toBe("1b5b4f1b5b49");
+    expect([channelOf(run, "t1"), run.core.size("t1"), framesOf(run, FRAME_RESIZE, sent).filter((frame) => frame.channel === channel)]).toEqual([channel, size, []]);
+  }, TEST_MS);
+
+  it("zoom and unzoom route held bytes against the confirmed document, whichever comes first: doc event or write reply", async () => {
+    for (const unzoom of [false, true]) for (const eventFirst of [false, true]) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      if (unzoom) {
+        // Remember t1, but show t2. Both terminals already have live attachments.
+        const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+        await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 0 });
+        await run.settle();
+        expect(run.loop.panes.view("t1")?.covered).toBe(true);
+      } else await run.keys("ctrl+b,l"); // zoom t2
+      const answer = Promise.withResolvers<void>();
+      const call = run.loop.link.call.bind(run.loop.link);
+      run.loop.link.call = async (method, params, timeout) => {
+        const result = await call(method, params, timeout);
+        if (method === "doc.set") await answer.promise;
+        return result;
+      };
+      run.core.holdingEvents = !eventFirst;
+      run.type("\x02zabc");
+      await run.settle();
+      expect(run.loop.panes.view("t1")?.covered).toBe(eventFirst ? !unzoom : unzoom);
+      expect(received(run)).toEqual({});
+      answer.resolve();
+      await run.settle();
+      expect(run.loop.panes.view("t1")?.covered).toBe(!unzoom);
+      expect(received(run)).toEqual({});
+      await run.advance(FRAME_PASS_MS);
+      expect(received(run)).toEqual({ [unzoom ? "t1" : "t2"]: "616263" });
+      run.core.releaseEvents();
+      await settled(run);
+      expect(received(run)).toEqual({ [unzoom ? "t1" : "t2"]: "616263" });
+      await run.close();
+    }
+  }, TEST_MS);
+
+  it("a late zoom confirmation cannot replay expired bytes or release the next zoom's input", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    await run.advance(1);
+    const first = Promise.withResolvers<boolean>();
+    const second = Promise.withResolvers<boolean>();
+    const refresh = run.loop.link.refreshLayout.bind(run.loop.link);
+    run.loop.link.refreshLayout = () => first.promise;
+    run.type("\x02za");
+    await settled(run);
+    await run.advance(LAYOUT_SHOWN_WAIT_MS);
+    expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])).toContainEqual(["input_dropped", "not_shown"]);
+    run.loop.link.refreshLayout = () => second.promise;
+    run.type("\x02zb");
+    await run.settle();
+    first.resolve(true);
+    await run.settle();
+    expect(received(run)).toEqual({});
+    second.resolve(await refresh());
+    await settled(run);
+    expect(received(run)).toEqual({ t1: "62" });
+  }, TEST_MS);
+
+  it("a size no emulator takes fails that pane alone: drawn as failed, no grid at the refused size, the other pane still typed into", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    const drawn = run.loop.report().grids.find((grid) => grid.pane === "t1");
+    expect(drawn).toBeDefined();
+    // another viewer sizes t1 past what an emulator takes (1000 columns)
+    const rival = new HcConnection(() => run.core.transport());
+    await rival.open("terminal.attach", { terminal: "t1", cols: 1200, rows: 50 }, { onData: () => {}, onClose: () => {} });
+    await run.advance(1_000);
+    expect(run.loop.panes.view("t1")?.state).toMatchObject({ kind: "Failed", code: "size" });
+    expect(run.loop.report().grids.find((grid) => grid.pane === "t1")).toEqual(drawn);
+    expect(run.grid().join("\n")).toContain("failed: size");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+    await run.advance(1);
+    await run.keys("k");
+    await run.advance(20);
+    expect([run.core.program("t1").receivedHex(), run.core.program("t2").receivedHex()]).toEqual(["", Buffer.from("k").toString("hex")]);
+    rival.close();
+  }, TEST_MS);
+
   it("one read routes as the same bytes split across reads: an action and the text after it in one read", async () => {
     /** the focus, the mode and what every program received after `reads`, each read followed by a turn */
     const outcome = async (reads: string[]) => {
@@ -517,7 +1128,7 @@ describe("the loop", () => {
           await run.advance(20);
         }
         const model = run.loop.model();
-        return { focus: model.focus, mode: model.mode.name, received: ["t1", "t2", "t3", "t4"].map((terminal) => sentTo(run, terminal)) };
+        return { focus: model.focus, mode: model.mode.name, received: received(run) };
       } finally {
         await run.close();
       }
@@ -526,8 +1137,15 @@ describe("the loop", () => {
     // each followed by text in the same read
     // the help's close key with a combining mark after it: read apart, q closes the help and the mark goes on to the pane,
     // so one read must give the overlay code points too (a text field joins a mark to its letter itself)
-    for (const bytes of ["\x02lzy\r", "\x02l\x02hab", "\x02wlab", "\x02rhab", "\x02zab", "\x02xab", "\x02?qab", "\x02?q\u0301ab"]) {
+    // each with where its text lands: the pane moved to, the zoomed one, the one a close focuses, none in a mode
+    const hex = (text: string) => Buffer.from(text).toString("hex");
+    const lands: [string, Record<string, string>][] = [
+      ["\x02lzy\r", { t2: hex("zy\r") }], ["\x02l\x02hab", { t1: hex("ab") }], ["\x02wlab", {}], ["\x02rhab", {}], ["\x02zab", { t1: hex("ab") }],
+      ["\x02xab", { t2: hex("ab") }], ["\x02?qab", { t1: hex("ab") }], ["\x02?q\u0301ab", { t1: hex("\u0301ab") }],
+    ];
+    for (const [bytes, destination] of lands) {
       const joined = await outcome([bytes]);
+      expect({ bytes, received: joined.received }).toEqual({ bytes, received: destination });
       expect({ bytes, outcome: await outcome([...bytes]) }).toEqual({ bytes, outcome: joined });
       for (let cut = 1; cut < bytes.length; cut++) {
         expect({ bytes, cut, outcome: await outcome([bytes.slice(0, cut), bytes.slice(cut)]) }).toEqual({ bytes, cut, outcome: joined });
@@ -535,7 +1153,21 @@ describe("the loop", () => {
     }
     // the gate's case: the text after the move reaches the pane moved to, and nothing reaches the one left
     const moved = await outcome(["\x02lzy\r"]);
-    expect([moved.focus.panes["t-main"], moved.received[0], moved.received[1]]).toEqual(["t2", "", Buffer.from("zy\r").toString("hex")]);
+    expect([moved.focus.panes["t-main"], moved.received]).toEqual(["t2", { t2: hex("zy\r") }]);
+  }, TEST_MS);
+
+  it("bounded memory: tabs visited at one host size leave no grid behind, only the shown tab's panes have one", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    const visits: [tab: string, panes: string[]][] = [["t-logs", ["t3"]], ["t-notes", ["t4"]], ["t-main", ["t1", "t2"]], ["t-notes", ["t4"]]];
+    for (const [tab, panes] of visits) {
+      run.loop.dispatch({ type: "select", target: { kind: "tab", id: tab }, at: run.clock.current });
+      await run.advance(100);
+      await run.live();
+      await run.advance(FRAME_PASS_MS);
+      expect([tab, run.loop.report().grids.map((grid) => grid.pane).sort()]).toEqual([tab, panes]);
+    }
+    expect(run.loop.report().actions).not.toContain("painter_rebuilt");
   }, TEST_MS);
 
   it("scale: 200 terminals in 50 workspaces draw a frame, and only the shown tab's 16 panes are attached", async () => {
@@ -562,6 +1194,8 @@ async function failedPane(): Promise<Resting> {
   const run = await start({ core });
   await run.advance(1_000);
   expect(run.loop.panes.view("t1")?.state).toMatchObject({ kind: "Failed", code: "size" });
+  // it never showed a picture: its grid is its rectangle, never the refused size
+  expect(run.loop.report().grids.filter((grid) => grid.cols > 1_000)).toEqual([]);
   return { run };
 }
 

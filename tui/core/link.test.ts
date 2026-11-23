@@ -17,7 +17,7 @@ const WAIT_MS = 5000;
  */
 const standInRun = process.env["OVIS_STANDIN_RUN"];
 /** the cases of the first block: the last block checks that the stand-in run passed every one */
-const LINK_CASES = 30;
+const LINK_CASES = 34;
 /** the cases the plan names (row 22), which the last block finds by name among those that passed */
 const NAMED = ["EOF", "missed", "stale socket", "incompatible names the methods", "a call while offline opens no socket"];
 
@@ -32,7 +32,7 @@ type Answer = (method: string, params: Record<string, unknown>, line: ScriptedLi
 /**
  * One connection to a core scripted by the test, served on a unix socket so that the link reaches it
  * through the real socket transport: answers hello with `hello` (never, when null), each call with
- * `answer` (an error when it throws, nothing while it answers HOLD), and lets the test put lines
+ * `answer` (an error when it throws or its promise rejects, nothing while it answers HOLD), and lets the test put lines
  * or a CLOSE on a stream channel, send raw frames, or end the connection (EOF).
  */
 class ScriptedLine {
@@ -91,20 +91,22 @@ class ScriptedLine {
     const message = JSON.parse(new TextDecoder().decode(payload)) as { id: number; method: string; params: Record<string, unknown> };
     this.calls.push(message.method === "doc.get" ? `doc.get ${String(message.params["name"])}` : message.method);
     this.heard();
+    const refused = (error: unknown) => ({ error: { code: -32000, message: String(error), data: { kind: "refused" } } });
+    const send = (reply: Record<string, unknown>) => this.send(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply })));
     let reply: Record<string, unknown>;
     try {
       const result = this.answer(message.method, message.params, this);
       if (result === HOLD) return;
       // an answer the test gives later, in the order it chooses
       if (result instanceof Promise) {
-        void result.then((value: unknown) => this.send(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id: message.id, result: value }))));
+        void result.then((value: unknown) => send({ result: value }), (error: unknown) => send(refused(error)));
         return;
       }
       reply = { result };
     } catch (error) {
-      reply = { error: { code: -32000, message: String(error), data: { kind: "refused" } } };
+      reply = refused(error);
     }
-    this.send(encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply })));
+    send(reply);
   }
 }
 
@@ -315,6 +317,16 @@ describe.skipIf(process.platform === "win32" || standInRun === undefined)("the c
     expect(await failure(link.call("terminal.list", {}))).toBe("offline");
   });
 
+  it("incompatible without terminal.list, which the layout's reads call", async () => {
+    const path = socket();
+    const core = new FakeHcCore({ methods: ANSWERED.filter((method) => method !== "terminal.list") });
+    await serve(core, path);
+    const link = start(path);
+    await until("the hello's verdict", () => link.state.kind === "Incompatible" || link.state.kind === "Online");
+    expect(link.state).toEqual({ kind: "Incompatible", code: "missing_methods", missing: ["terminal.list"], reason: expect.stringContaining("terminal.list") });
+    expect(callsByLine(core)).toEqual([["hello"]]);
+  });
+
   it("a call while offline opens no socket", async () => {
     const path = socket();
     const core = new FakeHcCore();
@@ -458,6 +470,19 @@ describe.skipIf(process.platform === "win32" || standInRun === undefined)("the c
     expect(link.state).toMatchObject({ code: "bad_line", retryAt: RECONNECT_FIRST_MS });
     await read(() => cores[0]!.ended);
     expect(cores[0]!.ended).toBe(true);
+  });
+
+  it("code bad_line: a framed subscribe answer without a positive whole channel never comes Online", async () => {
+    const channels: [string, Record<string, unknown>][] = [["none", {}], ["null", { channel: null }], ["0", { channel: 0 }], ["1.5", { channel: 1.5 }], ["a string", { channel: "1" }], ["2^32, past a frame's 32 bits", { channel: 0x1_0000_0000 }]];
+    for (const [given, channel] of channels) {
+      const { cores, path } = await scripted((method) => (method === "events.subscribe" ? { ...channel, seq: 1, terminals: [] } : { value: null, version: 0 }));
+      timeline = [];
+      const link = start(path);
+      await until(`the line's end or Online with channel ${given}`, () => link.state.kind === "Offline" || link.state.kind === "Online");
+      expect({ given, state: link.state, told: timeline }).toEqual({ given, state: { kind: "Offline", code: "bad_line", retryAt: RECONNECT_FIRST_MS, reason: expect.stringContaining("channel") }, told: ["state Connecting", "state Offline"] });
+      expect(cores[0]!.calls).toEqual(["hello", "events.subscribe"]);
+      await link.close();
+    }
   });
 
   // the connection's own timers are real time: the link is given a short one, so these cases wait SHORT_MS, not 10 s
@@ -650,13 +675,61 @@ describe.skipIf(process.platform === "win32" || standInRun === undefined)("the c
     old!({ value: { tag: "old" }, version: 1 });
     // answered after the re-read on the same line: the re-read has settled once this call has
     await link.call("machine.list", {}).catch(() => {});
+    // a refresh asked while the resync still reads settles only once the resync's layout is told
+    held = false;
+    const refreshed = link.refreshLayout().then((ok) => ({ ok, toldBefore: layouts() }));
     app!({ value: null, version: 0 });
     current!({ value: { tag: "current" }, version: 2 });
-    await until("the resync's layout told", () => layouts().includes(2));
-    held = false;
-    expect(await link.refreshLayout()).toBe(true);
+    expect(await refreshed).toEqual({ ok: true, toldBefore: [0, 2] });
     expect(layouts()).toEqual([0, 2]);
     expect(notices.filter((notice) => notice.type === "doc" && notice.name === "ovis-layout").at(-1)).toMatchObject({ doc: { version: 2, value: { tag: "current" } } });
+  });
+
+  /** Online in epoch 1, then two `missed` (seq 3, then 4) whose document reads the test answers: `held` holds them in the order asked, the first resync's two before the second's. */
+  const twoResyncs = async () => {
+    let hold = false;
+    const held: ReturnType<typeof Promise.withResolvers<unknown>>[] = [];
+    const { cores, path } = await scripted((method, params, line) => {
+      if (method !== "doc.get" || !hold) return subscribing()(method, params, line);
+      const read = Promise.withResolvers<unknown>();
+      held.push(read);
+      return read.promise;
+    });
+    const link = start(path);
+    await online(link, 1);
+    const core = cores[0]!;
+    const asked = () => core.calls.filter((call) => call.startsWith("doc.get")).length;
+    hold = true;
+    core.notify(1, "missed", { seq: 3, terminals: [] });
+    await until("the first resync's reads asked", () => asked() === 4);
+    core.notify(1, "missed", { seq: 4, terminals: [] });
+    await until("the second resync's reads asked", () => asked() === 6);
+    return { link, cores, held };
+  };
+  const missedSeqs = () => notices.flatMap((notice) => (notice.type === "snapshot" && notice.cause === "missed" ? [notice.seq] : []));
+
+  it("keeps the line when a document read of a resync that a newer missed took over fails", async () => {
+    const { link, cores, held } = await twoResyncs();
+    const [firstApp, firstLayout, app, layout] = held;
+    app!.resolve({ value: null, version: 0 });
+    layout!.resolve({ value: null, version: 0 });
+    await until("the second resync's snapshot", () => missedSeqs().includes(4));
+    firstApp!.reject(new Error("doc.get refused"));
+    firstLayout!.resolve({ value: null, version: 0 });
+    // answered behind the refusal on the same line, and the second only after a round trip: the first resync has heard it
+    for (let call = 0; call < 2; call++) await link.call("machine.list", {}).catch(() => {});
+    expect(link.state).toEqual({ kind: "Online", epoch: 1 });
+    expect(cores.length).toBe(1);
+    expect(cores[0]!.ended).toBe(false);
+    expect(missedSeqs()).toEqual([4]);
+  });
+
+  it("ends the line when a document read of the latest resync fails, while an older resync still reads", async () => {
+    const { link, held } = await twoResyncs();
+    held[2]!.reject(new Error("doc.get refused"));
+    await until("Offline", () => link.state.kind === "Offline");
+    expect(link.state).toMatchObject({ kind: "Offline", code: "call_failed" });
+    expect(missedSeqs()).toEqual([]);
   });
 
   it("can be read from inside its first notice, which comes after openLink returned", async () => {

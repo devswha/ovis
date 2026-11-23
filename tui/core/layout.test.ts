@@ -282,7 +282,7 @@ describe("the screen's layout writes", () => {
       }) as HcConnection["call"],
     };
     const lost = screen(cut, undefined, dropping);
-    await lost.run("new_workspace");
+    expect(await lost.run("new_workspace")).toEqual({ ended: [], dropInput: "layout_unknown" });
     await lost.run("zoom", pane("t9"));
     expect([runs, lost.notices()]).toEqual([1, [{ code: "layout_unknown", action: "new_workspace" }, { code: "layout_refused", action: "zoom", reason: "unsupported" }]]);
 

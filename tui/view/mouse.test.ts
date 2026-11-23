@@ -19,8 +19,8 @@ const TEST_MS = 120_000;
 
 const EMULATOR = {};
 /** pane a: screen cells x 0-8, y 1-5, drawn from grid row 2 of its 9x8 grid; 20 rows of history above, at the bottom */
-const lookA = (programMouse: boolean, history = { scrollback: 20, total: 28, viewportTop: 20 }): PaneLook => ({
-  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, altScreen: false, emulator: EMULATOR, history,
+const lookA = (programMouse: boolean, history = { scrollback: 20, total: 28, viewportTop: 20 }): PaneLook & { contentVersion: number } => ({
+  rect: { x: 0, y: 1, width: 9, height: 5 }, top: 2, grid: { cols: 9, rows: 8 }, programMouse, altScreen: false, screen: 0, emulator: EMULATOR, history, contentVersion: 0,
 });
 const HITS = new HitMap([
   { rect: { x: 0, y: 0, width: 20, height: 1 }, target: { part: "tabs", id: "" } },
@@ -40,11 +40,25 @@ function sceneOf(focus: string, look: PaneLook | null): PointerScene {
     tab: { id: "T1", root: { split: "right", ratio: 0.5, first: { leaf: "a" }, second: { leaf: "b" } } },
     splits: [{ id: "split_0_root", direction: "right", rect: { x: 0, y: 1, width: 20, height: 5 }, divider: { x: 9, y: 1, width: 2, height: 5 } }],
     look: (pane) => (pane === "a" ? look : null),
+    painted: (pane) => (pane === "a" && look ? { ...look, contentVersion: 0 } : null),
   };
 }
 
 type Ev = [action: MouseInput["action"], button: MouseInput["button"] | null, col: number, row: number, shift?: boolean];
 const ev = ([action, button, col, row, shift]: Ev): MouseInput => ({ type: "mouse", action, ...(button === null ? {} : { button }), mods: shift ? { shift: true } : {}, col, row, at: 1 });
+
+it("a stale queued continuation cannot release a newer program grab", () => {
+  const pointer = new Pointer();
+  const scene = sceneOf("a", lookA(true));
+  pointer.mouse("screen", ev(["press", "right", 3, 2]), scene);
+  const held = pointer.defer();
+  const oldMotion = held.bind(ev(["motion", "right", 4, 2]), scene);
+  pointer.mouse("screen", ev(["release", "right", 4, 2]), scene);
+  pointer.mouse("screen", ev(["press", "right", 5, 3]), scene);
+  expect(oldMotion("screen", scene)).toEqual([]);
+  expect(pointer.mouse("screen", ev(["release", "right", 6, 4]), scene))
+    .toEqual([{ kind: "forward", pane: "a", event: ev(["release", "right", 6, 5]) }]);
+});
 
 /** rows of (case, focused pane, the program's mouse mode, events in order, the acts each one answers) */
 const RULES: [name: string, focus: string, programMouse: boolean, events: Ev[], acts: PointerAct[][]][] = [
@@ -74,14 +88,14 @@ const RULES: [name: string, focus: string, programMouse: boolean, events: Ev[], 
     [["press", "left", 5, 3, true], ["motion", "left", 2, 2, true], ["release", "left", 2, 2, true]], [
       [],
       [{ kind: "redraw" }],
-      [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 2, y: 23 }, end: { x: 5, y: 24 } } }],
+      [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 2, y: 23 }, end: { x: 5, y: 24 } }, contentVersion: 0 }],
     ]],
   ["with no mouse mode a drag selects", "a", false, [["press", "left", 1, 1], ["motion", "left", 3, 1], ["release", "left", 3, 1]], [
-    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } } }],
+    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } }, contentVersion: 0 }],
   ]],
   ["a click with no drag selects nothing and copies nothing", "a", false, [["press", "left", 1, 1], ["release", "left", 1, 1]], [[], []]],
   ["the next press drops the selection", "a", false, [["press", "left", 1, 1], ["motion", "left", 3, 1], ["release", "left", 3, 1], ["press", "left", 1, 1]], [
-    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } } }], [{ kind: "redraw" }],
+    [], [{ kind: "redraw" }], [{ kind: "redraw" }, { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 3, y: 22 } }, contentVersion: 0 }], [{ kind: "redraw" }],
   ]],
   ["the wheel scrolls three rows, never past the history, and back", "a", false, [["press", "wheelUp", 1, 1], ["press", "wheelDown", 1, 1]], [
     [{ kind: "scroll", pane: "a", fromBottom: 3 }], [],
@@ -105,6 +119,13 @@ const RULES: [name: string, focus: string, programMouse: boolean, events: Ev[], 
       [{ kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.3, done: true }],
     ]],
   ["a divider pressed and released without a move writes nothing", "a", false, [["press", "left", 9, 3], ["release", "left", 9, 3]], [[], []]],
+  ["a new press while a divider is held ends its drag at the last ratio it moved to", "a", false,
+    [["press", "left", 10, 3], ["motion", "left", 4, 3], ["press", "right", 16, 0], ["release", "left", 6, 3]], [
+      [],
+      [{ kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.2, done: false }],
+      [{ kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.2, done: true }],
+      [],
+    ]],
 ];
 
 describe("the pointer", () => {
@@ -121,8 +142,10 @@ describe("the pointer", () => {
     const forward = new Pointer();
     const program = sceneOf("a", lookA(true));
     expect(forward.mouse("screen", ev(["press", "left", 3, 2]), program)).toEqual([{ kind: "forward", pane: "a", event: ev(["press", "left", 3, 3]) }]);
-    // the help opens from the keyboard while the button is held
+    // the help opens from the keyboard while the button is held; a wheel notch over it neither reaches the program
+    // nor ends the gesture: the program gets exactly its press and its release
     expect(forward.mouse("overlay", ev(["motion", "left", 4, 2]), program)).toEqual([]);
+    expect(forward.mouse("overlay", ev(["press", "wheelUp", 4, 2]), program)).toEqual([]);
     expect(forward.mouse("overlay", ev(["release", "left", 4, 2]), program)).toEqual([{ kind: "forward", pane: "a", event: ev(["release", "left", 4, 3]) }]);
     // the help closed again: a drag with no new press goes nowhere
     expect(forward.mouse("screen", ev(["motion", "left", 5, 2]), program)).toEqual([]);
@@ -132,6 +155,13 @@ describe("the pointer", () => {
     expect(select.mouse("screen", ev(["press", "left", 1, 1]), plain)).toEqual([]);
     expect(select.mouse("overlay", ev(["release", "left", 3, 1]), plain)).toEqual([]);
     expect(select.mouse("screen", ev(["motion", "left", 4, 1]), plain)).toEqual([]);
+    // a divider drag ends at the last ratio it moved to, so its ratio is not drawn over later layouts
+    const divider = new Pointer();
+    expect(divider.mouse("screen", ev(["press", "left", 10, 3]), plain)).toEqual([]);
+    const move = { kind: "divider", grab: 1, tab: "T1", name: { first: "a", second: "b", direction: "right" }, ratio: 0.2 } as const;
+    expect(divider.mouse("screen", ev(["motion", "left", 4, 3]), plain)).toEqual([{ ...move, done: false }]);
+    expect(divider.mouse("overlay", ev(["release", "left", 8, 3]), plain)).toEqual([{ ...move, done: true }]);
+    expect(divider.mouse("screen", ev(["motion", "left", 6, 3]), plain)).toEqual([]);
   });
 
   it("an open overlay takes the mouse: nothing reaches a pane or the chrome; a left press on its close control closes it", () => {
@@ -158,15 +188,21 @@ describe("the pointer", () => {
     expect(pointer.mouse("screen", ev(["motion", null, 3, 2]), sceneOf("a", lookA(true)))).toEqual([{ kind: "forward", pane: "a", event: ev(["motion", null, 3, 3]) }]);
   });
 
-  it("a drag report with a new focus drops the old forward grab even without a focus notification", () => {
+  for (const mismatch of ["focus", "attachment", "screen generation"] as const) it(`a change of ${mismatch} cancels a forwarded drag or an overlay release`, () => {
     const pointer = new Pointer();
     const look = lookA(true);
-    expect(pointer.mouse("screen", ev(["press", "left", 3, 2]), sceneOf("a", look))).toEqual([
+    const original = sceneOf("a", look);
+    const changed = mismatch === "focus" ? sceneOf("b", look) : sceneOf("a", {
+      ...look, ...(mismatch === "attachment" ? { emulator: {} } : { screen: look.screen + 2 }),
+    });
+    expect(pointer.mouse("screen", ev(["press", "left", 3, 2]), original)).toEqual([
       { kind: "forward", pane: "a", event: ev(["press", "left", 3, 3]) },
     ]);
-    expect(pointer.mouse("screen", ev(["motion", "left", 4, 2]), sceneOf("b", look))).toEqual([]);
-    // With focus back on a, the original release still belongs to the canceled gesture.
-    expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), sceneOf("a", look))).toEqual([]);
+    expect(pointer.mouse("screen", ev(["motion", "left", 4, 2]), changed)).toEqual([]);
+    // Seeing the original again cannot revive a grab that the drag canceled.
+    expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), original)).toEqual([]);
+    pointer.mouse("screen", ev(["press", "left", 3, 2]), original);
+    expect(pointer.mouse("overlay", ev(["release", "left", 4, 2]), changed)).toEqual([]);
   });
 
   it("moving focus away and back mid-selection keeps the drag's original anchor", () => {
@@ -177,8 +213,21 @@ describe("the pointer", () => {
     pointer.focusChanged("a");
     expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), scene)).toEqual([
       { kind: "redraw" },
-      { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 4, y: 23 } } },
+      { kind: "copy", pane: "a", range: { start: { x: 1, y: 22 }, end: { x: 4, y: 23 } }, contentVersion: 0 },
     ]);
+  });
+
+  it("returning focus before a paint cannot revive a selection from an earlier screen", () => {
+    const pointer = new Pointer();
+    const look = lookA(false);
+    const scene = sceneOf("a", look);
+    pointer.mouse("screen", ev(["press", "left", 1, 1]), scene);
+    pointer.mouse("screen", ev(["motion", "left", 3, 2]), scene);
+    pointer.focusChanged("b");
+    pointer.focusChanged("a");
+    const replacement = { ...look, screen: look.screen + 2 };
+    expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), sceneOf("a", replacement))).toEqual([{ kind: "redraw" }]);
+    expect(pointer.shown("a", "a", replacement)).toBeNull();
   });
 
   it("changing pane focus does not end a divider drag in the same tab", () => {
@@ -203,6 +252,18 @@ describe("the pointer", () => {
     expect(pointer.typed("a", lookA(false))).toEqual([]);
   });
 
+  it("a drag whose pane got a new emulator or switched screens before its release selects and copies nothing", () => {
+    for (const changed of [{ ...lookA(false), emulator: {} }, { ...lookA(false), altScreen: true }, { ...lookA(false), screen: 1 }]) {
+      const pointer = new Pointer();
+      expect(pointer.mouse("screen", ev(["press", "left", 1, 1]), sceneOf("a", lookA(false)))).toEqual([]);
+      expect(pointer.mouse("screen", ev(["motion", "left", 3, 2]), sceneOf("a", lookA(false)))).toEqual([{ kind: "redraw" }]);
+      expect(pointer.mouse("screen", ev(["release", "left", 4, 2]), sceneOf("a", changed))).toEqual([{ kind: "redraw" }]);
+      expect(pointer.shown("a", "a", changed)).toBeNull();
+      // the grab is gone with it: a later drag extends nothing
+      expect(pointer.mouse("screen", ev(["motion", "left", 5, 2]), sceneOf("a", changed))).toEqual([]);
+    }
+  });
+
   it("the selection is drawn in the grid's rows, and dropped when its pane loses the focus, gets a new emulator or switches screens", () => {
     const select = () => {
       const pointer = new Pointer();
@@ -221,6 +282,8 @@ describe("the pointer", () => {
     expect(pointer.shown("a", "a", { ...lookA(false), emulator: {} })).toBeNull();
     pointer = select();
     expect(pointer.shown("a", "a", { ...lookA(false), altScreen: true })).toBeNull();
+    pointer = select();
+    expect(pointer.shown("a", "a", { ...lookA(false), screen: 1 })).toBeNull();
   });
 });
 
@@ -292,6 +355,25 @@ const focusedPane = (run: Run): string | undefined => {
 };
 /** the screen's own `doc.set` calls (another writer's are not on its line) */
 const docSets = (run: Run) => run.sent.filter((frame) => frame.channel === 0 && new TextDecoder().decode(frame.payload).includes("\"doc.set\""));
+
+/** Keep the rename pending after its field has closed, while the program and painter continue normally. */
+async function holdRename(run: Run): Promise<() => void> {
+  const sent = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<void>();
+  const call = run.loop.link.call.bind(run.loop.link);
+  run.loop.link.call = async (method, params, timeout) => {
+    if (method === "terminal.label") {
+      run.loop.link.call = call;
+      sent.resolve();
+      await answer.promise;
+    }
+    return call(method, params, timeout);
+  };
+  run.type("\x02Prenamed\r");
+  await sent.promise;
+  await run.advance(20);
+  return answer.resolve;
+}
 
 describe("mouse on the whole screen", () => {
   for (const [move, keys, focus, left] of [
@@ -535,11 +617,309 @@ describe("mouse on the whole screen", () => {
     const from = run.host.output().length;
     // the press at the oldest row, the wheel down to the newest while the button is held, the release at the bottom right
     run.type("\x1b[<64;41;21M".repeat(800));
-    await run.settle();
-    run.type(`\x1b[<0;26;3M${"\x1b[<65;41;21M".repeat(800)}\x1b[<32;71;38M\x1b[<0;71;38m`);
+    // Endpoints belong to the displayed viewport: show each scroll destination before pointing at its rows.
+    await run.advance(20);
+    run.type(`\x1b[<0;26;3M${"\x1b[<65;41;21M".repeat(800)}`);
+    await run.advance(20);
+    run.type("\x1b[<32;71;38M\x1b[<0;71;38m");
     await run.settle();
     expect(run.host.output().slice(from)).not.toContain("]52;");
     expect(run.loop.model().notices.find((notice) => notice.code === "copy_refused")?.data).toMatchObject({ reason: "too_large" });
+  }, TEST_MS);
+
+  for (const held of [false, true]) for (const beforePress of [false, true]) {
+    it(`same-screen scroll ${beforePress ? "before" : "after"} press ${held ? "during a hold" : "after a hold, before repaint"} selects displayed cells and refuses stale text`, async () => {
+      const run = await demo120();
+      await run.advance(20);
+      const program = run.core.program("t1");
+      if (!held) {
+        program.output("\x1b[?2026h\x1b[?2026l");
+        await run.advance(20);
+      }
+      program.output(`\x1b[H\x1b[2J${"line\r\n".repeat(35)}AAAA`);
+      await run.settle();
+      expect((await hostScreen(run)).text(37, 25, 28)).toBe("AAAA");
+      const from = run.host.output().length;
+      if (!beforePress) await run.keys("press@25:37");
+      program.output(`${held ? "\x1b[?2026h" : ""}\r\nBBBB`);
+      await run.settle();
+      // Still A on the host, even though the live viewport has advanced.
+      expect((await hostScreen(run)).text(37, 25, 28)).toBe("AAAA");
+      if (beforePress) await run.keys("press@25:37");
+      await run.keys("drag@28:37");
+      await run.advance(20);
+      const row = held ? 37 : 36;
+      const marked = await hostScreen(run);
+      expect([marked.inverted(36, 25, 70), marked.inverted(37, 25, 70)]).toEqual(held ? ["", "AAAA"] : ["AAAA", ""]);
+      await run.keys(`release@28:${row}`);
+      if (held) {
+        expect(run.host.output().slice(from)).not.toContain("]52;");
+        expect(notices(run)).not.toContain("copied");
+      } else {
+        expect(run.host.output().slice(from)).toContain(osc52Of("AAAA"));
+        expect(run.host.output().slice(from)).not.toContain(osc52Of("BBBB"));
+      }
+      if (held) program.output("\x1b[?2026l");
+      await run.advance(20);
+      // After the hold and its paint, B is displayed and a new gesture can copy B.
+      expect((await hostScreen(run)).text(37, 25, 28)).toBe("BBBB");
+      const fresh = run.host.output().length;
+      await run.keys("press@25:37,drag@28:37,release@28:37");
+      await run.advance(20);
+      expect((await hostScreen(run)).inverted(37, 25, 70)).toBe("BBBB");
+      expect(run.host.output().slice(fresh)).toContain(osc52Of("BBBB"));
+    }, TEST_MS);
+  }
+
+  it("a wheel during a drag uses the newly displayed viewport and copies the unchanged history", async () => {
+    const run = await demo120();
+    run.core.program("t1").output(`\x1b[H\x1b[2J${Array.from({ length: 60 }, (_, n) => `row-${n.toString().padStart(2, "0")}`).join("\r\n")}`);
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-59");
+    await run.keys("press@30:37,wheelup@40:20");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-56");
+    await run.keys("drag@25:37");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(37, 25, 30)).toBe("row-56");
+    const from = run.host.output().length;
+    await run.keys("release@25:37");
+    expect(run.host.output().slice(from)).toContain(osc52Of("row-56\nrow-57\nrow-58\nrow-59"));
+  }, TEST_MS);
+
+  for (const repaint of ["before press", "during drag", "after release", "unchanged"] as const) {
+    it(`a held rename binds selection to the displayed cells: ${repaint}`, async () => {
+      const run = await demo120();
+      const program = run.core.program("t1");
+      program.output("\x1b[H\x1b[2JAAAA");
+      await run.advance(20);
+      const answer = await holdRename(run);
+      expect((await hostScreen(run)).text(2, 25, 28)).toBe("AAAA");
+      const from = run.host.output().length;
+      const paintB = async () => {
+        program.output("\rBBBB");
+        await run.advance(20);
+        expect((await hostScreen(run)).text(2, 25, 28)).toBe("BBBB");
+      };
+      if (repaint === "before press") await paintB();
+      await run.keys("press@25:2");
+      if (repaint === "during drag") await paintB();
+      await run.keys("drag@28:2,release@28:2");
+      if (repaint === "after release") await paintB();
+      expect(run.host.output().slice(from)).not.toContain("]52;");
+      answer();
+      await run.advance(20);
+      const copies = run.host.output().slice(from).match(/\x1b\]52;[^\x1b]*\x1b\\/g) ?? [];
+      expect(copies).toEqual(repaint === "unchanged" ? [osc52Of("AAAA")] : repaint === "before press" ? [osc52Of("BBBB")] : []);
+      if (!copies.length) {
+        await run.keys("press@25:2,drag@28:2,release@28:2");
+        expect(run.host.output().slice(from)).toContain(osc52Of("BBBB"));
+      }
+    }, TEST_MS);
+  }
+
+  it.each(["unchanged", "repaint after release", "switch before rename", "switch before queued drag",
+    "switch after queued press", "switch between queued drag and release", "switch after queued release"] as const)("a held rename binds a forwarded grab to its press-time screen: %s", async (order) => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output("\x1b[?1002h\x1b[?1006h"); // report drags as well as button presses and releases
+    await run.advance(20);
+    const from = run.sent.length;
+    const roundTrip = async () => {
+      program.output("\x1b[?1049h\x1b[?1049l");
+      await run.advance(20);
+    };
+    const queuedPress = order === "switch after queued press";
+    if (!queuedPress) await run.keys("press@25:2");
+    if (order === "switch before rename") await roundTrip();
+    const answer = await holdRename(run);
+    if (queuedPress) await run.keys("press@25:2");
+    if (queuedPress || order === "switch before queued drag") await roundTrip();
+    await run.keys("drag@30:3");
+    if (order === "switch between queued drag and release") await roundTrip();
+    await run.keys("release@30:3");
+    if (order === "switch after queued release") await roundTrip();
+    if (order === "repaint after release") {
+      program.output("new content");
+      await run.advance(20);
+    }
+    const press = "\x1b[<0;1;1M";
+    const heard = () => dataTo(run, "t1", from).map((frame) => new TextDecoder().decode(frame.payload));
+    expect(heard()).toEqual(queuedPress ? [] : [press]);
+    answer();
+    await run.advance(20);
+    // output that leaves the grab's pane, attachment, screen and cells as they were changes nothing a program reads
+    const continuation = order === "unchanged" || order === "repaint after release" ? ["\x1b[<32;6;2M", "\x1b[<0;6;2m"] : [];
+    expect(heard()).toEqual(queuedPress ? [] : [press, ...continuation]);
+    expect(dataTo(run, "t2", from)).toEqual([]);
+  }, TEST_MS);
+
+  it("a wheel during a held drag never maps the endpoint into an unseen viewport", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output(`\x1b[H\x1b[2J${Array.from({ length: 60 }, (_, n) => `row-${n}`).join("\r\n")}`);
+    await run.advance(20);
+    program.output("\x1b[?2026h\r\nrow-60");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@30:37,wheelup@40:20");
+    await run.advance(20);
+    await run.keys("drag@25:37");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(37, 25, 70)).toBe("row-59");
+    await run.keys("release@25:37");
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+  }, TEST_MS);
+
+  it("a wheel drag refuses a changed anchor outside the displayed viewport", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output(`\x1b[H\x1b[2J${Array.from({ length: 60 }, (_, n) => `row-${n}`).join("\r\n")}`);
+    await run.advance(20);
+    await run.keys("press@30:37,wheelup@40:20");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-56");
+    // The program overwrites the active bottom row (the anchor), outside the scrolled viewport.
+    program.output("\x1b[36;1HCHANGED\r\nrow-60");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(37, 25, 30)).toBe("row-56");
+    await run.keys("drag@25:37");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(37, 25, 30)).toBe("row-56");
+    const from = run.host.output().length;
+    await run.keys("release@25:37");
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+  }, TEST_MS);
+
+  for (const held of [false, true]) for (const beforePress of [false, true]) {
+    it(`selection uses the displayed screen when it switches ${beforePress ? "before" : "after"} press, ${held ? "during a hold" : "before repaint"}`, async () => {
+      const run = await demo120();
+      await run.advance(20);
+      const program = run.core.program("t1");
+      program.output("\x1b[H\x1b[2JVISIBLE-A");
+      await run.settle();
+      const passes = run.loop.report().passes;
+      const from = run.host.output().length;
+      if (!beforePress) await run.keys("press@25:2");
+      program.output(`${held ? "\x1b[?2026h" : ""}\x1b[?1049h\x1b[H\x1b[2JREPLACED-B`);
+      await run.settle();
+      expect(run.loop.report().passes).toBe(passes);
+      if (held) await run.advance(20);
+      expect((await hostScreen(run)).text(2, 25, 33)).toBe("VISIBLE-A");
+      if (beforePress) await run.keys("press@25:2");
+      await run.keys("drag@28:2,release@28:2");
+      expect(run.host.output().slice(from)).not.toContain("]52;");
+      expect(notices(run)).not.toContain("copied");
+      program.output("\x1b[?2026l");
+      await run.advance(20);
+      expect((await hostScreen(run)).text(2, 25, 34)).toBe("REPLACED-B");
+      // Once B is actually displayed, a new selection belongs to B and can copy it.
+      const after = run.host.output().length;
+      await run.keys("press@25:2,drag@28:2,release@28:2");
+      expect(run.host.output().slice(after)).toContain(osc52Of("REPL"));
+    }, TEST_MS);
+  }
+
+  it("a drag whose pane switches to its alternate screen before the release copies nothing", async () => {
+    const run = await demo120();
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("echo");
+    // the program switches to its alternate screen, with text where the selection's cells were
+    run.core.program("t1").output("\x1b[?1049h\x1b[H\x1b[2JALTSCREEN-TEXT");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 38)).toBe("ALTSCREEN-TEXT");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
+  }, TEST_MS);
+
+  it("a drag on the alternate screen, drawn on the main screen and then on a new alternate screen before the release, copies nothing", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output("\x1b[?1049h\x1b[H\x1b[2JALT-ONE-TEXT");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("T-ON");
+    // back on the main screen, drawn; then a new alternate screen with other text where the selection was
+    program.output("\x1b[?1049l");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 30)).toBe("$ echo");
+    program.output("\x1b[?1049h\x1b[H\x1b[2JALT-TWO-TEXT");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 36)).toBe("ALT-TWO-TEXT");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
+  }, TEST_MS);
+
+  for (const [ordering, transition] of [
+    ["two mode changes", "\x1b[?1049l\x1b[?1049h"],
+    ["a compound restore", "\x1b[?47;1049r"],
+    ["a NUL in CSI entry", "\x1b[\x00?47l\x1b[?1049h"],
+  ]) it(`an alternate screen replaced by ${ordering} in one output copies nothing at release`, async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    program.output("\x1b[?47s\x1b[?1049h\x1b[?1049s\x1b[H\x1b[2JALT-ONE-TEXT");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("T-ON");
+    // one write: the main screen is never drawn, and the pane is on its alternate screen before and after it
+    program.output(`${transition}\x1b[H\x1b[2JALT-TWO-TEXT`);
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 36)).toBe("ALT-TWO-TEXT");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("");
+  }, TEST_MS);
+
+  it("a drag on an alternate screen that a restored mode leaves before the release copies nothing", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    // mode 47 saved off on the main screen, then set
+    program.output("\x1b[?47s\x1b[?47h\x1b[H\x1b[2JALT-ONE-TEXT");
+    await run.advance(20);
+    const from = run.host.output().length;
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("T-ON");
+    // restored: back on the main screen, whose text lies under the selection's cells
+    program.output("\x1b[?47r");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(2, 25, 30)).toBe("$ echo");
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).not.toContain("]52;");
+    expect(notices(run)).not.toContain("copied");
+  }, TEST_MS);
+
+  it("a switch to the screen a pane already shows keeps its selection, which the release copies", async () => {
+    const run = await demo120();
+    const program = run.core.program("t1");
+    await run.keys("press@27:2,drag@30:2");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("echo");
+    // already on the main screen: the reset changes nothing
+    program.output("\x1b[?47l");
+    await run.advance(20);
+    expect((await hostScreen(run)).inverted(2, 25, 40)).toBe("echo");
+    const from = run.host.output().length;
+    await run.keys("release@30:2");
+    await run.advance(20);
+    expect(run.host.output().slice(from)).toContain(osc52Of("echo"));
   }, TEST_MS);
 
   it("a click on a pane without focus focuses it and is not forwarded; a click on a tab or a sidebar row selects it", async () => {
@@ -696,6 +1076,64 @@ describe("mouse on the whole screen", () => {
     }
   }, TEST_MS);
 
+  it("a divider drag released over the help draws the core's ratio once another writer changes it", async () => {
+    const run = await demo120();
+    await run.keys("press@71:10,drag@60:10");
+    await run.advance(20);
+    // drawn ahead: t1's box ends at x 60, t2's starts at x 61
+    expect((await hostScreen(run)).text(10, 59, 62)).toBe(" || ");
+    await run.keys("ctrl+b,?");
+    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["help"]);
+    await run.keys("release@60:10");
+    await run.advance(20);
+    await run.keys("click@100:2");
+    expect(run.loop.model().overlays).toEqual([]);
+    await rivalWrites(run.core, (value) => ({ ...value, workspaces: value.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.map((tab) => tab.id === "t-main" ? { ...tab, root: { ...(tab.root as object), ratio: 0.75 } } : tab) })) }));
+    await run.advance(20);
+    // the core's 72 of 96 columns: t1's box ends at x 95, t2's starts at x 96
+    expect((await hostScreen(run)).text(10, 94, 97)).toBe(" || ");
+  }, TEST_MS);
+
+  it("a divider released on another tab draws the core's ratio once another writer changed it while its tab was not shown", async () => {
+    const run = await demo120();
+    await run.keys("press@71:10,drag@60:10");
+    await run.advance(20);
+    expect((await hostScreen(run)).text(10, 59, 62)).toBe(" || ");
+    await run.keys("ctrl+b,n");
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
+    await run.live();
+    await run.keys("release@60:10");
+    await run.advance(20);
+    await rivalWrites(run.core, (value) => ({ ...value, workspaces: value.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.map((tab) => tab.id === "t-main" ? { ...tab, root: { ...(tab.root as object), ratio: 0.75 } } : tab) })) }));
+    await run.advance(20);
+    // back by a click on "1:main" in the tab bar
+    expect((await hostScreen(run)).text(0, 25, 30)).toBe("1:main");
+    await run.keys("click@26:0");
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
+    await run.live();
+    // the core's 72 of 96 columns: t1's box ends at x 95, t2's starts at x 96
+    expect((await hostScreen(run)).text(10, 94, 97)).toBe(" || ");
+  }, TEST_MS);
+
+  for (const editBeforePress of [true, false]) it(`divider drag is stale after a foreign edit ${editBeforePress ? "before" : "after"} the press, before repaint`, async () => {
+    const run = await demo120();
+    await run.advance(20);
+    run.core.program("t1").output("paint");
+    await run.settle();
+    const passes = run.loop.report().passes;
+    if (!editBeforePress) await run.keys("press@71:10");
+    const rival = await rivalWrites(run.core, (value) => ({ ...value, workspaces: value.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.map((tab) => tab.id === "t-main" ? { ...tab, root: { split: "down", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } } } : tab) })) }));
+    await run.settle();
+    expect(run.loop.report().passes).toBe(passes);
+    expect((await hostScreen(run)).text(10, 70, 73)).toBe(" || ");
+    if (editBeforePress) await run.keys("press@71:10");
+    await run.keys("drag@60:10,release@60:10");
+    await run.advance(20);
+    expect(docSets(run)).toEqual([]);
+    expect(notices(run)).toContain("stale");
+    expect(run.core.docs.get(OVIS_LAYOUT_DOC)!.value).toEqual(rival);
+  }, TEST_MS);
+
   it("divider drag is stale after a foreign edit", async () => {
     const run = await demo120();
     await run.keys("press@71:10");
@@ -707,6 +1145,27 @@ describe("mouse on the whole screen", () => {
     expect(notices(run)).toContain("stale");
     expect(docSets(run)).toEqual([]);
     expect(run.core.docs.get(OVIS_LAYOUT_DOC)!.value).toEqual(rival);
+  }, TEST_MS);
+
+  for (const replace of [true, false]) it(`a held rename binds a divider to its two panes: ${replace ? "replaced" : "unchanged"}`, async () => {
+    const run = await demo120();
+    const answer = await holdRename(run);
+    await run.keys("press@71:10,drag@60:10,release@60:10");
+    if (replace) {
+      // Same tab, split id, orientation and screen cells, but the sides name different panes.
+      await rivalWrites(run.core, (value) => ({ ...value, workspaces: value.workspaces.map((ws) => ({ ...ws, tabs: ws.tabs.map((tab) => tab.id === "t-main"
+        ? { ...tab, root: { split: "right", ratio: 0.5, first: { leaf: "t2" }, second: { leaf: "t1" } } } : tab) })) }));
+      await run.advance(20);
+    } else {
+      // Unrelated output at the drag coordinates does not replace the grabbed divider.
+      run.core.program("t1").output("still the same divider");
+      await run.advance(20);
+    }
+    expect(docSets(run)).toEqual([]);
+    answer();
+    await run.advance(30);
+    expect(docSets(run)).toHaveLength(replace ? 0 : 1);
+    expect(run.loop.report().actions.includes("divider:done")).toBe(!replace);
   }, TEST_MS);
 });
 
