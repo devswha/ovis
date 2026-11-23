@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
-description = "Holds an ACP agent on pipes, numbers every message into a file, serves replay clients, draws a shared terminal screen and arbitrates approvals"
+description = "Holds an ACP agent on pipes for Ovis: numbers every message into a file, serves replay clients, arbitrates approvals and switches the pane to the agent's real TUI"
 
 [[bin]]
 name = "ovis-acp-keeper"
@@ -14,7 +14,7 @@ path = "src/main.rs"
 serde_json = "1"
 memchr = "2"
 tokio = { version = "1", features = ["rt", "net", "process", "io-util", "signal", "sync", "time", "macros"] }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
 unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]

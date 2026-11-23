@@ -1,12 +1,19 @@
 //! Where every message goes. The keeper is the agent's only ACP client: it sends `initialize` and
-//! `session/new` (or `session/load`) itself, so the screen works with nobody else attached. A
+//! `session/new` (or `session/load`) itself, so the session is open before any client attaches. A
 //! client's request reaches the agent under an id of the keeper's own and its answer comes back to
 //! that client alone (a `to-client` row), so clients that count ids alike never get each other's
 //! answers. An agent request is archived under an id of the keeper's own too (`agent-N`), so an
 //! answer meant for one approval can never resolve a later one the agent asked under the same id.
-//! It is pending until the first answer arrives from the screen or any client; that answer alone
-//! goes to the agent (under the agent's id), a `_keeper/resolved` note says who won, and a later
-//! answer is dropped with a `_keeper/dropped` note.
+//! It is pending until the first answer arrives from a client (people answer in Ovis, never in the
+//! pane); that answer alone goes to the agent (under the agent's id), a `_keeper/resolved` note
+//! says who won, and a later answer is dropped with a `_keeper/dropped` note.
+//!
+//! The switch: once the turn is over and nothing waits, F4 in the pane or a client's
+//! `_keeper/open_terminal` request asks for the agent's real TUI on the same conversation. The run
+//! loop ends the ACP agent, hands the pane to the TUI, and when the TUI exits starts the ACP agent
+//! again and loads the same session (now with the turns made in the TUI). `_keeper/mode` notes mark
+//! each step; client requests in between are refused, since one conversation is never driven by
+//! ACP and a live TUI at once.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -17,16 +24,27 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::archive::{key_of, rpc, Archive, MAX_LINE};
 use crate::model::Model;
-use crate::ui::{Action, Screen};
+use crate::status::{Key, Mode};
 use crate::Opts;
 
+/// Agent lines carry the generation of the agent process that wrote them: lines of an agent the
+/// keeper already ended for the switch are dropped.
 pub enum Ev {
-    Agent(String),
-    Client { conn: u64, line: String },
-    Oversize { conn: Option<u64>, bytes: usize, id: Option<Value>, request: bool },
+    Agent(u64, String),
+    Client {
+        conn: u64,
+        line: String,
+    },
+    Oversize {
+        conn: Option<u64>,
+        bytes: usize,
+        id: Option<Value>,
+        request: bool,
+        generation: u64,
+    },
     Open(u64),
     Gone,
-    Term(ratatui::crossterm::event::Event),
+    Key(Key),
 }
 
 /// A mode or model change from the screen or a client, shown in the header once the agent accepts it.
@@ -56,8 +74,6 @@ enum Own {
     Initialize,
     NewSession,
     LoadSession { resumed: bool },
-    Prompt,
-    Change(Change),
 }
 
 struct Route {
@@ -76,7 +92,7 @@ fn invalid_answer(pending: &crate::model::Pending, answer: &Value) -> Option<&'s
         Some("cancelled") => None,
         Some("selected") => {
             let option = answer.pointer("/result/outcome/optionId").and_then(Value::as_str);
-            (!pending.options.iter().any(|o| Some(o.id.as_str()) == option)).then_some("not one of the offered options")
+            (!pending.options.iter().any(|o| Some(o.as_str()) == option)).then_some("not one of the offered options")
         }
         _ => Some("not a permission outcome"),
     }
@@ -90,43 +106,118 @@ pub struct Hub {
     archive: Arc<Archive>,
     pub agent: Option<UnboundedSender<Vec<u8>>>,
     pub model: Model,
-    pub screen: Option<Screen>,
-    opts: Opts,
+    pub opts: Opts,
     resumed: bool,
+    pub mode: Mode,
+    pub generation: u64,
+    /// When the switch to the real TUI was asked for; the run loop carries it out.
+    pub want_terminal: Option<Instant>,
+    /// Whether the pane is a terminal the real TUI can be given.
+    pub tty: bool,
     next: u64,
     own: HashMap<String, Own>,
     routes: HashMap<String, Route>,
     agent_ids: HashMap<String, Value>,
     client_ids: HashSet<(u64, String)>,
     prompts: HashSet<String>,
-    started: Instant,
-    drew: bool,
     pub quit: bool,
+    /// The pane was resized: paint the status line again.
+    pub redraw: bool,
 }
 
 impl Hub {
     /// `resumed`: the session to load came from the archive, so a failed load opens a new one.
-    pub fn new(archive: Arc<Archive>, agent: UnboundedSender<Vec<u8>>, screen: Option<Screen>, opts: Opts, resumed: bool, started: Instant) -> Hub {
+    pub fn new(archive: Arc<Archive>, agent: UnboundedSender<Vec<u8>>, opts: Opts, resumed: bool, tty: bool) -> Hub {
         // Ids the keeper makes up (`keeper-N`, `client-C-N`, `agent-N`) count on from the archive's
         // last row, so no id of an earlier run in the same ROOT is ever given out again.
         let next = archive.replay_from(1).map(|(_, _, last)| last).unwrap_or(0);
         Hub {
             archive,
             agent: Some(agent),
-            model: Model::new(opts.name.clone(), opts.cwd.clone()),
-            screen,
+            model: Model::new(opts.name.clone()),
             opts,
             resumed,
+            mode: Mode::Acp,
+            generation: 0,
+            want_terminal: None,
+            tty,
             next,
             own: HashMap::new(),
             routes: HashMap::new(),
             agent_ids: HashMap::new(),
             client_ids: HashSet::new(),
             prompts: HashSet::new(),
-            started,
-            drew: false,
             quit: false,
+            redraw: false,
         }
+    }
+
+    pub fn resume_argv(&self) -> Option<Vec<String>> {
+        let session = self.model.session.as_deref()?;
+        let template = self.opts.resume.as_deref()?;
+        let words: Vec<String> = match serde_json::from_str::<Vec<String>>(template) {
+            Ok(words) => words,
+            Err(_) => template.split_whitespace().map(str::to_string).collect(),
+        };
+        (!words.is_empty()).then(|| words.iter().map(|w| w.replace("{session}", session)).collect())
+    }
+
+    pub fn mode_note(&self, mode: &str, phase: &str, extra: Value) {
+        let mut params = json!({"mode": mode, "phase": phase, "sessionId": self.model.session});
+        if let (Some(target), Value::Object(extra)) = (params.as_object_mut(), extra) {
+            target.extend(extra);
+        }
+        self.note_row("_keeper/mode", params);
+    }
+
+    fn switch_blocker(&self) -> Option<&'static str> {
+        if self.mode != Mode::Acp {
+            Some("already switching")
+        } else if !self.tty {
+            Some("the pane has no terminal (headless)")
+        } else if self.agent.is_none() {
+            Some("the agent has exited")
+        } else if self.resume_argv().is_none() {
+            Some(if self.model.session.is_none() {
+                "no session yet"
+            } else {
+                "no resume command for this agent (--resume)"
+            })
+        } else if !self.model.pending.is_empty() {
+            Some("an approval is waiting")
+        } else if self.model.working {
+            Some("a turn is running")
+        } else if !self.own.is_empty() || !self.routes.is_empty() {
+            Some("a request to the agent is still open")
+        } else {
+            None
+        }
+    }
+
+    /// Asks for the switch to the real TUI: refused (and noted) unless the agent is idle.
+    fn open_terminal(&mut self, by: &str) -> Result<(), &'static str> {
+        if let Some(reason) = self.switch_blocker() {
+            self.note_row("_keeper/switch_refused", json!({"by": by, "reason": reason}));
+            self.model.error(format!("진짜 TUI로 열지 않았습니다: {reason}"));
+            return Err(reason);
+        }
+        self.want_terminal = Some(Instant::now());
+        Ok(())
+    }
+
+    /// A new ACP agent after the real TUI: everything the old one had open is gone, and the same
+    /// session is loaded (a new one opens when the agent cannot load it).
+    pub fn restarted(&mut self, agent: UnboundedSender<Vec<u8>>) {
+        self.agent = Some(agent);
+        self.own.clear();
+        self.prompts.clear();
+        self.agent_ids.clear();
+        self.model.pending.clear();
+        self.model.working = false;
+        self.model.agent_gone = None;
+        self.opts.load = self.model.session.clone();
+        self.resumed = true;
+        self.start();
     }
 
     pub fn note_row(&self, method: &str, params: Value) {
@@ -186,27 +277,27 @@ impl Hub {
 
     pub fn handle(&mut self, ev: Ev) {
         match ev {
-            Ev::Agent(text) => self.on_agent(text),
+            Ev::Agent(generation, text) => {
+                if generation == self.generation {
+                    self.on_agent(text);
+                }
+            }
             Ev::Client { conn, line } => self.on_client(conn, line),
-            Ev::Oversize { conn, bytes, id, request } => self.oversize(conn, bytes, id, request),
+            Ev::Oversize { conn, bytes, id, request, generation } => {
+                if conn.is_some() || generation == self.generation {
+                    self.oversize(conn, bytes, id, request);
+                }
+            }
             Ev::Open(conn) => {
                 self.note_row("_keeper/client", json!({"client": conn}));
                 self.model.clients += 1;
-                self.model.revision += 1;
             }
-            Ev::Gone => {
-                self.model.clients = self.model.clients.saturating_sub(1);
-                self.model.revision += 1;
+            Ev::Gone => self.model.clients = self.model.clients.saturating_sub(1),
+            Ev::Key(Key::OpenTui) => {
+                let _ = self.open_terminal("terminal");
             }
-            Ev::Term(event) => {
-                let actions = match self.screen.as_mut() {
-                    Some(screen) => screen.event(event, &self.model),
-                    None => vec![],
-                };
-                for action in actions {
-                    self.act(action);
-                }
-            }
+            Ev::Key(Key::Quit) => self.quit = true,
+            Ev::Key(Key::Redraw) => self.redraw = true,
         }
     }
 
@@ -307,11 +398,16 @@ impl Hub {
             }
             Own::NewSession | Own::LoadSession { .. } if error.is_some() => {
                 let e = error.unwrap_or_default();
-                self.model.session = None;
                 if let Own::LoadSession { resumed: true } = own {
+                    self.model.session = None;
                     self.model.note(format!("지난 세션을 이어 가지 못해 새 세션을 엽니다: {e}"));
                     self.new_session();
                     return;
+                }
+                self.model.session = None;
+                if self.mode == Mode::Switching {
+                    self.mode = Mode::Acp;
+                    self.mode_note("acp", "failed", json!({"reason": e}));
                 }
                 let auth = msg.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64) == Some(-32000);
                 self.model.error(if auth {
@@ -326,18 +422,16 @@ impl Hub {
                 }
                 self.model.session_result(&result);
                 let session = self.model.session.clone().unwrap_or_default();
-                self.model.resume = self.opts.resume.as_ref().map(|t| t.replace("{session}", &session));
                 self.model.note(format!("세션 {session} 열림 · 폴더 {}", self.opts.cwd));
                 self.note_row(
                     "_keeper/session",
-                    json!({"sessionId": session, "cwd": self.opts.cwd, "agent": self.opts.name, "resume": self.model.resume}),
+                    json!({"sessionId": session, "cwd": self.opts.cwd, "agent": self.opts.name, "resume": self.resume_argv()}),
                 );
+                if self.mode == Mode::Switching {
+                    self.mode = Mode::Acp;
+                    self.mode_note("acp", "ready", json!({}));
+                }
             }
-            Own::Prompt => {}
-            Own::Change(change) => match error {
-                Some(e) => self.model.error(format!("바꾸지 못했습니다: {e}")),
-                None => self.apply(&change, &result),
-            },
         }
     }
 
@@ -368,6 +462,20 @@ impl Hub {
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.answer(&key_of(&id), &line, &by),
+            (Some(method), Some(id)) if method == "_keeper/open_terminal" => {
+                let answer = match self.open_terminal(&by) {
+                    Ok(()) => json!({"jsonrpc": "2.0", "id": id, "result": {"accepted": true, "argv": self.resume_argv()}}),
+                    Err(reason) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32002, "message": reason}}),
+                };
+                self.reply(conn, &answer);
+            }
+            (Some(_), Some(id)) if self.mode != Mode::Acp => {
+                self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "terminal mode"}));
+                self.reply(
+                    conn,
+                    &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32002, "message": "the agent's real TUI has the conversation"}}),
+                );
+            }
             (Some(method), Some(id)) => {
                 if self.agent.is_none() {
                     self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the agent has exited"}}));
@@ -385,8 +493,6 @@ impl Hub {
                 if method == "session/prompt" && params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref() {
                     self.prompts.insert(key.clone());
                     self.model.working = true;
-                    let text = Model::prompt_text(&params);
-                    self.model.user(&format!("[{by}] {text}"), &text);
                 }
                 self.routes.insert(
                     key,
@@ -399,6 +505,7 @@ impl Hub {
                 msg.insert("id".into(), routed);
                 self.forward(&Value::Object(msg).to_string());
             }
+            (Some(_), None) if self.mode != Mode::Acp => {}
             (Some(method), None) => {
                 self.forward(&line);
                 if method == "session/cancel" {
@@ -428,22 +535,8 @@ impl Hub {
         self.note_row("_keeper/resolved", json!({"id": pending.id, "by": by, "optionId": option, "outcome": outcome, "seq": pending.seq}));
         answer["id"] = self.agent_ids.remove(key).unwrap_or_else(|| pending.id.clone());
         self.forward(&answer.to_string());
-        let chosen = pending
-            .options
-            .iter()
-            .find(|o| Some(&o.id) == option.as_ref())
-            .map(|o| o.name.clone())
-            .or(outcome)
-            .unwrap_or_else(|| "오류로 답함".into());
-        let who = if by == "terminal" {
-            "터미널".to_string()
-        } else if by == "keeper-cancel" {
-            "취소".to_string()
-        } else {
-            format!("클라이언트 {}", by.trim_start_matches("client-"))
-        };
-        self.model
-            .note(format!("승인 답함 ({who}): {chosen} · {}", if pending.title.is_empty() { &pending.method } else { &pending.title }));
+        let chosen = option.or(outcome).unwrap_or_else(|| "error".into());
+        self.model.note(format!("승인 답함 ({by}): {chosen}"));
     }
 
     fn cancel_pending(&mut self, session: Option<&str>, by: &str) {
@@ -451,7 +544,7 @@ impl Hub {
             .model
             .pending
             .iter()
-            .filter(|p| p.method == "session/request_permission" && p.params.get("sessionId").and_then(Value::as_str) == session)
+            .filter(|p| p.method == "session/request_permission" && p.session.as_deref() == session)
             .map(|p| (p.key.clone(), p.id.clone()))
             .collect();
         for (key, id) in keys {
@@ -459,64 +552,6 @@ impl Hub {
             self.answer(&key, &raw, "keeper-cancel");
         }
         self.model.note(format!("취소 보냄 ({by})"));
-    }
-
-    fn act(&mut self, action: Action) {
-        let session = self.model.session.clone();
-        match action {
-            Action::Prompt(text) => {
-                let Some(session) = session else {
-                    self.model.error("세션이 아직 없습니다");
-                    return;
-                };
-                let key = self.request("session/prompt", json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}), Own::Prompt);
-                self.prompts.insert(key);
-                self.model.working = true;
-                self.model.user(&text, &text);
-            }
-            Action::Cancel => {
-                if let Some(session) = session {
-                    self.forward(&json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}}).to_string());
-                    self.cancel_pending(Some(&session), "terminal");
-                }
-            }
-            Action::Answer { key, option } => {
-                let Some(pending) = self.model.pending.iter().find(|p| p.key == key) else { return };
-                let raw = match option {
-                    Some(option) => json!({"jsonrpc": "2.0", "id": pending.id, "result": {"outcome": {"outcome": "selected", "optionId": option}}}),
-                    None => json!({"jsonrpc": "2.0", "id": pending.id, "error": {"code": -32601, "message": "Method not supported by this client"}}),
-                }
-                .to_string();
-                self.answer(&key, &raw, "terminal");
-            }
-            Action::SetMode(id) => self.set(true, id, session),
-            Action::SetModel(id) => self.set(false, id, session),
-            Action::Quit => self.quit = true,
-        }
-    }
-
-    fn set(&mut self, mode: bool, id: String, session: Option<String>) {
-        let Some(session) = session else { return };
-        let selector = if mode { &self.model.modes } else { &self.model.models };
-        match selector.as_ref().and_then(|s| s.config_id.clone()) {
-            Some(config) => self.request(
-                "session/set_config_option",
-                json!({"sessionId": session, "configId": config, "value": id}),
-                Own::Change(Change::Config { config, value: id }),
-            ),
-            None if mode => self.request("session/set_mode", json!({"sessionId": session, "modeId": id}), Own::Change(Change::Mode(id))),
-            None => self.request("session/set_model", json!({"sessionId": session, "modelId": id}), Own::Change(Change::Model(id))),
-        };
-    }
-
-    pub fn draw(&mut self) {
-        if let Some(screen) = self.screen.as_mut() {
-            screen.draw(&self.model);
-            if !self.drew {
-                self.drew = true;
-                self.note_row("_keeper/first_frame", json!({"sinceStartMs": self.started.elapsed().as_secs_f64() * 1000.0}));
-            }
-        }
     }
 }
 
@@ -531,7 +566,7 @@ mod tests {
         let (archive, _) = Archive::open(dir.join("archive.jsonl")).unwrap();
         let (tx, rx) = unbounded_channel();
         let opts = crate::parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
-        (Hub::new(Arc::new(archive), tx, None, opts, false, Instant::now()), rx)
+        (Hub::new(Arc::new(archive), tx, opts, false, false), rx)
     }
 
     #[test]
@@ -572,7 +607,7 @@ mod tests {
                 line: json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string(),
             });
             let forwarded: Value = serde_json::from_slice(&sent.try_recv().expect("forwarded to the agent")).unwrap();
-            hub.handle(Ev::Agent(json!({"jsonrpc": "2.0", "id": forwarded["id"], "result": {}}).to_string()));
+            hub.handle(Ev::Agent(0, json!({"jsonrpc": "2.0", "id": forwarded["id"], "result": {}}).to_string()));
         };
         change(&mut hub, 5, "session/set_model", json!({"sessionId": "s", "modelId": "m2"}));
         change(&mut hub, 6, "session/set_mode", json!({"sessionId": "s", "modeId": "code"}));

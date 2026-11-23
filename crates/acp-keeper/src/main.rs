@@ -1,29 +1,30 @@
-//! ovis-acp-keeper: holds one ACP agent on pipes for any number of clients and a shared terminal
-//! screen. Every JSON-RPC line in either direction, plus the keeper's own `_keeper/*` notes, is
-//! numbered into ROOT/archive.jsonl; clients on ROOT/acp.sock (a named pipe on Windows) replay from
-//! any row and then follow live. Routing and approvals are in `hub`, the agent's process tree in
-//! `agent`. A keeper started again in the same ROOT numbers on, expires the approvals the dead
-//! agent asked, and loads the last session.
+//! ovis-acp-keeper: holds one ACP agent on pipes for any number of clients. Every JSON-RPC line in
+//! either direction, plus the keeper's own `_keeper/*` notes, is numbered into ROOT/archive.jsonl;
+//! clients on ROOT/acp.sock (a named pipe on Windows) replay from any row and then follow live.
+//! Routing, approvals and the switch to the real TUI are in `hub`, the agent's process tree and the
+//! terminal hand-over in `agent`, the pane's status line in `status`. A keeper started again in the
+//! same ROOT numbers on, expires the approvals the dead agent asked, and loads the last session.
 
 mod agent;
 mod archive;
 mod hub;
 mod model;
-mod ui;
+mod status;
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::task::JoinHandle;
 
-use agent::Agent;
+use agent::{Agent, Io};
 use archive::{pump, Archive, Framed, Framer, MAX_LINE, PUSH};
 use hub::{Ev, Hub};
-use ui::Screen;
+use status::{Mode, Status};
 
 pub struct Opts {
     pub root: PathBuf,
@@ -37,36 +38,38 @@ pub struct Opts {
     pub args: Vec<String>,
 }
 
-/// At most one frame per `gap`: a burst of agent output costs one frame, not one per message, so
-/// drawing never holds up reading the agent.
-struct Pace {
-    gap: Duration,
-    last: Option<Instant>,
-    dirty: bool,
+/// Stops the pane's key reader while the real TUI owns the terminal, so no keystroke is taken from it.
+struct Gate {
+    state: Mutex<(bool, bool)>,
+    cv: Condvar,
 }
 
-impl Pace {
-    fn new(gap: Duration) -> Pace {
-        Pace { gap, last: None, dirty: true }
+impl Gate {
+    /// Closes the gate and waits (briefly) for the reader to stop at it.
+    fn pause(&self) {
+        let mut state = self.state.lock().expect("gate");
+        state.0 = true;
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while !state.1 && Instant::now() < deadline {
+            state = self.cv.wait_timeout(state, Duration::from_millis(20)).expect("gate").0;
+        }
     }
 
-    /// `Ok` to draw now; otherwise when to look again (`None`: nothing changed).
-    fn due(&mut self, now: Instant) -> Result<(), Option<Instant>> {
-        if !self.dirty {
-            return Err(None);
+    fn resume(&self) {
+        self.state.lock().expect("gate").0 = false;
+        self.cv.notify_all();
+    }
+
+    fn wait_open(&self) {
+        let mut state = self.state.lock().expect("gate");
+        while state.0 {
+            state.1 = true;
+            self.cv.notify_all();
+            state = self.cv.wait(state).expect("gate");
         }
-        match self.last {
-            Some(last) if now < last + self.gap => Err(Some(last + self.gap)),
-            _ => {
-                self.last = Some(now);
-                self.dirty = false;
-                Ok(())
-            }
-        }
+        state.1 = false;
     }
 }
-
-const FRAME: Duration = Duration::from_millis(33);
 
 async fn serve_client<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(conn: u64, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>, stream: S) {
     let (mut input, output) = tokio::io::split(stream);
@@ -84,7 +87,13 @@ async fn serve_client<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(conn: 
                 Framed::Line(line) => line,
                 Framed::Oversize { bytes, id, request } => {
                     if pumping.is_some() {
-                        let _ = tx.send(Ev::Oversize { conn: Some(conn), bytes, id, request });
+                        let _ = tx.send(Ev::Oversize {
+                            conn: Some(conn),
+                            bytes,
+                            id,
+                            request,
+                            generation: 0,
+                        });
                     }
                     continue;
                 }
@@ -183,7 +192,8 @@ async fn shutdown_signal() {
     }
 }
 
-const USAGE: &str = "Usage: ovis-acp-keeper ROOT [--cwd DIR] [--name NAME] [--resume 'CMD {session}'] [--session-meta JSON] [--load SESSION] [--headless] -- AGENT [ARGS...]";
+const USAGE: &str =
+    "Usage: ovis-acp-keeper ROOT [--cwd DIR] [--name NAME] [--resume 'CMD {session}' | '[\"CMD\",\"{session}\"]'] [--session-meta JSON] [--load SESSION] [--headless] -- AGENT [ARGS...]";
 
 fn default_resume(command: &str, args: &[String]) -> Option<String> {
     let base = |s: &str| Path::new(s).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
@@ -199,6 +209,8 @@ fn default_resume(command: &str, args: &[String]) -> Option<String> {
         Some("hermes --tui --resume {session}".into())
     } else if has("opencode") {
         Some("opencode --session {session}".into())
+    } else if words.iter().any(|w| w.starts_with("codex")) {
+        Some("codex resume {session}".into())
     } else {
         None
     }
@@ -286,6 +298,105 @@ fn lock(root: &Path) -> Result<File, String> {
         .map_err(|_| "another keeper is running in ROOT".to_string())
 }
 
+/// Starts the ACP agent (generation `generation`): its stdin fed from the returned sender, its stdout
+/// framed into hub events by the returned reader task.
+async fn start_acp(opts: &Opts, stderr: &File, generation: u64, tx: &UnboundedSender<Ev>) -> std::io::Result<(Agent, UnboundedSender<Vec<u8>>, JoinHandle<()>)> {
+    let mut agent = Agent::spawn(&opts.command, &opts.args, &opts.cwd, Io::Pipes(stderr.try_clone()?), &opts.root).await?;
+    let (agent_tx, mut agent_rx) = unbounded_channel::<Vec<u8>>();
+    let mut stdin = agent.child.stdin.take().expect("piped stdin");
+    tokio::spawn(async move {
+        while let Some(bytes) = agent_rx.recv().await {
+            if stdin.write_all(&bytes).await.is_err() {
+                break;
+            }
+        }
+    });
+    let mut stdout = agent.child.stdout.take().expect("piped stdout");
+    let lines = tx.clone();
+    let reader = tokio::spawn(async move {
+        let mut framer = Framer::new(MAX_LINE);
+        let mut chunk = vec![0u8; PUSH];
+        while let Ok(n) = stdout.read(&mut chunk).await {
+            if n == 0 {
+                break;
+            }
+            for item in framer.push(&chunk[..n]) {
+                let ev = match item {
+                    Framed::Line(line) => match String::from_utf8(line) {
+                        Ok(text) => Ev::Agent(generation, text),
+                        Err(_) => continue,
+                    },
+                    Framed::Oversize { bytes, id, request } => Ev::Oversize {
+                        conn: None,
+                        bytes,
+                        id,
+                        request,
+                        generation,
+                    },
+                };
+                let _ = lines.send(ev);
+            }
+        }
+    });
+    Ok((agent, agent_tx, reader))
+}
+
+async fn wait_for(agent: &mut Option<Agent>) -> std::io::Result<std::process::ExitStatus> {
+    match agent {
+        Some(agent) => agent.child.wait().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn write_process(root: &Path, acp: Option<&Agent>, tui: Option<&Agent>) {
+    let pid = |a: Option<&Agent>| a.map(|a| a.pid);
+    let scope = acp.or(tui).and_then(|a| a.scope.clone());
+    let _ = std::fs::write(
+        root.join("process.json"),
+        json!({"keeper": std::process::id(), "child": pid(acp), "tui": pid(tui), "scope": scope}).to_string(),
+    );
+}
+
+fn ms(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Hands the pane back to the keeper after the real TUI: the status line's raw mode first, then the
+/// terminal, then the key reader.
+fn take_pane_back(status: &mut Option<Status>, gate: &Gate, job_control: bool) {
+    let mut resume = || {
+        if let Some(status) = status.as_mut() {
+            let _ = status.resume();
+        }
+    };
+    if job_control {
+        agent::take_terminal(resume);
+    } else {
+        resume();
+    }
+    gate.resume();
+}
+
+/// After the real TUI (or a failed start of it): the ACP agent again, loading the same session.
+async fn restart_acp(hub: &mut Hub, stderr: &File, tx: &UnboundedSender<Ev>) -> Option<(Agent, JoinHandle<()>)> {
+    hub.mode = Mode::Switching;
+    hub.generation += 1;
+    match start_acp(&hub.opts, stderr, hub.generation, tx).await {
+        Ok((agent, agent_tx, reader)) => {
+            write_process(&hub.opts.root, Some(&agent), None);
+            hub.restarted(agent_tx);
+            Some((agent, reader))
+        }
+        Err(e) => {
+            hub.mode = Mode::Acp;
+            hub.mode_note("acp", "failed", json!({"reason": e.to_string()}));
+            hub.model.agent_gone = Some(format!("ACP 에이전트를 다시 띄우지 못했습니다 ({e})"));
+            hub.agent_gone();
+            None
+        }
+    }
+}
+
 async fn run(mut opts: Opts) -> i32 {
     let started = Instant::now();
     if let Err(message) = check_root(&opts.root) {
@@ -321,80 +432,73 @@ async fn run(mut opts: Opts) -> i32 {
             return 1;
         }
     };
-    let mut agent = match Agent::spawn(&opts.command, &opts.args, &opts.cwd, stderr, &root).await {
-        Ok(agent) => agent,
+    let (tx, mut rx) = unbounded_channel::<Ev>();
+    let (agent, agent_tx, reader) = match start_acp(&opts, &stderr, 0, &tx).await {
+        Ok(started) => started,
         Err(e) => {
             eprintln!("{}: {e}", opts.command);
             return 1;
         }
     };
     let child_pid = agent.pid;
-    let (tx, mut rx) = unbounded_channel::<Ev>();
-    let (agent_tx, mut agent_rx) = unbounded_channel::<Vec<u8>>();
-    let mut stdin = agent.child.stdin.take().expect("piped stdin");
-    tokio::spawn(async move {
-        while let Some(bytes) = agent_rx.recv().await {
-            if stdin.write_all(&bytes).await.is_err() {
-                break;
-            }
-        }
-    });
-    let mut stdout = agent.child.stdout.take().expect("piped stdout");
-    let agent_lines = tx.clone();
-    let reader = tokio::spawn(async move {
-        let mut framer = Framer::new(MAX_LINE);
-        let mut chunk = vec![0u8; PUSH];
-        while let Ok(n) = stdout.read(&mut chunk).await {
-            if n == 0 {
-                break;
-            }
-            for item in framer.push(&chunk[..n]) {
-                let ev = match item {
-                    Framed::Line(line) => match String::from_utf8(line) {
-                        Ok(text) => Ev::Agent(text),
-                        Err(_) => continue,
-                    },
-                    Framed::Oversize { bytes, id, request } => Ev::Oversize { conn: None, bytes, id, request },
-                };
-                let _ = agent_lines.send(ev);
-            }
-        }
-    });
+    let mut acp = Some(agent);
+    let mut reader = Some(reader);
+    let mut tui: Option<Agent> = None;
     let accept = match listen(&root, archive.clone(), child_pid, tx.clone(), previous.last_client).await {
         Ok(accept) => accept,
         Err(e) => {
             eprintln!("listen: {e}");
-            let _ = agent.stop(Duration::ZERO).await;
+            if let Some(agent) = acp.as_mut() {
+                let _ = agent.stop(Duration::ZERO).await;
+            }
             return 1;
         }
     };
     let accepting = tokio::spawn(accept);
-    let _ = std::fs::write(root.join("process.json"), json!({"keeper": std::process::id(), "child": child_pid, "scope": agent.scope}).to_string());
+    write_process(&root, acp.as_ref(), None);
 
-    let tui = !opts.headless && is_terminal();
-    let screen = if tui {
+    let tty = !opts.headless && is_terminal();
+    let job_control = tty && agent::job_control();
+    let mut status = if tty {
         std::panic::set_hook(Box::new(|info| {
-            ui::restore_terminal();
+            status::restore_terminal();
             eprintln!("{info}");
         }));
-        match Screen::enter() {
-            Ok(screen) => Some(screen),
+        match Status::enter() {
+            Ok(status) => Some(status),
             Err(e) => {
                 eprintln!("terminal: {e}");
-                let _ = agent.stop(Duration::ZERO).await;
+                if let Some(agent) = acp.as_mut() {
+                    let _ = agent.stop(Duration::ZERO).await;
+                }
                 return 1;
             }
         }
     } else {
         None
     };
-    if tui {
+    let gate = Arc::new(Gate {
+        state: Mutex::new((false, false)),
+        cv: Condvar::new(),
+    });
+    if tty {
         let keys = tx.clone();
-        std::thread::spawn(move || {
-            while let Ok(event) = ratatui::crossterm::event::read() {
-                if keys.send(Ev::Term(event)).is_err() {
-                    break;
-                }
+        let gate = gate.clone();
+        std::thread::spawn(move || loop {
+            gate.wait_open();
+            match crossterm::event::poll(Duration::from_millis(25)) {
+                Ok(true) => match crossterm::event::read() {
+                    Ok(event) => {
+                        if let Some(key) = status::key(&event) {
+                            if keys.send(Ev::Key(key)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                },
+                Ok(false) => {}
+                Err(_) => break,
             }
         });
     } else {
@@ -404,10 +508,13 @@ async fn run(mut opts: Opts) -> i32 {
             while std::io::Read::read(&mut stdin, &mut sink).is_ok_and(|n| n > 0) {}
         });
     }
-    let mut hub = Hub::new(archive.clone(), agent_tx, screen, opts, resumed, started);
-    hub.note_row("_keeper/ready", json!({"sinceStartMs": started.elapsed().as_secs_f64() * 1000.0, "keeper": std::process::id(), "child": child_pid, "tui": tui, "scope": agent.scope, "resumed": resumed, "expired": previous.pending.len()}));
+    let mut hub = Hub::new(archive.clone(), agent_tx, opts, resumed, tty);
+    hub.note_row(
+        "_keeper/ready",
+        json!({"sinceStartMs": ms(started), "keeper": std::process::id(), "child": child_pid, "tty": tty, "jobControl": job_control, "scope": acp.as_ref().and_then(|a| a.scope.clone()), "resumed": resumed, "expired": previous.pending.len()}),
+    );
     hub.start();
-    if !tui {
+    if !tty {
         println!("KEEPER_READY");
     }
 
@@ -415,15 +522,13 @@ async fn run(mut opts: Opts) -> i32 {
     tokio::pin!(signal);
     let mut exited: Option<std::io::Result<std::process::ExitStatus>> = None;
     let mut by_signal = false;
-    let mut pace = Pace::new(FRAME);
-    let mut wake: Option<Instant>;
+    let mut tui_started = Instant::now();
     loop {
-        match pace.due(Instant::now()) {
-            Ok(()) => {
-                hub.draw();
-                wake = None;
+        if let Some(status) = status.as_mut().filter(|_| hub.mode != Mode::Terminal) {
+            if std::mem::take(&mut hub.redraw) {
+                status.redraw();
             }
-            Err(next) => wake = next,
+            status.draw(status::lines(&hub.model, hub.mode));
         }
         if hub.quit {
             break;
@@ -436,69 +541,115 @@ async fn run(mut opts: Opts) -> i32 {
                     hub.handle(ev);
                 }
             }
-            status = agent.child.wait(), if exited.is_none() => {
-                let text = match &status {
+            result = wait_for(&mut acp) => {
+                let text = match &result {
                     Ok(s) => format!("에이전트 끝남 ({s})"),
                     Err(e) => format!("에이전트 끝남 ({e})"),
                 };
                 hub.note_row("_keeper/agent_exit", json!({"status": text}));
-                hub.model.agent_gone = Some(text.clone());
-                hub.model.note(format!("{text}. Ctrl+Q로 닫으세요"));
+                hub.model.agent_gone = Some(format!("{text} · Ctrl+Q: 닫기"));
                 hub.agent_gone();
-                exited = Some(status);
-                // Now, while the reaped agent's group number cannot have been handed out again: a
-                // screen left open for hours must not signal whatever holds that number later.
-                agent.sweep().await;
-                if !tui {
+                exited = Some(result);
+                // Now, while the reaped agent's group number cannot have been handed out again.
+                if let Some(agent) = acp.take() {
+                    agent.sweep().await;
+                }
+                if !tty {
                     break;
                 }
             }
-            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(wake.unwrap_or_else(Instant::now))), if wake.is_some() => {}
+            result = wait_for(&mut tui) => {
+                let ran = ms(tui_started);
+                if let Some(agent) = tui.take() {
+                    agent.sweep().await;
+                }
+                take_pane_back(&mut status, &gate, job_control);
+                let code = result.as_ref().ok().and_then(|s| s.code());
+                if !result.as_ref().is_ok_and(|s| s.success()) && ran < 10_000.0 {
+                    hub.model.error(format!("진짜 TUI가 {:.1}초 만에 끝났습니다 (종료 코드 {code:?}). 이어 열기가 안 된 것 같습니다", ran / 1000.0));
+                }
+                hub.mode_note("acp", "start", json!({"tuiExit": code, "tuiRanMs": ran}));
+                if let Some((agent, task)) = restart_acp(&mut hub, &stderr, &tx).await {
+                    acp = Some(agent);
+                    reader = Some(task);
+                    exited = None;
+                }
+            }
             _ = &mut signal => {
                 by_signal = true;
                 break;
             }
         }
-        pace.dirty = true;
+        if let Some(pressed) = hub.want_terminal.take() {
+            let argv = hub.resume_argv().expect("checked before the switch was accepted");
+            hub.mode = Mode::Switching;
+            if let Some(status) = status.as_mut() {
+                status.draw(status::lines(&hub.model, hub.mode));
+            }
+            hub.mode_note("terminal", "start", json!({"argv": argv}));
+            hub.agent = None;
+            if let Some(mut agent) = acp.take() {
+                let _ = tokio::time::timeout(Duration::from_millis(800), agent.child.wait()).await;
+                let _ = agent.stop(Duration::from_millis(1500)).await;
+            }
+            if let Some(task) = reader.take() {
+                let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
+            }
+            while let Ok(ev) = rx.try_recv() {
+                hub.handle(ev);
+            }
+            hub.generation += 1;
+            let agent_ended = ms(pressed);
+            gate.pause();
+            if let Some(status) = status.as_mut() {
+                status.suspend();
+            }
+            match Agent::spawn(&argv[0], &argv[1..], &hub.opts.cwd, Io::Terminal { foreground: job_control }, &root).await {
+                Ok(agent) => {
+                    tui_started = Instant::now();
+                    hub.mode = Mode::Terminal;
+                    hub.mode_note("terminal", "ready", json!({"tuiPid": agent.pid, "agentEndedMs": agent_ended, "spawnedMs": ms(pressed)}));
+                    write_process(&root, None, Some(&agent));
+                    tui = Some(agent);
+                }
+                Err(e) => {
+                    take_pane_back(&mut status, &gate, job_control);
+                    hub.model.error(format!("진짜 TUI를 띄우지 못했습니다 ({}: {e})", argv[0]));
+                    hub.mode_note("terminal", "failed", json!({"reason": e.to_string()}));
+                    if let Some((agent, task)) = restart_acp(&mut hub, &stderr, &tx).await {
+                        acp = Some(agent);
+                        reader = Some(task);
+                    }
+                }
+            }
+        }
     }
     hub.agent = None;
-    let status = match exited {
-        Some(status) => status,
-        None => agent.stop(Duration::from_millis(1500)).await,
+    if let Some(mut agent) = tui.take() {
+        let _ = agent.stop(Duration::from_millis(1500)).await;
+        take_pane_back(&mut status, &gate, job_control);
+    }
+    let result = match (exited, acp.as_mut()) {
+        (Some(result), _) => result,
+        (None, Some(agent)) => agent.stop(Duration::from_millis(1500)).await,
+        (None, None) => Ok(Default::default()),
     };
-    let _ = tokio::time::timeout(Duration::from_millis(500), reader).await;
+    if let Some(task) = reader.take() {
+        let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
+    }
     while let Ok(ev) = rx.try_recv() {
-        if matches!(ev, Ev::Agent(_) | Ev::Oversize { conn: None, .. }) {
+        if matches!(ev, Ev::Agent(..) | Ev::Oversize { conn: None, .. }) {
             hub.handle(ev);
         }
     }
     accepting.abort();
     #[cfg(unix)]
     let _ = std::fs::remove_file(root.join("acp.sock"));
-    if let Some(screen) = hub.screen.as_mut() {
-        screen.leave();
+    if status.is_some() {
+        status::restore_terminal();
     }
-    match status {
-        Ok(status) if status.success() || by_signal || hub.quit => 0,
+    match result {
+        Ok(result) if result.success() || by_signal || hub.quit => 0,
         _ => 1,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pace_draws_a_burst_once_per_frame() {
-        let start = Instant::now();
-        let mut pace = Pace::new(FRAME);
-        assert_eq!(pace.due(start), Ok(()));
-        assert_eq!(pace.due(start), Err(None));
-        pace.dirty = true;
-        assert_eq!(pace.due(start + FRAME / 3), Err(Some(start + FRAME)));
-        pace.dirty = true;
-        assert_eq!(pace.due(start + FRAME / 2), Err(Some(start + FRAME)));
-        assert_eq!(pace.due(start + FRAME), Ok(()));
-        assert_eq!(pace.due(start + FRAME * 3), Err(None));
     }
 }

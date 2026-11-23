@@ -4,12 +4,23 @@
 //! transient scope named after ROOT: helpers that leave the group (a broker that calls `setsid`)
 //! stay in the scope, which the keeper stops when it ends and, before starting the agent, when an
 //! earlier keeper in the same ROOT died without stopping it.
+//!
+//! The agent's real TUI is started the same way, in the same scope, on the pane's terminal instead
+//! of pipes: it becomes the terminal's foreground job, as a shell would make it, and the keeper takes
+//! the terminal back when it exits.
 
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
+
+pub enum Io {
+    /// The ACP agent: stdin and stdout are the keeper's pipes, stderr goes to a file.
+    Pipes(std::fs::File),
+    /// The real TUI: the pane's terminal, handed over as the foreground job when the pane has job control.
+    Terminal { foreground: bool },
+}
 
 pub struct Agent {
     pub child: Child,
@@ -18,7 +29,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub async fn spawn(command: &str, args: &[String], cwd: &str, stderr: std::fs::File, root: &Path) -> std::io::Result<Agent> {
+    pub async fn spawn(command: &str, args: &[String], cwd: &str, io: Io, root: &Path) -> std::io::Result<Agent> {
         let scope = scope_for(root).await;
         let mut cmd = match &scope {
             Some(unit) => {
@@ -31,19 +42,35 @@ impl Agent {
             }
             None => Command::new(command),
         };
-        cmd.args(args).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(stderr).kill_on_drop(true);
+        cmd.args(args).current_dir(cwd).kill_on_drop(true);
+        let foreground = match io {
+            Io::Pipes(stderr) => {
+                cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(stderr);
+                false
+            }
+            Io::Terminal { foreground } => foreground,
+        };
+        #[cfg(not(unix))]
+        let _ = foreground;
         #[cfg(unix)]
         cmd.process_group(0);
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             let keeper = std::process::id() as libc::pid_t;
             unsafe {
                 cmd.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                        return Err(std::io::Error::last_os_error());
+                    #[cfg(target_os = "linux")]
+                    {
+                        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        if libc::getppid() != keeper {
+                            return Err(std::io::Error::other("the keeper ended before the agent started"));
+                        }
                     }
-                    if libc::getppid() != keeper {
-                        return Err(std::io::Error::other("the keeper ended before the agent started"));
+                    let _ = keeper;
+                    if foreground {
+                        hand_terminal(libc::getpid());
                     }
                     Ok(())
                 });
@@ -51,6 +78,10 @@ impl Agent {
         }
         let child = cmd.spawn()?;
         let pid = child.id().unwrap_or(0);
+        #[cfg(unix)]
+        if foreground && pid > 0 {
+            hand_terminal(pid as libc::pid_t);
+        }
         Ok(Agent { child, pid, scope })
     }
 
@@ -125,4 +156,44 @@ async fn scope_for(_root: &Path) -> Option<String> {
 
 async fn stop_scope(unit: &str) {
     let _ = quiet(Command::new("systemctl").args(["--user", "stop"]).arg(format!("{unit}.scope"))).status().await;
+}
+
+/// Whether the pane's terminal has job control with the keeper as its foreground job, so the real
+/// TUI can be handed the terminal and the keeper can take it back.
+#[cfg(unix)]
+pub fn job_control() -> bool {
+    unsafe { libc::isatty(0) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() }
+}
+
+#[cfg(windows)]
+pub fn job_control() -> bool {
+    false
+}
+
+/// Makes `pgid` the terminal's foreground job, ignoring SIGTTOU around the call as shells do.
+#[cfg(unix)]
+fn hand_terminal(pgid: libc::pid_t) {
+    unsafe {
+        let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        libc::tcsetpgrp(0, pgid);
+        libc::signal(libc::SIGTTOU, old);
+    }
+}
+
+/// Takes the terminal back after the real TUI. `raw` (the status line's raw mode) runs while the
+/// keeper is still in the background, so a Ctrl+C typed as the TUI quits stays a key instead of
+/// becoming SIGINT for the keeper.
+#[cfg(unix)]
+pub fn take_terminal(raw: impl FnOnce()) {
+    unsafe {
+        let old = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        raw();
+        libc::tcsetpgrp(0, libc::getpgrp());
+        libc::signal(libc::SIGTTOU, old);
+    }
+}
+
+#[cfg(windows)]
+pub fn take_terminal(raw: impl FnOnce()) {
+    raw();
 }

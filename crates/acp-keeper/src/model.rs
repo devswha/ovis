@@ -1,118 +1,16 @@
-//! What the screen draws, kept up to date from the ACP traffic the keeper sees in both directions.
-
-use std::collections::{HashMap, VecDeque};
+//! What the keeper knows about its session: the session id, the mode and model the agent runs with,
+//! whether a turn is running, and the agent requests waiting for an answer. The conversation itself
+//! is not kept: people read it in Ovis, and the archive has every line.
 
 use serde_json::{Map, Value};
-
-pub struct Diff {
-    pub path: String,
-    pub added: usize,
-    pub removed: usize,
-    pub new_file: bool,
-}
-
-pub struct Tool {
-    pub id: String,
-    pub title: String,
-    pub kind: String,
-    pub status: String,
-    pub raw_input: Option<Value>,
-    raw_bytes: usize,
-    pub text: String,
-    pub diffs: Vec<Diff>,
-    pub locations: Vec<String>,
-}
-
-impl Tool {
-    /// Keeps a tool's input only up to ENTRY_BYTES of JSON (the archive has all of it), and its size.
-    fn set_raw_input(&mut self, value: Option<&Value>) {
-        let size = value.map(|v| v.to_string().len()).unwrap_or(0);
-        (self.raw_input, self.raw_bytes) = match value {
-            Some(v) if size <= ENTRY_BYTES => (Some(v.clone()), size),
-            _ => (None, 0),
-        };
-    }
-}
-
-pub enum Entry {
-    User(String),
-    Agent(String),
-    Thought(String),
-    Tool(Tool),
-    Plan(Vec<(String, String)>),
-    Note(String),
-    Error(String),
-}
-
-pub struct Choice {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-}
 
 pub struct Pending {
     pub key: String,
     pub id: Value,
     pub seq: u64,
     pub method: String,
-    pub title: String,
-    pub kind: String,
-    pub tool_call_id: String,
-    pub command: Option<String>,
-    pub paths: Vec<String>,
-    pub diffs: Vec<Diff>,
-    pub raw_input: Option<Value>,
-    pub params: Value,
-    pub options: Vec<Choice>,
-}
-
-impl Entry {
-    fn bytes(&self) -> usize {
-        match self {
-            Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) | Entry::Note(s) | Entry::Error(s) => s.len(),
-            Entry::Tool(tool) => {
-                tool.id.len() + tool.title.len() + tool.text.len() + tool.raw_bytes + tool.locations.iter().map(String::len).sum::<usize>() + tool.diffs.iter().map(|d| d.path.len()).sum::<usize>()
-            }
-            Entry::Plan(items) => items.iter().map(|(c, s)| c.len() + s.len()).sum(),
-        }
-    }
-}
-
-/// The screen keeps the newest entries within these bounds, so a long session or a flood of
-/// output costs bounded memory and bounded drawing; the archive keeps everything.
-const KEEP_BYTES: usize = 1 << 20;
-const KEEP_ENTRIES: usize = 1000;
-const ENTRY_BYTES: usize = 256 << 10;
-const CUT: &str = "… ";
-
-/// A growing text past ENTRY_BYTES keeps its newer half, so streaming into it stays amortized O(1).
-fn keep_tail(text: &mut String) {
-    if text.len() > ENTRY_BYTES {
-        let mut cut = text.len() - ENTRY_BYTES / 2;
-        while !text.is_char_boundary(cut) {
-            cut += 1;
-        }
-        text.replace_range(..cut, CUT);
-    }
-}
-
-const PLAN_ITEMS: usize = 200;
-const PLAN_ITEM_BYTES: usize = 4 << 10;
-
-fn keep_head(text: String) -> String {
-    short_text(text, ENTRY_BYTES)
-}
-
-fn short_text(mut text: String, max: usize) -> String {
-    if text.len() > max {
-        let mut cut = max;
-        while !text.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        text.truncate(cut);
-        text.push_str(" …");
-    }
-    text
+    pub session: Option<String>,
+    pub options: Vec<String>,
 }
 
 pub struct Selector {
@@ -121,154 +19,30 @@ pub struct Selector {
     pub config_id: Option<String>,
 }
 
+impl Selector {
+    /// The name of the current choice, or its id when the agent gave no name.
+    pub fn current_name(&self) -> &str {
+        self.options
+            .iter()
+            .find(|(id, _)| *id == self.current)
+            .map(|(_, name)| name.as_str())
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&self.current)
+    }
+}
+
 #[derive(Default)]
 pub struct Model {
     pub agent: String,
-    pub cwd: String,
     pub session: Option<String>,
-    pub resume: Option<String>,
-    pub entries: VecDeque<Entry>,
-    /// How many entries were dropped from the front: `tools` holds positions counted from the first entry ever.
-    dropped: usize,
-    tools: HashMap<String, usize>,
-    pub commands: Vec<(String, String)>,
     pub modes: Option<Selector>,
     pub models: Option<Selector>,
-    pub title: Option<String>,
-    pub usage: Option<String>,
     pub working: bool,
     pub pending: Vec<Pending>,
     pub clients: usize,
     pub agent_gone: Option<String>,
-    pub revision: u64,
-    /// The prompt just sent and how many of its bytes the agent has echoed back so far.
-    echo: Option<(String, usize)>,
-}
-
-pub fn text_of(block: &Value) -> String {
-    match block.get("type").and_then(Value::as_str) {
-        Some("text") => block.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
-        Some("image") => "[image]".into(),
-        Some("audio") => "[audio]".into(),
-        Some("resource_link") => format!("[{}]", block.get("uri").and_then(Value::as_str).unwrap_or("link")),
-        Some("resource") => {
-            let resource = block.get("resource").unwrap_or(&Value::Null);
-            resource
-                .get("text")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("[{}]", resource.get("uri").and_then(Value::as_str).unwrap_or("resource")))
-        }
-        _ => String::new(),
-    }
-}
-
-pub fn command_of(raw: &Value) -> Option<String> {
-    for key in ["command", "CommandLine", "commandLine", "cmd", "script"] {
-        match raw.get(key) {
-            Some(Value::String(s)) => return Some(s.clone()),
-            Some(Value::Array(parts)) if parts.iter().all(Value::is_string) => {
-                return Some(parts.iter().filter_map(Value::as_str).map(quote_arg).collect::<Vec<_>>().join(" "));
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// An argument of an argv-style command, quoted when a space or a quote would hide where it ends,
-/// so `["a b"]` and `["a", "b"]` never look the same on an approval card.
-fn quote_arg(arg: &str) -> String {
-    if !arg.is_empty() && !arg.chars().any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\')) {
-        return arg.to_string();
-    }
-    format!("'{}'", arg.replace('\'', "'\\''"))
-}
-
-fn paths_of(raw: &Value) -> Vec<String> {
-    ["file_path", "filePath", "path", "Path", "notebook_path", "TargetFile"]
-        .iter()
-        .filter_map(|key| raw.get(*key).and_then(Value::as_str).map(str::to_string))
-        .collect()
-}
-
-/// Lines added and removed, by longest common subsequence on whole lines; past 4M cells it counts
-/// lines that appear on one side only, which can undercount moved lines, and past DIFF_LINES lines
-/// on a side it reports every line as changed, without building line tables.
-pub fn line_changes(old: &str, new: &str) -> (usize, usize) {
-    const DIFF_LINES: usize = 100_000;
-    let count = |text: &str| if text.is_empty() { 0 } else { text.lines().count() };
-    let (old_lines, new_lines) = (count(old), count(new));
-    if old_lines == 0 || new_lines == 0 || old_lines.max(new_lines) > DIFF_LINES {
-        return (new_lines, old_lines);
-    }
-    let a: Vec<&str> = if old.is_empty() { vec![] } else { old.lines().collect() };
-    let b: Vec<&str> = if new.is_empty() { vec![] } else { new.lines().collect() };
-    if a.len().saturating_mul(b.len()) > 4_000_000 {
-        let mut count: HashMap<&str, i64> = HashMap::new();
-        for line in &a {
-            *count.entry(line).or_default() -= 1;
-        }
-        for line in &b {
-            *count.entry(line).or_default() += 1;
-        }
-        let added = count.values().filter(|v| **v > 0).sum::<i64>() as usize;
-        let removed = count.values().filter(|v| **v < 0).map(|v| -v).sum::<i64>() as usize;
-        return (added, removed);
-    }
-    let mut row = vec![0usize; b.len() + 1];
-    for x in &a {
-        let mut diag = 0;
-        for (j, y) in b.iter().enumerate() {
-            let up = row[j + 1];
-            row[j + 1] = if x == y { diag + 1 } else { up.max(row[j]) };
-            diag = up;
-        }
-    }
-    let common = row[b.len()];
-    (b.len() - common, a.len() - common)
-}
-
-fn diffs_of(content: &Value) -> Vec<Diff> {
-    content
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("diff"))
-        .map(|item| {
-            let old = item.get("oldText").and_then(Value::as_str);
-            let (added, removed) = line_changes(old.unwrap_or(""), item.get("newText").and_then(Value::as_str).unwrap_or(""));
-            Diff {
-                path: item.get("path").and_then(Value::as_str).unwrap_or("?").to_string(),
-                added,
-                removed,
-                new_file: old.is_none(),
-            }
-        })
-        .collect()
-}
-
-fn texts_of(content: &Value) -> String {
-    content
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|item| match item.get("type").and_then(Value::as_str) {
-            Some("content") => Some(text_of(item.get("content").unwrap_or(&Value::Null))),
-            Some("terminal") => Some(format!("[terminal {}]", item.get("terminalId").and_then(Value::as_str).unwrap_or("?"))),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn locations_of(value: Option<&Value>) -> Vec<String> {
-    value
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|l| l.get("path").and_then(Value::as_str).map(str::to_string))
-        .collect()
+    /// The latest thing worth telling whoever looks at the pane (a refused switch, an error).
+    pub notice: Option<String>,
 }
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
@@ -276,84 +50,16 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
 }
 
 impl Model {
-    pub fn new(agent: String, cwd: String) -> Model {
-        Model { agent, cwd, ..Model::default() }
-    }
-
-    fn touch(&mut self) {
-        self.revision += 1;
-    }
-
-    /// Adds an entry and drops the oldest ones past the screen's bounds; the archive keeps them all.
-    fn push(&mut self, entry: Entry) {
-        self.entries.push_back(entry);
-        self.trim();
-    }
-
-    fn trim(&mut self) {
-        let mut kept: usize = self.entries.iter().map(Entry::bytes).sum();
-        while self.entries.len() > 1 && (self.entries.len() > KEEP_ENTRIES || kept > KEEP_BYTES) {
-            if let Some(gone) = self.entries.pop_front() {
-                kept -= gone.bytes();
-                self.dropped += 1;
-            }
-        }
-        let dropped = self.dropped;
-        self.tools.retain(|_, at| *at >= dropped);
-    }
-
-    fn tool_at(&self, id: &str) -> Option<usize> {
-        self.tools.get(id).map(|at| at - self.dropped)
+    pub fn new(agent: String) -> Model {
+        Model { agent, ..Model::default() }
     }
 
     pub fn note(&mut self, text: impl Into<String>) {
-        self.push(Entry::Note(text.into()));
-        self.touch();
+        self.notice = Some(text.into());
     }
 
     pub fn error(&mut self, text: impl Into<String>) {
-        self.push(Entry::Error(text.into()));
-        self.touch();
-    }
-
-    fn append(&mut self, text: &str, same: fn(&Entry) -> bool, make: fn(String) -> Entry) {
-        if let Some(last) = self.entries.back_mut() {
-            if same(last) {
-                if let Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) = last {
-                    s.push_str(text);
-                    keep_tail(s);
-                }
-                self.trim();
-                self.touch();
-                return;
-            }
-        }
-        self.push(make(keep_head(text.to_string())));
-        self.touch();
-    }
-
-    pub fn user(&mut self, text: &str, sent: &str) {
-        self.push(Entry::User(keep_head(text.to_string())));
-        self.echo = Some((sent.to_string(), 0));
-        self.touch();
-    }
-
-    /// Agents that echo the prompt back as user_message_chunk would draw it twice; the echo of what was just sent is dropped.
-    fn swallow_echo(&mut self, chunk: &str) -> bool {
-        let Some((sent, seen)) = self.echo.as_mut() else { return false };
-        if sent[*seen..].starts_with(chunk) {
-            *seen += chunk.len();
-            if *seen == sent.len() {
-                self.echo = None;
-            }
-            return true;
-        }
-        self.echo = None;
-        false
-    }
-
-    pub fn prompt_text(params: &Value) -> String {
-        params.get("prompt").and_then(Value::as_array).into_iter().flatten().map(text_of).collect::<Vec<_>>().join("")
+        self.notice = Some(format!("✖ {}", text.into()));
     }
 
     pub fn update(&mut self, params: &Value) {
@@ -362,128 +68,14 @@ impl Model {
         }
         let Some(update) = params.get("update") else { return };
         match update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("") {
-            "user_message_chunk" => {
-                let text = text_of(update.get("content").unwrap_or(&Value::Null));
-                if !self.swallow_echo(&text) {
-                    self.append(&text, |e| matches!(e, Entry::User(_)), Entry::User);
-                }
-            }
-            "agent_message_chunk" => self.append(&text_of(update.get("content").unwrap_or(&Value::Null)), |e| matches!(e, Entry::Agent(_)), Entry::Agent),
-            "agent_thought_chunk" => self.append(&text_of(update.get("content").unwrap_or(&Value::Null)), |e| matches!(e, Entry::Thought(_)), Entry::Thought),
-            "tool_call" => {
-                let id = str_field(update, "toolCallId").unwrap_or_default();
-                let mut tool = Tool {
-                    id: id.clone(),
-                    title: keep_head(str_field(update, "title").unwrap_or_default()),
-                    kind: str_field(update, "kind").unwrap_or_else(|| "other".into()),
-                    status: str_field(update, "status").unwrap_or_else(|| "pending".into()),
-                    raw_input: None,
-                    raw_bytes: 0,
-                    text: keep_head(texts_of(update.get("content").unwrap_or(&Value::Null))),
-                    diffs: diffs_of(update.get("content").unwrap_or(&Value::Null)),
-                    locations: locations_of(update.get("locations")),
-                };
-                tool.set_raw_input(update.get("rawInput"));
-                self.tools.insert(id, self.dropped + self.entries.len());
-                self.push(Entry::Tool(tool));
-                self.touch();
-            }
-            "tool_call_update" => {
-                let id = str_field(update, "toolCallId").unwrap_or_default();
-                if self.tool_at(&id).is_none() {
-                    self.tools.insert(id.clone(), self.dropped + self.entries.len());
-                    self.push(Entry::Tool(Tool {
-                        id: id.clone(),
-                        title: String::new(),
-                        kind: "other".into(),
-                        status: "pending".into(),
-                        raw_input: None,
-                        raw_bytes: 0,
-                        text: String::new(),
-                        diffs: vec![],
-                        locations: vec![],
-                    }));
-                }
-                let at = self.tool_at(&id).unwrap_or(self.entries.len() - 1);
-                if let Some(Entry::Tool(tool)) = self.entries.get_mut(at) {
-                    if let Some(v) = str_field(update, "title") {
-                        tool.title = keep_head(v);
-                    }
-                    if let Some(v) = str_field(update, "kind") {
-                        tool.kind = v;
-                    }
-                    if let Some(v) = str_field(update, "status") {
-                        tool.status = v;
-                    }
-                    if let Some(v) = update.get("rawInput") {
-                        tool.set_raw_input(Some(v));
-                    }
-                    if let Some(content) = update.get("content").filter(|c| !c.is_null()) {
-                        tool.text = keep_head(texts_of(content));
-                        tool.diffs = diffs_of(content);
-                    }
-                    if update.get("locations").is_some() {
-                        tool.locations = locations_of(update.get("locations"));
-                    }
-                }
-                self.trim();
-                self.touch();
-            }
-            "plan" => {
-                let entries = update
-                    .get("entries")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .take(PLAN_ITEMS)
-                    .map(|e| {
-                        (
-                            short_text(str_field(e, "content").unwrap_or_default(), PLAN_ITEM_BYTES),
-                            short_text(str_field(e, "status").unwrap_or_default(), 64),
-                        )
-                    })
-                    .collect();
-                if let Some(Entry::Plan(old)) = self.entries.back_mut() {
-                    *old = entries;
-                } else {
-                    self.push(Entry::Plan(entries));
-                }
-                self.trim();
-                self.touch();
-            }
-            "available_commands_update" => {
-                self.commands = update
-                    .get("availableCommands")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(|c| (str_field(c, "name").unwrap_or_default(), str_field(c, "description").unwrap_or_default()))
-                    .collect();
-                self.touch();
-            }
             "current_mode_update" => {
                 if let (Some(modes), Some(id)) = (self.modes.as_mut(), str_field(update, "currentModeId")) {
                     modes.current = id;
                 }
-                self.touch();
             }
             "config_option_update" => {
                 if let Some(options) = update.get("configOptions") {
                     self.config_options(options);
-                }
-            }
-            "session_info_update" => {
-                if let Some(title) = str_field(update, "title") {
-                    self.title = Some(title);
-                    self.touch();
-                }
-            }
-            "usage_update" => {
-                let used = update.get("used").and_then(Value::as_u64);
-                let size = update.get("size").and_then(Value::as_u64);
-                if let (Some(used), Some(size)) = (used, size) {
-                    self.usage = Some(format!("{}k/{}k", used / 1000, size / 1000));
-                    self.touch();
                 }
             }
             _ => {}
@@ -520,10 +112,9 @@ impl Model {
         if let Some(options) = result.get("configOptions") {
             self.config_options(options);
         }
-        self.touch();
     }
 
-    /// Session config options (the newer ACP form) take over the mode and model pickers when they carry those categories.
+    /// Session config options (the newer ACP form) take over the mode and model when they carry those categories.
     pub fn config_options(&mut self, options: &Value) {
         for option in options.as_array().into_iter().flatten() {
             let id = str_field(option, "id").unwrap_or_default();
@@ -547,166 +138,22 @@ impl Model {
                 config_id: Some(id),
             });
         }
-        self.touch();
     }
 
     pub fn request(&mut self, key: String, id: Value, seq: u64, msg: &Map<String, Value>) {
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
-        let call = params.get("toolCall").cloned().unwrap_or(Value::Null);
-        let tool_call_id = str_field(&call, "toolCallId").unwrap_or_default();
-        let known = self.tool_at(&tool_call_id).and_then(|at| match &self.entries[at] {
-            Entry::Tool(tool) => Some(tool),
-            _ => None,
-        });
-        let raw_input = call.get("rawInput").cloned().or_else(|| known.and_then(|t| t.raw_input.clone()));
-        let mut paths = locations_of(call.get("locations"));
-        if paths.is_empty() {
-            paths = known.map(|t| t.locations.clone()).unwrap_or_default();
-        }
-        if let Some(raw) = &raw_input {
-            for path in paths_of(raw) {
-                if !paths.contains(&path) {
-                    paths.push(path);
-                }
-            }
-        }
-        let mut diffs = diffs_of(call.get("content").unwrap_or(&Value::Null));
-        if diffs.is_empty() {
-            if let Some(tool) = known {
-                diffs = tool
-                    .diffs
-                    .iter()
-                    .map(|d| Diff {
-                        path: d.path.clone(),
-                        added: d.added,
-                        removed: d.removed,
-                        new_file: d.new_file,
-                    })
-                    .collect();
-            }
-        }
-        let options = params
-            .get("options")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .map(|o| Choice {
-                id: str_field(o, "optionId").unwrap_or_default(),
-                name: str_field(o, "name").unwrap_or_default(),
-                kind: str_field(o, "kind").unwrap_or_default(),
-            })
-            .collect();
         self.pending.push(Pending {
             key,
             id,
             seq,
-            method,
-            title: str_field(&call, "title").or_else(|| known.map(|t| t.title.clone())).unwrap_or_default(),
-            kind: str_field(&call, "kind").or_else(|| known.map(|t| t.kind.clone())).unwrap_or_default(),
-            tool_call_id,
-            command: raw_input.as_ref().and_then(command_of),
-            paths,
-            diffs,
-            raw_input,
-            params,
-            options,
+            method: msg.get("method").and_then(Value::as_str).unwrap_or("").to_string(),
+            session: str_field(&params, "sessionId"),
+            options: params.get("options").and_then(Value::as_array).into_iter().flatten().filter_map(|o| str_field(o, "optionId")).collect(),
         });
-        self.touch();
     }
 
     pub fn resolve(&mut self, key: &str) -> Option<Pending> {
         let at = self.pending.iter().position(|p| p.key == key)?;
-        self.touch();
         Some(self.pending.remove(at))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{command_of, line_changes, Entry, Model};
-    use serde_json::json;
-
-    fn update(model: &mut Model, kind: &str, extra: serde_json::Value) {
-        let mut update = json!({"sessionUpdate": kind});
-        update.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        model.update(&json!({"sessionId": "s", "update": update}));
-    }
-
-    #[test]
-    fn argv_commands_keep_their_argument_boundaries() {
-        assert_eq!(command_of(&json!({"command": ["rm", "a b"]})).as_deref(), Some("rm 'a b'"));
-        assert_eq!(command_of(&json!({"command": ["rm", "a", "b"]})).as_deref(), Some("rm a b"));
-        assert_eq!(command_of(&json!({"command": ["echo", "it's", ""]})).as_deref(), Some(r"echo 'it'\''s' ''"));
-        assert_eq!(command_of(&json!({"command": "rm a b"})).as_deref(), Some("rm a b"));
-    }
-
-    #[test]
-    fn a_huge_new_file_counts_its_lines_without_tables() {
-        let huge = "\n".repeat(2_000_000);
-        assert_eq!(line_changes("", &huge), (2_000_000, 0));
-        assert_eq!(line_changes("a\n", &huge), (2_000_000, 1));
-    }
-
-    #[test]
-    fn an_echo_in_small_chunks_is_swallowed() {
-        let mut model = Model::new("agent".into(), "/".into());
-        let sent = "hello world ".repeat(100);
-        model.user(&sent, &sent);
-        for piece in sent.as_bytes().chunks(5) {
-            update(&mut model, "user_message_chunk", json!({"content": {"type": "text", "text": std::str::from_utf8(piece).unwrap()}}));
-        }
-        assert_eq!(model.entries.len(), 1, "the echo was drawn again");
-    }
-
-    #[test]
-    fn growing_tool_results_stay_within_the_screen_bound() {
-        let mut model = Model::new("agent".into(), "/".into());
-        for n in 0..8 {
-            update(&mut model, "tool_call", json!({"toolCallId": format!("t{n}"), "rawInput": {"content": "r".repeat(200 * 1024)}}));
-        }
-        for n in 0..8 {
-            let content = json!([{"type": "content", "content": {"type": "text", "text": "x".repeat(200 * 1024)}}]);
-            update(&mut model, "tool_call_update", json!({"toolCallId": format!("t{n}"), "content": content}));
-        }
-        let kept: usize = model.entries.iter().map(Entry::bytes).sum();
-        assert!(kept <= super::KEEP_BYTES, "the screen keeps {kept} bytes of tool output");
-        let raw: usize = model
-            .entries
-            .iter()
-            .filter_map(|e| if let Entry::Tool(t) = e { t.raw_input.as_ref() } else { None })
-            .map(|v| v.to_string().len())
-            .sum();
-        assert!(kept + raw <= 2 * super::KEEP_BYTES, "the screen holds {raw} bytes of tool input on top");
-    }
-
-    #[test]
-    fn keeps_a_bounded_tail_of_a_long_conversation() {
-        let mut model = Model::new("agent".into(), "/".into());
-        update(&mut model, "tool_call", json!({"toolCallId": "early", "title": "early tool"}));
-        let piece = "x".repeat(100 * 1024);
-        for n in 0..100 {
-            let kind = if n % 2 == 0 { "agent_message_chunk" } else { "agent_thought_chunk" };
-            update(&mut model, kind, json!({"content": {"type": "text", "text": format!("{piece}{n}")}}));
-        }
-        for n in 0..5000 {
-            model.note(format!("note {n}"));
-        }
-        update(&mut model, "tool_call_update", json!({"toolCallId": "early", "status": "completed"}));
-        let ask = json!({"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {"sessionId": "s", "toolCall": {"toolCallId": "early"}, "options": []}});
-        model.request("1".into(), json!(1), 1, ask.as_object().unwrap());
-        update(&mut model, "agent_message_chunk", json!({"content": {"type": "text", "text": "the end"}}));
-
-        let kept: usize = model.entries.iter().map(Entry::bytes).sum();
-        assert!(kept <= 1 << 20, "the screen keeps {kept} bytes of a 10 MB conversation");
-        assert!(model.entries.len() <= 1000, "the screen keeps {} entries", model.entries.len());
-        assert!(matches!(model.entries.iter().last(), Some(Entry::Agent(text)) if text == "the end"));
-    }
-
-    #[test]
-    fn counts_lines_like_a_diff() {
-        assert_eq!(line_changes("", "a\nb\n"), (2, 0));
-        assert_eq!(line_changes("a\nb\nc", "a\nx\nc\nd"), (2, 1));
-        assert_eq!(line_changes("a\nb", "a\nb"), (0, 0));
     }
 }
