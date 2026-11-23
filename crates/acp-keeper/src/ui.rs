@@ -54,6 +54,15 @@ pub struct Screen {
     view: View,
 }
 
+const HISTORY: usize = 200;
+
+/// The card a key answers: the one last drawn, while it is still pending. A card that came (or moved
+/// up because another side answered the one on screen) after the last frame is not answerable until
+/// it has been drawn, so a key never answers an approval nobody saw.
+fn shown_card<'m>(model: &'m Model, drawn: &str) -> Option<&'m Pending> {
+    model.pending.first().filter(|p| p.key == drawn)
+}
+
 pub fn restore_terminal() {
     let _ = terminal::disable_raw_mode();
     let _ = execute!(
@@ -397,7 +406,11 @@ impl Screen {
         if let Some(popup) = self.view.popup.take() {
             return self.popup_key(popup, key, model);
         }
-        if let Some(p) = model.pending.first().filter(|_| !self.view.card_hidden) {
+        if !model.pending.is_empty() && !self.view.card_hidden {
+            let Some(p) = shown_card(model, &self.view.card_key) else {
+                self.view.flash = Some("새 승인 카드가 왔습니다. 카드를 보고 답하세요".into());
+                return vec![];
+            };
             let actions = self.card_key(p, key);
             if actions.iter().any(|a| matches!(a, Action::Answer { .. })) {
                 self.view.card_key.clear();
@@ -467,6 +480,9 @@ impl Screen {
                 if model.working {
                     v.flash = Some("에이전트가 일하는 중입니다. 끝나면 보내거나 Esc로 취소하세요".into());
                     return vec![];
+                }
+                if v.history.len() >= HISTORY {
+                    v.history.remove(0);
                 }
                 v.history.push(text.clone());
                 v.history_at = None;
@@ -937,6 +953,20 @@ fn input_rows(input: &[char], cursor: usize, width: u16) -> (Vec<String>, (usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_answers_only_the_card_on_screen() {
+        let mut model = Model::default();
+        let ask = |id: u64| serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "session/request_permission", "params": {"options": []}});
+        for id in [1, 2] {
+            model.request(id.to_string(), serde_json::json!(id), id, ask(id).as_object().unwrap());
+        }
+        assert!(shown_card(&model, "").is_none(), "a card answered before it was drawn");
+        assert_eq!(shown_card(&model, "1").map(|p| p.key.as_str()), Some("1"));
+        model.resolve("1");
+        assert!(shown_card(&model, "1").is_none(), "the next card took a key meant for the one answered elsewhere");
+        assert_eq!(shown_card(&model, "2").map(|p| p.key.as_str()), Some("2"));
+    }
 
     #[test]
     fn wide_characters_wrap_whole() {

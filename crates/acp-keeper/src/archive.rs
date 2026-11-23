@@ -81,7 +81,9 @@ impl Framer {
 }
 
 /// Finds the top-level `"id"` of a JSON object streamed through it in pieces, keeping only a few
-/// bytes: the line it reads is too long to hold, and the id may come after a huge `params`.
+/// bytes: the line it reads is too long to hold, and the id may come after a huge `params`. Member
+/// names are compared after JSON unescaping (`"\u0069d"` is `id`); a name past KEY_BYTES is no
+/// `id` or `method`, and an id past ID_BYTES is not kept (the note then carries no id).
 #[derive(Default)]
 struct IdScan {
     depth: u32,
@@ -95,13 +97,17 @@ struct IdScan {
     method: bool,
 }
 
+const KEY_BYTES: usize = 64;
+const ID_BYTES: usize = 64 << 10;
+
 impl IdScan {
     fn feed(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            if let Some(value) = self.value.as_mut() {
-                if value.len() > 1024 {
-                    self.value = None;
-                }
+            if self.value.as_ref().is_some_and(|value| value.len() > ID_BYTES) {
+                self.value = None;
+            }
+            if self.key.as_ref().is_some_and(|key| key.len() > KEY_BYTES) {
+                self.key = None;
             }
             if self.string {
                 if let Some(key) = self.key.as_mut() {
@@ -116,9 +122,9 @@ impl IdScan {
                     self.escape = true;
                 } else if b == b'"' {
                     self.string = false;
-                    if let Some(mut key) = self.key.take() {
-                        key.pop();
-                        self.after_key = Some(key);
+                    if let Some(key) = self.key.take() {
+                        let quoted = [&b"\""[..], &key].concat();
+                        self.after_key = serde_json::from_slice::<String>(&quoted).ok().map(String::into_bytes);
                     }
                 }
                 continue;
@@ -243,6 +249,7 @@ impl Previous {
                     unanswered.insert(key_of(id), (id.clone(), seq));
                 }
             }
+            (_, "_keeper/client") => self.last_client = self.last_client.max(params["client"].as_u64().unwrap_or(0)),
             (_, "_keeper/session") => self.session = params["sessionId"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
             (_, "_keeper/resolved" | "_keeper/auto_answered" | "_keeper/expired") => {
                 unanswered.remove(&key_of(&params["id"]));

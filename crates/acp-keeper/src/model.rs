@@ -17,9 +17,21 @@ pub struct Tool {
     pub kind: String,
     pub status: String,
     pub raw_input: Option<Value>,
+    raw_bytes: usize,
     pub text: String,
     pub diffs: Vec<Diff>,
     pub locations: Vec<String>,
+}
+
+impl Tool {
+    /// Keeps a tool's input only up to ENTRY_BYTES of JSON (the archive has all of it), and its size.
+    fn set_raw_input(&mut self, value: Option<&Value>) {
+        let size = value.map(|v| v.to_string().len()).unwrap_or(0);
+        (self.raw_input, self.raw_bytes) = match value {
+            Some(v) if size <= ENTRY_BYTES => (Some(v.clone()), size),
+            _ => (None, 0),
+        };
+    }
 }
 
 pub enum Entry {
@@ -58,7 +70,7 @@ impl Entry {
     fn bytes(&self) -> usize {
         match self {
             Entry::User(s) | Entry::Agent(s) | Entry::Thought(s) | Entry::Note(s) | Entry::Error(s) => s.len(),
-            Entry::Tool(tool) => tool.title.len() + tool.text.len(),
+            Entry::Tool(tool) => tool.title.len() + tool.text.len() + tool.raw_bytes + tool.locations.iter().map(String::len).sum::<usize>() + tool.diffs.iter().map(|d| d.path.len()).sum::<usize>(),
             Entry::Plan(items) => items.iter().map(|(c, s)| c.len() + s.len()).sum(),
         }
     }
@@ -336,16 +348,18 @@ impl Model {
             "agent_thought_chunk" => self.append(&text_of(update.get("content").unwrap_or(&Value::Null)), |e| matches!(e, Entry::Thought(_)), Entry::Thought),
             "tool_call" => {
                 let id = str_field(update, "toolCallId").unwrap_or_default();
-                let tool = Tool {
+                let mut tool = Tool {
                     id: id.clone(),
                     title: str_field(update, "title").unwrap_or_default(),
                     kind: str_field(update, "kind").unwrap_or_else(|| "other".into()),
                     status: str_field(update, "status").unwrap_or_else(|| "pending".into()),
-                    raw_input: update.get("rawInput").cloned(),
+                    raw_input: None,
+                    raw_bytes: 0,
                     text: keep_head(texts_of(update.get("content").unwrap_or(&Value::Null))),
                     diffs: diffs_of(update.get("content").unwrap_or(&Value::Null)),
                     locations: locations_of(update.get("locations")),
                 };
+                tool.set_raw_input(update.get("rawInput"));
                 self.tools.insert(id, self.dropped + self.entries.len());
                 self.push(Entry::Tool(tool));
                 self.touch();
@@ -360,6 +374,7 @@ impl Model {
                         kind: "other".into(),
                         status: "pending".into(),
                         raw_input: None,
+                        raw_bytes: 0,
                         text: String::new(),
                         diffs: vec![],
                         locations: vec![],
@@ -377,7 +392,7 @@ impl Model {
                         tool.status = v;
                     }
                     if let Some(v) = update.get("rawInput") {
-                        tool.raw_input = Some(v.clone());
+                        tool.set_raw_input(Some(v));
                     }
                     if let Some(content) = update.get("content").filter(|c| !c.is_null()) {
                         tool.text = keep_head(texts_of(content));
@@ -387,6 +402,7 @@ impl Model {
                         tool.locations = locations_of(update.get("locations"));
                     }
                 }
+                self.trim();
                 self.touch();
             }
             "plan" => {
@@ -402,6 +418,7 @@ impl Model {
                 } else {
                     self.push(Entry::Plan(entries));
                 }
+                self.trim();
                 self.touch();
             }
             "available_commands_update" => {

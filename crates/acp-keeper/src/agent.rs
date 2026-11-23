@@ -111,7 +111,8 @@ async fn scope_for(root: &Path) -> Option<String> {
         return None;
     }
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let hash = root.to_string_lossy().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    use std::os::unix::ffi::OsStrExt;
+    let hash = root.as_os_str().as_bytes().iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
     let unit = format!("acp-keeper-{hash:016x}");
     stop_scope(&unit).await;
     Some(unit)

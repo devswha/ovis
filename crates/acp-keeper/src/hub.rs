@@ -2,8 +2,10 @@
 //! `session/new` (or `session/load`) itself, so the screen works with nobody else attached. A
 //! client's request reaches the agent under an id of the keeper's own and its answer comes back to
 //! that client alone (a `to-client` row), so clients that count ids alike never get each other's
-//! answers. An agent request is pending until the first answer arrives from the screen or any
-//! client; that answer alone goes to the agent, a `_keeper/resolved` note says who won, and a later
+//! answers. An agent request is archived under an id of the keeper's own too (`agent-N`), so an
+//! answer meant for one approval can never resolve a later one the agent asked under the same id.
+//! It is pending until the first answer arrives from the screen or any client; that answer alone
+//! goes to the agent (under the agent's id), a `_keeper/resolved` note says who won, and a later
 //! answer is dropped with a `_keeper/dropped` note.
 
 use std::collections::{HashMap, HashSet};
@@ -22,7 +24,7 @@ pub enum Ev {
     Agent(String),
     Client { conn: u64, line: String },
     Oversize { conn: Option<u64>, bytes: usize, id: Option<Value>, request: bool },
-    Open,
+    Open(u64),
     Gone,
     Term(ratatui::crossterm::event::Event),
 }
@@ -78,6 +80,7 @@ pub struct Hub {
     next: u64,
     own: HashMap<String, Own>,
     routes: HashMap<String, Route>,
+    agent_ids: HashMap<String, Value>,
     client_ids: HashSet<(u64, String)>,
     prompts: HashSet<String>,
     started: Instant,
@@ -98,6 +101,7 @@ impl Hub {
             next: 0,
             own: HashMap::new(),
             routes: HashMap::new(),
+            agent_ids: HashMap::new(),
             client_ids: HashSet::new(),
             prompts: HashSet::new(),
             started,
@@ -153,7 +157,8 @@ impl Hub {
             Ev::Agent(text) => self.on_agent(text),
             Ev::Client { conn, line } => self.on_client(conn, line),
             Ev::Oversize { conn, bytes, id, request } => self.oversize(conn, bytes, id, request),
-            Ev::Open => {
+            Ev::Open(conn) => {
+                self.note_row("_keeper/client", json!({"client": conn}));
                 self.model.clients += 1;
                 self.model.revision += 1;
             }
@@ -197,25 +202,33 @@ impl Hub {
     }
 
     fn on_agent(&mut self, text: String) {
-        let Some(msg) = rpc(&text) else { return };
-        let seq = self.archive.append("from-agent", &text);
+        let Some(mut msg) = rpc(&text) else { return };
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
         match (method, msg.get("id").cloned()) {
-            (Some(method), Some(id)) => {
-                if method.starts_with("fs/") || method.starts_with("terminal/") {
-                    let raw = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}).to_string();
-                    self.forward(&raw);
-                    self.note_row("_keeper/auto_answered", json!({"id": id, "method": method}));
-                } else {
-                    self.model.request(key_of(&id), id, seq, &msg);
-                }
+            (Some(method), Some(id)) if method.starts_with("fs/") || method.starts_with("terminal/") => {
+                self.archive.append("from-agent", &text);
+                let raw = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}).to_string();
+                self.forward(&raw);
+                self.note_row("_keeper/auto_answered", json!({"id": id, "method": method}));
+            }
+            (Some(_), Some(id)) => {
+                self.next += 1;
+                let ours = Value::String(format!("agent-{}", self.next));
+                msg.insert("id".into(), ours.clone());
+                let seq = self.archive.append("from-agent", &Value::Object(msg.clone()).to_string());
+                self.agent_ids.insert(key_of(&ours), id);
+                self.model.request(key_of(&ours), ours, seq, &msg);
             }
             (Some(method), None) => {
+                self.archive.append("from-agent", &text);
                 if method == "session/update" {
                     self.model.update(msg.get("params").unwrap_or(&Value::Null));
                 }
             }
-            (None, Some(id)) => self.agent_response(&key_of(&id), &msg),
+            (None, Some(id)) => {
+                self.archive.append("from-agent", &text);
+                self.agent_response(&key_of(&id), &msg);
+            }
             (None, None) => {}
         }
     }
@@ -262,8 +275,8 @@ impl Hub {
             }
             Own::NewSession | Own::LoadSession { .. } if error.is_some() => {
                 let e = error.unwrap_or_default();
+                self.model.session = None;
                 if let Own::LoadSession { resumed: true } = own {
-                    self.model.session = None;
                     self.model.note(format!("지난 세션을 이어 가지 못해 새 세션을 엽니다: {e}"));
                     self.new_session();
                     return;
@@ -344,7 +357,7 @@ impl Hub {
                     Route {
                         conn,
                         id,
-                        change: Change::of(&method, &params),
+                        change: Change::of(&method, &params).filter(|_| params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref()),
                     },
                 );
                 msg.insert("id".into(), routed);
@@ -361,20 +374,20 @@ impl Hub {
         }
     }
 
+    /// The resolved note is archived before the answer goes out: a keeper killed between the two
+    /// leaves an approval noted as answered, never one the agent got and the archive calls unanswered.
     fn answer(&mut self, key: &str, raw: &str, by: &str) {
         let Some(pending) = self.model.resolve(key) else {
             let id: Value = serde_json::from_str(key).unwrap_or(Value::Null);
             self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": "not pending (already answered or unknown)"}));
             return;
         };
-        self.forward(raw);
-        let option = serde_json::from_str::<Value>(raw)
-            .ok()
-            .and_then(|v| v.pointer("/result/outcome/optionId").and_then(Value::as_str).map(str::to_string));
-        let outcome = serde_json::from_str::<Value>(raw)
-            .ok()
-            .and_then(|v| v.pointer("/result/outcome/outcome").and_then(Value::as_str).map(str::to_string));
+        let mut answer: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+        let option = answer.pointer("/result/outcome/optionId").and_then(Value::as_str).map(str::to_string);
+        let outcome = answer.pointer("/result/outcome/outcome").and_then(Value::as_str).map(str::to_string);
         self.note_row("_keeper/resolved", json!({"id": pending.id, "by": by, "optionId": option, "outcome": outcome, "seq": pending.seq}));
+        answer["id"] = self.agent_ids.remove(key).unwrap_or_else(|| pending.id.clone());
+        self.forward(&answer.to_string());
         let chosen = pending
             .options
             .iter()

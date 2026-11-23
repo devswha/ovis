@@ -74,7 +74,7 @@ async fn serve_client<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(conn: 
     let mut chunk = vec![0u8; PUSH];
     let mut pumping: Option<tokio::task::JoinHandle<()>> = None;
     let mut output = Some(output);
-    let _ = tx.send(Ev::Open);
+    let _ = tx.send(Ev::Open(conn));
     while let Ok(n) = input.read(&mut chunk).await {
         if n == 0 {
             break;
@@ -446,6 +446,9 @@ async fn run(mut opts: Opts) -> i32 {
                 hub.model.note(format!("{text}. Ctrl+Q로 닫으세요"));
                 hub.agent = None;
                 exited = Some(status);
+                // Now, while the reaped agent's group number cannot have been handed out again: a
+                // screen left open for hours must not signal whatever holds that number later.
+                agent.sweep().await;
                 if !tui {
                     break;
                 }
@@ -460,13 +463,15 @@ async fn run(mut opts: Opts) -> i32 {
     }
     hub.agent = None;
     let status = match exited {
-        Some(status) => {
-            agent.sweep().await;
-            status
-        }
+        Some(status) => status,
         None => agent.stop(Duration::from_millis(1500)).await,
     };
     let _ = tokio::time::timeout(Duration::from_millis(500), reader).await;
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(ev, Ev::Agent(_) | Ev::Oversize { conn: None, .. }) {
+            hub.handle(ev);
+        }
+    }
     accepting.abort();
     #[cfg(unix)]
     let _ = std::fs::remove_file(root.join("acp.sock"));
