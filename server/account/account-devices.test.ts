@@ -203,49 +203,77 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     expect(fileKeys(dir)).toEqual([]);
   });
 
-  test("a new admission is announced once to this PC's windows: not on a re-read, a republish, a sign-in or a start; a readmission is a new one", () => {
+  test("the rows one whole read admits are told once, together: not on a re-read, a republish, a sign-in or a start; a readmission is a new one", () => {
     const dir = stateDir();
-    const announced: string[] = [];
+    const told: string[][] = [];
     const down = new Set<string>();
     const { ports: p } = ports(dir, {
-      admitted: (row) => { announced.push(nameOf(row.key)); },
+      admitted: (rows) => { told.push(rows.map((row) => nameOf(row.key))); },
       publish: (entry) => { if (down.has(nameOf(entry.key))) throw new Error("relay down"); },
     });
     const store = new AccountDeviceStore(dir, SERVER, p);
-    store.commitList(list(["k-1"]));
-    expect(announced).toEqual(["k-1"]);
-    store.commitList(list(["k-1"]));
+    store.commitList(list(["k-1", "k-2", "k-3"]));
+    expect(told).toEqual([["k-1", "k-2", "k-3"]]);
+    store.commitList(list(["k-1", "k-2", "k-3"]));
     clock.now += JOIN_HOLD_MS;
     const [one] = store.rows();
     expect(store.access(one!.id)).toEqual({ ok: true });
-    expect(announced).toEqual(["k-1"]);
+    expect(told).toEqual([["k-1", "k-2", "k-3"]]);
 
     // a notice that could not go out is published again later; the admission was told when its row was written
-    down.add("k-2");
-    store.commitList(list(["k-1", "k-2"]));
-    expect(announced).toEqual(["k-1", "k-2"]);
+    down.add("k-4");
+    store.commitList(list(["k-1", "k-2", "k-3", "k-4"]));
+    expect(told).toEqual([["k-1", "k-2", "k-3"], ["k-4"]]);
     down.clear();
-    store.commitList(list(["k-1", "k-2"]));
-    expect(store.rows().find((row) => nameOf(row.key) === "k-2")?.hold_until).not.toBeNull();
-    expect(announced).toEqual(["k-1", "k-2"]);
+    store.commitList(list(["k-1", "k-2", "k-3", "k-4"]));
+    expect(store.rows().find((row) => nameOf(row.key) === "k-4")?.hold_until).not.toBeNull();
+    expect(told).toHaveLength(2);
 
     // a start reads the rows it had: none of them is news
     const reopened = new AccountDeviceStore(dir, SERVER, p);
-    reopened.commitList(list(["k-1", "k-2"]));
-    expect(announced).toEqual(["k-1", "k-2"]);
+    reopened.commitList(list(["k-1", "k-2", "k-3", "k-4"]));
+    expect(told).toHaveLength(2);
 
     // an expired row the device itself brings back is a new admission
     clock.now += (EXPIRY_DAYS + 1) * 86_400_000;
     reopened.expire();
-    expect(reopened.readmit(keyOf("k-1"), list(["k-1", "k-2"]))).toBe(true);
-    expect(announced).toEqual(["k-1", "k-2", "k-1"]);
+    expect(reopened.readmit(keyOf("k-1"), list(["k-1", "k-2", "k-3", "k-4"]))).toBe(true);
+    expect(told.at(-1)).toEqual(["k-1"]);
   });
 
   test("an announcement that fails is only logged: the admission stands", () => {
     const dir = stateDir();
-    const { ports: p } = ports(dir, { admitted: () => { throw new Error("no window"); } });
+    const asked: string[] = [];
+    const { ports: p } = ports(dir, { admitted: (rows) => { asked.push(...rows.map((row) => nameOf(row.key))); throw new Error("no window"); } });
     const store = new AccountDeviceStore(dir, SERVER, p);
     expect(store.commitList(list(["k-1"])).admitted).toEqual([keyOf("k-1")]);
+    expect(asked).toEqual(["k-1"]);
     expect(fileKeys(dir)).toEqual(["k-1"]);
+  });
+
+  test("a row stands while it is admitted: in its hold, then out of it only through the admission guard, and never once expired", () => {
+    const dir = stateDir();
+    const guard = { admits: true };
+    let settled = 0;
+    const { ports: p } = ports(dir, { admits: () => guard.admits, settleNotices: () => { settled++; } });
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    store.commitList(list(["k-1"]));
+    const [row] = store.rows();
+    expect(store.standing(row!.id)).toBe(true);
+    guard.admits = false;
+    // in its ten seconds the guard is not asked yet
+    expect(store.standing(row!.id)).toBe(true);
+    clock.now += JOIN_HOLD_MS;
+    expect(store.standing(row!.id)).toBe(false);
+    // the refusal settles what was said of its admission (DeviceStore.onListedChange takes the notice back)
+    const before = settled;
+    expect(store.access(row!.id)).toEqual({ refused: "admission" });
+    expect(settled).toBe(before + 1);
+    guard.admits = true;
+    expect(store.standing(row!.id)).toBe(true);
+    expect(store.access(row!.id)).toEqual({ ok: true });
+    clock.now += (EXPIRY_DAYS + 1) * 86_400_000;
+    expect(store.standing(row!.id)).toBe(false);
+    expect(store.standing("0000000000000000")).toBe(false);
   });
 });

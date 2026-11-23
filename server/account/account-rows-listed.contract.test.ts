@@ -1,6 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import type { DeviceConnection, DevicePairedEvent, PairedDevice } from "../../shared/protocol.ts";
+import type { Access } from "../access.ts";
 import { handleDeviceRequest } from "../devices.ts";
+import type { ServerContext } from "../dispatch.ts";
+import { handleJoinSeen, JOIN_SEEN_PATH, shownTo, type JoinViewer } from "../join-notices.ts";
+import { machinePairingEvents } from "../machine-pairing-events.ts";
 import { relayConnection, relayFixture } from "../relay/test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT, createListedPc } from "./listed-pc.test-helpers.ts";
@@ -10,6 +15,7 @@ import { EXPIRY_DAYS } from "./row-expiry.ts";
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0)) close(); });
 const listedPc = () => createListedPc(close => closes.push(close));
+type Pc = Awaited<ReturnType<typeof listedPc>>;
 
 /** GET /api/devices from this PC's own window (loopback). */
 async function ownList(port: number): Promise<PairedDevice[]> {
@@ -19,7 +25,7 @@ async function ownList(port: number): Promise<PairedDevice[]> {
 }
 
 /** The same read at the handler, as this PC's own window, with the relay sessions `live` up. */
-async function handlerList(pc: Awaited<ReturnType<typeof listedPc>>, live = new Map<string, DeviceConnection>()): Promise<PairedDevice[]> {
+async function handlerList(pc: Pc, live = new Map<string, DeviceConnection>()): Promise<PairedDevice[]> {
   const response = await handleDeviceRequest(new Request("http://127.0.0.1/api/devices"), "/api/devices", pc.fixture.app.context.services.devices,
     { level: "full", via: "local", role: "drive" }, null, undefined, false, { list: () => live, check: async () => {} }, true);
   expect(response.status).toBe(200);
@@ -67,6 +73,7 @@ test("the PC's own window sees how an account-joined row's session reaches it, b
 
 test("an expired account-joined row is not listed, by the clock or by its state", async () => {
   const { fixture, device } = await listedPc();
+  expect((await ownList(fixture.app.port)).some(row => row.id === device.id)).toBe(true);
   const now = Date.now();
   const clock = spyOn(Date, "now").mockReturnValue(now + (EXPIRY_DAYS + 1) * 86_400_000);
   try {
@@ -106,34 +113,108 @@ test("the PC's own window renames and revokes an account-joined row by its id, t
   expect(devices.list(null).map(row => row.id)).toEqual([pc.member.id]);
 });
 
-test("a list admission tells this PC's windows of the new device once: not again on a re-read, a sign-in or a restart", async () => {
+type Viewer = { access: Access; peer: ServerContext["peer"]; viewer: JoinViewer };
+
+/** The device-paired notices (by label) and take-backs (by event id) a window of `viewer` hears from now on. */
+function listen(fixture: Pc["fixture"], { access, peer, viewer }: Viewer) {
+  const told: string[] = [];
+  const taken: string[] = [];
+  closes.push(machinePairingEvents({ ...fixture.app.context, peer } as ServerContext, access, [], viewer).subscribe(event => {
+    if (event.type === "device-paired") told.push(event.label);
+    if (event.type === "device-paired-seen") taken.push(event.event_id);
+  }));
+  return { told, taken };
+}
+
+function viewers(pc: Pc): Record<"own" | "member" | "joined" | "watch" | "portal", Viewer> {
+  const { devices } = pc.fixture.app.context.services;
+  const relayed = (id: string, key: string, role: "drive" | "watch"): Viewer => {
+    const device = { id, label: id, role };
+    return { access: { level: "full", via: "relay", role, device }, peer: { kind: "relay", device, sessionId: id, serverId: pc.serverId, key },
+      viewer: { ownWindow: false, since: devices.addedAt(id) } };
+  };
+  return {
+    own: { access: { level: "full", via: "local", role: "drive" }, peer: { kind: "socket" }, viewer: { ownWindow: true, since: undefined } },
+    member: relayed(pc.member.id, pc.member.publicKey, "drive"),
+    joined: relayed(pc.device.id, pc.device.publicKey, "drive"),
+    watch: relayed(pc.member.id, pc.member.publicKey, "watch"),
+    portal: { access: { level: "full", via: "portal", role: "drive" }, peer: { kind: "socket" }, viewer: { ownWindow: false, since: undefined } },
+  };
+}
+
+test("one whole read's admissions are one notice, told to this PC's own window alone: no other device, no push, nobody else marks it seen", async () => {
+  const pc = await listedPc();
+  const { joins, devices, accountMailbox, core } = pc.fixture.app.context.services;
+  const push = spyOn(core.push, "devicePaired");
+  const paired: DevicePairedEvent[] = [];
+  devices.onPaired(event => paired.push(event));
+  const who = viewers(pc);
+  const live = Object.fromEntries(Object.entries(who).map(([name, viewer]) => [name, listen(pc.fixture, viewer).told]));
+  // the account-joined row the fixture admitted waits for this PC's own window only
+  expect(Object.fromEntries(Object.entries(who).map(([name, { viewer }]) => [name, joins.waiting().filter(join => shownTo(join, viewer)).map(join => join.event.label)])))
+    .toEqual({ own: ["Laptop"], member: [], joined: [], watch: [], portal: [] });
+
+  for (const [label, device] of [["Tablet", await phone()], ["Pixel", await phone()]] as const) pc.service.registerDevice(ACCOUNT, device.spki, label);
+  expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  // the own window heard the waiting one as it subscribed, then this read's one live
+  expect(live).toEqual({ own: ["Laptop", "Tablet +1"], member: [], joined: [], watch: [], portal: [] });
+  expect(paired).toEqual([]);
+  expect(push).not.toHaveBeenCalled();
+  push.mockRestore();
+  // a window that opens later: the own window hears both notices, an older device neither
+  expect([listen(pc.fixture, who.own).told, listen(pc.fixture, who.member).told]).toEqual([["Laptop", "Tablet +1"], []]);
+
+  const [notice] = joins.waiting().filter(join => join.event.label === "Tablet +1");
+  const mark = ({ access, viewer }: Viewer) => handleJoinSeen(new Request(`http://127.0.0.1${JOIN_SEEN_PATH}`, {
+    method: "POST", headers: { origin: "http://127.0.0.1", "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ event_id: notice!.event.event_id }),
+  }), joins, access, viewer);
+  expect((await mark(who.member)).status).toBe(404);
+  expect((await mark(who.joined)).status).toBe(404);
+  expect((await mark(who.own)).status).toBe(200);
+  expect(joins.waiting().map(join => join.event.label)).toEqual(["Laptop"]);
+});
+
+test("Not me takes the notice back from this PC's own window once its row is dropped", async () => {
+  const pc = await listedPc();
+  const { joins, devices } = pc.fixture.app.context.services;
+  const [notice] = joins.waiting();
+  expect(notice?.event.label).toBe("Laptop");
+  const own = listen(pc.fixture, viewers(pc).own);
+  const record = await signSafetyRecord({ v: 1, kind: "block", account: ACCOUNT, target: pc.device.publicKey, signer: pc.member.publicKey,
+    target_no: 2, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, pc.member.keys.privateKey);
+  expect(await devices.applyBlock(record, "handed")).toMatchObject({ outcome: "applied" });
+  expect(devices.has(pc.device.id)).toBe(false);
+  expect(own.taken).toEqual([notice!.event.event_id]);
+  expect(joins.waiting()).toEqual([]);
+});
+
+test("a notice is told once a whole read: not again on a re-read, a sign-in or a restart", async () => {
   const { fixture, device, service, serverId } = await listedPc();
-  const { joins, devices, accountMailbox } = fixture.app.context.services;
-  const first = joins.waiting().filter(join => join.event.device_id === device.id);
-  expect(first.map(join => [join.event.type, join.event.label])).toEqual([["device-paired", "Laptop"]]);
-  const heard: DevicePairedEvent[] = [];
-  devices.onPaired(event => heard.push(event));
+  const { joins, accountMailbox } = fixture.app.context.services;
+  const told: string[] = [];
+  joins.onListed(event => told.push(event.label));
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   const clock = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS);
   try {
     const link = await relayConnection(fixture, { serverId });
     await link.auth(device);
   } finally { clock.mockRestore(); }
-  expect(heard).toEqual([]);
+  expect(told).toEqual([]);
 
   const newer = await phone();
   service.registerDevice(ACCOUNT, newer.spki, "Tablet");
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   expect(await accountMailbox.readSnapshot()).toMatchObject({ committed: true });
-  expect(heard.map(event => event.label)).toEqual(["Tablet"]);
+  expect(told).toEqual(["Tablet"]);
+  const [first] = joins.waiting();
   expect(joins.waiting().map(join => join.event.label)).toEqual(["Laptop", "Tablet"]);
 
-  expect(joins.see(first[0]!.event.event_id)).toBe(true);
+  expect(joins.see(first!.event.event_id)).toBe(true);
   fixture.app.stop();
   const reopened = relayFixture(false, { stateDir: fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
   closes.unshift(() => reopened.app.stop());
-  const again: DevicePairedEvent[] = [];
-  reopened.app.context.services.devices.onPaired(event => again.push(event));
+  const again: string[] = [];
+  reopened.app.context.services.joins.onListed(event => again.push(event.label));
   expect(await reopened.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   expect(again).toEqual([]);
   expect(reopened.app.context.services.joins.waiting().map(join => join.event.label)).toEqual(["Tablet"]);

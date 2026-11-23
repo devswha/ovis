@@ -658,16 +658,28 @@ try {
           }
 
           {
-            // no device paired here, one the PC's account let in (site/demo/transport.ts `demo_devices=account`)
+            // no device paired here, two the PC's account let in, this one among them (site/demo/transport.ts `demo_devices=account`)
             const { page, errors } = await open(context, server.port, "&demo_devices=account");
             errorsOf.push(errors);
             const joined = page.locator(ROW, { hasText: "Galaxy S25" });
             await joined.waitFor();
             assert.equal(await joined.locator(".devices-kind", { hasText: label("Through your account") }).count(), 1, "the row says the account let it in");
-            assert.equal(await page.getByText(label("No devices paired yet."), { exact: true }).count(), 0, "a list of such a device alone is not empty");
-            assert.equal(await page.locator(".devices-revoke-all").count(), 1, "Revoke all is offered with such a device alone");
+            assert.equal(await page.getByText(label("No devices paired yet."), { exact: true }).count(), 0, "a list of such devices alone is not empty");
+            assert.equal(await page.locator(".devices-revoke-all").count(), 0, "such devices alone offer no Revoke all");
             assert.equal(await joined.getByRole("button", { name: label("Revoke {name}").replace("{name}", "Galaxy S25"), exact: true }).count(), 1, "the row has its own Revoke");
-            assert.deepEqual(await overflow(page), [], "the tag fits the row");
+            // this device's row wears three pills: its kind, the account, and this device; each whole, in the name, clear of the buttons
+            const self = page.locator(ROW, { hasText: "iPhone · Safari" });
+            const pills = await self.evaluate((row) => {
+              const name = row.querySelector(".devices-name")!.getBoundingClientRect();
+              const actions = row.querySelector(".devices-actions")?.getBoundingClientRect();
+              return [...row.querySelectorAll<HTMLElement>(".devices-kind, .devices-current")].map((pill) => {
+                const box = pill.getBoundingClientRect();
+                return { text: pill.textContent, inName: box.left >= name.left - 0.5 && box.right <= name.right + 0.5, clearOfButtons: actions === undefined || box.right <= actions.left + 0.5, whole: pill.scrollWidth <= pill.clientWidth + 0.5 };
+              });
+            });
+            assert.deepEqual(pills.map((pill) => pill.text), [label("Phone"), label("Through your account"), label("This device now")], "this device's row has its three pills");
+            for (const pill of pills) assert.deepEqual({ inName: pill.inName, clearOfButtons: pill.clearOfButtons, whole: pill.whole }, { inName: true, clearOfButtons: true, whole: true }, `the pill ${pill.text} fits at ${width}`);
+            assert.deepEqual(await overflow(page), [], "the pills fit the rows");
             await reveal(joined);
             await capture(page, `${prefix}-account`, about("account"));
             await page.close();

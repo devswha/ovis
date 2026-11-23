@@ -238,7 +238,8 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
           <button type="button" className="btn" onClick={() => { setAlsoBlock(new Set()); setRemoving({ id: null, label: "" }); }}>{t("Choose…")}</button>
         </SettingsRow>
       )}
-      {devices !== null && devices.length > 0 && !guest && (
+      {/* the account's own devices alone are no reason for Revoke all: each has its own Revoke */}
+      {devices !== null && devices.some((d) => !d.through_account) && !guest && (
         <div className="devices-revoke-all">
           <SettingsRow label={t("Revoke every device")} description={t(watching
             ? "Every paired device, this one included, would lose its pairing access at once. A device that only watches cannot do it: use the PC or a device that can drive."

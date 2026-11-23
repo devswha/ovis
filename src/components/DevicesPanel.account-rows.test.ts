@@ -63,13 +63,16 @@ describe("a device the PC's account let in, in Devices and PCs", () => {
     expect(text()).not.toMatch(/\d+ h ago/);
   });
 
-  it("with only rows the account let in, the list shows them and Revoke all, and never says nothing is paired", async () => {
+  it("with only rows the account let in, the list shows them with their own Revoke, offers no Revoke all, and never says nothing is paired", async () => {
     await mount();
     await answer(0, [joined]);
     expect(text()).not.toContain("No devices paired yet.");
     expect(text()).toContain("Phone");
-    expect(text()).toContain("Revoke every device");
     expect(labelled("Revoke Phone")).toHaveLength(1);
+    expect(text()).not.toContain("Revoke every device");
+    await act(async () => { window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT)); });
+    await answer(1, [joined, paired]);
+    expect(text()).toContain("Revoke every device");
   });
 
   it("a row the account let in is no pairing: nothing says it was paired, and a dialog waiting for one stays", async () => {
