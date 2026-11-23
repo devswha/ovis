@@ -236,6 +236,8 @@ try {
   const connecting = await accountWindow(browser, pageErrors);
   assert.equal(await connecting.page.locator('.machine-title[aria-current="true"][title="Desk"]').count(), 0, "a new window starts on another PC");
   const offered = connecting.page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/api/relay/offer");
+  const typedCodes: string[] = [];
+  connecting.page.on("request", (request) => { if (request.method() === "POST" && new URL(request.url()).pathname === "/api/relay/code") typedCodes.push(request.url()); });
   const mine = await openRelayTab(connecting.page);
   // signed in to this PC's own account in this PC's own window, the tab opens as the Tailscale tab does: the phone part
   // first, the relay's pairing QR code made as it opens, then the signed-in line; the account's PCs are in the sidebar
@@ -245,6 +247,12 @@ try {
   await pairingQr.waitFor();
   assert.equal((await offered).headers()["x-ovis-no-account-only"], undefined, "the relay's own offer, made as the tab opened, not the account QR code's");
   assert.equal(await mine.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).count(), 0, "one QR code a phone scans");
+  // one code, as on the Tailscale tab: the six digits the offer carries, with one Refresh and one Copy, and no relay code to type
+  await mine.getByTestId("connect-phone-scan").locator(".compact-pair-code").filter({ hasText: /^\d{3} \d{3}$/ }).waitFor();
+  assert.equal(await mine.getByRole("button", { name: "Refresh", exact: true }).count(), 1, "one Refresh");
+  assert.equal(await mine.getByRole("button", { name: "Copy", exact: true }).count(), 1, "one Copy");
+  assert.equal(await mine.getByTestId("pair-with-code").count(), 0, "no second Pair with a code");
+  assert.deepEqual(typedCodes, [], "no relay code to type is asked for");
   const qrBottom = await pairingQr.evaluate((qr) => qr.getBoundingClientRect().bottom);
   assert.ok(qrBottom <= await mine.getByText("This PC is in your account.", { exact: true }).evaluate((line) => line.getBoundingClientRect().top), "the signed-in line comes under the phone part");
   // this PC's own window, signed in to its account: under the QR code, the PCs it can reach to add over SSH, and a field

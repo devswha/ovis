@@ -261,7 +261,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await openPhoneSettings(page, fixture.origin);
     const ui = relayUi(page);
-    const { dialog, connect, sheet, tabs, relayTab, tailscaleTab, sshTab, toggle, addRelayOff, addPlain, tailscaleCode, pairCode, moreState, moreSwitch } = ui;
+    const { dialog, connect, sheet, tabs, relayTab, tailscaleTab, sshTab, toggle, addRelayOff, addPlain, tailscaleCode, moreState, moreSwitch } = ui;
     const pairStart = () => answered(page, "/api/devices/pair/start");
     const startedCode = async (answer: Promise<Response>) => {
       const response = await answer;
@@ -458,9 +458,11 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     page.off("request", noteOffer);
     assert.ok(askedAgain.some(([path]) => path === "/api/relay/offer"), "the tab asked for the relay's offer as it opened");
     assert.ok(askedAgain.every(([, mark]) => mark === undefined), "never the account QR code's own offer, which the PC refuses");
+    assert.ok(askedAgain.every(([path]) => path !== "/api/relay/code"), "and no relay code to type: the QR code's six digits are the tab's one code");
+    assert.equal(await relayTab.getByTestId("pair-with-code").count(), 0, "no second Pair with a code");
 
     // this loopback page with no Tailscale has no address a phone can open: the Tailscale tab's phone part offers the step
-    // that makes one, and the relay tab's Pair with a code shows the code the relay's offer carries, with no QR box
+    // that makes one, and the relay tab's top shows the six digits the relay's offer carries, beside its QR code
     await ui.openTab("tailscale");
     await tailscaleTab.getByTestId("connect-phone-scan").getByRole("link", { name: "Get Tailscale", exact: true }).waitFor();
     assert.equal(await tailscaleTab.getByText("The phone needs the Tailscale app turned on too.", { exact: true }).count(), 1, "it says the phone needs Tailscale too");
@@ -468,13 +470,13 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await ui.openTab("relay");
     const codeStarted = fixture.pendingCode();
     assert.ok(codeStarted !== null, "the PC holds the code the relay's offer carries");
-    await pairCode.filter({ hasText: exactly(spaced(codeStarted)) }).waitFor();
-    assert.equal(await relayTab.getByTestId("pair-with-code").locator(".compact-pair-qr-empty, [role='img']").count(), 0, "no address: no QR code and no empty box beside the code");
+    const topCode = accountQr.getByTestId("connect-phone-scan").locator(".compact-pair-code");
+    await topCode.filter({ hasText: exactly(spaced(codeStarted)) }).waitFor();
     await ui.openTab("ssh");
     assert.equal(await relayTab.isHidden(), true, "another tab hides the relay tab");
     await sshTab.getByLabel("Add another PC from this one", { exact: true }).waitFor();
     await ui.openTab("relay");
-    assert.equal(await pairCode.innerText(), spaced(codeStarted), "back on the relay tab, its code is the same")
+    assert.equal(await topCode.innerText(), spaced(codeStarted), "back on the relay tab, its code is the same")
     await ui.closeSheet();
 
     // the page shows this PC's relay ID nowhere: the reset is read from the PC itself

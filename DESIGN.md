@@ -5123,10 +5123,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   this PC in the account and the relay online, the tab is the signed-in line and the phone's QR code,
   no list of the account's PCs (the sidebar has them). Where Add PC over SSH adds a PC to the account
   (this PC's own window, signed in to the account this PC is in, as `sshAddOffered` says), the tab
-  opens as the Tailscale tab does (owner, 2026-11-23): the phone part first, with the relay's own
-  pairing QR code beside its code to type, Refresh and Copy (`RelayRoute` compact, made as the tab
-  opens and renewed as it runs out, as a page with no account draws it), in place of the QR code that
-  opens this PC's page, then the signed-in line. That state is drawn only under the account policy
+  opens as the Tailscale tab does (owner, 2026-11-23): the phone part first, with one QR code, the
+  relay's own offer, beside the six digits it carries (the code typed where this PC's address
+  opens), one Refresh and one Copy (`RelayRoute` `digits`, made as the tab opens and renewed as it
+  runs out), in place of the QR code that opens this PC's page, then the signed-in line. No relay
+  code to type and no Pair with a code below: that one code is the tab's. That state is drawn only under the account policy
   (`pc_add_from_account`), where a device that redeems a relay code waits for this PC's screen to
   approve the key it proved. The phone part is followed, behind a hairline (`.connect-reachable`), by
   the PCs this PC can reach: one line of

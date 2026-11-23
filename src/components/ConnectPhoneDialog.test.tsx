@@ -590,12 +590,14 @@ describe("Connect a phone on a phone", () => {
     await until(() => renderer!.root.findAll((each) => each.props["data-tab-panel"] === "relay").length > 0, "the relay tab");
     for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
     expect(lists()).toHaveLength(0);
+    expect(renderer!.root.find((each) => each.props["data-tab-panel"] === "relay" && each.type === "div").findAllByProps({ "data-testid": "pair-with-code" }).length).toBeGreaterThan(0);
     await act(async () => { renderer!.update(<SettingsProvider>{dialog(true)}</SettingsProvider>); });
     await until(() => lists().length === 1 && lists()[0]!.findAll((each) => each.props.className === "connect-found-row").length > 0, "the relay tab's list");
     const panel = renderer!.root.find((each) => each.props["data-tab-panel"] === "relay" && each.type === "div");
     const parts = panel.children.filter((child): child is ReactTestInstance => typeof child !== "string");
-    // under what the tab showed before, the phone's QR code first
+    // under what the tab showed before, the phone's QR code first; its code is the tab's one code, so no Pair with a code
     expect(parts.at(-1)!.findAll((each) => each.type === "section" && each.props.className === "connect-reachable")).toHaveLength(1);
+    expect(panel.findAllByProps({ "data-testid": "pair-with-code" })).toHaveLength(0);
     expect(panel.findAll((each) => each.type === QrCode).length).toBeGreaterThan(0);
     expect(renderer!.root.findAll((each) => each.props["data-tab-panel"] === "tailscale" && each.type === "div").flatMap((tab) => tab.findAll((each) => each.props.className === "connect-reachable"))).toHaveLength(0);
   });
@@ -1498,10 +1500,13 @@ describe("the relay tab's QR code behind a press", () => {
     pcAccount = ACCOUNT_ID;
     await mount({ joinBySignIn: true, provider: "github", addsOverSsh: true });
     const scan = renderer!.root.findByProps({ "data-testid": "connect-phone-scan" });
-    // the relay's own pairing: its QR code and the code to type, made as the tab opens, never the account QR code's
+    // as the Tailscale tab's top: the relay's own offer as the QR code, made as the tab opens (never the account QR
+    // code's), beside the six digits it carries, with one Refresh and one Copy; no relay code to type is asked for
     expect(scan.findAllByType(QrCode).map((qr) => qr.props.value)).toEqual([OFFER_URL]);
-    expect(text(scan)).toContain("7K3QD-M2XHA");
-    expect(minted()).toEqual(["/api/relay/code", "/api/relay/offer"]);
+    expect(text(scan.findByProps({ className: "compact-pair-code" }))).toBe("482 913");
+    expect(text(scan)).not.toContain("7K3QD-M2XHA");
+    expect(scan.findAll((node) => node.type === "button").map((node) => text(node).trim())).toEqual(["Refresh", "Copy"]);
+    expect(minted()).toEqual(["/api/relay/offer"]);
     expect(offerMarks).toEqual([null]);
     // the QR code that opens this PC's page gives way to it: one QR code a phone scans
     expect(qrCodes()).toHaveLength(1);
