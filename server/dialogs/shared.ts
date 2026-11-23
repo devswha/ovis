@@ -156,6 +156,8 @@ export type ParsedPrompt = InteractivePrompt & {
    * client on its own app server (dialogs/codex.ts); null for a dialog the screen does not show whole
    */
   approvalCommand?: string | null;
+  /** which of the agent's approval dialogs it is, where it has several (server/approvals/hub.ts ApprovalDialog.kind) */
+  approvalKind?: string;
   lettaSearch?: string;
   lettaTab?: string;
   lettaTabs?: string[];

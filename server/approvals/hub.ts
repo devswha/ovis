@@ -36,6 +36,8 @@ export type ApprovalDecision = "allow" | "deny";
 export interface ApprovalRequest {
   command: string;
   description: string | null;
+  /** which of the agent's dialogs shows it, where it has several (Codex's command, edit, grant): no other is its */
+  dialog?: string;
 }
 
 /**
@@ -44,6 +46,8 @@ export interface ApprovalRequest {
  */
 export interface ApprovalDialog {
   command: string | null;
+  /** which of the agent's dialogs it is, where it has several (ApprovalRequest.dialog) */
+  kind?: string;
 }
 
 export interface HeldApproval extends ApprovalRequest {
@@ -342,11 +346,16 @@ export class ApprovalHub {
     return entry !== undefined;
   }
 
-  /** The held requests a dialog on the screen leaves open, oldest first: all of them, but those showing another command whole. */
+  /**
+   * The held requests a dialog on the screen leaves open, oldest first: those of its kind, but those showing another
+   * command whole. A dialog that does not show its command whole leaves a request an agent asked directly (hold) open
+   * only when it is the one of its kind held: of two, the screen cannot tell which it shows.
+   */
   private open(paneId: string, dialog: ApprovalDialog | null): Pending[] {
     if (dialog === null) return [];
-    const { command } = dialog;
-    return (this.pending.get(paneId) ?? []).filter((entry) => command === null || shows(command, entry.command));
+    const { command, kind } = dialog;
+    const open = (this.pending.get(paneId) ?? []).filter((entry) => entry.dialog === kind && (command === null || shows(command, entry.command)));
+    return command === null && open.length > 1 && open.some((entry) => entry.pinned) ? [] : open;
   }
 
   /**

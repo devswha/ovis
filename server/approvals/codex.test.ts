@@ -6,7 +6,7 @@ import type { Server, ServerWebSocket } from "bun";
 
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
-import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, serverArgs, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, privateParent, serverArgs, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
 import { parsePrompt } from "../dialogs/live.ts";
 import { ApprovalHub } from "./hub.ts";
 
@@ -59,6 +59,9 @@ describe("the command a card shows", () => {
     expect(shellScript(`/bin/zsh -lc 'echo '"'"'Ovis'"'"' "x"'`)).toBe(`echo 'Ovis' "x"`);
     expect(shellScript("/bin/bash -lc 'cat <<'\\''EOF'\\'' > a.txt\nfirst line\n\tthird\nEOF\nwc -l a.txt'"))
       .toBe("cat <<'EOF' > a.txt\nfirst line\n\tthird\nEOF\nwc -l a.txt");
+    // a backslash before a line break joins the lines, in double quotes and out of them
+    expect(shellScript('/bin/bash -c "printf %s A\\\nB"')).toBe("printf %s AB");
+    expect(shellScript("/bin/bash -c ab\\\ncd")).toBe("abcd");
   });
 
   it("is the command as it is where it is not one shell script, or where the shell would read it otherwise", () => {
@@ -82,15 +85,37 @@ describe("the command a card shows", () => {
       const parsed = parsePrompt("codex", screen);
       expect(parsed?.responder, shape).toBe("codex-approval");
       expect(parsed?.approvalCommand, shape).toBeString();
+      expect(parsed?.approvalKind, shape).toBe("command");
       hub.hold(pane, { kind: "codex", decision: codexDecision }, codexCard(request.method, request.params)!, () => {});
-      expect(hub.shown(pane, { command: parsed!.approvalCommand! })?.command, shape).toBe(codexCard(request.method, request.params)!.command);
+      expect(hub.shown(pane, { command: parsed!.approvalCommand!, kind: "command" })?.command, shape).toBe(codexCard(request.method, request.params)!.command);
       const other = COMMANDS[(at + 1) % COMMANDS.length]!;
-      expect(hub.shown(pane, { command: parsePrompt("codex", other.screen)!.approvalCommand! }), shape).toBeNull();
+      expect(hub.shown(pane, { command: parsePrompt("codex", other.screen)!.approvalCommand!, kind: "command" }), shape).toBeNull();
+      expect(hub.shown(pane, { command: null, kind: "edit" }), shape).toBeNull();
     }
   });
 
-  it("comes from the recorded request with its reason", () => {
-    expect(codexCard(RECORDED.method, RECORDED.params)).toEqual({ command: "ls -la", description: "Do you approve running ls -la in the workspace with escalated permissions?" });
+  it("binds a dialog that does not show its command only to the one request of its kind held", () => {
+    const hub = new ApprovalHub(join(root(), "h"), []);
+    cleanups.push(() => hub.stop());
+    const source = { kind: "codex", decision: codexDecision };
+    const make = codexCard(RECORDED.method, { ...RECORDED.params, command: "/bin/bash -lc 'make check'" })!;
+    hub.hold("w1:p1", source, make, () => {});
+    expect(hub.shown("w1:p1", { command: null, kind: "command" })?.command).toBe("make check");
+    hub.hold("w1:p1", source, codexCard(RECORDED.method, { ...RECORDED.params, command: "/bin/bash -lc 'printf innocuous'" })!, () => {});
+    // a clipped `$ make…` with two held: the screen cannot say which it is
+    expect(hub.shown("w1:p1", { command: null, kind: "command" })).toBeNull();
+    expect(hub.shown("w1:p1", { command: "make check", kind: "command" })?.command).toBe("make check");
+  });
+
+  it("comes from the recorded request with its reason and where it runs", () => {
+    expect(codexCard(RECORDED.method, RECORDED.params))
+      .toEqual({ command: "ls -la", description: "Do you approve running ls -la in the workspace with escalated permissions?\nin /home/user/work", dialog: "command" });
+  });
+
+  it("tells two runs of one command apart by where they run and what more they may do", () => {
+    const elsewhere = codexCard(RECORDED.method, { ...RECORDED.params, cwd: "/srv/other", environmentId: "remote-1", additionalPermissions: { network: { enabled: true }, fileSystem: { read: null, write: ["/srv"] } } });
+    expect(elsewhere?.description).toBe("Do you approve running ls -la in the workspace with escalated permissions?\nin /srv/other\nenvironment: remote-1\nwith network: on\nwith write: /srv");
+    expect(codexCard(RECORDED.method, { ...RECORDED.params, additionalPermissions: { network: null, fileSystem: { read: null, write: null, entries: [{ path: "/x" }] } } })).toBeNull();
   });
 
   it("leaves to the TUI a command of another kind, a network approval, and an edit whose changes were not announced", () => {
@@ -101,11 +126,12 @@ describe("the command a card shows", () => {
   });
 
   it("shows an edit with its announced changes, permissions spelled out, and an MCP server's plain yes-or-no form", () => {
-    const changes = new Map([["i1", [{ path: "/w/a.txt", kind: "add", diff: "+hello" }]]]);
+    const changes = new Map([["i1", [{ path: "/w/a.txt", kind: "add", diff: "+hello" }, { path: "/w/b.txt", kind: "update", diff: "-x\n+y", movePath: "/elsewhere/b.txt" }]]]);
     expect(codexCard("item/fileChange/requestApproval", { itemId: "i1", reason: "outside the workspace" }, changes))
-      .toEqual({ command: "add /w/a.txt\n+hello", description: "outside the workspace" });
+      .toEqual({ command: "add /w/a.txt\n+hello\nupdate /w/b.txt -> /elsewhere/b.txt\n-x\n+y", description: "outside the workspace", dialog: "edit" });
     expect(codexCard("item/permissions/requestApproval", { reason: "needs the net", permissions: { network: { enabled: true }, fileSystem: { read: null, write: ["/srv"] } } }))
-      .toEqual({ command: "network: on\nwrite: /srv", description: "needs the net" });
+      .toEqual({ command: "network: on\nwrite: /srv", description: "needs the net", dialog: "grant" });
+    expect(codexCard("item/permissions/requestApproval", { reason: "nothing", permissions: { network: null, fileSystem: null } })).toBeNull();
     expect(codexCard("mcpServer/elicitation/request", { mode: "form", serverName: "deploy", message: "Ship it?", requestedSchema: { type: "object", properties: {} } }))
       .toEqual({ command: "Ship it?", description: "deploy" });
     expect(codexCard("mcpServer/elicitation/request", { mode: "form", serverName: "deploy", message: "Name?", requestedSchema: { type: "object", properties: { name: { type: "string" } } } })).toBeNull();
@@ -118,6 +144,8 @@ describe("a card's answer", () => {
     expect(codexDecision("Yes, proceed (y)")).toBe("allow");
     expect(codexDecision("No, and tell Codex what to do differently (esc)")).toBe("deny");
     expect(codexDecision("Yes, and don't ask again for commands that start with `ls -la` (p)")).toBeNull();
+    // the native answer grants for the turn: a grant for the session goes to the dialog as its keys
+    expect(codexDecision("Yes, grant these permissions for this session (s)")).toBeNull();
     expect(codexAnswer(RECORDED.method, RECORDED.params, "allow")).toEqual({ decision: "accept" });
     expect(codexAnswer(RECORDED.method, RECORDED.params, "deny")).toEqual({ decision: "cancel" });
     expect(codexAnswer(RECORDED.method, { availableDecisions: ["accept", "decline"] }, "deny")).toEqual({ decision: "decline" });
@@ -153,6 +181,20 @@ describe("which launches run on their own server", () => {
     expect(statSync(program).mode & 0o777).toBe(0o700);
     expect(statSync(dirname(program)).mode & 0o777).toBe(0o700);
     expect(readFileSync(program, "utf8")).toContain(`codex --remote "unix://$socket" '--model' 'm'`);
+  });
+});
+
+describe("where the launcher is written", () => {
+  it("is a folder no other account can rename entries in", () => {
+    const dir = root();
+    expect(privateParent(dir)).toBe(true);
+    const shared = join(dir, "shared");
+    mkdirSync(shared);
+    chmodSync(shared, 0o777);
+    expect(privateParent(shared)).toBe(false);
+    chmodSync(shared, 0o1777);
+    expect(privateParent(shared)).toBe(true);
+    expect(privateParent(join(dir, "none"))).toBe(false);
   });
 });
 
@@ -339,7 +381,7 @@ describe("Ovis on the pane's Codex server", () => {
     codex.send(RECORDED);
     await holding;
     const [card] = hub.held("w1:p1");
-    expect(card).toMatchObject({ kind: "codex", command: "ls -la", description: "Do you approve running ls -la in the workspace with escalated permissions?" });
+    expect(card).toMatchObject({ kind: "codex", command: "ls -la", description: "Do you approve running ls -la in the workspace with escalated permissions?\nin /home/user/work" });
     expect(hub.settle("w1:p1", card!.id, "allow")).toBe(true);
     expect(await codex.next((message) => message["id"] === RECORDED.id && "result" in message)).toEqual({ id: RECORDED.id, result: { decision: "accept" } });
   });

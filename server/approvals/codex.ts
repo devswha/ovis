@@ -21,7 +21,7 @@
  * that fails or ends, and a request this file does not take.
  */
 import { createHash } from "node:crypto";
-import { lstatSync, mkdtempSync, readlinkSync, rmSync, watch, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readlinkSync, realpathSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
@@ -36,7 +36,7 @@ export function supportsCodexServer(version: string): boolean {
   return meetsMinVersion(version, CODEX_SERVER_MIN_VERSION) && !meetsMinVersion(version, CODEX_SERVER_BELOW_VERSION);
 }
 
-/** How long the server may take to come up before Ovis stops waiting for it (the launcher waits 15 s). */
+/** How long the server may take to come up before Ovis stops waiting for it (the launcher waits 8 s). */
 const CONNECT_MS = 30_000;
 /** How often a socket that is there but not yet up is looked at again. */
 const SOCKET_LOOK_MS = 50;
@@ -65,7 +65,8 @@ function shellWords(line: string): string[] | null {
     } else if (char === '"') {
       let inner = "";
       for (at++; at < line.length && line[at] !== '"'; at++) {
-        if (line[at] === "\\" && at + 1 < line.length && '$`"\\\n'.includes(line[at + 1]!)) inner += line[++at];
+        if (line[at] === "\\" && line[at + 1] === "\n") at++;
+        else if (line[at] === "\\" && at + 1 < line.length && '$`"\\'.includes(line[at + 1]!)) inner += line[++at];
         else if (line[at] === "$" || line[at] === "`") return null;
         else inner += line[at];
       }
@@ -73,7 +74,8 @@ function shellWords(line: string): string[] | null {
       word = (word ?? "") + inner;
     } else if (char === "\\") {
       if (at + 1 >= line.length) return null;
-      word = (word ?? "") + line[++at];
+      if (line[at + 1] === "\n") at++;
+      else word = (word ?? "") + line[++at];
     } else if (char === " " || char === "\t" || char === "\n") {
       if (word !== null) words.push(word);
       word = null;
@@ -103,8 +105,9 @@ export const APPROVAL_METHODS = new Set([
 ]);
 
 /** A file change Codex announced (item/started), for the card of its approval. */
-export interface FileChange { path: string; kind: string; diff: string }
+export interface FileChange { path: string; kind: string; diff: string; movePath?: string }
 
+/** The permissions spelled out, one line each (none for an empty profile), or null for any the card could not spell out. */
 const permissionLines = (permissions: unknown): string[] | null => {
   if (!isObject(permissions)) return null;
   const lines: string[] = [];
@@ -118,7 +121,7 @@ const permissionLines = (permissions: unknown): string[] | null => {
     }
     if (Array.isArray(files["entries"]) && files["entries"].length) return null;
   }
-  return lines.length ? lines : null;
+  return lines;
 };
 
 /**
@@ -134,16 +137,25 @@ export function codexCard(method: string, params: unknown, changes?: ReadonlyMap
     case "item/commandExecution/requestApproval": {
       const command = text(params["command"]);
       if (command === null || (params["kind"] !== undefined && params["kind"] !== "command") || params["networkApprovalContext"] != null) return null;
-      return { command: shellScript(command), description: reason };
+      const extra = params["additionalPermissions"] == null ? [] : permissionLines(params["additionalPermissions"]);
+      // permissions the card cannot spell out are the terminal's to show
+      if (extra === null) return null;
+      const where = [
+        ...(typeof params["cwd"] === "string" ? [`in ${params["cwd"]}`] : []),
+        ...(typeof params["environmentId"] === "string" && params["environmentId"] !== "local" ? [`environment: ${params["environmentId"]}`] : []),
+        ...extra.map((line) => `with ${line}`),
+      ];
+      const description = [reason, ...where].filter((line): line is string => line !== null).join("\n");
+      return { command: shellScript(command), description: description === "" ? null : description, dialog: "command" };
     }
     case "item/fileChange/requestApproval": {
       const edits = typeof params["itemId"] === "string" ? changes?.get(params["itemId"]) : undefined;
       if (edits === undefined || edits.length === 0) return null;
-      return { command: edits.map((edit) => `${edit.kind} ${edit.path}\n${edit.diff}`.trimEnd()).join("\n"), description: reason };
+      return { command: edits.map((edit) => `${edit.kind} ${edit.path}${edit.movePath === undefined ? "" : ` -> ${edit.movePath}`}\n${edit.diff}`.trimEnd()).join("\n"), description: reason, dialog: "edit" };
     }
     case "item/permissions/requestApproval": {
       const lines = permissionLines(params["permissions"]);
-      return lines === null ? null : { command: lines.join("\n"), description: reason };
+      return lines === null || lines.length === 0 ? null : { command: lines.join("\n"), description: reason, dialog: "grant" };
     }
     case "mcpServer/elicitation/request": {
       const schema = params["requestedSchema"];
@@ -179,9 +191,9 @@ export function codexAnswer(method: string, params: unknown, decision: ApprovalD
   }
 }
 
-/** Yes allows once, No stops the turn; any other option ("don't ask again") goes to the TUI's dialog as its keys. */
+/** Yes allows once, No stops the turn; any other option ("don't ask again", "for this session") goes to the TUI's dialog as its keys. */
 export function codexDecision(label: string): ApprovalDecision | null {
-  return /^Yes, (?:proceed|grant|accept)\b/.test(label) ? "allow" : /^No\b/.test(label) ? "deny" : null;
+  return /^Yes, (?:proceed|grant|accept)\b/.test(label) && !/\bsession\b/i.test(label) ? "allow" : /^No\b/.test(label) ? "deny" : null;
 }
 
 const SOURCE: ApprovalSource = { kind: "codex", decision: codexDecision };
@@ -227,7 +239,7 @@ export function launcherScript(dir: string, server: readonly string[], tui: read
     `codex${words(["app-server", ...server])} --listen "unix://$socket" </dev/null >/dev/null 2>&1 &`,
     "server=$!",
     "tries=0",
-    'while [ ! -S "$socket" ] && kill -0 "$server" 2>/dev/null && [ "$tries" -lt 300 ]; do sleep 0.05; tries=$((tries + 1)); done',
+    'while [ ! -S "$socket" ] && kill -0 "$server" 2>/dev/null && [ "$tries" -lt 160 ]; do sleep 0.05; tries=$((tries + 1)); done',
     'if [ ! -S "$socket" ]; then',
     "  stop",
     "  trap - EXIT HUP TERM",
@@ -254,6 +266,27 @@ export function serverSocket(path: string): boolean {
       entry = lstatSync(target);
     }
     return entry.isSocket() && entry.uid === uid;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether only this account can rename what is in `folder` and in each folder above it: each is this account's or
+ * root's, and one others may write in (all, or a group other than this account's own) is sticky (as /tmp), where
+ * only an entry's owner may rename it.
+ */
+export function privateParent(folder: string): boolean {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  try {
+    for (let at = realpathSync(folder); ; at = dirname(at)) {
+      const entry = statSync(at);
+      if (entry.uid !== uid && entry.uid !== 0) return false;
+      const othersWrite = (entry.mode & 0o002) !== 0 || ((entry.mode & 0o020) !== 0 && entry.gid !== gid);
+      if (othersWrite && (entry.mode & 0o1000) === 0) return false;
+      if (at === dirname(at)) return true;
+    }
   } catch {
     return false;
   }
@@ -358,7 +391,8 @@ class Connection {
         const edits = item["changes"].flatMap((change): FileChange[] => {
           if (!isObject(change) || typeof change["path"] !== "string" || typeof change["diff"] !== "string") return [];
           const kind = isObject(change["kind"]) && typeof change["kind"]["type"] === "string" ? change["kind"]["type"] : "update";
-          return [{ path: change["path"], kind, diff: change["diff"] }];
+          const movePath = isObject(change["kind"]) && typeof change["kind"]["move_path"] === "string" ? change["kind"]["move_path"] : undefined;
+          return [{ path: change["path"], kind, diff: change["diff"], ...(movePath === undefined ? {} : { movePath }) }];
         });
         this.changes.set(item["id"], edits);
         break;
@@ -440,20 +474,26 @@ export class CodexServers {
     if (this.stopped || version === null || !supportsCodexServer(version)) return null;
     const split = serverArgs(args ?? []);
     if (split === null) return null;
+    const tmp = this.options.tmp ?? tmpdir();
+    // the pane runs the launcher by its path: a folder another account may rename entries in is no place for it
+    if (!privateParent(tmp)) return null;
     let dir: string;
     try {
-      dir = mkdtempSync(join(this.options.tmp ?? tmpdir(), "ovis-codex-"));
+      dir = mkdtempSync(join(tmp, "ovis-codex-"));
     } catch (error) {
       console.error(`codex server: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
     const socket = join(dir, SOCKET_NAME);
     const program = join(dir, "launch");
-    if (!PLAIN_PATH.test(socket)) {
+    try {
+      if (!PLAIN_PATH.test(socket)) throw new Error(`${socket} is not a plain path`);
+      writeFileSync(program, launcherScript(dir, split.server, split.tui, args ?? []), { mode: 0o700 });
+    } catch (error) {
+      console.error(`codex server: ${error instanceof Error ? error.message : String(error)}`);
       rmSync(dir, { recursive: true, force: true });
       return null;
     }
-    writeFileSync(program, launcherScript(dir, split.server, split.tui, args ?? []), { mode: 0o700 });
     const served: Served = { dir, connection: null, stopWaiting: () => {} };
     this.panes.set(paneId, served);
     this.await(paneId, served, socket);
