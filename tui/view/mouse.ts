@@ -65,7 +65,7 @@ export type PointerAct =
 
 type Grab =
   | { readonly kind: "none" }
-  | { readonly kind: "forward"; readonly pane: string }
+  | { readonly kind: "forward"; readonly pane: string; readonly button: MouseInput["button"] }
   | { readonly kind: "select"; readonly pane: string; readonly anchor: ScreenPoint }
   | { readonly kind: "divider"; readonly id: number; readonly tab: string; readonly name: DividerName; readonly rect: Rect; readonly direction: SplitDirection; readonly offset: number; moved: number | null };
 
@@ -91,6 +91,8 @@ export class Pointer {
   }
 
   mouse(over: "overlay" | "screen", event: MouseInput, scene: PointerScene): PointerAct[] {
+    // A refused press on another button has no release to forward and cannot end the initiating button's grab.
+    if (event.action === "release" && this.grab.kind === "forward" && event.button !== this.grab.button) return [];
     if (over === "overlay") {
       // an open overlay owns the mouse: nothing reaches the chrome or a pane under it; its close control closes it.
       // A gesture that began before it opened ends at its release: a program that got the press gets that release,
@@ -170,7 +172,7 @@ export class Pointer {
       const look = scene.look(hit.pane);
       if (!look) return dropped;
       if (look.programMouse && !event.mods.shift) {
-        this.grab = { kind: "forward", pane: hit.pane };
+        this.grab = { kind: "forward", pane: hit.pane, button: event.button };
         return [...dropped, { kind: "forward", pane: hit.pane, event: inGrid(event, look) }];
       }
       if (event.button === "left") this.grab = { kind: "select", pane: hit.pane, anchor: pointOf(event, look) };

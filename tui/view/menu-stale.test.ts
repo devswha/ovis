@@ -116,7 +116,7 @@ it.each(["joined", "split"])("Escape dismisses a stale menu without leaking trai
   expect(run.core.program("t1").receivedHex()).toBe("7a");
 }, 60_000);
 
-it.each(["before repaint", "after repaint"])("a stale menu dismissal preserves a program's matching mouse release: %s", async (ordering) => {
+it.each(["before repaint", "after repaint", "split before repaint"])("a stale menu dismissal preserves a program's matching mouse release: %s", async (ordering) => {
   const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });
   runs.push(run);
   await run.live();
@@ -143,7 +143,12 @@ it.each(["before repaint", "after repaint"])("a stale menu dismissal preserves a
   // Motion, wheel and a new press must neither reach the program nor replace its existing grab.
   run.type("\x1b[<32;32;6M\x1b[<64;31;6M\x1b[<2;31;6M");
   if (ordering === "after repaint") await run.advance(FRAME_PASS_MS);
-  run.type("\x1b[<0;32;6m");
+  // The refused right press has no release to forward and cannot end the held left button's grab.
+  if (ordering === "split before repaint") {
+    run.type("\x1b[<2;32;6m");
+    await run.settle();
+    run.type("\x1b[<0;32;6m");
+  } else run.type("\x1b[<2;32;6m\x1b[<0;32;6m");
   await run.settle();
   const gesture = Buffer.from(press + "\x1b[<0;7;4m").toString("hex");
   expect(program.receivedHex()).toBe(gesture);
