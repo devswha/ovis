@@ -174,9 +174,9 @@ describe("the screen's layout writes", () => {
     await two.advance(20);
     expect([tabOf(core, "t").zoomed, two.loop.panes.view("t1")?.covered, two.loop.panes.view("t2")?.covered]).toEqual(["t1", false, true]);
     // the other screen draws t1 alone over the whole pane area: its top border runs from the sidebar's edge to the right edge
-    expect(two.grid()[1]!.slice(24).startsWith("+")).toBe(true);
-    expect(two.grid()[1]!.endsWith("+")).toBe(true);
-    expect(two.grid()[1]!.slice(25, -1).includes("+")).toBe(false);
+    expect(two.grid()[1]!.slice(26).startsWith("┌")).toBe(true);
+    expect(two.grid()[1]!.endsWith("┐")).toBe(true);
+    expect(two.grid()[1]!.slice(27, -1).includes("┐")).toBe(false);
     // a narrow screen writes nothing of its own
     const narrow = twoWorkspaces();
     const small = await start(narrow, 64, 24);
@@ -300,12 +300,13 @@ describe("the screen's layout writes", () => {
     const run = await start(core);
     await run.keys("ctrl+b,c");
     expect(run.loop.report().mode.overlays).toEqual(["text"]);
-    await run.keys("logs,enter");
+    // herdr fills in the new tab's number: clear it, then name the tab
+    await run.keys("ctrl+c,logs,enter");
     await run.advance(20);
     const tabs = () => run.loop.model().world.workspaces.find((workspace) => workspace.id === "w")!.tabs.map((tab) => tab.name);
     const focusOf = () => { const state = run.loop.model(); return state.focus.panes[state.focus.tabs[state.focus.workspace!]!]; };
     expect([tabs(), focusOf()]).toEqual([["main", "side", "logs"], "t5"]);
-    expect(run.grid()[0]!.includes("3:logs")).toBe(true);
+    expect(run.grid()[0]!.includes("  logs  ")).toBe(true);
     // a key in the millisecond a pane goes live is refused by the pane machine: wait for the new pane first
     await run.live();
     await run.advance(1);
@@ -317,7 +318,7 @@ describe("the screen's layout writes", () => {
     await run.keys("ctrl+b,T,ctrl+u,build,enter");
     await run.advance(20);
     expect(tabs()).toEqual(["main", "side", "build"]);
-    expect(run.grid()[0]!.includes("3:build")).toBe(true);
+    expect(run.grid()[0]!.includes("  build  ")).toBe(true);
   }, TEST_MS);
 });
 
@@ -326,27 +327,15 @@ describe("the screen's closes and steps, pinned", () => {
   const ends = (core: FakeHcCore) => calls(core, "terminal.kill", "terminal.rm").map((call) => `${call.method} ${String(call.params["terminal"])}`).sort();
   const seenOf = (core: FakeHcCore, ...ids: string[]) => ids.map((id) => ({ id, created: created(core, id) }));
 
-  it("an ended pane closes: its record is removed, and its tab and workspace close with it", async () => {
-    const pane2 = twoWorkspaces();
-    ended(pane2, "t2");
-    const one = screen(pane2);
-    await one.run("close_pane", pane("t2"), { seen: seenOf(pane2, "t2") });
-    const tab = twoWorkspaces();
-    ended(tab, "t2");
-    const two = screen(tab);
-    await two.run("close_tab", { kind: "tab", id: "t" }, { seen: seenOf(tab, "t1", "t2") });
-    const workspace = twoWorkspaces();
-    ended(workspace, "t2");
-    const three = screen(workspace);
-    await three.run("close_workspace", { kind: "workspace", id: "w" }, { seen: seenOf(workspace, "t1", "t2", "t3") });
-    const left = async (core: FakeHcCore) => (await new HcConnection(() => core.transport()).call("terminal.list", { all: true })).terminals.map((terminal) => terminal.address);
-    expect([ends(pane2), ends(tab), ends(workspace), one.notices(), two.notices(), three.notices()]).toEqual([
-      ["terminal.rm t2"],
-      ["terminal.kill t1", "terminal.rm t1", "terminal.rm t2"],
-      ["terminal.kill t1", "terminal.kill t3", "terminal.rm t1", "terminal.rm t2", "terminal.rm t3"],
-      [], [], [],
-    ]);
-    expect([await left(pane2), await left(tab), await left(workspace)]).toEqual([["t1", "t3", "t4"], ["t3", "t4"], ["t4"]]);
+  it("an ended pane is shown nowhere, so no close names it: its tab's close ends the live panes the user saw and leaves the finished record to the core", async () => {
+    const core = twoWorkspaces();
+    ended(core, "t2");
+    const one = screen(core);
+    await one.run("close_pane", pane("t2"), { seen: seenOf(core, "t2") });
+    const refused = { code: "layout_refused", action: "close_pane", reason: "pane_not_found" };
+    expect([ends(core), one.notices()]).toEqual([[], [refused]]);
+    await one.run("close_tab", { kind: "tab", id: "t" }, { seen: seenOf(core, "t1") });
+    expect([ends(core), one.notices()]).toEqual([["terminal.kill t1", "terminal.rm t1"], [refused]]);
   }, TEST_MS);
 
   it("a close ends exactly what it checked: a terminal that joins after the check is left running", async () => {
@@ -394,15 +383,4 @@ describe("the screen's closes and steps, pinned", () => {
     expect(overlay?.kind === "confirm" ? overlay.seen : null).toEqual(seenOf(core, "t1", "t2", "t3"));
   }, TEST_MS);
 
-  it("the screen closes an ended pane with its key", async () => {
-    const core = twoWorkspaces();
-    const run = await start(core);
-    ended(core, "t2");
-    await run.advance(20);
-    expect(run.loop.panes.view("t2")?.state.kind).toBe("Ended");
-    run.loop.dispatch({ type: "select", target: pane("t2"), at: run.clock.current });
-    await run.keys("ctrl+b,x");
-    await run.advance(20);
-    expect([ends(core), run.loop.model().world.workspaces[0]!.tabs[0]!.panes.map((one) => one.id), run.loop.model().notices.map((notice) => notice.code)]).toEqual([["terminal.rm t2"], ["t1"], []]);
-  }, TEST_MS);
 });

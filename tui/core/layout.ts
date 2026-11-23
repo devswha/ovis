@@ -12,18 +12,22 @@
 import type { HcConnection } from "../../server/herdr-core/connection.ts";
 import { HcError, HcReplyError } from "../../server/herdr-core/connection.ts";
 import { AdapterError } from "../../server/herdr-core/errors.ts";
-import { foreignLayout, leaves, OVIS_LAYOUT_DOC, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
-import { type CloseTarget, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
+import { foreignLayout, leaves, OVIS_LAYOUT_DOC, OVIS_LAYOUT_SCHEMA, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
+import { type CloseTarget, collapseEdit, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, passthroughEdit, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
 import { type CoreHost, type FirstTurn, LAYOUT_DOC, OTHER_WORKSPACE_ID } from "../../server/herdr-core/snapshot.ts";
+import { checkoutHolding, factsOf, type Repository, WORKTREE_LABEL, worktreeFolder, worktreeLabel } from "../../server/herdr-core/worktrees.ts";
+import type { CheckoutRow } from "../model/overlays.ts";
+import { checkoutTop, repositoryFiles } from "./git-head.ts";
 import { errorCode } from "../crash.ts";
 import type { RunEffect, Seen } from "../model/effects.ts";
 import type { Target } from "../model/focus.ts";
-import { keepsPlace } from "./world.ts";
 
 /** What a layout write tells the screen: a notice (`calm` when it reports how things are, not a failure), or a pane to focus once shown. */
 export type LayoutAnswer =
   | { readonly type: "notice"; readonly code: string; readonly data: Readonly<Record<string, string>>; readonly calm?: true }
-  | { readonly type: "follow"; readonly target: Target; readonly away: string | null };
+  | { readonly type: "follow"; readonly target: Target; readonly away: string | null }
+  /** a repository's checkouts, read for Open worktree... */
+  | { readonly type: "worktrees"; readonly target: Target; readonly checkouts: readonly CheckoutRow[] };
 
 /** What a layout write did that the screen is still to show: the terminals a close ended (none for any other write). */
 export interface LayoutDone {
@@ -48,15 +52,27 @@ interface LayoutWritesOptions {
   model: { readonly firstTurn: FirstTurn; readonly host: CoreHost };
   /** the folder the screen was opened in: a new workspace starts there */
   folder: string | undefined;
+  /** the user's home: the first workspace opened there is named as herdr's server names its own */
+  home?: string | undefined;
   answer: (answer: LayoutAnswer) => void;
 }
+
+/** What herdr names the first workspace its server opens in its own home; a workspace in any other folder is named after it. */
+const HOME_NAME = "~";
+
+/** The layout document's key for the first workspace's claim (`LayoutWrites.claimFirst`). */
+const FIRST_CLAIM = "first_workspace";
+/** The claim a screen writes while it opens the first workspace; the document holds it for no longer. */
+const OPENING = { opening: true } as const;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 const SPLITS: Readonly<Record<string, SplitDirection>> = { split_vertical: "right", split_horizontal: "down" };
 const SWAPS: Readonly<Record<string, PaneDirection>> = { swap_pane_left: "left", swap_pane_down: "down", swap_pane_up: "up", swap_pane_right: "right" };
 const RESIZES: Readonly<Record<string, PaneDirection>> = { resize_pane_left: "left", resize_pane_down: "down", resize_pane_up: "up", resize_pane_right: "right" };
 
-/** The core read afresh: the snapshot as the screen shows it, when the core made each terminal, and those whose program already ended. */
-interface Fresh { readonly view: LayoutView; readonly created: ReadonlyMap<string, number>; readonly finished: ReadonlySet<string> }
+/** The core read afresh: the snapshot as the screen shows it, and when the core made each terminal. */
+interface Fresh { readonly view: LayoutView; readonly created: ReadonlyMap<string, number> }
 
 /** Whether the terminals a close ends now are exactly the ones the user saw, each made at the time it was shown. */
 function sameTerminals(ends: readonly string[], seen: readonly Seen[], created: ReadonlyMap<string, number>): boolean {
@@ -96,6 +112,91 @@ export class LayoutWrites {
   }
 
   /**
+   * Opens a first workspace on a core that has none, as herdr's server does when a client connects: a shell in the folder
+   * the screen was started from (the core's own folder when it has none), named `~` in the home and after the folder
+   * anywhere else, as a new workspace is (`firstShell`). Every screen on the core, and the browser, share it, so the create is guarded by a claim in the
+   * layout document taken by compare-and-set (`claimFirst`): of the screens that find the core empty at once, one
+   * creates. Answers when it is done; a failure is a notice.
+   */
+  openFirst(): Promise<void> {
+    if (this.busy) return Promise.resolve();
+    this.busy = true;
+    return this.claimFirst().catch((error: unknown) => this.refused("new_workspace", error)).finally(() => {
+      this.busy = false;
+    });
+  }
+
+  /**
+   * The first workspace's claim. The claim is a key of the layout document beside its workspaces; every reader keeps
+   * only the schema and the workspaces (snapshot.ts `keptLayout`), so no reader sees it and the next layout edit drops
+   * it. Steps:
+   * 1. read the document, then the terminals: nothing to do unless the core has no terminal, Ovis arranges its layout and
+   *    no claim is in the document;
+   * 2. write the claim with the version read: a screen that loses the race gets a conflict and stops;
+   * 3. read the terminals again: another client may have opened one meanwhile, then the claim is let go;
+   * 4. create the workspace, then take the claim out of the document: a screen that reads the document after that finds
+   *    the workspace's terminal, and the document is left as the browser and every reader know it.
+   * A screen that dies between 2 and 4 leaves the claim until the next layout edit drops it: the core then stays empty,
+   * and the sidebar's new button still opens a workspace.
+   */
+  private async claimFirst(): Promise<void> {
+    const { hc } = this.options;
+    if (!layoutCalls(await hc.hello())) return;
+    const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
+    const [list, app] = await Promise.all([hc.call("terminal.list", {}), hc.call("doc.get", { name: LAYOUT_DOC })]);
+    if (!ownsLayout(app.value) || foreignLayout(doc.value) || list.terminals.length > 0) return;
+    if (isRecord(doc.value) && doc.value[FIRST_CLAIM] !== undefined) return;
+    const layout = isRecord(doc.value) ? doc.value : { schema: OVIS_LAYOUT_SCHEMA, workspaces: [] };
+    const write = async (claim: boolean, version: number): Promise<number | null> => {
+      const { [FIRST_CLAIM]: _old, ...rest } = layout;
+      try {
+        return (await hc.call("doc.set", { name: OVIS_LAYOUT_DOC, value: claim ? { ...rest, [FIRST_CLAIM]: OPENING } : rest, version })).version;
+      } catch (error) {
+        if (error instanceof HcError && error.kind === "conflict") return null;
+        throw error;
+      }
+    };
+    const claimed = await write(true, doc.version);
+    if (claimed === null) return;
+    if ((await hc.call("terminal.list", {})).terminals.length > 0) {
+      await write(false, claimed);
+      return;
+    }
+    let address: string;
+    try {
+      address = await this.createFirst();
+    } catch (error) {
+      await write(false, claimed);
+      throw error;
+    }
+    await write(false, claimed);
+    this.follow(address, null);
+  }
+
+  /**
+   * Creates the first workspace (`firstShell`). A folder the core refuses (removed, or not usable: hc answers
+   * `spawn_failed`) gives way to the core's own folder, named `~` as herdr's, once and under the same claim, with a calm
+   * notice naming the folder; a line that ended or timed out may have made it, so nothing is tried again then.
+   */
+  private async createFirst(): Promise<string> {
+    const shell = this.firstShell();
+    try {
+      return (await this.store.createWorkspace(shell)).root_pane.pane_id;
+    } catch (error) {
+      if (shell.cwd === undefined || unknownAnswer(error)) throw error;
+      this.notice("first_folder_unusable", { folder: shell.cwd }, true);
+      return (await this.store.createWorkspace({ name: HOME_NAME })).root_pane.pane_id;
+    }
+  }
+
+  /** The first workspace's shell: the screen's folder, and herdr's name for the home there (a new workspace's otherwise). */
+  private firstShell(): { cwd?: string; name?: string } {
+    const { folder, home } = this.options;
+    if (folder === undefined) return { name: HOME_NAME };
+    return folder === home ? { cwd: folder, name: HOME_NAME } : { cwd: folder };
+  }
+
+  /**
    * Performs `effect` when it is a layout action and answers when it is done, with the terminals it ended (it never
    * rejects: a failure is a notice); null for any other action.
    */
@@ -125,9 +226,26 @@ export class LayoutWrites {
     if (id === undefined) return null;
     if (action === "new_tab") return async () => this.follow((await store.createTab(id, effect.name ? { name: effect.name } : {})).root_pane.pane_id, null);
     if (Object.hasOwn(SPLITS, action)) return async () => this.follow((await store.split(id, SPLITS[action]!)).pane_id, null);
-    if (action === "close_pane" || action === "close_tab" || action === "close_workspace") {
-      const close: CloseTarget = action === "close_pane" ? { pane: id } : action === "close_tab" ? { tab: id } : { workspace: id, group: false };
+    if (action === "close_pane" || action === "close_tab" || action === "close_workspace" || action === "close_group") {
+      const close: CloseTarget = action === "close_pane" ? { pane: id } : action === "close_tab" ? { tab: id } : { workspace: id, group: action === "close_group" };
       return () => this.close(action, close, effect.seen ?? []);
+    }
+    if (action === "swap_with" && effect.to !== undefined) {
+      const to = effect.to;
+      return async () => this.unchanged(action, await store.edit(swapEdit(id, to, null)));
+    }
+    if (action === "passthrough" && effect.setting !== undefined) {
+      const on = effect.setting;
+      return async () => this.unchanged(action, await store.edit(passthroughEdit(id, on)));
+    }
+    if (action === "collapse_group" && effect.setting !== undefined) {
+      const on = effect.setting;
+      return async () => this.unchanged(action, await store.edit(collapseEdit(id, on)));
+    }
+    if (action === "list_worktrees") return () => this.listWorktrees(id);
+    if (action === "open_checkout" && effect.path !== undefined) {
+      const path = effect.path;
+      return () => this.openCheckout(path);
     }
     if (action === "rename_workspace") return () => store.rename({ workspace: id, name: effect.name ?? "" });
     if (action === "rename_tab") return () => store.rename({ tab: id, name: effect.name ?? "" });
@@ -180,13 +298,88 @@ export class LayoutWrites {
     return null;
   }
 
-  /** The core as the screen shows it, read now (the same terminals its world shows: world.ts `keepsPlace`), with each terminal's created_ms and state. */
+  /**
+   * Open worktree...: the repository the workspace's first pane works in, read from git's files (git-head.ts: no process),
+   * and its checkouts, each with the workspace showing it, for the dialog.
+   */
+  private async listWorktrees(workspace: string): Promise<void> {
+    const { shown } = (await this.fresh()).view;
+    const repository = this.repositoryOfWorkspace(shown, workspace);
+    if (repository === null) {
+      this.notice("not_git_worktree", { action: "open_worktree" });
+      return;
+    }
+    const open = this.openWorkspaces(shown, repository);
+    const checkouts = repository.checkouts.map((checkout): CheckoutRow => ({
+      path: checkout.path,
+      label: checkout.branch ? worktreeFolder(checkout.branch) : checkout.path.split("/").at(-1) ?? checkout.path,
+      open: open.get(checkout.path) ?? null,
+    }));
+    this.options.answer({ type: "worktrees", target: { kind: "workspace", id: workspace }, checkouts });
+  }
+
+  /**
+   * Opens a checkout as herdr's Open worktree... does: the workspace showing it comes to the front (the reducer did that),
+   * else a new workspace with a shell in it; either way it is grouped under the repository's workspace by the facts the
+   * server's adapter writes (worktrees.ts `worktreeLabel`), the repository's workspace given its own facts too.
+   */
+  private async openCheckout(path: string): Promise<LayoutDone | void> {
+    const { shown } = (await this.fresh()).view;
+    const repository = repositoryFiles(path);
+    if (repository === null) {
+      this.notice("not_git_worktree", { action: "open_worktree" });
+      return;
+    }
+    const open = this.openWorkspaces(shown, repository);
+    const labelled = async (workspace: string, checkout: string, gitDir: string) => {
+      if ((await this.store.worktreeLabelOf(shown, workspace))[WORKTREE_LABEL]) return;
+      await this.store.label(shown.panes.filter((pane) => pane.workspace_id === workspace).map((pane) => pane.pane_id), { [WORKTREE_LABEL]: worktreeLabel(factsOf(repository, checkout), gitDir) });
+    };
+    const head = open.get(repository.repo_root);
+    if (head !== undefined) await labelled(head, repository.repo_root, repository.repo_key);
+    const own = path === repository.repo_root ? repository.repo_key : repository.git_dir;
+    const showing = open.get(path);
+    if (showing !== undefined) {
+      await labelled(showing, path, own);
+      return;
+    }
+    const branch = repository.checkouts.find((checkout) => checkout.path === path)?.branch ?? null;
+    const name = branch ? worktreeFolder(branch) : path.split("/").at(-1) ?? path;
+    const made = await this.store.createWorkspace({ name, cwd: path, labels: { [WORKTREE_LABEL]: worktreeLabel(factsOf(repository, path), own) } });
+    return this.follow(made.root_pane.pane_id, null);
+  }
+
+  /** The repository the workspace's first pane works in, from git's files; null outside one. */
+  private repositoryOfWorkspace(shown: LayoutView["shown"], workspace: string): Repository | null {
+    const pane = shown.panes.find((candidate) => candidate.workspace_id === workspace);
+    const folder = pane ? pane.foreground_cwd ?? pane.cwd : null;
+    return folder ? repositoryFiles(folder) : null;
+  }
+
+  /** Which workspace shows each checkout of the repository: the one its facts name, else the one whose first pane works in it. */
+  private openWorkspaces(shown: LayoutView["shown"], repository: Repository): Map<string, string> {
+    const open = new Map<string, string>();
+    for (const workspace of shown.workspaces) {
+      if (workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
+      const facts = workspace.worktree;
+      const pane = shown.panes.find((candidate) => candidate.workspace_id === workspace.workspace_id);
+      const folder = facts ? (facts.repo_key === repository.repo_key ? facts.checkout_path : null) : pane ? pane.foreground_cwd ?? pane.cwd : null;
+      if (!folder) continue;
+      const checkout = checkoutHolding(repository.checkouts, folder);
+      // as the server's adapter: a folder below a checkout is that checkout's only when its own nearest `.git` is the
+      // checkout's (a clone or a submodule inside it is a repository of its own); facts naming the checkout count as they are
+      if (checkout === null || open.has(checkout) || (!facts && checkoutTop(folder) !== checkout)) continue;
+      open.set(checkout, workspace.workspace_id);
+    }
+    return open;
+  }
+
+  /** The core as the screen shows it, read now (the same terminals its world shows: no finished one), with each terminal's created_ms. */
   private async fresh(): Promise<Fresh> {
-    const { terminals, ...view } = await readCore(this.options.hc, { ...this.options.model, all: true, shown: (listed) => listed.map(keepsPlace) });
+    const { terminals, ...view } = await readCore(this.options.hc, { ...this.options.model, all: true });
     return {
       view,
       created: new Map(terminals.map((terminal) => [terminal.address, terminal.created_ms])),
-      finished: new Set(terminals.filter((terminal) => terminal.state !== "live").map((terminal) => terminal.address)),
     };
   }
 
@@ -200,20 +393,21 @@ export class LayoutWrites {
       this.notice("layout_refused", { action, reason: errorCode(error) });
       return NOTHING_ENDED;
     }
-    const { view, created, finished } = fresh;
+    const { view, created } = fresh;
     const ends = this.store.endsOf(view.shown, target);
     if (!sameTerminals(ends, seen, created)) {
       this.notice("target_changed", { action });
       return NOTHING_ENDED;
     }
-    const results = await this.store.endEach(ends, finished);
+    // the screen shows no finished terminal (`fresh`): each of these is killed, then its record removed
+    const results = await this.store.endEach(ends, new Set());
     const ended: string[] = [];
     let dropInput: LayoutDone["dropInput"];
     const failure = results.find((one) => one.step !== "removed");
     for (const one of results) {
       if (one.step === "removed" || (one.error instanceof HcReplyError && one.error.kind === "not_found")) ended.push(one.terminal);
       else if (!(one.error instanceof HcReplyError) || unknownAnswer(one.error)) dropInput = "layout_unknown";
-      // The kill succeeded (or the program was already finished), but its record remains. Don't type into it.
+      // The kill succeeded, but the terminal's record remains. Don't type into it.
       else if (one.step === "rm") dropInput ??= "not_closed";
     }
     if (dropInput === "layout_unknown") this.notice("layout_unknown", { action });

@@ -104,6 +104,12 @@ export const PAINT_QUIET_MS = 1_000;
  */
 export const REATTACH_SETTLE_MS = 150;
 /**
+ * How long a pane waits after the last change of its own rectangle before it attaches again. A host
+ * sends a dragged window's steps at its frame rate (16 ms at 60 Hz), so two frames still make a drag
+ * one attach; the size rules do not depend on it (another viewer's change still waits REATTACH_SETTLE_MS).
+ */
+export const RESIZE_SETTLE_MS = 32;
+/**
  * How often in a row a pane attaches again by itself after its stream was dropped though its terminal
  * lives, or after its emulator died, before it is Failed and waits for the user's retry. Counted from
  * the last time the pane was live.

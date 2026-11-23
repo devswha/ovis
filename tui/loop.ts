@@ -15,7 +15,6 @@ import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts"
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import { SeenMarker } from "../server/herdr-core/seen-label.ts";
 import { SeenWrites } from "./core/seen.ts";
-import { alertsOf } from "./model/look.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
 import { type LayoutDone, LayoutWrites } from "./core/layout.ts";
@@ -29,13 +28,12 @@ import type { Host, HostEnd } from "./host/index.ts";
 import type { InputEvent } from "./input/decode.ts";
 import { Framer } from "./input/framer.ts";
 import type { TuiThemeMode } from "./theme.generated.ts";
-import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
+import { buildChrome, type PaneScroll, selectionColors, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect, MouseInput } from "./model/effects.ts";
-import { menuChoice } from "./model/overlays.ts";
 import { exists, focused } from "./model/focus.ts";
-import { type Following, initialState, type ModelEvent, type ModelState, presentedMenu, reduce } from "./model/reduce.ts";
+import { type Following, initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { CopyView } from "./view/copy.ts";
 import { type DeferredMouse, type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
@@ -62,8 +60,10 @@ export interface LoopOptions {
   connect?: (path: string) => Promise<HcTransport>;
   /** the hc session joined, shown in the header */
   session?: string;
-  /** the folder the command was typed in, shown when the core has no workspaces */
+  /** the folder the command was typed in: a new workspace starts there */
   cwd?: string;
+  /** the user's home: a first workspace opened there is named `~`, as herdr's server names its own */
+  home?: string;
   /** where the view is kept per core between runs; none: nothing is kept */
   views?: ViewStore;
 }
@@ -117,6 +117,14 @@ export interface Loop {
   screen(): Painter["screen"] | null;
 }
 
+/** What the pointer meets at an event: the cells, the shown tab's layout and panes, and the overlay those cells show. */
+interface Met {
+  readonly hits: HitMap | null;
+  readonly layout: Pick<PointerScene, "tab" | "splits">;
+  readonly spots: readonly PaneSpot[];
+  readonly overlay: ModelState["overlays"][number] | undefined;
+}
+
 export function startLoop(options: LoopOptions): Loop {
   const { host, clock } = options;
   const framer = new Framer(true);
@@ -134,7 +142,6 @@ export function startLoop(options: LoopOptions): Loop {
   let theme: TuiThemeMode = "dark";
   let shown: ShownLink = LINK_UNKNOWN;
   const session = options.session ?? sessionFromSocket(options.socket);
-  const cwd = options.cwd ?? "~";
   let grids = new Map<string, { emulator: unknown; grid: PaneGrid }>();
   let shape: ScreenShape | null = null;
   const pointer = new Pointer();
@@ -143,8 +150,19 @@ export function startLoop(options: LoopOptions): Loop {
   let hits: HitMap | null = null;
   let drawn = new Map<string, PanePicture>();
   let paintedLayout: Pick<PointerScene, "tab" | "splits"> = { tab: null, splits: [] };
+  let paintedSpots: readonly PaneSpot[] = [];
   let paintedOverlay: ModelState["overlays"][number] | undefined;
   let overlayGeneration = 0;
+  /**
+   * The user's own input moved the model past the last frame the host took (a menu opened, an entry hovered, another tab
+   * shown): until the next frame is taken, the pointer meets what that frame will show (`met`). A change that came from
+   * the core alone never sets it: the pointer then still meets the frame a person saw.
+   */
+  let inputAhead = false;
+  /** how many times the user's input changed the model: a frame clears `inputAhead` only when none came during its write */
+  let inputMoves = 0;
+  /** what the pointer meets for the model `of`, kept until the model or the layout changes again or a frame is taken */
+  let ahead: (Met & { readonly of: ModelState }) | null = null;
   /** What the last frame the host took showed a person: the pane drawn focused, and whether an overlay lay over the panes. */
   let presented: { readonly pane: string | null; readonly overlay: boolean } = { pane: null, overlay: false };
   /** What a person has in front of them, as `sight` last worked it out: the pane (null: none), and whether anything covers the panes. */
@@ -245,10 +263,13 @@ export function startLoop(options: LoopOptions): Loop {
     hc: link,
     model: world.model,
     folder: options.cwd,
+    home: options.home,
     answer: (answer) => {
       guard(() => dispatch(answer.type === "notice"
         ? { type: "notice", code: answer.code, data: answer.data, ...(answer.calm ? { calm: true } : {}), at: clock.now() }
-        : { type: "follow", target: answer.target, away: answer.away, at: clock.now() }));
+        : answer.type === "worktrees"
+          ? { type: "worktrees", target: answer.target, checkouts: answer.checkouts, at: clock.now() }
+          : { type: "follow", target: answer.target, away: answer.away, at: clock.now() }));
       arm();
     },
   });
@@ -272,6 +293,7 @@ export function startLoop(options: LoopOptions): Loop {
             helloEpoch = epoch;
             world.setVersion(info.version);
             guard(identifySnapshot);
+            guard(openFirstWorkspace);
             arm();
           }
         }, () => {});
@@ -283,17 +305,10 @@ export function startLoop(options: LoopOptions): Loop {
       snapshot = { epoch: notice.epoch, complete: false, core: null };
       options.views?.suspend();
     }
-    // the core's word comes when it comes, whatever was read since the last frame: the alerts and a turn's end below
-    // ask who is in front of a person now
+    // the core's word comes when it comes, whatever was read since the last frame: a turn's end below asks who is in
+    // front of a person now
     if (notice.type === "event") sight();
-    const before = world.view();
-    const alerts = notice.type === "event" ? alertsOf(notice.event.type, notice.changes, (terminal) => before.panes.get(terminal)?.status, seen.current) : [];
     if (world.notice(notice)) worldChanged();
-    const after = world.view();
-    for (const alert of alerts) {
-      const agent = after.agents.find((row) => row.paneId === alert.terminal)?.name ?? alert.terminal;
-      dispatch({ type: "notice", code: alert.kind === "blocked" ? "agent_blocked" : "agent_done", data: { agent }, calm: true, at: clock.now() });
-    }
     if (notice.type === "event" && notice.event.type === "turn" && notice.event.terminal !== undefined) seen.turn(notice.event.terminal);
     // a snapshot shows turns no event told (the line was down, or events were missed): the look hears of them here,
     // after the world took the snapshot in
@@ -319,6 +334,22 @@ export function startLoop(options: LoopOptions): Loop {
     reshow();
   }
 
+  /** a first workspace was asked for on this line's empty core: once a line */
+  let firstAsked: number | null = null;
+
+  /**
+   * An empty core gets a first workspace, as herdr's server opens one when a client connects: checked once per line,
+   * right after its hello, never on a core the app arranges. A core that empties later (its last workspace closed, or
+   * the core shutting down) gets none.
+   */
+  function openFirstWorkspace(): void {
+    const view = world.view();
+    if (link.state.kind !== "Online" || hello === null || !view.ownsLayout || view.world.workspaces.length > 0 || firstAsked === link.state.epoch) return;
+    firstAsked = link.state.epoch;
+    act("open_first_workspace");
+    void layout.openFirst();
+  }
+
   /** The read of the core the world asks for, its answer handed back to it. */
   function readCore(): void {
     const read = world.nextRead();
@@ -340,6 +371,8 @@ export function startLoop(options: LoopOptions): Loop {
       else holds.delete(notice.terminal);
     }
     if (notice.type === "gone") grids.delete(notice.terminal);
+    // a program that enters or leaves the alternate screen gives its pane's scrollbar gutter back or takes it again
+    if (altScreens() !== altShown) reshow();
     if (notice.type === "effect" && !closing) {
       const bytes = effectBytes(notice.effect, notice.terminal === paneFocus);
       if (bytes && !host.write(bytes)) painter?.invalidate();
@@ -398,14 +431,19 @@ export function startLoop(options: LoopOptions): Loop {
     // refused chords and prefixes take no place in it; the prefix state is kept apart.
     const pieces: HeldInput[] = [];
     if (event.type === "mouse") {
+      // the pointer passing with no button held (the host reports every move, for the menus' hover) is no input to keep:
+      // by the time the write is done it says nothing true, and it takes no place among what waits
+      if (event.action === "motion" && event.button === undefined) return;
       const scene = pointerScene();
       const continuation = behindWrite.mouse.continuation(event);
       if (!continuation) {
-        const blocked = state.overlays.length > 0 || state.mode.name !== "terminal" || state.menuDismissed;
+        const blocked = state.overlays.length > 0 || state.mode.name !== "terminal";
         // the last accepted frame's overlay owns its cells even once the model closed it
         const hit = hits?.at(event.col, event.row);
         if (blocked || (hit && "part" in hit && (hit.part.startsWith("overlay:") || hit.id === "menu"))) {
-          busy(state.overlays.at(-1)?.kind ?? (blocked ? state.mode.name : "menu"));
+          // only a press asks for something: the release of the click that chose a menu's entry (and started this very
+          // write), or the pointer passing over the menu, is refused without a word
+          if (event.action === "press") busy(state.overlays.at(-1)?.kind ?? (blocked ? state.mode.name : "menu"));
           return;
         }
         const route = behindWrite.mouse.bind(event, scene);
@@ -423,7 +461,7 @@ export function startLoop(options: LoopOptions): Loop {
       const step = reduce(before, next, true);
       behindWrite.armed = step.state.armed;
       if (!step.state.armed) behindWrite.terminalArmed = false;
-      else if (step.prefixStarted) behindWrite.terminalArmed = before.overlays.length === 0 && before.mode.name === "terminal" && !before.menuDismissed;
+      else if (step.prefixStarted) behindWrite.terminalArmed = before.overlays.length === 0 && before.mode.name === "terminal";
       for (const notice of step.state.notices) {
         if (notice.id >= before.nextNotice) dispatch({ type: "notice", code: notice.code, data: notice.data, ...(notice.calm ? { calm: true } : {}), at: clock.now() });
       }
@@ -602,11 +640,18 @@ export function startLoop(options: LoopOptions): Loop {
     });
   }
 
+  /** The events that are the user's own doing (read from the host, or chosen with the pointer), as against what the core or the clock told. */
+  const USER_EVENTS: ReadonlySet<ModelEvent["type"]> = new Set(["key", "text", "paste", "mouse", "action", "select", "close_overlay", "choose", "hover", "context"]);
+
   /** One event through the state core, and its effects performed in order, now. */
   function dispatch(event: ModelEvent, route?: DeferredMouse): void {
     const before = state;
     const step = reduce(state, event);
     state = step.state;
+    if (state !== before && USER_EVENTS.has(event.type)) {
+      inputAhead = true;
+      inputMoves++;
+    }
     for (const effect of step.effects) perform(effect, route);
     if (state !== before) {
       keepView();
@@ -635,7 +680,8 @@ export function startLoop(options: LoopOptions): Loop {
         // a copy command reads the pane as it is now, not as the last frame drew it: what one read holds (a scroll, hint
         // mode, a label) acts as it does read apart, with a frame between each
         const spot = effect.command.kind === "leave" ? undefined : shape?.spots.find((spot) => spot.pane === effect.pane && !spot.covered);
-        const answer = copyView.run(effect, panes.view(effect.pane), painter && spot ? sceneNow(painter.styles, spot).scene : undefined);
+        const shownScene = painter && spot ? sceneNow(painter.styles, spot).scene : undefined;
+        const answer = copyView.run(effect, panes.view(effect.pane), shownScene && copyScene(shownScene));
         // copy mode takes the mouse from here and swallows what it reads of it, a release too: a gesture under way ends now,
         // where its press went (a program that got the press gets its release, a divider its last ratio)
         if (effect.command.kind === "enter" && !answer.close) for (const step of pointer.cancel(pointerScene(), clock.now())) performPointer(step);
@@ -648,6 +694,7 @@ export function startLoop(options: LoopOptions): Loop {
       case "pane":
         for (const step of pointer.typed(effect.pane, lookOf(effect.pane))) performPointer(step);
         toPane(effect.pane, effect.input);
+        rereadBranches();
         return;
       case "run": {
         act(`run:${effect.action}`);
@@ -670,13 +717,12 @@ export function startLoop(options: LoopOptions): Loop {
         // the rest of a text run, behind the action before it: it meets the focus and mode that action left
         userInput(effect.event);
         return;
-      case "unread":
-        act("unread");
-        seen.unread(effect.pane);
-        return;
       case "quit":
         act("quit");
         quit();
+        return;
+      case "clipboard":
+        writeCopy(effect.text);
         return;
       case "reload_keys":
         act("reload_keys");
@@ -742,10 +788,24 @@ export function startLoop(options: LoopOptions): Loop {
       case "close_overlay":
         dispatch({ type: "close_overlay", at: clock.now() });
         return;
+      case "context":
+        act(`context:${step.target.kind}`);
+        dispatch({ type: "context", target: step.target, cell: step.cell, at: clock.now() });
+        return;
+      case "choose_heading":
+        dispatch({ type: "key", key: "ENTER", mods: {}, action: "press", at: clock.now() } as ModelEvent);
+        return;
+      case "hover":
+        dispatch({ type: "hover", entry: step.entry, ...(step.heading ? { heading: true } : {}), at: clock.now() });
+        return;
       case "choose":
-        // The menu validates its presented identity across updates. Picker and agent rows belong to the painted overlay.
-        if (state.overlays.at(-1)?.kind !== "menu" && paintedOverlay !== state.overlays.at(-1)) return;
+        // its rows are the top overlay's as the pointer met them (`overlayShown`): the entry's index names the same entry here
         dispatch({ type: "choose", entry: step.entry, at: clock.now() });
+        return;
+      case "button":
+        dispatch(step.button === "accept"
+          ? { type: "key", key: "ENTER", mods: {}, action: "press", at: clock.now() }
+          : { type: "key", key: "c", mods: { ctrl: true }, action: "press", at: clock.now() });
         return;
     }
   }
@@ -784,13 +844,71 @@ export function startLoop(options: LoopOptions): Loop {
     return { ...picture, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, screen: modes.value.screens, emulator, history: history.value };
   }
 
-  function pointerScene(): PointerScene {
-    return { hits, focus: paneFocus, ...paintedLayout, look: lookOf, painted: (pane) => drawn.get(pane) ?? null,
-      acceptsMenu: (entry) => {
-        const menu = state.overlays.at(-1);
-        return menu?.kind === "menu" ? menuChoice(menu, entry).accepted : menu === paintedOverlay;
-      } };
+  /** The shown tab's tree as `frameShape` lays it out, for naming a divider. */
+  function layoutOf(frameShape: ScreenShape): Pick<PointerScene, "tab" | "splits"> {
+    const tab = focused(state.world, state.focus).tab;
+    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
+    return { tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: frameShape.splits };
   }
+
+  /**
+   * What the pointer meets: the last frame the host took (its cells, its layout and the overlay it showed), which is what
+   * a person saw. Only when the user's own input moved the model past that frame (`inputAhead`: a right-click opened a
+   * menu and the click on its entry came in the same read) does it meet what the next frame will show, composed for the
+   * model as it is now and measured without drawing, so the reads' cut changes nothing. A pane's picture (the rows and
+   * columns of its grid a cell maps to) is the taken frame's either way (`drawn`).
+   */
+  function met(): Met {
+    if (!inputAhead || !painter || !shape) return { hits, layout: paintedLayout, spots: paintedSpots, overlay: paintedOverlay };
+    if (ahead?.of === state && ahead.spots === shape.spots) return ahead;
+    const size = host.size();
+    const open = shape.spots.filter((spot) => !spot.covered);
+    const scroll = new Map<string, PaneScroll>();
+    for (const spot of open) {
+      const look = lookOf(spot.pane);
+      if (look) scrollOf(scroll, spot.pane, look);
+    }
+    const chrome = chromeOf(shape, scroll, null);
+    ahead = {
+      of: state, layout: layoutOf(shape), spots: shape.spots, overlay: state.overlays.at(-1),
+      hits: painter.hitMap({ width: size.cols, height: size.rows, parts: chrome.parts, panes: open.map((spot) => ({ id: spot.pane, rect: spot.cells.inner })), overlays: chrome.overlays }),
+    };
+    return ahead;
+  }
+
+  function pointerScene(): PointerScene {
+    const meets = met();
+    const spots = meets.spots;
+    return {
+      hits: meets.hits, focus: paneFocus, ...meets.layout, look: lookOf, painted: (pane) => drawn.get(pane) ?? null,
+      boxAt: (col, row) => spots.find(({ cells, covered }) => !covered && col >= cells.outer.x && col < cells.outer.x + cells.outer.width && row >= cells.outer.y && row < cells.outer.y + cells.outer.height)?.pane ?? null,
+      passthrough: (pane) => focused(state.world, state.focus).tab?.passthrough?.includes(pane) ?? false,
+      sidebarCollapsed: state.sidebarCollapsed,
+      overlay: state.overlays.at(-1)?.kind ?? null,
+      overlayShown: meets.overlay === state.overlays.at(-1),
+    };
+  }
+
+  /**
+   * A pane as copy mode sees it: without its last row while the mode bar lies over it, so the copy cursor, its hints and
+   * its scrolling stay in the rows the user can see.
+   */
+  function copyScene(scene: PaneScene): PaneScene {
+    const bar = shape?.regions.modeBar;
+    const { rect } = scene;
+    if (!bar || bar.height === 0 || rect.height < 2 || bar.y !== rect.y + rect.height - 1 || bar.x > rect.x || bar.x + bar.width < rect.x + rect.width) return scene;
+    return { ...scene, rect: { ...rect, height: rect.height - 1 } };
+  }
+
+  /** whether a pane's program is on the alternate screen */
+  function altScreen(pane: string): boolean {
+    const modes = panes.view(pane)?.emulator?.modes();
+    return modes?.ok === true && modes.value.altScreen;
+  }
+
+  /** the shown panes on the alternate screen, as the last layout counted them */
+  let altShown = "";
+  const altScreens = (): string => (shape?.spots ?? []).filter((spot) => altScreen(spot.pane)).map((spot) => spot.pane).join(" ");
 
   /** The shown tab's panes with their cells, told to the pane machine when anything about them changed. */
   function reshow(): void {
@@ -799,12 +917,16 @@ export function startLoop(options: LoopOptions): Loop {
     const { tab, pane } = focused(state.world, state.focus);
     // the focus moves before the layout: a pane that a zoom is about to cover still tells its program the focus left (a
     // covered pane is silent), and one the zoom uncovers hears it come once it shows
-    if ((pane?.id ?? null) !== paneFocus) {
+    const focusMoved = (pane?.id ?? null) !== paneFocus;
+    if (focusMoved) {
       paneFocus = pane?.id ?? null;
       pointer.focusChanged(paneFocus);
       panes.focus(paneFocus);
     }
-    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed, pane: pane?.id ?? null });
+    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, {
+      sidebarCollapsed: state.sidebarCollapsed, gutter: (pane) => !altScreen(pane),
+    });
+    altShown = altScreens();
     // a pane that left the shown tab keeps no grid: shown again, it is drawn anew from its new attach
     for (const pane of grids.keys()) if (!shape.spots.some((spot) => spot.pane === pane)) grids.delete(pane);
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
@@ -813,6 +935,14 @@ export function startLoop(options: LoopOptions): Loop {
       shownKey = key;
       panes.show(shown);
     }
+    if (focusMoved) rereadBranches();
+  }
+
+  /** A branch switched in a pane (a checkout typed there) shows at the next key or focus change: git's files read again. */
+  function rereadBranches(): void {
+    if (!world.rereadBranches()) return;
+    worldChanged();
+    owePass();
   }
 
   function owePass(): void {
@@ -889,13 +1019,36 @@ export function startLoop(options: LoopOptions): Loop {
     return { scene: paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live }), actual, filled };
   }
 
+  /** A pane's scrollbar, when it has history above its rows. */
+  function scrollOf(scroll: Map<string, PaneScroll>, pane: string, look: Pick<PaneLook, "history" | "grid">): void {
+    if (look.history.total > look.grid.rows) scroll.set(pane, { offset: rowsAboveBottom(look), max: look.history.total - look.grid.rows, viewport: look.grid.rows });
+  }
+
+  /** The chrome and overlays over `frameShape` for the model as it is now. */
+  function chromeOf(frameShape: ScreenShape, scroll: ReadonlyMap<string, PaneScroll>, copying: ReturnType<CopyView["draw"]>): ReturnType<typeof buildChrome> {
+    return buildChrome({
+      regions: frameShape.regions,
+      spots: frameShape.spots,
+      splits: frameShape.splits,
+      state,
+      world: world.view(),
+      panes: new Map(panes.views().map((v) => [v.terminal, v])),
+      scroll,
+      link: shown,
+      session,
+      theme,
+      colors: host.colorDepth,
+      copying,
+      copyLook: copyView.look(),
+    });
+  }
+
   function pass(now: number): void {
     if (!painter || !shape || ended) return;
     const releaseHeld = behindWrite?.ready === true ? behindWrite : null;
     const frameShape = shape;
-    const tab = focused(state.world, state.focus).tab;
-    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
-    const nextLayout = { tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: frameShape.splits };
+    const nextLayout = layoutOf(frameShape);
+    const frameMoves = inputMoves;
     passOwed = false;
     lastPass = now;
     passes++;
@@ -905,12 +1058,13 @@ export function startLoop(options: LoopOptions): Loop {
     let copying: ReturnType<CopyView["draw"]> = null;
     const copied = new Set<string>();
     const nextDrawn = new Map<string, PanePicture>();
+    const scroll = new Map<string, PaneScroll>();
     for (const spot of frameShape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
       const { scene, actual, filled } = sceneNow(painter.styles, spot, view);
       if (filled) copied.add(spot.pane);
-      const copy = copyView.draw(scene);
+      const copy = copyView.draw(copyScene(scene));
       if (copy) copying = copy;
       // copy mode clips the pane round its own cursor: the picture published is the one drawn
       const painted = copy?.pane ?? scene;
@@ -921,32 +1075,18 @@ export function startLoop(options: LoopOptions): Loop {
         altScreen: snapshot.value.altScreen, screen: snapshot.value.screens, history: snapshot.value.history, contentVersion: snapshot.value.contentVersion,
       } : null;
       if (look) nextDrawn.set(spot.pane, look);
+      if (look) scrollOf(scroll, spot.pane, look);
       const selection = pointer.shown(spot.pane, paneFocus, look);
-      scenes.push({ ...painted, scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(!copy && selection ? { selection } : {}) });
+      scenes.push({ ...painted, scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(!copy && selection ? { selection: { ...selection, colors: selectionColors(theme, host.colorDepth) } } : {}) });
     }
     const size = host.size();
-    const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
     const frameMenu = state.overlays.at(-1);
-    const frameMenuDismissed = state.menuDismissed;
-    // taken before the write, as the menu is: input read during it may move the focus the frame does not show
+    // taken before the write, as the overlay is: input read during it may move the focus the frame does not show
     const frameFocus = paneFocus;
-    const chrome = buildChrome({
-      regions: frameShape.regions,
-      spots: frameShape.spots,
-      splits: frameShape.splits,
-      state,
-      world: world.view(),
-      panes: paneViews,
-      link: shown,
-      session,
-      cwd,
-      theme,
-      colors: host.colorDepth,
-      copying,
-    });
+    const chrome = chromeOf(frameShape, scroll, copying);
     const frame = painter.paint({
       width: size.cols, height: size.rows, parts: chrome.parts,
-      panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input,
+      panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input, dim: chrome.dim,
     });
     let taken = true;
     if (frame.bytes.length > 0) {
@@ -960,15 +1100,14 @@ export function startLoop(options: LoopOptions): Loop {
     presented = { pane: frameFocus, overlay: frameMenu !== undefined };
     sight();
     paintedLayout = nextLayout;
+    paintedSpots = frameShape.spots;
     if (paintedOverlay !== frameMenu) {
       paintedOverlay = frameMenu;
       overlayGeneration++;
     }
-    // A menu acknowledgement changes only presentation metadata. Keep that same painted owner,
-    // but never bless an overlay changed by input or a world update during the host write.
-    const sameOverlay = state.overlays.at(-1) === paintedOverlay;
-    state = presentedMenu(state, frameMenu, frameMenuDismissed);
-    if (sameOverlay) paintedOverlay = state.overlays.at(-1);
+    // this frame shows what the user's input did up to its composition; input read during its write is past it again
+    if (inputMoves === frameMoves) inputAhead = false;
+    ahead = null;
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
     const order = [...frameShape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
