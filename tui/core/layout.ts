@@ -10,7 +10,7 @@
  */
 
 import type { HcConnection } from "../../server/herdr-core/connection.ts";
-import { HcError } from "../../server/herdr-core/connection.ts";
+import { HcError, HcReplyError } from "../../server/herdr-core/connection.ts";
 import { AdapterError } from "../../server/herdr-core/errors.ts";
 import { foreignLayout, OVIS_LAYOUT_DOC, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
 import { type CloseTarget, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
@@ -24,6 +24,16 @@ import { keepsPlace } from "./world.ts";
 export type LayoutAnswer =
   | { readonly type: "notice"; readonly code: string; readonly data: Readonly<Record<string, string>>; readonly calm?: true }
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null };
+
+/** What a layout write did that the screen is still to show: the terminals a close ended (none for any other write). */
+export interface LayoutDone { readonly ended: readonly string[]; readonly dropInput?: "layout_unknown" | "not_closed" }
+
+const NOTHING_ENDED: LayoutDone = { ended: [] };
+
+/** A failed connection or a core reporting that it too lost the answer (for example, on a remote machine). */
+function unknownAnswer(error: unknown): boolean {
+  return error instanceof HcError && (!(error instanceof HcReplyError) || ["timeout", "offline", "closed"].includes(error.kind));
+}
 
 interface LayoutWritesOptions {
   /** the core's line (the screen's link) */
@@ -74,24 +84,32 @@ export class LayoutWrites {
     });
   }
 
+  /** Whether `effect` is a layout action: one `run` performs. */
+  writes(effect: RunEffect): boolean {
+    return this.work(effect) !== null;
+  }
+
   /**
-   * Performs `effect` when it is a layout action and answers when it is done (it never rejects: a failure is a notice);
-   * null for any other action.
+   * Performs `effect` when it is a layout action and answers when it is done, with the terminals it ended (it never
+   * rejects: a failure is a notice); null for any other action.
    */
-  run(effect: RunEffect): Promise<void> | null {
+  run(effect: RunEffect): Promise<LayoutDone> | null {
     const work = this.work(effect);
     if (work === null) return null;
     if (this.busy) {
       this.notice("layout_busy", { action: effect.action });
-      return Promise.resolve();
+      return Promise.resolve(NOTHING_ENDED);
     }
     this.busy = true;
-    return work().catch((error: unknown) => this.refused(effect.action, error)).finally(() => {
+    return work().then((done) => done ?? NOTHING_ENDED, async (error: unknown): Promise<LayoutDone> => {
+      await this.refused(effect.action, error);
+      return unknownAnswer(error) ? { ended: [], dropInput: "layout_unknown" } : NOTHING_ENDED;
+    }).finally(() => {
       this.busy = false;
     });
   }
 
-  private work(effect: RunEffect): (() => Promise<void>) | null {
+  private work(effect: RunEffect): (() => Promise<LayoutDone | void>) | null {
     const { action, target } = effect;
     const id = target?.id;
     const store = this.store;
@@ -146,14 +164,34 @@ export class LayoutWrites {
   }
 
   /** A close, once the core still holds exactly the terminals the user saw: it ends those and no other; anything else ends nothing. */
-  private async close(action: string, target: CloseTarget, seen: readonly Seen[]): Promise<void> {
-    const { view, created, finished } = await this.fresh();
+  private async close(action: string, target: CloseTarget, seen: readonly Seen[]): Promise<LayoutDone> {
+    let fresh: Fresh;
+    try {
+      fresh = await this.fresh();
+    } catch (error) {
+      // Even a lost answer here is only a lost read: the close has not sent a kill or removal.
+      this.notice("layout_refused", { action, reason: errorCode(error) });
+      return NOTHING_ENDED;
+    }
+    const { view, created, finished } = fresh;
     const ends = this.store.endsOf(view.shown, target);
     if (!sameTerminals(ends, seen, created)) {
       this.notice("target_changed", { action });
-      return;
+      return NOTHING_ENDED;
     }
-    await this.store.end(ends, finished);
+    const results = await this.store.endEach(ends, finished);
+    const ended: string[] = [];
+    let dropInput: LayoutDone["dropInput"];
+    const failure = results.find((one) => one.step !== "removed");
+    for (const one of results) {
+      if (one.step === "removed" || (one.error instanceof HcReplyError && one.error.kind === "not_found")) ended.push(one.terminal);
+      else if (!(one.error instanceof HcReplyError) || unknownAnswer(one.error)) dropInput = "layout_unknown";
+      // The kill succeeded (or the program was already finished), but its record remains. Don't type into it.
+      else if (one.step === "rm") dropInput ??= "not_closed";
+    }
+    if (dropInput === "layout_unknown") this.notice("layout_unknown", { action });
+    else if (failure) await this.refused(action, failure.error);
+    return dropInput ? { ended, dropInput } : { ended };
   }
 
   private follow(pane: string, away: string | null): void {
@@ -179,7 +217,7 @@ export class LayoutWrites {
     }
     if (error instanceof HcError && error.kind === "conflict") this.notice("layout_conflict", { action }, true);
     // the line ended or the answer never came: what happened is unknown, and nothing is sent again
-    else if (error instanceof HcError && (error.kind === "closed" || error.kind === "offline" || error.kind === "timeout")) this.notice("layout_unknown", { action });
+    else if (unknownAnswer(error)) this.notice("layout_unknown", { action });
     else this.notice("layout_refused", { action, reason: errorCode(error) });
   }
 

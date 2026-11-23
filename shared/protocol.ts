@@ -102,7 +102,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, PendingKey, PendingRedemptionsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, PendingKey, PendingRedemptionsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -156,6 +156,14 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         [keys] prefix bindings, for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
  *         Tailscale on this PC already serves, or the command to run), no-store
+ *  POST   /api/access/tailscale/serve    -> RemoteAccess once Tailscale serves this server (runs `tailscale serve --bg
+ *         --https=<first free allowed port> http://127.0.0.1:<port>` unless it serves it already), no-store; this PC's own
+ *         window only (403 local_required before anything runs), x-herdr-machine: 1. 409 tailscale_owner_unknown (this
+ *         PC's Tailscale login is not known: nothing runs) / tailscale_missing /
+ *         tailscale_not_running / tailscale_no_port / tailscale_serve_refused (operator: true on Linux when the refusal
+ *         is for want of operator rights); the CLI's words go to the server log only
+ *  POST   /api/access/tailscale/open     -> 204 once the Tailscale app is opened on this PC (macOS, Windows); this PC's own
+ *         window only (403 local_required), x-herdr-machine: 1. 409 tailscale_app_unavailable (Linux, or no app)
  *  GET    /api/portal                    -> PortalStatus (an optional public HTTPS address through
  *         Portal, server/portal.ts), no-store
  *  POST   /api/portal/start              -> 202 { accepted: true }; body { relay, auth? } (PortalAuth: who may
@@ -191,10 +199,10 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         `admission: 1`, and a link while it lives needs the account's admission (docs/account.md, "The account's word")
  *  POST   /api/relay/offer/keep          -> AccountPairingState; JSON { id }: such a code read by its pairing.id;
  *         400 invalid_body without one
- *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
+ *  POST   /api/relay/link                -> { url, window_id }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
- *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
- *         comparisons this PC was shown under it; from this PC only (403 local_required through the relay)
+ *  POST   /api/relay/link/close          -> { ok: true }; ends the current window and declines its comparisons.
+ *         With `x-ovis-window: <window_id>`, a stale close does nothing. From this PC only (403 through the relay).
  *         500 internal_error when the saved window could not be cleared (closed until a restart)
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,

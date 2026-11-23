@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
+import type { Socket } from "bun";
+import { mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { constants } from "node:os";
 import { join } from "node:path";
 import { coreFolder, IsolatedCore, type StopReport, stoppedCleanly } from "../scripts/test-hc.ts";
@@ -24,8 +25,95 @@ const TEST_MS = 300_000;
 const DETACH = "\x02q";
 /** what the host writes when it gives the terminal back (tui/host/guard.ts LEAVE): exactly once per run */
 const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+/** the query that ends the screen's start probe (DA1): the probe waits for its answer, or REPLY_WAIT_MS */
+const DA1 = "\x1b[c";
+/** what the screen writes once its start probe ended (tui/host/guard.ts watchDisplay): the sign that it got past the probe */
+const DISPLAY_WATCH = "\x1b[?2031h";
 /** what a terminal answers to the queries the screen's start probe ends with */
-const ANSWERS: [query: string, answer: string][] = [["\x1b[c", "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
+const ANSWERS: [query: string, answer: string][] = [[DA1, "\x1b[?62;22c"], ["\x1b[?2026$p", "\x1b[?2026;2$y"]];
+
+/** Bytes on their way through one direction of a held line, sent as the socket takes them. */
+interface Outbound { socket: Socket<Line> | null; queue: Uint8Array[] }
+/** One line of the screen through the holding socket: `held` once the screen asked for an attach on it. */
+interface Line { toCore: Outbound; toScreen: Outbound; held: boolean; tail: string }
+
+function flush(out: Outbound): void {
+  while (out.socket && out.queue.length > 0) {
+    const chunk = out.queue[0]!;
+    const written = out.socket.write(chunk);
+    if (written < chunk.length) {
+      out.queue[0] = chunk.subarray(Math.max(0, written));
+      return;
+    }
+    out.queue.shift();
+  }
+}
+
+function send(out: Outbound, bytes: Uint8Array): void {
+  out.queue.push(bytes.slice());
+  flush(out);
+}
+
+/**
+ * A socket at `path` in front of the core at `core`: everything passes both ways until the screen asks for an attach on a
+ * line; from then on nothing the core sends on that line reaches the screen, so the attach's reply stays pending.
+ */
+function attachHolder(core: string, path: string): { path: string; asked: Promise<void>; close: () => void } {
+  let told!: () => void;
+  const asked = new Promise<void>((resolve) => { told = resolve; });
+  const sockets = new Set<Socket<Line>>();
+  const server = Bun.listen<Line>({
+    unix: path,
+    socket: {
+      open(screen) {
+        const line: Line = { toCore: { socket: null, queue: [] }, toScreen: { socket: screen, queue: [] }, held: false, tail: "" };
+        screen.data = line;
+        sockets.add(screen);
+        void Bun.connect<Line>({
+          unix: core,
+          data: line,
+          socket: {
+            open(upstream) {
+              sockets.add(upstream);
+              line.toCore.socket = upstream;
+              flush(line.toCore);
+            },
+            data(_upstream, bytes) {
+              if (!line.held) send(line.toScreen, bytes);
+            },
+            drain() { flush(line.toCore); },
+            close() { screen.end(); },
+          },
+        }).catch(() => screen.end());
+      },
+      data(screen, bytes) {
+        const line = screen.data;
+        // the request's method name, also when a read cuts it in two
+        const text = line.tail + Buffer.from(bytes).toString("latin1");
+        line.tail = text.slice(-32);
+        if (!line.held && text.includes("\"terminal.attach\"")) {
+          line.held = true;
+          told();
+        }
+        send(line.toCore, bytes);
+      },
+      drain(screen) { flush(screen.data.toScreen); },
+      close(screen) { screen.data.toCore.socket?.end(); },
+    },
+  });
+  return {
+    path,
+    asked,
+    close: () => {
+      for (const socket of sockets) socket.end();
+      server.stop(true);
+      rmSync(path, { force: true });
+    },
+  };
+}
+
+/** A grid decoded from the run's output, and the length of the output it was decoded from. */
+interface Shown { text: string; length: number }
 
 describe.skipIf(!bin || process.platform === "win32")("the screen's entry against a real hc", () => {
   const cores: IsolatedCore[] = [];
@@ -60,8 +148,12 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
   }
 
   /** The entry on a pty of its own, in the core's environment, answering the probe as a terminal does. */
-  function screen(isolated: IsolatedCore, root: string): SupervisedRun {
-    const env = { ...isolated.env, TERM: "xterm-256color", COLORTERM: "truecolor", OVIS_TUI_STATE_DIR: join(root, "tui-state"), TMPDIR: root };
+  function screen(isolated: IsolatedCore, root: string, options: { socket?: string; answerDa1?: boolean } = {}): SupervisedRun {
+    const env = {
+      ...isolated.env, TERM: "xterm-256color", COLORTERM: "truecolor", OVIS_TUI_STATE_DIR: join(root, "tui-state"), TMPDIR: root,
+      ...(options.socket ? { HC_SOCKET: options.socket } : {}),
+    };
+    const answers = options.answerDa1 === false ? ANSWERS.filter(([query]) => query !== DA1) : ANSWERS;
     let tail = "";
     const run: SupervisedRun = runSupervised({
       entry: [process.execPath, ENTRY], env, cols: 100, rows: 30, deadlineMs: WAIT_MS * 4,
@@ -69,7 +161,7 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
         const window = tail + text;
         // answered in the order asked, as a terminal does: DA1 comes last and ends the probe
         const asked: [at: number, answer: string][] = [];
-        for (const [query, answer] of ANSWERS) {
+        for (const [query, answer] of answers) {
           for (let at = window.indexOf(query); at !== -1; at = window.indexOf(query, at + 1)) if (at + query.length > tail.length) asked.push([at, answer]);
         }
         for (const [, answer] of asked.sort((a, b) => a[0] - b[0])) run.type(answer);
@@ -129,35 +221,64 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
   it("gives the terminal back on SIGTERM, SIGINT and SIGHUP at every stage, and the terminal keeps running", async () => {
     const { core: isolated, hc, root } = await core();
     const { address } = await hc.call("terminal.run", { argv: ["sh", "-c", "echo READY-MARK; exec sh"], labels, cwd: root });
-    const stages: [stage: string, signal: "SIGTERM" | "SIGINT" | "SIGHUP", reach: (run: SupervisedRun) => Promise<void>][] = [
-      ["the start probe", "SIGTERM", async (run) => { await run.started; await run.until("\x1b[?1049h", "the screen's entry"); }],
-      ["the first attach", "SIGINT", async (run) => { await run.until("\x1b[?1049h", "the screen's entry"); await run.until("\x1b[?25l", "the first frame"); }],
-      ["a flood", "SIGHUP", async (run) => {
+    type Hold = { answerDa1?: boolean; attach?: boolean };
+    const stages: [stage: string, signal: "SIGTERM" | "SIGINT" | "SIGHUP", hold: Hold, reach: (run: SupervisedRun, attachAsked: Promise<void>) => Promise<void>][] = [
+      // DA1 is left unanswered: the signal comes while the probe waits for it (it waits REPLY_WAIT_MS at most, from the query)
+      ["the start probe", "SIGTERM", { answerDa1: false }, async (run) => { await run.started; await run.until(DA1, "the probe's last query"); }],
+      // the core's answers are held from the screen's attach request on: the signal comes while that attach waits for its reply
+      ["the first attach", "SIGINT", { attach: true }, async (run, attachAsked) => {
+        await run.until("\x1b[?1049h", "the screen's entry");
+        await Promise.race([attachAsked, run.ended.then(() => { throw new Error("the screen ended before it asked for an attach"); })]);
+      }],
+      // the typed command is echoed: wait for a line only its output holds (flood-42), never the command's own text
+      ["a flood", "SIGHUP", {}, async (run) => {
         await run.until(/READY-MARK[\s\S]*\x1b\[\?25h/, "the live pane");
-        run.type("yes flood-line | head -n 200000\r");
-        await run.until("flood-line", "the flood");
+        run.type("yes flood-$((6*7)) | head -n 200000\r");
+        await run.until("flood-42", "the flood");
       }],
       // the flood scrolled READY-MARK away: a shown cursor alone says the pane is Live
-      ["quit", "SIGTERM", async (run) => { await run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, "the live pane"); run.type(DETACH); }],
+      ["quit", "SIGTERM", {}, async (run) => { await run.until(/\x1b\[\?1049h[\s\S]*\x1b\[\?25h/, "the live pane"); run.type(DETACH); }],
     ];
     const codes = { SIGTERM: 143, SIGINT: 130, SIGHUP: 129 } as const;
-    for (const [stage, signal, reach] of stages) {
-      const run = screen(isolated, root);
-      await reach(run);
-      run.signal(signal);
-      const end = await run.ended;
-      // a quit may finish before the signal lands
-      expect([codes[signal], ...(stage === "quit" ? [0] : [])]).toContain(end.code);
-      expect([stage, end.after?.canonical, end.after?.echo]).toEqual([stage, true, true]);
-      expect([stage, run.output().split(LEAVE).length - 1]).toEqual([stage, 1]);
-      expect((await hc.call("terminal.get", { terminal: address })).state).toBe("live");
+    for (const [stage, signal, hold, reach] of stages) {
+      const holder = hold.attach ? attachHolder(isolated.socket, join(root, "h.sock")) : null;
+      try {
+        const run = screen(isolated, root, { ...(holder ? { socket: holder.path } : {}), ...(hold.answerDa1 === false ? { answerDa1: false } : {}) });
+        await reach(run, holder?.asked ?? Promise.resolve());
+        run.signal(signal);
+        const end = await run.ended;
+        // a quit may finish before the signal lands
+        expect([codes[signal], ...(stage === "quit" ? [0] : [])]).toContain(end.code);
+        expect([stage, end.after?.canonical, end.after?.echo]).toEqual([stage, true, true]);
+        expect([stage, run.output().split(LEAVE).length - 1]).toEqual([stage, 1]);
+        // the held attach never replied: nothing of the pane was drawn
+        if (holder) expect([stage, run.output().includes("READY-MARK")]).toEqual([stage, false]);
+        // the signal came before the probe ended: the display watch the screen turns on right after it (tui/loop.ts) never went
+        // out. Read once every byte of the pty is in, so a late one is not missed
+        if (hold.answerDa1 === false) {
+          await run.exited;
+          expect([stage, run.output().includes(DISPLAY_WATCH)]).toEqual([stage, false]);
+        }
+        expect((await hc.call("terminal.get", { terminal: address })).state).toBe("live");
+      } finally {
+        holder?.close();
+      }
     }
   }, TEST_MS);
 
-  /** The screen's grid once more output arrived than now; the run's own deadline bounds the wait. */
-  const nextGrid = async (run: SupervisedRun): Promise<string> => {
-    await run.until(new RegExp(`^[\\s\\S]{${run.output().length + 1}}`), "more output");
-    return gridText(run.output(), 100, 30);
+  /** The screen's grid as the output so far draws it, and how much output that was. */
+  const gridNow = async (run: SupervisedRun): Promise<Shown> => {
+    const output = run.output();
+    return { text: await gridText(output, 100, 30), length: output.length };
+  };
+
+  /**
+   * The screen's grid once output arrived beyond what `seen` was decoded from (output that came while it was decoded counts);
+   * the run's own deadline bounds the wait.
+   */
+  const nextGrid = async (run: SupervisedRun, seen: Shown): Promise<Shown> => {
+    await run.until(new RegExp(`^[\\s\\S]{${seen.length + 1}}`), "more output");
+    return gridNow(run);
   };
 
   it("shows a program named like an agent coming to the front as that agent, in its pane's title and the Agents list, with no reconnect", async () => {
@@ -172,11 +293,11 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     expect([before.includes("[claude]"), before.includes("No agents")]).toEqual([false, true]);
     run.type(`exec ${join(root, "bin", "claude")} -c 'read line'\r`);
     await run.until("[claude]", "the agent in the pane's title");
-    let grid = await gridText(run.output(), 100, 30);
-    while (grid.includes("No agents")) grid = await nextGrid(run);
-    expect(grid.split("\n").filter((line) => line.startsWith(" · front-pane /")).length).toBe(1);
-    expect(grid.split("\n")[1]).toContain("front-pane");
-    expect(grid.split("\n")[1]).toContain("[claude]");
+    let grid = await gridNow(run);
+    while (grid.text.includes("No agents")) grid = await nextGrid(run, grid);
+    expect(grid.text.split("\n").filter((line) => line.startsWith(" · front-pane /")).length).toBe(1);
+    expect(grid.text.split("\n")[1]).toContain("front-pane");
+    expect(grid.text.split("\n")[1]).toContain("[claude]");
     expect(run.output()).not.toContain("herdr-core is not answering");
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
@@ -191,16 +312,17 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's entry agains
     await hc.call("terminal.send", { terminal: address, text: "go\r" });
     await run.until("ended (3)", "the ended pane's banner");
     // the banner can arrive in one read and the rest of its frame in the next
-    const shown = (grid: string) => [grid.includes("+- stays "), grid.includes("+- ends "), grid.includes("+- ended (3) ")];
-    let ended = await gridText(run.output(), 100, 30);
-    while (shown(ended).includes(false)) ended = await nextGrid(run);
+    const shown = ({ text }: Shown) => [text.includes("+- stays "), text.includes("+- ends "), text.includes("+- ended (3) ")];
+    let ended = await gridNow(run);
+    while (shown(ended).includes(false)) ended = await nextGrid(run, ended);
     expect(shown(ended)).toEqual([true, true, true]);
     expect((await hc.call("terminal.get", { terminal: address })).state).toBe("finished");
     await hc.call("terminal.rm", { terminal: address });
+    // One frame can arrive in several reads: the survivor, removed title, program marker and banner must agree on one grid.
+    const removed = ({ text }: Shown) => [text.includes("+- stays "), text.includes("+- ends "), text.includes("END-MARK"), text.includes("ended (3)")];
     let grid = ended;
-    // the frame that drops the pane can arrive in two reads too: wait until its banner is gone as well
-    while (grid.includes("+- ends ") || grid.includes("ended (3)")) grid = await nextGrid(run);
-    expect([grid.includes("+- stays "), grid.includes("ended (3)")]).toEqual([true, false]);
+    while (removed(grid).join() !== [true, false, false, false].join()) grid = await nextGrid(run, grid);
+    expect(removed(grid)).toEqual([true, false, false, false]);
     run.type(DETACH);
     expect((await run.ended).code).toBe(0);
   }, TEST_MS);

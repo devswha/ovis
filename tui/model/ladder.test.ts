@@ -2,8 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { type InputEvent, type Mods, typedKey } from "../input/decode.ts";
 import { Framer } from "../input/framer.ts";
 import type { Effect } from "./effects.ts";
-import type { World } from "./focus.ts";
+import { focused, type World } from "./focus.ts";
 import { modeBar } from "./hints.ts";
+import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import { OVERLAYS } from "./overlays.ts";
 import { initialState, type Level, type ModelEvent, type ModelState, reduce, type Step } from "./reduce.ts";
 
@@ -224,6 +225,52 @@ describe("hangul once", () => {
     const top = step.state.overlays.at(-1)!;
     expect(top.kind === "text" && top.field.graphemes).toEqual(["\u{d55c}", "\u{ae00}"]);
   });
+
+  it("in a rename field, a grapheme grown by marks in reads of their own stops at the code-point budget, and what the field held stays whole", () => {
+    const renaming = after(idle, prefix(), key("P"));
+    const shown = (state: ModelState) => { const top = state.overlays.at(-1)!; return top.kind === "text" ? top.field.graphemes : []; };
+    // a letter, then a mark at a time, each joining the grapheme before the cursor: it grows only to the budget
+    let state = after(renaming, text("ab"));
+    for (let n = 0; n < TEXT_FIELD_MAX_CODE_POINTS; n++) state = reduce(state, text("\u0301")).state;
+    expect([shown(state).length, shown(state)[0], shown(state)[1]![0], [...shown(state).join("")].length]).toEqual([2, "a", "b", TEXT_FIELD_MAX_CODE_POINTS]);
+    // one read of endless marks stops at the same budget
+    expect([...shown(after(renaming, text("ab"), text("\u0301".repeat(4 * TEXT_FIELD_MAX_CODE_POINTS)))).join("")]).toEqual([...shown(state).join("")]);
+    // one code point of room: a letter is taken and its mark refused, typed or pasted alike; then nothing more fits
+    const nearly = after(renaming, text(`x${"\u0301".repeat(TEXT_FIELD_MAX_CODE_POINTS - 2)}`));
+    const typed = after(nearly, text("e\u0301"));
+    expect([shown(nearly).length, shown(typed), shown(after(nearly, paste("e\u0301")))]).toEqual([1, [...shown(nearly), "e"], [...shown(nearly), "e"]]);
+    expect(shown(after(typed, text("z")))).toEqual(shown(typed));
+  });
+
+  it("in a rename field, Enter on a name past the field's bound left as shown renames nothing; an edit renames", () => {
+    // one grapheme longer than the code-point budget: the field shows it cut
+    const long = `e${"\u0301".repeat(2 * TEXT_FIELD_MAX_CODE_POINTS)}`;
+    const named = reduce(initialState(undefined), { type: "world", world: { workspaces: [{ id: "w1", name: "one", tabs: [{ id: "t1", name: "a", panes: [{ id: "p1", name: long }] }] }] }, at: 0 }).state;
+    const renaming = after(named, prefix(), key("P"));
+    const enter = (state: ModelState) => reduce(state, { type: "key", key: "ENTER", mods: {}, action: "press", at: AT });
+    const kept = enter(renaming);
+    expect([kept.effects, kept.state.overlays]).toEqual([[], []]);
+    const edited = enter(after(renaming, text("x")));
+    expect(edited.effects).toEqual([{ type: "run", action: "rename_pane", target: { kind: "pane", id: "p1" }, index: null, name: "x" }]);
+  });
+
+  it("renames to the displayed prefix only when the user edits the field", () => {
+    const prefixName = "x".repeat(TEXT_FIELD_MAX_GRAPHEMES);
+    const rename = (name: string, ...events: ModelEvent[]) => {
+      const workspace = { ...WORLD.workspaces[0]!, name };
+      const state = after(idle, { type: "world", world: { workspaces: [workspace] }, at: 0 });
+      const open = after(state, { type: "action", action: "rename_workspace", at: AT });
+      return reduce(after(open, ...events), named("ENTER")).effects;
+    };
+    const long = `${prefixName}y`;
+    const expected: Effect[] = [{ type: "run", action: "rename_workspace", target: { kind: "workspace", id: "w1" }, index: null, name: prefixName }];
+    expect(rename(long)).toEqual([]);
+    expect(rename(long, named("HOME"), named("END"))).toEqual([]);
+    expect(rename(long, named("END"), named("DELETE"), text("z"))).toEqual([]); // no deletion and no room
+    expect(rename(long, paste(prefixName))).toEqual(expected);
+    expect(rename(long, named("END"), named("BACKSPACE"), text("x"))).toEqual(expected);
+    expect(rename(prefixName, paste(prefixName))).toEqual([]); // explicitly replaced, but identical to the stored name
+  });
 });
 
 describe("overlay close keys", () => {
@@ -335,5 +382,20 @@ describe("layout actions as data", () => {
     const calm = after(seen, { type: "notice", code: "layout_unchanged", data: { action: "zoom", reason: "single_pane" }, calm: true, at: AT });
     const plain = after(seen, { type: "notice", code: "layout_refused", data: { action: "zoom", reason: "x" }, at: AT });
     expect([calm.notices.map((notice) => notice.calm), plain.notices.map((notice) => notice.calm)]).toEqual([[true], [undefined]]);
+  });
+});
+
+describe("the pane looked at before", () => {
+  it("is the pane last shown: selecting a pane a zoom keeps covered leaves it, so last_pane goes back to the pane left", () => {
+    const world: World = { workspaces: [{ id: "w", name: "w", tabs: [
+      { id: "ta", name: "a", panes: [{ id: "A", name: "" }] },
+      { id: "tb", name: "b", panes: [{ id: "B", name: "" }, { id: "C", name: "" }], zoomed: "B" },
+    ] }] };
+    const seen = reduce(initialState(undefined), { type: "world", world, at: 0 }).state;
+    const shown = (state: ModelState) => focused(state.world, state.focus).pane?.id;
+    const zoomed = after(seen, { type: "select", target: { kind: "tab", id: "tb" }, at: AT });
+    const cycled = after(zoomed, { type: "action", action: "cycle_pane_next", at: AT });
+    const back = after(cycled, { type: "action", action: "last_pane", at: AT });
+    expect([shown(seen), shown(zoomed), shown(cycled), cycled.focus.previous, shown(back)]).toEqual(["A", "B", "B", "A", "A"]);
   });
 });

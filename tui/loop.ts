@@ -15,9 +15,9 @@ import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts"
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
-import { LayoutWrites } from "./core/layout.ts";
+import { type LayoutDone, LayoutWrites } from "./core/layout.ts";
 import { type CoreLink, LINK_DOCS, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
-import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
+import { createPanes, type PaneInput, type PaneNotice, type Panes } from "./core/pane.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
 import { errorCode } from "./crash.ts";
 import { effectBytes, osc52 } from "./host/effects.ts";
@@ -27,12 +27,12 @@ import { Framer } from "./input/framer.ts";
 import type { TuiThemeMode } from "./theme.generated.ts";
 import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
-import { type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
+import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
-import { focused } from "./model/focus.ts";
-import { initialState, type ModelEvent, type ModelState, presentedMenu, reduce } from "./model/reduce.ts";
+import { exists, focused } from "./model/focus.ts";
+import { type Following, initialState, type ModelEvent, type ModelState, presentedMenu, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
-import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
+import { type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
 import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
 import type { ViewStore } from "./view-store.ts";
@@ -89,6 +89,8 @@ export interface LoopReport {
   actions: string[];
   hc: { version: string; features: string[] } | null;
   size: { cols: number; rows: number };
+  /** the pane grids the frame keeps, each at its size */
+  grids: { pane: string; cols: number; rows: number }[];
   mode: { name: string; locked: boolean; armed: boolean; overlays: string[] };
   /** the stable code of the error giving the terminal back at quit failed with, or null */
   leaveError: string | null;
@@ -130,9 +132,10 @@ export function startLoop(options: LoopOptions): Loop {
   let grids = new Map<string, { emulator: unknown; grid: PaneGrid }>();
   let shape: ScreenShape | null = null;
   const pointer = new Pointer();
-  /** the last frame's hit map and pane scenes: what the mouse lands on */
+  /** Published together only after a frame is taken: the cells and layout the mouse actually sees. */
   let hits: HitMap | null = null;
-  const drawn = new Map<string, PaneScene>();
+  let drawn = new Map<string, PanePicture>();
+  let paintedLayout: Pick<PointerScene, "tab" | "splits"> = { tab: null, splits: [] };
   let shownKey = "";
   let paneFocus: string | null = null;
   let hello: HelloInfo | null = null;
@@ -208,6 +211,7 @@ export function startLoop(options: LoopOptions): Loop {
 
   const dividers = new DividerWrites({
     edit: (change) => editLayout(link, change),
+    tree: (tab) => world.view().tabs.get(tab)?.root,
     refused: (refusal) => {
       guard(() => {
         dispatch({ type: "notice", code: refusal.code, data: refusal.reason === null ? {} : { reason: refusal.reason }, at: clock.now() });
@@ -309,49 +313,156 @@ export function startLoop(options: LoopOptions): Loop {
    * What the user typed, pasted or clicked while a layout write that one of their actions started is under way: it
    * waits behind that write, in order, and goes through once the write is done, so it meets the layout the write
    * leaves (the pane a close focuses, the pane a split follows), as a later read would. null when no write holds it.
-   * `ahead` is the state core as if what waits had gone through: only to see a detach in it, which never waits.
+   * `ahead` is the state core as if what waits had gone through: to see a detach in it, which never waits, and a layout
+   * action, which is refused as busy when it is read, against the layout the user saw. `awaiting`: the write is done
+   * and the screen does not show what it did yet: the pane it made or moved (`follow`: what waits goes there once
+   * focus follows it), or the panes a close ended still in the world (`gone`: what waits goes through once they left
+   * and focus moved off them). It is refused if that is not so by `until`, never sent to the pane focused before.
+   * `bytes`: the text among what waits (typed, pasted, or carried by a key); `full`: what waits reached
+   * BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
    */
-  let behindWrite: { readonly events: ModelEvent[]; ahead: ModelState } | null = null;
+  let behindWrite: {
+    readonly events: ModelEvent[];
+    ahead: ModelState;
+    awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone }) & { readonly until: number } | null;
+    bytes: number;
+    full: boolean;
+  } | null = null;
+  /** what waited behind a write is going through: a layout action in it was refused when it was read */
+  let replaying = false;
 
   /**
    * A user's input event: through the state core now, or behind the layout write under way. A detach among what would
-   * wait leaves at once: a user leaving never waits for a write (what waited, typed before it, goes nowhere).
+   * wait leaves at once: a user leaving never waits for a write (what waited, typed before it, goes nowhere). A layout
+   * action among it is refused now: once the write is done it would meet another layout and act on another target.
    */
   function userInput(event: ModelEvent): void {
     // nothing after a detach goes anywhere, from the same read either: the screen is leaving
     if (closing) return;
-    if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse")) {
+    // the host's focus waits in order too: a focus loss returns an armed prefix to Idle, for the read-ahead and the replay alike
+    if (behindWrite === null || !(event.type === "key" || event.type === "text" || event.type === "paste" || event.type === "mouse" || event.type === "focus")) {
       dispatch(event);
       return;
     }
-    // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order
-    const ahead = [event];
-    for (let next = ahead.shift(); next !== undefined; next = ahead.shift()) {
-      const step = reduce(behindWrite.ahead, next);
+    // read ahead the way the loop would go: the event, then each rest of a read it hands back, in order. What waits is
+    // what the read-ahead took in each step (a text run cut where it handed its rest back, as split reads give it), and
+    // a layout action refused here waits as `consumed`: its keys are taken, and never chose anything in another layout
+    const pieces: ModelEvent[] = [];
+    const units = [event];
+    for (let next = units.shift(); next !== undefined; next = units.shift()) {
+      const before = behindWrite.ahead;
+      const step = reduce(before, next);
       behindWrite.ahead = step.state;
+      let rest = "";
+      let refused = false;
       for (const effect of step.effects) {
         if (effect.type === "quit") {
           behindWrite = null;
           perform({ type: "quit" });
           return;
         }
-        if (effect.type === "input") ahead.push(effect.event);
+        if (effect.type === "input") {
+          units.push(effect.event);
+          if (effect.event.type === "text") rest = effect.event.text;
+        }
+        if (effect.type === "run" && layout.writes(effect)) {
+          busy(effect.action);
+          refused = true;
+        }
       }
+      const taken = next.type === "text" ? next.text.slice(0, next.text.length - rest.length) : "";
+      if (!refused) {
+        pieces.push(next.type === "text" ? { ...next, text: taken } : next);
+        continue;
+      }
+      // the action was chosen by the last code point taken: what came before it in the run waits as typed
+      if (next.type === "text" && step.textAction && step.textAction.offset > 0) pieces.push({ ...next, text: next.text.slice(0, step.textAction.offset) });
+      const source = step.textAction?.before ?? before;
+      pieces.push({ type: "consumed", overlay: step.state.overlays.length < source.overlays.length, mode: source.mode.name !== "terminal" && step.state.mode.name === "terminal", at: next.at });
     }
-    behindWrite.events.push(event);
+    if (behindWrite.full) return;
+    // the text a key typed (a kitty key reports it) costs its bytes too, as the same text read as text does
+    const bytes = pieces.reduce((sum, piece) => sum + (piece.type === "text" || piece.type === "paste" || piece.type === "key" ? Buffer.byteLength(piece.text ?? "") : 0), 0);
+    if (behindWrite.events.length + pieces.length > BEHIND_WRITE_EVENTS || behindWrite.bytes + bytes > BEHIND_WRITE_BYTES) {
+      // nothing more waits, so what goes through later keeps its order and no paste is cut; a detach still leaves above
+      behindWrite.full = true;
+      dispatch({ type: "notice", code: "input_dropped", data: { reason: "full" }, at: clock.now() });
+      return;
+    }
+    behindWrite.events.push(...pieces);
+    behindWrite.bytes += bytes;
   }
 
-  /** Holds the user's input until `writing` is done; then what waited goes through in order (and may hold again). */
-  function holdUntil(writing: Promise<void>): void {
-    behindWrite ??= { events: [], ahead: state };
-    void writing.then(() => {
+  /** A layout action chosen while a write, or what waits behind it, is under way: one notice, nothing written. */
+  function busy(action: string): void {
+    dispatch({ type: "notice", code: "layout_busy", data: { action }, at: clock.now() });
+  }
+
+  /**
+   * Holds the user's input until `writing` is done; then what waited goes through in order, or, when the write asked
+   * focus to follow a pane the screen does not show yet or ended panes the screen still shows, once the screen shows
+   * what it did.
+   */
+  function holdUntil(writing: Promise<LayoutDone>): void {
+    behindWrite ??= { events: [], ahead: state, awaiting: null, bytes: 0, full: false };
+    const before = state.following;
+    void writing.then((done) => {
       guard(() => {
-        const waited = behindWrite?.events ?? [];
-        behindWrite = null;
-        for (const event of waited) userInput(event);
+        if (behindWrite === null) return;
+        const until = clock.now() + LAYOUT_SHOWN_WAIT_MS;
+        if (!closedShown(done.ended)) behindWrite.awaiting = { kind: "gone", done, until };
+        else if (done.dropInput) drop(done.dropInput);
+        else if (state.following !== null && state.following !== before) behindWrite.awaiting = { kind: "follow", following: state.following, until };
+        else release();
       });
       arm();
     });
+  }
+
+  /** Whether the screen shows these ended panes gone: none of them is in the world any more. */
+  function closedShown(panes: readonly string[]): boolean {
+    return panes.every((id) => !exists(state.world, { kind: "pane", id }));
+  }
+
+  /** What waited behind a write goes through, in order. */
+  function release(): void {
+    const waited = behindWrite?.events ?? [];
+    const full = behindWrite?.full === true;
+    behindWrite = null;
+    replaying = true;
+    try {
+      for (const event of waited) userInput(event);
+      // what came after the queue filled went nowhere, a focus loss or the key after a prefix among it: a prefix the
+      // replay armed would take the next key typed as its own, so it returns to Idle
+      if (full) dispatch({ type: "consumed", overlay: false, mode: false, at: clock.now() });
+    } finally {
+      replaying = false;
+    }
+  }
+
+  /** What waited behind a write goes nowhere, with one notice saying so when anything did. */
+  function drop(reason: string): void {
+    const count = behindWrite?.events.length ?? 0;
+    behindWrite = null;
+    if (count > 0) dispatch({ type: "notice", code: "input_dropped", data: { reason, events: count }, at: clock.now() });
+  }
+
+  /** Once focus no longer waits for the pane a write made or moved: what waited goes there if focus landed on it, else nowhere. */
+  function followed(following: Following): void {
+    if (focused(state.world, state.focus).pane?.id === following.target.id) release();
+    else drop("not_shown");
+  }
+
+  /** What waits for the screen to show what a write did goes on once it does. */
+  function onceShown(): void {
+    const awaiting = behindWrite?.awaiting;
+    if (!awaiting) return;
+    if (awaiting.kind === "follow") {
+      if (state.following !== awaiting.following) followed(awaiting.following);
+    } else if (closedShown(awaiting.done.ended)) {
+      if (awaiting.done.dropInput) drop(awaiting.done.dropInput);
+      else release();
+    }
   }
 
   /** One event through the state core, and its effects performed in order, now. */
@@ -365,6 +476,7 @@ export function startLoop(options: LoopOptions): Loop {
       reshow();
       owePass();
     }
+    onceShown();
   }
 
   /** The view written to this core's file when it changed; a failed write said once. */
@@ -387,6 +499,10 @@ export function startLoop(options: LoopOptions): Loop {
           const shapeOf = tab ? world.view().tabs.get(tab.id) : undefined;
           const toward = shapeOf ? paneToward(shapeOf, effect.target.id, direction) : null;
           if (toward !== null) dispatch({ type: "select", target: { kind: "pane", id: toward }, at: clock.now() });
+          return;
+        }
+        if ((behindWrite !== null || replaying) && layout.writes(effect)) {
+          busy(effect.action);
           return;
         }
         const writing = layout.run(effect);
@@ -447,7 +563,7 @@ export function startLoop(options: LoopOptions): Loop {
         owePass();
         return;
       case "copy":
-        copy(step.pane, step.range);
+        copy(step.pane, step.range, step.contentVersion);
         return;
       case "divider":
         act(`divider:${step.done ? "done" : "move"}`);
@@ -468,8 +584,8 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** The selected text to the host's clipboard as OSC 52, with a notice: `copied`, or `copy_refused` over the size cap. */
-  function copy(pane: string, range: ScreenRange): void {
-    const text = panes.view(pane)?.emulator?.textOf(range);
+  function copy(pane: string, range: ScreenRange, contentVersion: number): void {
+    const text = panes.view(pane)?.emulator?.textOf(range, contentVersion);
     if (!text?.ok) return;
     const data = new TextEncoder().encode(text.value);
     const write = osc52(data);
@@ -486,39 +602,42 @@ export function startLoop(options: LoopOptions): Loop {
     dispatch({ type: "notice", code: "copied", data: { bytes: data.length }, at: clock.now() });
   }
 
-  /** What the pointer reads of a shown pane as the last frame drew it; null for a pane not drawn or with no picture. */
-  function lookOf(pane: string, view: PaneView | undefined = panes.view(pane), scene: PaneScene | undefined = drawn.get(pane)): PaneLook | null {
+  /** Live modes and identity for routing and validation, located in the last accepted frame. */
+  function lookOf(pane: string): PaneLook | null {
+    const view = panes.view(pane);
+    const picture = drawn.get(pane);
     const emulator = view?.emulator;
-    if (!emulator || !view.actual || !scene) return null;
+    if (!emulator || !view.actual || !picture) return null;
     const modes = emulator.modes();
     const history = emulator.history();
     if (!modes.ok || !history.ok) return null;
-    return { rect: scene.rect, top: scene.view?.row ?? 0, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, emulator, history: history.value };
+    return { ...picture, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, screen: modes.value.screens, emulator, history: history.value };
   }
 
   function pointerScene(): PointerScene {
-    const tab = focused(state.world, state.focus).tab;
-    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
-    return { hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane) };
+    return { hits, focus: paneFocus, ...paintedLayout, look: lookOf, painted: (pane) => drawn.get(pane) ?? null };
   }
 
   /** The shown tab's panes with their cells, told to the pane machine when anything about them changed. */
   function reshow(): void {
     const size = host.size();
     const view = world.view();
-    const tab = focused(state.world, state.focus).tab;
-    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed, pane: focused(state.world, state.focus).pane?.id ?? null });
+    const { tab, pane } = focused(state.world, state.focus);
+    // the focus moves before the layout: a pane that a zoom is about to cover still tells its program the focus left (a
+    // covered pane is silent), and one the zoom uncovers hears it come once it shows
+    if ((pane?.id ?? null) !== paneFocus) {
+      paneFocus = pane?.id ?? null;
+      pointer.focusChanged(paneFocus);
+      panes.focus(paneFocus);
+    }
+    shape = layOut(size.cols, size.rows, tab ? dividers.shape(tab.id, view.tabs.get(tab.id)) ?? null : null, { sidebarCollapsed: state.sidebarCollapsed, pane: pane?.id ?? null });
+    // a pane that left the shown tab keeps no grid: shown again, it is drawn anew from its new attach
+    for (const pane of grids.keys()) if (!shape.spots.some((spot) => spot.pane === pane)) grids.delete(pane);
     const shown = shape.spots.map(({ pane, cells, covered }) => ({ terminal: pane, cols: cells.cols, rows: cells.rows, covered }));
     const key = JSON.stringify(shown);
     if (painter && key !== shownKey) {
       shownKey = key;
       panes.show(shown);
-    }
-    const pane = focused(state.world, state.focus).pane?.id ?? null;
-    if (pane !== paneFocus) {
-      paneFocus = pane;
-      pointer.focusChanged(pane);
-      panes.focus(pane);
     }
   }
 
@@ -526,11 +645,11 @@ export function startLoop(options: LoopOptions): Loop {
     passOwed = true;
   }
 
-  /** Bytes read from the host (or drained): events, each through the state core at once. */
+  /** Bytes read from the host: events, each through the state core at once. */
   function read(bytes: Uint8Array): void {
     const events: InputEvent[] = framer.feed(bytes, clock.now());
-    if (events.some((event) => event.type === "paste" && !event.complete)) pasteAt = clock.now() + PASTE_ABANDON_MS;
-    else if (pasteAt !== null) pasteAt = events.length > 0 ? null : clock.now() + PASTE_ABANDON_MS;
+    // only a refused paste whose end mark has not come yet is waited for: a paste begun after its end is framed as any paste
+    pasteAt = framer.discarding() ? clock.now() + PASTE_ABANDON_MS : null;
     for (const event of events) {
       // the rest of a read that detached goes nowhere, as a later read would not
       if (closing) break;
@@ -555,6 +674,8 @@ export function startLoop(options: LoopOptions): Loop {
       if (quitting && now >= quitting.at) quitting.settle();
       return;
     }
+    // what a write did never showed in time: what waited for it is refused, not sent elsewhere
+    if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop(behindWrite.awaiting.kind === "follow" ? "not_shown" : behindWrite.awaiting.done.dropInput ?? "not_closed");
     for (const event of framer.tick(now)) userInput(event);
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
@@ -575,6 +696,10 @@ export function startLoop(options: LoopOptions): Loop {
 
   function pass(now: number): void {
     if (!painter || !shape || ended) return;
+    const frameShape = shape;
+    const tab = focused(state.world, state.focus).tab;
+    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
+    const nextLayout = { tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: frameShape.splits };
     passOwed = false;
     lastPass = now;
     passes++;
@@ -582,11 +707,12 @@ export function startLoop(options: LoopOptions): Loop {
     if (painter.styles.get(STYLE_TABLE_LIMIT) !== undefined) rebuildPainter();
     const scenes: PaneScene[] = [];
     const copied = new Set<string>();
-    drawn.clear();
-    for (const spot of shape.spots) {
+    const nextDrawn = new Map<string, PanePicture>();
+    for (const spot of frameShape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
-      const actual = view?.actual ?? { cols: spot.cells.cols, rows: spot.cells.rows };
+      // the grid of the picture drawn, never a size a newer attach was told before its first paint: with none, the visible cells
+      const actual = view?.grid ?? { cols: spot.cells.cols, rows: spot.cells.rows };
       let held = grids.get(spot.pane);
       const emulator = view?.emulator ?? null;
       if (!held || held.emulator !== emulator) {
@@ -594,14 +720,16 @@ export function startLoop(options: LoopOptions): Loop {
         grids.set(spot.pane, held);
       }
       held.grid.resize(actual.cols, actual.rows);
-      if (emulator) {
-        held.grid.copy(emulator, held.grid.allDirty);
-        copied.add(spot.pane);
-      }
+      const copy = emulator ? held.grid.copy(emulator, held.grid.allDirty) : null;
+      if (copy?.ok) copied.add(spot.pane);
       const live = paneLive(view, shown);
       const scene = paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live });
-      drawn.set(spot.pane, scene);
-      const look = lookOf(spot.pane, view, scene);
+      const snapshot = copy?.ok && emulator ? emulator.frameScreen() : null;
+      const look: PanePicture | null = snapshot?.ok && snapshot.value && emulator ? {
+        rect: scene.rect, top: scene.view?.row ?? 0, grid: actual, emulator,
+        altScreen: snapshot.value.altScreen, screen: snapshot.value.screens, history: snapshot.value.history, contentVersion: snapshot.value.contentVersion,
+      } : null;
+      if (look) nextDrawn.set(spot.pane, look);
       const selection = pointer.shown(spot.pane, paneFocus, look);
       scenes.push({ ...scene, scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(selection ? { selection } : {}) });
     }
@@ -610,9 +738,9 @@ export function startLoop(options: LoopOptions): Loop {
     const frameMenu = state.overlays.at(-1);
     const frameMenuDismissed = state.menuDismissed;
     const chrome = buildChrome({
-      regions: shape.regions,
-      spots: shape.spots,
-      splits: shape.splits,
+      regions: frameShape.regions,
+      spots: frameShape.spots,
+      splits: frameShape.splits,
       state,
       world: world.view(),
       panes: paneViews,
@@ -634,10 +762,12 @@ export function startLoop(options: LoopOptions): Loop {
     painter.taken(taken);
     if (ended || !taken) return;
     hits = frame.hits;
+    drawn = nextDrawn;
+    paintedLayout = nextLayout;
     state = presentedMenu(state, frameMenu, frameMenuDismissed);
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
-    const order = [...shape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
+    const order = [...frameShape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
     for (const spot of order) {
       if (budget <= 0) break;
       budget -= panes.credit(spot.pane, budget);
@@ -648,12 +778,14 @@ export function startLoop(options: LoopOptions): Loop {
     if (ready.length > 0 && !draining) drainThenLive(ready);
   }
 
-  /** What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. */
+  /**
+   * What was typed before a pane's first paint was drawn is read (and refused there), then the pane is Live. It is read as any
+   * input, at once and through the focus it meets: a pane already Live takes it without waiting for this one.
+   */
   function drainThenLive(ready: string[]): void {
     draining = true;
-    host.drain().then((bytes) => guard(() => {
+    host.drain().then(() => guard(() => {
       draining = false;
-      if (bytes.length > 0) read(bytes);
       for (const pane of ready) if (panes.view(pane)?.ready) panes.live(pane);
       owePass();
       arm();
@@ -674,6 +806,7 @@ export function startLoop(options: LoopOptions): Loop {
     const input = framer.deadline();
     if (input !== undefined) all.set("input", input);
     if (pasteAt !== null) all.set("paste", pasteAt);
+    if (behindWrite?.awaiting) all.set("layout_shown", behindWrite.awaiting.until);
     for (const [name, at] of link.deadlines()) all.set(`link:${name}`, at);
     for (const [name, at] of panes.deadlines()) all.set(`panes:${name}`, at);
     for (const [name, at] of state.deadlines) all.set(`model:${name}`, at);
@@ -755,12 +888,15 @@ export function startLoop(options: LoopOptions): Loop {
       end(first.kind === "NoCore" ? { kind: "no_core", code: first.code } : { kind: "incompatible", code: first.code, reason: first.reason });
       return;
     }
+    // heard before the entry: the entry's own write can find the terminal gone, and a signal held during it is told at its end
+    host.onEnd((how) => onHostEnd(how));
     if (!host.enter()) {
       void link.close().catch(() => {});
       end({ kind: "not_a_terminal" });
       return;
     }
     entered = true;
+    if (closing) return;
     framer.setModes({ mouse: true });
     host.onInput((bytes) => {
       guard(() => read(bytes));
@@ -776,14 +912,13 @@ export function startLoop(options: LoopOptions): Loop {
       });
       arm();
     });
-    host.onEnd((how) => onHostEnd(how));
     const size = host.size();
     guard(() => {
       dispatch({ type: "resize", cols: size.cols, rows: size.rows, at: clock.now() });
       reshow();
     });
     const probe = await host.probe();
-    if (ended) return;
+    if (ended || closing) return;
     guard(() => {
       framer.setModes({ kitty: (probe.kittyFlags ?? 0) > 0 });
       sync = probe.syncOutput === true;
@@ -820,6 +955,7 @@ export function startLoop(options: LoopOptions): Loop {
         leaveError,
         hc: hello ? { version: hello.version, features: [...hello.features] } : null,
         size: entered ? host.size() : { cols: 0, rows: 0 },
+        grids: [...grids].map(([pane, { grid }]) => ({ pane, cols: grid.grid.cols, rows: grid.grid.rows })),
         mode: { name: state.mode.name, locked: state.locked, armed: state.armed, overlays: state.overlays.map((overlay) => overlay.kind) },
         link: { kind: link.state.kind, code: "code" in link.state ? link.state.code : null },
       };
