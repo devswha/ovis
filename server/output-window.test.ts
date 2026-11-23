@@ -265,6 +265,14 @@ describe("terminal output credit", () => {
     expect(replay.text()).toBe("\x1b[?1049h\x1b[?1000hhello");
   });
 
+  it("keeps no more room than its limit needs after a burst far past it", () => {
+    const replay = new ReplayBuffer(1024);
+    replay.append("x".repeat(1024 * 1024));
+    replay.append("");
+    expect(replay.recent).toBe("x".repeat(1024));
+    expect((replay as unknown as { bytes: Buffer }).bytes.length).toBeLessThanOrEqual(4 * 1024);
+  });
+
   it("replays byte for byte what re-encoding the whole tail on every append gave", () => {
     // the tail kept as one string, encoded and decoded whole on every append
     class StringTail {

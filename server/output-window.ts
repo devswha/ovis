@@ -150,10 +150,7 @@ export class ReplayBuffer {
     const size = Buffer.byteLength(data);
     if (this.end + size > this.bytes.length) {
       // twice what is held: the next copy comes only after about as much output again
-      const next = Buffer.allocUnsafe(2 * (this.end - this.start + size));
-      this.end = this.bytes.copy(next, 0, this.start, this.end);
-      this.start = 0;
-      this.bytes = next;
+      this.move(2 * (this.end - this.start + size));
     }
     this.end += this.bytes.write(data, this.end);
     const bytes = this.bytes;
@@ -173,6 +170,16 @@ export class ReplayBuffer {
     }
     for (const [, resource, level, final] of cut.matchAll(MODIFY_OTHER_KEYS)) this.modifyOtherKeys = resource && final === "m" ? Number(level || 0) : 0;
     this.start = start;
+    // a burst far past the limit grew the buffer for itself: keep only room for what is left
+    const kept = Math.max(this.limit, this.end - this.start);
+    if (this.bytes.length > 4 * kept) this.move(2 * kept);
+  }
+
+  private move(capacity: number): void {
+    const next = Buffer.allocUnsafe(capacity);
+    this.end = this.bytes.copy(next, 0, this.start, this.end);
+    this.start = 0;
+    this.bytes = next;
   }
 
   text(): string {
