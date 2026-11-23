@@ -101,7 +101,6 @@ export const APPROVAL_METHODS = new Set([
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",
   "item/permissions/requestApproval",
-  "mcpServer/elicitation/request",
 ]);
 
 /** A file change Codex announced (item/started), for the card of its approval. */
@@ -127,8 +126,8 @@ const permissionLines = (permissions: unknown): string[] | null => {
 /**
  * The card of an approval Codex asks (`method` and its params), or null for one Ovis leaves to the TUI's own dialog and
  * the screen reader: a command of another kind than a plain one (writing to a running command's input, a network
- * approval), a file change whose edits were not announced, permissions it cannot spell out, and an MCP server's form
- * that asks for more than a yes or no.
+ * approval), a file change whose edits were not announced, and permissions it cannot spell out. An MCP server's
+ * elicitation is no approval here: Codex's TUI draws it as a form of its own, which stays the TUI's.
  */
 export function codexCard(method: string, params: unknown, changes?: ReadonlyMap<string, FileChange[]>): ApprovalRequest | null {
   if (!isObject(params)) return null;
@@ -157,13 +156,6 @@ export function codexCard(method: string, params: unknown, changes?: ReadonlyMap
       const lines = permissionLines(params["permissions"]);
       return lines === null || lines.length === 0 ? null : { command: lines.join("\n"), description: reason, dialog: "grant" };
     }
-    case "mcpServer/elicitation/request": {
-      const schema = params["requestedSchema"];
-      const message = text(params["message"]);
-      const empty = isObject(schema) && (schema["properties"] === undefined || (isObject(schema["properties"]) && Object.keys(schema["properties"]).length === 0));
-      if (params["mode"] !== "form" || message === null || !empty) return null;
-      return { command: message, description: text(params["serverName"]) };
-    }
     default:
       return null;
   }
@@ -184,16 +176,18 @@ export function codexAnswer(method: string, params: unknown, decision: ApprovalD
       const granted = Object.fromEntries(Object.entries(asked).filter(([, value]) => value !== null));
       return { permissions: decision === "allow" ? granted : {}, scope: "turn" };
     }
-    case "mcpServer/elicitation/request":
-      return decision === "allow" ? { action: "accept", content: {}, _meta: null } : { action: "decline", content: null, _meta: null };
     default:
       return null;
   }
 }
 
-/** Yes allows once, No stops the turn; any other option ("don't ask again", "for this session") goes to the TUI's dialog as its keys. */
+/**
+ * Yes allows once (for a grant, `Yes, grant these permissions for this turn`, the answer codexAnswer sends), No stops
+ * the turn; any other option (don't ask again, a grant for the session or with strict auto review) goes to the TUI's
+ * dialog as its keys. The labels are Codex 0.171.0's.
+ */
 export function codexDecision(label: string): ApprovalDecision | null {
-  return /^Yes, (?:proceed|grant|accept)\b/.test(label) && !/\bsession\b/i.test(label) ? "allow" : /^No\b/.test(label) ? "deny" : null;
+  return /^Yes, proceed\b/.test(label) || /^Yes, grant these permissions for this turn\b/.test(label) ? "allow" : /^No\b/.test(label) ? "deny" : null;
 }
 
 const SOURCE: ApprovalSource = { kind: "codex", decision: codexDecision };
@@ -294,14 +288,14 @@ export function privateParent(folder: string): boolean {
 
 type TurnEnd = "running" | "answered" | "failed";
 
-interface Held { method: string; params: unknown; release: () => void }
+
 
 /** Ovis's connection to one pane's Codex server. */
 class Connection {
   private readonly socket: WebSocket;
   private next = 1;
   private readonly calls = new Map<number, (message: Json) => void>();
-  private readonly held = new Map<string, Held>();
+  private readonly held = new Map<string, () => void>();
   private readonly subscribed = new Set<string>();
   private readonly subagents = new Set<string>();
   private readonly changes = new Map<string, FileChange[]>();
@@ -403,7 +397,7 @@ class Connection {
         break;
       }
       case "serverRequest/resolved":
-        this.held.get(JSON.stringify(params["requestId"]))?.release();
+        this.held.get(JSON.stringify(params["requestId"]))?.();
         this.held.delete(JSON.stringify(params["requestId"]));
         break;
     }
@@ -421,13 +415,13 @@ class Connection {
       const result = decision === null ? null : codexAnswer(method, params, decision);
       if (result !== null) this.send({ id, result });
     });
-    if (release !== null) this.held.set(key, { method, params, release });
+    if (release !== null) this.held.set(key, release);
   }
 
   private end(): void {
     if (this.closed) return;
     this.closed = true;
-    for (const held of this.held.values()) held.release();
+    for (const release of this.held.values()) release();
     this.held.clear();
     for (const resolve of this.calls.values()) resolve({ error: { message: "closed" } });
     this.calls.clear();

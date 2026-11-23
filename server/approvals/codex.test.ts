@@ -125,17 +125,14 @@ describe("the command a card shows", () => {
     expect(codexCard("item/tool/requestUserInput", RECORDED.params)).toBeNull();
   });
 
-  it("shows an edit with its announced changes, permissions spelled out, and an MCP server's plain yes-or-no form", () => {
+  it("shows an edit with its announced changes and permissions spelled out, and leaves an MCP server's form to the TUI", () => {
     const changes = new Map([["i1", [{ path: "/w/a.txt", kind: "add", diff: "+hello" }, { path: "/w/b.txt", kind: "update", diff: "-x\n+y", movePath: "/elsewhere/b.txt" }]]]);
     expect(codexCard("item/fileChange/requestApproval", { itemId: "i1", reason: "outside the workspace" }, changes))
       .toEqual({ command: "add /w/a.txt\n+hello\nupdate /w/b.txt -> /elsewhere/b.txt\n-x\n+y", description: "outside the workspace", dialog: "edit" });
     expect(codexCard("item/permissions/requestApproval", { reason: "needs the net", permissions: { network: { enabled: true }, fileSystem: { read: null, write: ["/srv"] } } }))
       .toEqual({ command: "network: on\nwrite: /srv", description: "needs the net", dialog: "grant" });
     expect(codexCard("item/permissions/requestApproval", { reason: "nothing", permissions: { network: null, fileSystem: null } })).toBeNull();
-    expect(codexCard("mcpServer/elicitation/request", { mode: "form", serverName: "deploy", message: "Ship it?", requestedSchema: { type: "object", properties: {} } }))
-      .toEqual({ command: "Ship it?", description: "deploy" });
-    expect(codexCard("mcpServer/elicitation/request", { mode: "form", serverName: "deploy", message: "Name?", requestedSchema: { type: "object", properties: { name: { type: "string" } } } })).toBeNull();
-    expect(codexCard("mcpServer/elicitation/request", { mode: "url", serverName: "x", message: "Open", url: "https://x" })).toBeNull();
+    expect(codexCard("mcpServer/elicitation/request", { mode: "form", serverName: "deploy", message: "Ship it?", requestedSchema: { type: "object", properties: {} } })).toBeNull();
   });
 });
 
@@ -144,15 +141,17 @@ describe("a card's answer", () => {
     expect(codexDecision("Yes, proceed (y)")).toBe("allow");
     expect(codexDecision("No, and tell Codex what to do differently (esc)")).toBe("deny");
     expect(codexDecision("Yes, and don't ask again for commands that start with `ls -la` (p)")).toBeNull();
-    // the native answer grants for the turn: a grant for the session goes to the dialog as its keys
+    // the native answer grants for the turn: Codex 0.171.0's other grants go to the dialog as their keys
+    expect(codexDecision("Yes, grant these permissions for this turn (y)")).toBe("allow");
     expect(codexDecision("Yes, grant these permissions for this session (s)")).toBeNull();
+    expect(codexDecision("Yes, grant for this turn with strict auto review (r)")).toBeNull();
+    expect(codexDecision("Yes, provide the requested info")).toBeNull();
     expect(codexAnswer(RECORDED.method, RECORDED.params, "allow")).toEqual({ decision: "accept" });
     expect(codexAnswer(RECORDED.method, RECORDED.params, "deny")).toEqual({ decision: "cancel" });
     expect(codexAnswer(RECORDED.method, { availableDecisions: ["accept", "decline"] }, "deny")).toEqual({ decision: "decline" });
     expect(codexAnswer("item/permissions/requestApproval", { permissions: { network: { enabled: true }, fileSystem: null } }, "allow"))
       .toEqual({ permissions: { network: { enabled: true } }, scope: "turn" });
     expect(codexAnswer("item/permissions/requestApproval", { permissions: { network: { enabled: true }, fileSystem: null } }, "deny")).toEqual({ permissions: {}, scope: "turn" });
-    expect(codexAnswer("mcpServer/elicitation/request", {}, "deny")).toEqual({ action: "decline", content: null, _meta: null });
   });
 });
 
