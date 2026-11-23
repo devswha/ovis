@@ -161,7 +161,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   ].filter(Boolean).join(" · ");
 
   return (
-    <section className={`prompt-card${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-busy={refreshing || undefined} aria-label={t("Agent is asking")} aria-describedby={context ? contextId : undefined}
+    <section className={`prompt-card${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")} aria-describedby={context ? contextId : undefined}
       onKeyDown={(event) => { down.current = null; keyed.current = event.key === "Enter" || event.key === " " ? event.target : null; }}
       onPointerDown={(event) => {
         keyed.current = null;
@@ -290,7 +290,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
       {hasChoices && (
         /* busy on the options alone, never on the card: a live region inside an aria-busy subtree is not
            read (Chromium), and the status line below has to be */
-        <div className={`prompt-card-options${watching ? " is-unavailable" : ""}`} role={prompt.multi_select ? "group" : undefined} aria-label={prompt.multi_select ? words.question : undefined} aria-busy={pending}>
+        <div className={`prompt-card-options${watching ? " is-unavailable" : ""}`} role={prompt.multi_select ? "group" : undefined} aria-label={prompt.multi_select ? words.question : undefined} aria-busy={pending || refreshing}>
           {prompt.options.map((option, index) => {
             if (index === prompt.custom_option_index) return null;
             const { text, recommended } = labelOf(words.label(index));
