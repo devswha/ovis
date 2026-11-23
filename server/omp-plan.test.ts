@@ -1,10 +1,13 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import type { ConversationTurn } from "../shared/protocol.ts";
+import type { ConversationTurn, InteractivePrompt } from "../shared/protocol.ts";
+import * as conversation from "./conversation.ts";
 import { ompLocalDir, ompPlanEvent, ompPlanFile, reduceOmpPlan, type OmpPlanState } from "./omp-plan.ts";
-import { parseInteractivePrompt, withOmpPlanFile } from "./prompt.ts";
+import { handlePromptRequest, parseInteractivePrompt, withOmpPlanFile } from "./prompt.ts";
 import { parsedByPublicPrompt } from "./dialogs/shared.ts";
 import { createOmpTranscriptParser, parseOmpTranscript } from "./transcript-records.ts";
 
@@ -134,9 +137,9 @@ describe("plan mode in the chat", () => {
   });
 
   it("holds the plan whole on the newest edit of it alone", () => {
-    const edit = (id: string, text: string) => [
+    const edit = (id: string, text?: string) => [
       { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "edit", arguments: { input: "[local://omp-proto-readme-plan.md#F920]\nPUT >1:\n+x" } }], stopReason: "toolUse" } },
-      { type: "message", message: { role: "toolResult", toolCallId: id, toolName: "edit", content: [{ type: "text", text: "ok" }], details: { op: "update", path: `${LOCAL}/omp-proto-readme-plan.md`, newText: text } } },
+      { type: "message", message: { role: "toolResult", toolCallId: id, toolName: "edit", content: [{ type: "text", text: "ok" }], details: { op: "update", path: `${LOCAL}/omp-proto-readme-plan.md`, ...(text === undefined ? {} : { newText: text }) } } },
     ];
     const rows = tools(parseOmpTranscript(jsonl(...edit("a", "one"), ...edit("b", "two"), ...edit("c", "three"))));
     expect(rows.map((row) => row.plan_text)).toEqual([undefined, undefined, "three"]);
@@ -148,6 +151,12 @@ describe("plan mode in the chat", () => {
     const long = tools(parseOmpTranscript(jsonl(...edit("a", "x".repeat(200_001)))));
     expect(long[0]).toMatchObject({ plan_file: `${LOCAL}/omp-proto-readme-plan.md` });
     expect(long[0]?.plan_text).toBeUndefined();
+    // an edit that leaves the plan too long for a row, or carries no text (omp prunes it from a large file's result), is the newest
+    // all the same: no older row keeps the plan as it was before it, and a shorter edit after it takes the text again
+    const grown = tools(parseOmpTranscript(jsonl(...edit("a", "one"), ...edit("b", "x".repeat(200_001)), ...edit("c", "three"))));
+    expect(grown.map((row) => row.plan_text)).toEqual([undefined, undefined, "three"]);
+    expect(tools(parseOmpTranscript(jsonl(...edit("a", "one"), ...edit("b", "x".repeat(200_001))))).map((row) => row.plan_text)).toEqual([undefined, undefined]);
+    expect(tools(parseOmpTranscript(jsonl(...edit("a", "one"), ...edit("b")))).map((row) => row.plan_text)).toEqual([undefined, undefined]);
   });
 
   it("marks no call whose own words and result disagree about the file, or that is not a plan's", () => {
@@ -222,7 +231,7 @@ describe("the plan behind the review", () => {
 
   it("reads the plan in review whole, from the file the last proposal named", async () => {
     const transcript = session("review", inReview);
-    expect(await ompPlanFile(transcript)).toEqual({ path: join(ompLocalDir(transcript)!, "omp-proto-readme-plan.md"), text: PLAN });
+    expect(await ompPlanFile(transcript)).toEqual({ path: join(ompLocalDir(transcript)!, "omp-proto-readme-plan.md"), text: PLAN, revision: createHash("sha256").update(PLAN).digest("hex") });
   });
 
   it("finds the plan in the transcript's last megabyte, and none that a megabyte of later records buries", async () => {
@@ -260,10 +269,12 @@ describe("the plan behind the review", () => {
     }
   });
 
-  it("holds the plan to what a card carries: a megabyte of plan is cut where the read stops", async () => {
-    const long = await ompPlanFile(session("long", inReview, { "omp-proto-readme-plan.md": `# Long\n${"line\n".repeat(400_000)}` }));
+  it("holds the plan to what a card carries: a megabyte of plan is cut where the read stops, its revision is of the file whole", async () => {
+    const content = `# Long\n${"line\n".repeat(400_000)}`;
+    const long = await ompPlanFile(session("long", inReview, { "omp-proto-readme-plan.md": content }));
     expect(long?.text.length).toBe(256 * 1024);
     expect(long?.text.startsWith("# Long\nline\n")).toBe(true);
+    expect(long?.revision).toBe(createHash("sha256").update(content).digest("hex"));
   });
 });
 
@@ -320,6 +331,92 @@ describe("the review's card with the plan", () => {
     expect(card.body).toBe(big.slice(0, 12_000));
     const later = (await withOmpPlanFile(review(), found(transcript("f", `${big}tail`))))!;
     expect(later.id).not.toBe(card.id);
+  });
+
+  it("takes the id from the file whole: a plan edited past the bytes the read keeps is another card", async () => {
+    const big = `# Big\n${"line\n".repeat(70_000)}`;
+    expect(big.length).toBeGreaterThan(256 * 1024);
+    const card = (await withOmpPlanFile(review(), found(transcript("g", big))))!;
+    expect(card.body).toBe(big.slice(0, 12_000));
+    // text added at the end, and a word changed in place with the length kept
+    expect((await withOmpPlanFile(review(), found(transcript("h", `${big}tail`))))!.id).not.toBe(card.id);
+    expect((await withOmpPlanFile(review(), found(transcript("i", big.replace(/line\n$/, "lone\n")))))!.id).not.toBe(card.id);
+    expect((await withOmpPlanFile(review(), found(transcript("j", big))))!.id).toBe(card.id);
+  });
+
+  /** an omp pane that shows the review, its session's plan on disk: `run` is given the plan file and the keys herdr was sent */
+  async function reviewPane(name: string, run: (planFile: string, sent: string[]) => Promise<void>): Promise<void> {
+    const path = transcript(name, PLAN);
+    const sent: string[] = [];
+    let shown = screen;
+    const sockets = new Set<Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.on("error", () => undefined);
+      let input = "";
+      socket.on("data", (chunk) => {
+        input += chunk.toString();
+        if (!input.includes("\n")) return;
+        const request: { id: string; method: string; params?: { keys?: string[] } } = JSON.parse(input.split("\n")[0]!);
+        const reply = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+        switch (request.method) {
+          case "session.snapshot": return reply({ snapshot: { panes: [{ pane_id: "p_1", agent: "omp", agent_status: "blocked", cwd: "/w" }], layouts: [] } });
+          case "pane.read": return reply({ read: { text: shown } });
+          case "pane.get": return reply({ pane: { pane_id: "p_1", scroll: { offset_from_bottom: 0 } } });
+          case "pane.process_info": return reply({ process_info: { foreground_processes: [{ pid: 2147483647, argv: ["/usr/bin/omp"] }] } });
+          case "agent.get": return reply({ agent: {} });
+          case "pane.send_keys":
+            sent.push(...(request.params?.keys ?? []));
+            // omp closes the review once it has the key
+            shown = "Applying your selection…\n";
+            return reply({});
+          default: throw new Error(`unexpected fixture RPC: ${request.method}`);
+        }
+      });
+    });
+    const address = join(root, `${name}.sock`);
+    const listening = Promise.withResolvers<void>();
+    server.once("error", listening.reject);
+    server.listen(address, listening.resolve);
+    await listening.promise;
+    const previous = process.env["HERDR_SOCKET"];
+    process.env["HERDR_SOCKET"] = address;
+    const lookup = spyOn(conversation, "ompTranscriptPath").mockResolvedValue({ path, blobs: null });
+    try {
+      await run(join(ompLocalDir(path)!, "omp-proto-readme-plan.md"), sent);
+    } finally {
+      lookup.mockRestore();
+      if (previous === undefined) delete process.env["HERDR_SOCKET"];
+      else process.env["HERDR_SOCKET"] = previous;
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    }
+  }
+
+  it("sends the key that answers the review only for the plan the card was read with: one rewritten since the id was checked is refused", async () => {
+    const read = async (): Promise<InteractivePrompt> => {
+      const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
+      const body: { prompt: InteractivePrompt } = await (await handlePromptRequest(new Request(url), url, {}))!.json();
+      return body.prompt;
+    };
+    const answer = async (card: InteractivePrompt, beforeKey: () => Promise<void>) => {
+      const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
+      const response = (await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify({ pane_id: "p_1", prompt_id: card.id, option_index: 0 }) }), url, { beforeKey }))!;
+      const body: { error?: { code: string } } = await response.json();
+      return [response.status, body.error?.code] as const;
+    };
+    await reviewPane("refused", async (planFile, sent) => {
+      const card = await read();
+      expect(card.plan_file).toBe(planFile);
+      // a step added after the card's id was checked, while the key is being made ready: no plan the card shows is approved
+      expect(await answer(card, async () => writeFileSync(planFile, `${PLAN}\n- a step the card never showed\n`))).toEqual([409, "prompt_changed"]);
+      expect(sent).toEqual([]);
+    });
+    await reviewPane("sent", async (_planFile, sent) => {
+      expect(await answer(await read(), async () => undefined)).toEqual([200, undefined]);
+      expect(sent).toEqual(["enter"]);
+    });
   });
 });
 

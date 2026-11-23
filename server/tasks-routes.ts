@@ -26,9 +26,10 @@ export async function handleTasksRequest(request: Request, url: URL, pathname: s
     const paneId = url.searchParams.get("pane_id");
     if (!paneId) return badRequest("missing_pane_id", "pane_id query parameter is required");
     const server_time = new Date().toISOString();
-    // Its transcript is found here if the background lookup has not got to it yet
+    // Its transcript is found here if the background lookup has not got to it yet, and no tracker holds the pane as it runs now:
+    // a session kept of what the pane ran before (not live) says nothing of what it runs now
     // (for a second at most: a slow herdr answers with what is known, and the next ask has the rest)
-    if (omo.sessionOf(paneId) === null && claudeAgents.sessionOf(paneId) === null && opencodeAgents.sessionOf(paneId) === null && (ompAgents?.sessionOf(paneId) ?? null) === null) {
+    if (omo.sessionOf(paneId) === null && claudeAgents.sessionOf(paneId)?.live !== true && opencodeAgents.sessionOf(paneId)?.live !== true && (ompAgents?.sessionOf(paneId) ?? null) === null) {
       await within(1000, (async () => {
         const begun = opencodeAgents.beginRead();
         const pane = await paneGet(paneId);
@@ -56,7 +57,7 @@ export async function handleTasksRequest(request: Request, url: URL, pathname: s
         const codeNow = opencodeAgents.sessionOf(paneId);
         const same = current !== null && current.path === claude.path && current.live === claude.live
           && current.startedAt === claude.startedAt && current.read === claude.read;
-        if (same && omo.sessionOf(paneId) === null && (codeNow === null || (!codeNow.live && current.live))) {
+        if (same && omo.sessionOf(paneId) === null && (ompAgents?.sessionOf(paneId) ?? null) === null && (codeNow === null || (!codeNow.live && current.live))) {
           return jsonResponse({ tasks, runs: [], server_time });
         }
         continue;
@@ -65,7 +66,7 @@ export async function handleTasksRequest(request: Request, url: URL, pathname: s
       const bound = read?.read ?? opencode;
       const current = opencodeAgents.sessionOf(paneId);
       const same = current !== null && current.path === bound.path && current.session === bound.session && current.live === bound.live;
-      if (same && omo.sessionOf(paneId) === null && (current.live || claudeAgents.sessionOf(paneId)?.live !== true)) {
+      if (same && omo.sessionOf(paneId) === null && (ompAgents?.sessionOf(paneId) ?? null) === null && (current.live || claudeAgents.sessionOf(paneId)?.live !== true)) {
         return jsonResponse({ tasks: read?.tasks ?? [], runs: [], server_time, ...(read !== null && read.unlisted > 0 ? { more_running: read.unlisted } : {}) });
       }
     }

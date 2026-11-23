@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { ConversationPart } from "../shared/protocol.ts";
@@ -111,7 +112,8 @@ const onDisk = (path: string | undefined, file: string): path is string =>
  * A `write` or `edit` of a plan file, finished: the call carries where the file lies (omp's own `details`), which
  * also tells the session's folder for the notices that only know `local://`. An edit of a plan also carries the plan
  * whole as the edit left it (`details.newText`), on the file's newest edit alone: the older rows go back to their
- * scripts, so a plan refined many times is held once.
+ * scripts, so a plan refined many times is held once. The newest edit owns it also where it has none to carry (a plan
+ * too long for a row, a result that leaves its text out): no older row keeps the plan as it was before that edit.
  */
 export function notePlanTool(files: OmpPlanFiles, tool: Tool, details: unknown): void {
   if (tool.name !== "write" && tool.name !== "edit") return;
@@ -133,9 +135,12 @@ export function notePlanTool(files: OmpPlanFiles, tool: Tool, details: unknown):
   files.dir = dirname(path);
   tool.plan_file = path;
   const whole = text(result.newText);
-  if (whole === undefined || whole.length > PLAN_TEXT_MAX) return;
   const older = files.edits.get(path);
-  if (older !== undefined) delete older.plan_text;
+  if (older !== undefined) {
+    delete older.plan_text;
+    files.edits.delete(path);
+  }
+  if (whole === undefined || whole.length > PLAN_TEXT_MAX) return;
   tool.plan_text = whole;
   files.edits.set(path, tool);
 }
@@ -171,24 +176,41 @@ async function planModeNow(transcript: string): Promise<OmpPlanState> {
 
 const PLAN_READ_BYTES = 256 * 1024;
 
-async function readPlan(path: string): Promise<string | null> {
+/**
+ * The first PLAN_READ_BYTES of a plan file as text, which is all a card holds of it, and the file's revision: the SHA-256
+ * of every byte, read through in chunks of that size, so a change anywhere in the file is another revision, past the
+ * part kept too (the file editor's revision, file-edit.ts, is the file's hash as well). Only a regular file, and only as
+ * long as it was when opened: a device or a file still growing is read no further than that.
+ */
+async function readPlan(path: string): Promise<{ text: string; revision: string } | null> {
   const file = await open(path, "r");
   try {
+    const stat = await file.stat();
+    if (!stat.isFile()) return null;
+    const { size } = stat;
+    const hash = createHash("sha256");
     const buffer = Buffer.alloc(PLAN_READ_BYTES);
-    const { bytesRead } = await file.read(buffer, 0, PLAN_READ_BYTES, 0);
-    const plan = buffer.toString("utf8", 0, bytesRead);
-    return plan.trim() === "" ? null : plan;
+    let head = "";
+    for (let at = 0; at < size; ) {
+      const { bytesRead } = await file.read(buffer, 0, Math.min(PLAN_READ_BYTES, size - at), at);
+      if (bytesRead === 0) break;
+      if (at === 0) head = buffer.toString("utf8", 0, bytesRead);
+      hash.update(buffer.subarray(0, bytesRead));
+      at += bytesRead;
+    }
+    return head.trim() === "" ? null : { text: head, revision: hash.digest("hex") };
   } finally {
     await file.close();
   }
 }
 
 /**
- * The plan behind omp's Plan Review overlay, whole from the session's own `local/` folder: the overlay shows only
- * the part of it that fits the pane. Only for the pane's own session, only for the file the transcript says is in
- * plan mode, and only a name `ompPlanName` takes: no other `local://` file is read.
+ * The plan behind omp's Plan Review overlay, from the session's own `local/` folder: the overlay shows only the part of
+ * it that fits the pane, and `text` is the part of the file a card holds, `revision` the file whole. Only for the
+ * pane's own session, only for the file the transcript says is in plan mode, and only a name `ompPlanName` takes: no
+ * other `local://` file is read.
  */
-export async function ompPlanFile(transcript: string): Promise<{ path: string; text: string } | null> {
+export async function ompPlanFile(transcript: string): Promise<{ path: string; text: string; revision: string } | null> {
   try {
     const state = await planModeNow(transcript);
     const named = state.mode === "plan" ? ompPlanName(state.file) : null;
@@ -196,7 +218,7 @@ export async function ompPlanFile(transcript: string): Promise<{ path: string; t
     if (named === null || dir === null) return null;
     const path = join(dir, named.file);
     const plan = await readPlan(path);
-    return plan === null ? null : { path, text: plan };
+    return plan === null ? null : { path, ...plan };
   } catch {
     return null;
   }

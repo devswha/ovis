@@ -3300,7 +3300,7 @@ Claude has written up a plan and is ready to execute. Would you like to proceed?
      shift+tab to approve with this feedback
 `;
 
-  async function planHerdr(run: (transcript: string, planFile: string) => Promise<void>): Promise<void> {
+  async function planHerdr(run: (transcript: string, planFile: string, sent: string[]) => Promise<void>): Promise<void> {
     const root = mkdtempSync(join(tmpdir(), "herdr-prompt-plan-"));
     const path = join(root, "herdr.sock");
     mkdirSync(join(root, "claude", "projects", "-work"), { recursive: true });
@@ -3309,6 +3309,9 @@ Claude has written up a plan and is ready to execute. Would you like to proceed?
     const planFile = join(root, "claude", "plans", "mellow-purring-pike.md");
     writeFileSync(transcript, `${JSON.stringify({ type: "user", slug: "mellow-purring-pike" })}\n`);
     writeFileSync(planFile, "# Plan\n\n1. The first step, gone from the pane.\n4. The last step that fits the pane.\n");
+    // the keys herdr was sent: once Claude has them its dialog is gone
+    const sent: string[] = [];
+    let shown = SCREEN;
     const sockets = new Set<Socket>();
     const server = createServer((socket) => {
       sockets.add(socket);
@@ -3318,19 +3321,24 @@ Claude has written up a plan and is ready to execute. Would you like to proceed?
       socket.on("data", (chunk) => {
         input += chunk.toString();
         if (!input.includes("\n")) return;
-        const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string };
+        const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params?: { keys?: string[] } };
         const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
         if (request.method === "session.snapshot") {
           return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: "claude", agent_status: "blocked" }], layouts: [] } });
         }
+        if (request.method === "pane.send_keys") {
+          sent.push(...(request.params?.keys ?? []));
+          shown = "\n";
+          return answer({});
+        }
         if (request.method !== "pane.read") throw new Error(`unexpected fixture RPC: ${request.method}`);
-        answer({ read: { text: SCREEN } });
+        answer({ read: { text: shown } });
       });
     });
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(path, resolve); });
     const previous = process.env["HERDR_SOCKET"];
     process.env["HERDR_SOCKET"] = path;
-    try { await run(transcript, planFile); } finally {
+    try { await run(transcript, planFile, sent); } finally {
       if (previous === undefined) delete process.env["HERDR_SOCKET"];
       else process.env["HERDR_SOCKET"] = previous;
       for (const socket of sockets) socket.destroy();
@@ -3398,6 +3406,29 @@ Claude has written up a plan and is ready to execute. Would you like to proceed?
       expect(((await response!.json()) as { error: { code: string } }).error.code).toBe("prompt_changed");
     });
   }, 4_000);
+
+  test("an answer's key is refused when the plan file changed after the card was checked, and goes out when it did not", async () => {
+    const answer = async (card: InteractivePrompt, transcript: string, beforeKey: () => Promise<void>) => {
+      const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
+      const response = await handlePromptRequest(new Request(url, {
+        method: "POST",
+        body: JSON.stringify({ pane_id: "p_1", prompt_id: card.id, option_index: 0 }),
+      }), url, { claudeTranscript: () => transcript, beforeKey });
+      const body: { error?: { code: string } } = await response!.json();
+      return [response!.status, body.error?.code] as const;
+    };
+    await planHerdr(async (transcript, planFile, sent) => {
+      const card = (await poll(() => transcript))!;
+      // rewritten after the card's id was checked, while the key is being made ready: no plan the card shows is approved
+      expect(await answer(card, transcript, async () => { writeFileSync(planFile, "# Plan\n\n1. A step the card never showed.\n"); })).toEqual([409, "prompt_changed"]);
+      expect(sent).toEqual([]);
+    });
+    await planHerdr(async (transcript, _planFile, sent) => {
+      const card = (await poll(() => transcript))!;
+      expect(await answer(card, transcript, async () => undefined)).toEqual([200, undefined]);
+      expect(sent).toEqual(["enter"]);
+    });
+  }, 8_000);
 
   test("keeps the screen's text when the session has no plan file", async () => {
     await planHerdr(async (transcript, planFile) => {

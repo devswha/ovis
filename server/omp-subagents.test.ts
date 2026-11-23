@@ -286,6 +286,49 @@ describe("OmpSubagentStatus", () => {
     expect(status.sessionOf("p1")).toBeNull();
   });
 
+  it("asks again for a pane's new session at once, shares a lookup under way between asks for one session, and keeps what the old one finds for nothing", async () => {
+    const asks: { session: string; answer: (found: OmpSession | null) => void }[] = [];
+    const status = new OmpSubagentStatus({
+      resolve: (found) => {
+        const { promise, resolve } = Promise.withResolvers<OmpSession | null>();
+        asks.push({ session: String(found.agent_session?.value), answer: resolve });
+        return promise;
+      },
+      onChange: () => {},
+    });
+    const first = status.refresh([pane("p1", "omp", "a")]);
+    const again = status.ensure(pane("p1", "omp", "a"));
+    expect(asks.map((ask) => ask.session)).toEqual(["a"]);
+    // the pane runs another session while the lookup is under way: not given its answer, but asked for
+    const second = status.refresh([pane("p1", "omp", "b")]);
+    expect(asks.map((ask) => ask.session)).toEqual(["a", "b"]);
+    asks[1]!.answer({ path: "/b.jsonl", startedAt: null });
+    await second;
+    asks[0]!.answer({ path: "/a.jsonl", startedAt: null });
+    await Promise.all([first, again]);
+    expect(status.sessionOf("p1")).toEqual({ path: "/b.jsonl", startedAt: null });
+  });
+
+  it("drops a lookup a request asked for that ends after its pane was forgotten, and keeps one for a pane the snapshot has not seen yet", async () => {
+    const s = ompSession();
+    const begun = Date.now() - MIN;
+    s.agent("A", begun, [r.prompt(begun)]);
+    const told: [string, number][] = [];
+    const { promise, resolve } = Promise.withResolvers<OmpSession | null>();
+    const status = new OmpSubagentStatus({ resolve: () => promise, onChange: (id, running) => told.push([id, running]) });
+    await status.refresh([]);
+    const asking = status.ensure(pane("p1"), true);
+    status.forget("p1");
+    resolve({ path: s.path, startedAt: null });
+    await asking;
+    status.poll();
+    expect(status.sessionOf("p1")).toBeNull();
+    expect(status.countOf("p1")).toBe(0);
+    expect(told).toEqual([]);
+    await status.ensure(pane("p2"), true);
+    expect(status.sessionOf("p2")).toEqual({ path: s.path, startedAt: null });
+  });
+
   it("asks nothing for a pane that is not omp, and lists none for one whose session it cannot find", async () => {
     let asked = 0;
     const status = new OmpSubagentStatus({ resolve: async () => { asked++; throw new Error("herdr is busy"); }, onChange: () => {} });

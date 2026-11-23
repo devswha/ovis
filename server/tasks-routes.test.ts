@@ -8,6 +8,7 @@ import * as herdr from "./herdr/client.ts";
 import { HerdrError } from "./herdr/client.ts";
 import { createServer } from "./index.ts";
 import { OmpSubagentStatus } from "./omp-subagents.ts";
+import * as scanner from "./claude-task-scan.ts";
 import { MIN, ompSession, records as r } from "./omp-subagents.fixture.ts";
 import { handleTasksRequest, type TaskTrackers } from "./tasks-routes.ts";
 
@@ -122,6 +123,50 @@ describe("handleTasksRequest with an omp pane", () => {
     const earlier: TaskTrackers["claudeAgents"] = { sessionOf: () => ({ path: "/earlier.jsonl", live: false, startedAt: null }), ensure: async () => undefined };
     const answer = await body(await ask({ omo: { sessionOf: () => null }, claudeAgents: earlier, opencodeAgents, ompAgents }));
     expect(answer.tasks.map((task) => [task.id, task.status])).toEqual([["Busy", "running"]]);
+  });
+
+  it("looks an omp pane up for the request when the trackers keep only a session the pane ran before, and answers its subagents ahead of that one", async () => {
+    const now = Date.now();
+    const earlierClaude: TaskTrackers["claudeAgents"] = { sessionOf: () => ({ path: "/earlier.jsonl", live: false, startedAt: null }), ensure: async () => undefined };
+    const earlierCode: TaskTrackers["opencodeAgents"] = { ...opencodeAgents, sessionOf: () => ({ path: "/earlier.db", session: "ses_1", live: false }) };
+    const get = spyOn(herdr, "paneGet").mockResolvedValue(omp as never);
+    try {
+      for (const kept of [{ claudeAgents: earlierClaude, opencodeAgents }, { claudeAgents, opencodeAgents: earlierCode }]) {
+        const s = ompSession();
+        s.agent("Busy", now - 10 * MIN, [r.prompt(now - 10 * MIN)]);
+        // the omp tracker is not asked beforehand: the request's own look finds the session
+        const ompAgents = new OmpSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: () => {} });
+        const answer = await body(await ask({ omo: { sessionOf: () => null }, ...kept, ompAgents }));
+        expect(answer.tasks.map((task) => [task.id, task.status])).toEqual([["Busy", "running"]]);
+      }
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it("answers an omp pane's subagents when the omp tracker holds the pane only after the Claude Code or OpenCode tasks were read", async () => {
+    const now = Date.now();
+    const s = ompSession();
+    s.agent("Busy", now - 10 * MIN, [r.prompt(now - 10 * MIN)]);
+    const tracker = () => new OmpSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: () => {} });
+    // herdr does not answer the request's own look: the tracker finds the pane in the background, while the tasks are read
+    const get = spyOn(herdr, "paneGet").mockRejectedValue(new HerdrError("timeout", "herdr did not answer"));
+    const scan = spyOn(scanner, "scanClaudeTasks");
+    try {
+      const afterClaude = tracker();
+      scan.mockImplementation(async () => { await afterClaude.ensure(omp as unknown as HerdrPane, true); return []; });
+      const earlier: TaskTrackers["claudeAgents"] = { sessionOf: () => ({ path: "/earlier.jsonl", live: false, startedAt: null }), ensure: async () => undefined };
+      const fromClaude = await body(await ask({ omo: { sessionOf: () => null }, claudeAgents: earlier, opencodeAgents, ompAgents: afterClaude }));
+      expect(fromClaude.tasks.map((task) => [task.id, task.status])).toEqual([["Busy", "running"]]);
+      const afterCode = tracker();
+      const bound = { path: "/live.db", session: "ses_1", live: true };
+      const live: TaskTrackers["opencodeAgents"] = { ...opencodeAgents, sessionOf: () => bound, tasksOf: async () => { await afterCode.ensure(omp as unknown as HerdrPane, true); return { tasks: [], unlisted: 0, read: bound }; } };
+      const fromCode = await body(await ask({ omo: { sessionOf: () => null }, claudeAgents, opencodeAgents: live, ompAgents: afterCode }));
+      expect(fromCode.tasks.map((task) => [task.id, task.status])).toEqual([["Busy", "running"]]);
+    } finally {
+      scan.mockRestore();
+      get.mockRestore();
+    }
   });
 
   it("leaves a pane the omp tracker does not hold to the other trackers, and only asks it to look the pane up", async () => {

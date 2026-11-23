@@ -873,6 +873,7 @@ class OmpCallChanged extends KeyRefused {}
 
 /** The request a card read from its agent's record is no longer the one the record holds open (record-cards.ts). */
 class RecordChanged extends KeyRefused {}
+class PlanChanged extends KeyRefused {}
 
 async function ompCallStillOpen(paneId: string, cwd: string, call: string, deadline: AbortSignal): Promise<boolean> {
   if (!cwd) return false;
@@ -1421,9 +1422,12 @@ function heldRequestOf(prompt: InteractivePrompt, promptId: string, approvals: A
     ? promptId.slice(prompt.id.length + 1) : null;
 }
 
-/** A plan card with the whole plan, its revision part of the id: an answer to a card read before the plan changed is refused. */
-function planCard(prompt: InteractivePrompt, plan: { path: string; text: string }): InteractivePrompt {
-  const revision = createHash("sha256").update(plan.text).digest("hex").slice(0, 8);
+/**
+ * A plan card with the plan, its revision part of the id: an answer to a card read before the plan changed is refused. The
+ * revision is the hash of the plan's text unless the file brings its own, as omp's does for a plan it reads in part.
+ */
+function planCard(prompt: InteractivePrompt, plan: { path: string; text: string; revision?: string }): InteractivePrompt {
+  const revision = (plan.revision ?? createHash("sha256").update(plan.text).digest("hex")).slice(0, 8);
   return { ...prompt, id: `${prompt.id}.${revision}`, body: plan.text.slice(0, 12_000), plan_file: plan.path };
 }
 
@@ -1635,12 +1639,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (!firstRead || Date.now() > deadlineAt) return promptChanged();
       const { prompt, agent, pane, panes, inputUnverified } = firstRead;
       if (inputUnverified || !prompt) return promptChanged();
-      // a plan card's id carries its plan file's revision: the file as it is now must match too. A command approval's
-      // can carry the held hook request it showed: that request must still be held, and still the one on the screen
+      // a plan card's id carries its plan file's revision: the file as it is now must match too, and once more before each
+      // key (guardKey). A command approval's can carry the held hook request it showed: that request must still be held,
+      // and still the one on the screen
       const heldId = heldRequestOf(prompt, body.prompt_id, options.approvals);
       if (heldId === null && heldOnly(prompt)) return promptChanged();
+      const withPlan = async (): Promise<InteractivePrompt> =>
+        (await withOmpPlanFile(await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)), ompPlanSession(body.pane_id, pane.cwd)))!;
       if (heldId !== null ? !options.approvals!.holds(body.pane_id, approvalDialog(prompt)!, heldId)
-        : (await withOmpPlanFile(await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)), ompPlanSession(body.pane_id, pane.cwd)))!.id !== body.prompt_id) return promptChanged();
+        : (await withPlan()).id !== body.prompt_id) return promptChanged();
       log.matched = true;
       waitedOn = waitingKindOf(prompt) !== undefined;
 
@@ -1657,6 +1664,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // keeps main's keys)
         if (parsedPrompt?.responder === "dsh-question" && !(await dshAsks(paneId, signal))) throw new DshNotAsking();
         if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
+        // a plan card's plan is read once more: the revision its id holds must be the file's now, as it may have changed since the
+        // check above. A change between this look and herdr writing the key is not seen: send_keys takes no condition on the plan
+        if ((parsedPrompt?.responder === "claude-plan" || parsedPrompt?.responder === "omp-plan") && (await untilAborted(withPlan(), signal))?.id !== body.prompt_id) throw new PlanChanged();
       };
       const verifyThenSend = async <T>(look: AbortSignal, guardUntil: number | null, readUntil: number,
         same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T, screenOnly: boolean | "editor" = false): Promise<T> => {

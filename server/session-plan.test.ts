@@ -413,6 +413,38 @@ describe("SessionPlans", () => {
     expect(plans.known(pane("p3", "codex"))).toBe(true);
   });
 
+  it("keeps what a lookup finds only for the session the pane runs when it ends, a request's lookup too, and shares a lookup under way between asks for one session", async () => {
+    const first = omp();
+    first.todo(OMP_FIRST, 1);
+    const second = omp();
+    second.todo(OMP_SECOND, 2);
+    const asks: { session: string; answer: (path: string | null) => void }[] = [];
+    const plans = new SessionPlans({
+      claudePath: () => null,
+      codexPath: async () => null,
+      ompPath: (found) => {
+        const { promise, resolve } = Promise.withResolvers<string | null>();
+        asks.push({ session: String(found.agent_session?.value), answer: resolve });
+        return promise;
+      },
+      onChange: () => {},
+    });
+    await plans.refresh([]);
+    const asking = plans.ensure(pane("p1", "omp", "t1"), true);
+    await plans.ensure(pane("p1", "omp", "t1"));
+    expect(asks.map((ask) => ask.session)).toEqual(["t1"]);
+    // the snapshot has the pane in another session while the request's lookup is under way: that one is asked for at once
+    const refreshing = plans.refresh([pane("p1", "omp", "t2")]);
+    expect(asks.map((ask) => ask.session)).toEqual(["t1", "t2"]);
+    asks[1]!.answer(second.path);
+    await refreshing;
+    asks[0]!.answer(first.path);
+    await asking;
+    plans.poll();
+    expect(plans.known(pane("p1", "omp", "t2"))).toBe(true);
+    expect(plans.summaryOf("p1")).toEqual({ done: 1, total: 2, current: "Fix" });
+  });
+
   it("tells a request the plan as the poll last read it, and reads nothing for it", async () => {
     const s = claude();
     s.create("One");

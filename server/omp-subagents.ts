@@ -268,6 +268,9 @@ export interface OmpSubagentDeps {
 
 interface Tracked { key: string; at: number; session: OmpSession | null; running: number }
 
+/** a pane's lookup under way, and the session it is made for (`key`) */
+interface Lookup { key: string; done: Promise<void> }
+
 /**
  * The running subagents of each omp pane, counted for the pane's sidebar row and chip. The session's transcript is looked up as the
  * plan's is (session-plan.ts): at once for a pane or session not seen before, and again each RETRY_MS while none is known, each
@@ -277,7 +280,8 @@ interface Tracked { key: string; at: number; session: OmpSession | null; running
 export class OmpSubagentStatus {
   private readonly panes = new Map<string, Tracked>();
   private readonly wanted = new Set<string>();
-  private readonly looking = new Map<string, Promise<void>>();
+  /** the pane's latest lookup: its answer is kept only while it is still the one the pane has under way */
+  private readonly looking = new Map<string, Lookup>();
   private refreshed = false;
   /** the lookups whose answer was kept: a refresh counts the subagents of its panes at once only when one was */
   private looked = 0;
@@ -313,10 +317,11 @@ export class OmpSubagentStatus {
     return session === null ? [] : ompSubagents(session.path, this.now(), session.startedAt).tasks;
   }
 
-  /** a pane that ended: nothing is told of it, whatever it counted */
+  /** a pane that ended: nothing is told of it, whatever it counted, and a lookup under way for it is kept for nothing */
   forget(paneId: string): void {
     this.panes.delete(paneId);
     this.wanted.delete(paneId);
+    this.looking.delete(paneId);
   }
 
   async refresh(panes: readonly HerdrPane[]): Promise<void> {
@@ -333,26 +338,37 @@ export class OmpSubagentStatus {
     if (this.looked !== before) this.poll();
   }
 
-  /** `asked`: a request wants the lookup, whether or not the last snapshot has seen the pane */
+  /**
+   * `asked`: a request wants the lookup, whether or not the last snapshot has seen the pane. A lookup under way is shared by the
+   * asks for the session it is made for; the ask for another session starts its own, and the lookup before it is kept for nothing.
+   */
   ensure(pane: HerdrPane, asked = false): Promise<void> {
     if (pane.agent !== "omp") return Promise.resolve();
-    const looking = this.looking.get(pane.pane_id);
-    if (looking !== undefined) return looking;
     const key = `${pane.agent_session?.value ?? ""}\0${pane.cwd ?? ""}`;
+    const looking = this.looking.get(pane.pane_id);
+    if (looking?.key === key) return looking.done;
+    this.looking.delete(pane.pane_id);
     const tracked = this.panes.get(pane.pane_id);
     if (tracked !== undefined && tracked.key === key && this.now() - tracked.at < (tracked.session === null ? this.deps.retryMs ?? RETRY_MS : this.deps.relocateMs ?? RELOCATE_MS)) return Promise.resolve();
-    const lookup = this.lookUp(pane, key, asked).finally(() => this.looking.delete(pane.pane_id));
+    const lookup: Lookup = { key, done: Promise.resolve() };
     this.looking.set(pane.pane_id, lookup);
-    return lookup;
+    lookup.done = this.lookUp(pane, lookup, asked);
+    return lookup.done;
   }
 
-  private async lookUp(pane: HerdrPane, key: string, asked: boolean): Promise<void> {
-    const found = await this.deps.resolve(pane).catch(() => null);
-    if (!asked && this.refreshed && !this.wanted.has(pane.pane_id)) return;
-    const current = this.panes.get(pane.pane_id);
-    const session = found ?? (current?.key === key ? current.session : null);
-    this.panes.set(pane.pane_id, { key, at: this.now(), session, running: current?.running ?? 0 });
-    this.looked += 1;
+  private async lookUp(pane: HerdrPane, lookup: Lookup, asked: boolean): Promise<void> {
+    try {
+      const found = await this.deps.resolve(pane).catch(() => null);
+      // the pane's session was asked for again since, or the pane forgotten: the answer is for no session it runs, a request's too
+      if (this.looking.get(pane.pane_id) !== lookup) return;
+      if (!asked && this.refreshed && !this.wanted.has(pane.pane_id)) return;
+      const current = this.panes.get(pane.pane_id);
+      const session = found ?? (current?.key === lookup.key ? current.session : null);
+      this.panes.set(pane.pane_id, { key: lookup.key, at: this.now(), session, running: current?.running ?? 0 });
+      this.looked += 1;
+    } finally {
+      if (this.looking.get(pane.pane_id) === lookup) this.looking.delete(pane.pane_id);
+    }
   }
 
   poll(): void {
