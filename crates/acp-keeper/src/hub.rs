@@ -410,7 +410,12 @@ impl Hub {
                 }
                 let can_load = result.pointer("/agentCapabilities/loadSession") == Some(&Value::Bool(true));
                 match self.opts.load.clone() {
-                    Some(id) if can_load || !self.resumed => {
+                    Some(_) if !can_load && !self.resumed => {
+                        let reason = "the agent cannot load a session";
+                        self.back_failed(reason);
+                        self.model.error(format!("세션을 불러오지 못했습니다: {reason}"));
+                    }
+                    Some(id) if can_load => {
                         self.model.session = Some(id.clone());
                         self.request(
                             "session/load",
@@ -429,8 +434,12 @@ impl Hub {
                     self.new_session();
                     return;
                 }
-                self.model.session = None;
-                self.back_failed(&e);
+                // After the real TUI the session id stays: F4 can still reopen that conversation in its TUI.
+                if self.mode == Mode::Switching {
+                    self.back_failed(&e);
+                } else {
+                    self.model.session = None;
+                }
                 let auth = msg.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64) == Some(-32000);
                 self.model.error(if auth {
                     format!("로그인이 필요합니다: {e}. 에이전트의 진짜 TUI나 로그인 명령으로 먼저 로그인하세요")
@@ -484,6 +493,10 @@ impl Hub {
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.answer(&key_of(&id), &line, &by),
+            (Some(_), Some(id)) if self.client_ids.contains(&(conn, key_of(&id))) => {
+                self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "id already in flight"}));
+                self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32600, "message": "id already in flight"}}));
+            }
             (Some(method), Some(id)) if method == "_keeper/open_terminal" => {
                 let answer = match self.open_terminal(&by) {
                     Ok(()) => json!({"jsonrpc": "2.0", "id": id, "result": {"accepted": true, "argv": self.resume_argv()}}),
@@ -503,11 +516,7 @@ impl Hub {
                     self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the agent has exited"}}));
                     return;
                 }
-                if !self.client_ids.insert((conn, key_of(&id))) {
-                    self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "id already in flight"}));
-                    self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32600, "message": "id already in flight"}}));
-                    return;
-                }
+                self.client_ids.insert((conn, key_of(&id)));
                 self.next += 1;
                 let routed = Value::String(format!("{by}-{}", self.next));
                 let key = key_of(&routed);
@@ -616,6 +625,32 @@ mod tests {
             .collect();
         assert_eq!(errors, vec![json!(1), json!(2)]);
         assert!(!hub.model.working);
+    }
+
+    #[test]
+    fn a_reused_id_is_refused_before_a_switch_is_asked_for() {
+        let dir = std::env::temp_dir().join(format!("ak-unit-{}-reuse", std::process::id()));
+        let (mut hub, _sent) = hub(&dir);
+        hub.model.session = Some("s".into());
+        hub.handle(Ev::Client {
+            conn: 1,
+            line: json!({"jsonrpc": "2.0", "id": 7, "method": "session/prompt", "params": {"sessionId": "s", "prompt": []}}).to_string(),
+        });
+        hub.handle(Ev::Client {
+            conn: 1,
+            line: json!({"jsonrpc": "2.0", "id": 7, "method": "_keeper/open_terminal"}).to_string(),
+        });
+        let archive = std::fs::read_to_string(dir.join("archive.jsonl")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let answers: Vec<Value> = archive
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|r| r["dir"] == "to-client")
+            .map(|r| serde_json::from_str::<Value>(r["raw"].as_str().unwrap()).unwrap())
+            .collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0]["error"]["message"], "id already in flight", "the switch was asked for under an id in flight");
+        assert!(!archive.contains("_keeper/switch_refused"));
     }
 
     #[test]

@@ -249,3 +249,41 @@ fn an_approval_from_the_ended_agent_cannot_be_answered() {
     pane.type_keys("\r");
     client.wait("ACP again", |r| mode(r, "acp", "ready"));
 }
+
+#[test]
+fn a_tui_stopped_with_ctrl_z_goes_on() {
+    let root = Root::new("pane-stop");
+    let got = root.0.join("tui-got");
+    let tui = json!([
+        "sh",
+        "-c",
+        "printf 'STOPPING\\n'; kill -STOP $$; printf 'GOING-ON\\n'; IFS= read -r line; printf %s \"$line\" > \"$1\"",
+        "sh",
+        got
+    ]);
+    let mut pane = Pane::start(&root, &tui, &[]);
+    let mut client = Client::connect(&root);
+    client.session();
+    pane.type_keys("\x1bOS");
+    client.wait("the stopped TUI going on", |r| method(r) == Some("_keeper/tui_continued"));
+    pane.shows("GOING-ON", 0);
+    pane.type_keys("after the stop\r");
+    client.wait("ACP again", |r| mode(r, "acp", "ready"));
+    assert_eq!(std::fs::read_to_string(&got).expect("the TUI's input"), "after the stop");
+}
+
+#[test]
+fn an_agent_that_cannot_load_keeps_the_conversation_for_the_tui() {
+    let root = Root::new("pane-noload");
+    let mut pane = Pane::start(&root, &json!(["true"]), &["--no-load"]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    pane.type_keys("\x1bOS");
+    let failed = client.wait("the failed return", |r| mode(r, "acp", "failed") || mode(r, "acp", "ready"));
+    assert!(mode(&failed, "acp", "failed"), "the keeper reported a return it did not make");
+    assert_eq!(failed["msg"]["params"]["reason"], "the agent cannot load a session");
+    client.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "_keeper/open_terminal"}));
+    let again = client.answer(json!(1));
+    assert_eq!(again["msg"]["result"]["argv"][0], "true", "the conversation can no longer be reopened in its TUI: {again}");
+    let _ = session;
+}

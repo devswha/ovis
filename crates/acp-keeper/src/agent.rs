@@ -34,7 +34,7 @@ impl Agent {
         let mut cmd = match &scope {
             Some(unit) => {
                 let mut cmd = Command::new("systemd-run");
-                cmd.args(["--user", "--scope", "--quiet", "--collect", "--property=TimeoutStopSec=2"])
+                cmd.args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "--property=TimeoutStopSec=2"])
                     .arg(format!("--unit={unit}"))
                     .arg("--")
                     .arg(command);
@@ -134,7 +134,7 @@ fn quiet(cmd: &mut Command) -> &mut Command {
 
 #[cfg(target_os = "linux")]
 async fn scope_for(root: &Path) -> Option<String> {
-    let usable = quiet(Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--collect", "true"]))
+    let usable = quiet(Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "true"]))
         .status()
         .await
         .is_ok_and(|s| s.success());
@@ -179,6 +179,30 @@ fn hand_terminal(pgid: libc::pid_t) {
         libc::signal(libc::SIGTTOU, old);
     }
 }
+
+/// Whether `pid` (a child of the keeper) is stopped, as a TUI is after Ctrl+Z; the stop is not consumed.
+#[cfg(target_os = "linux")]
+pub fn stopped(pid: u32) -> bool {
+    unsafe {
+        let mut info = std::mem::zeroed::<libc::siginfo_t>();
+        libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WSTOPPED | libc::WNOHANG | libc::WNOWAIT) == 0 && info.si_pid() != 0
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn stopped(_pid: u32) -> bool {
+    false
+}
+
+/// Lets a stopped TUI go on: the pane has no shell to bring it back with `fg`.
+#[cfg(unix)]
+pub fn continue_job(pid: u32) {
+    hand_terminal(pid as libc::pid_t);
+    unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGCONT) };
+}
+
+#[cfg(windows)]
+pub fn continue_job(_pid: u32) {}
 
 /// Takes the terminal back after the real TUI. `raw` (the status line's raw mode) runs while the
 /// keeper is still in the background, so a Ctrl+C typed as the TUI quits stays a key instead of

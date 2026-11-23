@@ -7,11 +7,12 @@
 //! - `helpers DIR`: starts a `sleep` in the agent's process group and one in a new session (as an
 //!   agent's broker does), writes `group PID` and `session PID` lines to DIR/helpers, ends the turn
 //! - `ask`: a `session/request_permission`; the turn ends with a chunk naming the answer
+//! - `answer-and-quit`: the end of the turn, then the agent exits
 //! - `quit`: one `agent_message_chunk` saying `bye`, then the agent exits without answering
 //! - `big N`: one `agent_message_chunk` line of exactly N bytes, then the end of the turn
 //!
 //! `session/load` adopts the loaded id, and fails while the file named by `--refuse-load FILE`
-//! exists. With `--ask-on-close` it asks for one more approval as its stdin closes, and with
+//! exists; with `--no-load` the agent does not offer `loadSession`. With `--ask-on-close` it asks for one more approval as its stdin closes, and with
 //! `--linger` it stays alive after that, as an agent busy elsewhere would.
 
 use std::io::{BufRead, Write};
@@ -83,7 +84,7 @@ fn main() {
             continue;
         }
         let result = match method {
-            "initialize" => json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true}}),
+            "initialize" => json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !args.iter().any(|a| a == "--no-load")}}),
             "session/new" => json!({
                 "sessionId": session,
                 "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
@@ -124,6 +125,10 @@ fn main() {
                             }}),
                         );
                         continue;
+                    }
+                    "answer-and-quit" => {
+                        send(&mut out, &end_turn(&id));
+                        std::process::exit(0);
                     }
                     "quit" => {
                         send(&mut out, &chunk(&session, "bye"));

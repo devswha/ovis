@@ -46,14 +46,16 @@ struct Gate {
 }
 
 impl Gate {
-    /// Closes the gate and waits (briefly) for the reader to stop at it.
-    fn pause(&self) {
+    /// Closes the gate and waits (briefly) for the reader to stop at it; false when it did not, so
+    /// the caller can keep the pane rather than hand a terminal the keeper may still read.
+    fn pause(&self) -> bool {
         let mut state = self.state.lock().expect("gate");
         state.0 = true;
         let deadline = Instant::now() + Duration::from_millis(300);
         while !state.1 && Instant::now() < deadline {
             state = self.cv.wait_timeout(state, Duration::from_millis(20)).expect("gate").0;
         }
+        state.1
     }
 
     fn resume(&self) {
@@ -342,6 +344,25 @@ async fn start_acp(opts: &Opts, stderr: &File, generation: u64, tx: &UnboundedSe
     Ok((agent, agent_tx, reader))
 }
 
+/// SIGCHLD, listened to from the start so a TUI that stops right away is not missed.
+struct ChildSignal(#[cfg(unix)] tokio::signal::unix::Signal);
+
+impl ChildSignal {
+    fn new() -> ChildSignal {
+        ChildSignal(
+            #[cfg(unix)]
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child()).expect("SIGCHLD handler"),
+        )
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        self.0.recv().await;
+        #[cfg(windows)]
+        std::future::pending::<()>().await;
+    }
+}
+
 async fn wait_for(agent: &mut Option<Agent>) -> std::io::Result<std::process::ExitStatus> {
     match agent {
         Some(agent) => agent.child.wait().await,
@@ -523,6 +544,7 @@ async fn run(mut opts: Opts) -> i32 {
 
     let signal = shutdown_signal();
     tokio::pin!(signal);
+    let mut children = ChildSignal::new();
     let mut exited: Option<std::io::Result<std::process::ExitStatus>> = None;
     let mut by_signal = false;
     let mut tui_started = Instant::now();
@@ -545,6 +567,13 @@ async fn run(mut opts: Opts) -> i32 {
                 }
             }
             result = wait_for(&mut acp) => {
+                // What the agent wrote before it exited (a last answer, a last request) is handled first.
+                if let Some(task) = reader.take() {
+                    let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
+                }
+                while let Ok(ev) = rx.try_recv() {
+                    hub.handle(ev);
+                }
                 let text = match &result {
                     Ok(s) => format!("에이전트 끝남 ({s})"),
                     Err(e) => format!("에이전트 끝남 ({e})"),
@@ -579,12 +608,25 @@ async fn run(mut opts: Opts) -> i32 {
                     exited = None;
                 }
             }
+            _ = children.recv(), if tui.is_some() => {
+                if let Some(agent) = tui.as_ref().filter(|a| agent::stopped(a.pid)) {
+                    agent::continue_job(agent.pid);
+                    hub.note_row("_keeper/tui_continued", json!({"tuiPid": agent.pid}));
+                }
+            }
             _ = &mut signal => {
                 by_signal = true;
                 break;
             }
         }
         if let Some(pressed) = hub.want_terminal.take() {
+            if !gate.pause() {
+                gate.resume();
+                hub.mode = Mode::Acp;
+                hub.note_row("_keeper/switch_refused", json!({"by": "keeper", "reason": "the pane's key reader did not stop"}));
+                hub.model.error("진짜 TUI로 열지 않았습니다: the pane's key reader did not stop");
+                continue;
+            }
             let argv = hub.resume_argv().expect("checked before the switch was accepted");
             hub.mode = Mode::Switching;
             if let Some(status) = status.as_mut() {
@@ -605,7 +647,6 @@ async fn run(mut opts: Opts) -> i32 {
             hub.expire_pending("the agent that asked it was ended for the real TUI");
             hub.generation += 1;
             let agent_ended = ms(pressed);
-            gate.pause();
             if let Some(status) = status.as_mut() {
                 status.suspend();
             }

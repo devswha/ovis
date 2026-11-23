@@ -283,3 +283,15 @@ fn an_answer_that_is_no_permission_outcome_leaves_the_approval_pending() {
     client.send(&json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}}));
     client.wait("the agent's word on the approval", |r| chunk_text(r) == Some("answered allow"));
 }
+
+#[test]
+fn an_answer_written_just_before_the_agent_exits_reaches_its_client() {
+    let root = Root::new("last-answer");
+    let mut keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, "answer-and-quit"));
+    let answer = client.answer(json!(1));
+    assert_eq!(answer["msg"]["result"]["stopReason"], "end_turn", "the agent's last answer became an exit error");
+    keeper.wait_exit();
+}
