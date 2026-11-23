@@ -25,10 +25,11 @@ export function patchText(input: string): string | null {
   // A scan, not a regex: a regex over the literal backtracks per character, takes tens of ms past
   // ~120KB and gives up (no match) past ~1.3MB, and a large edit's script is that big.
   let literal: string | null = null;
-  for (let call = input.indexOf(CALL); call >= 0 && literal === null; call = input.indexOf(CALL, call + CALL.length)) {
+  for (let call = input.indexOf(CALL); call >= 0; call = input.indexOf(CALL, call + CALL.length)) {
     let at = call + CALL.length;
     while (at < input.length && /\s/.test(input[at]!)) at++;
     literal = literalAt(input, at);
+    if (literal !== null) break;
   }
   if (literal === null) return null;
   let text: string;
