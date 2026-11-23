@@ -50,6 +50,7 @@ const CARD_TEXT = [
   "{question}. {count} more models are listed in the terminal.",
   "{question}. More models are listed in the terminal.",
   "{question}. More levels are listed in the terminal.",
+  "{question}. More options are listed in the terminal.",
   "{answered}/{total} answered",
   "Comment: {comment}",
   "{notice}\nComment: {comment}",

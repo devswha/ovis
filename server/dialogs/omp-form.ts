@@ -1,6 +1,7 @@
 import type { DialogReader } from "./registry.ts";
 import type { InteractivePrompt, InteractivePromptAnswer, InteractivePromptStep } from "../../shared/protocol.ts";
-import { ANSI_RE, KEY, type AnswerStep, type CardWords, type ParsedPrompt, type PromptDraft, finishPrompt, findLastIndex, keySteps, navigationKeys, own } from "./shared.ts";
+import { ANSI_RE, KEY, type AnswerStep, type CardWords, type OmpFormChoices, type OmpFormCut, type ParsedPrompt, type PromptDraft, finishPrompt, findLastIndex, keySteps, navigationKeys, own } from "./shared.ts";
+import { formChoiceGroups } from "./omp-form-html.ts";
 
 /**
  * omp 19's `ask` (pi-tui `html-form/dialog.ts` HtmlFormDialog, measured on omp 19.1.0): the agent's HTML form in one
@@ -50,6 +51,8 @@ interface FormBox {
   rows: string[];
   /** fields omp counts in its title, null under two */
   total: number | null;
+  /** the body is taller than the box: rows past its top or bottom edge are not on screen */
+  scrolled: boolean;
 }
 
 interface Block {
@@ -85,7 +88,7 @@ function formBox(screen: string): FormBox | null {
   if (raw.length === 0) return null;
   const scrolled = raw.every((row) => SCROLLBAR_RE.test(row));
   const total = TOP_RE.exec(lines[top]!)![2];
-  return { rows: raw.map((row) => (scrolled ? row.slice(0, -1) : row).trimEnd()), total: total === undefined ? null : Number(total) };
+  return { rows: raw.map((row) => (scrolled ? row.slice(0, -1) : row).trimEnd()), total: total === undefined ? null : Number(total), scrolled };
 }
 
 function blocksOf(rows: string[]): Block[] {
@@ -143,7 +146,12 @@ function toggleKeys(checked: readonly boolean[], desired: ReadonlySet<number>, f
 
 type Field = { question: CardWords; draft: PromptDraft; internal: Omit<ParsedPrompt, keyof InteractivePrompt | "responder"> };
 
-function choiceField(rows: readonly string[], at: number, block: Block, context: string | null): Field | null {
+/**
+ * The choice group under the cursor. In a scrolled box it can run past an edge: past the top when no caption is above
+ * its first option, past the bottom when its last shown row is the box's last one and not the Other row omp draws last.
+ * The card then lists what shows and says more is in the terminal, until omp-ask.ts fills it from the call (fillCutChoice).
+ */
+function choiceField(rows: readonly string[], at: number, block: Block, context: string | null, scrolled: boolean): Field | null {
   const belongs = (index: number): boolean => OPTION_RE.test(rows[index]!) || (CONTINUATION_RE.test(rows[index]!) && !ERROR_RE.test(rows[index]!));
   let first = at;
   while (first - 1 >= block.start && belongs(first - 1)) first -= 1;
@@ -164,15 +172,28 @@ function choiceField(rows: readonly string[], at: number, block: Block, context:
   const multi = BOX_MARKERS.has(markers[0]!);
   if (markers.some((marker) => BOX_MARKERS.has(marker) !== multi)) return null;
   for (const option of options) option.label = option.label.replace(NOTE_MARK_RE, "");
-  const otherRow = options.length > 2 ? OTHER_RE.exec(options.at(-1)!.label) : null;
+  // the rows above the first option are its caption, or the wrapped end of an option past the top edge
+  const top = scrolled && block.start === 0 && rows.slice(0, first).every((row) => CONTINUATION_RE.test(row));
+  const bottom = scrolled && last === rows.length - 1 && !OTHER_RE.test(options.at(-1)!.label);
+  const otherRow = (options.length > 2 || top) && !bottom ? OTHER_RE.exec(options.at(-1)!.label) : null;
   const choices = otherRow ? options.slice(0, -1) : options;
-  const otherIndex = otherRow ? choices.length : null;
-  // focused and empty, the Other input draws its caret as a space before the placeholder
-  const otherText = otherRow && !otherRow[1]!.startsWith(" ") && !(otherRow[1] === OTHER_PLACEHOLDER && !options.at(-1)!.checked) ? otherRow[1]! : "";
-  const caption = joined(rows.slice(block.start, first));
+  const other = otherRow ? {
+    // focused and empty, the Other input draws its caret as a space before the placeholder
+    text: !otherRow[1]!.startsWith(" ") && !(otherRow[1] === OTHER_PLACEHOLDER && !options.at(-1)!.checked) ? otherRow[1]! : "",
+    ticked: options.at(-1)!.checked,
+  } : null;
+  const shown: OmpFormChoices = {
+    labels: choices.map((option) => option.label), checked: choices.map((option) => option.checked), multi, cursor, other,
+    caption: top ? "" : joined(rows.slice(block.start, first)),
+  };
   const error = ERROR_RE.exec(rows[last + 1] ?? "")?.[1] ?? null;
-  const checked = choices.map((option) => option.checked);
-  const question = caption || (choices.length === 1 ? choices[0]!.label : own("Choose an option"));
+  return choiceCard(shown, [context, error].filter(Boolean).join("\n\n") || null, top || bottom ? { shown, top, bottom } : null);
+}
+
+function choiceCard(group: OmpFormChoices, body: string | null, cut: OmpFormCut | null): Field {
+  const { labels, checked, multi, cursor, other } = group;
+  const otherIndex = other ? labels.length : null;
+  const question = group.caption || (labels.length === 1 ? labels[0]! : own("Choose an option"));
   const typedOther = (text: string, picked?: number[]): AnswerStep[] => {
     const { keys, cursor: from } = picked === undefined ? { keys: [], cursor } : toggleKeys(checked, new Set(picked), cursor);
     return [...keySteps([...keys, ...navigationKeys(otherIndex! - from)]), ...typedSteps(text, false)];
@@ -180,25 +201,72 @@ function choiceField(rows: readonly string[], at: number, block: Block, context:
   return {
     question,
     draft: {
-      kind: "question", title: own(multi ? "Multiple choice" : "Question"), question, body: [context, error].filter(Boolean).join("\n\n") || null,
-      options: choices.map((option) => ({ label: option.label, description: null })),
+      kind: "question", title: own(multi ? "Multiple choice" : "Question"),
+      question: cut ? own("{question}. More options are listed in the terminal.", { question }) : question, body,
+      options: labels.map((label) => ({ label, description: null })),
       multi_select: multi, custom_option_index: otherIndex,
       ...(multi ? { default_option_indices: checked.flatMap((ticked, index) => ticked ? [index] : []) } : { default_option_index: checked.indexOf(true) >= 0 ? checked.indexOf(true) : null }),
-      ...(otherText ? { default_custom_text: otherText } : {}),
+      ...(other?.text ? { default_custom_text: other.text } : {}),
       ...(multi && otherIndex !== null ? { checks_with_text: true as const } : {}),
     },
     internal: {
-      menuLabels: [...choices.map((option) => option.label), ...(otherIndex === null ? [] : ["Other"])], selectedIndex: cursor,
+      menuLabels: [...labels, ...(otherIndex === null ? [] : ["Other"])], selectedIndex: cursor,
       checkedOptionIndices: checked.flatMap((ticked, index) => ticked ? [index] : []), customMenuIndex: otherIndex, rejectWithEscapeIndex: null,
       ...(otherIndex === null ? {} : { customSteps: typedOther }),
+      ...(cut ? { ompFormCut: cut } : {}),
       // Space ticks, and Enter leaves the group once something is ticked (it would tick the focused box of an empty one).
       // Other is ticked while it holds text, and Space there would type one: emptying its text unticks it
       ...(multi ? { multiSteps: (picked: number[]) => {
         const { keys, cursor: from } = toggleKeys(checked, new Set(picked), cursor);
-        const untick = otherIndex !== null && options.at(-1)!.checked ? [...navigationKeys(otherIndex - from), "ctrl+k", "ctrl+u"] : [];
+        const untick = otherIndex !== null && other!.ticked ? [...navigationKeys(otherIndex - from), "ctrl+k", "ctrl+u"] : [];
         return keySteps([...keys, ...untick, KEY.enter]);
       } } : {}),
     },
+  };
+}
+
+/**
+ * A cut radio group made whole from its `ask` call's HTML: the one group whose labels hold the shown ones in a row,
+ * starting at its first option unless the top is cut and ending at its last unless the bottom is. The card keeps its id
+ * and its words around the options. A checkbox group stays cut: its hidden options' ticks are not on screen, and Space
+ * toggles them.
+ */
+export function fillCutChoice(parsed: ParsedPrompt, html: string): ParsedPrompt | null {
+  const cut = parsed.ompFormCut;
+  if (!cut || cut.shown.multi || cut.shown.labels.length === 0) return null;
+  const { shown, top, bottom } = cut;
+  const bare = (text: string): string => text.replace(/\s+/gu, "");
+  const wanted = shown.labels.map(bare);
+  // the Other row is drawn last: shown, the group's end shows with it
+  const ends = !bottom || shown.other !== null;
+  const found = formChoiceGroups(html).flatMap((group) => {
+    if (group.multi || group.disabled || (ends && group.other !== (shown.other !== null))) return [];
+    const labels = group.labels.map(bare);
+    const offsets: number[] = [];
+    for (let offset = 0; offset + wanted.length <= labels.length && (top || offset === 0); offset += 1) {
+      if (ends && offset + wanted.length !== labels.length) continue;
+      if (wanted.every((label, index) => labels[offset + index] === label)) offsets.push(offset);
+    }
+    return offsets.map((offset) => ({ group, offset }));
+  });
+  if (found.length !== 1) return null;
+  const { group, offset } = found[0]!;
+  const field = choiceCard({
+    labels: group.labels, multi: false, caption: shown.caption,
+    checked: group.labels.map((_, index) => shown.checked[index - offset] ?? false),
+    cursor: shown.cursor === shown.labels.length ? group.labels.length : offset + shown.cursor,
+    other: group.other ? shown.other ?? { text: "", ticked: false } : null,
+  }, null, null);
+  const whole = finishPrompt("omp", field.draft, { ...field.internal, responder: "omp-form" });
+  const kept = Object.entries(parsed.own_text ?? {}).filter(([key]) => key !== "question" && key !== "labels");
+  const ownText = { ...Object.fromEntries(kept), ...whole.own_text };
+  return {
+    ...parsed,
+    question: whole.question, options: whole.options, custom_option_index: whole.custom_option_index,
+    default_option_index: whole.default_option_index, default_custom_text: whole.default_custom_text,
+    own_text: Object.keys(ownText).length > 0 ? ownText : undefined,
+    menuLabels: whole.menuLabels, selectedIndex: whole.selectedIndex, checkedOptionIndices: whole.checkedOptionIndices,
+    customMenuIndex: whole.customMenuIndex, customSteps: whole.customSteps, ompFormCut: undefined,
   };
 }
 
@@ -320,7 +388,7 @@ function parseOmpForm(screen: string): ParsedPrompt | null {
   const onSubmit = submit !== null && block.end - block.start === 1;
   let field: Field | null = null;
   if (onSubmit) submitBlock = focusedBlock;
-  else if (OPTION_RE.test(rows[at]!)) field = choiceField(rows, at, block, intro);
+  else if (OPTION_RE.test(rows[at]!)) field = choiceField(rows, at, block, intro, box.scrolled);
   else {
     const bare = DROPDOWN_RE.exec(cursorText);
     const valueRow = VALUE_RE.exec(rows[at + 1] ?? "");

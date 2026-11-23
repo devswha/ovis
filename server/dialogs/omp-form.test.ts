@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
 import { ompFormPrompt } from "../omp-ask.ts";
+import { formChoiceGroups } from "./omp-form-html.ts";
 import { KEY, parsedByPublicPrompt } from "./shared.ts";
+import type { InteractivePrompt } from "../../shared/protocol.ts";
 
 // omp 19.1.0's Ask form (HtmlFormDialog), recorded in an isolated omp home with a fake model provider whose `ask`
 // call carries an HTML form: radio, checkbox and dropdown groups, a number input, a textarea and a lone checkbox at 100
@@ -137,5 +139,90 @@ describe("omp 19 Ask form", () => {
     expect(parseInteractivePrompt("omp", form("settled-60"))).toBeNull();
     // more output under the form: it is not omp's live dialog
     expect(parseInteractivePrompt("omp", `${form("radio-100")}\n${"output\n".repeat(12)}`)).toBeNull();
+  });
+});
+
+// omp 19.1.1 at 46 columns and 24 or 16 rows, as a phone's pane draws it: the box scrolls, and a choice group's long
+// options run past its edges. `cut` is the form the agent asked with three radio groups (`.html`, its call's `html`),
+// on Q2's first, second and Other rows; `cut-top` is one five-option group on its fourth row, with neither end shown.
+const scrolled = (name: string) => {
+  const prompt = parseInteractivePrompt("omp", readFileSync(new URL(`../fixtures/omp-form-19.1.1-${name}.txt`, import.meta.url), "utf8"));
+  expect(prompt, name).not.toBeNull();
+  return prompt!;
+};
+const html = (name: string): string => readFileSync(new URL(`../fixtures/omp-form-19.1.1-${name}.html`, import.meta.url), "utf8");
+const bound = (prompt: InteractivePrompt, form: string) => ompFormPrompt(prompt, [{ id: "call-1", wait: true, args: { html: form } }], "/s.jsonl").prompt;
+const pressed = (prompt: InteractivePrompt, answer: Parameters<typeof answerKeys>[1]): (string | undefined)[] =>
+  answerKeys(prompt, answer).flatMap((step) => step.keys ?? [step.text]);
+const SHIP = [
+  "Implement, run the related tests, check it in the browser, commit, and push the branch to fork. No PR anywhere. Recommended because you said \"personal repo\".",
+  "Do the same, then open a PR into tung-dnt/ovis main.",
+  "Do the same, but commit locally only, with no push.",
+];
+
+describe("omp 19 Ask form cut by a scrolled box", () => {
+  it("says more options are in the terminal rather than offering the rows that show as the whole group", () => {
+    const first = scrolled("cut-46");
+    expect(first).toMatchObject({
+      question: "Q2 · How far should I go?. More options are listed in the terminal.",
+      options: [{ label: SHIP[0] }], custom_option_index: null, default_option_index: 0,
+      own_text: { question: { key: "{question}. More options are listed in the terminal.", vars: { question: "Q2 · How far should I go?" } } },
+    });
+    expect(pressed(first, { option_index: 0 })).toEqual([KEY.enter]);
+    // no caption above the rows that show: the group may go on above as well
+    expect(scrolled("cut-top-46")).toMatchObject({
+      question: "Choose an option. More options are listed in the terminal.",
+      options: [{ label: "United States, where the fictional billing runs" }, { label: "Asia Pacific, nearest the fictional support desk" }, { label: "South America & the fictional archive \"cold\" tier" }],
+      custom_option_index: null,
+    });
+    // Other is the group's last row: shown, nothing of the group is past the bottom
+    const other = scrolled("cut-other-46");
+    expect(other).toMatchObject({ question: "Q2 · How far should I go?", options: SHIP.map((label) => ({ label })), custom_option_index: 3 });
+    expect(pressed(other, { custom_text: "later" })).toEqual(["ctrl+k", "ctrl+u", PASTE("later"), KEY.enter]);
+  });
+
+  it("makes a cut radio group whole from its call's HTML, keeping the card's id", () => {
+    const first = scrolled("cut-46");
+    const whole = bound(first, html("cut"));
+    expect(whole).toMatchObject({ id: first.id, question: "Q2 · How far should I go?", options: SHIP.map((label) => ({ label })), custom_option_index: 3, default_option_index: 0 });
+    expect(whole.own_text?.question).toBeUndefined();
+    expect(pressed(whole, { option_index: 2 })).toEqual([KEY.down, KEY.down, KEY.enter]);
+    expect(pressed(whole, { custom_text: "later" })).toEqual([KEY.down, KEY.down, KEY.down, "ctrl+k", "ctrl+u", PASTE("later"), KEY.enter]);
+    // on the second option, the third and Other past the bottom
+    expect(pressed(bound(scrolled("cut-down-46"), html("cut")), { option_index: 0 })).toEqual([KEY.up, KEY.enter]);
+    // past both edges: the shown rows are the group's second to fourth, the cursor on its fourth
+    const top = bound(scrolled("cut-top-46"), html("cut-top"));
+    expect(top).toMatchObject({ question: "Choose an option", custom_option_index: 5 });
+    expect(top.options.map((option) => option.label)).toEqual([
+      "Europe, close to most of the fictional team and its data", "United States, where the fictional billing runs",
+      "Asia Pacific, nearest the fictional support desk", "South America & the fictional archive \"cold\" tier", "Africa, for the fictional disaster-recovery copy",
+    ]);
+    expect(pressed(top, { option_index: 0 })).toEqual([KEY.up, KEY.up, KEY.up, KEY.enter]);
+  });
+
+  it("keeps the cut card when the call's HTML does not place the shown rows in exactly one group", () => {
+    const first = scrolled("cut-46");
+    // another form: no group holds the shown option
+    expect(bound(first, html("cut-top")).options).toHaveLength(1);
+    // two groups both start with it: which one shows is not known
+    const twice = `${html("cut")}<form><fieldset><legend>Again</legend>${html("cut").match(/<label><input type="radio" name="ship"[\s\S]*?<\/fieldset>/u)![0]!.replaceAll("name=\"ship\"", "name=\"again\"")}</form>`;
+    expect(bound(first, twice).options).toHaveLength(1);
+    // a disabled option: how omp draws it is not measured
+    expect(bound(first, html("cut").replace("value=\"local-only\"", "value=\"local-only\" disabled")).options).toHaveLength(1);
+  });
+
+  it("labels each option as omp does", () => {
+    expect(formChoiceGroups([
+      "<label for=\"a1\">Named by for</label><input type=\"radio\" name=\"a\" id=\"a1\">",
+      "<input type=\"radio\" name=\"a\" aria-label=\"Named by aria\">",
+      "<input type=\"radio\" name=\"a\" value=\"by-value\">",
+      "<label><input type=\"radio\" name=\"b\"> A <img alt=\"pic\"> &amp; <code>code</code><select><option>not this</option></select></label>",
+      "<label><input type=\"radio\" name=\"b\"> Other place</label>",
+      "<label><input type=\"checkbox\" name=\"c\" disabled> Lone</label>",
+    ].join(""))).toEqual([
+      { multi: false, labels: ["Named by for", "Named by aria", "by-value"], disabled: false, other: true },
+      { multi: false, labels: ["A pic & code", "Other place"], disabled: false, other: false },
+      { multi: true, labels: ["Lone"], disabled: true, other: false },
+    ]);
   });
 });

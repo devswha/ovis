@@ -150,6 +150,8 @@ export type ParsedPrompt = InteractivePrompt & {
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */
   ompCall?: string;
+  /** omp 19 form: the focused choice group runs past the scrolled box's edge (dialogs/omp-form.ts); omp-ask.ts fills it from the call's HTML */
+  ompFormCut?: OmpFormCut;
   claudeUltracode?: boolean | null;
   /**
    * the shell command of an approval dialog the approval hub binds a held request to (server/approvals/hub.ts): Claude's
@@ -182,6 +184,25 @@ export type ParsedPrompt = InteractivePrompt & {
   multiSteps?: (choices: number[]) => AnswerStep[];
   rowKey?: AnswerStep | null;
 };
+
+/** A choice group as the omp 19 form draws it: its option labels (Other apart), their ticks and the row under the cursor. */
+export interface OmpFormChoices {
+  labels: string[];
+  checked: boolean[];
+  multi: boolean;
+  /** an index into `labels`, or `labels.length` on the Other row */
+  cursor: number;
+  /** the Other row, null when none shows */
+  other: { text: string; ticked: boolean } | null;
+  caption: string;
+}
+
+/** The rows of a choice group the scrolled box shows: more of its options may be above (`top`) or below (`bottom`). */
+export interface OmpFormCut {
+  shown: OmpFormChoices;
+  top: boolean;
+  bottom: boolean;
+}
 
 export type AnswerStep = { keys?: string[]; text?: string; pick?: true };
 

@@ -226,6 +226,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "{question}. {count} more models are listed in the terminal.": "{question}. 터미널에 모델이 {count}개 더 있습니다.",
   "{question}. More models are listed in the terminal.": "{question}. 터미널에 모델이 더 있습니다.",
   "{question}. More levels are listed in the terminal.": "{question}. 터미널에 수준이 더 있습니다.",
+  "{question}. More options are listed in the terminal.": "{question}. 터미널에 선택지가 더 있습니다.",
   "{answered}/{total} answered": "{answered}/{total} 답함",
   "Comment: {comment}": "코멘트: {comment}",
   "{notice}\nComment: {comment}": "{notice}\n코멘트: {comment}",

@@ -226,6 +226,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "{question}. {count} more models are listed in the terminal.": "{question}。终端中还列出了 {count} 个模型。",
   "{question}. More models are listed in the terminal.": "{question}。终端中还列出了更多模型。",
   "{question}. More levels are listed in the terminal.": "{question}。终端中还列出了更多级别。",
+  "{question}. More options are listed in the terminal.": "{question}。终端中还列出了更多选项。",
   "{answered}/{total} answered": "已回答 {answered}/{total}",
   "Comment: {comment}": "备注：{comment}",
   "{notice}\nComment: {comment}": "{notice}\n备注：{comment}",

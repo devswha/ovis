@@ -226,6 +226,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "{question}. {count} more models are listed in the terminal.": "{question}。ターミナルにはモデルがあと {count} 個あります。",
   "{question}. More models are listed in the terminal.": "{question}。ターミナルにはほかにもモデルがあります。",
   "{question}. More levels are listed in the terminal.": "{question}。ターミナルにはほかにもレベルがあります。",
+  "{question}. More options are listed in the terminal.": "{question}。ターミナルにはほかにも選択肢があります。",
   "{answered}/{total} answered": "{answered}/{total} 回答済み",
   "Comment: {comment}": "コメント: {comment}",
   "{notice}\nComment: {comment}": "{notice}\nコメント: {comment}",
