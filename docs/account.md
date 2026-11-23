@@ -194,7 +194,7 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   own word, which a decoy account can copy); the person at the PC types yes, or the command
   checks it against `--account`, which is the only way where no one can type at it. Only then does
   it list the PC, and a device of that account, signed in with a sign-in of its own made in the last
-  10 minutes, adds it by pressing **Add** on the PC's card: the account's one-press admission
+  10 minutes or proved with that sign-in's key ([In one press](#adding-a-pc)), adds it by pressing **Add** on the PC's card: the account's one-press admission
   ([In one press](#adding-a-pc)), which the PC takes on its own key's proof. An admission by any other
   account never binds it ([A PC with no screen](relay.md#a-pc-with-no-screen)).
 - **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
@@ -799,7 +799,9 @@ until someone signs in on it; the steps below are then the way.
 1. On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay: sign in, then press
    **Add this PC to my account** (a page without that tab keeps **Sign in and add this PC** in its
    Account card, which does both in one press). A PC in no account is then added: the
-   PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens a
+   PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay, and as `os` the
+   system the browser runs, which the account's devices show while a listing a sign-in code made asks
+   to join; `ovis add` sends the PC's platform) and opens a
    pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. The PC is
    added only by a press of a button that says so. The link page's one button reads
    **Sign in and add this PC** only where the sign-in does add it (a PC in no account, its relay
@@ -869,8 +871,9 @@ until someone signs in on it; the steps below are then the way.
 The account service's Step 2 switch must also be on. **Add this PC to my account** then adds the PC
 with no other device and no digits, when the account service admits it: the browser on the PC's own page lists the PC
 (`PUT /v1/pcs`, as above), then asks `POST /v1/pcs/{server_id}/admit`. The service admits only a
-sign-in made in an app itself within the last 10 minutes (403 `session_not_fresh` for an older one,
-`own_sign_in_required` for a device code's), within a daily cap of PC adds per account (429
+sign-in made in an app itself (`own_sign_in_required` for a device code's) that is fresh, or proved
+with its key: made within the last 10 minutes, or older with a key proof (below; 403
+`session_not_fresh` without one), within a daily cap of PC adds per account (429
 `pc_add_cap`), and writes who added it in the account's safety log. It no longer asks for two-step
 sign-in, which most providers' sign-ins never say: an admission by a sign-in without it is kept as
 exempt, and a device that joins the account later is told of it (`admitted_before_you`). An account
@@ -893,24 +896,57 @@ own Settings signs in with a code typed on another device, which the service doe
 app's own sign-in, so a press there still ends in that wait; it adds the PC in one press once the PC
 page signs in on its own window.
 
+**Fresh, or proved with the sign-in's key.** Adding a PC asks for a sign-in from the last 10 minutes,
+or an older one that proves the key it registered with the service right after it was made (one key
+per sign-in, apart from the account key, made by WebCrypto as non-extractable and kept in this app's
+IndexedDB: `signin_key`, `src/lib/account/signInKey.ts`). That covers the admit, a confirm (`PUT /v1/pcs/{server_id}` with
+`confirm: true`) and, where Step 2 is on, a `PUT` that lists a PC the account does not list yet (the
+service holds a listing to it only once it turns that rule on; until then it judges a proof only when
+one is sent, and an old sign-in's listing without one goes through as before); upkeep of a listed PC
+and a device code's listing ask nothing. A sign-in this device made more than
+nine minutes ago by its own clock, or one saved before that time was kept, proves its key on every
+such add by itself (`AccountService.pcAddProof`): it asks `POST /v1/pcs/challenge` (`{}`) for `{
+challenge_id, challenge, expires_in: 120 }`, a challenge for this sign-in alone that any use spends,
+and sends `key_proof: { challenge_id, signature }`, the key's ECDSA P-256 / SHA-256 signature (raw r
+then s, base64url) over `ovis-pc-add/1` and six fields, each a 4-byte big-endian length and its UTF-8
+bytes: the purpose (`admit`, `confirm` or `list`), the account, the PC's `server_id`, the listing ID
+(the one a confirm names, else the PC's current one in `GET /v1/pcs?include=unconfirmed`, `""` when
+the account lists none), the challenge ID and the challenge (`shared/account-records.ts`
+`pcAddSigningBytes`). A fresh sign-in sends none. One proof per press, never asked again: a sign-in
+that registered no key sends none, a service without the route (404, one from before key proofs)
+gets none, a refusal of the field (400 `invalid_request`, the admit's body of such a service) is told
+as `session_not_fresh`, and a signature the service does not take is judged by the sign-in's age
+alone; each ends in **Sign in again**, as before. A malformed proof is 400 `invalid_request`, a
+challenge unknown, spent, expired or another sign-in's 400 `challenge_invalid`. The proof binds the
+add to this browser profile, not to a person: a copied access or refresh token alone adds no PC, but
+a script running in the app's page, or a copy of the whole browser profile, still can.
+
 **Add on another device.** The admit also confirms a listing a device code made (unconfirmed until
 then), so the same admission adds a PC that signed in on the link page. Every device of the account
 whose sign-in is its own shows such a PC's card, **Add this PC to your account?**, with the name the
-PC gave itself and when it was listed, for the 10 minutes after the listing; **Add** there reads the
-listing again and admits nothing when it is no longer the one on the card, then asks `POST
-/v1/pcs/{server_id}/admit`, with **Sign in again** for `session_not_fresh` and
-`own_sign_in_required`, after which the add goes on. The admit names the PC, not the listing, so a
+PC gave itself, who is asking under it (the system its listing named and where the service saw that
+listing come from, `asking_os`, `asking_country` and `asking_city`: "Linux · Seoul, South Korea", only
+what is known), when it was listed and the minutes left. That window is the service's
+(`asking_until`, 10 minutes from the sign-in code that listed the PC), and never longer than 10
+minutes from the listing, the whole window where the service names none. Once it passed, or the admit
+answers 409 `listing_expired`, the card says **This request ran out. To add this PC, start again on
+the PC.**, with **No** alone. **Add** reads the listing again and admits nothing when it is no longer
+the one on the card, then asks `POST /v1/pcs/{server_id}/admit` (with the key proof above when the
+sign-in is old), with **Sign in again** for `session_not_fresh` and `own_sign_in_required`, after
+which the add goes on; a 409 `listing_changed` reads the listing again and shows the one there now. The admit names the PC, not the listing, so a
 listing that replaces the card's in the moment between that read and the admit is admitted in its
 place; it is a listing of the same PC (its id derives from the PC's key), whose name may differ. An
 admit bound to the listing is the account service's to add. The card keeps a closed new-PC notice
 under the admission's time as the service answered it, which the directory's row repeats. **No**
-removes the listing. `ovis add` on that
+removes the listing, from a sign-in of any age: ending a listing that asks to join cuts nobody off (a
+service from before key proofs asks a fresh sign-in, and **No** then offers **Sign in again**). `ovis add` on that
 PC waits for that admission and takes it as above ([A PC with no screen](relay.md#a-pc-with-no-screen)).
 A PC's own page that signed in on the link page does not take it: its digit wait goes on, and the
 admission ends unused after its 10 minutes (the listing stays confirmed).
 
 **Sign in again from the wait.** When the service refuses the press for the sign-in itself
-(`session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
+(`session_not_fresh`: an old sign-in with no key to prove, or a service from before key proofs; or
+`own_sign_in_required`) and the page signs in its own way
 (the desktop app, the PC's own window), the wait offers **Sign in again** once. A sign-in without
 two-step (`two_step_required`) gets no such offer, since the same sign-in again is refused again:
 the wait says so, and that the PC is added from another device of the account (which shows a number
@@ -1133,7 +1169,8 @@ reach (its Tailscale login's PCs and its ssh config hosts); Add opens Add PC ove
   (`server/account-add-channel.ts`), and closes the forward once take answers, on any error, and after ten minutes.
 - **List and admit.** The window lists B (`PUT /v1/pcs/:id`) unless already listed, then admits it
   (`POST /v1/pcs/:id/admit`) with the same stored sign-in. The service applies its usual rules:
-  fresh own sign-in, and two-step unless the account was never used. On `two_step_required` the
+  an own sign-in, fresh or proved with its key ([In one press](#adding-a-pc)), and two-step unless
+  the account was never used; an old sign-in with no key gets **Sign in again on this PC**. On `two_step_required` the
   window says to add B with the number on its Ovis page.
 - **Take.** `POST /api/account/ssh-add` `{job_id, server_id}`, this PC's own window only. This PC
   sends B only its own binding's account (`account_add_take`) over the same connection, while the
@@ -1627,7 +1664,10 @@ the person started. Names are read as one plain line (no control or bidi charact
 showed: when the device asked again with another name, system or place, nothing is answered and the
 card shows the new details first.
 The link page's confirmation shows the PC's ("Asked by Desk (Linux), near Seoul, South Korea")
-with "continue only if you started this on your own PC".
+with "continue only if you started this on your own PC". A PC's listing that asks to join carries
+them too (`asking_os`, `asking_country`, `asking_city` on an unconfirmed PC of `GET /v1/pcs`; the
+system is the one its `PUT` named in `os`), and its card shows them under the PC's name as "Linux ·
+Seoul, South Korea", leaving out what is unknown ([Adding a PC](#adding-a-pc), "Add on another device").
 
 ## Errors
 
@@ -1685,6 +1725,11 @@ with "continue only if you started this on your own PC".
   `ovis add` let in, say) can have the PC start a pairing code through its loopback address from
   a terminal pane, as the PC's own user: that code is held by no device, so it survives the
   device's removal.
+- **A script in the app's page, or a copy of the whole browser profile.** Past ten minutes a sign-in
+  adds a PC only with its own key's proof ([In one press](#adding-a-pc)), so a copied access or
+  refresh token alone adds none. The key is the app's non-extractable WebCrypto key in its
+  IndexedDB: a script running in the app's page, or a copy of the whole browser profile, can still
+  sign with it.
 - **Someone who gets a person to type their device code at GitHub** (device-code phishing, true of
   every RFC 8628 sign-in) gets a sign-in to that person's account: they can list, rename and remove
   its PCs in the directory, fill mailboxes, post admissions and spend the ring budget. They still

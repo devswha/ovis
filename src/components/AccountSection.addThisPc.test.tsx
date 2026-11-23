@@ -1297,6 +1297,16 @@ describe("AddThisPc", () => {
     expect(tab.has(MARKER)).toBe(false);
   });
 
+  test("a listing the account service refuses for an old sign-in with no key to prove says to sign in again, not to try again", async () => {
+    putRefusal = new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first");
+    const renderer = await mount(ACCOUNT);
+    await settle();
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    expect(words(renderer)).toContain("Sign in again to add it: your sign-in is more than ten minutes old.");
+    expect(words(renderer)).not.toContain("This PC could not be listed in your account. Try again.");
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
   test("a PC that stops answering while the sign-in lists it gives the button back", async () => {
     pc.hang = "/api/relay/link";
     const renderer = await mount(ACCOUNT);

@@ -5,7 +5,7 @@ import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts"
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { AccountService } from "./service.ts";
 import { addOverSsh, sshAddListed, sshAddOffered } from "./sshAdd.ts";
-import { memoryAccountStore } from "./store.ts";
+import { memoryAccountStore, newKey } from "./store.ts";
 
 const ACCOUNT = "acct_1";
 const SERVICE = "https://account.test";
@@ -87,6 +87,49 @@ describe("adding another PC to the account over SSH, from this PC's own window",
     expect(sshAddOffered({ ownWindow: true, signedInAccount: ACCOUNT, pcAccount: null })).toBe(false);
     expect(sshAddOffered({ ownWindow: true, signedInAccount: "acct_other", pcAccount: ACCOUNT })).toBe(false);
     expect(sshAddOffered({ ownWindow: false, signedInAccount: ACCOUNT, pcAccount: ACCOUNT })).toBe(false);
+  });
+});
+
+describe("adding another PC over SSH from a sign-in that is days old", () => {
+  /** this PC's own window, signed in `age` ago with the key that sign-in registered (or none), on the account service since key proofs */
+  async function signedIn(age: number, registered: boolean) {
+    let now = Date.now();
+    const fake = new FakeAccountService(() => now);
+    fake.opensAll = true;
+    const store = memoryAccountStore();
+    const token = fake.issueToken(ACCOUNT, { twoStep: true });
+    await store.set("session", { service: SERVICE, account: ACCOUNT, provider: "google", access_token: token, refresh_token: "r", expires_at: now + 365 * 86_400_000, sign_in_id: "here", signed_in_at: now });
+    if (registered) {
+      const key = await newKey();
+      await store.set("signin_key", { account: ACCOUNT, sign_in_id: "here", key, no: fake.registerSessionKey(token, key.public_spki, "desk") });
+    }
+    now += age;
+    const service = new AccountService({ store, fetch: fake.fetch, now: () => now });
+    const takes: string[] = [];
+    const take = async (jobId: string, serverId: string) => { takes.push(`${jobId} ${serverId}`); return true; };
+    return { fake, service, takes, take, challenges: () => fake.requests.filter((line) => line === "POST /v1/pcs/challenge").length };
+  }
+
+  it("lists and admits that PC with this sign-in's key, with no Sign in again", async () => {
+    const { fake, service, take, takes, challenges } = await signedIn(3 * 86_400_000, true);
+    const target = pcFields();
+    expect(await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take })).toBe("added");
+    expect(challenges()).toBe(2);
+    expect(fake.pcs(ACCOUNT).map((pc) => [pc.server_id, pc.listed_by_device, pc.admitted_at !== null])).toEqual([[target.server_id, false, true]]);
+    expect(takes).toEqual([`job-1 ${target.server_id}`]);
+  });
+
+  it("a fresh sign-in proves nothing, as before", async () => {
+    const { service, take, challenges } = await signedIn(0, true);
+    expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("added");
+    expect(challenges()).toBe(0);
+  });
+
+  it("with no key to prove, it asks to sign in again, and nothing is handed over", async () => {
+    const { fake, service, take, takes } = await signedIn(3 * 86_400_000, false);
+    expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("sign-in-again");
+    expect(fake.pcs(ACCOUNT)).toEqual([]);
+    expect(takes).toEqual([]);
   });
 });
 

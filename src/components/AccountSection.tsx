@@ -660,7 +660,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (as !== null && relayOff) { setState({ kind: "relay-off", account: as, error: null }); return; }
       // the PC left the account (`ovis logout`) and gave no proof of its own here: only a sign-in on the PC lists it again
       const left = error instanceof AccountServiceError && error.code === "pc_left";
-      setState({ kind: "error", message: left ? t("Sign in on this PC to add it again") : relayOff
+      // an old sign-in with no registered key to prove (docs/account.md, "In one press"): a new sign-in lists it
+      const stale = error instanceof AccountServiceError && error.code === "session_not_fresh";
+      setState({ kind: "error", message: left ? t("Sign in on this PC to add it again") : stale ? t("Sign in again to add it: your sign-in is more than ten minutes old.") : relayOff
         ? relayAbove ? t("Turn on remote access through the Ovis relay above first.") : t("Turn on remote access through the Ovis relay in Settings → Devices and PCs first.")
         // its entry was already on the way to the directory when the screen gave up: it may be listed all the same
         : writing ? t("This PC may not have been listed in your account. Try again.") : t("This PC could not be listed in your account. Try again.") });
