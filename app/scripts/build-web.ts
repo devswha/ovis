@@ -7,10 +7,16 @@
  * web/shell.js, and the native code's: hosted-origin.ts), for a test build whose relay pairing links
  * point at a shell served elsewhere. OVIS_APP_HOME=bundled keeps the app's own page as the first screen, where the
  * native code otherwise opens the hosted shell's (hosted-origin.ts, appHome).
+ *
+ * The Android app also carries the shell itself (bundled-shell.ts): OVIS_APP_SHELL=bundled, the default for a build of
+ * the production origin, copies OVIS_APP_SHELL_DIR's dist-shell (or one built from this checkout) into
+ * android/app/bundled-shell; OVIS_APP_SHELL=hosted, the default with OVIS_APP_URL, loads it from the network instead.
  */
-import { cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildDemoApp } from "../../scripts/demo-build.ts";
+import { appShell, buildShell, packShell, SHELL_ASSETS } from "./bundled-shell.ts";
 import { appHome, appOrigin, writeNativeOrigin } from "./hosted-origin.ts";
 import { pretendardCss } from "./pretendard.ts";
 
@@ -45,7 +51,22 @@ if (home !== "hosted") {
   if (!script.includes(constant)) throw new Error("shell.js no longer declares APP_HOME the way build-web.ts replaces it");
   writeFileSync(shellJs, script.replace(constant, `export const APP_HOME = ${JSON.stringify(home)};`));
 }
-writeNativeOrigin(app, appUrl, home);
+const shell = appShell(process.env["OVIS_APP_SHELL"], appUrl);
+writeNativeOrigin(app, appUrl, home, shell);
+
+const shellAssets = join(app, SHELL_ASSETS);
+rmSync(shellAssets, { recursive: true, force: true });
+if (shell === "bundled") {
+  const given = process.env["OVIS_APP_SHELL_DIR"];
+  const from = given || mkdtempSync(join(tmpdir(), "ovis-app-shell-"));
+  try {
+    if (!given) buildShell(from);
+    const packed = packShell(from, shellAssets);
+    console.log(`The Android app carries the shell from ${given || "this checkout"}: ${packed.files} files, ${(packed.bytes / 1048576).toFixed(1)} MB`);
+  } finally {
+    if (!given) rmSync(from, { recursive: true, force: true });
+  }
+}
 
 if (process.env["OVIS_APP_ACCOUNT"] === "0") {
   const shellJs = join(www, "shell.js");

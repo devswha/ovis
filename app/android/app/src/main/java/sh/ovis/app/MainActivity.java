@@ -23,6 +23,8 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.webkit.CookieManager;
+import android.webkit.ServiceWorkerClient;
+import android.webkit.ServiceWorkerController;
 import android.webkit.WebBackForwardList;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -35,6 +37,7 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import com.getcapacitor.Bridge;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
 import com.getcapacitor.CapConfig;
@@ -72,6 +75,15 @@ public class MainActivity extends BridgeActivity {
     private boolean pageFailed;
 
     private boolean pageShown;
+
+    /**
+     * The hosted shell this build carries, when this activity opens the hosted origin (home, or a relay PC under it) and
+     * answers it from that copy (BundledShell); null where the shell comes from the network, or the page is another.
+     */
+    private BundledShell shell;
+
+    /** Whether the bundled shell's first page here is its boot page, which clears the workers the network's copy left. */
+    private boolean booting;
 
     /** What this activity opened as its first page (Home.screen). */
     private Home.Screen screen = Home.Screen.BUNDLED;
@@ -364,15 +376,25 @@ public class MainActivity extends BridgeActivity {
         String origin = pc == null ? null : PCStore.origin(pc);
         String host = origin == null ? null : Uri.parse(origin).getHost();
         boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        boolean hostedOrigin = origin != null && PCStore.sameOrigin(origin, BuildConfig.APP_ORIGIN);
+        shell = hostedOrigin && BuildConfig.SHELL_BUNDLED ? BundledShell.at(this, BuildConfig.APP_ORIGIN) : null;
+        if (hostedOrigin && shell == null) BundledShell.loadedFromNetwork(this);
+        booting = shell != null && BundledShell.needsBoot(this);
         if (host != null) {
+            String start = home != null ? "/" + homeStart : PCStore.startPath(PCStore.pendingStart, pc);
             // Capacitor makes server.url the bridge's origin rule, which takes no path, query or
             // trailing slash: such a rule throws, and Capacitor falls back to a bridge that every
             // frame (a preview's iframe included) can call. So server.url is the bare origin, and a
             // pairing link's path, query and fragment (a relay offer's `#offer=`) come in as the start
             // path until a PC page has loaded; a relay PC starts at its scope after that.
+            // The bundled shell keeps this server.url, so the bridge's origin rules and every gate that reads them decide as
+            // with the shell from the network: only its answers come from the app (BundledShell.serve below)
             config = new CapConfig.Builder(this)
                 .setServerUrl(origin)
-                .setStartPath(home != null ? "/" + homeStart : PCStore.startPath(PCStore.pendingStart, pc))
+                .setStartPath(booting ? BundledShell.bootStart(start) : start)
+                // Capacitor's own client for a worker's fetches would take the network for the hosted origin: the
+                // bundled shell sets its own (beforeFirstPage)
+                .setResolveServiceWorkerRequests(shell == null)
                 // No allowNavigation: the PC's own pages stay in the WebView already, and Capacitor
                 // turns each entry into another bridge origin rule (https://host, or a host starting
                 // with "http" as is: invalid, which again drops the bridge's origin check). Links to
@@ -412,6 +434,7 @@ public class MainActivity extends BridgeActivity {
         java.net.CookieHandler.setDefault(null);
         keepClearOfNavigationButtons();
         String appOrigin = bridge.getScheme() + "://" + bridge.getHost();
+        BundledShell served = shell;
         getOnBackPressedDispatcher().addCallback(this, pageBack);
         if (host == null) {
             bridge.setWebViewClient(
@@ -540,6 +563,12 @@ public class MainActivity extends BridgeActivity {
                     // no callback, so those stay unchecked (the check is best effort)
                     @Override
                     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                        // the hosted origin from the shell this build carries, never the network (BundledShell)
+                        if (served != null) return served.serve(request, () -> pageRequest(view, request));
+                        return pageRequest(view, request);
+                    }
+
+                    private WebResourceResponse pageRequest(WebView view, WebResourceRequest request) {
                         Uri url = request.getUrl();
                         // an SSH PC's host at another port would get that PC's gate cookie (SshPcs.otherLoopbackPort)
                         if (SshPcs.otherLoopbackPort(url.toString())) {
@@ -594,15 +623,18 @@ public class MainActivity extends BridgeActivity {
                 new WebViewListener() {
                     @Override
                     public void onPageStarted(WebView webView) {
+                        String url = webView.getUrl();
+                        // the bundled shell's boot page is the app's own step before the page asked for
+                        if (served != null && BundledShell.isBoot(url, BuildConfig.APP_ORIGIN)) return;
                         pageFailed = false;
                         // WebView reports a main-frame page as started once its response has come: the
                         // PC answered, and the page is on its way however slowly
-                        String url = webView.getUrl();
                         if (watch != null && url != null && PCStore.belongs(url, pc)) watch.answered(SystemClock.elapsedRealtime());
                     }
 
                     @Override
                     public void onPageCommitVisible(WebView webView, String url) {
+                        if (served != null && BundledShell.isBoot(url, BuildConfig.APP_ORIGIN)) return;
                         // the main frame's first page is on screen, before its pictures or scripts finish:
                         // the PC's, a sign-in's or the error page. The PC's own page keeps the cover, with
                         // its bar, until the client is up (watchOpening): until then it shows only its
@@ -620,7 +652,7 @@ public class MainActivity extends BridgeActivity {
                         // only a page of this very PC (its scheme, host and port, and its scope for a relay PC) counts
                         String url = webView.getUrl();
                         // a page that finishes once this activity is leaving (reopen) is not the page the app shows next
-                        if (leaving || pageFailed || url == null || !PCStore.belongs(url, pc)) return;
+                        if (leaving || pageFailed || url == null || !PCStore.belongs(url, pc) || (served != null && BundledShell.isBoot(url, BuildConfig.APP_ORIGIN))) return;
                         pageLoaded = true;
                         // the hosted screen is no PC yet: nothing is kept or saved until a PC's page comes up in it
                         if (atHome()) return;
@@ -643,12 +675,63 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
+     * Before the WebView's first page (HerdrShellPlugin.load: Capacitor loads its plugins before it loads a page), in a
+     * build that carries the shell: where this activity answers the hosted origin, the clients that keep its requests
+     * and its workers' off the network from the first one; the contract every page the app serves from its assets gets
+     * at document start (window.__ovisAppShell, BundledShell.contractScript), on the app's own origin and, where this
+     * activity answers it, the hosted origin; and the boot page's word that it cleared the workers. A build that loads
+     * the shell from the network adds none of them.
+     */
+    void beforeFirstPage(Bridge bridge) {
+        BundledShell served = shell;
+        if (served != null) {
+            // Capacitor asks for the first page as it loads it, before this activity's own client is in place (onCreate,
+            // which answers the hosted origin the same way): until then this one keeps that request off the network
+            bridge.setWebViewClient(
+                new BridgeWebViewClient(bridge) {
+                    @Override
+                    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                        return served.serve(request, () -> super.shouldInterceptRequest(view, request));
+                    }
+                }
+            );
+            // and a worker the network's copy registered asks the bundled shell too, never the network
+            ServiceWorkerController.getInstance().setServiceWorkerClient(
+                new ServiceWorkerClient() {
+                    @Override
+                    public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                        return served.serve(request, () -> bridge.getLocalServer().shouldInterceptRequest(request));
+                    }
+                }
+            );
+        }
+        if (!BuildConfig.SHELL_BUNDLED || !BundledShell.supported()) return;
+        WebView view = bridge.getWebView();
+        Set<String> origins = new HashSet<>(Collections.singleton(bridge.getScheme() + "://" + bridge.getHost()));
+        if (shell != null) origins.add(BuildConfig.APP_ORIGIN);
+        try {
+            WebViewCompat.addDocumentStartJavaScript(view, BundledShell.contractScript(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE), origins);
+            if (!booting) return;
+            // only the boot page's main frame is heard (another page of the origin saying so would only spare the next start
+            // a clean-up), and once: the pages after it go without the listener
+            WebViewCompat.addWebMessageListener(view, "OvisBoot", Collections.singleton(BuildConfig.APP_ORIGIN), (frame, message, source, mainFrame, reply) -> {
+                if (!mainFrame || !"cleaned".equals(message.getData()) || !BundledShell.isBoot(frame.getUrl(), BuildConfig.APP_ORIGIN)) return;
+                BundledShell.booted(this);
+                WebViewCompat.removeWebMessageListener(frame, "OvisBoot");
+            });
+        } catch (IllegalArgumentException rejectedOrigin) {
+            // an origin WebView refuses as a rule: the pages go without
+        }
+    }
+
+    /**
      * Keeps the PC `pc`, whose page `url` has loaded, unless it is not Ovis: a web server that is not
      * Ovis would otherwise be saved and opened at every start, with no Change PC and Back closing the
      * app.
      */
     private void keepIfOvis(String pc, String url) {
-        if (PCStore.scoped(pc)) {
+        // the bundled shell is the app's own copy, asked nothing over the network
+        if (PCStore.scoped(pc) || shell != null) {
             PCStore.remember(this, pc);
             return;
         }
@@ -773,8 +856,8 @@ public class MainActivity extends BridgeActivity {
         if (home == Home.Phase.LOADING) {
             // only time in front counts (Home.Clock): a page that came up while the app was away is asked (askPage)
             // before the time it was away could count against it
-            if (Home.timedOut(homeClock.tick(now), watch.isAnswered())) {
-                home(Home.Event.TIMED_OUT);
+            if (Home.timedOut(homeClock.tick(now), watch.isAnswered(), shell != null)) {
+                home(Home.clockRanOut(shell != null));
                 return;
             }
         } else if (watch.stage(now) == OpeningWatch.Stage.NO_ANSWER) {
