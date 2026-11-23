@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { Check, RefreshCw, Smartphone, X } from "lucide-react";
 
@@ -19,7 +19,7 @@ import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { tailscalePlan, type PhonePlan } from "../lib/phone.ts";
-import { isTailnetAddress } from "../../shared/relay-mux.ts";
+import { reachablePcs, reachableState, type ReachableFacts, type ReachablePc, type ReachableState } from "../lib/reachablePcs.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -160,6 +160,13 @@ export interface ConnectPhoneDialogProps {
   machines: readonly Machine[];
   onConnectMachine: (machine: Machine) => void;
   /**
+   * Add PC over SSH adds a PC to the account here (this PC's own window, signed in to the account this PC is in:
+   * sshAddOffered): the relay tab then lists the PCs this PC can reach, each with Add (ReachablePcList)
+   */
+  addsOverSsh?: boolean;
+  /** the relay IDs of the account's PCs, so the relay tab's list says which are in it already */
+  accountPcs?: readonly string[];
+  /**
    * The relay tab's QR code may put this PC in an account, and the dialog then says which and by which device, and asks
    * about a device nobody vouched for: while that can still come, or is on screen, a device that pairs does not close
    * the dialog (`held`).
@@ -169,7 +176,7 @@ export interface ConnectPhoneDialogProps {
   onClose: () => void;
 }
 
-export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: givenTailscale = givenPlan, platform: givenPlatform, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, provider = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, addsOverSsh = false, accountPcs, pcAddFromAccount, onAccountSetup, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -199,6 +206,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   // until a tab is picked, the opening one follows the tabs as they arrive (the relay's state comes a moment later)
   const [chosen, setChosen] = useState<ConnectTab | null>(() => asked ?? (accountQrNoticeWaiting() && hasAccount ? "relay" : null));
   const found = useFoundPcs(machines, tabs.includes("tailscale"));
+  const inAccount = useMemo(() => new Set(accountPcs), [accountPcs]);
   useEffect(() => {
     if (!hasAccount) return;
     const onWatch = (event: Event) => { if ((event as CustomEvent<{ notice: boolean }>).detail.notice) setChosen("relay"); };
@@ -249,7 +257,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
                 ) : tailnet.tailscaleStep !== null ? <TailscaleStep step={tailnet.tailscaleStep} platform={platform} onAccess={setFresh} /> : null}
                 {(tailscale.kind === "served" || tailnet.tailscaleStep !== null) && <p className="settings-hint">{t("The phone needs the Tailscale app turned on too.")}</p>}
               </PhoneScan>
-              <TailscaleTab found={found} onAddPc={onAddPc!} />
+              <TailscaleTab found={found} onAddPc={onAddPc!} onConnectMachine={onConnectMachine} />
             </div>
           )}
           {opened.current.has("ssh") && tabs.includes("ssh") && (
@@ -265,6 +273,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
                 pcAddFromAccount={pcAddFromAccount} onAccountSetup={onAccountSetup}
                 active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} machines={machines} onConnectMachine={onConnectMachine} />
               {codeTab === "relay" && pairByCode}
+              {addsOverSsh && tabs.includes("tailscale") && <ReachablePcList found={found} accountPcs={inAccount} onAddPc={onAddPc!} />}
             </div>
           )}
         </div>
@@ -274,9 +283,6 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
     document.body,
   );
 }
-
-/** What the PCs this PC could reach over SSH say for one of them: added already, its Ovis too old, still being asked, or open to add. */
-type FoundPcState = "added" | "outdated" | "waiting" | "open";
 
 /**
  * The PCs this PC's server could reach over SSH (its ssh config, its Tailscale login), for the Tailscale and SSH
@@ -295,14 +301,15 @@ export function useFoundPcs(machines: readonly Machine[], enabled = true) {
   // the server keeps its list from this window (owner_only): one line above the field says where it can be seen
   const [withheld, setWithheld] = useState(false);
   const [reads, setReads] = useState(0);
-  const [outdated, setOutdated] = useState<ReadonlySet<string>>(new Set());
+  // what each PC of the Tailscale login says of itself, by its MagicDNS name: its Ovis's age and its relay ID
+  const [tailnet, setTailnet] = useState<ReachableFacts["tailnet"]["pcs"]>(new Map());
   const [tailnetRead, setTailnetRead] = useState(false);
   useEffect(() => {
     if (!enabled) return;
     let live = true;
     setTailnetRead(false);
     findTailnetPcs().then(({ pcs }) => {
-      if (live) setOutdated(new Set(pcs.filter(pc => pc.outdated).map(pc => new URL(pc.url).hostname.toLowerCase())));
+      if (live) setTailnet(new Map(pcs.map((pc) => [new URL(pc.url).hostname.toLowerCase(), { outdated: pc.outdated, server_id: pc.server_id ?? null }])));
     }, () => undefined).finally(() => { if (live) setTailnetRead(true); });
     return () => { live = false; };
   }, [reads, enabled]);
@@ -324,15 +331,13 @@ export function useFoundPcs(machines: readonly Machine[], enabled = true) {
     });
     return () => { live = false; };
   }, [reads, enabled]);
-  // a found PC is Added only as Add would add it: its own address, on ssh's default port and herdr's default session
-  const stateOf = (pc: SshCandidate): FoundPcState =>
-    machines.some(({ target }) => target?.destination === pc.destination && (target.port ?? 22) === 22 && target.session === undefined) ? "added"
-    : pc.tailnet !== undefined && outdated.has(pc.tailnet.toLowerCase()) ? "outdated"
-    // until the Tailscale PCs' Ovis is known (it asks each PC, a few seconds), one of them waits, so an older one is not added
-    : pc.tailnet !== undefined && !tailnetRead ? "waiting"
-    : "open";
+  const rows = useMemo(() => found === null ? null : reachablePcs(found), [found]);
+  // until the Tailscale PCs' Ovis is known (it asks each PC, a few seconds), one of them waits, so an older one is not added
+  const facts = { machines, tailnet: { read: tailnetRead, pcs: tailnet } };
+  const rowState = (row: ReachablePc, accountPcs?: ReadonlySet<string>): ReachableState => reachableState(row, accountPcs === undefined ? facts : { ...facts, accountPcs });
+  const stateOf = (pc: SshCandidate): ReachableState => rowState(reachablePcs([pc])[0]!);
   const retry = () => { setFound(null); setReads((count) => count + 1); };
-  return { found, unread, failed, withheld, stateOf, retry };
+  return { found, rows, unread, failed, withheld, stateOf, rowState, retry };
 }
 
 /** The found list's failure with Try again, or where a list this window is refused can be seen. */
@@ -351,11 +356,16 @@ function FoundPcsTrouble({ failed, withheld, retry }: { failed: boolean; withhel
   );
 }
 
-export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf, retry }, onAddPc }: {
-  found: FoundPcs; onAddPc: (preset?: AddPcPreset) => void;
+/**
+ * Tailscale: the PCs of this PC's Tailscale login, one row a machine as Tailscale's own machine list has them (the ssh
+ * config aliases that reach one are that row, reachablePcs), then a field for a PC not in the list, connected as the
+ * SSH tab connects a typed one.
+ */
+export function TailscaleTab({ found: { rows, unread, failed, withheld, rowState, retry }, onAddPc, onConnectMachine }: {
+  found: FoundPcs; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void;
 }) {
   const t = useT();
-  const pcs = found?.filter((pc) => pc.source === "tailscale" || pc.tailnet !== undefined) ?? null;
+  const pcs = rows?.filter((pc) => pc.way === "tailscale") ?? null;
   return (
     <>
       <p className="settings-description">{t("The PCs of this Tailscale login. Connect goes over SSH, with nothing to install there.")}</p>
@@ -364,17 +374,14 @@ export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf
           <div className="connect-found">
             <ul className="connect-found-list">
               {pcs.map((pc) => {
-                const state = stateOf(pc);
-                // an ssh config host written as a tailnet IP goes by its Tailscale name, the IP beside it
-                const byIp = pc.tailnet !== undefined && isTailnetAddress(pc.name);
-                const name = byIp ? pc.tailnet!.split(".")[0]! : pc.name;
+                const state = rowState(pc);
                 return (
-                  <li key={`${pc.source}:${pc.destination}`} className="connect-found-row">
-                    <span className="connect-found-name">{name}</span>
-                    <span className="connect-found-detail">{byIp ? pc.name : pc.tailnet ?? pc.detail ?? pc.destination}</span>
+                  <li key={pc.key} className="connect-found-row">
+                    <span className="connect-found-name">{pc.name}</span>
+                    <span className="connect-found-detail">{pc.address}</span>
                     {state === "added" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
                       : state === "outdated" ? <span className="settings-hint">{t("Update Ovis on that PC to 0.5 first.")}</span>
-                      : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Connect")} ${name}`} onClick={() => onAddPc({ destination: pc.destination, name })}>{t("Connect")}</button>}
+                      : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Connect")} ${pc.name}`} onClick={() => onAddPc({ destination: pc.destination, name: pc.name })}>{t("Connect")}</button>}
                   </li>
                 );
               })}
@@ -382,7 +389,60 @@ export function TailscaleTab({ found: { found, unread, failed, withheld, stateOf
           </div>
         ) : !unread && <p className="settings-hint" role="status">{t("No other PC of this Tailscale login was found.")}</p>}
       <FoundPcsTrouble failed={failed} withheld={withheld} retry={retry} />
+      <TypedPcForm label={t("A PC not in the list")} placeholder={t("user@host or address")} onAddPc={onAddPc} onConnectMachine={onConnectMachine} />
     </>
+  );
+}
+
+/**
+ * The relay tab's other PCs, where Add PC over SSH adds a PC to the account (this PC's own window, signed in to the
+ * account this PC is in): the Tailscale login's PCs and the ssh config's hosts in one list, the Tailscale tab's rows
+ * with their way. Add, and a PC typed at the foot, open Add PC with that host filled in and Add it to my account
+ * ticked, which reaches that PC's own Ovis over SSH, offers to install it, and adds it to the account
+ * (docs/account.md "Adding a PC over SSH"). A PC in the account, here already or with an older Ovis says so instead.
+ */
+export function ReachablePcList({ found: { rows, failed, withheld, rowState, retry }, accountPcs, onAddPc }: {
+  found: FoundPcs; accountPcs: ReadonlySet<string>; onAddPc: (preset?: AddPcPreset) => void;
+}) {
+  const t = useT();
+  const id = useId();
+  const [typed, setTyped] = useState("");
+  const host = typed.trim();
+  const way: Record<ReachablePc["way"], string> = { tailscale: "Tailscale", ssh_config: t("SSH config") };
+  const add = (event: FormEvent) => {
+    event.preventDefault();
+    if (host !== "") onAddPc({ destination: host });
+  };
+  return (
+    <section className="connect-reachable">
+      <p className="settings-description">{t("Other PCs this PC can reach. Add goes in over SSH, installs Ovis there if it is missing, and adds it to your account.")}</p>
+      {rows === null ? <p className="settings-hint" role="status">{t("Looking for PCs…")}</p>
+        : rows.length > 0 && (
+          <ul className="connect-found-list">
+            {rows.map((pc) => {
+              const state = rowState(pc, accountPcs);
+              return (
+                <li key={pc.key} className="connect-found-row" data-reachable-state={state}>
+                  <span className="connect-found-name">{pc.name}</span>
+                  <span className="connect-found-detail">{way[pc.way]} · {pc.address}</span>
+                  {state === "in-account" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("In your account")}</span>
+                    : state === "added" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
+                    : state === "outdated" ? <span className="settings-hint">{t("Update Ovis on that PC to 0.5 first.")}</span>
+                    : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Add")} ${pc.name}`} onClick={() => onAddPc({ destination: pc.destination, name: pc.name })}>{t("Add")}</button>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      <FoundPcsTrouble failed={failed} withheld={withheld} retry={retry} />
+      <form className="connect-ssh-form" onSubmit={add}>
+        <label className="settings-label" htmlFor={`${id}-host`}>{t("A PC not in the list")}</label>
+        <div className="connect-ssh-field">
+          <input id={`${id}-host`} className="input" type="text" value={typed} placeholder="user@host" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => setTyped(event.target.value)} />
+          <button type="submit" className="btn" disabled={host === ""}>{t("Add")}</button>
+        </div>
+      </form>
+    </section>
   );
 }
 
@@ -404,20 +464,19 @@ function addressFailureText(t: ReturnType<typeof useT>, error: unknown): string 
 }
 
 /**
- * SSH: its one field takes an SSH alias, user@host or a tailnet name, which opens Add PC with it (the host's fingerprint
- * first). Add by address, a text link under it, opens AddressPcForm: another PC's Ovis by its https address and the code
- * that PC shows. Under them the hosts of this PC's ssh config and the PCs saved in herdr, one press each.
+ * A PC typed in, the SSH and Tailscale tabs' one connect for it: an SSH alias, user@host or a tailnet name opens Add PC
+ * with it (the host's fingerprint first); another PC's https address opens AddressPcForm with it, where the code that PC
+ * shows is typed. `byAddressLink`: Add by address, a text link under the field, opens that form empty.
  */
-export function SshTab({ found: { found, failed, withheld, stateOf, retry }, machines, onAddPc, onConnectMachine }: { found: FoundPcs; machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
+function TypedPcForm({ label, placeholder, byAddressLink = false, onAddPc, onConnectMachine }: {
+  label: string; placeholder: string; byAddressLink?: boolean; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void;
+}) {
   const t = useT();
   const id = useId();
   const [typed, setTyped] = useState("");
-  // the address form, once opened: with the address it opens on (an https address typed in the SSH field moves there)
+  // the address form, once opened: with the address it opens on (an https address typed in the field moves there)
   const [byAddress, setByAddress] = useState<string | null>(null);
   const address = typed.trim();
-  const saved = machines.filter((machine) => machine.herdr_profile_id !== undefined && machine.action_required === "connect");
-  const hosts = (found?.filter((pc) => pc.source === "ssh_config") ?? []).map((pc) => ({ pc, state: stateOf(pc) }));
-  const outdated = hosts.filter(({ state }) => state === "outdated").map(({ pc }) => pc.name);
   const add = (event: FormEvent) => {
     event.preventDefault();
     if (address === "") return;
@@ -427,15 +486,31 @@ export function SshTab({ found: { found, failed, withheld, stateOf, retry }, mac
   return (
     <>
       <form className="connect-ssh-form" onSubmit={add}>
-        <label className="settings-label" htmlFor={`${id}-address`}>{t("Add another PC from this one")}</label>
+        <label className="settings-label" htmlFor={`${id}-address`}>{label}</label>
         <div className="connect-ssh-field">
-          <input id={`${id}-address`} className="input" type="text" value={typed} placeholder="user@host" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => setTyped(event.target.value)} />
+          <input id={`${id}-address`} className="input" type="text" value={typed} placeholder={placeholder} autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" aria-describedby={address === "" ? undefined : `${id}-kind`} onChange={(event) => setTyped(event.target.value)} />
           <button type="submit" className="btn" disabled={address === ""}>{t("Connect")}</button>
         </div>
         {address !== "" && !OVIS_ADDRESS.test(address) && <p className="settings-hint" id={`${id}-kind`} role="status" data-address-kind="ssh">{t("An SSH address: Connect checks that PC's fingerprint first.")}</p>}
       </form>
-      <button type="button" className="connect-address-link" aria-expanded={byAddress !== null} aria-controls={`${id}-by-address`} onClick={() => setByAddress((open) => open === null ? "" : null)}>{t("Add by address")}</button>
+      {byAddressLink && <button type="button" className="connect-address-link" aria-expanded={byAddress !== null} aria-controls={`${id}-by-address`} onClick={() => setByAddress((open) => open === null ? "" : null)}>{t("Add by address")}</button>}
       {byAddress !== null && <AddressPcForm key={byAddress} id={`${id}-by-address`} initial={byAddress} onConnectMachine={onConnectMachine} />}
+    </>
+  );
+}
+
+/**
+ * SSH: its one field (TypedPcForm) takes an SSH alias, user@host or a tailnet name, or another PC's Ovis by its https
+ * address and the code that PC shows. Under it the hosts of this PC's ssh config and the PCs saved in herdr, one press each.
+ */
+export function SshTab({ found: { found, failed, withheld, stateOf, retry }, machines, onAddPc, onConnectMachine }: { found: FoundPcs; machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
+  const t = useT();
+  const saved = machines.filter((machine) => machine.herdr_profile_id !== undefined && machine.action_required === "connect");
+  const hosts = (found?.filter((pc) => pc.source === "ssh_config") ?? []).map((pc) => ({ pc, state: stateOf(pc) }));
+  const outdated = hosts.filter(({ state }) => state === "outdated").map(({ pc }) => pc.name);
+  return (
+    <>
+      <TypedPcForm label={t("Add another PC from this one")} placeholder="user@host" byAddressLink onAddPc={onAddPc} onConnectMachine={onConnectMachine} />
       {(saved.length > 0 || hosts.length > 0) && (
         <section className="connect-picks" aria-label="ssh config">
           <p className="settings-label">ssh config</p>

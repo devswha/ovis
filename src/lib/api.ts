@@ -1521,8 +1521,11 @@ export interface SshCandidate {
   readonly tailnet?: string;
 }
 export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("/ssh-candidates");
-/** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older than 0.5. */
-export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
+/**
+ * A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older
+ * than 0.5; `server_id`: the relay ID that PC names itself (absent from an older server), for display only.
+ */
+export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean; readonly server_id?: string | null }
 export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
 /** POST /api/machines/address: pairs with another PC's Ovis at that https address by the six-digit code it shows, and adds it. */
 export const addAddressPc = (address: string, code: string) => machineRequest<{ machine: Machine }>("/address", "POST", { address, code });

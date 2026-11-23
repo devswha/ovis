@@ -235,12 +235,18 @@ try {
   assert.equal(await mine.getByRole("button", { name: "Add from account", exact: true }).count(), 0, "no prompt");
   assert.equal(await mine.getByText("Your account's PCs", { exact: true }).count(), 0, "the relay tab lists no PCs");
   assert.equal(await mine.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).count(), 1, "the phone's QR code");
+  // this PC's own window, signed in to its account: under the QR code, the PCs it can reach to add over SSH, and a field
+  const reachable = mine.locator(".connect-reachable");
+  await reachable.getByRole("textbox", { name: "A PC not in the list", exact: true }).waitFor();
+  const qrBottom = await mine.getByRole("img", { name: "QR code that opens this PC in the Ovis app", exact: true }).evaluate((qr) => qr.getBoundingClientRect().bottom);
+  assert.ok(qrBottom <= await reachable.evaluate((list) => list.getBoundingClientRect().top), "the PCs to add come under the phone's QR code");
   await shot(connecting.page, "relay-tab");
 
   for (const relation of ["other", "signed-out"] as const) {
     const { page } = await accountWindow(browser, pageErrors, relation);
     // a window signed out of this PC's account gets the sign-in alone, not the Add from account prompt
     const tab = await openRelayTab(page, "Sign in to Ovis");
+    assert.equal(await tab.locator(".connect-reachable").count(), 0, `${relation}: no PCs to add over SSH`);
     if (relation === "signed-out") {
       // the sign-in alone: no line above it, no Add from account prompt beside it
       assert.equal(await tab.getByTestId("connect-signin").locator("p.settings-description, p.settings-hint").count(), 0);
@@ -285,7 +291,7 @@ try {
     if (!strict) await shot(page, "unavailable");
   }
   assert.deepEqual(pageErrors, [], "no page error");
-  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, marks offline PCs and automatically asks a member to pair a ready PC; it opens in the sidebar with no SSH setup dialog; a sign-in on this PC, already in the account, closes Add a connection and leaves Settings open with the account and its PCs; Add a connection → Ovis relay is the signed-in line and the QR code, with no PC list");
+  console.log("PASS the account's PCs: the sidebar lists those not in this app yet with nothing opened, marks offline PCs and automatically asks a member to pair a ready PC; it opens in the sidebar with no SSH setup dialog; a sign-in on this PC, already in the account, closes Add a connection and leaves Settings open with the account and its PCs; Add a connection → Ovis relay is the signed-in line and the QR code, with no list of the account's PCs, and only in this PC's own window signed in to its account the PCs to add over SSH under it");
 } catch (error) {
   code = 1;
   console.error("FAIL relay account PCs:", error);

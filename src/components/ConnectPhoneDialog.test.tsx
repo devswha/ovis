@@ -20,7 +20,7 @@ import { QrCode } from "./QrCode.tsx";
 
 // the confirmation before Revoke all is a portal on document.body, which this renderer has none of
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, closedBySignIn, CodeRoute, ConnectPhoneDialog, connectTabs, TAILSCALE_POLL_MS, localWays, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, SshTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
+const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, closedBySignIn, CodeRoute, ConnectPhoneDialog, connectTabs, TAILSCALE_POLL_MS, localWays, openingTab, ReachablePcList, RelayRoute, RelayTab, sameNameRelayDevice, signInLink, TailscaleTab, SshTab, useFoundPcs } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
 const { announcePairingCode, QR_CODE_ENDED_CHANNEL, useRelay } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
@@ -51,6 +51,8 @@ describe("Connect a phone on a phone", () => {
   let tailnetAnswer: Promise<void>;
   let tailnetOutdated: boolean;
   let tailnetRelay: string | null;
+  /** the relay ID the Tailscale PC names in its own health */
+  let tailnetServerId: string | null;
   let extraCandidates: object[];
   let candidatesRefused: string | null;
   /** the bodies of POST /api/machines/address, and whether the next one is refused as a wrong code */
@@ -96,6 +98,7 @@ describe("Connect a phone on a phone", () => {
     tailnetAnswer = Promise.resolve();
     tailnetOutdated = true;
     tailnetRelay = "online";
+    tailnetServerId = null;
     extraCandidates = [];
     candidatesRefused = null;
     addressAsked = [];
@@ -150,7 +153,7 @@ describe("Connect a phone on a phone", () => {
       }
       if (path === "/api/machines/tailnet") {
         await tailnetAnswer;
-        return Response.json({ pcs: [{ name: "winvm", url: "https://winvm.tail.ts.net:8443", relay: tailnetRelay, outdated: tailnetOutdated }] });
+        return Response.json({ pcs: [{ name: "winvm", url: "https://winvm.tail.ts.net:8443", relay: tailnetRelay, outdated: tailnetOutdated, server_id: tailnetServerId }] });
       }
       if (path === "/api/machines/ssh-candidates" && candidatesRefused !== null) return Response.json({ error: { code: candidatesRefused, message: "refused" } }, { status: 403 });
       if (path === "/api/machines/ssh-candidates") return Response.json({ pcs: [
@@ -569,6 +572,34 @@ describe("Connect a phone on a phone", () => {
     expect(renderer!.root.findAll((each) => each.props["data-tab"] !== undefined && each.type === "button").map((each) => each.props["data-tab"])).toEqual(["tailscale", "ssh"]);
   });
 
+  it("puts the list of PCs under the relay tab's QR code only where Add PC over SSH adds to the account", async () => {
+    Object.assign(window, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } });
+    const pageEvents = new EventTarget();
+    Object.assign(document, { addEventListener: pageEvents.addEventListener.bind(pageEvents), removeEventListener: pageEvents.removeEventListener.bind(pageEvents), querySelectorAll: () => [], body: {}, activeElement: null });
+    descriptors.set("HTMLElement", Object.getOwnPropertyDescriptor(globalThis, "HTMLElement"));
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+    const node = () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {}, getAttribute: () => null, style: {}, dataset: {} });
+    const served = { kind: "served", url: "https://workstation.example.ts.net" } as const;
+    const machines = [{ id: "local", kind: "local", name: "Desk", server_id: SERVER_ID } as unknown as Machine];
+    const dialog = (addsOverSsh: boolean) => (
+      <ConnectPhoneDialog asked="relay" plan={served} tailscale={served} pairUrl={served.url} relay={relayState()} readOnly={false} closesGate={false} canPair
+        signedIn={false} joinBySignIn={false} account={null} onAddPc={() => {}} machines={machines} onConnectMachine={() => {}} onClose={() => {}} addsOverSsh={addsOverSsh} accountPcs={[]} />
+    );
+    const lists = () => renderer!.root.findAll((each) => each.type === "section" && each.props.className === "connect-reachable");
+    await act(async () => { renderer = create(<SettingsProvider>{dialog(false)}</SettingsProvider>, { createNodeMock: node }); });
+    await until(() => renderer!.root.findAll((each) => each.props["data-tab-panel"] === "relay").length > 0, "the relay tab");
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    expect(lists()).toHaveLength(0);
+    await act(async () => { renderer!.update(<SettingsProvider>{dialog(true)}</SettingsProvider>); });
+    await until(() => lists().length === 1 && lists()[0]!.findAll((each) => each.props.className === "connect-found-row").length > 0, "the relay tab's list");
+    const panel = renderer!.root.find((each) => each.props["data-tab-panel"] === "relay" && each.type === "div");
+    const parts = panel.children.filter((child): child is ReactTestInstance => typeof child !== "string");
+    // under what the tab showed before, the phone's QR code first
+    expect(parts.at(-1)!.findAll((each) => each.type === "section" && each.props.className === "connect-reachable")).toHaveLength(1);
+    expect(panel.findAll((each) => each.type === QrCode).length).toBeGreaterThan(0);
+    expect(renderer!.root.findAll((each) => each.props["data-tab-panel"] === "tailscale" && each.type === "div").flatMap((tab) => tab.findAll((each) => each.props.className === "connect-reachable"))).toHaveLength(0);
+  });
+
   describe("the Tailscale tab's step, one press each and never a terminal step until a serve is refused", () => {
     /** the intervals the page set, the Tailscale watch's among them; any other runs as usual */
     let polls: { tick: () => void; cleared: boolean }[];
@@ -849,15 +880,18 @@ describe("Connect a phone on a phone", () => {
   const ssh = (destination: string, extra: Partial<Machine> = {}): Machine => ({ id: destination, name: destination, kind: "ssh", target: { destination }, enabled: true, state: "disconnected", error: null, snapshot: null, ...extra });
   const flushReads = async () => { for (let flush = 0; flush < 3; flush += 1) await act(async () => {}); };
   // the dialog reads the found PCs once for both tabs (useFoundPcs)
-  function Tailscale({ machines, onAddPc }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void }) {
-    return <TailscaleTab found={useFoundPcs(machines)} onAddPc={onAddPc} />;
+  function Tailscale({ machines, onAddPc, onConnectMachine = () => undefined }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine?: (machine: Machine) => void }) {
+    return <TailscaleTab found={useFoundPcs(machines)} onAddPc={onAddPc} onConnectMachine={onConnectMachine} />;
+  }
+  function Reachable({ machines, accountPcs, onAddPc }: { machines: readonly Machine[]; accountPcs: ReadonlySet<string>; onAddPc: (preset?: AddPcPreset) => void }) {
+    return <ReachablePcList found={useFoundPcs(machines)} accountPcs={accountPcs} onAddPc={onAddPc} />;
   }
   function Ssh({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
     return <SshTab found={useFoundPcs(machines)} machines={machines} onAddPc={onAddPc} onConnectMachine={onConnectMachine} />;
   }
   function Both({ machines }: { machines: readonly Machine[] }) {
     const found = useFoundPcs(machines);
-    return <><TailscaleTab found={found} onAddPc={() => undefined} /><SshTab found={found} machines={machines} onAddPc={() => undefined} onConnectMachine={() => undefined} /></>;
+    return <><TailscaleTab found={found} onAddPc={() => undefined} onConnectMachine={() => undefined} /><SshTab found={found} machines={machines} onAddPc={() => undefined} onConnectMachine={() => undefined} /></>;
   }
 
   it("lists only the PCs of the Tailscale login: Connect opens Add PC with that address, an added one says so", async () => {
@@ -877,15 +911,15 @@ describe("Connect a phone on a phone", () => {
     expect(text(renderer!.root)).toContain("Added");
   });
 
-  it("lists an ssh config host written as a tailnet IP by its Tailscale name, the IP beside it, and adds it under that name", async () => {
+  it("lists an ssh config host written as a tailnet IP by its Tailscale name and MagicDNS name, and adds it under that name at that IP", async () => {
     tailnetOutdated = false;
     extraCandidates = [{ name: "100.123.228.51", destination: "100.123.228.51", detail: "devswha@100.123.228.51", source: "ssh_config", tailnet: "old-desktop.tail.ts.net" }];
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
-    const row = renderer!.root.findAll((node) => node.props.className === "connect-found-row").find((node) => text(node).includes("100.123.228.51"))!;
+    const row = renderer!.root.findAll((node) => node.props.className === "connect-found-row").find((node) => text(node).includes("old-desktop"))!;
     expect(text(row.findByProps({ className: "connect-found-name" }))).toBe("old-desktop");
-    expect(text(row.findByProps({ className: "connect-found-detail" }))).toBe("100.123.228.51");
+    expect(text(row.findByProps({ className: "connect-found-detail" }))).toBe("old-desktop.tail.ts.net");
     await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect old-desktop" }).props.onClick(); });
     expect(added).toEqual([{ destination: "100.123.228.51", name: "old-desktop" }]);
   });
@@ -914,12 +948,91 @@ describe("Connect a phone on a phone", () => {
     expect(renderer!.root.findByProps({ "aria-label": "Connect winvm" }).props.disabled).toBe(false);
   });
 
-  it("tells a Tailscale PC with an older Ovis, and an ssh config host that reaches it, to update it there instead of offering Connect", async () => {
+  it("tells a Tailscale PC with an older Ovis, one row with the ssh config host that reaches it, to update it there instead of offering Connect", async () => {
     extraCandidates = [{ name: "lab", destination: "lab", detail: "rise@winvm.tail.ts.net", source: "ssh_config", tailnet: "winvm.tail.ts.net" }];
     await mount(<Tailscale machines={[]} onAddPc={() => undefined} />);
     await flushReads();
     expect(renderer!.root.findAllByProps({ "aria-label": "Connect winvm" })).toHaveLength(0);
-    expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(2);
+    expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(1);
+  });
+
+  it("lists one row per Tailscale PC: the config aliases the server resolved to it go under its machine name, Connect opening the first", async () => {
+    tailnetOutdated = false;
+    extraCandidates = [
+      { name: "mymac", destination: "mymac", detail: "me@100.64.0.7", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
+      { name: "macbook", destination: "macbook", detail: "me@macbookpro.tail.ts.net", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
+    ];
+    const added: (AddPcPreset | undefined)[] = [];
+    await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
+    await flushReads();
+    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
+    expect(rows.map((row) => text(row.findByProps({ className: "connect-found-name" })))).toEqual(["winvm", "macbookpro"]);
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect macbookpro" }).props.onClick(); });
+    expect(added).toEqual([{ destination: "mymac", name: "macbookpro" }]);
+    // added under either alias, the one row says so
+    await act(async () => { renderer!.unmount(); });
+    await mount(<Tailscale machines={[ssh("macbook")]} onAddPc={() => undefined} />);
+    await flushReads();
+    expect(renderer!.root.findAllByProps({ "aria-label": "Connect macbookpro" })).toHaveLength(0);
+  });
+
+  it("takes a PC not in the Tailscale tab's list in a field at its foot, connected as the SSH tab connects a typed one", async () => {
+    const added: (AddPcPreset | undefined)[] = [];
+    await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
+    await flushReads();
+    const field = renderer!.root.findByType("input");
+    expect(field.props.placeholder).toBe("user@host or address");
+    await act(async () => { field.props.onChange({ target: { value: " me@build-box " } }); });
+    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    expect(added).toEqual([{ destination: "me@build-box" }]);
+    // another PC's Ovis by its https address goes to its code, as in the SSH tab
+    await act(async () => { renderer!.root.findByType("input").props.onChange({ target: { value: "https://desk.tail.ts.net:7317" } }); });
+    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    expect(added).toHaveLength(1);
+    expect(renderer!.root.findAllByProps({ "data-address-kind": "ovis" })).toHaveLength(1);
+    expect(renderer!.root.findAllByType("input").map((input) => input.props.value ?? input.props.autoComplete)).toEqual(["", "https://desk.tail.ts.net:7317", "one-time-code"]);
+  });
+
+  it("lists in the relay tab the Tailscale PCs and ssh config hosts as one list, each with its way: Add opens Add PC for that host", async () => {
+    tailnetOutdated = false;
+    tailnetServerId = "srv_winvm";
+    extraCandidates = [
+      { name: "mymac", destination: "mymac", detail: "me@100.64.0.7", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
+      { name: "macbook", destination: "macbook", detail: "me@macbookpro.tail.ts.net", source: "ssh_config", tailnet: "macbookpro.tail.ts.net" },
+    ];
+    const added: (AddPcPreset | undefined)[] = [];
+    await mount(<Reachable machines={[]} accountPcs={new Set(["srv_winvm"])} onAddPc={(preset) => { added.push(preset); }} />);
+    await flushReads();
+    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
+    const cell = (row: ReactTestInstance, className: string) => text(row.findByProps({ className }));
+    expect(rows.map((row) => [cell(row, "connect-found-name"), cell(row, "connect-found-detail")])).toEqual([
+      ["nuc12", "SSH config · rise@100.127.218.1"],
+      ["winvm", "Tailscale · winvm.tail.ts.net"],
+      ["macbookpro", "Tailscale · macbookpro.tail.ts.net"],
+    ]);
+    // a PC whose relay ID is the account's is in it: nothing to add
+    expect(text(rows[1]!)).toContain("In your account");
+    expect(renderer!.root.findAllByProps({ "aria-label": "Add winvm" })).toHaveLength(0);
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add macbookpro" }).props.onClick(); });
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add nuc12" }).props.onClick(); });
+    expect(added).toEqual([{ destination: "mymac", name: "macbookpro" }, { destination: "nuc12", name: "nuc12" }]);
+    // a PC not in the list, typed at the foot, goes the same way
+    const field = renderer!.root.findByType("input");
+    expect(field.props.placeholder).toBe("user@host");
+    await act(async () => { field.props.onChange({ target: { value: "root@hosthatch " } }); });
+    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    expect(added.at(-1)).toEqual({ destination: "root@hosthatch" });
+  });
+
+  it("in the relay tab's list, says what keeps a PC from being added: here already, or an older Ovis", async () => {
+    tailnetOutdated = true;
+    await mount(<Reachable machines={[ssh("nuc12")]} accountPcs={new Set()} onAddPc={() => undefined} />);
+    await flushReads();
+    const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
+    expect(rows.map((row) => row.props["data-reachable-state"])).toEqual(["added", "outdated"]);
+    expect(text(rows[0]!)).toContain("Added");
+    expect(text(rows[1]!)).toContain("Update Ovis on that PC to 0.5 first.");
+    expect(renderer!.root.findAll((node) => node.type === "button" && String(node.props["aria-label"] ?? "").startsWith("Add "))).toHaveLength(0);
   });
 
   const openByAddress = async () => { await act(async () => { renderer!.root.find((node) => node.type === "button" && text(node) === "Add by address").props.onClick(); }); };
@@ -1121,7 +1234,7 @@ describe("Connect a phone on a phone", () => {
     await flushReads();
     expect(reads()).toBe(4);
     expect(renderer!.root.findAll((node) => node.type === "button" && text(node).includes("Try again"))).toHaveLength(0);
-    expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(2);
+    expect(renderer!.root.findAll((node) => node.type === "span" && text(node) === "Update Ovis on that PC to 0.5 first.")).toHaveLength(1);
     expect(text(renderer!.root)).toContain("lab: Update Ovis on that PC to 0.5 first.");
   });
 
