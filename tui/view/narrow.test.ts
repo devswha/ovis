@@ -173,6 +173,24 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect([run.loop.report().mode.overlays, where()]).toEqual([["menu"], before]);
   }, TEST_MS);
 
+  it.each(["before update", "before repaint", "after repaint"])("a painted Close pane acts only on the pane shown: click %s", async (when) => {
+    const run = await shown(45, 80);
+    await run.keys("ctrl+b,enter");
+    await run.advance(FRAME_PASS_MS);
+    if (when !== "before update") {
+      run.core.remove("t1");
+      await run.settle();
+      if (when === "after repaint") await run.advance(FRAME_PASS_MS);
+    }
+    const row = run.grid().findIndex((line) => line.includes("close pane"));
+    expect(row).toBeGreaterThan(0);
+    run.type(click(10, row));
+    await run.advance(200);
+    const main = run.loop.model().world.workspaces.flatMap((w) => w.tabs).find((tab) => tab.id === "t-main");
+    expect(main?.panes.map(({ id }) => id) ?? []).toEqual(when === "after repaint" ? [] : ["t2"]);
+    expect(run.loop.report().mode.overlays).toEqual(when === "before repaint" ? ["menu"] : []);
+  }, TEST_MS);
+
   it("the narrow header counts the agents that need the user elsewhere, and not the one it shows", async () => {
     const run = await Run.start({ fixture: agents, cols: 45, rows: 30 });
     runs.push(run);

@@ -14,8 +14,8 @@ type PlaceKind = "workspace" | "tab" | "pane" | "agent";
 
 /** One line of the menu: a place (its id; an agent's and a pane's is the pane's) or an action; `label` the key that chooses it. */
 export type MenuEntry =
-  | { readonly kind: PlaceKind; readonly id: string; readonly label: string | null }
-  | { readonly kind: "action"; readonly action: HerdrAction; readonly label: string };
+  | { readonly kind: PlaceKind; readonly id: string; readonly label: string | null; readonly created?: number }
+  | { readonly kind: "action"; readonly action: HerdrAction; readonly label: string; readonly targets: string };
 
 /** The keys of the first places, in order: digits, which every keyboard types and no input method composes. */
 const PLACE_LABELS = [..."1234567890"];
@@ -25,6 +25,7 @@ const ACTION_LABELS = [..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 /** The menu's entries for what exists now and where the screen looks. */
 export function menuEntries(world: World, focus: Focus): MenuEntry[] {
   const shown = focused(world, focus);
+  const created = new Map(world.workspaces.flatMap((w) => w.tabs.flatMap((t) => t.panes.map((p) => [p.id, p.created] as const))));
   const places: { kind: PlaceKind; id: string }[] = [
     ...world.workspaces.map(({ id }) => ({ kind: "workspace" as const, id })),
     ...(shown.workspace?.tabs ?? []).map(({ id }) => ({ kind: "tab" as const, id })),
@@ -33,20 +34,65 @@ export function menuEntries(world: World, focus: Focus): MenuEntry[] {
     ...(world.agents ?? []).map((id) => ({ kind: "agent" as const, id })),
   ];
   const actions = CATALOGUE.filter((entry) => entry.status === "built");
+  const { workspace, tab, pane } = shown;
+  const paneId = (id: string) => [id, created.get(id) ?? null];
+  const here = [workspace?.id, tab?.id, pane && paneId(pane.id)];
+  // Include the scope of relative choices and the complete seen set of a close. An unrelated workspace
+  // appearing does not invalidate a pane action; a new terminal reusing the same address does.
+  const targets = (action: HerdrAction): string => {
+    switch (action) {
+      case "help": case "goto": case "detach": case "reload_config": case "toggle_sidebar": case "new_workspace":
+        return "";
+      case "workspace_picker": case "rename_workspace": case "new_tab":
+        return JSON.stringify(workspace?.id ?? null);
+      case "rename_tab":
+        return JSON.stringify([workspace?.id, tab?.id]);
+      case "previous_workspace": case "next_workspace": case "switch_workspace":
+        return JSON.stringify([workspace?.id, world.workspaces.map((w) => w.id)]);
+      case "previous_tab": case "next_tab": case "move_tab_previous": case "move_tab_next": case "switch_tab":
+        return JSON.stringify([workspace?.id, tab?.id, workspace?.tabs.map((t) => t.id)]);
+      case "close_workspace":
+        return JSON.stringify([workspace?.id, workspace?.tabs.flatMap((t) => t.panes.map((p) => paneId(p.id)))]);
+      case "close_tab": case "close_pane": {
+        const ends = action === "close_tab" ? tab?.panes : pane && [pane];
+        const all = workspace?.tabs.reduce((n, t) => n + t.panes.length, 0);
+        return JSON.stringify([workspace?.id, tab?.id, ends?.map((p) => paneId(p.id)), ends?.length === all]);
+      }
+      case "last_pane":
+        return JSON.stringify([here, focus.previous && paneId(focus.previous)]);
+      case "previous_agent": case "next_agent": case "focus_agent": case "open_notification_target":
+        return JSON.stringify([here, world.agents?.map(paneId)]);
+      case "cycle_pane_previous": case "cycle_pane_next":
+      case "focus_pane_left": case "focus_pane_right": case "focus_pane_up": case "focus_pane_down":
+      case "swap_pane_left": case "swap_pane_right": case "swap_pane_up": case "swap_pane_down":
+        return JSON.stringify([here, tab?.panes.map((p) => paneId(p.id))]);
+      default:
+        return JSON.stringify(here);
+    }
+  };
   return [
-    ...places.map((place, at): MenuEntry => ({ ...place, label: PLACE_LABELS[at] ?? null })),
-    ...actions.map(({ id }, at): MenuEntry => ({ kind: "action", action: id, label: ACTION_LABELS[at]! })),
+    ...places.map((place, at): MenuEntry => ({
+      ...place, label: PLACE_LABELS[at] ?? null,
+      ...(place.kind === "pane" || place.kind === "agent" ? { created: created.get(place.id) } : {}),
+    })),
+    ...actions.map(({ id }, at): MenuEntry => ({ kind: "action", action: id, label: ACTION_LABELS[at]!, targets: targets(id) })),
   ];
 }
 
 /** An entry's identity, the same across world updates: what a click on its painted line names (never its index, which a world update shifts). */
-export const entryKey = (entry: MenuEntry): string => entry.kind === "action" ? `action:${entry.action}` : `${entry.kind}:${entry.id}`;
+export const entryKey = (entry: MenuEntry): string => entry.kind === "action"
+  ? `action:${entry.action}:${entry.targets}` : JSON.stringify([entry.kind, entry.id, entry.created]);
 
 /** The cursor's place among `next` for the entry it was on in `before`: the same entry, else the same index, kept in range. */
 export function keptCursor(before: readonly MenuEntry[], cursor: number, next: readonly MenuEntry[]): number {
   const was = before[cursor];
-  const same = was === undefined ? -1 : next.findIndex((entry) => entryKey(entry) === entryKey(was));
+  const same = was === undefined ? -1 : indexOfEntry(next, was);
   return same >= 0 ? same : Math.max(0, Math.min(cursor, next.length - 1));
+}
+
+export function indexOfEntry(entries: readonly MenuEntry[], wanted: MenuEntry): number {
+  const key = entryKey(wanted);
+  return entries.findIndex((entry) => entryKey(entry) === key);
 }
 
 /** The actions that need a number say which place: the menu moves its cursor to the first place of that kind instead. */
