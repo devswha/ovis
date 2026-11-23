@@ -70,6 +70,8 @@ APP_DIR="$HOME/.local/share/ovis/app"
 SERVICE="ovis"
 AGENT_LABEL="sh.ovis.server"
 HERDR_SERVICE="ovis-herdr"
+# the unit's own line, which tells a unit this installer wrote from one of the same name that is someone else's
+HERDR_UNIT_DESCRIPTION="herdr for Ovis: herdr's server, headless, which starts Ovis"
 # the Mac app's (app/mac/Sources/OvisMac/Run.swift, Ovis.agentLabel): one LaunchAgent, whichever of the two set it up
 HERDR_AGENT_LABEL="sh.ovis.herdr-server"
 # the first release whose `ovis add` takes --account (scripts/plugin-link.ts): an older one would not check the account
@@ -685,6 +687,8 @@ running_lines() {
   esac
   if [ -z "$herdr_way" ]; then
     say "Ovis runs now at $(link "$running_at"), and starts whenever herdr does. See it: $(ovis_command) status. Stop it: $(ovis_command) stop"
+    [ "${herdr_doomed:-0}" != 1 ] || say "this herdr was started at this login by the user service $HERDR_SERVICE, inside your service manager, and lingering is off for $(id -un): it ends when you log out, with every terminal in it. The installer removed that service. To have herdr outlive the logout, stop it ($(herdr_command) server stop) and run this installer again; to have it start whenever this PC starts, an administrator turns lingering on (sudo loginctl enable-linger $(id -un)), then run this installer again"
+    [ "${herdr_doomed:-0}" = 1 ] || [ "${herdr_unit_gone:-0}" != 1 ] || say "removed the user service $HERDR_SERVICE an earlier run set up: lingering is off for $(id -un) now, so it would start herdr at each login inside your service manager, which ends herdr with that login"
     return 0
   fi
   say "Ovis runs now at $(link "$running_at"), in herdr, which $herdr_way"
@@ -692,6 +696,7 @@ running_lines() {
   # the service starts herdr; it does not watch it
   [ -z "$herdr_again" ] || say "a herdr that stops or crashes is not started again $herdr_again, or until this installer runs again"
   [ "${lingering:-}" != turned-on ] || say "lingering is on for $(id -un) now, so herdr runs with nobody logged in; the guide's Uninstall turns it off again"
+  [ "${herdr_unit_gone:-0}" != 1 ] || say "removed the user service $HERDR_SERVICE an earlier run set up: with lingering off it would start herdr at each login inside your service manager, which ends herdr with that login"
 }
 
 # herdr as a command typed here runs it: by its name where the user's PATH finds this one, else by its path
@@ -1347,6 +1352,32 @@ service_path() {
 # A locale's name that says UTF-8 (en_US.UTF-8, C.utf8, ko_KR.UTF-8@euro).
 utf8_locale() { case "$1" in *.[Uu][Tt][Ff]-8 | *.[Uu][Tt][Ff]8 | *.[Uu][Tt][Ff]-8@* | *.[Uu][Tt][Ff]8@*) return 0 ;; esac; return 1; }
 
+# The unit an earlier run wrote, where lingering is off now (turned off since, or refused): at every login it would
+# start herdr inside the user's service manager, which logind ends with that login, and every terminal with it, and a
+# herdr the person starts would attach to that one instead of starting one that outlives the logout. It is disabled and
+# removed, never stopped (a stop would end nothing anyway), and the note that the installer turned lingering on goes
+# with it. Fails where there is no such unit, or it is someone else's (its description is not this installer's).
+forget_herdr_unit() {
+  herdr_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HERDR_SERVICE.service"
+  grep -qsxF "Description=$HERDR_UNIT_DESCRIPTION" "$herdr_unit" || return 1
+  systemctl --user disable "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1 || true
+  rm -f "$herdr_unit" "$OVIS_HOME/lingering"
+  systemctl --user daemon-reload </dev/null >/dev/null 2>&1 || true
+}
+
+# herdr runs (nothing is started or stopped then), but where lingering is off and the unit an earlier run wrote is
+# there, that unit goes (forget_herdr_unit). When it ran at this login, the herdr that runs is most likely the one it
+# started, inside the service manager: $herdr_doomed says so, and the closing lines say what that means.
+unit_without_lingering() {
+  [ "$os" = linux ] && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 || return 0
+  [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null </dev/null || true)" != yes ] || return 0
+  herdr_unit_ran=$(systemctl --user is-active "$HERDR_SERVICE.service" 2>/dev/null </dev/null || true)
+  forget_herdr_unit || return 0
+  herdr_bin=$(command -v herdr)
+  herdr_unit_gone=1
+  [ "$herdr_unit_ran" != active ] || herdr_doomed=1
+}
+
 # herdr's server, started headless where none runs (herdr just installed, or installed and stopped): the plugin starts
 # with it (its startup hook), so the app runs now. On a PC used without a desktop, the user's service manager starts it
 # again: on macOS the Mac app's LaunchAgent (app/mac/README.md) at login; on Linux ovis-herdr.service, only where
@@ -1404,6 +1435,7 @@ start_herdr() {
     herdr_kept=once
   elif keep_lingering; [ "$lingering" != on ] && [ "$lingering" != turned-on ]; then
     herdr_kept=linger-off
+    ! forget_herdr_unit || herdr_unit_gone=1
   else
     herdr_kept=once
     herdr_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HERDR_SERVICE.service"
@@ -1417,7 +1449,7 @@ start_herdr() {
     # KillMode=process and no ExecStop a stop or restart of the unit ends nothing that runs. herdr runs in the home
     # folder, as from a login, not in systemd's /, and its output goes to the journal (journalctl --user -u ovis-herdr)
     {
-      printf '%s\n' '[Unit]' "Description=herdr for Ovis: herdr's server, headless, which starts Ovis" '' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' 'KillMode=process' 'WorkingDirectory=~'
+      printf '%s\n' '[Unit]' "Description=$HERDR_UNIT_DESCRIPTION" '' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' 'KillMode=process' 'WorkingDirectory=~'
       printf 'Environment="PATH=%s"\n' "$(unit_text "$service_path")"
       printf 'Environment="LC_CTYPE=%s"\n' "$(unit_text "$herdr_ctype")"
       ! utf8_locale "${LANG:-}" || printf 'Environment="LANG=%s"\n' "$(unit_text "$LANG")"
@@ -1620,6 +1652,7 @@ install_plugin() {
   # itself once it is up (the plugin's startup hook): either way, wait for it here
   ovis_wait=25
   if herdr_running; then
+    unit_without_lingering
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
   elif start_herdr; then
     ovis_wait=60
@@ -1774,6 +1807,7 @@ install_plugin_binary() {
   # the release's server outlives a stopped herdr: one from the binary before keeps serving unless stopped first
   [ "$binary_changed" = 0 ] || ovis_cli stop </dev/null >/dev/null 2>&1 || true
   if herdr_running; then
+    unit_without_lingering
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
   elif start_herdr; then
     ovis_wait=60
@@ -1851,6 +1885,8 @@ main() {
   new_install=0
   herdr_kept=""
   lingering=""
+  herdr_unit_gone=0
+  herdr_doomed=0
   PATH="$BIN_DIR:$HOME/.bun/bin:$NODE_DIR/bin:$LEGACY_NODE_DIR/bin:$PATH"
   export PATH
 

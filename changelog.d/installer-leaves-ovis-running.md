@@ -5,7 +5,7 @@
   only where lingering is on or can be turned on without a password, so herdr starts at boot and
   keeps running after a logout; on macOS the Mac app's `sh.ovis.herdr-server` LaunchAgent. In a
   desktop's session, without lingering, or with `--no-service` (`OVIS_NO_SERVICE=1`) it starts herdr
-  once and sets up nothing. The service never stops herdr, a herdr that already runs is left as it
+  once and sets up nothing, and it removes a service an earlier run set up once lingering is off. The service never stops herdr, a herdr that already runs is left as it
   is, and the guide's Uninstall removes the service. Its last lines say what runs, what starts it
   again, `ovis status` to see it and `ovis stop` to stop it.
 

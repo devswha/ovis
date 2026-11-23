@@ -12,11 +12,14 @@
  *   6. the guide's Uninstall: herdr runs on, nothing starts it at the next boot, and lingering is off again;
  *   7. the line after it (herdr installed, not running, no service yet): Ovis runs and starts at boot again;
  *   8. --add --account on a release whose add does not take --account: nothing is added, and the exit is non-zero;
- * on a server whose polkit refuses lingering:
- *   9. no unit; herdr started once, in the session's scope and not alice's service manager, outlives the logout, and
- *      nothing starts after a reboot;
+ * on a server whose administrator turns lingering off after a service install:
+ *   9-10. the unit and lingering, then lingering off and refused, and a reboot that starts nothing;
+ *   11. the login starts herdr from the old unit inside alice's service manager; the line removes the unit and says that
+ *       herdr ends with the login, which it does;
+ *   12. the line again: no unit, herdr started once in the session's scope, which outlives the logout;
+ *   13. a reboot and a login start nothing, and a herdr alice starts herself outlives her logout;
  * and on one where alice may turn lingering on:
- *   10. in a desktop's session (XDG_SESSION_TYPE=wayland), and 11. with --no-service: no unit, lingering untouched.
+ *   14. in a desktop's session (XDG_SESSION_TYPE=wayland), and 15. with --no-service: no unit, lingering untouched.
  *
  *   bun scripts/install-service-docker.ts      KEEP=1 leaves the containers behind
  */
@@ -212,24 +215,57 @@ try {
 
 const strict = await pc("no-linger");
 try {
-  const { root, install, until, reboot, processes, lingers, loggedOut } = strict;
-  assert.equal((await root(`mkdir -p /etc/polkit-1/rules.d && printf '%s\\n' '${NO_LINGER}' >/etc/polkit-1/rules.d/00-no-self-linger.rules && systemctl restart polkit`)).code, 0);
-  await step("9. lingering refused: no unit, and herdr started once outlives the logout", async () => {
-    const fresh = await install();
-    assert.match(fresh.out, /exit=0/, fresh.out.slice(-3000));
-    assert.match(fresh.out, /in herdr, which was started in the background and keeps running after you log out\. Nothing starts it after a restart: lingering is off for alice, and turning it on needs an administrator \(sudo loginctl enable-linger alice\)/, fresh.out.slice(-3000));
+  const { root, alice, install, until, reboot, processes, lingers, loggedOut } = strict;
+  const HERDR_UP = "for i in $(seq 1 30); do herdr status server --json | grep -q '\"running\":true' && break; sleep 1; done";
+  const cgroupOf = async (pid: string) => (await root(`cat /proc/${pid}/cgroup`)).out;
+  const SESSION_SCOPE = /\/user-\d+\.slice\/session-[^/]+\.scope$/m;
+  await step("9. a service set up while lingering was allowed: unit and lingering", async () => {
+    const first = await install();
+    assert.match(first.out, /in herdr, which the user service ovis-herdr starts whenever this PC starts/, first.out.slice(-3000));
+    assert.equal(await lingers(), true);
+  });
+  await step("10. an administrator turns lingering off and refuses it; a reboot starts nothing", async () => {
+    assert.equal((await root(`loginctl disable-linger alice && mkdir -p /etc/polkit-1/rules.d && printf '%s\\n' '${NO_LINGER}' >/etc/polkit-1/rules.d/00-no-self-linger.rules`)).code, 0);
+    await reboot();
+    assert.deepEqual(await processes(), { herdr: [], ovis: [] });
+  });
+  await step("11. the person logs in, where the old unit starts herdr inside the manager, and runs the line: the unit goes, and it says this herdr ends with the login", async () => {
+    // one session: the login's start of the unit, then the line in it
+    const run = await alice(`${HERDR_UP}; ps -u alice -o pid=,args= | awk '/herdr server$/ { print $1 }' | while read pid; do cat /proc/$pid/cgroup; done; cat /opt/install.sh | sh 2>&1; echo "exit=$?"`);
+    assert.match(run.out, /\/user@\d+\.service\/.*ovis-herdr\.service$/m, `the login did not start herdr from the old unit:\n${run.out.slice(0, 1500)}`);
+    assert.match(run.out, /exit=0/, run.out.slice(-3000));
+    assert.match(run.out, /Ovis: this herdr was started at this login by the user service ovis-herdr, inside your service manager, and lingering is off for alice: it ends when you log out, with every terminal in it\. The installer removed that service\./, run.out.slice(-3000));
+    assert.equal((await root(`test -e ${UNIT}`)).code, 1);
+    // as it said: with no session left the manager stops, and herdr with it
+    await until("alice's service manager stopped with her last session", "! systemctl is-active --quiet user@$(id -u alice).service", 60);
+    assert.deepEqual((await processes()).herdr, []);
+  });
+  await step("12. the line again, lingering refused: no unit, herdr started once in the session's scope, which outlives the logout", async () => {
+    const run = await install();
+    assert.match(run.out, /exit=0/, run.out.slice(-3000));
+    assert.match(run.out, /in herdr, which was started in the background and keeps running after you log out\. Nothing starts it after a restart: lingering is off for alice, and turning it on needs an administrator \(sudo loginctl enable-linger alice\); then run this installer again and herdr starts whenever this PC starts/, run.out.slice(-3000));
     assert.equal(await lingers(), false);
     assert.equal((await root(`test -e ${UNIT}`)).code, 1);
-    // herdr runs in the scope of the session it was started from, not in alice's service manager, which logind stops
-    // once no session is left: a herdr in the manager would have ended with it (the finding this case is for)
+    // in the scope of the session it was started from, not in alice's service manager (the finding this case is for)
     const running = await processes();
     assert.equal(running.herdr.length, 1);
-    assert.match((await root(`cat /proc/${running.herdr[0]}/cgroup`)).out, /\/user-\d+\.slice\/session-[^/]+\.scope$/m);
+    assert.match(await cgroupOf(running.herdr[0]!), SESSION_SCOPE);
     await loggedOut();
     assert.deepEqual((await processes()).herdr, running.herdr);
     await until("Ovis answers after the logout", HEALTH, 10);
+  });
+  await step("13. a reboot starts nothing, nor does a login; a herdr the person starts outlives their logout", async () => {
     await reboot();
     assert.deepEqual(await processes(), { herdr: [], ovis: [] });
+    const own = await alice(`herdr status server --json | grep -q '"running":true' && echo "running at login"; setsid herdr server </dev/null >/dev/null 2>&1 & ${HERDR_UP}; herdr status server --json`);
+    assert.doesNotMatch(own.out, /running at login/, own.out);
+    assert.match(own.out, /"running":true/, own.out);
+    const running = await processes();
+    assert.equal(running.herdr.length, 1);
+    assert.match(await cgroupOf(running.herdr[0]!), SESSION_SCOPE);
+    await loggedOut();
+    assert.deepEqual((await processes()).herdr, running.herdr);
+    await until("Ovis answers, started by the person's herdr", HEALTH, 30);
   });
 } finally {
   await strict.remove();
@@ -238,7 +274,7 @@ try {
 const desk = await pc("desktop");
 try {
   const { root, alice, install, until, lingers } = desk;
-  await step("10. in a desktop's session: no unit, lingering untouched, herdr started once", async () => {
+  await step("14. in a desktop's session: no unit, lingering untouched, herdr started once", async () => {
     const run = await install("", "export XDG_SESSION_TYPE=wayland; ");
     assert.match(run.out, /exit=0/, run.out.slice(-3000));
     assert.match(run.out, /in herdr, which was started for now: this is a desktop's session, so after a restart herdr starts when you open it, as before/, run.out.slice(-3000));
@@ -246,7 +282,7 @@ try {
     assert.equal((await root(`test -e ${UNIT}`)).code, 1);
     await until("Ovis answers", HEALTH, 10);
   });
-  await step("11. with --no-service: no unit, lingering untouched, herdr started once", async () => {
+  await step("15. with --no-service: no unit, lingering untouched, herdr started once", async () => {
     assert.equal((await alice("herdr server stop")).code, 0);
     await until("herdr stopped", "! su -l alice -c 'herdr status server --json' | grep -q '\"running\":true'", 30);
     const run = await install("--no-service");
@@ -260,5 +296,5 @@ try {
   await desk.remove();
 }
 
-console.log(`\nOne line leaves Ovis running: on a server through a logout, a rerun and a reboot; where lingering is refused through a logout; in a desktop's session and with --no-service with nothing set up. install.sh said on the fresh server:\n${
+console.log(`\nOne line leaves Ovis running: on a server through a logout, a rerun and a reboot; where lingering is refused through a logout, with no service left to start a herdr that a logout would end; in a desktop's session and with --no-service with nothing set up. install.sh said on the fresh server:\n${
   said.split("\n").filter((line) => /^Ovis: /.test(line)).map((line) => `  ${line}`).join("\n")}`);

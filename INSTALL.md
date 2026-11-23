@@ -64,7 +64,9 @@ is on or can be turned on without a password (`loginctl enable-linger`; it recor
 `~/.local/share/ovis/lingering`), so herdr starts at boot and runs after a logout; on macOS the
 `sh.ovis.herdr-server` LaunchAgent, at login. Where lingering cannot be turned on, in a desktop's
 session, without a service manager, or with `--no-service` (`OVIS_NO_SERVICE=1`), it starts herdr once
-(it outlives a logout) and sets up nothing. That is a service and possibly lingering for the user's
+(it outlives a logout) and sets up nothing; a service an earlier run set up while lingering was on is
+removed once lingering is off (it would start herdr inside the user's service manager at each login,
+which ends it at logout), and the closing lines say so. That is a service and possibly lingering for the user's
 account: say so when you **Ask**, and pass `--no-service` if the user does not want them. The service
 never stops herdr, and a herdr that runs is left as it is. It ends by saying what runs and what starts
 it again, `ovis status` to see it and `ovis stop` to stop it.

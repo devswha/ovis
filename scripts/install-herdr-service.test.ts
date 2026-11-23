@@ -20,12 +20,12 @@ function fn(name: string): string {
   if (!match) throw new Error(`install.sh defines no ${name}()`);
   return match[0];
 }
-const CONSTANTS = ["BIN_DIR", "OVIS_HOME", "HERDR_SERVICE", "HERDR_AGENT_LABEL"].map((name) => {
+const CONSTANTS = ["BIN_DIR", "OVIS_HOME", "HERDR_SERVICE", "HERDR_UNIT_DESCRIPTION", "HERDR_AGENT_LABEL"].map((name) => {
   const line = new RegExp(`^${name}=.*$`, "m").exec(INSTALLER)?.[0];
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
 }).join("\n");
-const FUNCTIONS = ["say", "fail", "link", "quoted", "xml_text", "unit_text", "herdr_running", "keep_lingering", "desktop_session", "service_path", "utf8_locale", "start_herdr", "herdr_failed", "running_lines", "herdr_command"].map(fn).join("\n");
+const FUNCTIONS = ["say", "fail", "link", "quoted", "xml_text", "unit_text", "herdr_running", "keep_lingering", "desktop_session", "service_path", "utf8_locale", "forget_herdr_unit", "unit_without_lingering", "start_herdr", "herdr_failed", "running_lines", "herdr_command"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-herdr-"));
 afterAll(() => {
@@ -66,6 +66,7 @@ const recorder = (name: string, body = "") => `echo "${name} $*" >> "$HOME/calls
 /** systemctl --user as a user manager answers it; its restart starts the unit's herdr as systemd would */
 const SYSTEMCTL = recorder("systemctl", `case "$*" in
   "--user restart ovis-herdr.service") [ -e "$HOME/systemd-refuses" ] && exit 1; "$HOME/tools/herdr" server >/dev/null 2>&1 </dev/null & ;;
+  "--user is-active ovis-herdr.service") if [ -e "$HOME/unit-ran" ]; then echo active; else echo inactive; exit 3; fi ;;
 esac
 exit 0`);
 
@@ -183,6 +184,60 @@ WantedBy=default.target
         }
       } finally { linux.stop(); }
     }
+  });
+
+  // lingering turned off since an earlier run wrote the unit: at every login it would start herdr inside the manager
+  it("where lingering is off now, removes the unit an earlier run wrote, without stopping it, and leaves anyone else's", () => {
+    const REFUSES = recorder("loginctl", `[ "$1" = show-user ] && { echo no; exit 0; }; exit 1`);
+    const linux = pc({ systemctl: SYSTEMCTL, loginctl: LINGERS, id });
+    try {
+      expect(sh("os=linux; start_herdr", linux.env).code).toBe(0);
+      linux.stop();
+      rmSync(join(linux.home, "up"));
+      mkdirSync(join(linux.home, ".local", "share", "ovis"), { recursive: true });
+      writeFileSync(join(linux.home, ".local", "share", "ovis", "lingering"), "alice\n");
+      writeFileSync(join(linux.bin, "loginctl"), `#!/bin/sh\n${REFUSES}\n`, { mode: 0o755 });
+      const before = linux.calls().length;
+      const result = sh(`os=linux; start_herdr; echo "kept=$herdr_kept gone=\${herdr_unit_gone:-0}"`, linux.env);
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toContain("kept=linger-off gone=1");
+      expect(existsSync(unitOf(linux.home))).toBe(false);
+      expect(existsSync(join(linux.home, ".local", "share", "ovis", "lingering"))).toBe(false);
+      const calls = linux.calls().slice(before).filter((call) => call.startsWith("systemctl"));
+      expect(calls).toEqual(["systemctl --user show-environment", "systemctl --user disable ovis-herdr.service", "systemctl --user daemon-reload"]);
+    } finally { linux.stop(); }
+    const theirs = pc({ systemctl: SYSTEMCTL, loginctl: REFUSES, id });
+    try {
+      mkdirSync(join(theirs.home, ".config", "systemd", "user"), { recursive: true });
+      writeFileSync(unitOf(theirs.home), "[Unit]\nDescription=my own herdr\n");
+      expect(sh(`os=linux; start_herdr; echo "gone=\${herdr_unit_gone:-0}"`, theirs.env).out).toContain("gone=0");
+      expect(readFileSync(unitOf(theirs.home), "utf8")).toBe("[Unit]\nDescription=my own herdr\n");
+    } finally { theirs.stop(); }
+  });
+
+  // after a reboot with lingering off, the unit starts herdr at the login the installer then runs in: herdr runs
+  it("where herdr runs and lingering is off, removes the unit, says when this herdr is the one it started, and stops nothing", () => {
+    for (const [ran, doomed] of [[true, "1"], [false, "0"]] as const) {
+      const linux = pc({ systemctl: SYSTEMCTL, loginctl: LINGERS, id });
+      try {
+        expect(sh("os=linux; start_herdr", linux.env).code).toBe(0);
+        if (ran) writeFileSync(join(linux.home, "unit-ran"), "");
+        writeFileSync(join(linux.bin, "loginctl"), `#!/bin/sh\n${recorder("loginctl", `[ "$1" = show-user ] && echo no; exit 0`)}\n`, { mode: 0o755 });
+        const before = linux.calls().length;
+        const result = sh(`os=linux; herdr_unit_gone=0; herdr_doomed=0; unit_without_lingering; echo "gone=$herdr_unit_gone doomed=$herdr_doomed"`, linux.env);
+        expect(result.out).toContain(`gone=1 doomed=${doomed}`);
+        expect(existsSync(unitOf(linux.home))).toBe(false);
+        const calls = linux.calls().slice(before);
+        expect(calls.some((call) => / (stop|restart|kill)\b/.test(call) || call.includes("enable-linger"))).toBe(false);
+        expect(() => process.kill(Number(readFileSync(join(linux.home, "herdr.pid"), "utf8")), 0)).not.toThrow();
+      } finally { linux.stop(); }
+    }
+    const lingered = pc({ systemctl: SYSTEMCTL, loginctl: LINGERS, id });
+    try {
+      expect(sh("os=linux; start_herdr", lingered.env).code).toBe(0);
+      expect(sh(`os=linux; herdr_unit_gone=0; herdr_doomed=0; unit_without_lingering; echo "gone=$herdr_unit_gone"`, lingered.env).out).toContain("gone=0");
+      expect(existsSync(unitOf(lingered.home))).toBe(true);
+    } finally { lingered.stop(); }
   });
 
   it("in a desktop's session, or with --no-service, sets up nothing and does not touch lingering: herdr starts once", () => {
@@ -332,6 +387,11 @@ describe.skipIf(process.platform === "win32")("running_lines", () => {
     const launchd = lines("herdr_kept=launchd; lingering=");
     expect(launchd).toContain("which launchd starts at your login (");
     expect(launchd).toContain("not started again until your next login");
+    expect(lines("herdr_kept=linger-off; lingering=off; herdr_unit_gone=1")).toContain("Ovis: removed the user service ovis-herdr an earlier run set up: with lingering off it would start herdr at each login inside your service manager, which ends herdr with that login\n");
+    const doomed = lines("herdr_kept=; lingering=; herdr_unit_gone=1; herdr_doomed=1");
+    expect(doomed).toContain("Ovis: this herdr was started at this login by the user service ovis-herdr, inside your service manager, and lingering is off for alice: it ends when you log out, with every terminal in it. The installer removed that service. To have herdr outlive the logout, stop it (herdr server stop) and run this installer again; to have it start whenever this PC starts, an administrator turns lingering on (sudo loginctl enable-linger alice), then run this installer again\n");
+    expect(doomed).not.toContain("removed the user service");
+    expect(lines("herdr_kept=; lingering=; herdr_unit_gone=1; herdr_doomed=0")).toContain("Ovis: removed the user service ovis-herdr an earlier run set up: lingering is off for alice now");
     // herdr ran before the install: nothing of it is the installer's to tell how to stop
     const before = lines("herdr_kept=; lingering=");
     expect(before).toBe("Ovis: Ovis runs now at http://127.0.0.1:7317, and starts whenever herdr does. See it: ovis status. Stop it: ovis stop\n");
