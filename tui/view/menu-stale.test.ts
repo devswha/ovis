@@ -12,7 +12,7 @@ const click = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}M\x1b[
 const panes = (run: Run) => run.loop.model().world.workspaces.flatMap((w) => w.tabs.flatMap((t) => t.panes.map((p) => p.id)));
 const closes = (run: Run) => run.core.calls().filter((call) => call.method === "terminal.kill" || call.method === "terminal.rm");
 
-it.each(["before Escape", "after Escape", "after repaint"])("a rejected left menu click balances a delivered right press: %s", async (ordering) => {
+it.each(["before Escape", "after Escape", "after repaint"])("a rejected left menu click preserves the physical right release: %s", async (ordering) => {
   const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });
   runs.push(run);
   await run.live();
@@ -35,6 +35,7 @@ it.each(["before Escape", "after Escape", "after repaint"])("a rejected left men
   expect(run.grid()).toEqual(painted);
   run.type(click(col, row));
   await run.settle();
+  expect(program.receivedHex()).toBe(Buffer.from("\x1b[<2;6;4M").toString("hex"));
   expect(run.loop.report().mode.overlays).toEqual(["menu"]);
   expect(run.loop.model().focus.panes["t-main"]).toBe("t1");
   expect(closes(run)).toEqual([]);
@@ -42,7 +43,7 @@ it.each(["before Escape", "after Escape", "after repaint"])("a rejected left men
   if (ordering === "after repaint") await run.advance(FRAME_PASS_MS);
   run.type("\x1b[<2;32;6m");
   await run.settle();
-  const balanced = Buffer.from("\x1b[<2;6;4M\x1b[<2;6;4m").toString("hex");
+  const balanced = Buffer.from("\x1b[<2;6;4M\x1b[<2;7;4m").toString("hex");
   expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual([balanced, ""]);
   run.type("\x1b[<2;33;6m");
   await run.settle();
@@ -102,6 +103,22 @@ it("an unrecognized menu character does not block the next recognized choice", a
   await run.advance(200);
   expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(["", "7a"]);
   expect(run.loop.report().mode.overlays).toEqual([]);
+}, 60_000);
+
+it("a long ignored menu span stays iterative and runs its following choice once", async () => {
+  const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });
+  runs.push(run);
+  await run.live();
+  await run.advance(1);
+  run.type("\x02\r" + "7".repeat(100_000) + "6z");
+  await run.advance(200);
+  expect(run.loop.report().mode.overlays).toEqual([]);
+  expect(run.loop.model().focus.panes["t-main"]).toBe("t2");
+  expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(["", "7a"]);
+  run.type("y");
+  await run.settle();
+  expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(["", "7a79"]);
+  expect(run.loop.report().actions).not.toContain("close_all");
 }, 60_000);
 
 it("a stale choice during a frame write waits for the next accepted menu frame", async () => {

@@ -395,9 +395,9 @@ describe("the loop", () => {
     }
   }, TEST_MS);
 
-  it("a refused layout action's keys leave its dialog or mode as they did: Enter or a letter after them reaches the survivor", async () => {
-    // the close-workspace dialog answered yes, and navigate mode's move-pane key, each read behind a close
-    for (const keys of [["\x02Dy"], ["\x02D", "y"], ["\x02wm"], ["\x02w", "m"]]) {
+  it("refusing a dialog or mode opener leaves its plain tail for the survivor", async () => {
+    // No dialog or navigate mode opens during the hold, so y and m remain plain pane input.
+    for (const [keys, tail] of [[["\x02Dy"], "y"], [["\x02D", "y"], "y"], [["\x02wm"], "m"], [["\x02w", "m"], "m"]] as const) {
       for (const answerFirst of [false, true]) {
         const label = { keys, answerFirst };
         const run = await start({ core: oneTab(2) });
@@ -413,7 +413,7 @@ describe("the loop", () => {
         run.type("\r");
         await settled(run);
         expect([label, run.core.calls().filter(({ method }) => method === "terminal.kill").map(({ params }) => params["terminal"]), sentTo(run, "t2")])
-          .toEqual([label, ["t1"], Buffer.from("\r").toString("hex")]);
+          .toEqual([label, ["t1"], Buffer.from(tail + "\r").toString("hex")]);
         await run.close();
       }
     }
@@ -688,17 +688,18 @@ describe("the loop", () => {
     // or may not have landed: for a run that detached, only that it left and what each program was sent are compared.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
     const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
-    // A layout action read while another's write is under way is refused as busy, so a read that holds two of them
-    // differs by design from reads that split them, where both act. Such a sequence is marked from its tokens alone,
-    // generously: two or more tokens that can choose a layout write (a zoom, a close, Enter submitting a dialog, and a
-    // side key once resize mode was entered). A marked sequence is left out here (the busy case is pinned on its own
-    // above); any other must never be refused as busy, so the mark cannot hide a case it should not.
-    const writes = (picked: readonly string[], prefix: string) => {
+    // A hold refuses every action except detach, and every overlay or mode input, so a read with one after a possible
+    // layout write differs by design from split reads, where the write may finish first. Such a sequence is marked
+    // generously from tokens: any possible write followed by a non-detach action. Any other must never be refused.
+    const refusesInHold = (picked: readonly string[], prefix: string) => {
       let resize = false;
-      return picked.filter((token) => {
+      let wrote = false;
+      return picked.some((token) => {
+        if (wrote && token.startsWith(prefix) && token !== `${prefix}q`) return true;
         if (token === `${prefix}r`) resize = true;
-        return token === `${prefix}z` || token === `${prefix}x` || token === "\r" || (resize && (token === `${prefix}h` || token === `${prefix}l`));
-      }).length;
+        wrote ||= token === `${prefix}z` || token === `${prefix}x` || token === "\r" || (resize && (token === `${prefix}h` || token === `${prefix}l`));
+        return false;
+      });
     };
     for (const prefix of ["\x02", "-"]) {
       const tokens = [...ACTIONS.map((action) => prefix + action), ...TEXT];
@@ -707,7 +708,7 @@ describe("the loop", () => {
         const text = picked.join("");
         const bytes = new TextEncoder().encode(text);
         const whole = await outcome(prefix, [bytes]);
-        if (writes(picked, prefix) >= 2) continue;
+        if (refusesInHold(picked, prefix)) continue;
         expect({ text, busy: whole.busy }).toEqual({ text, busy: false });
         const joined = compared(whole);
         expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)))) }).toEqual({ text, outcome: joined });
@@ -955,6 +956,8 @@ describe("the loop", () => {
       answer.resolve();
       await run.settle();
       expect(run.loop.panes.view("t1")?.covered).toBe(!unzoom);
+      expect(received(run)).toEqual({});
+      await run.advance(FRAME_PASS_MS);
       expect(received(run)).toEqual({ [unzoom ? "t1" : "t2"]: "616263" });
       run.core.releaseEvents();
       await settled(run);
@@ -982,7 +985,7 @@ describe("the loop", () => {
     await run.settle();
     expect(received(run)).toEqual({});
     second.resolve(await refresh());
-    await run.settle();
+    await settled(run);
     expect(received(run)).toEqual({ t1: "62" });
   }, TEST_MS);
 

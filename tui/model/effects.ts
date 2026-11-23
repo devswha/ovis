@@ -49,6 +49,8 @@ export type Effect =
   | { readonly type: "quit" }
   /** read herdr's config again and answer with a `keys` event */
   | { readonly type: "reload_keys" }
+  /** An action or overlay/mode input refused at the hold boundary, before it changes any UI state. */
+  | { readonly type: "busy"; readonly action: string }
   /** a mouse event for the caller's hit map: inside the top overlay, or over the screen's chrome and panes */
   | { readonly type: "mouse"; readonly over: "overlay" | "screen"; readonly event: MouseInput }
   /** a reply to the start probe (the host's colours, flags, cell size) */

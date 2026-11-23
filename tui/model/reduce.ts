@@ -15,7 +15,7 @@ import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { directionalNeighbour, indexOfEntry, keptCursor, menuEntries } from "./menu.ts";
-import { field, menuChoice, type MenuSelection, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
+import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
 export type ModeState =
@@ -66,8 +66,6 @@ export type ScreenEvent =
   | { readonly type: "world"; readonly world: World; readonly core?: string | null; readonly epoch?: number; readonly at: number }
   /** herdr's `[keys]` table as parsed (anything else: the defaults), read again by main.ts */
   | { readonly type: "keys"; readonly keys: unknown; readonly at: number }
-  /** A reload already resolved while reading held input; replay uses exactly this map. */
-  | { readonly type: "keymap"; readonly keymap: Keymap; readonly at: number }
   /** a deadline the state named came due */
   | { readonly type: "deadline"; readonly name: string; readonly at: number }
   /** an action chosen without a key (a menu entry, a click) */
@@ -89,10 +87,9 @@ export type ScreenEvent =
   | { readonly type: "restore"; readonly core: string; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number }
   /**
    * Input taken without running what it chose (a layout action refused as busy when it was read) or that went nowhere
-   * (input dropped behind a write): an armed prefix returns to Idle, and, as that input left them, the top overlay
-   * closes (`overlay`) and the mode returns to Terminal (`mode`). Nothing else happens: those keys meet no other layout.
+   * (input dropped behind a write): an armed prefix returns to Idle. No overlay or mode is replayed.
    */
-  | { readonly type: "consumed"; readonly overlay: boolean; readonly mode: boolean; readonly at: number };
+  | { readonly type: "consumed"; readonly at: number };
 
 export type ModelEvent = InputEvent | ScreenEvent;
 
@@ -104,9 +101,7 @@ export interface Step {
   readonly effects: readonly Effect[];
   readonly levels: readonly Level[];
   /** Where the character that handed its tail back began, in the read and in the input ladder. */
-  readonly textAction?: { readonly offset: number; readonly before: ModelState };
-  /** The presented menu's choice or explicit no-op, including a refused stale choice. */
-  readonly menuSelection?: MenuSelection;
+  readonly textAction?: { readonly offset: number };
 }
 
 export function initialState(keys: unknown): ModelState {
@@ -117,10 +112,10 @@ export function initialState(keys: unknown): ModelState {
 }
 
 /** The work in progress of one `reduce` call; only this call's own arrays are changed. */
-interface Acc { s: ModelState; readonly effects: Effect[]; readonly levels: Level[]; menuSelection?: MenuSelection }
+interface Acc { s: ModelState; readonly effects: Effect[]; readonly levels: Level[]; readonly holding: boolean }
 
-export function reduce(state: ModelState, event: ModelEvent): Step {
-  const acc: Acc = { s: state, effects: [], levels: [] };
+export function reduce(state: ModelState, event: ModelEvent, holding = false): Step {
+  const acc: Acc = { s: state, effects: [], levels: [], holding };
   let textAction: Step["textAction"];
   switch (event.type) {
     case "reply":
@@ -167,9 +162,6 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     case "keys":
       reload(acc, buildKeymap(event.keys), event.at);
       break;
-    case "keymap":
-      reload(acc, event.keymap, event.at);
-      break;
     case "deadline":
       fire(acc, event.name, event.at);
       break;
@@ -208,8 +200,6 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     }
     case "consumed":
       disarm(acc);
-      if (event.overlay && acc.s.overlays.length > 0) acc.s = { ...acc.s, overlays: acc.s.overlays.slice(0, -1) };
-      if (event.mode && acc.s.mode.name !== "terminal") setMode(acc, { name: "terminal" });
       break;
     default:
       // an event of a kind the model does not know changes nothing
@@ -217,7 +207,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
   }
   if (acc.s.world !== state.world || acc.s.focus !== state.focus) refreshMenus(acc);
   return { state: acc.s, effects: acc.effects, levels: acc.levels,
-    ...(textAction ? { textAction } : {}), ...(acc.menuSelection ? { menuSelection: acc.menuSelection } : {}) };
+    ...(textAction ? { textAction } : {}) };
 }
 
 /** Commit the key map of the frame the host took. Until the first menu frame, keys use the list at open. */
@@ -242,24 +232,25 @@ type Unit = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind
 /** A key or a paste down the ladder. */
 function ladder(acc: Acc, unit: Unit): void {
   const s = acc.s;
-  if (s.menuDismissed && s.overlays.length === 0) return;
+  if (!acc.holding && s.menuDismissed && s.overlays.length === 0) return;
   const at = unit.event.at;
   const chords = unit.kind === "key" ? keyChords(unit.event) : [];
   if (s.locked) {
     if (unit.kind === "key" && boundIn(s.keymap.direct, chords)?.action === "lock") {
       acc.levels.push(1);
-      acc.s = { ...s, locked: false };
+      if (acc.holding) acc.effects.push({ type: "busy", action: "lock" });
+      else acc.s = { ...s, locked: false };
       return;
     }
     toPane(acc, unit.event);
     return;
   }
-  if (s.overlays.length > 0) {
+  if (!acc.holding && s.overlays.length > 0) {
     acc.levels.push(2);
     toOverlay(acc, unit);
     return;
   }
-  if (s.mode.name !== "terminal") {
+  if (!acc.holding && s.mode.name !== "terminal") {
     acc.levels.push(3);
     const bound = boundIn(s.keymap.modeKeys[s.mode.name], chords);
     if (bound !== undefined) runAction(acc, bound.action, bound.index, at);
@@ -321,31 +312,31 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
   let rest = event.text;
   while (rest.length > 0) {
     const s = acc.s;
-    if (s.menuDismissed) return;
+    if (!acc.holding && s.menuDismissed) return;
     const run: TextInput = rest === event.text ? event : { type: "text", text: rest, at: event.at };
     if (s.locked) {
       toPane(acc, run);
       return;
     }
     const [first, after] = splitFirst(rest);
-    if (s.overlays.length > 0) {
+    if (!acc.holding && s.overlays.length > 0) {
       // one code point at a time, as reads that split the run would give them: a choice the overlay makes from one
       // (a digit, a letter) leaves the rest of the run to whatever is below once it closed, never dropped
       acc.levels.push(2);
       const from = acc.effects.length;
       toOverlay(acc, { kind: "text", event: { type: "text", text: first, at: event.at } });
-      // A menu selection hands its tail back after the choice, including reload_keys. Its identity
-      // and any prefix text stay separate so held input can replay the choice without reinterpreting its key.
-      if (handBack(acc, from, after, event.at, acc.menuSelection !== undefined)) return { offset: event.text.length - rest.length, before: s };
+      // Ignored characters stay in this iteration. Only closing the menu or an external effect hands a tail back.
+      const closedMenu = s.overlays.at(-1)?.kind === "menu" && acc.s.overlays.length < s.overlays.length;
+      if (handBack(acc, from, after, event.at, closedMenu)) return { offset: event.text.length - rest.length };
       rest = after;
       continue;
     }
-    if (s.mode.name !== "terminal") {
+    if (!acc.holding && s.mode.name !== "terminal") {
       acc.levels.push(3);
       const bound = boundIn(s.keymap.modeKeys[s.mode.name], charChords(first, false));
       const from = acc.effects.length;
       if (bound !== undefined) runAction(acc, bound.action, bound.index, event.at);
-      if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length, before: s };
+      if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length };
       rest = after;
       continue;
     }
@@ -359,7 +350,7 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
         const from = acc.effects.length;
         if (bound !== undefined) runAction(acc, bound.action, bound.index, event.at);
         else if (HANGUL.test(first)) notice(acc, "ime_prefix", {}, event.at);
-        if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length, before: s };
+        if (handBack(acc, from, after, event.at)) return { offset: event.text.length - rest.length };
       }
       rest = after;
       continue;
@@ -384,13 +375,17 @@ function ladderText(acc: Acc, event: TextInput): Step["textAction"] {
 function handBack(acc: Acc, from: number, rest: string, at: number, closedMenu = false): boolean {
   // nothing typed after a detach goes anywhere: the rest of the run ends with it, as a later read would
   if (acc.effects.slice(from).some((effect) => effect.type === "quit")) return true;
-  if (!closedMenu && !acc.effects.slice(from).some((effect) => effect.type === "run" || effect.type === "reload_keys")) return false;
+  if (!closedMenu && !acc.effects.slice(from).some((effect) => effect.type === "run" || effect.type === "reload_keys" || effect.type === "busy")) return false;
   if (rest.length > 0) acc.effects.push({ type: "input", event: { type: "text", text: rest, at } });
   return true;
 }
 
 /** Level 6: the focused pane gets this input, unless there is none or the key has no identity. */
 function toPane(acc: Acc, input: PaneInput): void {
+  if (acc.holding && (acc.s.overlays.length > 0 || acc.s.mode.name !== "terminal" || acc.s.menuDismissed)) {
+    acc.effects.push({ type: "busy", action: acc.s.overlays.at(-1)?.kind ?? acc.s.mode.name });
+    return;
+  }
   acc.levels.push(6);
   const pane = focused(acc.s.world, acc.s.focus).pane;
   if (pane === null || (input.type === "key" && input.key === "UNIDENTIFIED")) return;
@@ -404,7 +399,6 @@ function toOverlay(acc: Acc, input: OverlayInput): void {
 /** The top overlay replaced by its answer (or closed), its effects given, then what it chose done. */
 function answerOverlay(acc: Acc, answer: OverlayAnswer, at: number): void {
   const { overlays } = acc.s;
-  if (answer.selection) acc.menuSelection = answer.selection;
   const top = overlays.at(-1);
   const dismissed = answer.overlay === null && top?.kind === "menu" && top.presented === null;
   acc.s = { ...acc.s, menuDismissed: acc.s.menuDismissed || dismissed, overlays: answer.overlay === null ? overlays.slice(0, -1) : [...overlays.slice(0, -1), answer.overlay] };
@@ -633,6 +627,10 @@ function target<T extends { readonly id: string }>(node: T | undefined | null, k
 
 function runAction(acc: Acc, action: KeyAction, index: number | null, at: number): void {
   disarm(acc);
+  if (acc.holding && action !== "detach") {
+    acc.effects.push({ type: "busy", action });
+    return;
+  }
   if (Object.hasOwn(CATALOGUE_BY_ID, action)) runHerdr(acc, action as HerdrAction, index, at);
   else runLocal(acc, action as Exclude<KeyAction, HerdrAction>, index, at);
 }

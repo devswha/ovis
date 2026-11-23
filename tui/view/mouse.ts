@@ -52,6 +52,8 @@ export interface PointerScene {
   readonly splits: readonly SplitCells[];
   look(pane: string): PaneLook | null;
   painted(pane: string): PanePicture | null;
+  /** The model checks a painted menu identity before a press can cancel another button's gesture. */
+  acceptsMenu?(entry: string): boolean;
 }
 
 export type PointerAct =
@@ -100,6 +102,11 @@ export class Pointer {
   private selection: Selection | null = null;
   private grabs = 0;
   private readonly identities = new WeakMap<object, symbol>();
+
+  /** Only continuations of a delivered program press can cross an overlay's hold boundary. */
+  forwarding(event: MouseInput): boolean {
+    return this.grab.kind === "forward" && (event.action === "motion" || event.action === "release") && event.button === this.grab.button;
+  }
 
   private identity(object: object): symbol {
     const known = this.identities.get(object);
@@ -183,6 +190,7 @@ export class Pointer {
       if (!hit || !("part" in hit) || !hit.part.startsWith("overlay:")) return [];
       const [kind, entry] = splitId(hit.id);
       if (hit.id !== "close" && (kind !== "menu" || entry === "")) return [];
+      if (kind === "menu" && scene.acceptsMenu?.(entry) === false) return [{ kind: "choose", entry }];
       // End any delivered gesture before the choice can change focus or reject a stale entry.
       const dropped = this.cancel(scene, event.at);
       if (hit.id === "close") return [...dropped, { kind: "close_overlay" }];
