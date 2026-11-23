@@ -545,6 +545,36 @@ describe("the loop", () => {
     }
   }, TEST_MS);
 
+  it.each([[true, "joined"], [true, "split"], [false, "joined"], [false, "split"]] as const)(
+    "empty-core creation classifies pane input before any pane exists: shown=%s, %s", async (shown, ordering) => {
+      const run = await start({ core: new FakeHcCore() });
+      await run.advance(1);
+      expect(run.loop.model().world.workspaces).toEqual([]);
+      run.type("\x02\r");
+      await run.advance(FRAME_PASS_MS);
+      const menu = run.loop.model().overlays.at(-1);
+      if (menu?.kind !== "menu") throw new Error("menu did not open");
+      const create = menu.entries.find((entry) => entry.kind === "action" && entry.action === "new_workspace");
+      if (!create?.label) throw new Error("New workspace has no label");
+      run.core.holdingEvents = true;
+      if (ordering === "joined") run.type(create.label + "abc");
+      else { run.type(create.label); run.type("abc"); }
+      await settled(run);
+      expect(run.core.calls().some((call) => call.method === "terminal.run")).toBe(true);
+      expect(run.loop.model().focus.workspace).toBeNull();
+      expect(received(run)).toEqual({});
+      if (!shown) await run.advance(LAYOUT_SHOWN_WAIT_MS);
+      run.core.releaseEvents();
+      await settled(run);
+      expect(received(run)).toEqual({});
+      expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]]))
+        .toEqual([[shown ? "input_refused" : "input_dropped", shown ? "opening" : "not_shown"]]);
+      await run.live();
+      run.type("z");
+      await settled(run);
+      expect(received(run)).toEqual({ t1: "7a" });
+    }, TEST_MS);
+
   it("what waits behind a layout write is bounded: past its bytes or events nothing more waits, no paste is cut, and a detach still leaves", async () => {
     const hex = (text: string) => Buffer.from(text).toString("hex");
     const dropped = (run: Run) => run.loop.model().notices.filter(({ code }) => code === "input_dropped").map(({ data }) => data["reason"]);

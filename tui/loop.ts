@@ -33,7 +33,7 @@ import { menuChoice } from "./model/overlays.ts";
 import { exists, focused } from "./model/focus.ts";
 import { type Following, initialState, type ModelEvent, type ModelState, presentedMenu, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
-import { type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
+import { type DeferredMouse, type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
 import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
 import type { ViewStore } from "./view-store.ts";
@@ -329,6 +329,9 @@ export function startLoop(options: LoopOptions): Loop {
     readonly events: HeldInput[];
     /** the prefix state of what was read during the hold, kept apart from what waits */
     armed: boolean;
+    /** Only a prefix begun in terminal context may survive release; overlay prefixes recognize held detach only. */
+    terminalArmed: boolean;
+    readonly mouse: ReturnType<Pointer["defer"]>;
     awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone } | { readonly kind: "zoom"; readonly read: AbortController }) & { readonly until: number } | null;
     bytes: number;
     full: boolean;
@@ -337,8 +340,8 @@ export function startLoop(options: LoopOptions): Loop {
   /** what waited behind a write is going through: a layout action in it was refused when it was read */
   let replaying = false;
   let busyReported = false;
-  type HeldInput = { type: "held_pane"; input: Extract<Effect, { type: "pane" }>["input"] }
-    | { type: "held_mouse"; input: MouseInput; continuation: boolean; matches: (scene: PointerScene) => boolean };
+  type HeldInput = Extract<Effect, { type: "held_pane" }>
+    | { type: "held_mouse"; input: MouseInput; continuation: boolean; route: DeferredMouse };
 
   /**
    * A user's input event: through the state core now, or behind the layout write under way. A detach among what would
@@ -358,8 +361,8 @@ export function startLoop(options: LoopOptions): Loop {
     const pieces: HeldInput[] = [];
     if (event.type === "mouse") {
       const scene = pointerScene();
-      const continuation = pointer.continuation(event, scene);
-      if (continuation === null) {
+      const continuation = behindWrite.mouse.continuation(event);
+      if (!continuation) {
         const blocked = state.overlays.length > 0 || state.mode.name !== "terminal" || state.menuDismissed;
         // the last accepted frame's overlay owns its cells even once the model closed it
         const hit = hits?.at(event.col, event.row);
@@ -367,11 +370,12 @@ export function startLoop(options: LoopOptions): Loop {
           busy(state.overlays.at(-1)?.kind ?? (blocked ? state.mode.name : "menu"));
           return;
         }
-        const matches = pointer.bind(event, scene);
+        const route = behindWrite.mouse.bind(event, scene);
         const owner = overlayGeneration;
         pieces.push({ type: "held_mouse", input: event, continuation: false,
-          matches: (now) => owner === overlayGeneration && paintedOverlay === state.overlays.at(-1) && matches(now) });
-      } else pieces.push({ type: "held_mouse", input: event, continuation: true, matches: continuation });
+          route: (over, now) => owner === overlayGeneration && paintedOverlay === state.overlays.at(-1)
+            ? route(over, now) : pointer.cancel(now, event.at) });
+      } else pieces.push({ type: "held_mouse", input: event, continuation: true, route: behindWrite.mouse.bind(event, scene) });
     }
     // read the event the way the loop would, then each rest of a read it hands back, in order. The hold parser knows
     // pane input, prefix chords and detach only: it never runs the overlay or mode ladder
@@ -380,6 +384,8 @@ export function startLoop(options: LoopOptions): Loop {
       const before = { ...state, armed: behindWrite.armed };
       const step = reduce(before, next, true);
       behindWrite.armed = step.state.armed;
+      if (!step.state.armed) behindWrite.terminalArmed = false;
+      else if (step.prefixStarted) behindWrite.terminalArmed = before.overlays.length === 0 && before.mode.name === "terminal" && !before.menuDismissed;
       for (const notice of step.state.notices) {
         if (notice.id >= before.nextNotice) dispatch({ type: "notice", code: notice.code, data: notice.data, ...(notice.calm ? { calm: true } : {}), at: clock.now() });
       }
@@ -391,7 +397,7 @@ export function startLoop(options: LoopOptions): Loop {
         }
         if (effect.type === "input") units.push(effect.event);
         if (effect.type === "busy") busy(effect.action);
-        if (effect.type === "pane") pieces.push({ type: "held_pane", input: effect.input });
+        if (effect.type === "held_pane") pieces.push(effect);
       }
     }
     // the host's focus is no pane input: the screen takes it now, after the hold's prefix state took it in order
@@ -423,7 +429,7 @@ export function startLoop(options: LoopOptions): Loop {
    */
   function holdUntil(writing: Promise<LayoutDone>): void {
     if (behindWrite === null) {
-      behindWrite = { events: [], armed: state.armed, awaiting: null, bytes: 0, full: false, ready: false };
+      behindWrite = { events: [], armed: state.armed, terminalArmed: state.armed, mouse: pointer.defer(), awaiting: null, bytes: 0, full: false, ready: false };
       busyReported = false;
     }
     const before = state.following;
@@ -472,17 +478,15 @@ export function startLoop(options: LoopOptions): Loop {
   function replay(): void {
     const waited = behindWrite?.events ?? [];
     const full = behindWrite?.full === true;
-    const armed = behindWrite?.armed === true;
+    const armed = behindWrite?.armed === true && behindWrite.terminalArmed;
     behindWrite = null;
     replaying = true;
     try {
       for (const event of waited) {
         if (event.type === "held_pane") {
-          // pane input when read: it reaches the pane the write left focused, never an overlay or a command
-          const pane = focused(state.world, state.focus).pane;
-          if (pane !== null) perform({ type: "pane", pane: pane.id, input: event.input });
-        } else if (event.continuation) routeMouse(event.input, "screen", event.matches);
-        else dispatch(event.input, event.matches);
+          perform(event);
+        } else if (event.continuation) routeMouse(event.input, "screen", event.route);
+        else dispatch(event.input, event.route);
       }
       // what came after the queue filled went nowhere, possibly the key a prefix waited for: the prefix returns to Idle
       dispatch({ type: "armed", armed: armed && !full, at: clock.now() });
@@ -518,11 +522,11 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** One event through the state core, and its effects performed in order, now. */
-  function dispatch(event: ModelEvent, matches?: (scene: PointerScene) => boolean): void {
+  function dispatch(event: ModelEvent, route?: DeferredMouse): void {
     const before = state;
     const step = reduce(state, event);
     state = step.state;
-    for (const effect of step.effects) perform(effect, matches);
+    for (const effect of step.effects) perform(effect, route);
     if (state !== before) {
       keepView();
       reshow();
@@ -537,8 +541,14 @@ export function startLoop(options: LoopOptions): Loop {
     if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
   }
 
-  function perform(effect: Effect, matches?: (scene: PointerScene) => boolean): void {
+  function perform(effect: Effect, route?: DeferredMouse): void {
     switch (effect.type) {
+      case "held_pane": {
+        // Classification needs no current destination; the completed write supplies it at replay.
+        const pane = focused(state.world, state.focus).pane;
+        if (pane !== null) perform({ type: "pane", pane: pane.id, input: effect.input });
+        return;
+      }
       case "pane":
         for (const step of pointer.typed(effect.pane, lookOf(effect.pane))) performPointer(step);
         toPane(effect.pane, effect.input);
@@ -587,16 +597,16 @@ export function startLoop(options: LoopOptions): Loop {
         return;
       case "mouse":
         act(`mouse:${effect.over}`);
-        routeMouse(effect.event, effect.over, matches);
+        routeMouse(effect.event, effect.over, route);
         return;
       case "host_reply":
         return;
     }
   }
 
-  function routeMouse(event: MouseInput, over: "overlay" | "screen", matches?: (scene: PointerScene) => boolean): void {
+  function routeMouse(event: MouseInput, over: "overlay" | "screen", route?: DeferredMouse): void {
     const scene = pointerScene();
-    const acts = matches && !matches(scene) ? pointer.cancel(scene, event.at) : pointer.mouse(over, event, scene);
+    const acts = route ? route(over, scene) : pointer.mouse(over, event, scene);
     for (const step of acts) performPointer(step);
   }
 

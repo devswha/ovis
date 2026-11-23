@@ -97,6 +97,8 @@ export interface Step {
   readonly state: ModelState;
   readonly effects: readonly Effect[];
   readonly levels: readonly Level[];
+  /** A new prefix began during this held input, rather than an earlier prefix merely remaining armed. */
+  readonly prefixStarted?: true;
 }
 
 export function initialState(keys: unknown): ModelState {
@@ -107,7 +109,7 @@ export function initialState(keys: unknown): ModelState {
 }
 
 /** The work in progress of one `reduce` call; only this call's own arrays are changed. */
-interface Acc { s: ModelState; readonly effects: Effect[]; readonly levels: Level[]; readonly holding: boolean }
+interface Acc { s: ModelState; readonly effects: Effect[]; readonly levels: Level[]; readonly holding: boolean; prefixStarted?: true }
 
 export function reduce(state: ModelState, event: ModelEvent, holding = false): Step {
   const acc: Acc = { s: state, effects: [], levels: [], holding };
@@ -201,7 +203,7 @@ export function reduce(state: ModelState, event: ModelEvent, holding = false): S
       break;
   }
   if (acc.s.world !== state.world || acc.s.focus !== state.focus) refreshMenus(acc);
-  return { state: acc.s, effects: acc.effects, levels: acc.levels };
+  return { state: acc.s, effects: acc.effects, levels: acc.levels, ...(acc.prefixStarted ? { prefixStarted: true as const } : {}) };
 }
 
 /** Commit the key map of the frame the host took. Until the first menu frame, keys use the list at open. */
@@ -381,8 +383,13 @@ function toPane(acc: Acc, input: PaneInput): void {
     return;
   }
   acc.levels.push(6);
+  if (input.type === "key" && input.key === "UNIDENTIFIED") return;
+  if (acc.holding) {
+    acc.effects.push({ type: "held_pane", input });
+    return;
+  }
   const pane = focused(acc.s.world, acc.s.focus).pane;
-  if (pane === null || (input.type === "key" && input.key === "UNIDENTIFIED")) return;
+  if (pane === null) return;
   acc.effects.push({ type: "pane", pane: pane.id, input });
 }
 
@@ -424,6 +431,7 @@ function mouse(acc: Acc, event: MouseInput): void {
 
 function arm(acc: Acc): void {
   acc.s = { ...acc.s, armed: true };
+  if (acc.holding) acc.prefixStarted = true;
 }
 
 function disarm(acc: Acc): void {

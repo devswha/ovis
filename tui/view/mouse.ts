@@ -73,6 +73,9 @@ export type PointerAct =
   /** the top overlay's close control was clicked */
   | { readonly kind: "close_overlay" };
 
+/** A queued report validated and applied to its own gesture at replay time. */
+export type DeferredMouse = (over: "overlay" | "screen", scene: PointerScene) => PointerAct[];
+
 type Grab =
   | { readonly kind: "none" }
   | { readonly kind: "forward"; readonly pane: string; readonly button: MouseInput["button"]; readonly attachment: symbol; readonly screen: number; last: MouseInput }
@@ -103,19 +106,48 @@ export class Pointer {
   private grabs = 0;
   private readonly identities = new WeakMap<object, symbol>();
 
-  /**
-   * A drag or release of the program grab under way, bound to that grab: its pane, attachment, screen and the cells its
-   * pane maps reports through. null for any other report. An overlay painted meanwhile changes none of them.
-   */
-  continuation(event: MouseInput, scene: PointerScene): ((now: PointerScene) => boolean) | null {
-    const grab = this.grab;
-    if (grab.kind !== "forward" || (event.action !== "motion" && event.action !== "release") || event.button !== grab.button) return null;
-    const mapping = (now: PointerScene) => {
-      const picture = now.painted(grab.pane);
-      return [picture?.rect, picture?.top, picture?.grid];
+  /** A hold's gesture ledger: accepted presses open owners and matching releases close them in read order. */
+  defer(): { continuation(event: MouseInput): boolean; bind(event: MouseInput, scene: PointerScene): DeferredMouse } {
+    type Owner = { pane: string; button: MouseInput["button"]; live: Extract<Grab, { kind: "forward" }> | null };
+    let owner: Owner | null = this.grab.kind === "forward" ? { pane: this.grab.pane, button: this.grab.button, live: this.grab } : null;
+    const continuation = (event: MouseInput) => owner !== null &&
+      (event.action === "motion" || event.action === "release") && event.button === owner.button;
+    return {
+      continuation,
+      bind: (event, scene) => {
+        const from = owner;
+        if (from !== null && continuation(event)) {
+          const mapping = (now: PointerScene) => {
+            const picture = now.painted(from.pane);
+            return [picture?.rect, picture?.top, picture?.grid];
+          };
+          const cells = mapping(scene);
+          if (event.action === "release") owner = null;
+          return (_over, now) => {
+            const live = from.live;
+            // An old continuation owns neither a replacement grab nor a press that never reached its program.
+            if (live === null || this.grab !== live) return [];
+            if (this.pressedScreen(live, now) === null || !isDeepStrictEqual(cells, mapping(now))) return this.cancel(now, event.at);
+            return this.mouse("screen", event, now);
+          };
+        }
+        let started: Owner | null = null;
+        if (event.action === "press" && !isWheel(event)) {
+          const hit = scene.hits?.at(event.col, event.row);
+          owner = null;
+          if (hit && "pane" in hit && hit.pane === scene.focus && scene.look(hit.pane)?.programMouse && !event.mods.shift) {
+            owner = started = { pane: hit.pane, button: event.button, live: null };
+          }
+        }
+        const matches = this.bind(event, scene);
+        return (over, now) => {
+          const valid = matches(now);
+          const acts = valid ? this.mouse(over, event, now) : this.cancel(now, event.at);
+          if (started !== null) started.live = valid && this.grab.kind === "forward" ? this.grab : null;
+          return acts;
+        };
+      },
     };
-    const cells = mapping(scene);
-    return (now) => this.grab === grab && this.pressedScreen(grab, now) !== null && isDeepStrictEqual(cells, mapping(now));
   }
 
   private identity(object: object): symbol {

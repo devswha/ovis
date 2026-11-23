@@ -47,6 +47,19 @@ function sceneOf(focus: string, look: PaneLook | null): PointerScene {
 type Ev = [action: MouseInput["action"], button: MouseInput["button"] | null, col: number, row: number, shift?: boolean];
 const ev = ([action, button, col, row, shift]: Ev): MouseInput => ({ type: "mouse", action, ...(button === null ? {} : { button }), mods: shift ? { shift: true } : {}, col, row, at: 1 });
 
+it("a stale queued continuation cannot release a newer program grab", () => {
+  const pointer = new Pointer();
+  const scene = sceneOf("a", lookA(true));
+  pointer.mouse("screen", ev(["press", "right", 3, 2]), scene);
+  const held = pointer.defer();
+  const oldMotion = held.bind(ev(["motion", "right", 4, 2]), scene);
+  pointer.mouse("screen", ev(["release", "right", 4, 2]), scene);
+  pointer.mouse("screen", ev(["press", "right", 5, 3]), scene);
+  expect(oldMotion("screen", scene)).toEqual([]);
+  expect(pointer.mouse("screen", ev(["release", "right", 6, 4]), scene))
+    .toEqual([{ kind: "forward", pane: "a", event: ev(["release", "right", 6, 5]) }]);
+});
+
 /** rows of (case, focused pane, the program's mouse mode, events in order, the acts each one answers) */
 const RULES: [name: string, focus: string, programMouse: boolean, events: Ev[], acts: PointerAct[][]][] = [
   ["a press on a pane with a mouse mode goes to it in its grid's cells, the drag and the release too",

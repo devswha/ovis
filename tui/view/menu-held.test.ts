@@ -275,3 +275,39 @@ it("a prefix still pending when the hold ends stays armed for the next key", asy
   expect(await run.loop.done).toMatchObject({ kind: "quit" });
   expect(bytes(run)).toEqual(["61", ""]);
 }, 60_000);
+
+it.each(["joined", "split"])("two same-button gestures in one hold retain their own physical cells: %s", async (ordering) => {
+  const { run, answer } = await heldRename(true);
+  const reports = ["\x1b[<34;32;6M", "\x1b[<2;33;6m", "\x1b[<2;34;6M", "\x1b[<34;35;6M", "\x1b[<2;36;6m"];
+  if (ordering === "joined") run.type(reports.join(""));
+  else for (const report of reports) { run.type(report); await run.settle(); }
+  const first = "\x1b[<2;6;4M";
+  expect(bytes(run)).toEqual([Buffer.from(first).toString("hex"), ""]);
+  answer();
+  await run.advance(200);
+  const gestures = first + "\x1b[<34;7;4M\x1b[<2;8;4m\x1b[<2;9;4M\x1b[<34;10;4M\x1b[<2;11;4m";
+  expect(bytes(run)).toEqual([Buffer.from(gestures).toString("hex"), ""]);
+  run.type("\x1b[<2;37;6m");
+  await run.settle();
+  expect(bytes(run)).toEqual([Buffer.from(gestures).toString("hex"), ""]);
+}, 60_000);
+
+it.each(["menu stays open", "menu closes before release"])("an overlay-owned prefix cannot survive its hold: %s", async (ordering) => {
+  const { run, answer } = await heldRename();
+  run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
+  await run.advance(FRAME_PASS_MS);
+  run.type("\x02");
+  if (ordering === "menu closes before release") {
+    run.loop.dispatch({ type: "close_overlay", at: run.clock.current });
+    // A focus-gain report must not turn a temporary detach prefix into a terminal prefix.
+    run.type("\x1b[I");
+  }
+  answer();
+  await run.advance(200);
+  expect(run.loop.model().armed).toBe(false);
+  if (ordering === "menu stays open") run.type("\x1b[27u");
+  run.type("q");
+  await run.settle();
+  expect(bytes(run)).toEqual(["71", ""]);
+  expect(run.loop.report().actions).not.toContain("quit");
+}, 60_000);
