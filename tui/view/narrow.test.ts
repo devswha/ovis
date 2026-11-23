@@ -196,7 +196,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     ["after repaint", 0, "6z", "w-ovis"],
     ["Down during repaint", 1, "6z", "w-ovis"],
     ["Enter after Down during repaint", 1, "\r", "w-docs"],
-    ["Enter on a shifted tab during repaint", 2, "\r", "w-ovis"],
+    ["Enter on a shifted tab during repaint", 3, "\r", "w-ovis"],
   ] as const)("menu choices use accepted labels and the latest cursor: %s", async (ordering, downs, keys, workspace) => {
     const run = await shown(120, 80);
     run.type("\x02\r");
@@ -211,6 +211,8 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     run.type(keys);
     await run.advance(200);
     expect(run.loop.model().focus.workspace).toBe(workspace);
+    if (ordering === "Enter on a shifted tab during repaint") expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
+    expect(run.loop.report().mode.overlays).toEqual([]);
     expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(keys === "\r" ? ["", ""] : repaint ? ["7a", ""] : ["", "7a"]);
   }, TEST_MS);
 
