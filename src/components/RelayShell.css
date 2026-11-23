@@ -128,6 +128,20 @@
   height: var(--touch-target);
 }
 
+/* My PCs and Add a PC under one parent that stays across the 1024 px line (RelayShell frontView): on a phone one shows and
+   the other is kept, hidden, with what it holds; on a wide screen they stand side by side */
+.connect-panes {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.my-pcs[hidden],
+.connect-add[hidden] {
+  display: none;
+}
+
 /* My PCs fills the screen, so Add PC can stay at its bottom while the list scrolls under it */
 .relay-shell-screen.relay-add-screen.my-pcs-screen {
   place-items: stretch center;
@@ -609,22 +623,19 @@
     min-height: 0;
   }
 
-  .connect-desk {
+  .connect-panes.connect-desk {
     display: grid;
-    flex: 1;
     grid-template-columns: minmax(0, 1fr) var(--relay-signin-w);
+    grid-template-rows: minmax(0, 1fr);
     align-items: start;
     gap: var(--space-8);
-    min-height: 0;
   }
 
-  .connect-desk > .my-pcs {
-    height: 100%;
-    min-height: 0;
-  }
-
-  .connect-desk .my-pcs-list {
-    flex: 0 1 auto;
+  /* each pane scrolls on its own when it is taller than the window: a long list, a tall stack of notices, an opened
+     code field; the other pane stays where it is */
+  .connect-desk > .my-pcs,
+  .connect-desk > .connect-add-side {
+    max-height: 100%;
     min-height: 0;
     overflow-y: auto;
   }

@@ -5160,13 +5160,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   bottom while the list scrolls, as the Claude app keeps New chat in reach over its list. With no PC on it is the same
   list, the rows Off under No PC is online and Check again; with none in the account yet, the list says to sign in with
   the same account on the PC where Ovis runs, over Add PC (#16 drew both as a page of their own). On a screen 1024 px
-  wide or more the two stand side by side: My PCs on the left, its list scrolling on its own, and Add a PC always open
-  on the right in a panel, with no Add PC button; Connect a PC alone is one centred card. Past eight PCs My PCs offers a
+  wide or more the two stand side by side: My PCs on the left and Add a PC always open on the right in a panel, each
+  pane scrolling on its own when it is taller than the window, with no Add PC button; Connect a PC alone is one centred
+  card. Both stay mounted under one parent across the 1024 px line, so a rotation or a resize keeps the chosen tab, what
+  is typed, the focus, the search and an open under way; a pairing dialog open when the window narrows again stays the
+  top of the history, and Add PC takes its entry once the dialog closes. Past eight PCs My PCs offers a
   search by name (any case, the PC in use found like any other, one line when nothing matches), and on the wide screen
   the All, On and Off chips. The code is one small Pair with a code line that opens its field in place, under what to
-  do on the PC (beside the QR way in the phone app, both held while a sign-in is under way). In the phone app, a PC opened by its address says Opening it, with Cancel (only
-  where the app has cancelOpen: iOS opens at once), and a failed open says why from the app's own reason, with
-  Tailscale's hint for a tailnet address, never the raw native message; a saved Tailscale PC tapped while the app says
+  do on the PC (beside the QR way in the phone app, both held while a sign-in is under way); the code is looked up
+  right there, the field keeping what was typed through the lookup and a failure to correct, until it finds its PC (the
+  comparison) or Cancel closes it. In the phone app, a PC opened by its address says Opening it, with Cancel (only
+  where the app has cancelOpen: iOS opens at once), one at a time for the whole page (a second tap while the app is asked
+  whether Tailscale is on replaces the first; one already opening holds the next; leaving the screen ends it), and a
+  failed open says why from the app's own reason, with Tailscale's hint for a tailnet address (its IPv6 too), never the
+  app's own words, which are not the person's language; a saved Tailscale PC tapped while the app says
   Tailscale is off shows Open Tailscale instead of trying it; an SSH PC whose address another app on the phone
   took says so above the list; and while the app keeps a PC open as the person chooses another, My PCs marks it In use
   now and its Back goes back to it (backToCurrent), the app's own connect page's ‹ PC. Add PC (and Connect a PC, the

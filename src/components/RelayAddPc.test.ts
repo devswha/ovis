@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { translate, type Vars } from "../lib/i18n.ts";
+import { tailnetHost } from "../lib/phone.ts";
 import { addressOf, openFailureText, publicHttp, scanQr } from "./RelayAddPc.tsx";
 
 describe("a QR scan in the phone app", () => {
@@ -59,7 +60,7 @@ describe("an address the phone app could not open", () => {
   const said = (address: string, code: string | undefined, message = "", t = en) => openFailureText(t, new URL(address), code, message);
   const tailscale = "This is a Tailscale address, and Tailscale may be off on this phone: turn it on in the Tailscale app.";
 
-  it("says why from the app's own reason, never the raw native message, and nothing for a Cancel", () => {
+  it("says why from the app's own reason, and nothing for a Cancel", () => {
     expect(said("https://desk.example.com/", "cancelled")).toBe("");
     expect(said("http://192.168.0.5:7317/", "not-ovis", "HTTP 404")).toBe("192.168.0.5:7317 answered (HTTP 404), but it is not Ovis: another web server, or herdr itself, which the app cannot open. Open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.");
     expect(said("http://192.168.0.5:7317/", "not-ovis", "It answered, but not as Ovis.")).toContain("192.168.0.5:7317 answered, but it is not Ovis");
@@ -73,11 +74,31 @@ describe("an address the phone app could not open", () => {
     expect(said("https://desk.tail1e211e.ts.net/", "timeout")).toMatch(new RegExp(` ${tailscale.replace(/[.:]/g, "\\$&")}$`));
     expect(said("https://desk.tail1e211e.ts.net/", "unknown-host")).toBe(`desk.tail1e211e.ts.net was not found. Check the name, or open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC. ${tailscale}`);
     expect(said("https://pc.example.com/", "unknown-host")).not.toContain("Tailscale");
-    expect(said("https://desk.tail1e211e.ts.net/", undefined, "No route")).toBe(`desk.tail1e211e.ts.net could not be reached: No route ${tailscale}`);
+    // a Tailscale address written as its IPv6 is one too
+    expect(said("http://[fd7a:115c:a1e0::1234]:7317/", "timeout")).toMatch(new RegExp(` ${tailscale.replace(/[.:]/g, "\\$&")}$`));
+  });
+
+  it("explains a network that has no way to the PC (Android's no-answer), and never prints the app's own words for a reason it does not know", () => {
+    expect(said("https://office.example/", "no-answer", "ENETUNREACH")).toBe("This phone has no way to office.example right now: the PC may be off, or this phone's network (mobile data, another Wi-Fi, or a VPN) does not reach it.");
+    expect(said("https://desk.tail1e211e.ts.net/", "no-answer", "ENETUNREACH")).toBe(`This phone has no way to desk.tail1e211e.ts.net right now: the PC may be off, or this phone's network (mobile data, another Wi-Fi, or a VPN) does not reach it. ${tailscale}`);
+    for (const [code, message] of [[undefined, "No route"], ["tls", "javax.net.ssl.SSLHandshakeException: chain"], [undefined, ""]] as const) {
+      const text = said("https://office.example/", code, message);
+      expect(text).toBe("office.example could not be opened. Check the address, and that Ovis runs on that PC.");
+      expect(text).not.toContain(message === "" ? "\u0000" : message);
+    }
+    const ja = (key: string, vars?: Vars) => translate("ja", key, vars);
+    expect(said("https://office.example/", "no-answer", "ENETUNREACH", ja)).not.toContain("ENETUNREACH");
   });
 
   it("says it in the page's language", () => {
     expect(said("https://desk.tail1e211e.ts.net/", "unknown-host", "", ko)).toContain("Tailscale 앱에서 연결을 켜세요");
     expect(said("http://192.168.0.5:7317/", "refused", "", ko)).toContain("연결을 거부했어요");
+  });
+});
+
+describe("a Tailscale address", () => {
+  it("is a MagicDNS name, a 100.64.0.0/10 address or an address of fd7a:115c:a1e0::/48", () => {
+    for (const host of ["desk.tail1e211e.ts.net", "100.101.1.2", "fd7a:115c:a1e0::1234", "[fd7a:115c:a1e0::1234]", "FD7A:115C:A1E0:AB12::1"]) expect(tailnetHost(host)).toBe(true);
+    for (const host of ["192.168.0.5", "fd7a:115c:a1e1::1", "fe80::1", "office.example"]) expect(tailnetHost(host)).toBe(false);
   });
 });

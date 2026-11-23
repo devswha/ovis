@@ -7,7 +7,8 @@ import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { markRemovedPc, removedPcs, type RemovedPcMark } from "../lib/relay/shellState.ts";
-import { AddressForm, canScanQr, OpenState, scanQr, sshHandoff, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
+import { AddressForm, canScanQr, OpenState, scanQr, sshHandoff, tailscaleOn, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
+import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { SheepMascot } from "./SheepMascot.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
@@ -114,8 +115,11 @@ function PcRow({ pc }: { readonly pc: PhonePc }) {
 /** HerdrShell getState as the phone app answers it (app/android HerdrShellPlugin, app/ios HerdrShellPlugin.swift). */
 interface ShellAnswer { readonly saved?: string[]; readonly names?: Record<string, string>; readonly choosing?: boolean; readonly current?: string; readonly kind?: string; readonly failure?: string }
 
-/** The PC the phone app still has open while the person chooses another: a relay PC by its id, any other by its origin. */
-export type CurrentPc = { readonly serverId: string } | { readonly origin: string };
+/**
+ * The PC the phone app still has open while the person chooses another: a relay PC of this app by its id, any other by
+ * its origin and, for a relay PC of another origin (a self-hosted relay), its scope there.
+ */
+export type CurrentPc = { readonly serverId: string } | { readonly origin: string; readonly scope: string | null };
 
 /** how long a front page that waits on what the phone app saved holds its controls back for an answer */
 const READ_WAIT_MS = 1_500;
@@ -132,7 +136,7 @@ export function phoneShellState(state: ShellAnswer, appOrigin: string): { readon
     try {
       const url = new URL(state.current);
       const serverId = url.origin === appOrigin ? serverIdOfPath(url.pathname) : null;
-      current = url.origin !== appOrigin ? { origin: url.origin } : serverId === null ? null : { serverId };
+      current = url.origin !== appOrigin ? { origin: url.origin, scope: serverIdOfPath(url.pathname) } : serverId === null ? null : { serverId };
     } catch { current = null; }
   }
   return { pcs: phoneSavedPcs(state.saved ?? [], state.names ?? {}, appOrigin), current, sshPort: state.kind === "ssh-port" && state.failure ? state.failure : null };
@@ -204,9 +208,13 @@ function ConnectHead({ title, onBack, backLabel, menu, side = false, focused = f
   );
 }
 
-/** where the origin of a saved entry is, or nothing for one that does not read */
-function originOf(saved: string): string | null {
-  try { return new URL(saved).origin; } catch { return null; }
+/** Whether the app's saved entry is the PC it keeps open: the same origin, and the same relay scope there or none. */
+function isCurrent(saved: string, current: CurrentPc | null): boolean {
+  if (current === null || !("origin" in current)) return false;
+  try {
+    const url = new URL(saved);
+    return url.origin === current.origin && serverIdOfPath(url.pathname) === current.scope;
+  } catch { return false; }
 }
 
 /**
@@ -219,7 +227,7 @@ function originOf(saved: string): string | null {
  * On and Off chips. `top`: what the screen says above the list (notices, a PC not answering); `empty`: what it says with
  * nothing listed. Add PC (`onAdd`, none beside the panel on a wide screen) stays at the bottom while the list scrolls.
  */
-export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, inUse = null, onBack, onAdd, addFocused = false, menu, top, empty, wide = false }: {
+export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, inUse = null, onBack, onAdd, addFocused = false, menu, top, empty, wide = false, hidden = false }: {
   readonly devices: readonly SavedPc[];
   /** signed in, the account's PCs, which the list adds to this phone's own pairings (relayTabPcs) */
   readonly accountPcs?: readonly MyPc[] | null;
@@ -237,6 +245,8 @@ export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, in
   readonly top?: ReactNode;
   readonly empty?: ReactNode;
   readonly wide?: boolean;
+  /** kept mounted but not shown (Add a PC stands in its place on a phone): what it holds survives the switch back */
+  readonly hidden?: boolean;
 }) {
   const t = useT();
   const open = useAddressOpen();
@@ -248,25 +258,11 @@ export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, in
   const addButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (addFocused) addButton.current?.focus(); }, [addFocused]);
   const forgetSaved = (pc: PhoneSavedPc) => () => { open.setError(null); callNative(SHELL, "forget", { url: pc.origin }).then(phone.reread, open.failed); };
-  // a Tailscale PC opens nothing while Tailscale is off on the phone: the app says so first, and Open Tailscale takes over,
-  // until the app comes back with it on
-  const [tailscaleOff, setTailscaleOff] = useState(false);
-  useEffect(() => {
-    if (!tailscaleOff) return;
-    let live = true;
-    const visible = (): void => { if (document.visibilityState === "visible") void tailscaleOn().then((on) => { if (live && on) setTailscaleOff(false); }); };
-    document.addEventListener("visibilitychange", visible);
-    return () => { live = false; document.removeEventListener("visibilitychange", visible); };
-  }, [tailscaleOff]);
-  const openSaved = (pc: PhoneSavedPc): void => {
-    open.setError(null);
-    if (pc.way !== "tailscale") { open.take(new URL(pc.origin)); return; }
-    void tailscaleOn().then((on) => { setTailscaleOff(!on); if (on) open.take(new URL(pc.origin)); });
-  };
+  // a saved Tailscale PC asks the app first whether Tailscale is on: off, Open Tailscale takes over (TailscaleOff)
   const fromPhone = (pc: PhoneSavedPc): PhonePc => ({
     key: pc.origin, name: pc.name, way: pc.way, address: pc.host, ...(pc.way === "tailscale" ? { data: { "data-tailnet-pc": pc.origin } } : {}),
-    ...(current !== null && "origin" in current && originOf(pc.origin) === current.origin ? { word: "in-use" as const } : {}),
-    open: () => openSaved(pc),
+    ...(isCurrent(pc.origin, current) ? { word: "in-use" as const } : {}),
+    open: () => open.take(new URL(pc.origin), { askTailscale: pc.way === "tailscale" }),
     forget: pc.way === "ssh" ? undefined : forgetSaved(pc),
   });
   const rows: PhonePc[] = [
@@ -288,10 +284,10 @@ export function MyPcs({ devices, accountPcs = null, checked, phone, onForget, in
   const shown = searchable ? pcsShown(rows, query, wide ? show : "all") : rows;
   const label: Record<PcShow, string> = { all: t("All"), on: t("On|pc state"), off: t("Off|pc state") };
   return (
-    <div className="my-pcs" data-view="my-pcs">
+    <div className="my-pcs" data-view="my-pcs" hidden={hidden || undefined}>
       <ConnectHead title={t("Your PCs")} onBack={onBack ?? backToCurrent} backLabel={backToCurrent ? t("Back to {name}", { name: currentName }) : undefined} menu={menu} />
       {top}
-      {tailscaleOff && <TailscaleOff failed={open.failed} />}
+      {open.tailscaleOff && <TailscaleOff failed={open.failed} />}
       {phone.sshPort !== null && <p className="account-error" role="alert">{t("Another app on this phone took the address the SSH PC opens on ({address}), so the app did not open it: that app would have answered in its place. Close or uninstall the app you do not know, or restart the phone, then open the PC again.", { address: phone.sshPort })}</p>}
       {searchable && (
         <div className="my-pcs-find">
@@ -318,18 +314,23 @@ function ScanWay({ open, failed, disabled = false }: { readonly open: AddressOpe
 }
 
 /**
- * The code a PC shows, where there is no scanner (a browser): one small line that opens its field in place, whose Pair
- * hands the code on (`onCode`, the shell's own code screen from there). The code stays in its input alone (src/AGENTS.md).
+ * The code a PC shows: one small line that opens its field in place. Its Pair looks the code up right here (`code.submit`):
+ * while it looks and after a failure the person can correct, the same field keeps what was typed, with Cancel; a code
+ * that found its PC goes on to the comparison, and that, or Cancel, closes the field and so drops the code. The code stays
+ * in its input alone (src/AGENTS.md).
  */
-function CodeLine({ onCode, disabled }: { readonly onCode: (code: string) => void; readonly disabled: boolean }) {
+function CodeLine({ code, disabled }: { readonly code: CodeWays; readonly disabled: boolean }) {
   const t = useT(), id = useId();
   const [shown, setShown] = useState(false);
+  // the lookup this field started ended (a PC found, or Cancel): the field closes
+  const [wasActive, setWasActive] = useState(false);
+  if (code.state.active !== wasActive) {
+    setWasActive(code.state.active);
+    if (!code.state.active) setShown(false);
+  }
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    const typed = (event.currentTarget.elements.namedItem("code") as HTMLInputElement).value;
-    // handed on, the field closes: no copy of the code stays under the screen it goes on to
-    setShown(false);
-    onCode(typed);
+    if (!code.state.looking) code.submit((event.currentTarget.elements.namedItem("code") as HTMLInputElement).value);
   };
   return (
     <>
@@ -338,15 +339,28 @@ function CodeLine({ onCode, disabled }: { readonly onCode: (code: string) => voi
         <form className="relay-shell-code-form" data-code-form="" onSubmit={submit}>
           <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{t("Code from the PC")}</label>
           <input id={`${id}-code`} name="code" className="input relay-shell-code-input" placeholder="XXXXX-XXXXX" disabled={disabled} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
-          <button type="submit" className="btn btn-primary" disabled={disabled}>{t("Pair")}</button>
+          {code.state.failure !== null && <p className="account-error" role="alert">{codeFailureText(t, code.state.failure)}</p>}
+          <div className="relay-shell-actions">
+            <button type="submit" className="btn btn-primary" disabled={disabled || code.state.looking} aria-busy={code.state.looking || undefined}>{code.state.looking ? t("Looking for the PC…") : t("Pair")}</button>
+            {code.state.active && <button type="button" className="btn" onClick={code.cancel}>{t("Cancel")}</button>}
+          </div>
         </form>
       )}
     </>
   );
 }
 
-/** How the relay tab's code goes on: `start` opens the code screen (a scanner that could not run), `submit` a code typed here. */
-export interface CodeWays { readonly start: () => void; readonly submit: (code: string) => void }
+/**
+ * How the relay tab's code goes on: `start` opens the code screen (a scanner that could not run); `submit` looks up a
+ * code typed in the tab's own field, whose lookup (`state`: under way, `looking` now, the `failure` it ended on) shows
+ * there until it finds its PC; `cancel` ends it.
+ */
+export interface CodeWays {
+  readonly start: () => void;
+  readonly submit: (code: string) => void;
+  readonly cancel: () => void;
+  readonly state: { readonly active: boolean; readonly looking: boolean; readonly failure: TypedCodeFailure | null };
+}
 
 /**
  * The relay tab's way in to a PC: its QR code where the phone app can scan, and its code everywhere (the PC offers both),
@@ -358,7 +372,7 @@ function QrOrCode({ code, disabled = false }: { readonly code: CodeWays; readonl
   return (
     <>
       {canScanQr() && <ScanWay open={open} failed={code.start} disabled={disabled} />}
-      <CodeLine onCode={code.submit} disabled={disabled} />
+      <CodeLine code={code} disabled={disabled} />
       <OpenState open={open} />
     </>
   );
@@ -399,12 +413,6 @@ export function AccountlessRelayPanel({ code }: { readonly code: CodeWays }) {
       <QrOrCode code={code} />
     </>
   );
-}
-
-/** Whether Tailscale is on in the phone app: yes where the app cannot tell (no `tailscale`, or a check that failed). */
-async function tailscaleOn(): Promise<boolean> {
-  if (!hasNativeMethod(SHELL, "tailscale")) return true;
-  try { return (await callNative<{ on?: boolean }>(SHELL, "tailscale")).on !== false; } catch { return true; }
 }
 
 /** With Tailscale off on the phone a Tailscale address opens nothing: one line and Open Tailscale, where the app has it. */
@@ -481,18 +489,20 @@ function SshPanel() {
  * SSH, so Tailscale and SSH each take a PC's address (RelayAddPc's AddressForm, which opens that PC's own Ovis); the
  * phone app adds what it knows.
  */
-export function AddPcTabs({ title, relay, onBack, layout = "page", focused = false }: {
+export function AddPcTabs({ title, relay, onBack, layout = "page", focused = false, hidden = false }: {
   readonly title: string; readonly relay: ReactNode; readonly onBack?: (() => void) | undefined;
   /** `front`: the front page itself (a centred card on a wide screen); `side`: the panel beside My PCs on a wide screen */
   readonly layout?: "page" | "front" | "side";
   /** opened from My PCs' Add PC: its title takes the focus */
   readonly focused?: boolean;
+  /** kept mounted but not shown (My PCs stands in its place on a phone): its tab and what is typed survive the switch */
+  readonly hidden?: boolean;
 }) {
   const t = useT();
   const [way, setWay] = useState<ConnectWay>("relay");
   const label: Record<ConnectWay, string> = { relay: t("Ovis relay"), tailscale: "Tailscale", ssh: "SSH" };
   return (
-    <div className={layout === "page" ? "connect-add" : `connect-add connect-add-${layout}`} data-view="add-pc">
+    <div className={layout === "page" ? "connect-add" : `connect-add connect-add-${layout}`} data-view="add-pc" hidden={hidden || undefined}>
       <ConnectHead title={title} onBack={onBack} side={layout === "side"} focused={focused} />
       <div className="segmented connect-start-tabs" role="group" aria-label={t("How to connect")}>
         {CONNECT_WAYS.map((each) => <button key={each} type="button" aria-pressed={way === each} data-tab={each} onClick={() => setWay(each)}>{label[each]}</button>)}

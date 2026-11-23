@@ -43,7 +43,7 @@ describe("the front page's account part", () => {
 
   const tabsOf = (html: string) => [...html.matchAll(/<button type="button" aria-pressed="(true|false)" data-tab="(\w+)">([^<]+)</g)].map(([, pressed, tab, label]) => [tab, label, pressed]);
   const panelOf = (html: string, tab: string): string => /<div class="connect-start-panel" data-tab-panel="(\w+)">/.exec(html)?.[1] === tab ? html.slice(html.indexOf(`data-tab-panel="${tab}"`)) : "";
-  const viewOf = (html: string): string | null => /data-view="([\w-]+)"/.exec(html)?.[1] ?? null;
+  const viewOf = (html: string): string | null => /data-view="([\w-]+)"/.exec(shownOf(html))?.[1] ?? null;
   const titleOf = (html: string): string | undefined => html.match(/<h1[^>]*>([^<]+)<\/h1>/)?.[1];
   // each row of My PCs: where it leads and its words (name, way, state), its Forget left out
   const rowsOf = (html: string) => [...html.matchAll(/<a class="relay-add-saved-pc" href="([^"]+)">([\s\S]*?)<\/a>/g)].map(([, href, inner]) => [href, inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " ")]);
@@ -78,8 +78,8 @@ describe("the front page's account part", () => {
     expect(viewOf(two)).toBe("my-pcs");
     expect(titleOf(two)).toBe("Your PCs");
     expect(rowsOf(two)).toEqual([[`/s/${"a".repeat(32)}/`, "p620 Relay"], [`/s/${"b".repeat(32)}/`, "nuc Relay"]]);
-    expect(two).not.toContain("Continue with GitHub");
-    expect(two).not.toContain("data-tab=");
+    expect(shownOf(two)).not.toContain("Continue with GitHub");
+    expect(shownOf(two)).not.toContain("data-tab=");
     expect(two).toMatch(/<div class="my-pcs-add"><button type="button" class="btn btn-primary" data-action="add-pc">(<svg[\s\S]*?<\/svg>)?Add PC<\/button><\/div><\/div>/);
     expect(two).not.toContain("<details");
     // a sign-in that ended says so here too, where the list is
@@ -95,7 +95,7 @@ describe("the front page's account part", () => {
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
     const signedIn = render({ ...props({ kind: "list", devices, account: { kind: "signed-in", provider: "github", error: null, pcs: [pc("a".repeat(32), "p620", "paired")] } }), scoped: false, onSignIn: none });
     expect(viewOf(signedIn)).toBe("my-pcs");
-    expect(signedIn).not.toContain("Continue with GitHub");
+    expect(shownOf(signedIn)).not.toContain("Continue with GitHub");
     const after = render({ ...props({ kind: "list", devices, account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
     expect(viewOf(after)).toBe("my-pcs");
     expect(after).not.toContain("Sign out");
@@ -109,12 +109,12 @@ describe("the front page's account part", () => {
     expect(html).toContain('data-account-state="signed-in"');
     expect(viewOf(html)).toBe("my-pcs");
     expect(titleOf(html)).toBe("Your PCs");
-    expect(html.match(/<h1/g)).toHaveLength(1);
-    expect(html).not.toContain("data-tab=");
+    expect(shownOf(html).match(/<h1/g)).toHaveLength(1);
+    expect(shownOf(html)).not.toContain("data-tab=");
     expect(html).toContain("Sign in with the same account on the PC where Ovis runs");
     expect(rowsOf(html)).toEqual([]);
     expect(html).toContain('data-action="add-pc"');
-    expect(html).not.toContain("Continue with");
+    expect(shownOf(html)).not.toContain("Continue with");
   });
 
   it("says of a PC what this device found first: its Ovis too old, a check that found it off or on, then the account's word", () => {
@@ -144,7 +144,7 @@ describe("the front page's account part", () => {
     expect(html).toContain('data-account-state="signed-in"');
     expect(viewOf(html)).toBe("my-pcs");
     expect(titleOf(html)).toBe("Your PCs");
-    expect(html).not.toContain("data-tab=");
+    expect(shownOf(html)).not.toContain("data-tab=");
     expect(rowsOf(html)).toEqual([[`/s/${"a".repeat(32)}/`, "p620 Relay On"], [`/s/${"b".repeat(32)}/`, "nuc Relay Off"], [`/s/${"c".repeat(32)}/`, "desk Relay On"], [`/s/${"d".repeat(32)}/`, "attic Relay Off"], [`/s/${"f".repeat(32)}/`, "old-box Relay Update needed"]]);
     // a PC this device is not let into yet is on or off like any other: its own page asks for the approval
     expect(html).not.toContain("Needs approval");
@@ -261,7 +261,9 @@ describe("the hosted front page", () => {
     const dialogs = () => renderer!.root.findAll((instance) => instance.props.role === "dialog");
     const dialog = () => { const found = dialogs(); if (found.length !== 1) throw new Error(`${found.length} dialogs`); return found[0]!; };
     const textOf = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : textOf(child)).join("");
-    const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
+    /** whether a node is on screen: no part it sits in is hidden (the pane the layout does not show stays mounted, hidden) */
+    const shown = (node: ReactTestInstance): boolean => { for (let at: ReactTestInstance | null = node; at !== null; at = at.parent) if (at.props?.hidden === true) return false; return true; };
+    const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label && shown(node));
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
 
     describe("a pairing's step frame", () => {
@@ -398,12 +400,14 @@ describe("the hosted front page", () => {
       expect(button("Forget this PC")).toBeDefined();
     });
 
-    const tab = (way: string) => renderer!.root.find((node) => node.type === "button" && node.props["data-tab"] === way);
-    const panel = () => renderer!.root.find((node) => node.type === "div" && typeof node.props["data-tab-panel"] === "string").props["data-tab-panel"] as string;
-    const view = () => renderer!.root.find((node) => node.type === "div" && typeof node.props["data-view"] === "string").props["data-view"] as string;
-    const action = (name: string) => renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === name);
-    const back = () => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back");
-    const title = () => textOf(renderer!.root.findByType("h1"));
+    const one = (what: string, found: ReactTestInstance[]): ReactTestInstance => { if (found.length !== 1) throw new Error(`${found.length} ${what} on screen`); return found[0]!; };
+    const tab = (way: string) => one(`${way} tabs`, renderer!.root.findAll((node) => node.type === "button" && node.props["data-tab"] === way && shown(node)));
+    const panel = () => one("tab panels", renderer!.root.findAll((node) => node.type === "div" && typeof node.props["data-tab-panel"] === "string" && shown(node))).props["data-tab-panel"] as string;
+    const views = () => renderer!.root.findAll((node) => node.type === "div" && typeof node.props["data-view"] === "string" && shown(node)).map((node) => node.props["data-view"] as string);
+    const view = () => { const on = views(); if (on.length !== 1) throw new Error(`views on screen: ${on.join(", ")}`); return on[0]!; };
+    const action = (name: string) => one(`${name} buttons`, renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === name && shown(node)));
+    const back = () => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back" && shown(node));
+    const title = () => textOf(one("h1 headings", renderer!.root.findAll((node) => node.type === "h1" && shown(node))));
     /** Add PC at the end of My PCs: the connect tabs, with Back to the list */
     const openAdd = async () => {
       expect(view()).toBe("my-pcs");
@@ -411,7 +415,7 @@ describe("the hosted front page", () => {
       expect(view()).toBe("add-pc");
       expect(title()).toBe("Add PC");
     };
-    const rowTexts = () => renderer!.root.findAll((node) => node.type === "li" && typeof node.props["data-pc-way"] === "string").map((node) => [node.props["data-pc-way"], textOf(node)]);
+    const rowTexts = () => renderer!.root.findAll((node) => node.type === "li" && typeof node.props["data-pc-way"] === "string" && shown(node)).map((node) => [node.props["data-pc-way"], textOf(node)]);
     /** where there is no scanner, the code is one small line that opens its field in place; its Pair hands the code on */
     const typeCode = async (code: string) => {
       const line = action("add-code");
@@ -423,7 +427,21 @@ describe("the hosted front page", () => {
       await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: code }) } } }); });
     };
     /** a wide screen (a desktop browser): My PCs and Add a PC side by side */
-    const wide = () => { (window as unknown as { matchMedia: (query: string) => unknown }).matchMedia = (query: string) => ({ matches: query === "(min-width: 1024px)", addEventListener() {}, removeEventListener() {} }); };
+    /** the window's width as media queries read it, which a test can move across 1024 px as a rotation or a resize does */
+    const screen = (() => {
+      const changed = new Map<(event: { matches: boolean }) => void, string>();
+      let wideNow = false;
+      const matching = (query: string): boolean => query === "(min-width: 1024px)" && wideNow;
+      const install = (): void => {
+        (window as unknown as { matchMedia: (query: string) => unknown }).matchMedia = (query: string) => ({
+          get matches() { return matching(query); },
+          addEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => { changed.set(listener, query); },
+          removeEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => { changed.delete(listener); },
+        });
+      };
+      return { install, set: (wide: boolean) => { wideNow = wide; for (const [listener, query] of [...changed]) listener({ matches: matching(query) }); } };
+    })();
+    const wide = () => { screen.install(); screen.set(true); };
     const many = (count: number) => Array.from({ length: count }, (_, index) => device(index.toString(16).padStart(2, "0").repeat(16), `pc-${index}`, AP));
 
     it("opens on the relay tab again after a sign-out that follows another tab and a sign-in", async () => {
@@ -448,7 +466,7 @@ describe("the hosted front page", () => {
       expect(panel()).toBe("relay");
       expect(buttons("Continue with GitHub")).toHaveLength(1);
       // no list under the ways to add one
-      expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined)).toHaveLength(0);
+      expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined && shown(node))).toHaveLength(0);
       await act(async () => { back()[0]!.props.onClick(); });
       expect(view()).toBe("my-pcs");
       await openAdd();
@@ -480,17 +498,37 @@ describe("the hosted front page", () => {
       expect(opened).toEqual(["https://my-pc.tailnet.ts.net/", "https://my-pc.example.com/"]);
     });
 
-    it("takes a code typed in the relay tab's folded field on to its own screen, and Cancel back to the tabs", async () => {
-      const shown = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
+    it("keeps a code typed in the relay tab's folded field through its lookup and a failure to correct, and its Cancel clears it", async () => {
       const calls: string[] = [];
-      await mount({ ...shown, onCodeStart: () => { calls.push("start"); }, onCodeSubmit: (code) => { calls.push(`submit ${code}`); } });
+      const draw = (shown: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      const front: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none,
+        onCodeStart: () => { calls.push("start"); }, onCodeSubmit: (code) => { calls.push(`submit ${code}`); }, onCancel: () => { calls.push("cancel"); void draw(front); } };
+      await mount(front);
+      await typeCode("ABCDE-1234");
+      expect(calls).toEqual(["start", "submit ABCDE-1234"]);
+      const field = () => renderer!.root.find((node) => node.type === "form" && node.props["data-code-form"] !== undefined).findByType("input");
+      // the field keeps its own open state, which a field mounted again would have lost (closed): so it is the same field
+      const same = () => action("add-code").props["aria-expanded"] === true && field() !== undefined;
+      // looking, then a failure the person can correct: the same field, still holding what was typed, on the same page
+      await draw({ ...front, state: { kind: "code-looking" } });
+      expect(same()).toBe(true);
+      expect(view()).toBe("add-pc");
+      expect(textOf(renderer!.root.find((node) => node.props["data-code-form"] !== undefined))).toContain("Looking for the PC…");
+      await draw({ ...front, state: { kind: "code-entry", failure: "not-a-code" } });
+      expect(view()).toBe("add-pc");
+      expect(same()).toBe(true);
+      expect(renderer!.root.findAll((node) => node.props.role === "alert").map(textOf)).toContain("A code has ten letters and digits, like 7K3QD-M2XHA.");
+      // its Cancel ends the code, which brings the tabs back with the field closed
+      await act(async () => { renderer!.root.find((node) => node.props["data-code-form"] !== undefined).find((node) => node.type === "button" && textOf(node) === "Cancel").props.onClick(); });
+      expect(calls.at(-1)).toBe("cancel");
+      expect(title()).toBe("Connect a PC");
+      expect(renderer!.root.findAll((node) => node.props["data-code-form"] !== undefined)).toHaveLength(0);
+      // a code found goes on to its own screen; back on the front page, the field is closed
       await typeCode("ABCDE-12345");
-      expect(calls).toEqual(["start", "submit ABCDE-12345"]);
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
-      expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Pair with a code"]);
-      expect(renderer!.root.findAll((node) => node.type === "button" && typeof node.props["data-tab"] === "string")).toHaveLength(0);
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
-      expect(textOf(renderer!.root.findByType("h1"))).toBe("Connect a PC");
+      await draw({ ...front, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } });
+      expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Does Mac mini's screen show this ID?"]);
+      await draw(front);
+      expect(renderer!.root.findAll((node) => node.props["data-code-form"] !== undefined)).toHaveLength(0);
     });
 
     it("reads the account's PCs again when a notice changed them (a PC confirmed or removed), so Your PCs shows it at once", async () => {
@@ -501,9 +539,11 @@ describe("the hosted front page", () => {
       expect(refreshed).toBe(1);
     });
 
-    it("pairs with a code from Add PC's relay tab, signed in with no PC, in the pairing dialog, over the tabs it closes back to", async () => {
+    it("pairs with a code from Add PC's relay tab, signed in with no PC: the lookup in the field, the PC it found in the pairing dialog, over the tabs it closes back to", async () => {
       const calls: string[] = [];
-      const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCodeStart: () => { calls.push("start"); }, onCodeSubmit: (code: string) => { calls.push(`submit ${code}`); } } satisfies RelayShellProps;
+      const draw = (shown: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      const shown: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none,
+        onCodeStart: () => { calls.push("start"); }, onCodeSubmit: (code: string) => { calls.push(`submit ${code}`); }, onCancel: () => { calls.push("cancel"); void draw(shown); } };
       await mount(shown);
       await openAdd();
       expect(panel()).toBe("relay");
@@ -513,12 +553,15 @@ describe("the hosted front page", () => {
       expect(relayText).toContain("Pair with a code");
       await typeCode("ABCDE-12345");
       expect(calls).toEqual(["start", "submit ABCDE-12345"]);
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
-      expect(dialog().props["data-pair-dialog"]).toBe("code");
+      await draw({ ...shown, state: { kind: "code-looking" } });
+      expect(dialogs()).toHaveLength(0);
+      await draw({ ...shown, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } });
+      expect(dialog().props["data-pair-dialog"]).toBe("compare");
       await act(async () => { button("Cancel").props.onClick(); });
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      expect(calls.at(-1)).toBe("cancel");
       expect(dialogs()).toHaveLength(0);
       expect(view()).toBe("add-pc");
+      expect(renderer!.root.findAll((node) => node.props["data-code-form"] !== undefined)).toHaveLength(0);
     });
 
     it("opens an account with no PC yet on My PCs' empty state, whose Add PC opens the tabs and comes back to it", async () => {
@@ -532,7 +575,7 @@ describe("the hosted front page", () => {
 
     it("tells of the account's news on My PCs (a new PC with its one-tap removal, a join request, a PC to confirm), and not on Add PC's tabs", async () => {
       await mount(signedIn(four()));
-      const notices = () => [NewPcNotices, AccountJoinRequests, UnconfirmedPcNotices].map((type) => renderer!.root.findAllByType(type as never).length);
+      const notices = () => [NewPcNotices, AccountJoinRequests, UnconfirmedPcNotices].map((type) => renderer!.root.findAllByType(type as never).filter(shown).length);
       expect(notices()).toEqual([1, 1, 1]);
       await openAdd();
       expect(notices()).toEqual([0, 0, 0]);
@@ -584,33 +627,186 @@ describe("the hosted front page", () => {
       expect(rowTexts().map(([, text]) => text.split("Relay")[0])).toEqual(["pc-1", "pc-3", "pc-5", "pc-7"]);
     });
 
-    it("says it is opening a PC of the phone app's own, with Cancel, which stops it only where the app can", async () => {
+    it("says it is opening a PC of the phone app's own, with Cancel only where the app can stop it, and pressing it stops the open", async () => {
       for (const canCancel of [true, false]) {
         const called: string[] = [];
+        const opened = Promise.withResolvers<unknown>();
         const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
         Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
-          isNativePlatform: () => true, getPlatform: () => "android",
+          isNativePlatform: () => true, getPlatform: () => canCancel ? "android" : "ios",
           PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", ...(canCancel ? ["cancelOpen"] : [])].map((name) => ({ name })) }],
           nativePromise: async (plugin: string, method: string) => {
             called.push(`${plugin}.${method}`);
             if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };
-            if (method === "open") return await new Promise(() => {});
+            if (method === "open") return await opened.promise;
             return {};
           },
         } });
         try {
           await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
-          const status = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined);
-          expect(status().map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
-          await act(async () => { status()[0]!.find((node) => node.type === "button").props.onClick(); });
-          expect(status()).toHaveLength(0);
-          expect(called.includes("HerdrShell.cancelOpen")).toBe(canCancel);
+          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc" && shown(node)).props.onClick(); });
+          const status = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node));
+          if (canCancel) {
+            expect(status().map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+            await act(async () => { status()[0]!.find((node) => node.type === "button").props.onClick(); });
+            expect(status()).toHaveLength(0);
+            expect(called).toContain("HerdrShell.cancelOpen");
+          } else {
+            // iOS has no way to stop an open: the status says what it opens, with nothing to press
+            expect(status().map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…"]);
+            await act(async () => { opened.resolve({}); await opened.promise; });
+            expect(status()).toHaveLength(0);
+            expect(called).not.toContain("HerdrShell.cancelOpen");
+          }
           await act(async () => { renderer!.unmount(); });
         } finally {
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
         }
+      }
+    });
+
+    it("opens one PC at a time: a second tap while the app is asked about Tailscale drops the first, one already opening holds the next, and leaving drops a late answer", async () => {
+      let tailscale = Promise.withResolvers<{ on?: boolean }>();
+      const called: string[] = [];
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "cancelOpen"].map((name) => ({ name })) }],
+        nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+          called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
+          if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };
+          if (method === "tailscale") return await tailscale.promise;
+          if (method === "open") return await new Promise(() => {});
+          return {};
+        },
+      } });
+      const opens = () => called.filter((call) => call.startsWith("HerdrShell.open "));
+      const row = (way: string) => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === way && shown(node)).find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc");
+      const status = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node)).map(textOf);
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await act(async () => { row("tailscale").props.onClick(); });
+        // the tap says so at once, while the app is asked whether Tailscale is on
+        expect(status()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+        expect(opens()).toEqual([]);
+        await act(async () => { row("address").props.onClick(); });
+        expect(opens()).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
+        expect(status()).toEqual(["Opening 192.168.0.5:7317…Cancel"]);
+        await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
+        expect(opens()).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
+        // while one opens, another tap opens nothing
+        await act(async () => { row("tailscale").props.onClick(); });
+        expect(opens()).toHaveLength(1);
+        expect(called.filter((call) => call === "HerdrShell.tailscale")).toHaveLength(1);
+        await act(async () => { renderer!.unmount(); });
+        expect(called).toContain("HerdrShell.cancelOpen");
+        // leaving while the app is asked: its late answer opens nothing
+        tailscale = Promise.withResolvers<{ on?: boolean }>();
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await act(async () => { row("tailscale").props.onClick(); });
+        await act(async () => { renderer!.unmount(); });
+        await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
+        expect(opens()).toHaveLength(1);
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("waits for the Tailscale answer only so long, takes only an explicit off as off, and says so when the app cannot open an address at all", async () => {
+      for (const [mode, methods] of [["silent", ["getState", "open", "tailscale"]], ["unsaid", ["getState", "open", "tailscale"]], ["no-open", ["getState", "tailscale"]]] as const) {
+        const called: string[] = [];
+        const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+        Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+          isNativePlatform: () => true, getPlatform: () => "android",
+          PluginHeaders: [{ name: "HerdrShell", methods: methods.map((name) => ({ name })) }],
+          nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+            called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
+            if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net"], names: {} };
+            if (method === "tailscale") return mode === "silent" ? await new Promise(() => {}) : {};
+            return {};
+          },
+        } });
+        try {
+          await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc" && shown(node)).props.onClick(); });
+          const settled = () => called.some((call) => call.startsWith("HerdrShell.open ")) || renderer!.root.findAll((node) => node.props.role === "alert" && shown(node)).length > 0;
+          // bounded: an app that never answers is taken as on once the short wait is over
+          const deadline = Date.now() + 4_000;
+          while (!settled()) {
+            if (Date.now() > deadline) throw new Error(`${mode}: the open neither went ahead nor said why`);
+            await act(async () => { await Promise.race([new Promise(() => {}), Bun.sleep(25)]); });
+          }
+          expect(renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined)).toHaveLength(0);
+          if (mode === "no-open") {
+            expect(renderer!.root.findAll((node) => node.props.role === "alert" && shown(node)).map(textOf)).toContain("This app cannot open a PC by its address. Update the Ovis app.");
+            expect(called.some((call) => call.startsWith("HerdrShell.open "))).toBe(false);
+          } else expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
+          await act(async () => { renderer!.unmount(); });
+        } finally {
+          if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+          else Reflect.deleteProperty(globalThis, "Capacitor");
+        }
+      }
+    });
+
+    it("shows the one open in progress in both panes on a wide screen, and Add a PC's own form opens nothing more meanwhile", async () => {
+      wide();
+      const called: string[] = [];
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "cancelOpen"].map((name) => ({ name })) }],
+        nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
+          called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
+          if (method === "getState") return { saved: ["http://192.168.0.5:7317"], names: {} };
+          if (method === "open") return await new Promise(() => {});
+          return {};
+        },
+      } });
+      try {
+        await mount(signedIn(four()));
+        await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "address").find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+        await act(async () => { tab("tailscale").props.onClick(); });
+        const form = renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale").findByType("form");
+        await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: "other.tail1e211e.ts.net" }) } } }); });
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
+        const status = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined).map(textOf);
+        expect(status()).toEqual(["Opening 192.168.0.5:7317…Cancel", "Opening 192.168.0.5:7317…Cancel"]);
+        // either Cancel stops the one open
+        await act(async () => { renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale").find((node) => node.props["data-opening"] !== undefined).findByType("button").props.onClick(); });
+        expect(called.filter((call) => call === "HerdrShell.cancelOpen")).toHaveLength(1);
+        expect(status()).toEqual([]);
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("says it is opening a PC scanned on the plain wait and on a removed PC's screen too", async () => {
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: ["open", "cancelOpen"].map((name) => ({ name })) }, { name: "CapacitorBarcodeScanner", methods: [{ name: "scanBarcode" }] }],
+        nativePromise: async (_plugin: string, method: string) => {
+          if (method === "scanBarcode") return { ScanResult: "https://desk.tail1e211e.ts.net" };
+          if (method === "open") return await new Promise(() => {});
+          return {};
+        },
+      } });
+      try {
+        for (const screen of [{ ...props({ kind: "connecting", name: "Mac", pairing: true }), sheetJoin: { mode: "join" as const, server_id: ids.mini }, launchJoin: true },
+          { ...props({ kind: "failed", failure: "revoked", name: "Mac", detail: null, server_id: ids.mini }), signedIn: true, onAskAgain: none }]) {
+          await mount(screen);
+          await act(async () => { action("approval-wait-qr").props.onClick(); });
+          await act(async () => { await Promise.resolve(); });
+          expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined).map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+          await act(async () => { renderer!.unmount(); });
+        }
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
       }
     });
 
@@ -808,6 +1004,114 @@ describe("the hosted front page", () => {
       }
     });
 
+    it("keeps the chosen tab, the list's search and an open in progress across the 1024 px line, both ways", async () => {
+      screen.install();
+      screen.set(false);
+      const called: string[] = [];
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "cancelOpen"].map((name) => ({ name })) }],
+        nativePromise: async (plugin: string, method: string) => {
+          called.push(`${plugin}.${method}`);
+          if (method === "getState") return { saved: ["http://192.168.0.5:7317"], names: {} };
+          if (method === "open") return await new Promise(() => {});
+          return {};
+        },
+      } });
+      try {
+        await mount({ ...props({ kind: "list", devices: many(9), account: { kind: "signed-in", provider: "github", error: null, pcs: [] } }), scoped: false, onSignIn: none });
+        const search = () => one("searches", renderer!.root.findAll((node) => node.type === "input" && node.props.type === "search"));
+        await act(async () => { search().props.onChange({ currentTarget: { value: "192" }, target: { value: "192" } }); });
+        await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "address").find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+        await openAdd();
+        await act(async () => { tab("ssh").props.onClick(); });
+        await act(async () => { screen.set(true); });
+        expect(views()).toEqual(["my-pcs", "add-pc"]);
+        expect(panel()).toBe("ssh");
+        expect(search().props.value).toBe("192");
+        await act(async () => { screen.set(false); });
+        expect(view()).toBe("add-pc");
+        expect(panel()).toBe("ssh");
+        // nothing was mounted again: the open goes on, never cancelled by the move
+        expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node)).map(textOf)).toEqual(["Opening 192.168.0.5:7317…Cancel"]);
+        expect(called).not.toContain("HerdrShell.cancelOpen");
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("leaves the pairing dialog the top of the history when the window narrows again under it, and gives Add PC its entry once the dialog closes", async () => {
+      screen.install();
+      screen.set(false);
+      const pushed: unknown[] = [];
+      (window.history as unknown as { pushState: (state: unknown) => void }).pushState = (state) => { pushed.push(state); };
+      const draw = (shown_: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown_) })); });
+      const front: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCancel: () => { void draw(front); } };
+      await mount(front);
+      await openAdd();
+      expect(pushed).toHaveLength(1);
+      await act(async () => { screen.set(true); });
+      await typeCode("ABCDE-12345");
+      await draw({ ...front, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } });
+      expect(dialog().props["data-pair-dialog"]).toBe("compare");
+      await act(async () => { screen.set(false); });
+      expect(pushed).toHaveLength(1);
+      await act(async () => { button("Cancel").props.onClick(); });
+      expect(dialogs()).toHaveLength(0);
+      expect(view()).toBe("add-pc");
+      expect(pushed).toHaveLength(2);
+    });
+
+    it("goes back from My PCs to the relay PC the app keeps open while the person chooses, signed out with nothing saved in this browser", async () => {
+      const called: string[] = [];
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      const scope = `https://app.ovis.sh/s/${ids.home}/`;
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "backToCurrent"].map((name) => ({ name })) }],
+        nativePromise: async (plugin: string, method: string) => { called.push(`${plugin}.${method}`); return method === "getState" ? { saved: [scope], names: {}, choosing: true, current: scope } : {}; },
+      } });
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        expect(view()).toBe("my-pcs");
+        const backs = renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back to this PC" && shown(node));
+        expect(backs).toHaveLength(1);
+        await act(async () => { backs[0]!.props.onClick(); });
+        expect(called).toContain("HerdrShell.backToCurrent");
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("marks only the scope the app keeps open on a self-hosted relay's origin, and names it on Back", async () => {
+      const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
+      const desk = `https://relay.example/s/${"e".repeat(32)}/`, laptop = `https://relay.example/s/${"f".repeat(32)}/`;
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+        isNativePlatform: () => true, getPlatform: () => "android",
+        PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "backToCurrent"].map((name) => ({ name })) }],
+        nativePromise: async (_plugin: string, method: string) => method === "getState" ? { saved: [desk, laptop], names: { [desk]: "Desk", [laptop]: "Laptop" }, choosing: true, current: laptop } : {},
+      } });
+      try {
+        await mount(signedIn(four()));
+        expect(rowTexts().filter(([, text]) => text.includes("In use now")).map(([, text]) => text.split("Address")[0])).toEqual(["Laptop"]);
+        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back to Laptop" && shown(node))).toHaveLength(1);
+      } finally {
+        if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
+        else Reflect.deleteProperty(globalThis, "Capacitor");
+      }
+    });
+
+    it("says a failed sign-in once on a wide screen, beside the sign-in it can try again", async () => {
+      wide();
+      await mount({ ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: "The sign-in did not finish." } }), scoped: false, onSignIn: none });
+      const alerts = renderer!.root.findAll((node) => node.props.role === "alert" && shown(node) && textOf(node).includes("The sign-in did not finish."));
+      expect(alerts).toHaveLength(1);
+      expect(renderer!.root.find((node) => node.props["data-view"] === "add-pc").findAll((node) => node === alerts[0])).toHaveLength(1);
+    });
+
     it("never says Needs approval: an account PC this device is not let into yet is On or Off like any other", async () => {
       await mount(signedIn(four()));
       expect(rowTexts()).toEqual([["relay", "Desk PCRelay"], ["relay", "MacBookRelay"], ["relay", "Home serverRelayOff"], ["relay", "Mac miniRelayOn"]]);
@@ -844,7 +1148,7 @@ describe("the hosted front page", () => {
         await openAdd();
         for (const way of ["tailscale", "ssh"]) {
           await act(async () => { tab(way).props.onClick(); });
-          expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined)).toHaveLength(0);
+          expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined && shown(node))).toHaveLength(0);
         }
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -870,8 +1174,8 @@ describe("the hosted front page", () => {
         },
       } });
       try {
-        const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
-        await mount(shown);
+        const page = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
+        await mount(page);
         expect(rowTexts().map(([way, text]) => [way, text.replace(/Forget$/, "")])).toEqual([["tailscale", "DeskTailscaledesk.tail1e211e.ts.net"], ["tailscale", "100.101.1.2:7317Tailscale"], ["address", "192.168.0.5:7317Address"]]);
         await openAdd();
         // the code line too, beside the QR way: the PC offers both
@@ -880,10 +1184,10 @@ describe("the hosted front page", () => {
         expect(assigned).toEqual([`https://app.ovis.sh/s/${ids.mini}/#offer=abc`]);
         await act(async () => { tab("tailscale").props.onClick(); });
         expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(1);
-        expect(renderer!.root.findAll((node) => node.props["data-tailnet-pc"] !== undefined)).toHaveLength(0);
+        expect(renderer!.root.findAll((node) => node.props["data-tailnet-pc"] !== undefined && shown(node))).toHaveLength(0);
         await act(async () => { renderer!.unmount(); });
         tailscaleOn = false;
-        await mount(shown);
+        await mount(page);
         await openAdd();
         await act(async () => { tab("tailscale").props.onClick(); });
         expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
@@ -973,7 +1277,7 @@ describe("the hosted front page", () => {
       }
     });
 
-    it("opens My PCs when asked by its address (/#add), and goes from its Add PC to the code field alone signed out, coming back to it after", async () => {
+    it("opens My PCs when asked by its address (/#add), and types a code in its Add PC signed out, coming back to it after", async () => {
       (window.location as { hash?: string }).hash = "#add";
       sessionStorage.setItem(ADD_PC_FROM_KEY, `/s/${ids.desk}/`);
       const shown = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, addEntry: true };
@@ -982,8 +1286,9 @@ describe("the hosted front page", () => {
       expect(back()).toHaveLength(1);
       await openAdd();
       await typeCode("ABCDE-12345");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
-      expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Pair with a code"]);
+      // the lookup and a failure stay in Add PC's own field
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: "no-pc" } }) })); });
+      expect(view()).toBe("add-pc");
       expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(1);
       // Cancel: back on Add PC, whose Back is the list that still goes back to the PC
       await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
@@ -993,15 +1298,14 @@ describe("the hosted front page", () => {
       expect(back()).toHaveLength(1);
     });
 
-    it("takes Pair with a code from /#add's Add PC to the code field, signed in too", async () => {
+    it("takes a code typed in /#add's Add PC on to the pairing dialog once it found its PC, signed in too", async () => {
       (window.location as { hash?: string }).hash = "#add";
       const shown = { ...signedIn(four()), addEntry: true };
       await mount(shown);
       await openAdd();
       await typeCode("ABCDE-12345");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: null } }) })); });
-      expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(1);
-      expect(dialog().props["data-pair-dialog"]).toBe("code");
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } }) })); });
+      expect(dialog().props["data-pair-dialog"]).toBe("compare");
     });
 
     it("marks on /#add the PC it was opened from In use now instead of its state, and its Back goes back to that PC, leaving My PCs without one", async () => {
@@ -1024,6 +1328,20 @@ describe("the hosted front page", () => {
 
   });
 });
+
+/** The markup on screen: each part kept mounted but hidden (the pane the layout does not show) left out. */
+function shownOf(html: string): string {
+  let out = html;
+  for (let at = out.search(/<div [^>]*hidden=""/); at !== -1; at = out.search(/<div [^>]*hidden=""/)) {
+    let depth = 0, end = at;
+    for (const tag of out.slice(at).matchAll(/<div\b|<\/div>/g)) {
+      depth += tag[0] === "</div>" ? -1 : 1;
+      if (depth === 0) { end = at + tag.index + tag[0].length; break; }
+    }
+    out = out.slice(0, at) + out.slice(end);
+  }
+  return out;
+}
 
 const groupsOf = (html: string) => [...html.matchAll(/<span class="(key-id-group(?: key-id-differs)?)">([0-9a-f]{4})/g)].map(([, kind, group]) => [group, kind === "key-id-group key-id-differs"]);
 
@@ -1110,7 +1428,7 @@ describe("#16: the one plain screen a phone waits on after its sign-in", () => {
   afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
   const id = "a".repeat(32);
   const noTabsNoList = (html: string): void => {
-    expect(html).not.toContain("data-tab=");
+    expect(shownOf(html)).not.toContain("data-tab=");
     expect(html).not.toContain("New PC added to your account");
     expect(html).not.toContain("Needs approval");
     expect(html).not.toContain("add-pc-sheet");
@@ -1172,7 +1490,7 @@ describe("#16 sweep, folded into My PCs: a signed-in front page with nothing on 
     expect(rows(html)).toEqual([]);
     expect(html).toContain("Sign in with the same account on the PC where Ovis runs");
     expect(html).toContain('data-action="add-pc"');
-    expect(html).not.toContain("data-tab=");
+    expect(shownOf(html)).not.toContain("data-tab=");
     expect(html).not.toContain("Other ways to connect");
   });
 

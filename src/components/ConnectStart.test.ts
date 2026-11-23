@@ -77,7 +77,9 @@ describe("the phone app's own word on what is open", () => {
   const app = "https://app.ovis.sh";
   it("names the PC still open while the person chooses another, a relay PC by its page and any other by its address", () => {
     expect(phoneShellState({ saved: [], choosing: true, current: `${app}/s/${id("a")}/` }, app).current).toEqual({ serverId: id("a") });
-    expect(phoneShellState({ saved: [], choosing: true, current: "https://desk.tail1e211e.ts.net" }, app).current).toEqual({ origin: "https://desk.tail1e211e.ts.net" });
+    expect(phoneShellState({ saved: [], choosing: true, current: "https://desk.tail1e211e.ts.net" }, app).current).toEqual({ origin: "https://desk.tail1e211e.ts.net", scope: null });
+    // a relay PC of another origin (a self-hosted relay) by its scope there, so another scope on it is not the one open
+    expect(phoneShellState({ saved: [], choosing: true, current: `https://relay.example/s/${id("b")}/` }, app).current).toEqual({ origin: "https://relay.example", scope: id("b") });
     expect(phoneShellState({ saved: [], choosing: false, current: "https://desk.tail1e211e.ts.net" }, app).current).toBeNull();
     expect(phoneShellState({ saved: [], choosing: true, current: "" }, app).current).toBeNull();
     expect(phoneShellState({ saved: [], choosing: true, current: `${app}/` }, app).current).toBeNull();

@@ -797,17 +797,18 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           const desk = width >= 1024;
           if (desk) assert.equal(await front(page).locator('[data-view="add-pc"]').count(), 1, "Add a PC stands open beside My PCs at 1440");
           else await front(page).locator('[data-action="add-pc"]').click();
-          // the code is one line that opens its field in place
+          // the code is one line that opens its field in place, where it is looked up: a code that does not read says so
+          // there and stays to correct (no lookup goes out for it), and Cancel closes the field
           await front(page).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
-          await front(page).locator('[data-code-form] input[name="code"]').fill("x");
+          const codeField = front(page).locator('[data-code-form] input[name="code"]');
+          await codeField.fill("x");
           await front(page).locator('[data-code-form] button[type="submit"]').click();
-          await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
-          await settledSheet(page);
-          await capture(page, `pair-dialog-${width}-${theme}`);
-          await page.keyboard.press("Escape");
-          await page.locator("[role=dialog]").waitFor({ state: "detached" });
-          // the dialog closes back to Add a PC: on a phone its Back is My PCs (and with it goes Add PC's own history entry,
-          // after the dialog's); beside it at 1440, Add a PC has none
+          await front(page).locator('[data-code-form] [role="alert"]').waitFor();
+          assert.equal(await codeField.inputValue(), "x", `a code that does not read stays in its field to correct (${width}px)`);
+          await capture(page, `code-field-${width}-${theme}`);
+          await front(page).locator("[data-code-form]").getByRole("button", { name: "Cancel", exact: true }).click();
+          await front(page).locator("[data-code-form]").waitFor({ state: "detached" });
+          // back to My PCs: on a phone Add a PC's Back (and with it goes its own history entry); beside it at 1440 there is none
           if (!desk) await front(page).locator('[data-view="add-pc"] .relay-add-back').click();
           await pcLink(page, "Desk PC").waitFor();
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
@@ -824,8 +825,27 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
         }
       }
+      // a short desktop window: each pane scrolls on its own under a mouse wheel, so Pair under an opened code field and
+      // the last PC stay within reach of a pointer
+      await a.setViewportSize({ width: 1024, height: 400 });
+      await a.goto(`${APP}/`);
+      await pcLink(a, "Desk PC").waitFor();
+      await front(a).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
+      const reachable = async (pane: Locator, target: Locator, what: string): Promise<void> => {
+        const box = await pane.boundingBox();
+        assert.ok(box !== null, `${what}: its pane is drawn`);
+        await a.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 120));
+        await a.mouse.wheel(0, 4_000);
+        await a.waitForFunction((element) => { const rect = element!.getBoundingClientRect(); return rect.top >= 0 && rect.bottom <= innerHeight; }, await target.elementHandle(), { timeout: 5_000 })
+          .catch(() => assert.fail(`${what} is out of reach at 1024x400: the wheel does not bring it into the window`));
+        await target.click({ trial: true });
+      };
+      await reachable(front(a).locator('[data-view="add-pc"]'), front(a).locator('[data-code-form] button[type="submit"]'), "Pair under the opened code field");
+      await reachable(front(a).locator('[data-view="my-pcs"]'), front(a).locator(".relay-add-saved-pc").last(), "the last PC of My PCs");
+      await capture(a, "short-window-1024x400");
+      await a.setViewportSize({ width: 1440, height: 900 });
       assert.deepEqual([...A.errors, ...B.errors], [], "no page error on either device");
-      log9("front page: My PCs, its Add PC's pairing dialog and the account menu at 1440 and 390, dark and light; Escape closes the dialog and its history entry; page errors on both devices: none");
+      log9("front page: My PCs, its Add a PC's code field (a code that does not read stays to correct, Cancel closes it) and the account menu at 1440 and 390, dark and light; at 1024x400 Pair and the last PC are reached with the wheel; page errors on both devices: none");
       keep("task-9-account.txt", `# relay-shell-browser-qa (n): the sign-in screen and Add a PC on ${APP} (routed to ${origin}), account service ${ACCOUNT_SERVICE} (shared/account-service-fake.ts), PCs on the Bun relay as ${RELAY}\n${lines.join("\n")}\n`);
     } finally {
       keep("task-9-console.txt", `${consoleLines.join("\n")}\n`);

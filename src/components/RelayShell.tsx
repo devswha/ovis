@@ -27,7 +27,7 @@ import { NoPcOnline } from "./NoPcOnline.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
-import { canScanQr, scanQr, useAddressOpen } from "./RelayAddPc.tsx";
+import { canScanQr, OpenState, scanQr, useAddressOpen } from "./RelayAddPc.tsx";
 import { INSTALLER_COMMAND, PcApprovalWait, type PlainReason, PLUGIN_COMMANDS, RelayShellCardContent, TypedDigits } from "./RelayShellScreens.tsx";
 import { RelayStepFrame, type RelayStepBack } from "./RelayStepFrame.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
@@ -202,14 +202,31 @@ export function RelayShell(props: RelayShellProps) {
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
   const pc = name ?? t("this PC");
   const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind === "forged" ? "identity-changed" : state.kind;
-  const devices = state.kind === "list" ? state.devices : [];
+  // a code typed in the relay tab's own field is looked up there: the front page stays, its field holding what was typed,
+  // through the lookup and a failure to correct, until the code finds its PC (the comparison) or is cancelled
+  const [inlineCode, setInlineCode] = useState(false);
+  const codeLooking = state.kind === "code-entry" || state.kind === "code-looking";
+  // it ends once the state leaves the code's own (the comparison went on to a pairing, or Cancel came back)
+  const [lastKind, setLastKind] = useState(state.kind);
+  if (state.kind !== lastKind) {
+    setLastKind(state.kind);
+    if (inlineCode && codeKind(lastKind) && !codeKind(state.kind)) setInlineCode(false);
+  }
+  const lookingHere = inlineCode && codeLooking;
+  // the front page as it was when such a lookup began, drawn on while it runs
+  const [lastFront, setLastFront] = useState<RelayShellState | null>(front ? state : null);
+  if (front && state !== lastFront) setLastFront(state);
+  const frontState = front ? state : lookingHere ? lastFront : null;
+  const frontLike = frontState !== null;
+  const devices = frontState?.kind === "list" ? frontState.devices : [];
   const scan = useAddressOpen();
   const phone = usePhoneSaved(hasNativePlugin(SHELL));
   // the plain wait's QR way in: the phone app's scanner, else a code typed in (#16)
   const qrOrCode = (code: () => void) => (): void => { if (canScanQr()) { scan.setError(null); scanQr(t, scan.take, code); } else code(); };
   // no PC on (#16): a launch that asked every saved PC heard none (Check again asks them again), or, signed in with
   // nothing saved here, none of the account's PCs is on (Check again is the sign-in's launch once more); the rows say Off
-  const checkAgain = !front ? undefined : state.noneOnline === true ? props.onFindPc : state.kind === "empty" && state.waitPc === true ? props.onWaitAgain : undefined;
+  const checkAgain = frontState === null || (frontState.kind !== "list" && frontState.kind !== "empty") ? undefined
+    : frontState.noneOnline === true ? props.onFindPc : frontState.kind === "empty" && frontState.waitPc === true ? props.onWaitAgain : undefined;
   const noneOnline = checkAgain ? <NoPcOnline onCheck={checkAgain} /> : null;
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
@@ -227,7 +244,7 @@ export function RelayShell(props: RelayShellProps) {
   // otherwise Add a PC itself, as Connect a PC. What is saved decides only the app's own front page: a PC's page (scoped)
   // keeps that PC's sign-in, and its Back. Until the phone app says what it saved, a front page that waits on that draws
   // neither, so it does not flash the other (usePhoneSaved waits only so long)
-  const inventory = !scoped && (devices.length > 0 || phone.pcs.length > 0);
+  const inventory = !scoped && (devices.length > 0 || phone.pcs.length > 0 || phone.current !== null);
   const listed = addOpen || account?.kind === "signed-in" || inventory;
   const undecided = !listed && !scoped && !phone.read;
   // a wide screen (a desktop browser) keeps Add a PC open beside My PCs; a narrower one opens it from Add PC
@@ -235,35 +252,47 @@ export function RelayShell(props: RelayShellProps) {
   const desk = wide && listed;
   const myPcsShown = listed && (desk || !addView);
   // Add a PC over My PCs has an entry of its own in the history: Back (the phone's, the browser's or its own) comes back to
-  // the list, and the focus goes back to Add PC. Beside My PCs on a wide screen it is no step of its own
+  // the list, and the focus goes back to Add PC. Beside My PCs on a wide screen it is no step of its own; and a pairing
+  // dialog open when the window narrows again stays the top of the history: Add PC's entry waits until it closes
   const [cameBack, setCameBack] = useState(false);
   const closeAdd = (): void => { setAddView(false); setCameBack(true); };
-  useSheetHistory(addView && listed && !desk, closeAdd);
+  const addOver = listed && !desk && addView;
+  const [addHeld, setAddHeld] = useState(false);
+  if (addOver && !addHeld && !addingPc) setAddHeld(true);
+  if (!addOver && addHeld) setAddHeld(false);
+  useSheetHistory(addHeld, closeAdd);
   const signIn = signedOut && onSignIn ? (
     <AccountSignIn onSignIn={onSignIn} error={account.kind === "signed-out" ? account.error : null} notice={account.kind === "signed-out" ? (account.notice ?? null) : null}
       busy={account.kind === "signing-in"} busyProvider={account.kind === "signing-in" ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null}
       {...(accountProviders ? { providers: accountProviders } : {})} />
   ) : null;
-  // signed in, a code is typed on in the pairing dialog over the page; otherwise on a screen of its own, whose Cancel comes
-  // back. A code typed in the relay tab's own field goes there at once, already submitted
+  // signed in, a PC a code found is compared in the pairing dialog over the page; otherwise on a screen of its own, whose
+  // Cancel comes back. A scanner that could not run opens the code screen (or the dialog) at once
   const dialog = account?.kind === "signed-in";
+  if (dialog && inlineCode && state.kind === "code-compare" && !addingPc) setAddingPc(true);
   const code: CodeWays = {
     start: () => { if (dialog) setAddingPc(true); onCodeStart(); },
-    submit: (typed) => { if (dialog) setAddingPc(true); onCodeStart(); onCodeSubmit(typed); },
+    submit: (typed) => { setInlineCode(true); onCodeStart(); onCodeSubmit(typed); },
+    cancel: onCancel,
+    state: { active: lookingHere, looking: lookingHere && state.kind === "code-looking", failure: lookingHere && state.kind === "code-entry" ? state.failure : null },
   };
   const relayPanel = account?.kind === "signed-in" ? <AccountRelayPanel code={code} />
     : account !== null ? <SignedOutRelayPanel signIn={signIn} signingIn={account.kind === "signing-in"} code={code} />
     : <AccountlessRelayPanel code={code} />;
-  const frontView = (top: ReactNode, menu?: ReactNode): ReactNode => {
-    if (!myPcsShown) return <AddPcTabs title={listed ? t("Add PC") : t("Connect a PC")} relay={relayPanel} layout={listed ? "page" : "front"} focused={listed} onBack={listed ? closeAdd : account === null && scoped ? onBack : undefined} />;
-    const list = (
-      <MyPcs devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} checked={checked} phone={phone} onForget={props.onForgetSaved} wide={desk} addFocused={cameBack}
-        inUse={addOpen && addFrom !== null ? serverIdOfPath(addFrom) : null} onBack={addOpen ? () => { setAddOpen(false); leaveAddEntry(addFrom); } : undefined}
-        onAdd={desk ? undefined : () => { setCameBack(false); setAddView(true); }} menu={menu} top={top}
-        empty={account?.kind === "signed-in" && account.pcs !== null ? <p className="relay-shell-copy">{t("Sign in with the same account on the PC where Ovis runs")}</p> : undefined} />
-    );
-    return desk ? <div className="connect-desk">{list}<AddPcTabs title={t("Add PC")} relay={relayPanel} layout="side" /></div> : list;
-  };
+  // My PCs and Add a PC under one parent that stays across the 1024 px line: the layout and what shows change in place, so
+  // the chosen tab, what is typed, the focus, the list's search and an open under way survive a rotation or a resize
+  const frontView = (top: ReactNode, menu?: ReactNode): ReactNode => (
+    <div className={desk ? "connect-panes connect-desk" : "connect-panes"}>
+      {listed && (
+        <MyPcs key="list" hidden={addOver} devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} checked={checked} phone={phone} onForget={props.onForgetSaved} wide={desk} addFocused={cameBack}
+          inUse={addOpen && addFrom !== null ? serverIdOfPath(addFrom) : null} onBack={addOpen ? () => { setAddOpen(false); leaveAddEntry(addFrom); } : undefined}
+          onAdd={desk ? undefined : () => { setCameBack(false); setAddView(true); }} menu={menu} top={top}
+          empty={account?.kind === "signed-in" && account.pcs !== null ? <p className="relay-shell-copy">{t("Sign in with the same account on the PC where Ovis runs")}</p> : undefined} />
+      )}
+      <AddPcTabs key="add" title={listed ? t("Add PC") : t("Connect a PC")} relay={relayPanel} layout={!listed ? "front" : desk ? "side" : "page"} hidden={listed && !desk && !addView}
+        focused={addOver} onBack={addOver ? closeAdd : !listed && account === null && scoped ? onBack : undefined} />
+    </div>
+  );
   // the sign-in's progress, told to a screen reader as the page that holds it changes
   const announcedSignIn = useAnnouncedText(front && account?.kind === "signing-in" ? t("Signing in…") : null);
   const frontClass = (shownList: boolean): string => !shownList ? "relay-shell-screen relay-add-screen" : desk ? "relay-shell-screen relay-add-screen my-pcs-screen connect-desk-screen" : "relay-shell-screen relay-add-screen my-pcs-screen";
@@ -294,8 +323,9 @@ export function RelayShell(props: RelayShellProps) {
 
   // signed out, or a relay with no accounts: My PCs or Add a PC the same way, the sign-in on Add PC's relay tab (the old
   // list of this device's pairings stays the front page of a relay with no accounts, unless a PC's More asked for My PCs)
-  if (front && (signedOut || state.kind === "empty" || addOpen)) {
-    const ended = account?.kind === "signed-out" && myPcsShown ? account.error ?? account.notice ?? null : null;
+  if (frontLike && (signedOut || frontState.kind === "empty" || addOpen)) {
+    // a sign-in that ended says so over the list; on a wide screen the sign-in beside it says it already, once
+    const ended = account?.kind === "signed-out" && myPcsShown && !desk ? account.error ?? account.notice ?? null : null;
     return (
       <main className={frontClass(!undecided && myPcsShown)} data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
         <div className="visually-hidden" role="status">{announcedSignIn}</div>
@@ -324,7 +354,7 @@ export function RelayShell(props: RelayShellProps) {
       return (
         <main className="relay-shell-screen" data-relay-state={stateName}>
           <PcApprovalWait reason={launched.reason} name={pc} digits={launched.digits ?? null} onQr={qrOrCode(onCodeStart)} onAskAgain={launched.ask} onCheck={launched.check} />
-          {scan.error !== null && <p className="account-error" role="alert">{scan.error}</p>}
+          <OpenState open={scan} />
         </main>
       );
     }
@@ -341,7 +371,7 @@ export function RelayShell(props: RelayShellProps) {
     return (
       <main className="relay-shell-screen" data-relay-state={stateName}>
         <PcApprovalWait reason="removed" name={pc} onQr={qrOrCode(onCodeStart)} onAskAgain={props.onAskAgain} />
-        {scan.error !== null && <p className="account-error" role="alert">{scan.error}</p>}
+        <OpenState open={scan} />
       </main>
     );
   }
@@ -404,6 +434,11 @@ export function leaveAddEntry(from: string | null, history: Pick<History, "back"
   else history.replaceState(null, "", "/");
 }
 
+/** a code's own screens: typed, looked up, its PC compared */
+function codeKind(kind: RelayShellState["kind"]): boolean {
+  return kind === "code-entry" || kind === "code-looking" || kind === "code-compare";
+}
+
 function addingPcOpen(state: RelayShellState): boolean {
-  return state.kind === "code-entry" || state.kind === "code-looking" || state.kind === "code-compare";
+  return codeKind(state.kind);
 }
