@@ -12,6 +12,43 @@ const click = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}M\x1b[
 const panes = (run: Run) => run.loop.model().world.workspaces.flatMap((w) => w.tabs.flatMap((t) => t.panes.map((p) => p.id)));
 const closes = (run: Run) => run.core.calls().filter((call) => call.method === "terminal.kill" || call.method === "terminal.rm");
 
+it.each(["before Escape", "after Escape", "after repaint"])("a rejected left menu click balances a delivered right press: %s", async (ordering) => {
+  const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });
+  runs.push(run);
+  await run.live();
+  const program = run.core.program("t1");
+  program.output("\x1b[?1002h\x1b[?1006h");
+  await run.advance(200);
+  run.type("\x1b[<2;31;6M");
+  await run.settle();
+  expect(program.receivedHex()).toBe(Buffer.from("\x1b[<2;6;4M").toString("hex"));
+  run.type("\x02\r");
+  await run.advance(FRAME_PASS_MS);
+  run.type("\x1b[B");
+  await run.settle();
+  const painted = run.grid();
+  const row = painted.findIndex((line) => line.includes("4 · tab") && line.includes("logs"));
+  expect(row).toBeGreaterThan(0);
+  const col = painted[row]!.indexOf("4 · tab");
+  run.core.remove("t3");
+  await run.settle();
+  expect(run.grid()).toEqual(painted);
+  run.type(click(col, row));
+  await run.settle();
+  expect(run.loop.report().mode.overlays).toEqual(["menu"]);
+  expect(run.loop.model().focus.panes["t-main"]).toBe("t1");
+  expect(closes(run)).toEqual([]);
+  if (ordering !== "before Escape") run.type("\x1b[27u");
+  if (ordering === "after repaint") await run.advance(FRAME_PASS_MS);
+  run.type("\x1b[<2;32;6m");
+  await run.settle();
+  const balanced = Buffer.from("\x1b[<2;6;4M\x1b[<2;6;4m").toString("hex");
+  expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual([balanced, ""]);
+  run.type("\x1b[<2;33;6m");
+  await run.settle();
+  expect(program.receivedHex()).toBe(balanced);
+}, 60_000);
+
 // Once a presented choice is stale, no later input chooses anything until a fresh menu is presented.
 it.each(["joined digit", "split digit", "Enter", "click"])("a stale choice refuses trailing Close pane before repaint: %s", async (input) => {
   const run = await Run.start({ fixture: demo, cols: 120, rows: 80 });

@@ -183,8 +183,8 @@ export class Pointer {
       if (!hit || !("part" in hit) || !hit.part.startsWith("overlay:")) return [];
       const [kind, entry] = splitId(hit.id);
       if (hit.id !== "close" && (kind !== "menu" || entry === "")) return [];
-      const dropped = finished(this.grab);
-      this.grab = NONE;
+      // End any delivered gesture before the choice can change focus or reject a stale entry.
+      const dropped = this.cancel(scene, event.at);
       if (hit.id === "close") return [...dropped, { kind: "close_overlay" }];
       return [...dropped, { kind: "choose", entry }];
     }
