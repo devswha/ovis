@@ -318,7 +318,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$SRCROOT/../check-hosted-origin.sh\" \"$SRCROOT/App/public/shell.js\" \"$OVIS_APP_ORIGIN\"\n";
+			shellScript = "/bin/sh \"$SRCROOT/../check-hosted-origin.sh\" \"$SRCROOT/App/public/shell.js\" \"$OVIS_APP_ORIGIN\" \"$OVIS_APP_HOME\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

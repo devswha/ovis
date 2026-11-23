@@ -32,7 +32,15 @@ if (appUrl) {
   if (!script.includes(constant)) throw new Error("shell.js no longer declares APP_ORIGIN the way build-web.ts replaces it");
   writeFileSync(shellJs, script.replace(constant, `export const APP_ORIGIN = ${JSON.stringify(appUrl)};`));
 }
-writeNativeOrigin(app, appUrl, appHome(process.env["OVIS_APP_HOME"], process.env["OVIS_APP_ACCOUNT"] !== "0"));
+const home = appHome(process.env["OVIS_APP_HOME"], process.env["OVIS_APP_ACCOUNT"] !== "0");
+if (home !== "hosted") {
+  const shellJs = join(www, "shell.js");
+  const constant = 'export const APP_HOME = "hosted";';
+  const script = readFileSync(shellJs, "utf8");
+  if (!script.includes(constant)) throw new Error("shell.js no longer declares APP_HOME the way build-web.ts replaces it");
+  writeFileSync(shellJs, script.replace(constant, `export const APP_HOME = ${JSON.stringify(home)};`));
+}
+writeNativeOrigin(app, appUrl, home);
 
 if (process.env["OVIS_APP_ACCOUNT"] === "0") {
   const shellJs = join(www, "shell.js");

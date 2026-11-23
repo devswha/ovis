@@ -413,7 +413,9 @@ checks it and opens its PC.
 
 `OVIS_APP_HOME=bundled bun run build:web` builds an app whose first screen is its own page, as before
 home existed (`BuildConfig.HOME_HOSTED`, `OvisAppHome` in Info.plist, through the files
-`app/scripts/hosted-origin.ts` writes). A build with `OVIS_APP_ACCOUNT=0` takes that too unless it sets
+`app/scripts/hosted-origin.ts` writes). The pages carry the value too (`APP_HOME` in `shell.js`), and the
+packaging checks that compare the hosted origin compare it as well, so the pages of one build are not
+packaged with the first screen of another. A build with `OVIS_APP_ACCOUNT=0` takes that too unless it sets
 `OVIS_APP_HOME=hosted`.
 
 ### Push in the app
