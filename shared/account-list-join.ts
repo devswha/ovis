@@ -1,8 +1,9 @@
 /**
  * The join line of the signed list (a machine joins by an invite): what the device that made an invite
- * shows once, and what a machine pastes to join. It has one form, and the reader proves it by
- * writing the line again from what it read. The line carries an invite's private key: no refusal of
- * this file puts any part of a line into its message or its fields. No I/O; WebCrypto only.
+ * shows once, and what a machine pastes to join. It names the account service, the account and the
+ * account's list (empty while the account has none), and carries the invite's private key. It has one
+ * form, and the reader proves it by writing the line again from what it read. No refusal of this file
+ * puts any part of a line into its message or its fields. No I/O; WebCrypto only.
  */
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { isListHash, verifySignature } from "./account-list-entry.ts";
@@ -22,7 +23,7 @@ export const JOIN_LINE_MAX_CHARS = 1024;
  * `not_extractable` is the writer's alone: an invite's key the runtime will not let out, so no line can carry it.
  * `length` is a line longer than JOIN_LINE_MAX_CHARS; `scalar` a secret in its form whose private value is not from 1 to n-1.
  */
-export type JoinLineReason = "prefix" | "length" | "base64url" | "json" | "members" | "version" | "service" | "list" | "secret" | "scalar"
+export type JoinLineReason = "prefix" | "length" | "base64url" | "json" | "members" | "version" | "service" | "account" | "list" | "secret" | "scalar"
   | "not_one_form" | "not_extractable";
 
 export class JoinLineError extends Error {
@@ -48,8 +49,10 @@ function webCrypto(): SubtleCrypto {
 export interface JoinLine {
   /** The account service's origin. */
   readonly service: string;
-  /** The list id. */
-  readonly list: string;
+  /** The id of the account the invite is for. It is not secret: a machine shows it and asks before it joins. */
+  readonly account: string;
+  /** The list id, or null for an account that has no list yet. */
+  readonly list: string | null;
   /** The invite's key: the public half of the line's secret, in the one spelling of a key. */
   readonly key: string;
   /** The line's secret, to sign `join` and the invite's read proof; it cannot be exported. */
@@ -76,10 +79,11 @@ const SECRET_CHARS = 184;
 /** n, the order of P-256's group: a private value is from 1 to n-1 (account-list-entry.ts holds the same n for signatures). */
 const P256_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 const PROBE = utf8ToBytes("ovis-join-secret-check/1");
-const MEMBERS = ["v", "service", "list", "secret"] as const;
+const MEMBERS = ["v", "service", "account", "list", "secret"] as const;
+const ACCOUNT_FORM = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Base64url in its one spelling (no padding), or null. */
-function oneSpelling(text: string): Uint8Array | null {
+export function oneSpelling(text: string): Uint8Array | null {
   if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) return null;
   const bytes = fromBase64Url(text);
   return toBase64Url(bytes) === text ? bytes : null;
@@ -96,27 +100,36 @@ export function isServiceOrigin(text: string): boolean {
   return url.protocol === "https:" && url.origin === text;
 }
 
+/** An account's id as the account service writes it: 1 to 64 of `A-Z a-z 0-9 _ -`. */
+export function isAccountId(text: string): boolean {
+  return ACCOUNT_FORM.test(text);
+}
+
 /** Whether 32 bytes are a private value of P-256: from 1 to n-1, judged here, whatever the runtime's import accepts. */
 function scalarInRange(d: Uint8Array): boolean {
   const value = BigInt(`0x${bytesToHex(d)}`);
   return value > 0n && value < P256_ORDER;
 }
 
-function lineJson(service: string, list: string, secret: string): string {
-  return `{"v":1,"service":${JSON.stringify(service)},"list":${JSON.stringify(list)},"secret":${JSON.stringify(secret)}}`;
+/** `list` is the list id, or empty for an account that has no list yet. */
+function lineJson(service: string, account: string, list: string, secret: string): string {
+  return `{"v":1,"service":${JSON.stringify(service)},"account":${JSON.stringify(account)},"list":${JSON.stringify(list)},"secret":${JSON.stringify(secret)}}`;
 }
 
-function lineText(service: string, list: string, secret: string): string {
-  return `${JOIN_LINE_PREFIX}${toBase64Url(utf8ToBytes(lineJson(service, list, secret)))}`;
+function lineText(service: string, account: string, list: string, secret: string): string {
+  return `${JOIN_LINE_PREFIX}${toBase64Url(utf8ToBytes(lineJson(service, account, list, secret)))}`;
 }
 
 /**
- * The longest service a line has room for (469): the base64url of n bytes fits JOIN_LINE_MAX_CHARS after the prefix
- * exactly when n is at most 3/4 of that room, and the JSON holds the list id and the secret besides the service. A
- * longer service never fits, so the writer refuses it before anything else. A shorter one may still not fit once JSON
- * escapes it (a host may hold `"`): the writer measures the line it built too.
+ * The longest service a line of this account and list has room for (392 beside the longest account and a list id): the
+ * base64url of n bytes fits JOIN_LINE_MAX_CHARS after the prefix exactly when n is at most 3/4 of that room, and the JSON
+ * holds the account, the list and the secret besides the service. A longer service never fits, so the writer refuses
+ * it before it parses it. A shorter one may still not fit once JSON escapes it (a host may hold `"`): the writer
+ * measures the line it built too.
  */
-const SERVICE_MAX_CHARS = Math.floor(((JOIN_LINE_MAX_CHARS - JOIN_LINE_PREFIX.length) * 3) / 4) - lineJson("", "", "").length - 64 - SECRET_CHARS;
+function serviceRoom(account: string, list: string): number {
+  return Math.floor(((JOIN_LINE_MAX_CHARS - JOIN_LINE_PREFIX.length) * 3) / 4) - lineJson("", account, list, "").length - SECRET_CHARS;
+}
 
 function secretBytes(d: Uint8Array, x: Uint8Array, y: Uint8Array): Uint8Array {
   const bytes = new Uint8Array(JOIN_SECRET_BYTES);
@@ -135,17 +148,20 @@ function jwkPart(value: string | undefined): Uint8Array {
 }
 
 /**
- * The line for an invite: the service's origin, the list id and the invite's private key, which must
- * be extractable. The secret's 138 bytes are built here from the key's JWK, never taken from an
- * engine's PKCS8 export, so every runtime writes the same line, and no line longer than JOIN_LINE_MAX_CHARS. A service
- * too long for any such line is refused before it is parsed, the key exported or anything encoded. Refuses `line_malformed`; any other
- * failure of WebCrypto is a fault and goes up as the runtime threw it.
+ * The line for an invite: the service's origin, the account's id, the list id (null for an account that has no list
+ * yet) and the invite's private key, which must be extractable. The secret's 138 bytes are built here from the key's
+ * JWK, never taken from an engine's PKCS8 export, so every runtime writes the same line, and no line longer than
+ * JOIN_LINE_MAX_CHARS. A service too long for any such line is refused before it is parsed, the key exported or
+ * anything encoded. Refuses `line_malformed`; any other failure of WebCrypto is a fault and goes up as the runtime
+ * threw it.
  */
-export async function writeJoinLine(service: string, list: string, privateKey: CryptoKey): Promise<string> {
+export async function writeJoinLine(service: string, account: string, list: string | null, privateKey: CryptoKey): Promise<string> {
   const subtle = webCrypto();
-  if (service.length > SERVICE_MAX_CHARS) refuse("length", `A join line is at most ${JOIN_LINE_MAX_CHARS} characters`);
+  if (!isAccountId(account)) refuse("account", "account is an account's id: 1 to 64 of A-Z a-z 0-9 _ -");
+  if (list !== null && !isListHash(list)) refuse("list", "list is a list id: 64 of 0-9a-f, or none");
+  const listText = list ?? "";
+  if (service.length > serviceRoom(account, listText)) refuse("length", `A join line is at most ${JOIN_LINE_MAX_CHARS} characters`);
   if (!isServiceOrigin(service)) refuse("service", "service is an https origin");
-  if (!isListHash(list)) refuse("list", "list is a list id: 64 of 0-9a-f");
   let jwk: JsonWebKey;
   try {
     jwk = await subtle.exportKey("jwk", privateKey);
@@ -156,7 +172,7 @@ export async function writeJoinLine(service: string, list: string, privateKey: C
   if (jwk.kty !== "EC" || jwk.crv !== "P-256") refuse("secret", "The secret is not a P-256 private key");
   const d = jwkPart(jwk.d);
   if (!scalarInRange(d)) refuse("scalar", "The secret's private value is not from 1 to n-1 of P-256");
-  const line = lineText(service, list, toBase64Url(secretBytes(d, jwkPart(jwk.x), jwkPart(jwk.y))));
+  const line = lineText(service, account, listText, toBase64Url(secretBytes(d, jwkPart(jwk.x), jwkPart(jwk.y))));
   if (line.length > JOIN_LINE_MAX_CHARS) refuse("length", `A join line is at most ${JOIN_LINE_MAX_CHARS} characters`);
   return line;
 }
@@ -175,8 +191,8 @@ function secretForm(text: string): Uint8Array | null {
 
 /**
  * A pasted line, read strictly: the prefix, at most JOIN_LINE_MAX_CHARS characters (measured before
- * anything is decoded), base64url in its one spelling, a JSON object with the four members, each in its
- * form, a private value from 1 to n-1, the line written again from them equal to the line given, and a
+ * anything is decoded), base64url in its one spelling, a JSON object with the five members, each in its
+ * form (`list` a list id, or empty for an account that has no list yet), a private value from 1 to n-1, the line written again from them equal to the line given, and a
  * secret that signs for the public point it carries. Refuses `line_malformed` with a reason, and never with
  * any part of the line. The secret's form fixes the point's SubjectPublicKeyInfo, so the key derived
  * from it is always a key in its one spelling. Throws (a fault, no refusal) without WebCrypto, and
@@ -196,15 +212,16 @@ export async function readJoinLine(line: string): Promise<JoinLine> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) refuse("json", "The line holds a JSON object");
   const members = value as Record<string, unknown>;
   const names = Object.keys(members);
-  if (names.length !== MEMBERS.length || !MEMBERS.every((name) => Object.hasOwn(members, name))) refuse("members", "The line has exactly v, service, list and secret");
+  if (names.length !== MEMBERS.length || !MEMBERS.every((name) => Object.hasOwn(members, name))) refuse("members", "The line has exactly v, service, account, list and secret");
   if (members.v !== 1) refuse("version", "v is 1");
-  const { service, list, secret } = members;
+  const { service, account, list, secret } = members;
   if (typeof service !== "string" || !isServiceOrigin(service)) refuse("service", "service is an https origin");
-  if (typeof list !== "string" || !isListHash(list)) refuse("list", "list is a list id: 64 of 0-9a-f");
+  if (typeof account !== "string" || !isAccountId(account)) refuse("account", "account is an account's id: 1 to 64 of A-Z a-z 0-9 _ -");
+  if (typeof list !== "string" || !(list === "" || isListHash(list))) refuse("list", "list is a list id: 64 of 0-9a-f, or empty");
   const pkcs8 = typeof secret === "string" ? secretForm(secret) : null;
   if (pkcs8 === null || typeof secret !== "string") refuse("secret", "The secret is not a P-256 private key in the line's one PKCS8 form");
   if (!scalarInRange(pkcs8.subarray(SECRET_HEAD.length, SECRET_HEAD.length + 32))) refuse("scalar", "The secret's private value is not from 1 to n-1 of P-256");
-  if (lineText(service, list, secret) !== line) refuse("not_one_form", "The line is not in its one form");
+  if (lineText(service, account, list, secret) !== line) refuse("not_one_form", "The line is not in its one form");
   const key = toBase64Url(new Uint8Array([...SPKI_HEAD, ...pkcs8.subarray(POINT_AT, POINT_AT + 65)]));
   let privateKey: CryptoKey;
   try {
@@ -215,5 +232,5 @@ export async function readJoinLine(line: string): Promise<JoinLine> {
   }
   const signature = new Uint8Array(await subtle.sign(SIGN, privateKey, new Uint8Array(PROBE)));
   if (!(await verifySignature(PROBE, signature, key))) refuse("secret", "The secret does not sign for the public point it carries");
-  return { service, list, key, privateKey };
+  return { service, account, list: list === "" ? null : list, key, privateKey };
 }
