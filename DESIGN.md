@@ -5205,7 +5205,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A launch is asked once a page; an address taken while it waits wins over it, and a page Back restores whole from
   the browser's cache loads again rather than keep the launch's wait. A PC page restored that way connects again: in a
   browser its transports take their sockets as gone and reconnect in place; in the phone app, whose bridge dropped its
-  native listeners and sockets at the navigation away, the page loads again, its unsent text handed to storage first.
+  native listeners and sockets at the navigation away, the page loads again once its unsent text is in storage. When
+  storage refuses that text, the page stays as it is, the text in its fields, under a warning line with Reload app (as
+  the update notice draws it) that reloads once the text is stored or gone, and while it is not connected its
+  connection reads Disconnected, as stopped output does, never Reconnecting.
 - Portal, under the phone part of Add a connection's Direct tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)
