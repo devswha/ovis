@@ -560,7 +560,7 @@ function focusTo(acc: Acc, focus: Focus): void {
   const { tab } = focused(s.world, focus);
   const requested = tab && focus.panes[tab.id];
   const zoom = shownZoom(tab);
-  if (tab && requested && zoom && requested !== zoom) {
+  if (tab && requested && zoom && requested !== zoom && s.host.cols > 0) {
     if (s.host.cols <= NARROW_COLUMNS) {
       const before = focused(s.world, s.focus).pane?.id;
       acc.s = { ...s, following: null, focus: { ...focus, localZoom: { tab: tab.id, zoom }, previous: before && before !== requested ? before : focus.previous } };
