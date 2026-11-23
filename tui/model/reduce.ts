@@ -297,7 +297,10 @@ function ladderText(acc: Acc, event: TextInput): void {
       acc.levels.push(2);
       const from = acc.effects.length;
       toOverlay(acc, { kind: "text", event: { type: "text", text: first, at: event.at } });
-      if (handBack(acc, from, after, event.at)) return;
+      // Once the menu closes the remaining bytes are a new input, after the loop performed its choice
+      // (including reload_keys, which can change how those very bytes are decoded by the ladder).
+      const closedMenu = s.overlays.at(-1)?.kind === "menu" && acc.s.overlays.length < s.overlays.length;
+      if (handBack(acc, from, after, event.at, closedMenu)) return;
       rest = after;
       continue;
     }
@@ -343,10 +346,10 @@ function ladderText(acc: Acc, event: TextInput): void {
  * is performed, so it meets the focus the action left. One read then routes as the same bytes split across reads do.
  * After a detach the rest is dropped. True when the run handed the rest back or dropped it.
  */
-function handBack(acc: Acc, from: number, rest: string, at: number): boolean {
+function handBack(acc: Acc, from: number, rest: string, at: number, closedMenu = false): boolean {
   // nothing typed after a detach goes anywhere: the rest of the run ends with it, as a later read would
   if (acc.effects.slice(from).some((effect) => effect.type === "quit")) return true;
-  if (!acc.effects.slice(from).some((effect) => effect.type === "run")) return false;
+  if (!closedMenu && !acc.effects.slice(from).some((effect) => effect.type === "run")) return false;
   if (rest.length > 0) acc.effects.push({ type: "input", event: { type: "text", text: rest, at } });
   return true;
 }
