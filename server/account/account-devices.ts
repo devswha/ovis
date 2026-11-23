@@ -332,9 +332,10 @@ export class AccountDeviceStore implements AccountRowSource {
       return [row.id];
     });
     if (!standing.includes(row.id)) return false;
-    this.publish(row);
+    // the row is on disk: it is told even when its notice's publication or the write of its hold fails next
     if (this.admittedNow !== null) this.admittedNow.push(row);
     else this.tellAdmitted([row]);
+    this.publish(row);
     return true;
   }
 

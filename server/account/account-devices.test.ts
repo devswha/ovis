@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeviceStore } from "../devices.ts";
+import { privateStateFs } from "../private-state.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT_DEVICES_FILE, ACCOUNT_DEVICES_MAX, AccountDeviceStore, EXPIRY_DAYS, type AccountRowPorts, accountRowsFor } from "./account-devices.ts";
 import { keyOf, listOrigins, snapshotList as list, nameOf, SERVER } from "./account-devices.test-helpers.ts";
@@ -258,6 +259,27 @@ describe("S2-25 account-joined rows in their own file (T34, T35, T44, T49)", () 
     reopened.expire();
     expect(reopened.readmit(keyOf("k-1"), list(["k-1", "k-2", "k-3", "k-4"]))).toBe(true);
     expect(told.at(-1)).toEqual(["k-1"]);
+  });
+
+  test("a row on disk is told even when the write of its hold fails after it", () => {
+    const dir = stateDir();
+    const told: string[] = [];
+    const { ports: p } = ports(dir, { admitted: (rows) => { told.push(...rows.map((row) => nameOf(row.key))); } });
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    const rename = privateStateFs.renameSync;
+    // the second write of an admission, the one that starts its ten seconds, cannot be made
+    const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).endsWith(ACCOUNT_DEVICES_FILE) && /"hold_until":\s*"/.test(readFileSync(from, "utf8"))) throw new Error("disk full");
+      rename(from, to);
+    });
+    try { expect(() => store.commitList(list(["k-1"]))).toThrow("disk full"); }
+    finally { fault.mockRestore(); }
+    expect(fileKeys(dir)).toEqual(["k-1"]);
+    expect(told).toEqual(["k-1"]);
+    // the next read publishes its notice again (republish) and tells nothing new
+    store.commitList(list(["k-1"]));
+    expect(store.rows()[0]?.hold_until).not.toBeNull();
+    expect(told).toEqual(["k-1"]);
   });
 
   test("an announcement that fails is only logged: the admission stands", () => {
