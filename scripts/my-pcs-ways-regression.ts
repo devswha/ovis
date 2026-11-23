@@ -39,7 +39,8 @@ interface App { readonly saved: readonly string[]; readonly names?: Readonly<Rec
 /** A page of the hosted shell in a phone app that saved `app`'s PCs, with Tailscale off on the phone. */
 async function open(browser: Browser, origin: string, width: number, app: App): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width === 390;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US" });
+  // reduced motion: More ways' glyph turns at once, so a picture never catches it half way
+  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", reducedMotion: "reduce" });
   await context.addInitScript((saved: App) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
     const calls: string[] = [];
@@ -116,7 +117,6 @@ try {
     assert.equal(await lines.first().locator(".relay-add-other-way-host").evaluate((host) => host.scrollWidth <= host.clientWidth + 1 && getComputedStyle(host).textOverflow !== "ellipsis"), true, `${tag}: the host is never cut`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll`);
     assert.deepEqual(await widths(page, "desk"), before, `${tag}: a row of one way keeps its width with More ways open`);
-    await page.waitForTimeout(300); // fixed wait: the glyph's turn (--dur-fast) settles before the picture
     if (evidence) await list(page).screenshot({ path: join(evidence, `my-pcs-ways-open-${width}.png`) });
 
     // the Tailscale line meets Tailscale off on the phone: the card, and nothing opened
