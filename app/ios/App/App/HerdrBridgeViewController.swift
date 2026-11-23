@@ -709,6 +709,67 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         // the first page loads
         if let rules = Self.loopbackRules { webView?.configuration.userContentController.add(rules) }
         if let handler = (bridge as? CapacitorBridge)?.webViewDelegationHandler { DirectCallGate.install(on: handler) }
+        followPageColor()
+    }
+
+    /// What the page last said its colour is, as the status bar icons that stand out on it; nil until a page said.
+    private var pageIcons: Bars.Icons?
+
+    /// Run in every main-frame page as it starts: tells the app the page's `<meta name="theme-color">`, once the
+    /// document is read and again whenever it changes (a theme picked in Settings, the phone going dark), as
+    /// MainActivity's BAR_COLOR_SCRIPT does on Android. A page with none says so, and gets the app's own icons.
+    private static let barsScript = """
+        (() => {
+          if (window !== window.top) return;
+          let last = null;
+          const send = () => {
+            const meta = document.querySelector('meta[name="theme-color"]');
+            const color = meta ? meta.content : '';
+            if (color === last) return;
+            last = color;
+            window.webkit.messageHandlers.ovisBars.postMessage(color);
+          };
+          const follow = () => {
+            send();
+            new MutationObserver(send).observe(document.head ?? document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['content'] });
+          };
+          if (document.readyState === 'loading') addEventListener('DOMContentLoaded', follow, { once: true });
+          else follow();
+        })();
+        """
+
+    /// The status bar's icons follow the page: light on a dark page, dark on a light one (Bars), where they were
+    /// light for every PC and for the hosted app whatever its theme, so white on white in a light one. One way for
+    /// every page of the web view, the app's own included; on the web view's own content controller, before the
+    /// first page loads.
+    private func followPageColor() {
+        guard let controller = webView?.configuration.userContentController else { return }
+        controller.addUserScript(WKUserScript(source: Self.barsScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        controller.add(PageColorMessages { [weak self] color in
+            self?.pageIcons = Bars.icons(themeColor: color)
+            self?.applyBars()
+        }, name: "ovisBars")
+    }
+
+    /// Sets the icons for what is on screen now: a cover over the page by its own colour, as the page under it does
+    /// not show, else the page's (Bars.icons(cover:page:)).
+    private func applyBars() {
+        let cover = openingView.flatMap { Self.icons(on: $0.backgroundColor, in: traitCollection) }
+        let style: UIStatusBarStyle = Bars.icons(cover: cover, page: pageIcons) == .dark ? .darkContent : .lightContent
+        if statusBarStyle != style { setStatusBarStyle(style) }
+    }
+
+    /// The icons that stand out on a native view of `color`, as it resolves in light or dark mode; nil for none.
+    private static func icons(on color: UIColor?, in traits: UITraitCollection) -> Bars.Icons? {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard let color, color.resolvedColor(with: traits).getRed(&red, green: &green, blue: &blue, alpha: &alpha), alpha > 0 else { return nil }
+        return Bars.icons(red: Double(red), green: Double(green), blue: Double(blue))
+    }
+
+    /// The phone went light or dark: a cover whose colour follows it changes under the icons.
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        applyBars()
     }
 
     override func viewDidLoad() {
@@ -969,6 +1030,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         openingChange = change
         openingBar = bar
         openingName = host
+        applyBars()
     }
 
     private func showNoAnswer(_ origin: String) {
@@ -1010,6 +1072,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         ticker = nil
         openingView?.removeFromSuperview()
         openingView = nil
+        applyBars()
     }
 
     /// `reason` nil keeps the reason an SSH PC's tunnel gave (its 503 says less).
@@ -1080,6 +1143,22 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             if let pc, !(await OvisSsh.prepare(pc)) { PCStore.current = nil }
             window.rootViewController = HerdrBridgeViewController()
         }
+    }
+}
+
+/// Takes what a page says its colour is (HerdrBridgeViewController.barsScript), from the main frame alone: a frame
+/// inside the page does not colour the screen. Held by the web view's content controller, so it holds no view
+/// controller itself.
+private final class PageColorMessages: NSObject, WKScriptMessageHandler {
+    private let said: (String) -> Void
+
+    init(_ said: @escaping (String) -> Void) {
+        self.said = said
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let color = message.body as? String, color.utf8.count <= 64 else { return }
+        said(color)
     }
 }
 
