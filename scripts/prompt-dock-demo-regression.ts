@@ -176,6 +176,12 @@ try {
   const form = `<script>(() => {
     const demo = window.fetch;
     const web = ${JSON.stringify(panes.web)};
+    const DemoWebSocket = window.WebSocket;
+    window.WebSocket = Object.assign(function (...args) {
+      const socket = new DemoWebSocket(...args);
+      if (new URL(String(args[0]), location.href).pathname === "/ws") window.formSocket = socket;
+      return socket;
+    }, Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED"].map((key) => [key, DemoWebSocket[key]])));
     window.formPrompt = null;
     window.panePrompts = {};
     window.formAnswers = [];
@@ -197,7 +203,10 @@ try {
         if (window.formReadHold) return new Promise(() => {});
         if (window.formReadFails) { window.formFailedReads += 1; if (window.formHoldAfterFailure) window.formReadHold = true; return Promise.reject(new TypeError("Failed to fetch")); }
         const prompt = promptOf(url.searchParams.get("pane_id"));
-        if (prompt !== null) return json({ prompt, suggestion: null });
+        if (prompt !== null) {
+          if (window.formReflowGate) return window.formReflowGate.then(() => json({ prompt, suggestion: null }));
+          return json({ prompt, suggestion: null });
+        }
       }
       if (url.pathname === "/api/pane/prompt/answer") {
         const answer = JSON.parse(init.body);
@@ -233,7 +242,7 @@ try {
         throw error;
       };
       let evidenceSequence = 0;
-      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
+      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, waitForFonts = true, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; waitForFonts?: boolean; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
         const context = await browser.newContext({ viewport: { width, height }, locale: "en-US", hasTouch: touch, isMobile: touch && !finePointer });
         // a laptop with a touch screen: Chromium calls any screen with touch a coarse pointer, and
         // such a laptop's mouse is its first one. The app asks through matchMedia (useMediaQuery)
@@ -276,7 +285,7 @@ try {
           if (prompt !== null) await setPrompt(page, prompt);
           await page.locator(".prompt-card").waitFor();
           if (prompt !== null) await page.locator(".prompt-card").getByText((prompt as { question: string }).question).waitFor();
-          await appFaces(page);
+          if (waitForFonts) await appFaces(page);
           return {
             page,
             errors,
@@ -332,6 +341,43 @@ try {
         }
       }
       console.log("PASS the approval card sits outside the transcript, directly over the input card on its column, at 1440 and 390, dark and light");
+
+      for (const optionIndex of [0, 1]) {
+        const approval = {
+          id: "claude-wide", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
+          body: "touch probe.txt", multi_select: false, custom_option_index: null,
+          options: ["Yes", "Yes, and always allow access to /projects/demo from this project", "No"].map((label) => ({ label, description: null })),
+        };
+        const { page, errors, close } = await open({ width: 1440, height: 900, prompt: approval, waitForFonts: false });
+        try {
+          const card = page.locator(".prompt-card");
+          const option = card.locator(".prompt-card-option").nth(optionIndex);
+          assert.ok(await option.isEnabled());
+          await page.evaluate(([pane, narrow]) => {
+            const mock = window as unknown as {
+              formPrompt: unknown; formSocket: WebSocket; formReflowGate?: Promise<void>; finishReflow?: () => void;
+            };
+            mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
+            mock.formPrompt = narrow;
+            mock.formSocket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+              type: "pane-geometry", pane_id: pane, cols: 40, rows: 44,
+            }) }));
+          }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }] as const);
+          await card.locator('.prompt-card-option:disabled').nth(optionIndex).waitFor();
+          assert.ok(await option.isDisabled());
+          assert.deepEqual(await answersOf(page), []);
+          await page.evaluate(() => {
+            const mock = window as unknown as { finishReflow: () => void; formReflowGate?: Promise<void> };
+            mock.finishReflow();
+            delete mock.formReflowGate;
+          });
+          await card.getByText("Yes, and always allow access to /projects/ demo from this project").waitFor();
+          await option.click();
+          assert.deepEqual(await answersOf(page), [{ pane_id: panes.web, prompt_id: "claude-narrow", option_index: optionIndex }]);
+          assert.deepEqual(errors, []);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+      }
+      console.log("PASS a Claude approval's first or second choice submits the refreshed card after a terminal resize");
 
       {
         const { page, errors, close } = await open({ width: 1440, height: 900 });
