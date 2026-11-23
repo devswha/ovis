@@ -41,7 +41,7 @@ const CONSTANTS = ["REPO", "BIN_DIR", "LAUNCHER_MARK", "OVIS_HOME", "HERDR_SERVI
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
 }).join("\n");
-const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_reads_answers", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted", "add_takes_account", "running_lines", "herdr_command", "ovis_cli", "at_least"].map(fn).join("\n");
+const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_reads_answers", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted", "add_takes_account", "running_lines", "unit_gone_line", "mac_agent_line", "herdr_command", "ovis_cli", "at_least"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-command-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

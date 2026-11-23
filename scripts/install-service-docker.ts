@@ -12,14 +12,17 @@
  *   6. the guide's Uninstall: herdr runs on, nothing starts it at the next boot, and lingering is off again;
  *   7. the line after it (herdr installed, not running, no service yet): Ovis runs and starts at boot again;
  *   8. --add --account on a release whose add does not take --account: nothing is added, and the exit is non-zero;
+ *   9. --no-service after that, herdr running from the unit: the unit goes, herdr runs on, the next boot starts nothing;
  * on a server whose administrator turns lingering off after a service install:
- *   9-10. the unit and lingering, then lingering off and refused, and a reboot that starts nothing;
- *   11. the login starts herdr from the old unit inside alice's service manager; the line removes the unit and says that
+ *   10-11. the unit and lingering, then lingering off and refused, and a reboot that starts nothing;
+ *   12. the login starts herdr from the old unit inside alice's service manager; the line removes the unit and says that
  *       herdr ends with the login, which it does;
- *   12. the line again: no unit, herdr started once in the session's scope, which outlives the logout;
- *   13. a reboot and a login start nothing, and a herdr alice starts herself outlives her logout;
- * and on one where alice may turn lingering on:
- *   14. in a desktop's session (XDG_SESSION_TYPE=wayland), and 15. with --no-service: no unit, lingering untouched.
+ *   13. the line again: no unit, herdr started once in the session's scope, which outlives the logout;
+ *   14. a reboot and a login start nothing, and a herdr alice starts herself outlives her logout;
+ * and on a PC that becomes a desktop:
+ *   15. X forwarded into an SSH login on a server (graphical.target, as Ubuntu's default, but no display manager): unit;
+ *   16. a display manager enabled, the line again with herdr running: the unit goes, herdr runs on;
+ *   17. after a reboot, the line in an SSH login: no unit, herdr started once, said as this PC having a desktop.
  *
  *   bun scripts/install-service-docker.ts      KEEP=1 leaves the containers behind
  */
@@ -209,6 +212,24 @@ try {
     // the add never started: it would have turned the relay on and shown the account sign-in page
     assert.doesNotMatch(added.out, /Turning on the Ovis relay|account\.ovis\.sh/, added.out.slice(-2000));
   });
+
+  await step("9. --no-service after an earlier run, herdr running from its unit: the unit goes, herdr runs on, and the next boot starts nothing", async () => {
+    await until("Ovis answers", HEALTH, 60);
+    const running = await processes();
+    const declined = await install("--no-service");
+    assert.match(declined.out, /exit=0/, declined.out.slice(-3000));
+    assert.match(declined.out, /Ovis: removed the user service ovis-herdr an earlier run set up, as --no-service asks: nothing starts herdr at boot now; herdr runs on until you stop it\n/, declined.out.slice(-3000));
+    assert.equal((await root(`test -e ${UNIT}`)).code, 1);
+    assert.equal((await root("test -e /home/alice/.config/systemd/user/default.target.wants/ovis-herdr.service")).code, 1);
+    assert.deepEqual((await processes()).herdr, running.herdr);
+    // lingering the installer turned on stays on, with its note, for the guide's Uninstall to turn off
+    assert.equal(await lingers(), true);
+    assert.equal((await root("test -e /home/alice/.local/share/ovis/lingering")).code, 0);
+    await reboot();
+    // booted: lingering starts alice's manager, which has no unit to start herdr from
+    await until("alice's service manager runs (lingering)", "systemctl is-active --quiet user@$(id -u alice).service", 60);
+    assert.deepEqual((await processes()).herdr, []);
+  });
 } finally {
   await server.remove();
 }
@@ -219,17 +240,17 @@ try {
   const HERDR_UP = "for i in $(seq 1 30); do herdr status server --json | grep -q '\"running\":true' && break; sleep 1; done";
   const cgroupOf = async (pid: string) => (await root(`cat /proc/${pid}/cgroup`)).out;
   const SESSION_SCOPE = /\/user-\d+\.slice\/session-[^/]+\.scope$/m;
-  await step("9. a service set up while lingering was allowed: unit and lingering", async () => {
+  await step("10. a service set up while lingering was allowed: unit and lingering", async () => {
     const first = await install();
     assert.match(first.out, /in herdr, which the user service ovis-herdr starts whenever this PC starts/, first.out.slice(-3000));
     assert.equal(await lingers(), true);
   });
-  await step("10. an administrator turns lingering off and refuses it; a reboot starts nothing", async () => {
+  await step("11. an administrator turns lingering off and refuses it; a reboot starts nothing", async () => {
     assert.equal((await root(`loginctl disable-linger alice && mkdir -p /etc/polkit-1/rules.d && printf '%s\\n' '${NO_LINGER}' >/etc/polkit-1/rules.d/00-no-self-linger.rules`)).code, 0);
     await reboot();
     assert.deepEqual(await processes(), { herdr: [], ovis: [] });
   });
-  await step("11. the person logs in, where the old unit starts herdr inside the manager, and runs the line: the unit goes, and it says this herdr ends with the login", async () => {
+  await step("12. the person logs in, where the old unit starts herdr inside the manager, and runs the line: the unit goes, and it says this herdr ends with the login", async () => {
     // one session: the login's start of the unit, then the line in it
     const run = await alice(`${HERDR_UP}; ps -u alice -o pid=,args= | awk '/herdr server$/ { print $1 }' | while read pid; do cat /proc/$pid/cgroup; done; cat /opt/install.sh | sh 2>&1; echo "exit=$?"`);
     assert.match(run.out, /\/user@\d+\.service\/.*ovis-herdr\.service$/m, `the login did not start herdr from the old unit:\n${run.out.slice(0, 1500)}`);
@@ -240,7 +261,7 @@ try {
     await until("alice's service manager stopped with her last session", "! systemctl is-active --quiet user@$(id -u alice).service", 60);
     assert.deepEqual((await processes()).herdr, []);
   });
-  await step("12. the line again, lingering refused: no unit, herdr started once in the session's scope, which outlives the logout", async () => {
+  await step("13. the line again, lingering refused: no unit, herdr started once in the session's scope, which outlives the logout", async () => {
     const run = await install();
     assert.match(run.out, /exit=0/, run.out.slice(-3000));
     assert.match(run.out, /in herdr, which was started in the background and keeps running after you log out\. Nothing starts it after a restart: lingering is off for alice, and turning it on needs an administrator \(sudo loginctl enable-linger alice\); then run this installer again and herdr starts whenever this PC starts/, run.out.slice(-3000));
@@ -254,7 +275,7 @@ try {
     assert.deepEqual((await processes()).herdr, running.herdr);
     await until("Ovis answers after the logout", HEALTH, 10);
   });
-  await step("13. a reboot starts nothing, nor does a login; a herdr the person starts outlives their logout", async () => {
+  await step("14. a reboot starts nothing, nor does a login; a herdr the person starts outlives their logout", async () => {
     await reboot();
     assert.deepEqual(await processes(), { herdr: [], ovis: [] });
     const own = await alice(`herdr status server --json | grep -q '"running":true' && echo "running at login"; setsid herdr server </dev/null >/dev/null 2>&1 & ${HERDR_UP}; herdr status server --json`);
@@ -271,24 +292,35 @@ try {
   await strict.remove();
 }
 
+/** a display manager, as a desktop's login screen enables one: display-manager.service, an alias of it */
+const FAKE_DM = "printf '[Unit]\\nDescription=a display manager stand-in\\n[Service]\\nExecStart=/bin/sleep infinity\\n[Install]\\nAlias=display-manager.service\\n' >/etc/systemd/system/fake-dm.service && systemctl daemon-reload && systemctl enable fake-dm.service";
 const desk = await pc("desktop");
 try {
-  const { root, alice, install, until, lingers } = desk;
-  await step("14. in a desktop's session: no unit, lingering untouched, herdr started once", async () => {
-    const run = await install("", "export XDG_SESSION_TYPE=wayland; ");
+  const { root, install, until, reboot, processes, lingers } = desk;
+  await step("15. X forwarded into an SSH login on a server (graphical.target by default, no display manager): the unit is written", async () => {
+    assert.equal((await root("systemctl get-default")).out.trim(), "graphical.target");
+    const run = await install("", "export XDG_SESSION_TYPE=tty DISPLAY=localhost:10.0; ");
     assert.match(run.out, /exit=0/, run.out.slice(-3000));
-    assert.match(run.out, /in herdr, which was started for now: this is a desktop's session, so after a restart herdr starts when you open it, as before/, run.out.slice(-3000));
-    assert.equal(await lingers(), false);
-    assert.equal((await root(`test -e ${UNIT}`)).code, 1);
-    await until("Ovis answers", HEALTH, 10);
+    assert.match(run.out, /in herdr, which the user service ovis-herdr starts whenever this PC starts/, run.out.slice(-3000));
+    assert.equal((await root(`test -e ${UNIT}`)).code, 0);
+    assert.equal(await lingers(), true);
   });
-  await step("15. with --no-service: no unit, lingering untouched, herdr started once", async () => {
-    assert.equal((await alice("herdr server stop")).code, 0);
-    await until("herdr stopped", "! su -l alice -c 'herdr status server --json' | grep -q '\"running\":true'", 30);
-    const run = await install("--no-service");
+  await step("16. the PC gets a display manager; the line again in an SSH login, herdr running: the unit goes, herdr runs on", async () => {
+    assert.equal((await root(FAKE_DM)).code, 0);
+    await until("Ovis answers", HEALTH, 60);
+    const running = await processes();
+    const run = await install("", "export XDG_SESSION_TYPE=tty; ");
     assert.match(run.out, /exit=0/, run.out.slice(-3000));
-    assert.match(run.out, /in herdr, which was started for now, with no service \(--no-service\)/, run.out.slice(-3000));
-    assert.equal(await lingers(), false);
+    assert.match(run.out, /Ovis: removed the user service ovis-herdr an earlier run set up: this PC has a display manager \(a desktop's login screen\), and herdr started at boot would give its terminals no display; herdr runs on until you stop it\n/, run.out.slice(-3000));
+    assert.equal((await root(`test -e ${UNIT}`)).code, 1);
+    assert.deepEqual((await processes()).herdr, running.herdr);
+  });
+  await step("17. after a reboot nothing starts; the line in an SSH login into this desktop PC: no unit, herdr started once", async () => {
+    await reboot();
+    assert.deepEqual((await processes()).herdr, []);
+    const run = await install("", "export XDG_SESSION_TYPE=tty; ");
+    assert.match(run.out, /exit=0/, run.out.slice(-3000));
+    assert.match(run.out, /in herdr, which was started for now: this PC has a display manager \(a desktop's login screen\), so after a restart herdr starts when you open it there, as before\n/, run.out.slice(-3000));
     assert.equal((await root(`test -e ${UNIT}`)).code, 1);
     await until("Ovis answers", HEALTH, 30);
   });
@@ -296,5 +328,5 @@ try {
   await desk.remove();
 }
 
-console.log(`\nOne line leaves Ovis running: on a server through a logout, a rerun and a reboot; where lingering is refused through a logout, with no service left to start a herdr that a logout would end; in a desktop's session and with --no-service with nothing set up. install.sh said on the fresh server:\n${
+console.log(`\nOne line leaves Ovis running: on a server through a logout, a rerun and a reboot; where lingering is refused through a logout, with no service left to start a herdr that a logout would end; on a desktop PC and with --no-service with no service left behind. install.sh said on the fresh server:\n${
   said.split("\n").filter((line) => /^Ovis: /.test(line)).map((line) => `  ${line}`).join("\n")}`);

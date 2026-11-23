@@ -58,15 +58,18 @@ small plugin folder that runs that binary into herdr, starts it when herdr
 runs, and, when Tailscale runs on the PC, serves the app to the tailnet (`tailscale serve`) and
 prints the address as a QR code. It changes the user's Tailscale configuration, so it needs the
 same **Ask** as step 5. Where herdr is not running (C just installed it, or it is stopped), C starts
-herdr's server headless, and the app with it. On a PC used without a desktop it also sets up what
-starts herdr again: on Linux the user service `ovis-herdr` (`systemctl --user`), only where lingering
-is on or can be turned on without a password (`loginctl enable-linger`; it records that it did in
-`~/.local/share/ovis/lingering`), so herdr starts at boot and runs after a logout; on macOS the
-`sh.ovis.herdr-server` LaunchAgent, at login. Where lingering cannot be turned on, in a desktop's
-session, without a service manager, or with `--no-service` (`OVIS_NO_SERVICE=1`), it starts herdr once
-(it outlives a logout) and sets up nothing; a service an earlier run set up while lingering was on is
-removed once lingering is off (it would start herdr inside the user's service manager at each login,
-which ends it at logout), and the closing lines say so. That is a service and possibly lingering for the user's
+herdr's server headless, and the app with it, and sets up what starts herdr again. On a Linux PC used
+without a desktop, that is the user service `ovis-herdr` (`systemctl --user`), only where lingering is
+on or can be turned on without a password (`loginctl enable-linger`; it records that it did in
+`~/.local/share/ovis/lingering`), so herdr starts at boot and runs after a logout. A desktop is told
+from the session it runs in and from the machine (an enabled display manager, or a graphical session
+of the user's), so a desktop PC set up over SSH gets no service. On a Mac, at the screen or over SSH,
+it is the `sh.ovis.herdr-server` LaunchAgent, at login, which launchd runs inside the user's login
+session. Where lingering is not on, on a Linux desktop, without a service manager, or with
+`--no-service` (`OVIS_NO_SERVICE=1`), it starts herdr once (it outlives a logout) and sets up nothing.
+A later run removes the service an earlier one set up where none is wanted now (lingering turned off
+since, `--no-service`, a desktop) without stopping herdr, and the closing lines say so; `--no-service`
+leaves a Mac's LaunchAgent, which the Mac app shares, and says how to remove it. That is a service and possibly lingering for the user's
 account: say so when you **Ask**, and pass `--no-service` if the user does not want them. The service
 never stops herdr, and a herdr that runs is left as it is. It ends by saying what runs and what starts
 it again, `ovis status` to see it and `ovis stop` to stop it.
@@ -342,7 +345,8 @@ if [ -f ~/.local/share/ovis/lingering ]; then loginctl disable-linger && rm ~/.l
 ```
 
 A herdr the service started ends at the user's next logout once lingering is off. Ask before turning
-lingering off: something else on the PC may rely on it.
+lingering off: something else on the PC may rely on it. `launchctl disable` leaves the label listed as
+disabled in launchd's per-user overrides, which is harmless.
 
 An install on herdr-core (no herdr) has no plugin: stop it and remove its service and checkout.
 
