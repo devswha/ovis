@@ -83,9 +83,27 @@ public class MainActivity extends BridgeActivity {
      */
     private volatile Home.Phase home;
 
-    /** How long home has been loading with the app in front, and when that was last counted (watchOpening). */
-    private long homeWaited;
-    private long homeSeenAt;
+    /** How long home has been loading with the app in front (watchOpening). */
+    private Home.Clock homeClock = new Home.Clock(0);
+
+    /** The PC that was current when home opened: a relay PC's page landing later makes the hosted app the PC only over that one. */
+    private String homeOver;
+
+    /**
+     * Asked of home's page while its cover is up: what the page is, as facts for Home.drawn to judge, so an empty
+     * answer or another page of the hosted origin never counts as the hosted screen.
+     */
+    private static final String HOME_SCRIPT =
+        "(() => {" +
+        "  const root = document.getElementById('root');" +
+        "  return JSON.stringify({" +
+        "    shell: document.querySelector('meta[name=\"ovis-shell\"]') !== null," +
+        "    root: root !== null," +
+        "    boot: root !== null && root.querySelector(':scope > .boot') !== null," +
+        "    children: root === null ? 0 : root.childElementCount," +
+        "    loading: document.readyState === 'loading'" +
+        "  });" +
+        "})()";
 
     /**
      * Whether the address being opened led to something in front of the PC, such as a sign-in page:
@@ -208,6 +226,10 @@ public class MainActivity extends BridgeActivity {
                 goHome();
                 return;
             }
+            if (last == Home.Back.DEMO_EXIT) {
+                leaveDemo();
+                return;
+            }
             // the system's own Back, once: on Android 12 and later it may only send the app to the background, which
             // must find this on again when the app comes back
             setEnabled(false);
@@ -236,14 +258,29 @@ public class MainActivity extends BridgeActivity {
 
     /** What Back does here (Home.back): a relay PC's page that came up in the hosted screen is a PC's page. */
     private Home.Back back(boolean pageHasBack) {
-        boolean choosing = PCStore.choosing && PCStore.current(this) != null;
-        return Home.back(home == Home.Phase.PC ? Home.Screen.PC : screen, BuildConfig.HOME_HOSTED, PCStore.homeFailed, choosing, pageHasBack);
+        boolean current = PCStore.current(this) != null;
+        return Home.back(home == Home.Phase.PC ? Home.Screen.PC : screen, BuildConfig.HOME_HOSTED, PCStore.homeFailed, current, PCStore.choosing && current, pageHasBack);
     }
 
     /** For the page's own back control (HerdrShell getState `back`): "current", "home" or "". */
     String backWay() {
         Home.Back back = back(false);
         return back == Home.Back.CURRENT ? "current" : back == Home.Back.HOME ? "home" : "";
+    }
+
+    /** Whether the page of the PC `origin` is what this activity shows (Home.pcShown): where an SSH tunnel's failure may put its error page. */
+    boolean showsPc(String origin) {
+        return Home.pcShown(screen, home) && origin != null && origin.equals(PCStore.current(this));
+    }
+
+    /** Whether this activity is on its way out to another screen (reopen). */
+    boolean leaving() {
+        return leaving;
+    }
+
+    /** Whether the app's own page was asked for to manage an SSH PC (PCStore.manage), which opens it on SSH. */
+    boolean manages() {
+        return screen == Home.Screen.BUNDLED && PCStore.manage;
     }
 
     /** Whether the hosted Connect a PC screen is what this activity shows or is opening. */
@@ -258,9 +295,13 @@ public class MainActivity extends BridgeActivity {
     }
 
     /** Something happened to the hosted screen: what Home decides is carried out here, and nowhere else. */
-    private void home(Home.Event event) {
+    private void home(Home.Event happened) {
         Home.Phase phase = home;
         if (phase == null) return;
+        // once the app is going elsewhere, nothing this page still does counts
+        Home.Event event = leaving ? Home.Event.LEFT : happened;
+        // nor does a relay PC's page landing after something else became the PC (a notification's, another screen's)
+        if (event == Home.Event.RELAY_PC && !java.util.Objects.equals(homeOver, PCStore.current(this))) return;
         Home.Action action = Home.on(phase, event);
         home = Home.after(phase, event);
         if (action == Home.Action.LIFT_COVER) {
@@ -307,7 +348,14 @@ public class MainActivity extends BridgeActivity {
         // choosing another way (PCStore.choosing): the connect screen, the current PC kept for Back
         String saved = PCStore.choosing ? null : OvisSshPlugin.opening(this, PCStore.link != null ? null : PCStore.current(this));
         screen = Home.screen(BuildConfig.HOME_HOSTED, saved != null && PCStore.origin(saved) != null, PCStore.demo, PCStore.bundledAsked(), PCStore.homeFailed);
-        if (screen == Home.Screen.HOME) home = Home.Phase.LOADING;
+        // #pcs: the hosted app's front page as the app's own way there, not a launch that goes on to the PC opened last;
+        // or the fragment the app's own page asked for (a sign-in), which this one attempt takes
+        String homeStart = PCStore.homeStart == null ? "#pcs" : PCStore.homeStart;
+        if (screen == Home.Screen.HOME) {
+            home = Home.Phase.LOADING;
+            homeOver = PCStore.current(this);
+            PCStore.homeStart = null;
+        }
         // the hosted screen opens as a PC's first page does, at the hosted app's origin, which is not made the current PC
         String pc = screen == Home.Screen.PC ? saved : screen == Home.Screen.HOME ? BuildConfig.APP_ORIGIN : null;
         String origin = pc == null ? null : PCStore.origin(pc);
@@ -321,8 +369,7 @@ public class MainActivity extends BridgeActivity {
             // path until a PC page has loaded; a relay PC starts at its scope after that.
             config = new CapConfig.Builder(this)
                 .setServerUrl(origin)
-                // #pcs: the hosted app's front page as the app's own way there, not a launch that goes on to the PC opened last
-                .setStartPath(home != null ? "/#pcs" : PCStore.startPath(PCStore.pendingStart, pc))
+                .setStartPath(home != null ? "/" + homeStart : PCStore.startPath(PCStore.pendingStart, pc))
                 // No allowNavigation: the PC's own pages stay in the WebView already, and Capacitor
                 // turns each entry into another bridge origin rule (https://host, or a host starting
                 // with "http" as is: invalid, which again drops the bridge's origin check). Links to
@@ -574,6 +621,10 @@ public class MainActivity extends BridgeActivity {
                         // a PC is up: the next Connect a PC tries the hosted screen again
                         PCStore.homeFailed = false;
                         keepIfOvis(pc, url);
+                        // a relay PC picked on the hosted screen is kept by its own scope too, as one opened from a
+                        // pairing link is, so an alert's tap and a link to one of its views find it (PCStore.alertLink)
+                        String scope = home == Home.Phase.PC ? Home.relayScope(url, BuildConfig.APP_ORIGIN) : null;
+                        if (scope != null) PCStore.remember(MainActivity.this, scope);
                     }
                 }
             );
@@ -691,8 +742,9 @@ public class MainActivity extends BridgeActivity {
         openingPc = pc;
         openingLabel = label;
         openingHost = origin == null ? pc : Uri.parse(origin).getAuthority();
-        homeSeenAt = SystemClock.elapsedRealtime();
-        watch = new OpeningWatch(homeSeenAt, answerDelay(), TrafficStats.getUidRxBytes(Process.myUid()));
+        long now = SystemClock.elapsedRealtime();
+        homeClock = new Home.Clock(now);
+        watch = new OpeningWatch(now, answerDelay(), TrafficStats.getUidRxBytes(Process.myUid()));
         answerTimer.postDelayed(this::watchOpening, 1000);
     }
 
@@ -701,11 +753,9 @@ public class MainActivity extends BridgeActivity {
         long now = SystemClock.elapsedRealtime();
         watch.received(now, TrafficStats.getUidRxBytes(Process.myUid()));
         if (home == Home.Phase.LOADING) {
-            // only time in front counts, a second at most for each look: a page that came up while the app was away is
-            // asked (askPage) before the time it was away could count against it
-            homeWaited += Math.min(now - homeSeenAt, 1000);
-            homeSeenAt = now;
-            if (Home.timedOut(homeWaited, watch.isAnswered())) {
+            // only time in front counts (Home.Clock): a page that came up while the app was away is asked (askPage)
+            // before the time it was away could count against it
+            if (Home.timedOut(homeClock.tick(now), watch.isAnswered())) {
                 home(Home.Event.TIMED_OUT);
                 return;
             }
@@ -736,15 +786,24 @@ public class MainActivity extends BridgeActivity {
         WebView view = bridge.getWebView();
         String url = view.getUrl();
         if (!watch.isAnswered() || url == null || !PCStore.belongs(url, openingPc)) return;
+        if (home == Home.Phase.LOADING) {
+            view.evaluateJavascript(HOME_SCRIPT, (value) -> {
+                if (openingView == null || value == null || "null".equals(value)) return;
+                try {
+                    // the script's answer comes as a JSON string holding its JSON
+                    if (Home.drawn(new org.json.JSONArray("[" + value + "]").getString(0))) home(Home.Event.LOADED);
+                } catch (org.json.JSONException unreadable) {
+                }
+            });
+            return;
+        }
         view.evaluateJavascript(PAGE_SCRIPT, (value) -> {
             if (openingView == null || value == null || "null".equals(value)) return;
             try {
                 org.json.JSONObject page = new org.json.JSONObject(new org.json.JSONArray("[" + value + "]").getString(0));
                 long size = page.optLong("size", -1);
                 if (size >= 0) pageBytes = size;
-                if (!(page.isNull("client") ? pageShown : page.optBoolean("client"))) return;
-                if (home == null || home == Home.Phase.PC) hideOpening();
-                else home(Home.Event.LOADED);
+                if (page.isNull("client") ? pageShown : page.optBoolean("client")) hideOpening();
             } catch (org.json.JSONException unreadable) {
             }
         });
@@ -755,7 +814,7 @@ public class MainActivity extends BridgeActivity {
         super.onStart();
         if (openingView != null && watch != null) {
             // the time the app was away does not count against the hosted screen
-            homeSeenAt = SystemClock.elapsedRealtime();
+            homeClock.resumed(SystemClock.elapsedRealtime());
             answerTimer.removeCallbacksAndMessages(null);
             answerTimer.post(this::watchOpening);
             if (pageShown) answerTimer.post(this::pollPage);
@@ -1087,8 +1146,43 @@ public class MainActivity extends BridgeActivity {
         reopen();
     }
 
+    /** Change PC on the cover or on error.html: the PC that did not open is left. */
     void changePc() {
+        // an SSH PC is mended on the app's own page (Manage: Forget host key, Set up again), where error.html sends the
+        // person, and the hosted screen has no such thing
+        String left = PCStore.current(this);
+        PCStore.manage = left != null && SshPcs.on(this).get(left) != null;
         PCStore.setCurrent(this, null);
+        reopen();
+    }
+
+    /** Change PC from a page that is up (HerdrShell disconnect): out of the demo the app opened, else the PC is left. */
+    void disconnect() {
+        if (PCStore.demo) PCStore.demo = false;
+        else PCStore.setCurrent(this, null);
+        reopen();
+    }
+
+    /** Out of the demo, to the screen it was opened over: the PC it was opened over stays current. */
+    void leaveDemo() {
+        PCStore.demo = false;
+        reopen();
+    }
+
+    /** The hosted app's front page asked for by its address (HerdrShell open): an attempt at the hosted screen at `start`. */
+    void homeAttempt(String start) {
+        PCStore.homeAttempt(this, start);
+        reopen();
+    }
+
+    /**
+     * The app's own page on SSH with `target` (an SSH login, or empty) in its field, which takes it to the SSH setup
+     * screen (HerdrShell openSshSetup). Asked while choosing another way, the PC it was opened from stays the one to go
+     * back to, as on the app's own page.
+     */
+    void openSshSetup(String target) {
+        PCStore.sshSetup = target;
+        if (!(PCStore.choosing && PCStore.current(this) != null)) PCStore.setCurrent(this, null);
         reopen();
     }
 
@@ -1127,6 +1221,11 @@ public class MainActivity extends BridgeActivity {
     void reopen() {
         if (leaving) return;
         leaving = true;
+        // the hosted screen still up counts for nothing from here on, and its clock stops
+        if (home != null) {
+            home = Home.after(home, Home.Event.LEFT);
+            answerTimer.removeCallbacksAndMessages(null);
+        }
         WebView view = bridge == null ? null : bridge.getWebView();
         if (view == null) {
             restart();

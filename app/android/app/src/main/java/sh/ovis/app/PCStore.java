@@ -64,18 +64,45 @@ final class PCStore {
     /** The bundled demo was asked for (HerdrShell openDemo) and is up until it is left. In memory only. */
     static volatile boolean demo;
 
-    /** Whether something waits that only the app's own Connect a PC page takes: a pairing link, an SSH setup, or an SSH PC whose address another app holds, which that page says. */
+    /**
+     * Change PC was pressed where an SSH PC did not open: the app's own page, whose Manage holds what mends it (Forget
+     * host key, Set up again), which the hosted screen has not. In memory only.
+     */
+    static volatile boolean manage;
+
+    /**
+     * The fragment the next hosted screen starts at instead of `#pcs` (Home.homeStart: a sign-in the app's own page
+     * asked for), taken once by the activity that opens it. In memory only.
+     */
+    static volatile String homeStart;
+
+    /**
+     * Whether something waits that only the app's own Connect a PC page takes: a pairing link, an SSH setup, an SSH PC
+     * whose address another app holds, which that page says, or an SSH PC to manage.
+     */
     static boolean bundledAsked() {
-        return link != null || sshSetup != null || "ssh-port".equals(failureKind);
+        return link != null || sshSetup != null || manage || "ssh-port".equals(failureKind);
     }
 
-    /** The hosted screen is to be tried again (Try again on the fallback, Back from the app's own page or the demo): nothing is left that would keep the app's own page up. */
+    /** The hosted screen is to be tried again (Try again on the fallback, the way back from the app's own page): nothing is left that would keep the app's own page up. */
     static void goHome() {
         homeFailed = false;
         demo = false;
         link = null;
         sshSetup = null;
+        manage = false;
+        homeStart = null;
         if ("ssh-port".equals(failureKind)) fail(null, null);
+    }
+
+    /**
+     * The hosted app's front page asked for by its address (Home.homeStart): an attempt at the hosted screen, starting
+     * at `start`, which makes nothing the current PC. A PC that is current stays the one to go back to.
+     */
+    static void homeAttempt(Context context, String start) {
+        goHome();
+        homeStart = start;
+        if (current(context) != null) choosing = true;
     }
 
     /**
@@ -350,6 +377,8 @@ final class PCStore {
     static void open(Context context, String key, String start) {
         choosing = false;
         demo = false;
+        manage = false;
+        homeStart = null;
         prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }

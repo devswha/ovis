@@ -80,6 +80,58 @@ final class HomeTests: XCTestCase {
         }
     }
 
+    func testOnceTheAppLeavesHomeNothingOfItCountsAnyMore() {
+        // a PC picked, Try again, another screen: the page still up has a moment before it goes, in which a relay PC's
+        // page landing must not make the hosted app the PC over the one just written
+        for phase in [Home.Phase.loading, .shown] {
+            XCTAssertEqual(Home.on(phase, .left), .none, "\(phase)")
+            XCTAssertEqual(Home.after(phase, .left), .left, "\(phase)")
+        }
+        for event in Home.Event.allCases {
+            XCTAssertEqual(Home.on(.left, event), .none, "\(event)")
+            XCTAssertEqual(Home.after(.left, event), .left, "\(event)")
+        }
+        XCTAssertEqual(Home.after(.pc, .left), .pc)
+        XCTAssertEqual(Home.after(.fallback, .left), .fallback)
+    }
+
+    func testAWebContentProcessThatDiedGetsOneFreshTimedAttemptThenTheFallback() {
+        // WebKit reloads a dead page by itself, with nothing timing it: home starts over, cover and clock, once
+        for phase in [Home.Phase.loading, .shown] {
+            XCTAssertEqual(Home.on(phase, .died), .retry, "\(phase)")
+            XCTAssertEqual(Home.after(phase, .died), .left, "\(phase)")
+            // it died again before home came up: the app's own page, so this cannot go round
+            XCTAssertEqual(Home.on(phase, .died, retried: true), .fallBack, "\(phase)")
+            XCTAssertEqual(Home.after(phase, .died, retried: true), .fallback, "\(phase)")
+        }
+        // a relay PC's page is a PC's: Capacitor's own reload, as for any PC
+        XCTAssertEqual(Home.on(.pc, .died), .none)
+        XCTAssertEqual(Home.on(.fallback, .died), .none)
+    }
+
+    func testWhatTheWebViewReportsBecomesTheEventHomeActsOn() {
+        // event(for:): the navigation delegate's callbacks, as HerdrBridgeViewController hands them over
+        XCTAssertEqual(Home.event(for: .provisionalFailed(onPurpose: false)), .failed)
+        XCTAssertEqual(Home.event(for: .failed(onPurpose: false)), .failed)
+        XCTAssertEqual(Home.event(for: .httpError), .failed)
+        XCTAssertEqual(Home.event(for: .redirectedElsewhere), .failed)
+        XCTAssertEqual(Home.event(for: .processDied), .died)
+        // a load cancelled on purpose (a new navigation, a link handed to Safari) is no failure
+        XCTAssertNil(Home.event(for: .provisionalFailed(onPurpose: true)))
+        XCTAssertNil(Home.event(for: .failed(onPurpose: true)))
+    }
+
+    func testADocumentThatBreaksOffAfterHomeWasUpStillGivesWay() {
+        // home finished, then another page of it committed and its connection broke (WebKit's didFail): the first
+        // page having finished long ago is no reason to keep half a page on screen
+        let event = Home.event(for: .failed(onPurpose: false))
+        XCTAssertEqual(event.map { Home.on(.shown, $0) }, .fallBack)
+        XCTAssertEqual(event.map { Home.after(.shown, $0) }, .fallback)
+        XCTAssertEqual(event.map { Home.on(.loading, $0) }, .fallBack)
+        // once a relay PC's page is up, the PC's own error page says it
+        XCTAssertEqual(event.map { Home.on(.pc, $0) }, Home.Action.none)
+    }
+
     func testOnceARelayPcIsUpThePcsOwnRulesDecide() {
         for event in Home.Event.allCases {
             XCTAssertEqual(Home.on(.pc, event), .none, "\(event)")
@@ -101,53 +153,66 @@ final class HomeTests: XCTestCase {
     }
 
     func testBackGoesThroughThePagesOwnHistoryFirstAtHome() {
-        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, choosing: true, pageHasBack: true), .page)
-        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, choosing: false, pageHasBack: true), .page)
-        XCTAssertEqual(Home.back(screen: .pc, hosted: hosted, failed: false, choosing: false, pageHasBack: true), .page)
-        XCTAssertEqual(Home.back(screen: .demo, hosted: hosted, failed: false, choosing: false, pageHasBack: true), .page)
+        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, current: true, choosing: true, pageHasBack: true), .page)
+        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: true), .page)
+        XCTAssertEqual(Home.back(screen: .pc, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: true), .page)
+        XCTAssertEqual(Home.back(screen: .demo, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: true), .page)
     }
 
     func testBackAtHomeWithNothingBehindReturnsToThePcItWasOpenedFrom() {
-        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, choosing: true, pageHasBack: false), .current)
+        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, current: true, choosing: true, pageHasBack: false), .current)
         // no PC to go back to: nowhere (on Android the system's Back, which leaves the app)
-        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, choosing: false, pageHasBack: false), .leave)
+        XCTAssertEqual(Home.back(screen: .home, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: false), .leave)
     }
 
     func testBackOnTheBundledPageWhileChoosingReturnsToThePcAtOnceAsBefore() {
         for build in [hosted, bundledBuild] {
             for failed in [false, true] {
                 for pageHasBack in [false, true] {
-                    XCTAssertEqual(Home.back(screen: .bundled, hosted: build, failed: failed, choosing: true, pageHasBack: pageHasBack), .current)
+                    XCTAssertEqual(Home.back(screen: .bundled, hosted: build, failed: failed, current: true, choosing: true, pageHasBack: pageHasBack), .current)
                 }
             }
         }
     }
 
     func testBackOnTheFallbackLeadsNowhereRatherThanTryHomeAgain() {
-        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: true, choosing: false, pageHasBack: false), .leave)
-        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: true, choosing: false, pageHasBack: true), .page)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: true, current: false, choosing: false, pageHasBack: false), .leave)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: true, current: false, choosing: false, pageHasBack: true), .page)
     }
 
     func testBackOnTheBundledPageHomeHandedOverToReturnsHome() {
         // the SSH setup took the person off home: this is the way back to it
-        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: false, choosing: false, pageHasBack: false), .home)
-        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: false, choosing: false, pageHasBack: true), .page)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: false), .home)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: true), .page)
     }
 
     func testBackOnTheBundledFirstScreenLeadsNowhereAsBefore() {
-        XCTAssertEqual(Home.back(screen: .bundled, hosted: bundledBuild, failed: false, choosing: false, pageHasBack: false), .leave)
-        XCTAssertEqual(Home.back(screen: .bundled, hosted: bundledBuild, failed: false, choosing: false, pageHasBack: true), .page)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: bundledBuild, failed: false, current: false, choosing: false, pageHasBack: false), .leave)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: bundledBuild, failed: false, current: false, choosing: false, pageHasBack: true), .page)
     }
 
-    func testBackFromTheDemoReturnsToWhereItWasOpenedFrom() {
-        XCTAssertEqual(Home.back(screen: .demo, hosted: hosted, failed: false, choosing: false, pageHasBack: false), .home)
-        XCTAssertEqual(Home.back(screen: .demo, hosted: hosted, failed: false, choosing: true, pageHasBack: false), .home)
-        XCTAssertEqual(Home.back(screen: .demo, hosted: bundledBuild, failed: false, choosing: false, pageHasBack: false), .home)
+    func testBackFromTheDemoLeavesTheDemoForTheScreenItWasOpenedOver() {
+        // whatever opens without it, home, the fallback or a build's own first screen, with the current PC and
+        // choosing as they were
+        XCTAssertEqual(Home.back(screen: .demo, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: false), .demoExit)
+        XCTAssertEqual(Home.back(screen: .demo, hosted: hosted, failed: false, current: true, choosing: true, pageHasBack: false), .demoExit)
+        XCTAssertEqual(Home.back(screen: .demo, hosted: hosted, failed: true, current: true, choosing: true, pageHasBack: false), .demoExit)
+        XCTAssertEqual(Home.back(screen: .demo, hosted: bundledBuild, failed: false, current: false, choosing: false, pageHasBack: false), .demoExit)
+    }
+
+    func testBackOnTheBundledPageOpenedOverAPcReturnsToThatPc() {
+        // an SSH setup cancelled with a PC still current and nobody choosing: the next screen is that PC, so that is
+        // where the way back says it leads
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: false, current: true, choosing: false, pageHasBack: false), .current)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: true, current: true, choosing: false, pageHasBack: false), .current)
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: hosted, failed: false, current: true, choosing: false, pageHasBack: true), .page)
+        // a build with the bundled first screen had no such control
+        XCTAssertEqual(Home.back(screen: .bundled, hosted: bundledBuild, failed: false, current: true, choosing: false, pageHasBack: false), .leave)
     }
 
     func testBackOnAPcWithNothingBehindLeadsNowhere() {
-        XCTAssertEqual(Home.back(screen: .pc, hosted: hosted, failed: false, choosing: false, pageHasBack: false), .leave)
-        XCTAssertEqual(Home.back(screen: .pc, hosted: hosted, failed: false, choosing: true, pageHasBack: false), .leave)
+        XCTAssertEqual(Home.back(screen: .pc, hosted: hosted, failed: false, current: false, choosing: false, pageHasBack: false), .leave)
+        XCTAssertEqual(Home.back(screen: .pc, hosted: hosted, failed: false, current: true, choosing: true, pageHasBack: false), .leave)
     }
 
     private let app = URL(string: "https://app.ovis.sh")!
@@ -212,5 +277,126 @@ final class HomeTests: XCTestCase {
             XCTAssertFalse(Home.demoAddress(other), other)
         }
         XCTAssertFalse(Home.demoAddress(nil))
+    }
+
+    func testHomeIsUpOnlyOnceTheHostedShellDrewItsOwnScreen() {
+        // the hosted app's page says what it is (<meta name="ovis-shell">, which the released front page and the
+        // next both carry) and its root holds what it rendered
+        XCTAssertTrue(Home.drawn(shell: true, root: true, boot: false, children: 1, loading: false))
+        XCTAssertTrue(Home.drawn(shell: true, root: true, boot: false, children: 3, loading: false))
+        // index.html's own loading spinner, before the client ran
+        XCTAssertFalse(Home.drawn(shell: true, root: true, boot: true, children: 1, loading: false))
+        // an empty answer, or a maintenance page of the same origin: a 200 that is not the hosted app
+        XCTAssertFalse(Home.drawn(shell: false, root: false, boot: false, children: 0, loading: false))
+        XCTAssertFalse(Home.drawn(shell: false, root: true, boot: false, children: 2, loading: false))
+        // the shell's page with nothing in its root (its script failed to run)
+        XCTAssertFalse(Home.drawn(shell: true, root: true, boot: false, children: 0, loading: false))
+        XCTAssertFalse(Home.drawn(shell: true, root: false, boot: false, children: 0, loading: false))
+        XCTAssertFalse(Home.drawn(shell: true, root: true, boot: false, children: 1, loading: true))
+    }
+
+    func testWhatThePageSaysOfItselfIsReadStrictly() {
+        // drawn(page:): the JSON the page's facts come back as; anything unreadable is not home
+        XCTAssertTrue(Home.drawn(page: #"{"shell":true,"root":true,"boot":false,"children":2,"loading":false}"#))
+        XCTAssertFalse(Home.drawn(page: #"{"shell":true,"root":true,"boot":true,"children":1,"loading":false}"#))
+        XCTAssertFalse(Home.drawn(page: #"{"shell":false,"root":false,"boot":false,"children":0,"loading":false}"#))
+        XCTAssertFalse(Home.drawn(page: #"{"shell":true,"root":true}"#))
+        XCTAssertFalse(Home.drawn(page: "true"))
+        XCTAssertFalse(Home.drawn(page: ""))
+        XCTAssertFalse(Home.drawn(page: nil))
+    }
+
+    func testTheHostedAppsFrontPageOpensAsHomeWithItsFragmentKept() {
+        XCTAssertEqual(Home.homeStart("https://app.ovis.sh/#sign-in=github", appOrigin: app), "#sign-in=github")
+        XCTAssertEqual(Home.homeStart("https://APP.ovis.sh:443/#sign-in=google", appOrigin: app), "#sign-in=google")
+        XCTAssertEqual(Home.homeStart("https://app.ovis.sh/#pcs", appOrigin: app), "#pcs")
+        XCTAssertEqual(Home.homeStart("https://app.ovis.sh/", appOrigin: app), "#pcs")
+        XCTAssertEqual(Home.homeStart("https://app.ovis.sh", appOrigin: app), "#pcs")
+        let preview = URL(string: "https://relay-0510.ovis-app.pages.dev")!
+        XCTAssertEqual(Home.homeStart("https://relay-0510.ovis-app.pages.dev/#sign-in=apple", appOrigin: preview), "#sign-in=apple")
+    }
+
+    func testAPcsPageAPairingLinkOrAnotherOriginIsNoHomeAttempt() {
+        for other in [
+            "https://app.ovis.sh/s/\(id)/",
+            "https://app.ovis.sh/s/\(id)/#offer=eyJ2IjoxfQ",
+            "https://app.ovis.sh/s/\(id)/#sign-in=github",
+            "https://app.ovis.sh/#offer=eyJ2IjoxfQ",
+            "https://app.ovis.sh/#add",
+            "https://app.ovis.sh/#sign-in=GitHub",
+            "https://app.ovis.sh/#sign-in=",
+            "https://app.ovis.sh/#sign-in=github&x=1",
+            "https://app.ovis.sh/?pair=123456",
+            "https://app.ovis.sh/?x=1#pcs",
+            "https://app.ovis.sh/index.html",
+            "http://app.ovis.sh/#pcs",
+            "https://app.ovis.sh:8443/#pcs",
+            "https://pc.tail1234.ts.net/#pcs",
+            "http://100.64.0.1:7317/",
+            "not an address",
+            ""
+        ] {
+            XCTAssertNil(Home.homeStart(other, appOrigin: app), other)
+        }
+        XCTAssertNil(Home.homeStart(nil, appOrigin: app))
+        XCTAssertNil(Home.homeStart("https://app.ovis.sh/#pcs", appOrigin: nil))
+    }
+
+    func testARelayPcsScopeIsWhatItIsRememberedBy() {
+        let scope = "https://app.ovis.sh/s/\(id)/"
+        XCTAssertEqual(Home.relayScope(URL(string: "https://app.ovis.sh/s/\(id)/"), appOrigin: app), scope)
+        XCTAssertEqual(Home.relayScope(URL(string: "https://app.ovis.sh/s/\(id)"), appOrigin: app), scope)
+        XCTAssertEqual(Home.relayScope(URL(string: "https://APP.ovis.sh:443/s/\(id)/?pane=w1%3Ap1#x"), appOrigin: app), scope)
+        XCTAssertEqual(Home.relayScope(URL(string: "https://app.ovis.sh/s/\(id)/index.html"), appOrigin: app), scope)
+        XCTAssertNil(Home.relayScope(URL(string: "https://app.ovis.sh/"), appOrigin: app))
+        XCTAssertNil(Home.relayScope(URL(string: "https://app.ovis.sh/s/\(id)/../\(id)/"), appOrigin: app))
+        XCTAssertNil(Home.relayScope(URL(string: "https://other.example/s/\(id)/"), appOrigin: app))
+        // a hosted origin on a port of its own keeps it
+        let local = URL(string: "http://127.0.0.1:18596")!
+        XCTAssertEqual(Home.relayScope(URL(string: "http://127.0.0.1:18596/s/\(id)/x"), appOrigin: local), "http://127.0.0.1:18596/s/\(id)/")
+    }
+
+    func testAPcIsOnScreenOnlyWhereItsOwnPageIs() {
+        // whose push subscription a page may read, and where an SSH tunnel's failure may show
+        XCTAssertTrue(Home.pcShown(screen: .pc, phase: nil))
+        XCTAssertTrue(Home.pcShown(screen: .home, phase: .pc))
+        for phase in [Home.Phase.loading, .shown, .fallback, .left] {
+            XCTAssertFalse(Home.pcShown(screen: .home, phase: phase), "\(phase)")
+        }
+        XCTAssertFalse(Home.pcShown(screen: .bundled, phase: nil))
+        XCTAssertFalse(Home.pcShown(screen: .demo, phase: nil))
+    }
+
+    func testOnlyTimeInFrontCountsAgainstHome() {
+        var clock = Home.Clock(now: 1)
+        XCTAssertEqual(clock.tick(now: 1), 0)
+        var now = 1.2
+        while now < 8.35 {
+            _ = clock.tick(now: now)
+            now += 0.2
+        }
+        XCTAssertEqual(clock.tick(now: 8.4), 7.4, accuracy: 0.001)
+        // away for a minute: none of it counts, and the look that follows the return adds only what passed since
+        clock.resumed(now: 68.4)
+        XCTAssertEqual(clock.tick(now: 68.4), 7.4, accuracy: 0.001)
+        XCTAssertEqual(clock.tick(now: 68.9), 7.9, accuracy: 0.001)
+        XCTAssertFalse(Home.timedOut(elapsed: clock.tick(now: 68.95), answered: false))
+        XCTAssertTrue(Home.timedOut(elapsed: clock.tick(now: 69.05), answered: false))
+    }
+
+    func testALookThatComesLateWithoutAReturnCountsAsOneLookAtMost() {
+        // the timer held up, with no word that the app was away: a second at most, never the whole gap
+        var clock = Home.Clock(now: 0)
+        XCTAssertEqual(clock.tick(now: 1), 1, accuracy: 0.001)
+        XCTAssertEqual(clock.tick(now: 31), 2, accuracy: 0.001)
+        XCTAssertEqual(clock.tick(now: 31.5), 2.5, accuracy: 0.001)
+    }
+
+    func testTheWordDemoIsTheDemoOnlyOnHome() {
+        XCTAssertTrue(Home.demoAddress("https://demo/"))
+        // which screens take it is the caller's: asked through `opensDemo`
+        XCTAssertTrue(Home.opensDemo("https://demo/", atHome: true))
+        XCTAssertFalse(Home.opensDemo("https://demo/", atHome: false))
+        XCTAssertFalse(Home.opensDemo("https://demo.example.com/", atHome: true))
     }
 }

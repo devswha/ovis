@@ -26,6 +26,8 @@ public enum Home {
         case fallback
         /// A relay PC's page came up in it: the hosted app is the current PC, and the rules of a PC's page decide.
         case pc
+        /// The app is going elsewhere (a PC picked, Try again, another screen): what the page still does counts for nothing.
+        case left
     }
 
     public enum Event: CaseIterable {
@@ -37,6 +39,24 @@ public enum Home {
         case timedOut
         /// The web view went to a relay PC's page (relayPc).
         case relayPc
+        /// The app was told to open something else, and this page is on its way out.
+        case left
+        /// The page's web content process died (iOS takes them from an app in the background too).
+        case died
+    }
+
+    /// What the web view's navigation delegate reports about a main-frame load (`event(for:)`).
+    public enum Signal {
+        /// The load failed before a page came (didFailProvisionalNavigation); `onPurpose`: cancelled or handed off.
+        case provisionalFailed(onPurpose: Bool)
+        /// A page that had committed broke off (didFail), whenever in the screen's life that is.
+        case failed(onPurpose: Bool)
+        /// The document answered with an HTTP error.
+        case httpError
+        /// The address being opened led to another origin (a network's sign-in page).
+        case redirectedElsewhere
+        /// webViewWebContentProcessDidTerminate.
+        case processDied
     }
 
     public enum Action {
@@ -46,6 +66,8 @@ public enum Home {
         case fallBack
         /// The hosted app becomes the current PC, which ends choosing.
         case keepHosted
+        /// Home once more from the start, with its cover and its clock.
+        case retry
     }
 
     /// Where the way back leads: the page's own back control on iOS, the phone's Back on Android.
@@ -56,6 +78,8 @@ public enum Home {
         case current
         /// Home again.
         case home
+        /// Out of the demo, to the screen it was opened over.
+        case demoExit
         /// Nowhere (on Android the system's Back, which leaves the app).
         case leave
     }
@@ -77,22 +101,82 @@ public enum Home {
         return hosted && !failed ? .home : .bundled
     }
 
-    public static func on(_ phase: Phase, _ event: Event) -> Action {
-        if phase == .fallback || phase == .pc { return .none }
+    /// `retried`: a web content process already died under this attempt at home (`died`), so the next death falls back.
+    public static func on(_ phase: Phase, _ event: Event, retried: Bool = false) -> Action {
+        if phase == .fallback || phase == .pc || phase == .left { return .none }
         switch event {
         case .loaded: return phase == .loading ? .liftCover : .none
         case .failed: return .fallBack
         case .timedOut: return phase == .loading ? .fallBack : .none
         case .relayPc: return .keepHosted
+        case .left: return .none
+        case .died: return retried ? .fallBack : .retry
         }
     }
 
-    public static func after(_ phase: Phase, _ event: Event) -> Phase {
-        switch on(phase, event) {
+    public static func after(_ phase: Phase, _ event: Event, retried: Bool = false) -> Phase {
+        if event == .left, phase == .loading || phase == .shown { return .left }
+        switch on(phase, event, retried: retried) {
         case .liftCover: return .shown
         case .fallBack: return .fallback
         case .keepHosted: return .pc
+        case .retry: return .left
         case .none: return phase
+        }
+    }
+
+    /// The event a report of the navigation delegate stands for, nil for a load cancelled on purpose (a new
+    /// navigation, a link handed to Safari), which is no failure.
+    public static func event(for signal: Signal) -> Event? {
+        switch signal {
+        case .provisionalFailed(let onPurpose), .failed(let onPurpose): return onPurpose ? nil : .failed
+        case .httpError, .redirectedElsewhere: return .failed
+        case .processDied: return .died
+        }
+    }
+
+    /// Whether the hosted app's own screen is up, from what its page says: `shell`, it names itself the hosted app
+    /// (`<meta name="ovis-shell">`, which the released front page and the next both carry); `root`, `boot`,
+    /// `children`, its root is there, without index.html's loading spinner, holding what the client rendered;
+    /// `loading`, the document is still arriving. An empty 200 or another page of that origin (a maintenance page) is
+    /// not home, so the cover stays and the clock goes on.
+    public static func drawn(shell: Bool, root: Bool, boot: Bool, children: Int, loading: Bool) -> Bool {
+        shell && root && !boot && children > 0 && !loading
+    }
+
+    /// `drawn` from the JSON the page's facts come back as (HerdrBridgeViewController's homeScript); anything
+    /// unreadable is not home.
+    public static func drawn(page: String?) -> Bool {
+        guard let data = page?.data(using: .utf8), let facts = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let shell = facts["shell"] as? Bool, let root = facts["root"] as? Bool, let boot = facts["boot"] as? Bool,
+              let children = facts["children"] as? Int, let loading = facts["loading"] as? Bool else { return false }
+        return drawn(shell: shell, root: root, boot: boot, children: children, loading: loading)
+    }
+
+    /// Whether a PC's own page is what is on screen: a PC opened as one, or a relay PC's page that came up in home.
+    public static func pcShown(screen: Screen, phase: Phase?) -> Bool {
+        phase.map { $0 == .pc } ?? (screen == .pc)
+    }
+
+    /// How long home has waited with the app in front, in seconds on any one clock: each look (`tick`) adds the time
+    /// since the look before, a second at most, and a return to the front (`resumed`) starts counting from there, so
+    /// the time the app was away is never counted.
+    public struct Clock {
+        private var waited: TimeInterval = 0
+        private var seenAt: TimeInterval
+
+        public init(now: TimeInterval) {
+            seenAt = now
+        }
+
+        public mutating func tick(now: TimeInterval) -> TimeInterval {
+            waited += max(0, min(now - seenAt, 1))
+            seenAt = now
+            return waited
+        }
+
+        public mutating func resumed(now: TimeInterval) {
+            seenAt = now
         }
     }
 
@@ -102,36 +186,68 @@ public enum Home {
         elapsed >= (answered ? answerSeconds : loadSeconds)
     }
 
-    /// Where the way back leads on `screen`. `failed` as for `screen`; `choosing`: the screen is up to choose another
-    /// PC, with one still current; `pageHasBack`: the page has a step of its own to take first. The bundled page while
-    /// choosing goes back to the PC at once, as it always did.
-    public static func back(screen: Screen, hosted: Bool, failed: Bool, choosing: Bool, pageHasBack: Bool) -> Back {
+    /// Where the way back leads on `screen`. `failed` as for `screen`; `current`: a PC is current; `choosing`: the
+    /// screen is up to choose another PC, with that one still current; `pageHasBack`: the page has a step of its own to
+    /// take first. The bundled page while choosing goes back to the PC at once, as it always did.
+    public static func back(screen: Screen, hosted: Bool, failed: Bool, current: Bool, choosing: Bool, pageHasBack: Bool) -> Back {
         if screen == .bundled && choosing { return .current }
         if pageHasBack { return .page }
         switch screen {
         case .home: return choosing ? .current : .leave
-        case .demo: return .home
-        // home handed over to this page (an SSH setup): the fallback never goes back by itself
-        case .bundled: return hosted && !failed ? .home : .leave
+        case .demo: return .demoExit
+        case .bundled:
+            if !hosted { return .leave }
+            // opened over a PC that nobody left (an SSH setup cancelled): that PC is what opens next
+            if current { return .current }
+            // home handed over to this page (an SSH setup): the fallback never goes back by itself
+            return failed ? .leave : .home
         case .pc: return .leave
         }
+    }
+
+    /// The fragment home starts at when `text` is the hosted app's front page at `appOrigin`, as the app's own page
+    /// opens it for a sign-in (`#sign-in=<provider>`) or its saved row (`#pcs`, which a bare address means too); nil
+    /// for anything else, which opens as a PC does. Such an open is an attempt at home: nothing is made the current PC
+    /// by it.
+    public static func homeStart(_ text: String?, appOrigin: URL?) -> String? {
+        guard let text, let url = URL(string: text), sameOrigin(url, appOrigin),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: true),
+              parts.percentEncodedPath.isEmpty || parts.percentEncodedPath == "/", parts.percentEncodedQuery == nil else { return nil }
+        guard let fragment = parts.percentEncodedFragment, !fragment.isEmpty, fragment != "pcs" else { return "#pcs" }
+        let provider = fragment.dropFirst("sign-in=".count)
+        guard fragment.hasPrefix("sign-in="), (1...32).contains(provider.utf8.count),
+              provider.utf8.allSatisfy({ (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0) }) else { return nil }
+        return "#" + fragment
+    }
+
+    /// Whether `url` and `appOrigin` are one http or https origin: scheme, host and port, the scheme's own port the
+    /// same as none.
+    private static func sameOrigin(_ url: URL?, _ appOrigin: URL?) -> Bool {
+        guard let url, let appOrigin, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              scheme == appOrigin.scheme?.lowercased(), let host = url.host?.lowercased(), host == appOrigin.host?.lowercased() else { return false }
+        let standard = scheme == "https" ? 443 : 80
+        return (url.port ?? standard) == (appOrigin.port ?? standard)
     }
 
     /// Whether `url` is a page of a relay PC on the hosted app at `appOrigin`: within `/s/<server_id>/`, as a browser
     /// loads it (no `.` or `..` segment, plain or percent-encoded, no encoded `/` and no `\`).
     public static func relayPc(_ url: URL?, appOrigin: URL?) -> Bool {
-        guard let url, let appOrigin, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
-              scheme == appOrigin.scheme?.lowercased(), let host = url.host?.lowercased(), host == appOrigin.host?.lowercased(),
-              let path = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath else { return false }
-        let standard = scheme == "https" ? 443 : 80
-        if (url.port ?? standard) != (appOrigin.port ?? standard) { return false }
+        relayScope(url, appOrigin: appOrigin) != nil
+    }
+
+    /// The scope of the relay PC whose page `url` is (`<appOrigin>/s/<server_id>/`, the key such a PC is saved by), or nil.
+    public static func relayScope(_ url: URL?, appOrigin: URL?) -> String? {
+        guard let url, let appOrigin, sameOrigin(url, appOrigin), let scheme = appOrigin.scheme?.lowercased(), let host = appOrigin.host?.lowercased(),
+              let path = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath else { return nil }
         let lower = path.lowercased()
-        if path.contains("\\") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c") || lower.contains("%25") { return false }
+        if path.contains("\\") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c") || lower.contains("%25") { return nil }
         let segments = path.split(separator: "/", omittingEmptySubsequences: false)
         // "", "s", the PC's id, then anything within it
-        guard segments.count >= 3, segments[0].isEmpty, segments[1] == "s", !segments.contains(where: { $0 == "." || $0 == ".." }) else { return false }
+        guard segments.count >= 3, segments[0].isEmpty, segments[1] == "s", !segments.contains(where: { $0 == "." || $0 == ".." }) else { return nil }
         let id = segments[2]
-        return id.utf8.count == 32 && id.utf8.allSatisfy { (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0) }
+        guard id.utf8.count == 32, id.utf8.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0) }) else { return nil }
+        let shownHost = host.contains(":") ? "[\(host)]" : host
+        return "\(scheme)://\(shownHost)\(appOrigin.port.map { ":\($0)" } ?? "")/s/\(id)/"
     }
 
     /// Whether `text` is what the word "demo" becomes in the hosted screen's address field (`https://demo/`): the
@@ -141,5 +257,11 @@ public enum Home {
         return parts.scheme?.lowercased() == "https" && parts.host?.lowercased() == "demo" && parts.port == nil
             && (parts.percentEncodedPath.isEmpty || parts.percentEncodedPath == "/") && parts.query == nil && parts.fragment == nil
             && parts.user == nil && parts.password == nil
+    }
+
+    /// Whether an open of `text` is the demo: the word "demo" as an address, on home alone. Anywhere else that address
+    /// is a PC's, as it always was.
+    public static func opensDemo(_ text: String?, atHome: Bool) -> Bool {
+        atHome && demoAddress(text)
     }
 }

@@ -20,7 +20,7 @@ async function chooser(saved: string[], account = true, state: Record<string, un
     Object.assign(window, { Capacitor: { getPlatform: () => "ios", nativePromise: async (_plugin: string, method: string, args: { url?: string }) => {
       if (method === "getState") return { saved, names: {}, ...state };
       if (method === "open") console.info(`open:${args.url}`);
-      if (method === "goHome" || method === "backToCurrent") console.info(`asked:${method}`);
+      if (method === "goHome" || method === "backToCurrent" || method === "openDemo") console.info(`asked:${method}`);
       return {};
     } } });
   }, { saved, state });
@@ -89,4 +89,53 @@ test.skipIf(noBrowser)("opened by the hosted screen for what only it can take, i
   expect(await back.getAttribute("aria-label")).toBe("Back to Connect a PC");
   expect(await page.locator("#offline").isVisible()).toBe(false);
   expect(await asked(() => back.click())).toBe("asked:goHome");
+});
+
+test.skipIf(noBrowser)("opened over a PC that stays current, with nobody choosing, its back control leads to that PC", async () => {
+  // a pairing link from outside the app that this page refused: the app opens that PC next, so Back says so
+  const pc = "https://desk.example.ts.net";
+  await chooser([pc], true, { current: pc, choosing: false, back: "current" });
+  const back = page.locator("#back-to-pc");
+  await back.waitFor({ state: "visible", timeout: 5_000 });
+  expect(await back.textContent()).toBe("‹ desk");
+  expect(await back.getAttribute("aria-label")).toBe("Back to desk");
+  expect(await asked(() => back.click())).toBe("asked:backToCurrent");
+});
+
+test.skipIf(noBrowser)("asked for to manage an SSH PC, it opens on SSH", async () => {
+  await chooser([], true, { manage: true, back: "home" });
+  await page.locator("#panel-ssh").waitFor({ state: "visible", timeout: 5_000 });
+  expect(await page.locator("#tab-ssh").getAttribute("aria-selected")).toBe("true");
+  expect(await page.locator("#back-to-pc").isVisible()).toBe(true);
+});
+
+test.skipIf(noBrowser)("the word demo asks the app for its demo where this page stands in for the hosted screen", async () => {
+  await chooser([], true, { fallback: true });
+  await page.locator("#tab-ssh").click();
+  await page.locator("#by-address").click();
+  await page.locator("#web-address").fill("demo");
+  expect(await asked(() => page.locator("#web-address").press("Enter"))).toBe("asked:openDemo");
+  expect(new URL(page.url()).pathname).toBe("/index.html");
+});
+
+test.skipIf(noBrowser)("in a build whose first screen this page is, the word demo goes to the demo itself", async () => {
+  page = await browser.newPage({ locale: "en-US" });
+  await page.addInitScript(() => {
+    Object.assign(window, { Capacitor: { getPlatform: () => "ios", nativePromise: async (_plugin: string, method: string) => method === "getState" ? { saved: [], names: {} } : {} } });
+  });
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname !== "chooser.test") return route.fulfill({ json: { providers: [], device: [] } });
+    if (url.pathname === "/demo/index.html") return route.fulfill({ contentType: "text/html", body: "<title>demo</title>" });
+    const file = Bun.file(new URL(`.${url.pathname}`, WEB));
+    if (!(await file.exists())) return route.fulfill({ status: 404 });
+    const text = await file.text();
+    return route.fulfill({ contentType: file.type, body: url.pathname === "/shell.js" ? text.replace('APP_HOME = "hosted"', 'APP_HOME = "bundled"') : text });
+  });
+  await page.goto("https://chooser.test/index.html");
+  await page.locator("#tab-ssh").click();
+  await page.locator("#by-address").click();
+  await page.locator("#web-address").fill("demo");
+  await page.locator("#web-address").press("Enter");
+  await page.waitForURL("https://chooser.test/demo/index.html", { timeout: 5_000 });
 });

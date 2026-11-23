@@ -77,17 +77,61 @@ enum PCStore {
     /// The bundled demo was asked for (HerdrShell openDemo) and is up until it is left. In memory only.
     static var demo = false
 
-    /// Whether something waits that only the app's own Connect a PC page takes: an SSH setup, or an SSH PC whose
-    /// address another app holds, which that page says.
-    static var bundledAsked: Bool { sshSetup != nil || failureKind == "ssh-port" }
+    /// Change PC was pressed where an SSH PC did not open: the app's own page, whose Manage holds what mends it
+    /// (Forget host key, Set up again), which the hosted screen has not. In memory only.
+    static var manage = false
+
+    /// The fragment the next hosted screen starts at instead of `#pcs` (Home.homeStart: a sign-in the app's own page
+    /// asked for), taken once by the view controller that opens it. In memory only.
+    static var homeStart: String?
+
+    /// A web content process died under this attempt at the hosted screen, which was started over once (Home `died`);
+    /// until that screen comes up or is asked for again.
+    static var homeRetried = false
+
+    /// Whether something waits that only the app's own Connect a PC page takes: an SSH setup, an SSH PC whose address
+    /// another app holds, which that page says, or an SSH PC to manage.
+    static var bundledAsked: Bool { sshSetup != nil || manage || failureKind == "ssh-port" }
 
     /// The hosted screen is to be tried again (Try again on the fallback, the back control of the app's own page):
     /// nothing is left that would keep the app's own page up.
     static func goHome() {
         homeFailed = false
+        homeRetried = false
         demo = false
         sshSetup = nil
+        manage = false
+        homeStart = nil
         if failureKind == "ssh-port" { failure = nil }
+    }
+
+    /// The hosted app's front page asked for by its address (Home.homeStart): an attempt at the hosted screen,
+    /// starting at `start`, which makes nothing the current PC. A PC that is current stays the one to go back to.
+    static func homeAttempt(_ start: String) {
+        goHome()
+        homeStart = start
+        if current != nil { choosing = true }
+    }
+
+    /// `key` becomes the PC the app opens, at `start` (HerdrShell open).
+    static func open(_ key: String, start: String) {
+        current = key
+        last = key
+        choosing = false
+        demo = false
+        manage = false
+        homeStart = nil
+        pendingStart = start
+        failure = nil
+        redirects = 0
+    }
+
+    /// The PC is left (Change PC): none is current. Where an SSH PC did not open (`unopened`), the app's own page
+    /// comes for it (`manage`).
+    static func leave(unopened: Bool) {
+        manage = unopened && OvisSsh.pc(current) != nil
+        current = nil
+        choosing = false
     }
 
     /// A relay PC's page came up in the hosted screen (Home.Event.relayPc), which the app is not asked to open: the
@@ -109,6 +153,8 @@ enum PCStore {
         last = origin
         choosing = false
         demo = false
+        manage = false
+        homeStart = nil
         pendingStart = nil
         failure = nil
         redirects = 0
@@ -478,11 +524,32 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// the current PC.
     private var phase: Home.Phase?
 
-    /// How long the hosted screen has been loading with the app in front, and when that was last counted (tick).
-    private var homeWaited: TimeInterval = 0
-    private var homeSeenAt: TimeInterval = 0
+    /// How long the hosted screen has been loading with the app in front (tick).
+    private var homeClock = Home.Clock(now: 0)
+    /// The fragment the hosted screen starts at: `#pcs`, the hosted app's front page as the app's own way there (not a
+    /// launch that goes on to the PC opened last), or what the app's own page asked for (a sign-in).
+    private let homeStart: String
+    /// The PC that was current when the hosted screen opened: a relay PC's page landing later makes the hosted app the
+    /// PC only over that one.
+    private let homeOver: String?
     private var urlWatch: NSKeyValueObservation?
+    private var frontWatch: NSObjectProtocol?
     private var openingChange: UIButton?
+
+    /// Asked of the hosted screen's page while its cover is up: what the page is, as facts for Home.drawn to judge,
+    /// so an empty answer or another page of the hosted origin never counts as the hosted screen.
+    private static let homeScript = """
+        (() => {
+          const root = document.getElementById('root');
+          return JSON.stringify({
+            shell: document.querySelector('meta[name="ovis-shell"]') !== null,
+            root: root !== null,
+            boot: root !== null && root.querySelector(':scope > .boot') !== null,
+            children: root === null ? 0 : root.childElementCount,
+            loading: document.readyState === 'loading'
+          });
+        })()
+        """
 
     /// What to open now, from what the app holds (PCStore).
     private static func start() -> (screen: Home.Screen, opened: String?) {
@@ -498,13 +565,19 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     init() {
         (screen, opened) = Self.start()
         phase = screen == .home ? .loading : nil
+        homeStart = PCStore.homeStart ?? "#pcs"
+        homeOver = PCStore.current
+        if screen == .home { PCStore.homeStart = nil }
         super.init(nibName: nil, bundle: nil)
     }
 
-    /// Main.storyboard names this class too.
+    /// Main.storyboard names this class too: UIKit makes one there, which never shows (SceneDelegate puts its own
+    /// window in), so it takes nothing that is kept for the one that does.
     required init?(coder: NSCoder) {
         (screen, opened) = Self.start()
         phase = screen == .home ? .loading : nil
+        homeStart = "#pcs"
+        homeOver = PCStore.current
         super.init(coder: coder)
     }
 
@@ -514,28 +587,40 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// Whether this view controller shows the app's own page in place of the hosted screen, which did not load.
     var fallback: Bool { screen == .bundled && PCStore.homeHosted && PCStore.homeFailed }
 
+    /// Whether the app's own page was asked for to manage an SSH PC (PCStore.manage), which opens it on SSH.
+    var manages: Bool { screen == .bundled && PCStore.manage }
+
+    /// Whether a PC's own page is what this view controller shows (Home.pcShown): the PC whose push subscription the
+    /// page may read, and where an SSH tunnel's failure may put its error page. While the person chooses another way
+    /// that PC is still current, but what is on screen is the hosted screen or the app's own page.
+    var showsPc: Bool { Home.pcShown(screen: screen, phase: phase) }
+
     /// For the page's own back control (HerdrShell getState `back`): "current", "home" or "".
     var backWay: String {
-        let choosing = PCStore.choosing && PCStore.current != nil
-        switch Home.back(screen: phase == .pc ? .pc : screen, hosted: PCStore.homeHosted, failed: PCStore.homeFailed, choosing: choosing, pageHasBack: false) {
+        let current = PCStore.current != nil
+        switch Home.back(screen: phase == .pc ? .pc : screen, hosted: PCStore.homeHosted, failed: PCStore.homeFailed, current: current, choosing: PCStore.choosing && current, pageHasBack: false) {
         case .current: return "current"
         case .home: return "home"
-        case .page, .leave: return ""
+        case .page, .demoExit, .leave: return ""
         }
     }
 
     /// Something happened to the hosted screen: what Home decides is carried out here, and nowhere else.
     private func home(_ event: Home.Event) {
         guard let phase else { return }
-        let action = Home.on(phase, event)
-        self.phase = Home.after(phase, event)
+        // a relay PC's page landing after something else became the PC (another screen's write) counts for nothing
+        if event == .relayPc, homeOver != PCStore.current { return }
+        let action = Home.on(phase, event, retried: PCStore.homeRetried)
+        self.phase = Home.after(phase, event, retried: PCStore.homeRetried)
         switch action {
         case .liftCover:
+            PCStore.homeRetried = false
             hideOpening()
         case .fallBack:
             // this view controller goes with its web view, so a load that still finishes cannot bring the hosted
             // screen back over what the person types on the app's own page
             PCStore.homeFailed = true
+            PCStore.homeRetried = false
             ticker?.invalidate()
             webView?.stopLoading()
             HerdrBridgeViewController.reopen()
@@ -543,9 +628,31 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             if let opened { PCStore.keepHosted(opened) }
             // a cover still up is a PC's from here on, with its Change PC
             openingChange?.isHidden = false
+        case .retry:
+            // the hosted screen from the start, in a new web view with its cover and clock: WebKit's own reload of
+            // the dead page has nothing timing it
+            PCStore.homeRetried = true
+            ticker?.invalidate()
+            HerdrBridgeViewController.reopen()
         case .none:
             break
         }
+    }
+
+    /// The app is going to another screen (reopen): what the hosted screen's page still does counts for nothing, and
+    /// its clock stops.
+    private func leave() {
+        guard let phase else { return }
+        self.phase = Home.after(phase, .left)
+        if self.phase == .left { ticker?.invalidate() }
+    }
+
+    /// What the navigation delegate reports about a main-frame load, while the hosted screen is up: true when it was
+    /// the hosted screen's to act on (Home.event), so the PC's own handling (error.html) leaves it alone.
+    private func homeSignal(_ signal: Home.Signal) -> Bool {
+        guard let phase, phase != .pc else { return false }
+        if let event = Home.event(for: signal) { home(event) }
+        return true
     }
 
     private func arrived(_ webView: WKWebView) {
@@ -559,7 +666,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             // after it (a relay PC's scope keeps a pairing offer's `#offer=` fragment through here).
             // The hosted screen is the hosted app's front page as the app's own way there (#pcs), not a
             // launch that goes on to the PC opened last
-            descriptor.serverURL = screen == .home ? origin + "/#pcs" : PCStore.pendingStart ?? PCStore.firstPage(origin)
+            descriptor.serverURL = screen == .home ? origin + "/" + homeStart : PCStore.pendingStart ?? PCStore.firstPage(origin)
             // the whole PC is the app: its own links stay in the WebView, others go to Safari. For a
             // relay PC that host is the hosted shell's (app.ovis.sh), the one the app then allows
             descriptor.allowedNavigationHostnames = descriptor.allowedNavigationHostnames + [host]
@@ -607,8 +714,13 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             proxy.onLoaded = { [weak self, weak webView] in
                 guard let self else { return }
                 self.firstPageDone = true
-                // a PC's page is up: the next Connect a PC tries the hosted screen again
-                if !self.atHome, let url = webView?.url, let current = PCStore.current, PCStore.belongs(url, to: current) { PCStore.homeFailed = false }
+                if self.showsPc, let url = webView?.url, let current = PCStore.current, PCStore.belongs(url, to: current) {
+                    // a PC's page is up: the next Connect a PC tries the hosted screen again
+                    PCStore.homeFailed = false
+                    // a relay PC picked on the hosted screen is kept by its own scope too, as one opened from a
+                    // pairing link is
+                    if self.phase == .pc, let scope = Home.relayScope(url, appOrigin: PCStore.appOrigin) { PCStore.remember(scope) }
+                }
                 self.askPage()
             }
             // a first page that broke off after it started: the error page; one cancelled on purpose
@@ -623,7 +735,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
                 self.showFailure(in: webView, reason: reason)
             }
             proxy.opened = opened
-            proxy.atHome = { [weak self] in self?.atHome ?? false }
+            // the hosted screen's failures are its own to act on, whenever they come: before the PC's handling
+            proxy.onSignal = { [weak self] signal in self?.homeSignal(signal) ?? false }
             // a PC's row on the hosted screen is the page's own link, which the app is not asked to open: the page
             // that committed says when one came up, and so does the web view's address for a step within the page
             // (while a load is under way that address is the one being tried, which may still fail)
@@ -639,8 +752,15 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         super.viewDidLoad()
         if webView != nil, let origin = opened {
             showOpening(origin, home: phase != nil)
-            homeSeenAt = ProcessInfo.processInfo.systemUptime
-            watch = OpeningWatch(now: homeSeenAt, answerLimit: TimeInterval(Self.answerSeconds))
+            let now = ProcessInfo.processInfo.systemUptime
+            homeClock = Home.Clock(now: now)
+            watch = OpeningWatch(now: now, answerLimit: TimeInterval(Self.answerSeconds))
+            // back in front: the time the app was away does not count against the hosted screen
+            if phase != nil {
+                frontWatch = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                    self?.homeClock.resumed(now: ProcessInfo.processInfo.systemUptime)
+                }
+            }
             // often enough that the cover lifts within a fifth of a second of the client's first frame
             ticker = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.tick(origin) }
         }
@@ -649,6 +769,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     deinit {
         ticker?.invalidate()
         urlWatch?.invalidate()
+        if let frontWatch { NotificationCenter.default.removeObserver(frontWatch) }
     }
 
     private func tick(_ origin: String) {
@@ -659,11 +780,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         let shown = watch.shownProgress()
         self.watch = watch
         if phase == .loading {
-            // only time in front counts, a second at most for each look: a page that came up while the app was away
-            // is asked (askPage) before the time it was away could count against it
-            homeWaited += min(now - homeSeenAt, 1)
-            homeSeenAt = now
-            if Home.timedOut(elapsed: homeWaited, answered: watch.answered) {
+            // only time in front counts (Home.Clock): a page that came up while the app was away is asked (askPage)
+            // before the time it was away could count against it
+            if Home.timedOut(elapsed: homeClock.tick(now: now), answered: watch.answered) {
                 home(.timedOut)
                 return
             }
@@ -687,9 +806,15 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             if firstPageDone, phase == nil || phase == .pc { hideOpening() }
             return
         }
+        if phase == .loading {
+            webView.evaluateJavaScript(Self.homeScript) { [weak self] page, _ in
+                if Home.drawn(page: page as? String) { self?.home(.loaded) }
+            }
+            return
+        }
+        guard phase == nil || phase == .pc else { return }
         webView.evaluateJavaScript(Self.clientUpScript) { [weak self] up, _ in
-            guard let self, (up as? Bool) == true else { return }
-            if self.phase == nil || self.phase == .pc { self.hideOpening() } else { self.home(.loaded) }
+            if (up as? Bool) == true { self?.hideOpening() }
         }
     }
 
@@ -727,7 +852,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         label.numberOfLines = 0
         label.textAlignment = .center
         let change = UIButton(type: .system, primaryAction: UIAction(title: Self.korean ? "PC 바꾸기" : "Change PC") { _ in
-            PCStore.current = nil
+            // an SSH PC is mended on the app's own page (its Manage), which the hosted screen has not
+            PCStore.leave(unopened: true)
             HerdrBridgeViewController.reopen()
         })
         change.tintColor = .white
@@ -827,12 +953,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     /// `reason` nil keeps the reason an SSH PC's tunnel gave (its 503 says less).
     private func showFailure(in webView: WKWebView, reason: String?) {
-        // the hosted screen's failure gives way to the app's own page, never to the error page of a PC
-        if phase != nil, phase != .pc {
-            home(.failed)
-            return
-        }
-        guard let local = bridge?.config.localURL else { return }
+        // the hosted screen's failures went to Home first (homeSignal): never the error page of a PC over it
+        guard phase == nil || phase == .pc, let local = bridge?.config.localURL else { return }
         // the timeout stays armed: if WebKit does not get the error page up either, the cover says it
         if let reason { PCStore.fail(reason, kind: nil) }
         webView.load(URLRequest(url: local.appendingPathComponent("error.html")))
@@ -841,7 +963,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// An SSH PC's tunnel stopped (its host key changed, its key refused): the error page says so now, as the page
     /// alone would only keep reconnecting.
     static func showSshStop() {
-        guard let shown = window?.rootViewController as? HerdrBridgeViewController, let webView = shown.webView,
+        // only over that PC's own page: while the person chooses another way it is still current, but what is on
+        // screen is the hosted screen or the app's own page, which this failure is not about
+        guard let shown = window?.rootViewController as? HerdrBridgeViewController, shown.showsPc, let webView = shown.webView,
               let local = shown.bridge?.config.localURL, webView.url?.scheme != local.scheme else { return }
         webView.load(URLRequest(url: local.appendingPathComponent("error.html")))
     }
@@ -858,6 +982,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// another app holds is not opened, and the connect screen says why.
     static func reopen() {
         guard let window else { return }
+        // the view controller that goes may stay a moment longer (an SSH PC's tunnel is made first): nothing its
+        // page still does counts from here on
+        (window.rootViewController as? HerdrBridgeViewController)?.leave()
         open(OvisSsh.pc(PCStore.shown), in: window)
     }
 
@@ -914,8 +1041,9 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     var onCommitted: ((WKWebView) -> Void)?
     /// The key of what the view controller opened: a PC's, or the hosted app's origin for the hosted Connect a PC screen.
     var opened: String?
-    /// Whether that is the hosted screen, still no PC (HerdrBridgeViewController.atHome).
-    var atHome: (() -> Bool)?
+    /// What a main-frame load came to, offered first to the hosted screen (Home.Signal): true when it took it, and
+    /// the PC's own handling below is skipped.
+    var onSignal: ((Home.Signal) -> Bool)?
 
     /// Whether a failed load was cancelled or handed off on purpose: a new navigation, WebKit's
     /// "frame load interrupted" (102) or "plug-in handled load" (204).
@@ -953,6 +1081,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
         }
         // the cancelled load ends in WebKit's "frame load interrupted", which is not reported
         decisionHandler(.cancel)
+        if onSignal?(.httpError) == true { return }
         // an SSH PC's tunnel said why itself (OvisSsh), in more words than its 503; the header alone is not enough,
         // as the PC's own servers can send it through the tunnel
         let tunnel = response.value(forHTTPHeaderField: SshTunnel.failureHeader) != nil && PCStore.failureKind?.hasPrefix("ssh-") == true
@@ -977,7 +1106,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
             decisionHandler(.cancel)
             // the hosted screen led elsewhere (a network's sign-in page): it is not up, and no other origin becomes
             // the PC in its place
-            if atHome?() == true { onFailure(webView, nil) } else { follow(url, from: current, in: webView) }
+            if onSignal?(.redirectedElsewhere) != true { follow(url, from: current, in: webView) }
             return
         }
         if let capacitor = inner as? WebViewDelegationHandler {
@@ -1043,11 +1172,21 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         provisional = false
         inner?.webView?(webView, didFailProvisionalNavigation: navigation, withError: error)
+        if onSignal?(.provisionalFailed(onPurpose: Self.onPurpose(error))) == true { return }
         if !Self.onPurpose(error) { onFailure(webView, error.localizedDescription) }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         inner?.webView?(webView, didFail: navigation, withError: error)
+        // the hosted screen's, whenever it comes: a later document of it that broke off is no page to stay on
+        if onSignal?(.failed(onPurpose: Self.onPurpose(error))) == true { return }
         onPageFailed?(webView, Self.onPurpose(error) ? nil : error.localizedDescription)
+    }
+
+    /// Capacitor reloads the page of a web content process that died. The hosted screen starts over instead, with
+    /// its cover and clock (Home `died`): nothing times that reload.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if onSignal?(.processDied) == true { return }
+        inner?.webViewWebContentProcessDidTerminate?(webView)
     }
 }
