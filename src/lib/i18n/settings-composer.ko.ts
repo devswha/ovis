@@ -23,5 +23,7 @@ export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "Artifacts chip": "아티팩트 칩",
   "A chip above the message box puts the prompt the agent suggests next (Claude Code, GJC or omp) into the box. With a keyboard, Tab does it.": "입력창 위의 칩을 누르면 에이전트(Claude Code, GJC, omp)가 제안한 다음 프롬프트가 입력창에 들어갑니다. 키보드에서는 Tab으로 넣습니다.",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "Claude Code 패널의 입력창에 세션이 Artifact 도구로 게시한 페이지 목록을 여는 칩을 표시합니다.",
+  "Plan card above the message box": "입력창 위 계획 카드",
+  "On this device, keeps the agent's plan and its running background tasks in a card above the message box while there are any. The card's header folds it to one line. The chip in the message box stays as it is.": "이 기기에서 에이전트의 계획과 실행 중인 백그라운드 작업이 있는 동안 입력창 위의 카드에 계속 보여 줍니다. 카드 머리글을 누르면 한 줄로 접힙니다. 입력창의 칩은 그대로 둡니다.",
   "The site in that tab can see and navigate this Ovis tab.": "그 탭의 사이트가 이 Ovis 탭을 보고 이동시킬 수 있습니다.",
 };

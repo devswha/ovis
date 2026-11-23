@@ -3582,6 +3582,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the header, the header's row and its tab sheet).
 
 ### Chat turn (`.chat-turn`)
+- Under a numeric Markdown table in an omp answer, the chat draws the chart omp's terminal draws
+  there (`tui.autoGraph`): omp's own chart engine (`src/lib/ompCharts/`, vendored from
+  oh-my-pi's `packages/tui/src/charts` at 19.1.1, MIT) analyses the table's cells and renders an
+  SVG in the figure tokens (`--fg`, `--muted`, `--c1`…`--c6`), drawn through the ```svg figure
+  path (theme palette, zoom, lightbox; the chart's own description is its `alt`). It follows omp's
+  terminal rather than a chart of Ovis's own, so the chat and the terminal show the same chart:
+  only the engine's local best guess is drawn, since omp's `smart` judge keeps its answer in the
+  terminal's memory, so a table omp's judge charts differently may differ. A table the engine
+  declines, a table under a list, a table still streaming at the end of the answer and every other
+  agent's table get no chart. The engine is its own lazy chunk, fetched only for a table with a
+  digit in its body; a failure leaves the table as it is.
 - A complete Codex `visualize` reference on its own line of a chat answer is drawn as a small
   card: the file's own name, the reference's title under it in `--text-dim`, and one button,
   **Open preview**. The name is always the path's last part, never the title in its place; bidi
@@ -3970,7 +3981,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   count, in its quiet mono figures and with no box (`.plan-count`). The step in the chip is the
   maintainer-approved adaptation of agent-of-empires' plan strip (#1040): only its step
   visibility is taken, and herdr keeps its existing shared chip rather than importing that
-  separate always-visible strip or a progress bar, so the status line stays one row on a phone.
+  separate always-visible strip or a progress bar, so the status line stays one row on a phone. A
+  device that wants the plan always in view turns on the Plan card below instead.
 - Settings > Appearance > **Context left on agent rows** (the device setting `sidebarContext`, off
   by default, #1305) adds the composer's context ring to each agent row, after the plan count
   (`.context-count`): the same ring at the badges' size, then the percentage left in the same quiet
@@ -4013,10 +4025,60 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   line; a waiting step's name is dim), then a **Background tasks** heading over the tasks list when
   the pane has tasks to show. The steps are read again every few seconds while the list is open.
 
+### Plan card (`.work-card`)
+- An opt-in card that keeps the pane's plan and its running background tasks over the input card.
+  Settings → Chat → Composer → **Plan card above the message box** (the device setting `workCard`,
+  off by default, kept in the key `ovis:work-card`) turns it on. Off, nothing is drawn, read or
+  announced, and the chip above stays the one place a plan and its tasks show. It works for every
+  agent whose server reports a plan or tasks (Claude Code, Codex, OmO, omp, OpenCode), is drawn in
+  the chat lens only, only while the pane has a plan or a background task running, and not for an
+  offline PC's cached plan, which the chip leaves out too.
+- It is the first thing in `.composer`, on the input card's column (`--chat-w`), above the quick
+  replies, the notes and the input card. The chat lens gives it its room as it does the composer's
+  other rows, and a phone's composer, which overlaps the chat's foot, starts with it. It takes no
+  `z-index`, so the input card's own menus (the `/` and `@` lists, the chip's list) draw over it.
+- Its head is one button (`aria-expanded`): the list-checks glyph, **Plan** and `done/total` in
+  tabular figures, the step in progress on one line cut with an ellipsis, the running tasks as the
+  layers glyph and their number, and a caret that turns when it opens. A pane with tasks and no
+  plan names them instead. The glyphs take the working tint while a step or a task is left, and go
+  quiet once every step is done and nothing runs. The button's name and tooltip are the chip's
+  ("Plan: 1 of 3 done · the step · 2 background tasks"); it is `--control-h` tall beside a mouse and
+  `--touch-target` under a finger, and a press leaves the focus in the message box, so it does not
+  close a phone's keyboard. Folded, the card is its head alone and asks for nothing. The fold is
+  kept per device (`ovis:work-card-folded`) and is the same for every card of the device, in every
+  tab; it starts open.
+- Open, the body lists the steps in the chip's wave order, each a status glyph and its name (dim
+  while it waits, two lines at most, the whole name in its tooltip), the step in progress tinted
+  `--status-working-tint` in `--text-strong` and marked `aria-current="step"`; forced colors, which
+  erase a tint, outline it in `Highlight`. Under a hairline and a **Background tasks** heading come
+  the running tasks: a glyph, the title on one line, the time it has run at the end. A task opens
+  the chip's detail sheet only where the PC can show what it does (a Claude Code or OpenCode
+  subagent); an OmO task, an omp subagent and a background command are plain rows, where the chip's
+  list opens them on a note that there is nothing to show. Ended tasks are the chip's.
+- The body scrolls inside the card, up to 40% of the visible height on a phone (`--app-height`;
+  20% while the keyboard is up, so the chat keeps its room) and four rows or 30% beside a mouse,
+  whichever is less. It brings the step in progress into view once as the plan moves on to it, and
+  leaves a reader who scrolled away where they are.
+- It reads what the chip reads, in the chip's words and rows: the plan (`GET /api/pane/plan`) and
+  the tasks (`GET /api/pane/omo-tasks`), with the chip's notes for a read still out, a failed one
+  and a list as it last read, every three seconds while it is open and the page is shown. Folded or
+  in a page nobody sees it asks for nothing and keeps what it read on screen, and a page coming
+  back reads at once. The caret's turn is its only motion, and `prefers-reduced-motion` drops it.
+- Design reference: omp's terminal UI pins its todo list and its running agents above the editor,
+  Claude Code's keeps its to-do checklist in the status area (Ctrl+T shows or hides it) and its
+  subagents in a panel below the prompt, and the Codex app shows a plan panel headed "2 out of 5
+  tasks completed" over its steps. The card follows them in keeping the plan in sight while the
+  agent works, as a card on the input's column that folds to one line; their pixels are not copied.
+  It is opt-in because the maintainer's decision on #1040 (above, **Plan**) keeps the status line
+  to one row and the chip the one shared place, and a pinned card is the always-visible strip that
+  decision did not take: a device that wants it turns it on.
+
 ### Running background task detail (`.bg-task-open`, `.bg-agent-detail`)
-- In the composer's background-task list, a running task's row is a disclosure button (the row's
-  padding and hover tint, a dim caret at its end, `aria-haspopup="dialog"`, `aria-expanded` while
-  its detail is open; `--touch-target` tall under a finger). Ended rows stay plain: what ended has
+- In the composer's background-task list, a running Claude Code or OpenCode subagent's row (one
+  whose work this PC can show, `detail_kind`) is a disclosure button (the row's padding and hover
+  tint, a dim caret at its end, `aria-haspopup="dialog"`, `aria-expanded` while its detail is open;
+  `--touch-target` tall under a finger); an OmO task or an omp subagent stays a plain row rather
+  than opening a sheet that can only say it shows nothing. Ended rows stay plain: what ended has
   the chat's task card. The list only reads, so a device that only watches keeps the chip, the
   fold of ended tasks and these rows usable while its composer locks what writes (the message box,
   attach, the microphone, the quick replies, Send and Stop).
@@ -4101,6 +4163,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`--bg`, `--fs-xs`); a question in words is never set in mono. An approval's command wraps at
   the box's edge and never scrolls sideways, so the end of what Yes runs is always in the box; it
   follows Claude Code's own dialog, which wraps the command at the pane's edge.
+- omp's Plan Review (responder `omp-plan`) is a plan card as Claude's is: the plan read from the
+  session's `local/<slug>-plan.md` in the reference box, View plan, and the overlay's rows by their
+  own names in omp's order (Refine plan only while the plan has comments), each with one line on
+  what it does, then Cancel (Esc: the review closes, plan mode stays). Nothing is preselected.
+  Each key goes out only after a fresh read shows the same review, the actions region and the
+  expected cursor row (Tab first from the plan or its sections), so a card never presses Enter on
+  a row it did not see. States the card cannot read (a comment being typed, Applying…, a pane too
+  short for the review's top) draw no card and leave them to the terminal. The model slider and
+  comments stay in the terminal. It follows omp's own overlay and Claude's plan card; the generic
+  fallback it replaces answered Enter on omp's default row, Approve and execute. omp's
+  `Exit plan mode?` box reads as a Yes / No menu. In the transcript, omp's plan mode changes are
+  notice lines, a `propose` is "Plan ready for review" with View plan, and the plan file's write
+  (and its newest edit) shows the plan rendered as Markdown.
 - Claude's words before its question (#2088): Claude Code 2.1.311 writes a turn's text to its
   session file only with the answer, so while a question waits the card shows the text the
   terminal draws right over the question (`screen_words`, read off the screen; the pane's wrapping

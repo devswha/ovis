@@ -10,6 +10,11 @@ export function taskElapsedMs(task: OmoTask, now: number): number | null {
   return spanMs(task.started_at, task.ended_at, task.status === "running", now);
 }
 
+/** Whether the PC can show what a running task is doing (the detail sheet): its own transcript or child session, which only a Claude Code or an OpenCode subagent has. */
+export function taskHasDetail(task: OmoTask): boolean {
+  return task.detail_kind === "claude-subagent" || task.detail_kind === "opencode-subagent";
+}
+
 export function runGoing(run: OmoRun): boolean {
   return run.status === "running" || run.status === "pending" || run.status === "paused";
 }

@@ -1360,7 +1360,10 @@ export async function fetchAgentCommands(agent: string, cwd: string | null, mach
   return (await getJson<{ commands: SlashCommand[] }>(`${machinePath(machineId, "agent/commands")}?${query.toString()}`)).commands;
 }
 
-export async function fetchPaneOmoActivity(paneId: string, machineId = "local"): Promise<{ tasks: OmoActivity["tasks"]; runs: OmoActivity["runs"]; serverTime: string | null; moreRunning: number }> {
+/** What the PC lists for a pane (GET /api/pane/omo-tasks): a field a bridge from before it left out is read as none. */
+export interface PaneTasksRead { tasks: OmoActivity["tasks"]; runs: OmoActivity["runs"]; serverTime: string | null; moreRunning: number }
+
+export async function fetchPaneOmoActivity(paneId: string, machineId = "local"): Promise<PaneTasksRead> {
   const activity = await getJson<Partial<OmoActivity>>(machinePath(machineId, `pane/omo-tasks?pane_id=${encodeURIComponent(paneId)}`));
   return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null, moreRunning: typeof activity.more_running === "number" && activity.more_running > 0 ? activity.more_running : 0 };
 }
@@ -1385,7 +1388,10 @@ export async function fetchPaneBtw(paneId: string, machineId = "local", signal?:
   return { topics: answer.topics ?? [], more: answer.more === true };
 }
 
-export async function fetchPanePlan(paneId: string, machineId = "local"): Promise<{ steps: PlanStep[] | null; serverTime: string | null }> {
+/** What the PC reads of a pane's plan (GET /api/pane/plan): no steps at all when the session keeps none. */
+export interface PlanRead { steps: PlanStep[] | null; serverTime: string | null }
+
+export async function fetchPanePlan(paneId: string, machineId = "local"): Promise<PlanRead> {
   const answer = await getJson<Partial<PanePlan>>(machinePath(machineId, `pane/plan?pane_id=${encodeURIComponent(paneId)}`));
   return { steps: answer.plan?.steps ?? null, serverTime: answer.server_time ?? null };
 }

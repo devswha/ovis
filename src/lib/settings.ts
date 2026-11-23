@@ -148,6 +148,9 @@ export interface Settings {
   /** the Side conversations chip in an OMP pane's composer, listing what was asked and answered with `/btw`; off until
    *  chosen, so the composer's row stays minimal */
   composerBtw: boolean;
+  /** the Plan card above the message box (components/WorkCard.tsx): the plan and the running background agents kept over the input
+   *  card while the pane has either; off until chosen, so the status line stays one row (DESIGN.md, Plan card) */
+  workCard: boolean;
   /** on a touch screen, a chip above the message box offers the prompt the agent suggests next.
    * Not `showSuggestionChip`: that key was on by default until 0.4.9 and is still stored on phones */
   suggestionChip: boolean;
@@ -215,6 +218,7 @@ type TelemetrySourceSettings = Omit<Settings,
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "builtInBrowser" | "browserBlockedSites" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
   | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
+  | "workCard"
   | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
 
@@ -305,6 +309,7 @@ export const SETTING_SCOPE = {
   composerArtifacts: "device",
   composerPasteSend: "device",
   composerBtw: "device",
+  workCard: "device",
   sidebarFilter: "device",
   sidebarContext: "device",
   foldHelpers: "device",
@@ -388,6 +393,7 @@ export const DEFAULT_SETTINGS: Settings = {
   composerArtifacts: false,
   composerPasteSend: false,
   composerBtw: false,
+  workCard: false,
   suggestionChip: false,
   showThinking: false,
   expandThinking: false,
@@ -604,6 +610,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     composerArtifacts: typeof record["composerArtifacts"] === "boolean" ? record["composerArtifacts"] : DEFAULT_SETTINGS.composerArtifacts,
     composerPasteSend: typeof record["composerPasteSend"] === "boolean" ? record["composerPasteSend"] : DEFAULT_SETTINGS.composerPasteSend,
     composerBtw: typeof record["composerBtw"] === "boolean" ? record["composerBtw"] : DEFAULT_SETTINGS.composerBtw,
+    workCard: typeof record["workCard"] === "boolean" ? record["workCard"] : DEFAULT_SETTINGS.workCard,
     suggestionChip: typeof record["suggestionChip"] === "boolean" ? record["suggestionChip"] : DEFAULT_SETTINGS.suggestionChip,
     showThinking: typeof record["showThinking"] === "boolean" ? record["showThinking"] : DEFAULT_SETTINGS.showThinking,
     expandThinking: typeof record["expandThinking"] === "boolean" ? record["expandThinking"] : DEFAULT_SETTINGS.expandThinking,
@@ -806,6 +813,7 @@ export const REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY = "ovis:reuse-external-link-tab
 export const FILES_PANEL_STORAGE_KEY = "ovis:files-panel";
 export const COMPOSER_PASTE_SEND_STORAGE_KEY = "ovis:composer-paste-send";
 export const COMPOSER_BTW_STORAGE_KEY = "ovis:composer-btw";
+export const WORK_CARD_STORAGE_KEY = "ovis:work-card";
 export const SIDEBAR_CONTEXT_STORAGE_KEY = "ovis:sidebar-context";
 export const FOLD_HELPERS_STORAGE_KEY = "ovis:fold-helpers";
 export const SIDEBAR_AGENT_TREE_STORAGE_KEY = "ovis:sidebar-agent-tree";
@@ -884,6 +892,7 @@ export function loadSettings(): Settings {
     filesPanel: readChatFold(FILES_PANEL_STORAGE_KEY, DEFAULT_SETTINGS.filesPanel),
     composerPasteSend: readChatFold(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
     composerBtw: readChatFold(COMPOSER_BTW_STORAGE_KEY, DEFAULT_SETTINGS.composerBtw),
+    workCard: readChatFold(WORK_CARD_STORAGE_KEY, DEFAULT_SETTINGS.workCard),
     sidebarContext: readChatFold(SIDEBAR_CONTEXT_STORAGE_KEY, DEFAULT_SETTINGS.sidebarContext),
     foldHelpers: readChatFold(FOLD_HELPERS_STORAGE_KEY, DEFAULT_SETTINGS.foldHelpers),
     sidebarAgentTree: readChatFold(SIDEBAR_AGENT_TREE_STORAGE_KEY, DEFAULT_SETTINGS.sidebarAgentTree),
@@ -903,7 +912,7 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, sidebarContext, sidebarAgentTree, phoneInbox, foldHelpers, pcLoad, voiceEngine, agentGroups, agentGroupSort, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, customThemes, phoneTabs, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, sidebarContext, sidebarAgentTree, phoneInbox, foldHelpers, pcLoad, voiceEngine, agentGroups, agentGroupSort, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, workCard, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, customThemes, phoneTabs, ...main } = mirrored;
     window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(customThemes));
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(PHONE_TABS_STORAGE_KEY, JSON.stringify(phoneTabs));
@@ -923,6 +932,7 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(FILES_PANEL_STORAGE_KEY, JSON.stringify(filesPanel));
     window.localStorage.setItem(COMPOSER_PASTE_SEND_STORAGE_KEY, JSON.stringify(composerPasteSend));
     window.localStorage.setItem(COMPOSER_BTW_STORAGE_KEY, JSON.stringify(composerBtw));
+    window.localStorage.setItem(WORK_CARD_STORAGE_KEY, JSON.stringify(workCard));
     window.localStorage.setItem(SIDEBAR_CONTEXT_STORAGE_KEY, JSON.stringify(sidebarContext));
     window.localStorage.setItem(FOLD_HELPERS_STORAGE_KEY, JSON.stringify(foldHelpers));
     window.localStorage.setItem(SIDEBAR_AGENT_TREE_STORAGE_KEY, JSON.stringify(sidebarAgentTree));

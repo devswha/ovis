@@ -4,32 +4,28 @@ import { ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot,
 import "./BackgroundTasks.css";
 
 import { BackgroundAgentDetail } from "./BackgroundAgentDetail.tsx";
+import { StepRow, TaskRow, workSummary } from "./BackgroundRows.tsx";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
-import { clockOffsetMs, endedSummary, formatElapsed, runGoing, spanMs, taskElapsedMs } from "../lib/omoTasks.ts";
-import { formatTokens } from "../lib/compose.ts";
+import { endedSummary, formatElapsed, runGoing, spanMs } from "../lib/omoTasks.ts";
 import { planWaves } from "../lib/plan.ts";
 import { useT } from "../lib/i18n.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
-import type { OmoRun, OmoRunNode, OmoTask, PlanStep, PlanSummary } from "../../shared/protocol.ts";
+import { usePanePlan, usePaneTasks, WORK_POLL_MS } from "../lib/usePaneWork.ts";
+import type { OmoRun, OmoRunNode, OmoTask, PlanSummary } from "../../shared/protocol.ts";
 
-const POLL_MS = 3000;
-
-const ICONS: Record<OmoTask["status"], ComponentType<LucideProps>> = {
-  running: CircleDot, completed: CircleCheck, failed: CircleX, cancelled: CircleSlash, lost: CircleAlert,
-};
-const STEP_ICONS: Record<PlanStep["status"], ComponentType<LucideProps>> = { pending: Circle, in_progress: CircleDot, completed: CircleCheck };
 const NODE_ICONS: Record<OmoRunNode["state"], ComponentType<LucideProps>> = {
   pending: Circle, scheduled: Circle, running: CircleDot, blocked: CircleAlert, completed: CircleCheck, failed: CircleX, skipped: CircleSlash, cancelled: CircleSlash,
 };
 
 /**
  * The status line's one chip for what the agent works through besides its answer: the plan it
- * keeps (Claude Code's task list, Codex's checklist: `plan`, read again while open) and its
- * background tasks. A Claude Code or OpenCode pane's tasks are its subagents (`subagents`).
+ * keeps (Claude Code's task list, Codex's checklist, the todo list of OmO and omp: `plan`, read
+ * again while open) and its background tasks. A Claude Code, OpenCode or omp pane's tasks are its
+ * subagents (`subagents`). The pinned card (WorkCard.tsx) draws the same two above the message box.
  */
 export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = null }: { paneId: string; count: number; omo: boolean; subagents?: boolean; plan?: PlanSummary | null }) {
   const t = useT();
-  const { fetchPaneOmoActivity, fetchPanePlan } = useMachineApi();
+  const { fetchPaneOmoActivity } = useMachineApi();
   const machineId = useMachineId();
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<OmoTask | null>(null);
@@ -49,18 +45,12 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
     // looking for reads as having none: an empty answer is asked again a few times. Agents that
     // ended before that are told by nothing else, as the count changes only for running ones.
     const ask = (left: number): void => {
-      const again = (): void => { if (alive && left > 0) timer = setTimeout(() => ask(left - 1), POLL_MS); };
+      const again = (): void => { if (alive && left > 0) timer = setTimeout(() => ask(left - 1), WORK_POLL_MS); };
       fetchPaneOmoActivity(paneId).then((found) => { if (!alive) return; if (found.tasks.length > 0) setSeen(true); else again(); }, again);
     };
     ask(3);
     return () => { alive = false; clearTimeout(timer); };
   }, [subagents, paneId, count]);
-  const [tasks, setTasks] = useState<OmoTask[] | null>(null);
-  const [runs, setRuns] = useState<OmoRun[]>([]);
-  const [moreRunning, setMoreRunning] = useState(0);
-  const [failed, setFailed] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
-  const [offset, setOffset] = useState(0);
   const [showEnded, setShowEnded] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -70,48 +60,11 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
   useEffect(() => { if (!open) setShowEnded(false); }, [open]);
 
   const tasksShown = count > 0 || seen || omo;
-  useEffect(() => {
-    if (!open || !tasksShown) return;
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = async (): Promise<void> => {
-      try {
-        const next = await fetchPaneOmoActivity(paneId);
-        if (!alive) return;
-        const received = Date.now();
-        setTasks(next.tasks); setRuns(next.runs); setMoreRunning(next.moreRunning); setFailed(false); setOffset(clockOffsetMs(next.serverTime, received)); setNow(received);
-      } catch {
-        if (alive) setFailed(true);
-      }
-      if (!alive) return;
-      timer = setTimeout(() => void load(), POLL_MS);
-    };
-    void load();
-    return () => { alive = false; clearTimeout(timer); };
-  }, [open, tasksShown, paneId, fetchPaneOmoActivity]);
-
-  const [steps, setSteps] = useState<PlanStep[] | null | undefined>(undefined);
-  const [planFailed, setPlanFailed] = useState(false);
   const planShown = plan !== null;
-  useEffect(() => {
-    if (!open || !planShown) return;
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    setSteps(undefined);
-    const load = async (): Promise<void> => {
-      try {
-        const next = await fetchPanePlan(paneId);
-        if (!alive) return;
-        const received = Date.now();
-        setSteps(next.steps); setPlanFailed(false); setOffset(clockOffsetMs(next.serverTime, received)); setNow(received);
-      } catch {
-        if (alive) setPlanFailed(true);
-      }
-      if (alive) timer = setTimeout(() => void load(), POLL_MS);
-    };
-    void load();
-    return () => { alive = false; clearTimeout(timer); };
-  }, [open, planShown, paneId, fetchPanePlan]);
+  const { tasks, runs, moreRunning, failed, at: tasksAt } = usePaneTasks(paneId, open && tasksShown);
+  const { steps, failed: planFailed, at: planAt, forget: forgetSteps } = usePanePlan(paneId, open && planShown);
+  // each opening of the list starts from a plan not read yet
+  useEffect(() => { if (open && planShown) forgetSteps(); }, [open, planShown, paneId, machineId, forgetSteps]);
 
   useEffect(() => {
     if (!open) return;
@@ -148,37 +101,8 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
 
   const running = tasks?.filter((task) => task.status === "running") ?? [];
   const ended = tasks?.filter((task) => task.status !== "running") ?? [];
-  const words: Record<OmoTask["status"], string> = {
-    running: t("running"), completed: t("done"), failed: t("failed"), cancelled: t("cancelled"), lost: t("lost"),
-  };
 
-  const row = (task: OmoTask) => {
-    const Icon = ICONS[task.status];
-    const elapsed = taskElapsedMs(task, now + offset);
-    const meta = [
-      task.category, task.model, elapsed === null ? null : formatElapsed(elapsed),
-      task.turns === null ? null : t(task.turns === 1 ? "{n} turn" : "{n} turns", { n: task.turns }),
-      task.tool_calls === null ? null : t(task.tool_calls === 1 ? "{n} tool call" : "{n} tool calls", { n: task.tool_calls }),
-      task.tokens === null ? null : t("{n} tokens", { n: formatTokens(task.tokens) }),
-    ].filter((item) => item !== null).join(" · ");
-    const main = <span className="bg-task-main">
-      <span className="bg-task-title">{task.title}<span className="sr-only"> ({words[task.status]})</span></span>
-      {(meta.length > 0 || (task.status !== "running" && task.status !== "completed")) && <span className="bg-task-meta">{[task.status !== "running" && task.status !== "completed" ? words[task.status] : null, meta || null].filter((item) => item !== null).join(" · ")}</span>}
-    </span>;
-    if (task.status === "running") {
-      return <li key={task.id} className={`bg-task is-${task.status} is-openable`}>
-        <button type="button" className="bg-task-open" aria-haspopup="dialog" aria-expanded={detail?.id === task.id} onClick={(event) => { event.currentTarget.focus(); setDetail(task); }}>
-          <Icon className="bg-task-icon" aria-hidden="true" />
-          {main}
-          <ChevronRight className="bg-task-caret" aria-hidden="true" />
-        </button>
-      </li>;
-    }
-    return <li key={task.id} className={`bg-task is-${task.status}`}>
-      <Icon className="bg-task-icon" aria-hidden="true" />
-      {main}
-    </li>;
-  };
+  const row = (task: OmoTask) => <TaskRow key={task.id} task={task} at={tasksAt} expanded={detail?.id === task.id} onOpen={setDetail} />;
 
   const nodeWords: Record<OmoRunNode["state"], string> = {
     pending: t("waiting"), scheduled: t("waiting"), running: t("running"), blocked: t("blocked"), completed: t("done"), failed: t("failed"), skipped: t("skipped"), cancelled: t("cancelled"),
@@ -189,7 +113,7 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
     const done = nodes.filter((node) => node.state === "completed").length;
     const runningNow = nodes.filter((node) => node.state === "running").length;
     const failedNodes = nodes.filter((node) => node.state === "failed");
-    const elapsed = spanMs(run.started_at, run.ended_at, runGoing(run), now + offset);
+    const elapsed = spanMs(run.started_at, run.ended_at, runGoing(run), tasksAt);
     const meta = [
       t("{done} of {total} done", { done, total: nodes.length }),
       runningNow > 0 ? t("{n} running", { n: runningNow }) : null,
@@ -215,25 +139,7 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
 
   useEffect(() => { if (open && !planShown && !tasksShown) setOpen(false); }, [open, planShown, tasksShown]);
   if (!planShown && !tasksShown) return null;
-  const tasksLabel = count === 0 ? t("Background tasks") : t(count === 1 ? "{n} background task" : "{n} background tasks", { n: count });
-  const planLabel = plan ? t("Plan: {done} of {total} done", { done: plan.done, total: plan.total }) : null;
-  const current = plan?.current ? plan.current : null;
-  const name = [planLabel, current, tasksShown ? tasksLabel : null].filter((part) => part !== null).join(" · ");
-  const busy = count > 0 || (plan !== null && plan.done < plan.total);
-  const stepWords: Record<PlanStep["status"], string> = { pending: t("waiting"), in_progress: t("running"), completed: t("done") };
-  const stepRow = (step: PlanStep) => {
-    const Icon = STEP_ICONS[step.status];
-    const elapsed = spanMs(step.started_at, step.ended_at, step.status === "in_progress", now + offset);
-    const meta = [stepWords[step.status], elapsed === null ? null : formatElapsed(elapsed), step.owner].filter((part) => part !== null).join(" · ");
-    return <li key={step.id} className={`bg-task bg-step is-${step.status}`}>
-      <Icon className="bg-task-icon" aria-hidden="true" />
-      <span className="bg-task-main">
-        <span className="bg-task-title">{step.label}</span>
-        {step.status === "in_progress" && step.active && step.active !== step.label && <span className="bg-step-active">{step.active}</span>}
-        <span className="bg-task-meta">{meta}</span>
-      </span>
-    </li>;
-  };
+  const { tasksLabel, current, name, busy } = workSummary(t, plan, count, tasksShown);
   return <span className="bg-tasks" ref={root}>
     <button type="button" ref={toggle} className={`bg-tasks-toggle${busy ? "" : " is-idle"}`} aria-label={name} title={name} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
       {plan && <><ListChecks aria-hidden="true" /><span className="bg-tasks-label">{t("Plan")}</span><span className="bg-tasks-plan" aria-hidden="true">{plan.done}/{plan.total}</span>{current && <span className="bg-tasks-current" aria-hidden="true">{current}</span>}</>}
@@ -246,7 +152,7 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
         {steps === undefined && !planFailed && <p className="bg-tasks-note">{t("Reading the plan…")}</p>}
         {steps === null && <p className="bg-tasks-note">{t("This session keeps no plan right now")}</p>}
         {planFailed && <p className="bg-tasks-note" role="status">{t("Couldn't read the plan. Trying again…")}</p>}
-        {steps && steps.length > 0 && <ol className="bg-task-list">{planWaves(steps).flat().map(stepRow)}</ol>}
+        {steps && steps.length > 0 && <ol className="bg-task-list">{planWaves(steps).flat().map((step) => <StepRow key={step.id} step={step} at={planAt} />)}</ol>}
       </>}
       {planShown && tasksShown && <div className="menu-heading bg-tasks-heading">{t("Background tasks")}</div>}
       {tasksShown && <>

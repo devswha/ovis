@@ -298,6 +298,15 @@ a.bg-task-open {
   overflow-wrap: anywhere;
 }
 
+/* the pinned card's agent row: the time at the end of the title's line, not a line under it */
+.bg-task-elapsed {
+  flex: none;
+  align-self: center;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
 .bg-run {
   padding: var(--space-1) var(--space-2) var(--space-2);
 }

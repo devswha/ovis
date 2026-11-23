@@ -32,7 +32,7 @@ export function settingsPageEntries(t: Translate): SettingsPageEntry[] {
     { id: "agents", section: "guide", label: t("Setup guide"), aliases: t("onboarding first run getting started welcome") },
     { id: "appearance", section: "typography", label: t("Typography"), aliases: [t("Interface font size"), t("Interface font"), t("Terminal font"), t("Terminal font size"), t("Chat font"), t("Chat font size")].join(" ") },
     { id: "appearance", section: "typography-more", label: `${t("Typography")} · ${t("More settings")}`, aliases: "" },
-    { id: "chat", section: "composer", label: t("Composer"), aliases: [t("Enter sends"), t("Return inserts a new line"), t("Composer buttons"), t("Paste and send button"), t("Artifacts chip"), t("Suggestion chip")].join(" ") },
+    { id: "chat", section: "composer", label: t("Composer"), aliases: [t("Enter sends"), t("Return inserts a new line"), t("Composer buttons"), t("Paste and send button"), t("Artifacts chip"), t("Suggestion chip"), t("Plan card above the message box")].join(" ") },
     { id: "chat", section: "composer-more", label: `${t("Composer")} · ${t("More settings")}`, aliases: t("Send queued messages automatically") },
     { id: "chat", section: "quick-replies", label: t("Quick replies"), aliases: t("Show above the message box") },
     { id: "devices", section: "sidebar-pcs", label: t("Show in sidebar"), aliases: t("hide PCs on this device") },

@@ -1,0 +1,178 @@
+/*
+ * The Plan card above the message box (WorkCard.tsx). It is the first thing in .composer, so the chat
+ * lens gives it room like any other row there. Its rows are the chip list's (.bg-task, .bg-step in
+ * BackgroundTasks.css), drawn compact. It takes no z-index: the input card (z-index: 1) and the menus
+ * inside it, the slash list and the chip's list, stay over it.
+ */
+.work-card {
+  --work-card-room: min(calc(var(--row-h) * 4), calc(var(--app-height, 100dvh) * 0.3));
+  width: min(100%, var(--chat-w));
+  margin: 0 auto var(--space-2);
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+@media (max-width: 768px), (pointer: coarse) {
+  .work-card {
+    --work-card-room: calc(var(--app-height, 100dvh) * 0.4);
+  }
+}
+
+/* a raised keyboard leaves the pane little height: the list takes a fifth of what is left */
+[data-keyboard] .work-card {
+  --work-card-room: calc(var(--app-height, 100dvh) * 0.2);
+}
+
+.work-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-variant-numeric: var(--font-numeric);
+  text-align: start;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+@media (pointer: coarse) {
+  .work-card-head {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (hover: hover) {
+  .work-card-head:hover {
+    background: var(--bg-hover);
+  }
+}
+
+/* the card clips its corners, so the ring is drawn inside the button */
+.work-card-head:focus-visible {
+  outline-offset: calc(-1 * var(--ring-offset));
+}
+
+.work-card-head svg {
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
+  flex: none;
+}
+
+.work-card-head.is-busy .work-card-mark,
+.work-card-head.is-busy .work-card-agents {
+  color: var(--status-working);
+}
+
+.work-card-label {
+  flex: none;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.work-card-figures {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* the step in progress takes the room the figures and the count leave, one line, cut with an ellipsis */
+.work-card-current {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-card-current::before {
+  content: "\00b7";
+  margin-inline-end: var(--space-2);
+  color: var(--text-dim);
+}
+
+.work-card-end {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+
+.work-card-agents {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.work-card-caret {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.work-card-head[aria-expanded="true"] .work-card-caret {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-card-caret {
+    transition: none;
+  }
+}
+
+/* positioned: the rows' hidden state words are absolute, and the step kept in view is measured from here */
+.work-card-body {
+  position: relative;
+  max-height: max(var(--row-h), var(--work-card-room));
+  padding: var(--space-1);
+  border-top: var(--hairline) solid var(--border);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.work-card-body > .work-card-heading:not(:first-child) {
+  margin-top: var(--space-1);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.work-card .bg-task-main {
+  flex: 1 1 auto;
+}
+
+/* a step's name may take two lines and an agent's one: the whole of either is in its tooltip */
+.work-card .bg-task-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.work-card .bg-task:not(.bg-step) .bg-task-title {
+  -webkit-line-clamp: 1;
+}
+
+.work-card .bg-step.is-in_progress {
+  background: var(--status-working-tint);
+  border-radius: var(--radius-md);
+}
+
+.work-card .bg-step.is-in_progress .bg-task-title {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+/* forced colors erase the tint: the step in progress is outlined instead */
+@media (forced-colors: active) {
+  .work-card .bg-step.is-in_progress {
+    outline: var(--hairline) solid Highlight;
+    outline-offset: calc(-1 * var(--hairline));
+  }
+}

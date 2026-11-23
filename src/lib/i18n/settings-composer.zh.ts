@@ -23,5 +23,7 @@ export const SETTINGS_COMPOSER_ZH: Record<string, string> = {
   "Artifacts chip": "Artifact 标签",
   "A chip above the message box puts the prompt the agent suggests next (Claude Code, GJC or omp) into the box. With a keyboard, Tab does it.": "输入框上方的标签会把 Agent（Claude Code、GJC、omp）建议的下一条提示填入输入框。使用键盘时按 Tab 即可。",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "在 Claude Code 面板的输入框中显示一个标签，列出该会话用 Artifact 工具发布的页面。",
+  "Plan card above the message box": "输入框上方的计划卡片",
+  "On this device, keeps the agent's plan and its running background tasks in a card above the message box while there are any. The card's header folds it to one line. The chip in the message box stays as it is.": "在此设备上，只要有计划或正在运行的后台任务，就会把它们保留在输入框上方的卡片中。点按卡片标题可将其折叠为一行。输入框中的标签保持不变。",
   "The site in that tab can see and navigate this Ovis tab.": "该标签页中的网站可以查看并跳转这个 Ovis 标签页。",
 };

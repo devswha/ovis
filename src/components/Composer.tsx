@@ -69,6 +69,7 @@ import { AgentMark } from "./AgentMark.tsx";
 import { Artifacts } from "./Artifacts.tsx";
 import { OmpBtw } from "./OmpBtw.tsx";
 import { BackgroundTasks } from "./BackgroundTasks.tsx";
+import { WorkCard } from "./WorkCard.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { useT } from "../lib/i18n.ts";
@@ -1126,6 +1127,8 @@ export function Composer({
 
   return (
     <div className={`composer${notices ? " has-notices" : ""}`} role="group" aria-label={t("Message composer")} data-dictating={dictation.voice.state !== "idle" ? "" : undefined} inert={inert || undefined}>
+      {/* first in the composer: over the quick replies, the notes and the input card, so what belongs to the box stays against it */}
+      <WorkCard paneId={paneId} plan={plan} count={backgroundTasks} />
       {greeting}
       {notices}
       {/* no Tab key on a phone: the suggestion can be a chip there that fills the box, when Settings asks for it; a tap
@@ -1430,7 +1433,7 @@ export function Composer({
             </button>
           )}
           {dictation.shown && <MicButton dictation={dictation} disabled={viewOnly} />}
-          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={kind === "omo"} subagents={kind === "claude" || kind === "opencode"} plan={plan} />
+          <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={kind === "omo"} subagents={kind === "claude" || kind === "opencode" || kind === "omp"} plan={plan} />
           {agent === "claude" && <Artifacts paneId={paneId} status={agentStatus} />}
           {agent === "omp" && <OmpBtw paneId={paneId} />}
         </div>

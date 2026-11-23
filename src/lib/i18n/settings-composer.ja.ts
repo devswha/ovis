@@ -23,5 +23,7 @@ export const SETTINGS_COMPOSER_JA: Record<string, string> = {
   "Artifacts chip": "アーティファクトチップ",
   "A chip above the message box puts the prompt the agent suggests next (Claude Code, GJC or omp) into the box. With a keyboard, Tab does it.": "入力欄の上のチップで、エージェント (Claude Code、GJC、omp) が次に提案するプロンプトを入力欄に入れます。キーボードでは Tab で入れます。",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "Claude Code のペインの入力欄に、セッションが Artifact ツールで公開したページの一覧を出すチップを表示します。",
+  "Plan card above the message box": "入力欄の上の計画カード",
+  "On this device, keeps the agent's plan and its running background tasks in a card above the message box while there are any. The card's header folds it to one line. The chip in the message box stays as it is.": "このデバイスでは、エージェントの計画と実行中のバックグラウンドタスクがある間、入力欄の上のカードに表示し続けます。カードの見出しを押すと1行に折りたたまれます。入力欄のチップはそのまま残ります。",
   "The site in that tab can see and navigate this Ovis tab.": "そのタブのサイトは、この Ovis タブを見たり移動させたりできます。",
 };

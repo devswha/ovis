@@ -351,6 +351,20 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerPasteSend).toBe(false);
   });
 
+  it("keeps the Plan card above the message box in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().workCard).toBe(false);
+    saveSettings(sanitizeSettings({ workCard: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("workCard");
+    expect(records.get("ovis:work-card")).toBe("true");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().workCard).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), workCard: false });
+    expect(loadSettings().workCard).toBe(false);
+    records.set("ovis:work-card", "\"true\"");
+    expect(loadSettings().workCard).toBe(false);
+  });
+
   it("keeps Expand thinking, Collapse work and Files beside the pane in keys of their own, out of an old tab's whole-record save", () => {
     for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"], ["filesPanel", "ovis:files-panel"]] as const) {
       expect(loadSettings()[key]).toBe(false);
@@ -617,6 +631,15 @@ it("keeps the composer's Paste and send button off until this device turns it on
   expect(sanitizeSettings({ composerPasteSend: true }).composerPasteSend).toBe(true);
   expect(sanitizeSettings({ composerPasteSend: "true" }).composerPasteSend).toBe(false);
   expect(SETTING_SCOPE.composerPasteSend).toBe("device");
+});
+
+it("keeps the Plan card above the message box off until this device turns it on, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.workCard).toBe(false);
+  expect(sanitizeSettings({}).workCard).toBe(false);
+  expect(sanitizeSettings({ workCard: true }).workCard).toBe(true);
+  expect(sanitizeSettings({ workCard: "true" }).workCard).toBe(false);
+  expect(SETTING_SCOPE.workCard).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("workCard");
 });
 
 it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {

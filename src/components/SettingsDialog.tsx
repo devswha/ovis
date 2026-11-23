@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeft, AudioLines, Ban, Bell, Bot, Box, Brain, NotebookPen, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink as ExternalLinkIcon, FileClock, FilePen, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListCollapse, ListTree, Lock, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
+import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeft, AudioLines, Ban, Bell, Bot, Box, Brain, NotebookPen, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink as ExternalLinkIcon, FileClock, FilePen, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListChecks, ListCollapse, ListTree, Lock, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -592,6 +592,9 @@ function ChatPage() {
             {chip(Layers, t("Artifacts (Claude Code)"), settings.composerArtifacts, (composerArtifacts) => update({ composerArtifacts }))}
             {touch && chip(Sparkles, t("Suggestion"), settings.suggestionChip, (suggestionChip) => update({ suggestionChip }))}
           </span>
+        </SettingsRow>
+        <SettingsRow icon={ListChecks} label={t("Plan card above the message box")} description={t("On this device, keeps the agent's plan and its running background tasks in a card above the message box while there are any. The card's header folds it to one line. The chip in the message box stays as it is.")} keywords="todo list tasks subagents pinned" reset={["workCard"]}>
+          <Toggle label={t("Plan card above the message box")} checked={settings.workCard} onChange={(workCard) => update({ workCard })} />
         </SettingsRow>
       </SettingsGroup>
 

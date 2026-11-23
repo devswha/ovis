@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { OmoRun, OmoTask } from "../../shared/protocol.ts";
-import { clockOffsetMs, endedSummary, formatElapsed, runGoing, taskCallItems, taskElapsedMs, taskResultMarkdown } from "./omoTasks.ts";
+import { clockOffsetMs, endedSummary, formatElapsed, runGoing, taskCallItems, taskElapsedMs, taskHasDetail, taskResultMarkdown } from "./omoTasks.ts";
 
 const task = (over: Partial<OmoTask>): OmoTask => ({ id: "st_1", title: "t", category: null, model: null, status: "running", started_at: "2026-10-02T05:00:00Z", ended_at: null, turns: null, tool_calls: null, tokens: null, ...over });
 const at = Date.parse("2026-10-02T05:04:12Z");
@@ -8,6 +8,13 @@ const at = Date.parse("2026-10-02T05:04:12Z");
 test("a running task counts to now, an ended one to its end", () => {
   expect(taskElapsedMs(task({}), at)).toBe(252_000);
   expect(taskElapsedMs(task({ status: "completed", ended_at: "2026-10-02T05:01:00Z" }), at)).toBe(60_000);
+});
+
+test("only a task the PC can read the work of has a detail: Claude Code's and OpenCode's subagents, not omp's, OmO's or an older bridge's", () => {
+  expect(taskHasDetail(task({ detail_kind: "claude-subagent" }))).toBe(true);
+  expect(taskHasDetail(task({ detail_kind: "opencode-subagent" }))).toBe(true);
+  expect(taskHasDetail(task({ detail_kind: null }))).toBe(false);
+  expect(taskHasDetail(task({}))).toBe(false);
 });
 
 test("no start, no end, or an end before the start: unknown", () => {

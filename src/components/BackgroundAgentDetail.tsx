@@ -7,6 +7,7 @@ import "./BackgroundAgentDetail.css";
 import { ApiError, routeMissing } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
+import { taskHasDetail } from "../lib/omoTasks.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
@@ -29,7 +30,7 @@ export function BackgroundAgentDetail({ paneId, task, onClose }: { paneId: strin
   const t = useT();
   const id = useId();
   const { fetchPaneBackgroundAgent } = useMachineApi();
-  const supported = task.detail_kind === "claude-subagent" || task.detail_kind === "opencode-subagent";
+  const supported = taskHasDetail(task);
   const [detail, setDetail] = useState<PaneBackgroundAgentDetail | null>(null);
   const [loading, setLoading] = useState(supported);
   const [failure, setFailure] = useState<Failure | null>(supported ? null : task.detail_kind === undefined ? "update" : "unsupported");
