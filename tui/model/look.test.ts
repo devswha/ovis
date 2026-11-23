@@ -544,3 +544,95 @@ describe("a turn the screen did not watch end", () => {
     expect([alertNotices(run), seenWrites(run)]).toEqual([[["agent_done", "two", true]], []]);
   }, TEST_MS);
 });
+
+describe("a look's write only raises herdr.seen", () => {
+  /**
+   * The look's write for t1's turn 1, with the core's answer to the read it starts with on its way: `meanwhile` happens
+   * (another client's writes among it), then the answer comes. `begins`: the turn ended with nobody there and a look
+   * that begins writes for it; else it ended under a look that went on. Answers t1's turn and label as the core holds
+   * them, and the labels the screen itself wrote.
+   */
+  async function lateAnswer(begins: boolean, meanwhile: (run: Run, other: HcConnection) => Promise<void>) {
+    const run = await started(twoAgents());
+    const answer = Promise.withResolvers<void>();
+    let waiting = false;
+    const call = run.loop.link.call.bind(run.loop.link);
+    run.loop.link.call = async (method, params, timeout) => {
+      const result = await call(method, params, timeout);
+      if (waiting && method === "terminal.get") await answer.promise;
+      return result;
+    };
+    if (begins) {
+      await endTurn(run, "t1");
+      waiting = true;
+      await hostFocus(run, FOCUS_IN);
+    } else {
+      await hostFocus(run, FOCUS_IN);
+      waiting = true;
+      await endTurn(run, "t1");
+    }
+    await hostFocus(run, FOCUS_OUT);
+    const other = new HcConnection(() => run.core.transport());
+    await meanwhile(run, other);
+    other.close();
+    answer.resolve();
+    await run.advance(20);
+    const own = run.core.calls().find((made) => made.method === "events.subscribe")!.line;
+    return { turn: run.core.terminal("t1").turn, seen: run.core.terminal("t1").labels[SEEN], wrote: seenWrites(run, own) };
+  }
+
+  const read = (other: HcConnection, turn: string) => other.call("terminal.label", { terminal: "t1", labels: { [SEEN]: turn } });
+  /** t1's next turn ends, and another client reads it; the screen is told of both as they happen. */
+  const newerRead = async (run: Run, other: HcConnection) => {
+    await endTurn(run, "t1");
+    await read(other, "2");
+    await run.advance(20);
+  };
+  /** The same, and one more turn of t1 ends: the screen is told of it all only in the snapshot of events it missed. */
+  const newerReadInSnapshot = async (run: Run, other: HcConnection) => {
+    run.core.holdingEvents = true;
+    for (const state of ["working", "idle"]) run.core.reportStatus("t1", { state, app: "claude" });
+    await read(other, "2");
+    for (const state of ["working", "idle"]) run.core.reportStatus("t1", { state, app: "claude" });
+    run.core.missed();
+    await run.settle();
+    run.core.releaseEvents();
+    await run.advance(20);
+  };
+  /** Another client reads the very turn the write is for, then marks it unread. */
+  const readThenUnread = async (run: Run, other: HcConnection) => {
+    await read(other, "1");
+    await read(other, "0");
+    await run.advance(20);
+  };
+
+  const cases: [name: string, begins: boolean, meanwhile: (run: Run, other: HcConnection) => Promise<void>, leaves: Awaited<ReturnType<typeof lateAnswer>>][] = [
+    ["a look that begins: a newer read another client made meanwhile stands", true, newerRead, { turn: 2, seen: "2", wrote: [] }],
+    ["a look that goes on: a newer read another client made meanwhile stands", false, newerRead, { turn: 2, seen: "2", wrote: [] }],
+    ["a look that begins: a newer read told by a snapshot, at a turn past it, stands", true, newerReadInSnapshot, { turn: 3, seen: "2", wrote: [] }],
+    ["a look that begins: a read of the same turn, marked unread again, is no newer read and the write goes through", true, readThenUnread, { turn: 1, seen: "1", wrote: [{ terminal: "t1", seen: "1" }] }],
+  ];
+  for (const [name, begins, meanwhile, leaves] of cases) {
+    it(name, async () => expect(await lateAnswer(begins, meanwhile)).toEqual(leaves), TEST_MS);
+  }
+
+  it("a core that started again with the same addresses: the reads its terminals had before stop no read of the turns it has now", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    for (let turn = 1; turn <= 3; turn++) await endTurn(run, "t1");
+    expect(run.core.terminal("t1").labels[SEEN]).toBe("3");
+    // another core at the same socket: its t1 is another terminal, one turn in and unread
+    const next = twoAgents();
+    for (const state of ["working", "idle"]) next.reportStatus("t1", { state, app: "claude" });
+    await run.cutLine();
+    const listening = await next.listen(run.socket);
+    try {
+      await run.advance(6_000);
+      await run.live();
+      await run.advance(20);
+      expect([next.terminal("t1").turn, next.terminal("t1").labels[SEEN]]).toEqual([1, "1"]);
+    } finally {
+      await listening.close();
+    }
+  }, TEST_MS);
+});
