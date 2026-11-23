@@ -165,7 +165,15 @@ export class LayoutWrites {
 
   /** A close, once the core still holds exactly the terminals the user saw: it ends those and no other; anything else ends nothing. */
   private async close(action: string, target: CloseTarget, seen: readonly Seen[]): Promise<LayoutDone> {
-    const { view, created, finished } = await this.fresh();
+    let fresh: Fresh;
+    try {
+      fresh = await this.fresh();
+    } catch (error) {
+      // Even a lost answer here is only a lost read: the close has not sent a kill or removal.
+      this.notice("layout_refused", { action, reason: errorCode(error) });
+      return NOTHING_ENDED;
+    }
+    const { view, created, finished } = fresh;
     const ends = this.store.endsOf(view.shown, target);
     if (!sameTerminals(ends, seen, created)) {
       this.notice("target_changed", { action });

@@ -427,6 +427,29 @@ describe("the loop", () => {
     expect([sentTo(run, "t1"), sentTo(run, "t2")]).toEqual(["", Buffer.from("d").toString("hex")]);
   }, TEST_MS);
 
+  it("a close preflight timeout releases held text to the original pane without ending any terminal", async () => {
+    for (const reads of [["\x02xabc"], ["\x02x", "abc"]]) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      const call = run.loop.link.call.bind(run.loop.link);
+      run.loop.link.call = async (method, params, timeout) => {
+        if (method === "terminal.list") {
+          run.loop.link.call = call;
+          throw new HcError("timeout", "no answer to the preflight read");
+        }
+        return call(method, params, timeout);
+      };
+      for (const read of reads) run.type(read);
+      await settled(run);
+      expect(run.core.calls().filter(({ method }) => method === "terminal.kill" || method === "terminal.rm")).toEqual([]);
+      expect(received(run)).toEqual({ t1: Buffer.from("abc").toString("hex") });
+      expect(run.loop.link.state.kind).toBe("Online");
+      expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])).toEqual([["layout_refused", "timeout"]]);
+      await run.close();
+    }
+  }, TEST_MS);
+
   it.each(["removed", "already gone", "rm refused", "answer lost", "remote timeout"] as const)("a partial close with a sibling %s routes held input independently of event order", async (third) => {
     for (const answerFirst of [false, true]) {
       const run = await start({ core: oneTab(3) });
