@@ -8,6 +8,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { COMMAND_ALIASES } from "./plugin-runtime.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { savedPort } from "./plugin-port.ts";
+import { mergeEnvLayers } from "../server/legacy-env.ts";
 import { quietPort, REAL_PORTS } from "./quiet-port.ts";
 import { readProcessBirth } from "../server/process-owner.ts";
 import { updateStateDir } from "../server/update-state.ts";
@@ -30,10 +31,30 @@ async function run(command: string, extra: Record<string, string | undefined> = 
   return { out, err, exitCode };
 }
 
+/** KEY=VALUE lines, as scripts/plugin.ts reads its settings files. */
+const settingsIn = (file: string): Record<string, string> => !existsSync(file) ? {} : Object.fromEntries(readFileSync(file, "utf8").split("\n")
+  .map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#") && line.indexOf("=") > 0)
+  .map((line) => [line.slice(0, line.indexOf("=")).trim(), line.slice(line.indexOf("=") + 1).trim().replace(/^["']|["']$/g, "")]));
+
+/**
+ * The port a command run with `env` opens and asks, found the way scripts/plugin.ts finds it: PORT from its environment
+ * and then its settings files, which win, and the kept port when that leaves none. null when it would fall back to
+ * DEFAULT_PORT.
+ */
+function portFor(env: Record<string, string | undefined>): string | null {
+  const dir = env["HERDR_PLUGIN_CONFIG_DIR"] ?? configDir;
+  const merged = mergeEnvLayers([env, ...["env", ".env"].map((name) => settingsIn(join(dir, name)))]);
+  if ((merged["PORT"] ?? "") !== "") return merged["PORT"]!;
+  const config = merged["XDG_CONFIG_HOME"] || join(scratch, ".config");
+  const kept = savedPort(join(merged["OVIS_STATE_DIR"] || join(config, "ovis"), "plugin-port")) ?? savedPort(join(config, "herdr-web-ui", "plugin-port"));
+  return kept === null ? null : String(kept);
+}
+
 /**
  * The command's environment. PORT is a quiet port unless `extra` names it: with none, the command would ask DEFAULT_PORT
  * (7317), where this PC's own Ovis answers. A test of the port a command finds without PORT passes `PORT: undefined`
- * and keeps a port first (`keep`), which the command then reads.
+ * and keeps a port first (`keep`), which the command then reads. Refused when the port the command would use, after
+ * its settings files, is one this PC's own Ovis may be on.
  */
 function launchEnv(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   const bin = join(scratch, "bin");
@@ -42,7 +63,7 @@ function launchEnv(extra: Record<string, string | undefined> = {}): Record<strin
   if (!("PORT" in extra)) env["PORT"] = String(quietPort());
   Object.assign(env, extra);
   for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
-  const port = env["PORT"] ?? savedPort(join(scratch, ".config", "ovis", "plugin-port"));
+  const port = portFor(env);
   if (port === null) throw new Error("a test leaves PORT out with no port kept: the command would ask 7317, where this PC's own Ovis answers");
   if (REAL_PORTS.includes(Number(port))) throw new Error(`a test hands the command PORT=${port}, a port this PC's own Ovis may be on`);
   return env;
@@ -71,6 +92,12 @@ describe("the launch helper", () => {
     expect(REAL_PORTS).not.toContain(port);
     for (const real of REAL_PORTS) expect(() => launchEnv({ PORT: String(real) })).toThrow(`PORT=${real}`);
     expect(() => launchEnv({ PORT: undefined })).toThrow("no port kept");
+    expect(() => launchEnv({ PORT: "" })).toThrow("no port kept");
+    writeFileSync(join(configDir, ".env"), "PORT=7421\n");
+    expect(() => launchEnv()).toThrow("PORT=7421");
+    writeFileSync(join(configDir, ".env"), "PORT=\n");
+    expect(() => launchEnv({ PORT: "1" })).toThrow("no port kept");
+    rmSync(join(configDir, ".env"));
     mkdirSync(join(scratch, ".config", "ovis"), { recursive: true });
     writeFileSync(join(scratch, ".config", "ovis", "plugin-port"), "7317\n");
     expect(() => launchEnv({ PORT: undefined })).toThrow("PORT=7317");
@@ -1515,9 +1542,7 @@ describe("pair --approve", () => {
 
   /** `pair --approve` at a real terminal (script), against the Ovis on `port`: what it shows, and what is typed at it. */
   function atTerminal(port: number, extra: Record<string, string> = {}) {
-    const bin = join(scratch, "bin");
-    const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state"), PORT: String(port), ...extra };
-    for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
+    const env = launchEnv({ PORT: String(port), ...extra });
     // util-linux takes the command as one string, BSD (macOS) as arguments after the file it records to. Behind cat:
     // Bun hands a child a socket for stdin, which macOS's script refuses (tcgetattr), and cat gives it a pipe
     const command = platform() === "darwin" ? "script -q /dev/null bun scripts/plugin.ts pair --approve" : "script -qfec 'bun scripts/plugin.ts pair --approve' /dev/null";

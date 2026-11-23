@@ -210,19 +210,42 @@ describe("fixed sleeps", () => {
  * something the run made (a mkdtemp directory, a randomUUID tag, its own pid), not a fixed string or an id herdr gave
  * out, which another session's pane has too.
  */
-const KILLS_BY_NAME = /\b(?:pkill|killall)\b|\bpgrep\b(?=[^\n]*?["'\s]-[a-zA-Z]*f[a-zA-Z]*\b)/;
+const KILLS_BY_NAME = /\b(?:pkill|killall)\b|\bpgrep\b(?=[^\n]*?["'\s]-[a-zA-Z]*f[a-zA-Z]*\b)/g;
 /** They run these commands only inside a container they start. */
 const IN_A_CONTAINER = ["scripts/fresh-install-docker.ts", "scripts/join/join.contract.test.ts"];
 
+/** One argument of the command, quoted or bare, or what ends the command (`]`, `)`, `;`, `||`, a redirection …). */
+const ARGUMENT = /`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\|\||&&|[)\];|<>]|(?:\$\{[^}]*\}|[^\s"'`,[\]();|&<>])+(?:\([^()]*\))?/g;
+const unquoted = (argument: string): string => argument.replace(/^["'`]|["'`]$/g, "");
+
+/** What an argument takes from the run: the values it interpolates, or a whole JavaScript expression. None for a fixed string. */
+function namesIn(argument: string, shell: boolean): string[] {
+  if (shell || argument.startsWith("`")) return [...argument.matchAll(/\$\{([^}]+)\}|\$([A-Za-z_]\w*)/g)].map((match) => match[1] ?? match[2]!);
+  return /^["']/.test(argument) ? [] : [argument];
+}
+
+/**
+ * The lines that find or end processes by a name the run did not make. The name is the command's last argument that is no
+ * option (`-f`, `-KILL`, `-${signal}`); a command scoped to a parent the run names (`pgrep -P <pid>`) passes too.
+ */
 function killsByName(file: string, text: string): string[] {
   const code = file.endsWith(".sh") ? text.replace(/(^|\s)#.*$/gm, "$1") : stripComments(text);
-  return code.split("\n").flatMap((line, index) => {
-    const at = line.search(KILLS_BY_NAME);
-    if (at < 0) return [];
-    const named = [...line.slice(at).matchAll(/\$\{([^}]+)\}|\$([A-Za-z_]\w*)|[,(]\s*([A-Za-z_][\w.]*(?:\([^()]*\))?)\s*(?=[,)\]])/g)]
-      .map((match) => match[1] ?? match[2] ?? match[3]!);
-    return named.length > 0 && !named.some((name) => /terminal|pane/i.test(name)) ? [] : [`${file}:${index + 1}: ${line.trim()}`];
-  });
+  return code.split("\n").flatMap((line, index) => [...line.matchAll(KILLS_BY_NAME)].flatMap(({ index: at }) => {
+    const after = line.slice(at).replace(/^\w+/, "");
+    // `["pkill", "-f", tag]` is an argument list; anything else (a .sh line, a command in a string) is a shell's
+    const shell = !(/["']$/.test(line.slice(0, at)) && /^["']/.test(after));
+    const args: string[] = [];
+    for (const [token] of after.replace(/^["']/, "").matchAll(ARGUMENT)) {
+      if (/^(?:\|\||&&|[)\];|<>])$/.test(token)) {
+        if (token === ">" && /^\d$/.test(args.at(-1) ?? "")) args.pop();
+        break;
+      }
+      args.push(token);
+    }
+    const scoped = args.some((arg, i) => unquoted(arg) === "-P" && namesIn(args[i + 1] ?? "", shell).length > 0);
+    const names = namesIn(args.filter((arg) => !unquoted(arg).startsWith("-")).at(-1) ?? "", shell);
+    return scoped || (names.length > 0 && !names.some((name) => /terminal|pane/i.test(name))) ? [] : [`${file}:${index + 1}: ${line.trim()}`];
+  })).filter((offender, at, all) => all.indexOf(offender) === at);
 }
 
 describe("killing by name", () => {
@@ -246,6 +269,11 @@ describe("killing by name", () => {
     expect(found("killall bun", "example.sh")).toBe(1);
     expect(found("Bun.spawn([\"pkill\", \"-f\", `^[^ ]*herdr terminal attach ${terminal}$`]);")).toBe(1);
     expect(found("Bun.spawnSync([\"pgrep\", \"-f\", `terminal session observe ${paneId}`]);")).toBe(1);
+    expect(found("Bun.spawn([\"pkill\", `-${name}`, \"-f\", \"server/index.ts\"]);")).toBe(1);
+    expect(found("pkill -f \"server/index.ts\" 2>/dev/null || true", "example.sh")).toBe(1);
+    expect(found("await m.sh(`pkill -f ${tag}-x; pkill -f server/index.ts`);")).toBe(1);
+    expect(found("Bun.spawn([\"pkill\", `-${name}`, \"-f\", s.log]);")).toBe(0);
+    expect(found("Bun.spawnSync([\"sudo\", \"-n\", \"pkill\", \"-u\", username]);")).toBe(0);
     expect(found("Bun.spawnSync([\"pgrep\", \"-f\", tag]);")).toBe(0);
     expect(found("spawnSync(\"pkill\", [\"-KILL\", \"-f\", tempDir]);")).toBe(0);
     expect(found("pkill -f \"$r/remote.sh\" || true", "example.sh")).toBe(0);
