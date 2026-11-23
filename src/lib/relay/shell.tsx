@@ -1049,11 +1049,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const confirmed = (): void => {
     const asked = shown, offer = entry.offer;
     if (offer === null || asked?.kind !== "confirm") return;
-    // a sheet's join acts as whoever is signed in when it pairs, so it waits for no read. A PC new in the account is
-    // signed in to by the account's key first: its page opened nothing before this press
+    // a sheet's join acts as whoever is signed in when it pairs. A PC new in the account is signed in to by the account's
+    // key first: its page opened nothing before this press. Which PC it is waits for the read of the account's PCs the
+    // sheet started (arrived), so a quick press is not taken for one this page knows nothing of
     if (sheetJoin !== null) {
-      const open = pressedAccountOpen(offer.server_id);
-      if (open === null) pair(); else void connect(open);
+      const go = (): void => { const open = pressedAccountOpen(offer.server_id); if (open === null) pair(); else void connect(open); };
+      const view = account.state;
+      if (account.enabled && (!accountRead || view?.kind === "signing-in" || (view?.kind === "signed-in" && view.pcs === null && view.error === null))) readAgain(offer, go);
+      else go();
       return;
     }
     if (asked.account === "checking") return;

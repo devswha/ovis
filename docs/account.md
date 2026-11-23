@@ -923,12 +923,15 @@ PC is marked new on them: it is never selected or opened by itself and no device
 its own. A launch only asks to join it, and a load or a reload of its own page (where a tap on its
 row in My PCs leads) only puts up its join sheet. The press on that sheet (**Ask to join**) signs in
 with this device's registered key first, as a load does once the 24 hours are over, so a PC that
-already let this device in from the account's list opens at once. When that is refused or cannot be
-tried (no key registered here, a PC that does not list this key or no longer admits it, one from
-before that way in), the same press sends the join request, with no second press, and the join's
-screens follow as before; a hold the PC answers is waited out, as for any such sign-in. The account
-service admits the PC before the PC is asked, so a press the PC then refuses (it restarted, was put
-in another account meanwhile, or was
+already let this device in from the account's list opens at once; a press made before the page has
+read the account's PCs waits for that read. When that is refused or cannot be tried (no key
+registered here, a PC that does not list this key or no longer admits it, one from before that way
+in), the same press sends the join request once, with no second press, and the join's screens
+follow as before; nothing tries the account's way again by itself. That join is the one a press
+sent before: the PC judges it as any other, so a key the account removed is never let back in, and
+a key the PC revoked comes back only when someone approves it on the PC's own window. A hold the PC
+answers is waited out, as for any such sign-in. The account service admits the PC before the PC is
+asked, so a press the PC then refuses (it restarted, was put in another account meanwhile, or was
 not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
 not in that account (in none, or in another one it joined meanwhile), and the page waits for the
 digits as before, and its notice says what to do if nobody added it. A PC bound this way leaves the
