@@ -21,7 +21,7 @@ pub fn fake_agent() -> PathBuf {
         .expect("target profile dir")
         .join("examples")
         .join(format!("fake_agent{}", std::env::consts::EXE_SUFFIX));
-    assert!(path.exists(), "{} is missing: `cargo test` builds it", path.display());
+    assert!(path.exists(), "{} is missing: plain `cargo test` builds it (`--test keeper` alone does not; `cargo build --examples` first)", path.display());
     path
 }
 
