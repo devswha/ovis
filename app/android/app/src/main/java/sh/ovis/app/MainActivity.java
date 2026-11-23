@@ -118,6 +118,9 @@ public class MainActivity extends BridgeActivity {
 
     private Integer barColor;
 
+    /** The page's own theme-color, painted on the bars once no cover is over the page (showOpening, hideOpening). */
+    private Integer pageBarColor;
+
     private View openingView;
 
     /**
@@ -399,9 +402,10 @@ public class MainActivity extends BridgeActivity {
         }
         super.onCreate(savedInstanceState);
         // behind every first page before it paints, the app's own page included (capacitor.config.json has one colour),
-        // and the bars' icons to suit it and the cover until the page gives its own theme-color
+        // and the bars to suit it until the page gives its own theme-color: after SystemBars, which sets its configured
+        // style in a task of its own
         bridge.getWebView().setBackgroundColor(getColor(R.color.ovis_page));
-        paintBars(getColor(R.color.ovis_page));
+        bridge.executeOnMainThread(() -> paintBars(barColor != null ? barColor : getColor(R.color.ovis_page)));
         // CapacitorCookies makes the WebView's cookies the process's CookieHandler, so the native
         // CapacitorHttp would carry them, an SSH PC's tunnel gate among them, for any page with the
         // bridge to any address; nothing in the app uses it, and the WebView keeps its own cookies
@@ -743,6 +747,8 @@ public class MainActivity extends BridgeActivity {
         cover.addView(stack, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
         addContentView(cover, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         openingView = cover;
+        // the bars take the cover's colour while it is up, whatever the page under it says (pageBarColor)
+        paintBars(getColor(R.color.ovis_page));
         openingSpinner = spinner;
         openingText = text;
         openingKeep = keep;
@@ -885,6 +891,7 @@ public class MainActivity extends BridgeActivity {
         if (openingView == null) return;
         ((ViewGroup) openingView.getParent()).removeView(openingView);
         openingView = null;
+        if (pageBarColor != null) paintBars(pageBarColor);
     }
 
     @Override
@@ -907,7 +914,8 @@ public class MainActivity extends BridgeActivity {
                     if (!isMainFrame || message.getData() == null) return;
                     String color = message.getData().trim();
                     if (!color.matches("#[0-9a-fA-F]{6}")) return;
-                    paintBars(Color.parseColor(color));
+                    pageBarColor = Color.parseColor(color);
+                    if (openingView == null) paintBars(pageBarColor);
                 }
             );
             WebViewCompat.addDocumentStartJavaScript(bridge.getWebView(), BAR_COLOR_SCRIPT, origins);

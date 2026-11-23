@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- the splash's background and its images', the app's dark start -->
-    <color name="ovis_background">#12100E</color>
+    <!-- the launch screen's background behind the app's icon (Android 12 and later), the page's colour below: the
+         start does not flash dark before a light first page -->
+    <color name="ovis_background">#FFFFFF</color>
     <!-- The hosted Connect a PC screen's colours (the Codex theme of src/styles.css, as app/web/shell.css copies them),
          light here and dark in values-night: behind the web view before a page paints, and on the native covers
          (MainActivity showOpening) -->
