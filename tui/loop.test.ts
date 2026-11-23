@@ -924,6 +924,64 @@ describe("the loop", () => {
     expect([channelOf(run, "t1"), run.core.size("t1"), framesOf(run, FRAME_RESIZE, sent).filter((frame) => frame.channel === channel)]).toEqual([channel, size, []]);
   }, TEST_MS);
 
+  it("zoom and unzoom route held bytes against the confirmed document, whichever comes first: doc event or write reply", async () => {
+    for (const unzoom of [false, true]) for (const eventFirst of [false, true]) {
+      const run = await start({ core: oneTab(2) });
+      await run.live();
+      await run.advance(1);
+      if (unzoom) {
+        // Remember t1, but show t2. Both terminals already have live attachments.
+        const root = { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } };
+        await run.loop.link.call("doc.set", { name: OVIS_LAYOUT_DOC, value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: "t2" }] }] }, version: 0 });
+        await run.settle();
+        expect(run.loop.panes.view("t1")?.covered).toBe(true);
+      } else await run.keys("ctrl+b,l"); // zoom t2
+      const answer = Promise.withResolvers<void>();
+      const call = run.loop.link.call.bind(run.loop.link);
+      run.loop.link.call = async (method, params, timeout) => {
+        const result = await call(method, params, timeout);
+        if (method === "doc.set") await answer.promise;
+        return result;
+      };
+      run.core.holdingEvents = !eventFirst;
+      run.type("\x02zabc");
+      await run.settle();
+      expect(run.loop.panes.view("t1")?.covered).toBe(eventFirst ? !unzoom : unzoom);
+      expect(received(run)).toEqual({});
+      answer.resolve();
+      await run.settle();
+      expect(run.loop.panes.view("t1")?.covered).toBe(!unzoom);
+      expect(received(run)).toEqual({ [unzoom ? "t1" : "t2"]: "616263" });
+      run.core.releaseEvents();
+      await settled(run);
+      expect(received(run)).toEqual({ [unzoom ? "t1" : "t2"]: "616263" });
+      await run.close();
+    }
+  }, TEST_MS);
+
+  it("a late zoom confirmation cannot replay expired bytes or release the next zoom's input", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    await run.advance(1);
+    const first = Promise.withResolvers<boolean>();
+    const second = Promise.withResolvers<boolean>();
+    const refresh = run.loop.link.refreshLayout.bind(run.loop.link);
+    run.loop.link.refreshLayout = () => first.promise;
+    run.type("\x02za");
+    await settled(run);
+    await run.advance(LAYOUT_SHOWN_WAIT_MS);
+    expect(run.loop.model().notices.map(({ code, data }) => [code, data["reason"]])).toContainEqual(["input_dropped", "not_shown"]);
+    run.loop.link.refreshLayout = () => second.promise;
+    run.type("\x02zb");
+    await run.settle();
+    first.resolve(true);
+    await run.settle();
+    expect(received(run)).toEqual({});
+    second.resolve(await refresh());
+    await run.settle();
+    expect(received(run)).toEqual({ t1: "62" });
+  }, TEST_MS);
+
   it("a size no emulator takes fails that pane alone: drawn as failed, no grid at the refused size, the other pane still typed into", async () => {
     const run = await start({ core: oneTab(2) });
     await run.live();

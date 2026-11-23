@@ -26,7 +26,7 @@ export type LayoutAnswer =
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null };
 
 /** What a layout write did that the screen is still to show: the terminals a close ended (none for any other write). */
-export interface LayoutDone { readonly ended: readonly string[]; readonly dropInput?: "layout_unknown" | "not_closed" }
+export interface LayoutDone { readonly ended: readonly string[]; readonly dropInput?: "layout_unknown" | "not_closed"; readonly refreshZoom?: true }
 
 const NOTHING_ENDED: LayoutDone = { ended: [] };
 
@@ -126,7 +126,12 @@ export class LayoutWrites {
     if (action === "rename_workspace") return () => store.rename({ workspace: id, name: effect.name ?? "" });
     if (action === "rename_tab") return () => store.rename({ tab: id, name: effect.name ?? "" });
     if (action === "rename_pane") return () => store.rename({ pane: id, name: effect.name || null });
-    if (action === "zoom") return async () => this.unchanged(action, await store.edit(zoomEdit(id, "toggle")));
+    if (action === "zoom") return async () => {
+      const result = await store.edit(zoomEdit(id, "toggle"));
+      if (result.changed) return { ended: [], refreshZoom: true };
+      this.unchanged(action, result);
+      return NOTHING_ENDED;
+    };
     if (Object.hasOwn(SWAPS, action)) return async () => this.unchanged(action, await store.edit(swapEdit(id, null, SWAPS[action]!)));
     if (Object.hasOwn(RESIZES, action)) return async () => this.unchanged(action, await store.edit(resizeEdit(id, RESIZES[action]!, RESIZE_STEP)));
     if (action === "move_tab_previous" || action === "move_tab_next") {
