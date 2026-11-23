@@ -396,7 +396,8 @@ While home is up (`Home.on`):
 Home is up only when its page is the hosted app's and has drawn: it carries `<meta name="ovis-shell">`
 (the released front page and the next both do) and its `#root` holds what the client rendered, no longer
 index.html's loading spinner. An empty 200 or another page of that origin never lifts the cover, so the
-clock runs on to the fallback. Only time in front counts against it (`Home.Clock`).
+clock runs on to the fallback. Only time in front counts against it (`Home.Clock`): nothing is added
+while the app is behind another, though its timer may run on there.
 
 Fallback: the flag `homeFailed` is set, in memory only, and the app's own page comes up in a new web
 view (the old one goes, so a load that finishes late cannot take the person off what they type). The page
@@ -404,8 +405,12 @@ reads `fallback` from `HerdrShell.getState` and shows one line, "Can't connect t
 Try again, which calls `HerdrShell.goHome`. Nothing else leads back to home by itself, so an offline phone
 stays on that page: the flag is cleared only by Try again, by a sign-in pressed there (below), or once a
 PC's page has loaded, after which the next Connect a PC tries home again. An app started again tries
-home. On iOS the app's own page is watched too: a web view that has not finished loading it within 6 s is
-built again (`Home.ownPageStalled`), so the page that stands in can never itself stay dark.
+home. On iOS, in a hosted-home build, the app's own page is watched too (`Home.ownPageCover`,
+`Home.ownPageStalled`): until the page answers that it is up, a native cover says "Opening Ovis…" with
+Try again once a second and a half has passed, and the web view is built again after 6 s, then 12, 24
+and 48, so the page that stands in can never itself be a dark screen with nothing on it. That was seen in
+a just-created simulator on a starved Mac: every web view committed its page and its content process
+then ran nothing more, home first and the app's own page after it, with the app's main thread idle.
 
 The hosted app's front page asked for by its address is an attempt at home, not a PC (`Home.homeStart`):
 the sign-in buttons and the saved Ovis row of the app's own page open `<hosted origin>/#sign-in=<provider>`
