@@ -301,7 +301,7 @@ export function startLoop(options: LoopOptions): Loop {
   let behindWrite: {
     readonly events: ModelEvent[];
     ahead: ModelState;
-    awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone }) & { readonly until: number } | null;
+    awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone } | { readonly kind: "zoom"; readonly read: AbortController }) & { readonly until: number } | null;
     bytes: number;
     full: boolean;
   } | null = null;
@@ -334,7 +334,7 @@ export function startLoop(options: LoopOptions): Loop {
       let refused = false;
       for (const effect of step.effects) {
         if (effect.type === "quit") {
-          behindWrite = null;
+          drop("detach", false);
           perform({ type: "quit" });
           return;
         }
@@ -383,13 +383,28 @@ export function startLoop(options: LoopOptions): Loop {
   function holdUntil(writing: Promise<LayoutDone>): void {
     behindWrite ??= { events: [], ahead: state, awaiting: null, bytes: 0, full: false };
     const before = state.following;
+    const line = link.state;
     void writing.then((done) => {
       guard(() => {
         if (behindWrite === null) return;
         const until = clock.now() + LAYOUT_SHOWN_WAIT_MS;
         if (!closedShown(done.ended)) behindWrite.awaiting = { kind: "gone", done, until };
         else if (done.dropInput) drop(done.dropInput);
-        else if (state.following !== null && state.following !== before) behindWrite.awaiting = { kind: "follow", following: state.following, until };
+        else if (done.refreshZoom) {
+          // An unzoom restores remembered focus. A doc.set reply alone cannot tell the model which pane to route to.
+          const wait = { kind: "zoom", read: new AbortController(), until } as const;
+          behindWrite.awaiting = wait;
+          const confirmed = (ok: boolean) => {
+            guard(() => {
+              if (behindWrite?.awaiting !== wait) return;
+              if (ok && line === link.state && clock.now() < until) release();
+              else drop("not_shown");
+            });
+            arm();
+          };
+          if (line !== link.state) confirmed(false);
+          else void link.refreshLayout(wait.read.signal).then(confirmed, () => confirmed(false));
+        } else if (state.following !== null && state.following !== before) behindWrite.awaiting = { kind: "follow", following: state.following, until };
         else release();
       });
       arm();
@@ -418,10 +433,11 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** What waited behind a write goes nowhere, with one notice saying so when anything did. */
-  function drop(reason: string): void {
+  function drop(reason: string, notify = true): void {
     const count = behindWrite?.events.length ?? 0;
+    if (behindWrite?.awaiting?.kind === "zoom") behindWrite.awaiting.read.abort();
     behindWrite = null;
-    if (count > 0) dispatch({ type: "notice", code: "input_dropped", data: { reason, events: count }, at: clock.now() });
+    if (notify && count > 0) dispatch({ type: "notice", code: "input_dropped", data: { reason, events: count }, at: clock.now() });
   }
 
   /** Once focus no longer waits for the pane a write made or moved: what waited goes there if focus landed on it, else nowhere. */
@@ -436,7 +452,7 @@ export function startLoop(options: LoopOptions): Loop {
     if (!awaiting) return;
     if (awaiting.kind === "follow") {
       if (state.following !== awaiting.following) followed(awaiting.following);
-    } else if (closedShown(awaiting.done.ended)) {
+    } else if (awaiting.kind === "gone" && closedShown(awaiting.done.ended)) {
       if (awaiting.done.dropInput) drop(awaiting.done.dropInput);
       else release();
     }
@@ -642,7 +658,7 @@ export function startLoop(options: LoopOptions): Loop {
       return;
     }
     // what a write did never showed in time: what waited for it is refused, not sent elsewhere
-    if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop(behindWrite.awaiting.kind === "follow" ? "not_shown" : behindWrite.awaiting.done.dropInput ?? "not_closed");
+    if (behindWrite?.awaiting && now >= behindWrite.awaiting.until) drop(behindWrite.awaiting.kind === "gone" ? behindWrite.awaiting.done.dropInput ?? "not_closed" : "not_shown");
     for (const event of framer.tick(now)) userInput(event);
     if (pasteAt !== null && now >= pasteAt) {
       pasteAt = null;
