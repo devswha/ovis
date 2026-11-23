@@ -15,7 +15,7 @@
  * So every card still has its keys: the hook is only how a Yes or No goes when it holds the very request on screen.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { settingsFile } from "./claude-settings-file.ts";
 import { entryCommand } from "./entries.ts";
@@ -24,11 +24,16 @@ import { jsonResponse } from "./http.ts";
 export type PermissionDecision = "allow" | "deny";
 
 export interface HeldPermission {
+  /** what a card built on this request carries in its id, so that its answer settles this request and no other */
+  id: string;
   command: string;
   description: string | null;
 }
 
-interface Pending extends HeldPermission {
+interface Pending {
+  nonce: string;
+  command: string;
+  description: string | null;
   at: number;
   settle: (decision: PermissionDecision | null) => void;
 }
@@ -42,7 +47,8 @@ const HELD_MS = 600_000;
 /** Under the shortest limit on a socket's path (104 bytes on macOS), with room for its terminating byte. */
 const SOCKET_PATH_MAX = 100;
 const PANES_MAX = 256;
-const COMMAND_MAX = 16_000;
+/** The most of a card's body the bridge and the card show (finishPrompt, promptWords). */
+const CARD_BODY_MAX = 12_000;
 
 /** A narrow pane wraps a command anywhere, and indents what it wraps. */
 const squeezed = (text: string): string => text.replace(/\s+/g, "");
@@ -51,6 +57,15 @@ const squeezed = (text: string): string => text.replace(/\s+/g, "");
 function shows(body: string, command: string): boolean {
   const start = squeezed(command).slice(0, 40);
   return start.length > 0 && squeezed(body).includes(start);
+}
+
+/** Computed from the command and words again at each answer: the card's answer settles a request only while it holds what the card showed. */
+const idOf = (entry: Pending): string =>
+  createHash("sha256").update(JSON.stringify([entry.nonce, entry.command, entry.description])).digest("hex").slice(0, 16);
+
+/** Yes allows and No declines; any other option of the dialog goes as its keys. */
+export function permissionDecision(label: string): PermissionDecision | null {
+  return label === "Yes" ? "allow" : /^No\b/.test(label) ? "deny" : null;
 }
 
 export class ClaudePermissionHooks {
@@ -75,6 +90,9 @@ export class ClaudePermissionHooks {
   private listen(): void {
     if (this.listener !== null) return;
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    // a folder that was there already is narrowed only when it is this account's own, never through a link
+    const folder = lstatSync(this.dir);
+    if (!folder.isDirectory() || folder.uid !== process.getuid?.()) throw new Error(`${this.dir} is not a folder of this account`);
     chmodSync(this.dir, 0o700);
     // a settings file names a token of an earlier run of this server, which nothing here answers any more, and the
     // socket of that run is in the way of this one's
@@ -178,14 +196,16 @@ export class ClaudePermissionHooks {
     // a Monitor command, or anything not a Bash command, is the terminal's: no decision
     if (input.hook_event_name !== "PermissionRequest" || input.tool_name !== "Bash" || typeof tool !== "object" || tool === null
       || typeof tool.command !== "string" || tool.command.trim() === "") return jsonResponse({});
-    const command = tool.command.slice(0, COMMAND_MAX);
-    const description = typeof tool.description === "string" && tool.description.trim() !== "" ? tool.description.slice(0, COMMAND_MAX) : null;
+    const command = tool.command;
+    const description = typeof tool.description === "string" && tool.description.trim() !== "" ? tool.description : null;
+    // a command the card could not show whole is the terminal's: a Yes allows only what the card showed
+    if (heldBody({ command, description }).length > CARD_BODY_MAX) return jsonResponse({});
     const decision = await new Promise<PermissionDecision | null>((resolve) => {
       const list = this.pending.get(paneId) ?? [];
       let timer: ReturnType<typeof setTimeout> | undefined;
       let done = false;
       const entry: Pending = {
-        command, description, at: this.now(),
+        nonce: randomBytes(16).toString("hex"), command, description, at: this.now(),
         settle: (decision) => {
           if (done) return;
           done = true;
@@ -213,33 +233,38 @@ export class ClaudePermissionHooks {
     });
   }
 
-  /** The one held request a Claude approval card with this text shows, or null when none or more than one does. */
-  private matching(paneId: string, body: string): Pending | null {
-    const found = (this.pending.get(paneId) ?? []).filter((entry) => shows(body, entry.command));
-    return found.length === 1 ? found[0]! : null;
+  private showing(paneId: string, approval: string | null): Pending[] {
+    return approval === null ? [] : (this.pending.get(paneId) ?? []).filter((entry) => shows(approval, entry.command));
   }
 
   /**
    * What a read of `paneId` found: the text of the Claude approval on its screen, or null for none. A held request
-   * the screen does not show (answered in the terminal, or by another dialog) is released; the one it shows is
-   * returned, for its card to show whole.
+   * the screen does not show (answered in the terminal, or by another dialog) is released. The one request it shows
+   * is returned, for its card to show whole. When it could be more than one, all of them stay held and none is
+   * returned: the card keeps the screen's text and its keys.
    */
   shown(paneId: string, approval: string | null): HeldPermission | null {
-    const held = approval === null ? null : this.matching(paneId, approval);
+    const showing = this.showing(paneId, approval);
     for (const entry of this.pending.get(paneId) ?? []) {
-      if (entry !== held && this.now() - entry.at >= GRACE_MS) entry.settle(null);
+      if (!showing.includes(entry) && this.now() - entry.at >= GRACE_MS) entry.settle(null);
     }
-    return held === null ? null : { command: held.command, description: held.description };
+    const held = showing.length === 1 ? showing[0]! : null;
+    return held === null ? null : { id: idOf(held), command: held.command, description: held.description };
   }
 
-  /**
-   * Answers the request the Claude approval card with this text shows, for the option labelled `label`: Yes allows,
-   * No declines. False when no one request is held for it, or for any other option (its keys answer it).
-   */
-  answer(paneId: string, approval: string, label: string): boolean {
-    const decision: PermissionDecision | null = label === "Yes" ? "allow" : /^No\b/.test(label) ? "deny" : null;
-    if (decision === null) return false;
-    const held = this.matching(paneId, approval);
+  /** The request a card built on `id` showed, while it is still held and still the one request the screen shows. */
+  private bound(paneId: string, approval: string, id: string): Pending | null {
+    const showing = this.showing(paneId, approval);
+    return showing.length === 1 && idOf(showing[0]!) === id ? showing[0]! : null;
+  }
+
+  holds(paneId: string, approval: string, id: string): boolean {
+    return this.bound(paneId, approval, id) !== null;
+  }
+
+  /** Answers the request a card built on `id` showed. False when that request is no longer bound to the card. */
+  answer(paneId: string, approval: string, id: string, decision: PermissionDecision): boolean {
+    const held = this.bound(paneId, approval, id);
     if (held === null) return false;
     held.settle(decision);
     return true;
@@ -259,6 +284,6 @@ export class ClaudePermissionHooks {
 const digest = (token: string): string => createHash("sha256").update(token).digest("hex");
 
 /** In the order Claude's dialog draws them. */
-export function heldBody(held: HeldPermission): string {
+export function heldBody(held: Pick<HeldPermission, "command" | "description">): string {
   return held.description === null ? held.command : `${held.description}\n${held.command}`;
 }

@@ -2,8 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ClaudePermissionHooks } from "./claude-permission-hook.ts";
 import { createServer } from "./index.ts";
 import { herdrRpc } from "./herdr/client.ts";
+import { handlePromptRequest } from "./prompt.ts";
 import { startFakePushService } from "./push.fake.ts";
 
 const root = mkdtempSync(join(tmpdir(), "ovis-prompt-"));
@@ -232,6 +234,62 @@ describe("answer buttons on a question's alert (#2916)", () => {
     } finally {
       alerting.stop();
       device.stop();
+    }
+  }, 30_000);
+});
+
+describe("a Claude command approval its PermissionRequest hook holds", () => {
+  it("answers only the held request its card showed, with no key, and a card read on the screen alone with keys", async () => {
+    writeFileSync(join(root, "approval.js"), APPROVAL);
+    const asked = await menu("hooked", [], ["Yes", "No"], false, "approval.js");
+    const holding: (() => void)[] = [];
+    const hooks = new ClaudePermissionHooks(join(root, "claude hooks"), { onHeld: () => holding.shift()?.() });
+    try {
+      const args = hooks.launchArgs(asked.pane, undefined)!;
+      const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1]!, "utf8")) as { hooks: { PermissionRequest: { hooks: { command: string; args: string[] }[] }[] } };
+      const hook = settings.hooks.PermissionRequest[0]!.hooks[0]!;
+      const held = new Promise<void>((resolve) => holding.push(resolve));
+      const relay = Bun.spawn([hook.command, ...hook.args], {
+        stdin: new Blob([JSON.stringify({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "pwd" } })]), stdout: "pipe",
+      });
+      await held;
+      const route = async (path: string, init?: RequestInit) => {
+        const url = new URL(path, "http://localhost");
+        return (await handlePromptRequest(new Request(url, init), url, { permissionHooks: hooks }))!;
+      };
+      const read = async (): Promise<{ id: string; body: string | null }> => {
+        for (let i = 0; i < 100; i++) {
+          const { prompt } = await (await route(`/api/pane/prompt?pane_id=${encodeURIComponent(asked.pane)}`)).json() as { prompt: { id: string; body: string | null } | null };
+          if (prompt) return prompt;
+          await Bun.sleep(50);
+        }
+        throw new Error("no card within 5s");
+      };
+      const post = async (promptId: string, optionIndex: number) => route("/api/pane/prompt/answer", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pane_id: asked.pane, prompt_id: promptId, option_index: optionIndex }),
+      });
+
+      const bound = await read();
+      expect(bound.body).toBe("pwd");
+      const [screenId, heldId] = bound.id.split(".");
+      expect(heldId).toMatch(/^[0-9a-f]{16}$/);
+      // an id naming a request other than the one held: refused, and nothing is sent
+      expect((await post(`${screenId}.${"0".repeat(16)}`, 0)).status).toBe(409);
+      expect((await post(bound.id, 0)).status).toBe(200);
+      expect(JSON.parse(await new Response(relay.stdout).text())).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+      expect((await post(bound.id, 0)).status).toBe(409);
+
+      // nothing held any more: the card is the screen's again (the same dialog still drawn is another asking), and its
+      // answer goes as keys
+      const plain = await read();
+      expect(plain.id).not.toContain(".");
+      expect(plain.body).toBe("pwd");
+      expect((await post(plain.id, 1)).status).toBe(200);
+      // the hook's Yes pressed no key: the dialog logged only the No that went as keys
+      expect(await confirmed(asked)).toEqual(["No"]);
+    } finally {
+      hooks.stop();
     }
   }, 30_000);
 });

@@ -18,7 +18,7 @@ import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
-import { heldBody, type ClaudePermissionHooks } from "./claude-permission-hook.ts";
+import { heldBody, permissionDecision, type ClaudePermissionHooks } from "./claude-permission-hook.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "./dialogs/registry.ts";
@@ -1322,15 +1322,24 @@ export interface PromptRequestOptions {
   beforeKey?: (paneId: string, agent: string, deadline: AbortSignal) => Promise<void>;
 }
 
+const approvalText = (prompt: InteractivePrompt | null): string | null =>
+  prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "claude-approval" ? prompt.body ?? "" : null;
+
 /**
  * A Claude command approval with the whole command its held hook request carries, where the screen may have cut it.
- * The read is also what tells the hooks the screen no longer shows a request, which releases it.
+ * Its id names that request, so that its Yes or No answers that request and no other (heldRequestOf). The read is
+ * also what tells the hooks the screen no longer shows a request, which releases it.
  */
 function withHeldPermission(paneId: string, agent: string, prompt: InteractivePrompt | null, hooks: ClaudePermissionHooks | undefined): InteractivePrompt | null {
   if (hooks === undefined || agent !== "claude") return prompt;
-  const approval = prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "claude-approval" ? prompt.body ?? "" : null;
-  const held = hooks.shown(paneId, approval);
-  return held === null || prompt === null ? prompt : { ...prompt, body: heldBody(held) };
+  const held = hooks.shown(paneId, approvalText(prompt));
+  return held === null || prompt === null ? prompt : { ...prompt, id: `${prompt.id}.${held.id}`, body: heldBody(held) };
+}
+
+/** The held request an answer's card was built on (withHeldPermission), or null for a card built on the screen alone. */
+function heldRequestOf(prompt: InteractivePrompt, promptId: string, agent: string, hooks: ClaudePermissionHooks | undefined): string | null {
+  return hooks !== undefined && agent === "claude" && approvalText(prompt) !== null && promptId.startsWith(`${prompt.id}.`)
+    ? promptId.slice(prompt.id.length + 1) : null;
 }
 
 /**
@@ -1513,8 +1522,12 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       const firstRead = await Promise.race([first, Bun.sleep(Math.max(0, deadlineAt - Date.now())).then(() => null)]);
       if (!firstRead || Date.now() > deadlineAt) return promptChanged();
       const { prompt, agent, pane, panes, inputUnverified } = firstRead;
-      // a plan card's id carries its plan file's revision: the file as it is now must match too
-      if (inputUnverified || !prompt || (await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)))!.id !== body.prompt_id) return promptChanged();
+      if (inputUnverified || !prompt) return promptChanged();
+      // a plan card's id carries its plan file's revision: the file as it is now must match too. A command approval's
+      // can carry the held hook request it showed: that request must still be held, and still the one on the screen
+      const heldId = heldRequestOf(prompt, body.prompt_id, agent, options.permissionHooks);
+      if (heldId !== null ? !options.permissionHooks!.holds(body.pane_id, approvalText(prompt)!, heldId)
+        : (await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)))!.id !== body.prompt_id) return promptChanged();
       log.matched = true;
       waitedOn = waitingKindOf(prompt) !== undefined;
 
@@ -1864,9 +1877,12 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         }
       }
 
-      // Yes or No on a Claude command approval whose request its hook holds goes as the hook's answer, with no key
-      if (parsedPrompt?.responder === "claude-approval" && body.option_index !== undefined && body.custom_text === undefined
-        && options.permissionHooks?.answer(body.pane_id, prompt.body ?? "", prompt.options[body.option_index]?.label ?? "")) {
+      // Yes or No on a card built on a held hook request is that request's answer, with no key
+      const decision = heldId === null || body.option_index === undefined || body.custom_text !== undefined ? null
+        : permissionDecision(prompt.options[body.option_index]?.label ?? "");
+      if (decision !== null && parsedPrompt?.responder === "claude-approval") {
+        // the request left since the read: no key either, as the dialog now on the screen may be another command's
+        if (!options.permissionHooks!.answer(body.pane_id, approvalText(prompt)!, heldId!, decision)) return promptChanged();
         delivered = true;
         askingEnded(body.pane_id);
         form.still = claudeStepStill(parsedPrompt);
