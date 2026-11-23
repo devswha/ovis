@@ -587,6 +587,27 @@ mod tests {
     }
 
     #[test]
+    fn growing_tool_results_stay_within_the_screen_bound() {
+        let mut model = Model::new("agent".into(), "/".into());
+        for n in 0..8 {
+            update(&mut model, "tool_call", json!({"toolCallId": format!("t{n}"), "rawInput": {"content": "r".repeat(200 * 1024)}}));
+        }
+        for n in 0..8 {
+            let content = json!([{"type": "content", "content": {"type": "text", "text": "x".repeat(200 * 1024)}}]);
+            update(&mut model, "tool_call_update", json!({"toolCallId": format!("t{n}"), "content": content}));
+        }
+        let kept: usize = model.entries.iter().map(Entry::bytes).sum();
+        assert!(kept <= super::KEEP_BYTES, "the screen keeps {kept} bytes of tool output");
+        let raw: usize = model
+            .entries
+            .iter()
+            .filter_map(|e| if let Entry::Tool(t) = e { t.raw_input.as_ref() } else { None })
+            .map(|v| v.to_string().len())
+            .sum();
+        assert!(kept + raw <= 2 * super::KEEP_BYTES, "the screen holds {raw} bytes of tool input on top");
+    }
+
+    #[test]
     fn keeps_a_bounded_tail_of_a_long_conversation() {
         let mut model = Model::new("agent".into(), "/".into());
         update(&mut model, "tool_call", json!({"toolCallId": "early", "title": "early tool"}));

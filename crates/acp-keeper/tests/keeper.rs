@@ -172,6 +172,8 @@ fn refuses_to_start_beside_a_live_keeper() {
     let session = client.session();
 
     let (mut second, stderr) = spawn(&root.0, &[]);
+    let _reap = Reap(vec![second.id() as i32]);
+    assert!(wait_gone(second.id() as i32), "a second keeper kept running on a live ROOT");
     let status = second.wait().expect("second keeper status");
     let said = std::fs::read_to_string(&stderr).unwrap_or_default();
     let _ = std::fs::remove_file(&stderr);
@@ -210,4 +212,53 @@ fn request_ids_of_different_clients_do_not_collide() {
     });
     assert!(release["msg"]["result"].is_object());
     assert_eq!(answers_to_one, 1, "the held prompt's late answer went to the second client as its id 1");
+}
+
+#[test]
+fn a_late_answer_never_reaches_a_later_approval() {
+    let root = Root::new("late");
+    let _keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    let ask = |client: &mut Client, id: u64| {
+        client.send(&prompt(id, &session, "ask"));
+        client.wait("an approval request", |r| r["dir"] == "from-agent" && method(r) == Some("session/request_permission"))
+    };
+    let first = ask(&mut client, 1);
+    let allow = json!({"jsonrpc": "2.0", "id": first["msg"]["id"], "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}});
+    client.send(&allow);
+    client.answer(json!(1));
+    let second = ask(&mut client, 2);
+    client.send(&allow);
+    let late = client.wait("the late answer's fate", |r| matches!(method(r), Some("_keeper/dropped" | "_keeper/resolved")));
+    assert_eq!(method(&late), Some("_keeper/dropped"), "an answer to the first approval resolved the second");
+    client.send(&json!({"jsonrpc": "2.0", "id": second["msg"]["id"], "result": {"outcome": {"outcome": "selected", "optionId": "reject"}}}));
+    client.wait("the agent's word on the second approval", |r| chunk_text(r) == Some("answered reject"));
+}
+
+#[test]
+fn the_last_lines_of_an_exiting_agent_are_archived() {
+    let root = Root::new("last-lines");
+    let mut keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, "quit"));
+    keeper.wait_exit();
+    let archive = std::fs::read_to_string(root.0.join("archive.jsonl")).expect("archive");
+    assert!(archive.contains(r#"\"text\":\"bye\""#), "the agent's last line is missing from the archive");
+}
+
+#[test]
+fn client_numbers_go_on_without_answers() {
+    let root = Root::new("numbers");
+    let mut first = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let before = client.number();
+    drop(client);
+    first.signal(libc::SIGTERM);
+    first.wait_exit();
+
+    let _second = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    assert!(client.number() > before, "the restarted keeper numbered its first client like the last run's");
 }

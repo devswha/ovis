@@ -503,5 +503,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(hub.model.models.as_ref().unwrap().current, "m2");
         assert_eq!(hub.model.modes.as_ref().unwrap().current, "code");
+        change(&mut hub, 7, "session/set_model", json!({"sessionId": "other", "modelId": "m1"}));
+        assert_eq!(hub.model.models.as_ref().unwrap().current, "m2", "another session's change moved this session's header");
     }
 }

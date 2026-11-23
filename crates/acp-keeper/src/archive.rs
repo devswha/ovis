@@ -407,6 +407,14 @@ mod tests {
     }
 
     #[test]
+    fn an_oversize_line_finds_an_escaped_key_and_a_long_id() {
+        let long = "i".repeat(5000);
+        let line = format!(r#"{{"jsonrpc":"2.0","method":"m","params":{{"t":"{}"}},"\u0069d":"{long}"}}"#, "z".repeat(100));
+        let framed = frame(40, format!("{line}\n").as_bytes());
+        assert!(matches!(&framed[0], Framed::Oversize { id: Some(id), request: true, .. } if id == &serde_json::json!(long)));
+    }
+
+    #[test]
     fn reopening_numbers_on_and_drops_a_torn_row() {
         let dir = std::env::temp_dir().join(format!("ak-unit-{}-reopen", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

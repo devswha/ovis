@@ -7,6 +7,7 @@
 //! - `helpers DIR`: starts a `sleep` in the agent's process group and one in a new session (as an
 //!   agent's broker does), writes `group PID` and `session PID` lines to DIR/helpers, ends the turn
 //! - `ask`: a `session/request_permission`; the turn ends with a chunk naming the answer
+//! - `quit`: one `agent_message_chunk` saying `bye`, then the agent exits without answering
 //! - `big N`: one `agent_message_chunk` line of exactly N bytes, then the end of the turn
 //!
 //! With `--linger` it stays alive after its stdin closes, as an agent busy elsewhere would.
@@ -111,6 +112,10 @@ fn main() {
                             }}),
                         );
                         continue;
+                    }
+                    "quit" => {
+                        send(&mut out, &chunk(&session, "bye"));
+                        std::process::exit(0);
                     }
                     "big" => {
                         let size: usize = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);

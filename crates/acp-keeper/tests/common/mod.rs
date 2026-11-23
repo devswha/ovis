@@ -189,7 +189,17 @@ impl Client {
     }
 
     /// The next archive row whose `msg` (its parsed `raw`) matches, reading past the others.
-    pub fn wait(&mut self, what: &str, mut matches: impl FnMut(&Value) -> bool) -> Value {
+    /// This client's number, from the watermark that follows the replayed rows.
+    pub fn number(&mut self) -> u64 {
+        self.read_until("the watermark", |_| false, true);
+        self.conn.expect("a client number")
+    }
+
+    pub fn wait(&mut self, what: &str, matches: impl FnMut(&Value) -> bool) -> Value {
+        self.read_until(what, matches, false).expect("a matching row")
+    }
+
+    fn read_until(&mut self, what: &str, mut matches: impl FnMut(&Value) -> bool, watermark: bool) -> Option<Value> {
         let deadline = Instant::now() + WAIT;
         let mut line = String::new();
         loop {
@@ -206,12 +216,15 @@ impl Client {
             let mut row: Value = serde_json::from_str(&line).expect("a JSON row");
             if row.get("through").is_some() {
                 self.conn = row.get("client").and_then(Value::as_u64);
+                if watermark {
+                    return None;
+                }
                 continue;
             }
             let msg: Value = row.get("raw").and_then(Value::as_str).and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or(Value::Null);
             row["msg"] = msg;
             if matches(&row) {
-                return row;
+                return Some(row);
             }
         }
     }
