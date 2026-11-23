@@ -28,7 +28,7 @@ import type { TuiThemeMode } from "./theme.generated.ts";
 import { buildChrome, sessionFromSocket } from "./view/chrome.ts";
 import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-view.ts";
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
-import type { Effect } from "./model/effects.ts";
+import type { Effect, MouseInput } from "./model/effects.ts";
 import { exists, focused } from "./model/focus.ts";
 import { type Following, initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
@@ -133,6 +133,8 @@ export function startLoop(options: LoopOptions): Loop {
   let hits: HitMap | null = null;
   let drawn = new Map<string, PanePicture>();
   let paintedLayout: Pick<PointerScene, "tab" | "splits"> = { tab: null, splits: [] };
+  let paintedOverlay: ModelState["overlays"][number] | undefined;
+  let overlayGeneration = 0;
   let shownKey = "";
   let paneFocus: string | null = null;
   let hello: HelloInfo | null = null;
@@ -299,7 +301,7 @@ export function startLoop(options: LoopOptions): Loop {
    * BEHIND_WRITE_EVENTS or BEHIND_WRITE_BYTES, and nothing more waits.
    */
   let behindWrite: {
-    readonly events: ModelEvent[];
+    readonly events: (ModelEvent | { type: "held_mouse"; input: MouseInput; matches: (scene: PointerScene) => boolean })[];
     ahead: ModelState;
     awaiting: ({ readonly kind: "follow"; readonly following: Following } | { readonly kind: "gone"; readonly done: LayoutDone } | { readonly kind: "zoom"; readonly read: AbortController }) & { readonly until: number } | null;
     bytes: number;
@@ -366,7 +368,15 @@ export function startLoop(options: LoopOptions): Loop {
       dispatch({ type: "notice", code: "input_dropped", data: { reason: "full" }, at: clock.now() });
       return;
     }
-    behindWrite.events.push(...pieces);
+    for (const piece of pieces) {
+      if (piece.type !== "mouse") behindWrite.events.push(piece);
+      else {
+        const matches = pointer.bind(piece, pointerScene());
+        const owner = overlayGeneration;
+        behindWrite.events.push({ type: "held_mouse", input: piece,
+          matches: (scene) => owner === overlayGeneration && paintedOverlay === state.overlays.at(-1) && matches(scene) });
+      }
+    }
     behindWrite.bytes += bytes;
   }
 
@@ -423,7 +433,10 @@ export function startLoop(options: LoopOptions): Loop {
     behindWrite = null;
     replaying = true;
     try {
-      for (const event of waited) userInput(event);
+      for (const event of waited) {
+        if (event.type === "held_mouse") dispatch(event.input, event.matches);
+        else userInput(event);
+      }
       // what came after the queue filled went nowhere, a focus loss or the key after a prefix among it: a prefix the
       // replay armed would take the next key typed as its own, so it returns to Idle
       if (full) dispatch({ type: "consumed", overlay: false, mode: false, at: clock.now() });
@@ -459,11 +472,11 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   /** One event through the state core, and its effects performed in order, now. */
-  function dispatch(event: ModelEvent): void {
+  function dispatch(event: ModelEvent, matches?: (scene: PointerScene) => boolean): void {
     const before = state;
     const step = reduce(state, event);
     state = step.state;
-    for (const effect of step.effects) perform(effect);
+    for (const effect of step.effects) perform(effect, matches);
     if (state !== before) {
       reshow();
       owePass();
@@ -471,7 +484,7 @@ export function startLoop(options: LoopOptions): Loop {
     onceShown();
   }
 
-  function perform(effect: Effect): void {
+  function perform(effect: Effect, matches?: (scene: PointerScene) => boolean): void {
     switch (effect.type) {
       case "pane":
         for (const step of pointer.typed(effect.pane, lookOf(effect.pane))) performPointer(step);
@@ -512,10 +525,13 @@ export function startLoop(options: LoopOptions): Loop {
         act("reload_keys");
         dispatch({ type: "keys", keys: options.readKeys ? options.readKeys() : options.keys, at: clock.now() });
         return;
-      case "mouse":
+      case "mouse": {
         act(`mouse:${effect.over}`);
-        for (const step of pointer.mouse(effect.over, effect.event, pointerScene())) performPointer(step);
+        const scene = pointerScene();
+        const acts = matches && !matches(scene) ? pointer.cancel(scene, effect.event.at) : pointer.mouse(effect.over, effect.event, scene);
+        for (const step of acts) performPointer(step);
         return;
+      }
       case "host_reply":
         return;
     }
@@ -683,6 +699,7 @@ export function startLoop(options: LoopOptions): Loop {
     const tab = focused(state.world, state.focus).tab;
     const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
     const nextLayout = { tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: frameShape.splits };
+    const nextOverlay = state.overlays.at(-1);
     passOwed = false;
     lastPass = now;
     passes++;
@@ -745,6 +762,10 @@ export function startLoop(options: LoopOptions): Loop {
     hits = frame.hits;
     drawn = nextDrawn;
     paintedLayout = nextLayout;
+    if (paintedOverlay !== nextOverlay) {
+      paintedOverlay = nextOverlay;
+      overlayGeneration++;
+    }
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
     const order = [...frameShape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
