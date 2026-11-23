@@ -14,7 +14,7 @@ import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KE
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
-import { entryKey, keptCursor, menuEntries } from "./menu.ts";
+import { entryKey, indexOfEntry, keptCursor, menuEntries } from "./menu.ts";
 import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -201,8 +201,14 @@ export function presentedMenu(state: ModelState, frame: Overlay | undefined, dis
   if (dismissed && state.menuDismissed && menu === frame) return { ...state, menuDismissed: false };
   // An arrow changes only the presented cursor. A stale choice or replacement menu changes its entry list.
   if (frame?.kind !== "menu" || menu?.kind !== "menu" || menu.presented?.entries !== frame.presented?.entries) return state;
-  if (frame.entries === menu.presented?.entries && frame.cursor === menu.presented?.cursor) return state;
-  return { ...state, overlays: [...state.overlays.slice(0, -1), { ...menu, presented: { entries: frame.entries, cursor: frame.cursor } }] };
+  let cursor = frame.cursor;
+  if (menu.presented !== frame.presented && menu.presented !== null) {
+    // Input during the write wins over the frame's earlier cursor, but never transfers to a replacement entry.
+    const moved = menu.presented.entries[menu.presented.cursor];
+    cursor = moved === undefined ? -1 : indexOfEntry(frame.entries, moved);
+  }
+  if (frame.entries === menu.presented?.entries && cursor === menu.presented?.cursor) return state;
+  return { ...state, overlays: [...state.overlays.slice(0, -1), { ...menu, presented: { entries: frame.entries, cursor } }] };
 }
 
 type Unit = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "paste"; readonly event: PasteInput };

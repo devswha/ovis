@@ -191,20 +191,42 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(run.loop.report().mode.overlays).toEqual(when === "before repaint" ? ["menu"] : []);
   }, TEST_MS);
 
-  it.each(["before repaint", "after repaint", "Down during repaint"])("6z goes to the pane labelled 6 on the screen: %s", async (ordering) => {
+  it.each([
+    ["before repaint", 0, "6z", "w-ovis"],
+    ["after repaint", 0, "6z", "w-ovis"],
+    ["Down during repaint", 1, "6z", "w-ovis"],
+    ["Enter after Down during repaint", 1, "\r", "w-docs"],
+    ["Enter on a shifted tab during repaint", 2, "\r", "w-ovis"],
+  ] as const)("menu choices use accepted labels and the latest cursor: %s", async (ordering, downs, keys, workspace) => {
     const run = await shown(120, 80);
     run.type("\x02\r");
     await run.advance(FRAME_PASS_MS);
     place(run.core, { space: "w-new", spaceName: "new", tab: "t-new", tabName: "new" }, "$ ");
     await run.settle();
     const repaint = ordering !== "before repaint";
-    if (ordering === "Down during repaint") run.host.duringNextWrite(() => run.type("\x1b[B"));
+    if (downs > 0) run.host.duringNextWrite(() => run.type("\x1b[B".repeat(downs)));
     if (repaint) await run.advance(FRAME_PASS_MS);
     const line = run.grid().find((row) => row.includes("6 · pane"));
     expect(line).toContain(repaint ? "shell" : "files");
-    run.type("6z");
+    run.type(keys);
     await run.advance(200);
-    expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(repaint ? ["7a", ""] : ["", "7a"]);
+    expect(run.loop.model().focus.workspace).toBe(workspace);
+    expect(["t1", "t2"].map((id) => run.core.program(id).receivedHex())).toEqual(keys === "\r" ? ["", ""] : repaint ? ["7a", ""] : ["", "7a"]);
+  }, TEST_MS);
+
+  it("Enter refuses a cursor moved during the write to an entry absent from the accepted frame", async () => {
+    const run = await shown(120, 80);
+    run.type("\x02\r");
+    await run.advance(FRAME_PASS_MS);
+    run.core.remove("t3");
+    await run.settle();
+    // The old list still has Logs at index 3; the accepted list has a pane at that index.
+    run.host.duringNextWrite(() => run.type("\x1b[B".repeat(3)));
+    await run.advance(FRAME_PASS_MS);
+    run.type("\r");
+    await run.settle();
+    expect(run.loop.report().mode.overlays).toEqual(["menu"]);
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-main");
   }, TEST_MS);
 
   it("the narrow header counts the agents that need the user elsewhere, and not the one it shows", async () => {
