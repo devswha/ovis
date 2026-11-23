@@ -31,6 +31,9 @@ async function run(command: string, extra: Record<string, string | undefined> = 
   return { out, err, exitCode };
 }
 
+/** Preloaded into each command and the Bun processes it starts: stops them at a real port (scripts/real-ports-guard.ts). */
+const GUARD = join(import.meta.dir, "real-ports-guard.ts");
+
 /** KEY=VALUE lines, as scripts/plugin.ts reads its settings files. */
 const settingsIn = (file: string): Record<string, string> => !existsSync(file) ? {} : Object.fromEntries(readFileSync(file, "utf8").split("\n")
   .map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#") && line.indexOf("=") > 0)
@@ -61,6 +64,8 @@ function launchEnv(extra: Record<string, string | undefined> = {}): Record<strin
   const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state") };
   for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "PORT", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
   if (!("PORT" in extra)) env["PORT"] = String(quietPort());
+  env["BUN_OPTIONS"] = `${process.env["BUN_OPTIONS"] ?? ""} --preload ${GUARD}`.trim();
+  env["OVIS_TEST_REAL_PORTS_LOG"] = join(scratch, "real-ports.log");
   Object.assign(env, extra);
   for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
   const port = portFor(env);
@@ -83,7 +88,11 @@ beforeEach(() => {
   chmodSync(herdr, 0o755);
 });
 
-afterEach(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => {
+  const reached = existsSync(join(scratch, "real-ports.log")) ? readFileSync(join(scratch, "real-ports.log"), "utf8") : "";
+  rmSync(scratch, { recursive: true, force: true });
+  expect(reached, "a command went for a port this PC's own Ovis may be on, and the guard stopped it").toBe("");
+});
 
 describe("the launch helper", () => {
   it("names a quiet port, and never one this PC's own Ovis may be on", () => {
@@ -101,6 +110,15 @@ describe("the launch helper", () => {
     mkdirSync(join(scratch, ".config", "ovis"), { recursive: true });
     writeFileSync(join(scratch, ".config", "ovis", "plugin-port"), "7317\n");
     expect(() => launchEnv({ PORT: undefined })).toThrow("PORT=7317");
+  });
+
+  it("stops a command, and the Bun processes it starts, at a port this PC's own Ovis may be on", () => {
+    const env = launchEnv();
+    const script = `const child = Bun.spawnSync([process.execPath, "-e", "Bun.serve({ hostname: '127.0.0.1', port: 7317, fetch: () => new Response() })"]); process.exit(child.exitCode);`;
+    const tried = Bun.spawnSync(["bun", "-e", script], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
+    expect(tried.exitCode).not.toBe(0);
+    expect(readFileSync(env["OVIS_TEST_REAL_PORTS_LOG"]!, "utf8")).toContain("serving on port 7317");
+    rmSync(env["OVIS_TEST_REAL_PORTS_LOG"]!);
   });
 });
 

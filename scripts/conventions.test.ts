@@ -210,7 +210,7 @@ describe("fixed sleeps", () => {
  * something the run made (a mkdtemp directory, a randomUUID tag, its own pid), not a fixed string or an id herdr gave
  * out, which another session's pane has too.
  */
-const KILLS_BY_NAME = /\b(?:pkill|killall)\b|\bpgrep\b(?=[^\n]*?["'\s]-[a-zA-Z]*f[a-zA-Z]*\b)/g;
+const KILLS_BY_NAME = /\b(pkill|killall|pgrep)\b/g;
 /** They run these commands only inside a container they start. */
 const IN_A_CONTAINER = ["scripts/fresh-install-docker.ts", "scripts/join/join.contract.test.ts"];
 
@@ -225,27 +225,33 @@ function namesIn(argument: string, shell: boolean): string[] {
 }
 
 /**
- * The lines that find or end processes by a name the run did not make. The name is the command's last argument that is no
- * option (`-f`, `-KILL`, `-${signal}`); a command scoped to a parent the run names (`pgrep -P <pid>`) passes too.
+ * The lines that find or end processes by a name the run did not make (`pgrep` only with `-f`). The name is the command's
+ * last argument that is no option (`-f`, `-KILL`, `-${signal}`); a command scoped to a parent the run names
+ * (`pgrep -P <pid>`) passes too.
  */
 function killsByName(file: string, text: string): string[] {
   const code = file.endsWith(".sh") ? text.replace(/(^|\s)#.*$/gm, "$1") : stripComments(text);
-  return code.split("\n").flatMap((line, index) => [...line.matchAll(KILLS_BY_NAME)].flatMap(({ index: at }) => {
-    const after = line.slice(at).replace(/^\w+/, "");
-    // `["pkill", "-f", tag]` is an argument list; anything else (a .sh line, a command in a string) is a shell's
-    const shell = !(/["']$/.test(line.slice(0, at)) && /^["']/.test(after));
+  return [...code.matchAll(KILLS_BY_NAME)].flatMap(({ index: at, 1: command }) => {
+    const after = code.slice(at + command!.length);
+    // `["pkill", "-f", tag]` is an argument list, which may go on over lines; anything else (a .sh line, a command in a
+    // string) is a shell's, which ends with its line
+    const list = /["']$/.test(code.slice(0, at)) && /^["']/.test(after);
+    const shell = !list;
     const args: string[] = [];
-    for (const [token] of after.replace(/^["']/, "").matchAll(ARGUMENT)) {
+    for (const [token] of (list ? after.slice(1) : after.slice(0, (after + "\n").indexOf("\n"))).matchAll(ARGUMENT)) {
       if (/^(?:\|\||&&|[)\];|<>])$/.test(token)) {
         if (token === ">" && /^\d$/.test(args.at(-1) ?? "")) args.pop();
         break;
       }
       args.push(token);
     }
+    if (command === "pgrep" && !args.some((arg) => /^-[a-zA-Z]*f[a-zA-Z]*$/.test(unquoted(arg)))) return [];
     const scoped = args.some((arg, i) => unquoted(arg) === "-P" && namesIn(args[i + 1] ?? "", shell).length > 0);
     const names = namesIn(args.filter((arg) => !unquoted(arg).startsWith("-")).at(-1) ?? "", shell);
-    return scoped || (names.length > 0 && !names.some((name) => /terminal|pane/i.test(name))) ? [] : [`${file}:${index + 1}: ${line.trim()}`];
-  })).filter((offender, at, all) => all.indexOf(offender) === at);
+    if (scoped || (names.length > 0 && !names.some((name) => /terminal|pane/i.test(name)))) return [];
+    const line = lineOf(code, at);
+    return [`${file}:${line}: ${text.split("\n")[line - 1]!.trim()}`];
+  }).filter((offender, at, all) => all.indexOf(offender) === at);
 }
 
 describe("killing by name", () => {
@@ -274,6 +280,8 @@ describe("killing by name", () => {
     expect(found("await m.sh(`pkill -f ${tag}-x; pkill -f server/index.ts`);")).toBe(1);
     expect(found("Bun.spawn([\"pkill\", `-${name}`, \"-f\", s.log]);")).toBe(0);
     expect(found("Bun.spawnSync([\"sudo\", \"-n\", \"pkill\", \"-u\", username]);")).toBe(0);
+    expect(found("Bun.spawnSync([\n  \"pgrep\",\n  \"-f\",\n  \"server/index.ts\",\n]);")).toBe(1);
+    expect(found("Bun.spawnSync([\n  \"pkill\",\n  \"-f\",\n  tag,\n]);")).toBe(0);
     expect(found("Bun.spawnSync([\"pgrep\", \"-f\", tag]);")).toBe(0);
     expect(found("spawnSync(\"pkill\", [\"-KILL\", \"-f\", tempDir]);")).toBe(0);
     expect(found("pkill -f \"$r/remote.sh\" || true", "example.sh")).toBe(0);
