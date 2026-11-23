@@ -56,17 +56,18 @@ export interface RelayTabPc { readonly server_id: string; readonly name?: string
  * is off, and any other account PC is on, whether or not this phone is let into it yet (its own page asks for that), as
  * is a pairing of this phone's that the directory lists (one it does not list, it says nothing of). One
  * that turned this phone away as removed (`removed`, shellState removedPcs) says so, never on, until this phone opens it
- * again, and is left out once forgotten from the list. `known`: with the account unread now (no internet), the account's
- * PCs it listed last (knownPcs), by name with no state word, each that is not listed already.
+ * again, and is left out once forgotten from the list. While the account cannot be read now (`unread`: no internet, or
+ * the account service down), its word is no longer said: a PC is on or off only by this device's own check. `known`:
+ * then, the account's PCs it listed last (knownPcs), with no state word, each that is not listed already.
  */
-export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[] | null, removed: Readonly<Record<string, RemovedPcMark>> = {}, checked: ReadonlyMap<string, CheckedPc> = new Map(), known: readonly KnownPc[] = []): RelayTabPc[] {
+export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[] | null, removed: Readonly<Record<string, RemovedPcMark>> = {}, checked: ReadonlyMap<string, CheckedPc> = new Map(), { known = [], unread = false }: { readonly known?: readonly KnownPc[] | undefined; readonly unread?: boolean } = {}): RelayTabPc[] {
   const listed = new Map((account ?? []).map((pc) => [pc.server_id, pc]));
   const own = devices.map((device): RelayTabPc => {
     const row = listed.get(device.server_id);
-    return { server_id: device.server_id, name: device.name, status: device.status ?? (row?.state === "needs-update" ? "update" : row?.state === "offline" ? "off" : row?.listed ? "online" : undefined), saved: true };
+    return { server_id: device.server_id, name: device.name, status: device.status ?? (row?.state === "needs-update" ? "update" : unread ? undefined : row?.state === "offline" ? "off" : row?.listed ? "online" : undefined), saved: true };
   });
   const more = (account ?? []).filter((pc) => !pc.paired && pc.join !== undefined && !own.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
-    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : checked.get(pc.server_id) ?? (pc.state === "offline" ? "off" : "online"), saved: false }));
+    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : checked.get(pc.server_id) ?? (unread ? undefined : pc.state === "offline" ? "off" : "online"), saved: false }));
   const rows = [...own, ...more];
   const kept = known.filter((pc) => !rows.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
     .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : undefined, saved: false }));
@@ -91,6 +92,8 @@ interface PhonePc {
   readonly onLink?: (event: { preventDefault(): void }) => void;
   readonly open?: () => void;
   readonly forget?: (() => void) | undefined;
+  /** why a row has no Forget here, said in Forget PCs: an account PC (removed in Manage account), an SSH PC (with its keys, not here) */
+  readonly kept?: "account" | "ssh" | undefined;
   readonly data?: Readonly<Record<string, string>>;
 }
 
@@ -117,11 +120,13 @@ function PcRow({ pc, editing = false, asking = false, onAsk, onKeep }: { readonl
     </>
   );
   const forget = editing ? pc.forget : undefined;
+  const kept = editing && forget === undefined ? pc.kept : undefined;
   return (
     <li className="my-pc" data-pc-way={pc.way} {...pc.data}>
       {editing ? <div className="relay-add-saved-pc is-editing">{inside}</div>
         : pc.href !== undefined ? <a className="relay-add-saved-pc" href={pc.href} onClick={pc.onLink}>{inside}</a>
         : <button type="button" className="relay-add-saved-pc" onClick={pc.open}>{inside}</button>}
+      {kept !== undefined && <p className="my-pc-kept" data-kept={kept}>{kept === "account" ? `${t("Account PC")} · ${t("Remove it in Manage account")}` : `${t("SSH PC")} · ${t("Not removed here")}`}</p>}
       {forget && <button type="button" className="btn btn-ghost phone-pc-forget" data-action="forget-pc" aria-label={t("Forget {name}", { name: pc.name })} aria-expanded={pc.word === "in-use" ? asking : undefined} onClick={pc.word === "in-use" ? onAsk : forget}>{t("Forget|this phone's PC")}</button>}
       {forget && asking && (
         <div className="my-pc-ask" role="group" aria-label={pc.name} data-forget-ask="">
@@ -251,12 +256,14 @@ function isCurrent(saved: string, current: CurrentPc | null): boolean {
  * chips. `top`: what the screen says above the list (notices, a PC not answering); `empty`: what it says with nothing
  * listed. Add PC (`onAdd`, none beside the panel on a wide screen) stays at the bottom while the list scrolls.
  */
-export function MyPcs({ devices, accountPcs = null, knownPcs, checked, phone, onForget, inUse = null, onBack, onAdd, focusAdd = 0, accountMenu = false, top, empty, wide = false, hidden = false }: {
+export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = false, checked, phone, onForget, inUse = null, onBack, onAdd, focusAdd = 0, accountMenu = false, top, empty, wide = false, hidden = false }: {
   readonly devices: readonly SavedPc[];
   /** signed in, the account's PCs, which the list adds to this phone's own pairings (relayTabPcs) */
   readonly accountPcs?: readonly MyPc[] | null;
   /** the account unread now: the account's PCs it listed last (relayTabPcs) */
   readonly knownPcs?: readonly KnownPc[] | undefined;
+  /** the account's last read failed: no row says on or off by its word (relayTabPcs) */
+  readonly accountUnread?: boolean;
   /** what this device's own checks settled of the account's PCs (relayTabPcs) */
   readonly checked?: ReadonlyMap<string, CheckedPc>;
   /** counts the times Add a PC's Back, the control with the focus, came back here: each gives Add PC the focus again */
@@ -313,15 +320,17 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, checked, phone, on
     ...(isCurrent(pc.origin, current) ? { word: "in-use" as const } : {}),
     open: isCurrent(pc.origin, current) && goBack ? goBack : () => open.take(new URL(pc.origin), { askTailscale: pc.way === "tailscale" }),
     forget: pc.way === "ssh" ? undefined : forgetSaved(pc),
+    ...(pc.way === "ssh" ? { kept: "ssh" as const } : {}),
   });
   const rows: PhonePc[] = [
-    ...relayTabPcs(devices, accountPcs, removed, checked, knownPcs).map((pc): PhonePc => {
+    ...relayTabPcs(devices, accountPcs, removed, checked, { known: knownPcs, unread: accountUnread }).map((pc): PhonePc => {
       const used = pc.server_id === inUse || (current !== null && "serverId" in current && current.serverId === pc.server_id);
       return {
         key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
         word: used ? "in-use" : pc.status,
         forget: pc.status === "removed" ? () => { markRemovedPc(pc.server_id, "hidden"); setRemoved(removedPcs()); }
           : pc.saved && onForget ? () => onForget(pc.server_id) : undefined,
+        ...(pc.saved || pc.status === "removed" ? {} : { kept: "account" as const }),
       };
     }),
     ...phone.pcs.filter((pc) => pc.way === "tailscale").map(fromPhone),

@@ -308,7 +308,7 @@ export function RelayShell(props: RelayShellProps) {
   const frontView = (top: ReactNode, accountMenu = false): ReactNode => (
     <div className={desk ? "connect-panes connect-desk" : "connect-panes"}>
       {listed && (
-        <MyPcs key="list" hidden={addOver} devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} knownPcs={account?.kind === "signed-in" ? account.known : undefined} checked={checked} phone={phone} onForget={props.onForgetSaved} wide={desk} focusAdd={listFocus}
+        <MyPcs key="list" hidden={addOver} devices={savedPcs} accountPcs={account?.kind === "signed-in" ? account.pcs : null} knownPcs={account?.kind === "signed-in" ? account.known : undefined} accountUnread={account?.kind === "signed-in" && account.error !== null} checked={checked} phone={phone} onForget={props.onForgetSaved} wide={desk} focusAdd={listFocus}
           inUse={addOpen && addFrom !== null ? serverIdOfPath(addFrom) : null} onBack={addOpen ? () => { setAddOpen(false); leaveAddEntry(addFrom); } : undefined}
           onAdd={desk ? undefined : () => { setAddView(true); setAddFocus((count) => count + 1); }} accountMenu={accountMenu} top={top}
           empty={account?.kind === "signed-in" && account.pcs !== null ? <p className="relay-shell-copy">{t("Sign in with the same account on the PC where Ovis runs")}</p> : undefined} />

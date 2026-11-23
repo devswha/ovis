@@ -5164,7 +5164,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the list scrolls, as the Claude app keeps New chat in reach over its list. No row carries Forget: the ⋮ menu (there whenever a row can be
   forgotten, signed in or not) has Forget PCs, after which each row this phone can forget shows Forget in its chevron's
   place and no row opens, until Done in Add PC's place; Forget on the PC in use asks once more in the row (This is the
-  PC in use now. Forget it?). With no PC on it is the same
+  PC in use now. Forget it?). A row this screen cannot forget says why in grey under it instead of showing nothing: an
+  account PC this device has no pairing for (Account PC · Remove it in Manage account; no way to remove it is added
+  here) and an SSH PC, which goes with its keys from the app's own screen only (SSH PC · Not removed here). With no PC on it is the same
   list, the rows Off under No PC is online and Check again; with none in the account yet, the list says to sign in with
   the same account on the PC where Ovis runs, over Add PC (#16 drew both as a page of their own). On a screen 1024 px
   wide or more the two stand side by side: My PCs on the left and Add a PC always open on the right in a panel, each
@@ -5193,7 +5195,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   counts), My PCs says so in one line with Try again (this phone in the app, this device in a browser), in place of No
   PC is online and the account service's failure, as Slack and WhatsApp say it over a list they keep; it still lists
   every PC this device knows, the account's ones from its last read that answered (kept on the device for that account
-  by id and name, with no state word, and dropped at sign-out); a row tapped then says to connect first instead of
+  by id and name, with no state word, and dropped at sign-out; while the account cannot be read, offline or not, no row
+  says On or Off by the account's word, only by this device's own check); a row tapped then says to connect first instead of
   trying the PC; and once the network is back the screen reads the account, the app's PCs and their checks again by
   itself. Add PC (and Connect a PC, the
   same screen as the front page) is the desktop's Add a connection tabs holding only the ways in: the sign-in signed out

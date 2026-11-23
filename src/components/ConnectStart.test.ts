@@ -49,9 +49,15 @@ describe("the relay PCs of My PCs", () => {
 
   it("lists the account's PCs it listed last when the account cannot be read now, by name with no state, each once", () => {
     const known = [{ server_id: id("a"), name: "desk" }, { server_id: id("b"), name: "mac" }, { server_id: id("c"), name: "nuc" }, { server_id: id("d"), name: "lab" }];
-    const rows = relayTabPcs([{ server_id: id("a"), name: "desk" }], [accountPc("b")], { [id("c")]: "hidden", [id("d")]: "removed" }, new Map(), known);
+    const rows = relayTabPcs([{ server_id: id("a"), name: "desk" }], [accountPc("b")], { [id("c")]: "hidden", [id("d")]: "removed" }, new Map(), { known });
     // desk is this phone's own pairing and mac is in the account's word read now: neither twice; nuc was forgotten here
     expect(rows.map((row) => [row.name, row.status ?? "", row.saved])).toEqual([["desk", "", true], ["pc-b", "online", false], ["lab", "removed", false]]);
+  });
+
+  it("claims no PC is on or off from the account's word while the account cannot be read: only this device's own checks, and an update it saw", () => {
+    const account = [accountPc("a", { paired: true }), accountPc("b"), accountPc("c", { state: "offline" }), accountPc("d", { state: "needs-update" }), accountPc("e")];
+    const rows = relayTabPcs([{ server_id: id("a"), name: "desk" }], account, {}, new Map([[id("e"), "online"]]), { unread: true });
+    expect(rows.map((row) => [row.name, row.status ?? ""])).toEqual([["desk", ""], ["pc-b", ""], ["pc-c", ""], ["pc-d", "update"], ["pc-e", "online"]]);
   });
 
   it("lists none of the account's PCs signed out, nor one it cannot open", () => {

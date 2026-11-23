@@ -276,6 +276,16 @@
   text-align: start;
 }
 
+/* Forget PCs: why a row has no Forget, in grey under it, the whole row wide: what the PC is, and where it goes, if anywhere */
+.my-pc > .my-pc-kept {
+  grid-column: 1 / -1;
+  margin: calc(-1 * var(--space-2)) 0 0;
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  text-align: start;
+}
+
 .my-pc > .phone-pc-forget {
   grid-column: 2;
   height: var(--touch-target);

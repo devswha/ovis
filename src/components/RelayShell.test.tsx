@@ -1684,6 +1684,30 @@ describe("the hosted front page", () => {
       });
     });
 
+    it("says, in Forget PCs, why a row has no Forget: an account PC goes in Manage account, an SSH PC not here", async () => {
+      await withApp(async () => {
+        app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
+          method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net", "http://127.0.0.1:41234"], names: { "http://127.0.0.1:41234": "lab-linux" } } : {});
+        const mac = pc(ids.mac, "hasang-uui-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: [mac] } }), scoped: false, onSignIn: none });
+        const reasons = () => renderer!.root.findAll((node) => node.props["data-kept"] !== undefined && shown(node)).map((node) => [node.props["data-kept"], textOf(node)]);
+        expect(reasons()).toEqual([]);
+        await forgetPcs();
+        expect(forgets().map((node) => node.props["aria-label"])).toEqual(["Forget desk"]);
+        expect(reasons()).toEqual([["account", "Account PC · Remove it in Manage account"], ["ssh", "SSH PC · Not removed here"]]);
+      });
+    });
+
+    it("claims no account PC is on while the account cannot be read", async () => {
+      const mac = pc(ids.mac, "hasang-uui-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
+      const page = (error: string | null) => ({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error, pcs: [mac] } }), scoped: false, onSignIn: none });
+      await mount(page(null));
+      expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelayOn"]]);
+      await act(async () => { renderer!.unmount(); });
+      await mount(page("The account service could not be reached. The PCs this device is paired with still work."));
+      expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay"]]);
+    });
+
     it("offers Forget PCs in the signed-in menu too", async () => {
       await mount({ ...signedIn(four()), onForgetSaved: none });
       await forgetPcs();
