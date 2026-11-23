@@ -9,8 +9,8 @@ import type { KeyInput, PasteInput, RunEffect, Seen, TextInput } from "./effects
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
 
-/** A one-line text field of graphemes. `fresh`: still the suggested text, replaced by the first character typed. */
-export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly fresh: boolean; readonly original: string }
+/** `fresh`: typing replaces the suggestion. Moving the cursor clears `fresh` without editing the name. */
+export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly fresh: boolean; readonly edited: boolean; readonly original: string }
 
 export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab";
 
@@ -55,7 +55,7 @@ function firstCodePoints(text: string, count: number): string {
 
 export function field(text: string): Field {
   const all = graphemes(firstCodePoints(text, TEXT_FIELD_MAX_CODE_POINTS)).slice(0, TEXT_FIELD_MAX_GRAPHEMES);
-  return { graphemes: all, cursor: all.length, fresh: all.length > 0, original: text };
+  return { graphemes: all, cursor: all.length, fresh: all.length > 0, edited: false, original: text };
 }
 
 /** `text` typed or pasted at the cursor: line breaks, tabs and other control characters become spaces. */
@@ -72,7 +72,8 @@ function insert(current: Field, text: string): Field {
   // points past it are refused, as when they are read one at a time (a text run reaches a field one code point at a time)
   const points = TEXT_FIELD_MAX_CODE_POINTS - codePoints(head.join("")) - codePoints(before) - codePoints(tail.join(""));
   const added = graphemes(before + firstCodePoints(text, Math.max(0, points)).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")).slice(0, Math.max(0, room));
-  return { ...base, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length, fresh: false };
+  if (!current.fresh && added.join("") === before) return current; // nothing fit
+  return { ...base, graphemes: [...head, ...added, ...tail], cursor: head.length + added.length, fresh: false, edited: true };
 }
 
 function wordStart(chars: readonly string[], from: number): number {
@@ -98,7 +99,8 @@ function edit(current: Field, event: KeyInput): Field | null {
   const chars = current.graphemes;
   const at = current.cursor;
   const moved = (cursor: number): Field => ({ ...current, cursor: Math.max(0, Math.min(chars.length, cursor)), fresh: false });
-  const cut = (from: number, to: number, cursor: number): Field => ({ ...current, graphemes: [...chars.slice(0, from), ...chars.slice(to)], cursor, fresh: false });
+  const cut = (from: number, to: number, cursor: number): Field => from >= Math.min(to, chars.length) ? moved(cursor)
+    : { ...current, graphemes: [...chars.slice(0, from), ...chars.slice(to)], cursor, fresh: false, edited: true };
   if (event.key === "ARROW_LEFT" || (ctrl && letter === "b")) return moved(at - 1);
   if (event.key === "ARROW_RIGHT" || (ctrl && letter === "f")) return moved(at + 1);
   if (event.key === "HOME" || (ctrl && letter === "a")) return moved(0);
@@ -111,7 +113,7 @@ function edit(current: Field, event: KeyInput): Field | null {
   if (ctrl && letter === "k") return cut(at, chars.length, at);
   if (ctrl && letter === "w") return cut(wordStart(chars, at), at, wordStart(chars, at));
   if (alt && letter === "d") return cut(at, wordEnd(chars, at), at);
-  if (ctrl && letter === "c") return { ...current, graphemes: [], cursor: 0, fresh: false };
+  if (ctrl && letter === "c") return cut(0, chars.length, 0);
   return null;
 }
 
@@ -159,8 +161,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
       if (overlay.purpose === "new_tab") return { overlay: null, effects: [run("new_tab", overlay.target, name)] };
       // herdr sends a rename only when the name changed; a name past the field's bounds shows cut, and that cut value
       // accepted as shown is no change either: Enter never shortens a name nobody edited
-      const { original } = overlay.field;
-      const unchanged = name === original || name === field(original).graphemes.join("");
+      const unchanged = !overlay.field.edited || name === overlay.field.original;
       return { overlay: null, effects: unchanged ? [] : [run(overlay.purpose, overlay.target, name)] };
     }),
   },

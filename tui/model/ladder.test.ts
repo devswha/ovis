@@ -4,7 +4,7 @@ import { Framer } from "../input/framer.ts";
 import type { Effect } from "./effects.ts";
 import type { World } from "./focus.ts";
 import { modeBar } from "./hints.ts";
-import { TEXT_FIELD_MAX_CODE_POINTS } from "./deadlines.ts";
+import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import { OVERLAYS } from "./overlays.ts";
 import { initialState, type Level, type ModelEvent, type ModelState, reduce, type Step } from "./reduce.ts";
 
@@ -252,6 +252,24 @@ describe("hangul once", () => {
     expect([kept.effects, kept.state.overlays]).toEqual([[], []]);
     const edited = enter(after(renaming, text("x")));
     expect(edited.effects).toEqual([{ type: "run", action: "rename_pane", target: { kind: "pane", id: "p1" }, index: null, name: "x" }]);
+  });
+
+  it("renames to the displayed prefix only when the user edits the field", () => {
+    const prefixName = "x".repeat(TEXT_FIELD_MAX_GRAPHEMES);
+    const rename = (name: string, ...events: ModelEvent[]) => {
+      const workspace = { ...WORLD.workspaces[0]!, name };
+      const state = after(idle, { type: "world", world: { workspaces: [workspace] }, at: 0 });
+      const open = after(state, { type: "action", action: "rename_workspace", at: AT });
+      return reduce(after(open, ...events), named("ENTER")).effects;
+    };
+    const long = `${prefixName}y`;
+    const expected: Effect[] = [{ type: "run", action: "rename_workspace", target: { kind: "workspace", id: "w1" }, index: null, name: prefixName }];
+    expect(rename(long)).toEqual([]);
+    expect(rename(long, named("HOME"), named("END"))).toEqual([]);
+    expect(rename(long, named("END"), named("DELETE"), text("z"))).toEqual([]); // no deletion and no room
+    expect(rename(long, paste(prefixName))).toEqual(expected);
+    expect(rename(long, named("END"), named("BACKSPACE"), text("x"))).toEqual(expected);
+    expect(rename(prefixName, paste(prefixName))).toEqual([]); // explicitly replaced, but identical to the stored name
   });
 });
 
