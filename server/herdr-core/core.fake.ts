@@ -42,7 +42,7 @@
 
 import { createServer, type Socket } from "node:net";
 import { AUTOMATIC_INPUT_FEATURE, encodeFrame, type Frame, FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_FACTS, FRAME_FOCUS, FRAME_RESIZE, type HcTransport, makeFrameReader } from "./connection.ts";
-import type { AttachResult, CoreInfo, DocGetParams, DocSetParams, EventsSubscribeParams, HcMethod, HcMethods, MachineView, Terminal, TerminalAttachParams, TerminalLabelParams, TerminalListParams, TerminalRunParams } from "./hc-api.generated.ts";
+import type { AttachResult, CoreInfo, DocGetParams, DocSetParams, EventsSubscribeParams, HcMethod, HcMethods, MachineView, Status, Terminal, TerminalAttachParams, TerminalLabelParams, TerminalListParams, TerminalRunParams } from "./hc-api.generated.ts";
 
 /** where a terminal nobody views runs */
 export const HEADLESS = { cols: 200, rows: 120 } as const;
@@ -468,7 +468,30 @@ export class FakeHcCore {
     this.notify((filter) => this.hears(filter, terminal), { jsonrpc: "2.0", method: "event", params }, type === "size");
   }
 
-  /** How many `size` events are held back on their way (`late`): none once the event loop has turned. */
+  /**
+   * A status written by a pane is also present in the next snapshot. A report that leaves `working` ends a turn, as hc
+   * 0.1.17 and 0.1.18 count them: the record's turn rises and a `turn` event with the new state follows the `status`.
+   */
+  reportStatus(terminal: string, status: Status): void {
+    const { terminal: record } = this.held(terminal);
+    const ends = record.status?.state === "working" && status.state !== "working";
+    record.status = structuredClone(status);
+    this.emit("status", terminal, { status: record.status });
+    if (!ends) return;
+    record.turn = (record.turn ?? 0) + 1;
+    this.emit("turn", terminal, { state: status.state, turn: record.turn });
+  }
+
+  /** While set, every event and heartbeat waits on its line, in order, until `releaseEvents`: a core that answers before it tells. */
+  holdingEvents = false;
+
+  /** What `holdingEvents` held goes out, in order, and events flow again. */
+  releaseEvents(): void {
+    this.holdingEvents = false;
+    for (const line of this.lines.values()) this.release(line);
+  }
+
+  /** How many events are held back on their way (`late` sizes, none once the event loop has turned; `holdingEvents`). */
   heldEvents(): number {
     return [...this.lines.values()].reduce((sum, line) => sum + line.held.length, 0);
   }
@@ -834,8 +857,8 @@ export class FakeHcCore {
       if (!heard(stream.filter!)) continue;
       stream.carried = true;
       const { line } = stream;
-      if (size && (line.held.length > 0 || this.late?.() === true)) {
-        if (line.held.length === 0) setImmediate(() => this.release(line));
+      if (this.holdingEvents || (size && (line.held.length > 0 || this.late?.() === true))) {
+        if (!this.holdingEvents && line.held.length === 0) setImmediate(() => this.release(line));
         line.held.push({ stream, bytes: lineOf(message) });
         continue;
       }
@@ -846,6 +869,7 @@ export class FakeHcCore {
 
   /** What was held back for `line` (`late`) goes out, in order. */
   private release(line: Line): void {
+    if (this.holdingEvents) return;
     for (const { stream, bytes } of line.held.splice(0)) if (line.channels.get(stream.id) === stream) stream.push(bytes);
   }
 

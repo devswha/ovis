@@ -4,14 +4,18 @@
  * can be tried with no PC, as App Review must. Run `bun run build:web` in app/.
  *
  * OVIS_APP_URL names another https origin for the hosted shell than app.ovis.sh (APP_ORIGIN in
- * web/shell.js), for a test build whose relay pairing links point at a shell served elsewhere.
+ * web/shell.js, and the native code's: hosted-origin.ts), for a test build whose relay pairing links
+ * point at a shell served elsewhere. OVIS_APP_HOME=bundled keeps the app's own page as the first screen, where the
+ * native code otherwise opens the hosted shell's (hosted-origin.ts, appHome).
  */
 import { cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildDemoApp } from "../../scripts/demo-build.ts";
+import { appHome, appOrigin, writeNativeOrigin } from "./hosted-origin.ts";
 
 const app = join(import.meta.dir, "..");
 const www = join(app, "www");
+const appUrl = appOrigin(process.env["OVIS_APP_URL"]);
 rmSync(www, { recursive: true, force: true });
 cpSync(join(app, "web"), www, { recursive: true });
 // error.html stands alone: Android serves it without the files beside it while a PC is open
@@ -21,17 +25,22 @@ const errorHtml = readFileSync(errorPage, "utf8");
 if (!errorHtml.includes(link)) throw new Error("error.html no longer links shell.css the way build-web.ts inlines it");
 writeFileSync(errorPage, errorHtml.replace(link, `<style>${readFileSync(join(www, "shell.css"), "utf8")}</style>`));
 
-const appUrl = process.env["OVIS_APP_URL"];
 if (appUrl) {
-  let parsed: URL | null = null;
-  try { parsed = new URL(appUrl); } catch {}
-  if (parsed?.protocol !== "https:" || parsed.origin !== appUrl) throw new Error(`OVIS_APP_URL must be an https origin with no path, such as https://app.ovis.sh: ${appUrl}`);
   const shellJs = join(www, "shell.js");
   const constant = 'export const APP_ORIGIN = "https://app.ovis.sh";';
   const script = readFileSync(shellJs, "utf8");
   if (!script.includes(constant)) throw new Error("shell.js no longer declares APP_ORIGIN the way build-web.ts replaces it");
   writeFileSync(shellJs, script.replace(constant, `export const APP_ORIGIN = ${JSON.stringify(appUrl)};`));
 }
+const home = appHome(process.env["OVIS_APP_HOME"], process.env["OVIS_APP_ACCOUNT"] !== "0");
+if (home !== "hosted") {
+  const shellJs = join(www, "shell.js");
+  const constant = 'export const APP_HOME = "hosted";';
+  const script = readFileSync(shellJs, "utf8");
+  if (!script.includes(constant)) throw new Error("shell.js no longer declares APP_HOME the way build-web.ts replaces it");
+  writeFileSync(shellJs, script.replace(constant, `export const APP_HOME = ${JSON.stringify(home)};`));
+}
+writeNativeOrigin(app, appUrl, home);
 
 if (process.env["OVIS_APP_ACCOUNT"] === "0") {
   const shellJs = join(www, "shell.js");
