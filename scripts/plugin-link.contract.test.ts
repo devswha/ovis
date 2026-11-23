@@ -213,7 +213,7 @@ test("ovis add --account, as a script or an agent runs it with no terminal: this
   }));
   expect((await pressed!)?.status).toBe(200);
   expect(code).toBe(0);
-  expect(out.join("")).toContain(`as Ovis account ${OWNER.slice(0, 12)}, which has no PCs yet. It is the account --account names.`);
+  expect(out.join("")).toContain(`Ovis account ${OWNER.slice(0, 12)} (signed in with GitHub) is the one --account names.`);
   expect(out.join("")).not.toContain("\x1b");
   expect(out.join("")).toContain("Added. Open ");
   // the first ask, with no account, only asked whether this PC takes such an add; every ask after it but the last found no admission yet

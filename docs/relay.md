@@ -346,10 +346,23 @@ for it before they show or ask anything.
   provider's own device page and its code instead. Signing in adds nothing by itself, but whoever
   signs in with that code (or its QR code) names the account this PC may join, and a code can leak:
   a scrollback, a shared screen or tmux, a recording, an agent's transcript. So before anything is
-  listed the command names the account that signed in, with the provider, the start of its id and
-  the names of its PCs (**Signed in with GitHub as Ovis account acct_1a2b3c4d, which has 2 PCs:
-  Desk, Laptop.**; the service gives it no e-mail), and asks **Is this your account? Type yes to add
-  this PC to it**. Anything but yes (in any case, full-width too) ends the run with nothing listed.
+  listed the command names the account that signed in by the start of its id, with the provider (the
+  service gives it no e-mail), and says where to compare that id; then what the account lists; then
+  the question:
+
+  ```
+  Ovis account acct_1a2b3c4d (signed in with GitHub).
+  Compare this ID with Settings → Manage account → Account ID in your
+  Ovis app, or with ovis status on a PC you already use.
+  That account lists:
+    - Desk (added 2026-10-02)
+    - Laptop (added 2026-11-20)
+  Is this your account? Type yes to add this PC to it:
+  ```
+
+  The id is what to compare. The names are the account's own word: someone who got the code first
+  can sign in with an account of their own whose PCs carry your PCs' names. Anything but yes (in any
+  case, full-width too) ends the run with nothing listed.
   With `--account <id>` it checks the account against that id instead of asking, and ends with
   nothing listed when it is another account. The id is all of the account's id or its start as `ovis
   status` shows it on a PC already in the account (12 characters); **Manage account** in Settings

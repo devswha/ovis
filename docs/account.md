@@ -190,7 +190,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 - **`bun scripts/plugin.ts add` shows no code that admits a device, but its sign-in code names the
   account.** Whoever signs in with that code (or its QR code) first names the account the PC may join,
   until that sign-in ends. So before anything is listed the command names the account that signed
-  in (its provider, the start of its id, its PCs) and the person at the PC types yes, or the command
+  in by the start of its id, says where to compare it, and lists what that account calls its PCs (its
+  own word, which a decoy account can copy); the person at the PC types yes, or the command
   checks it against `--account`, which is the only way where no one can type at it. Only then does
   it list the PC, and a device of that account, signed in with a sign-in of its own made in the last
   10 minutes, adds it by pressing **Add** on the PC's card: the account's one-press admission

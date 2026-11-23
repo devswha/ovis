@@ -1682,12 +1682,20 @@ async function addByPress(options: LinkOptions, api: Api, press: Pressing): Prom
 /** `--account`'s id names `account`: all of it, or its start as `ovis status` shows it (12 characters at least). */
 const pins = (pinned: string, account: string): boolean => pinned === account || (pinned.length >= 12 && account.startsWith(pinned));
 
-/** The account that signed in, as the person at this PC is asked to confirm it: the provider, the start of its id and its PCs' names. */
-function accountLine(provider: AccountProvider, account: string, pcs: readonly DirectoryPc[]): string {
-  const names = pcs.map((pc) => plainLabel(pc.label));
-  const which = names.length === 0 ? "no PCs yet"
-    : `${names.length} PC${names.length === 1 ? "" : "s"}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? `, and ${names.length - 6} more` : ""}`;
-  return `Signed in with ${PROVIDER_NAMES[provider]} as Ovis account ${shortAccount(account)}, which has ${which}.`;
+/**
+ * The account that signed in, as the person at this PC is asked to confirm it. Its id leads, with where to compare it:
+ * whoever signed in with the code chose that account, and the names of its PCs are its own word (a decoy account can
+ * carry the owner's PC names), so they follow as what it lists, never as proof.
+ */
+function accountQuestion(options: LinkOptions, provider: AccountProvider, account: string, pcs: readonly DirectoryPc[]): string[] {
+  const listed = pcs.slice(0, 6).map((pc) => `  - ${plainLabel(pc.label)}${Number.isFinite(Date.parse(pc.added_at)) ? ` (added ${pc.added_at.slice(0, 10)})` : ""}`);
+  return [
+    `Ovis account ${shortAccount(account)} (signed in with ${PROVIDER_NAMES[provider]}).`,
+    "Compare this ID with Settings → Manage account → Account ID in your",
+    `Ovis app, or with ${cli(options)} status on a PC you already use.`,
+    ...pcs.length === 0 ? ["That account lists no PCs yet."]
+      : ["That account lists:", ...listed, ...pcs.length > listed.length ? [`  and ${pcs.length - listed.length} more`] : []],
+  ];
 }
 
 async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvider | undefined, mode: { readonly approve: boolean; readonly print: boolean; readonly qr: boolean; readonly account?: string }): Promise<number> {
@@ -1791,14 +1799,14 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     // telling whether an earlier run listed this PC
     const lists = press ? await Promise.all([service.listUnconfirmedPcs(), service.listPcs()]) : null;
     if (lists !== null) {
-      const named = accountLine(session.provider, signedIn, lists[1]);
       if (mode.account === undefined || preview) {
-        const line = await askLine(options, `${STEP_INDENT}${named}\n${STEP_INDENT}Is this your account? Type yes to add this PC to it: `);
+        const asked = step([...accountQuestion(options, session.provider, signedIn, lists[1]), "Is this your account? Type yes to add this PC to it: "]).join("\n");
+        const line = await askLine(options, asked);
         if (line === null || line.normalize("NFKC").trim().toLowerCase() !== "yes") {
           out(`This PC was not listed in that account. Run ${cli(options)} add again and sign in with your own account.\n`);
           return 1;
         }
-      } else out(`${STEP_INDENT}${named} It is the account --account names.\n`);
+      } else out(`${STEP_INDENT}Ovis account ${shortAccount(signedIn)} (signed in with ${PROVIDER_NAMES[session.provider]}) is the one --account names.\n`);
     }
     if (preview && byQr) {
       // The account as the service's token answer names it: its id and the provider it signed in with (the service

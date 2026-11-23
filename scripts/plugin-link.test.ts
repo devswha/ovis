@@ -1699,7 +1699,14 @@ describe("ovis link, on the PC itself", () => {
     return { code, text: out.join(""), askedAt, pressed, named, service, pc, listed, signedOut, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
   }
 
-  const ASKED = "     Signed in with GitHub as Ovis account acct_1, which has no PCs yet.\n     Is this your account? Type yes to add this PC to it: ";
+  // the id first, with where to compare it; the PCs as what that account lists, which a decoy account can copy
+  const ASKED = [
+    "     Ovis account acct_1 (signed in with GitHub).",
+    "     Compare this ID with Settings → Manage account → Account ID in your",
+    "     Ovis app, or with ovis status on a PC you already use.",
+    "     That account lists no PCs yet.",
+    "     Is this your account? Type yes to add this PC to it: ",
+  ].join("\n");
   const LISTED_AND_NAMED = "     This PC is listed in your account as old-desktop.\n\n2/2  Press Add on a device of your account\n     Open Ovis on your phone or another PC and press Add for old-desktop.\n";
   const NO_TERMINAL = "Not run in a terminal, so nobody here can confirm the account that signs in. Run ovis add --account <your account id> (ovis status on a PC already in your account shows the id, and so does Manage account in Settings), or run ovis add in a terminal.\n";
 
@@ -1742,7 +1749,10 @@ describe("ovis link, on the PC itself", () => {
       expect(put.ok).toBe(true);
     } });
     expect(named.code).toBe(0);
-    expect(named.text).toContain("Signed in with GitHub as Ovis account acct_1, which has 1 PC: Desk.\n");
+    expect(named.text).toContain(`     Ovis app, or with ovis status on a PC you already use.\n     That account lists:\n       - Desk (added ${new Date(Date.parse("2026-11-06T12:00:00Z")).toISOString().slice(0, 10)})\n     Is this your account?`);
+    // every line of the question fits 80 columns
+    const question = named.text.slice(named.text.indexOf("     Ovis account acct_1"), named.text.indexOf("Type yes to add this PC to it: ") + 31);
+    expect(question.split("\n").every((line) => line.length <= 80)).toBe(true);
   });
 
   it("refuses before the sign-in where it is not run in a terminal and no --account names the account, in one plain line", async () => {
@@ -1760,7 +1770,7 @@ describe("ovis link, on the PC itself", () => {
       const run = await pressing({ args, terminal: false, isTty: false, pressAfter: 1 });
       expect([args, run.code]).toEqual([args, 0]);
       expect(run.text).not.toContain("Is this your account?");
-      expect(run.text).toContain("     Signed in with GitHub as Ovis account acct_1, which has no PCs yet. It is the account --account names.\n");
+      expect(run.text).toContain("     Ovis account acct_1 (signed in with GitHub) is the one --account names.\n");
       expect(run.text.endsWith(`Added. Open old-desktop from My PCs.\n${CLOSING}`)).toBe(true);
       expect(run.text).not.toContain("\x1b");
     }
