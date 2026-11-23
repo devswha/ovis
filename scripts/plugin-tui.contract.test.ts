@@ -33,7 +33,7 @@ const teardown = () => (ending ??= cleanUpAll([
   () => { if (built) rmSync(built, { recursive: true, force: true }); },
 ]));
 afterAll(teardown, CASE_MS);
-for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => { void teardown().finally(() => process.exit(128 + 15)); });
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => { void teardown().catch(() => undefined).finally(() => process.exit(128 + 15)); });
 
 interface Scene {
   folder: { root: string; env: Record<string, string> };
