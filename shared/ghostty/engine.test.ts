@@ -531,6 +531,46 @@ describe("shared/ghostty engine", () => {
     }
   });
 
+  it("frame identity follows the captured screen across holds and screen round trips", () => {
+    const { engine } = screenEngine(20, 3);
+    try {
+      engine.write(bytesOf("MAIN"));
+      expect(rowText(screenRows(engine).get(0)!)).toBe("MAIN");
+      expect(engine.frameScreen()).toMatchObject({ altScreen: false, screens: 0 });
+      // The hold captures main, while the live terminal enters alternate.
+      engine.write(bytesOf("\x1b[?2026h\x1b[?1049h\x1b[HALT"));
+      expect(engine.modes()).toMatchObject({ altScreen: true, screens: 1 });
+      expect(rowText(screenRows(engine).get(0)!)).toBe("MAIN");
+      expect(engine.frameScreen()).toMatchObject({ altScreen: false, screens: 0 });
+      engine.write(bytesOf("\x1b[?2026l"));
+      expect(rowText(screenRows(engine).get(0)!)).toBe("ALT");
+      expect(engine.frameScreen()).toMatchObject({ altScreen: true, screens: 1 });
+      // A new hold captures a newer screen even when no frame was requested between holds.
+      engine.write(bytesOf("\x1b[?1049l\x1b[?2026h\x1b[?1049h\x1b[HNEW"));
+      expect(rowText(screenRows(engine).get(0)!)).toBe("MAIN");
+      expect(engine.frameScreen()).toMatchObject({ altScreen: false, screens: 2 });
+      engine.releaseHold();
+      expect(rowText(screenRows(engine).get(0)!)).toBe("NEW");
+      expect(engine.frameScreen()).toMatchObject({ altScreen: true, screens: 3 });
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it("a reply callback failure does not detach a held frame from its captured identity", () => {
+    const { engine } = screenEngine(20, 3, { events: { onReply: () => { throw new Error("reply failed"); } } });
+    try {
+      engine.write(bytesOf("MAIN"));
+      screenRows(engine);
+      expect(() => engine.write(bytesOf("\x1b[?1049h\x1b[HALT\x1b[6n\x1b[?2026h\x1b[?1049l"))).toThrow("reply failed");
+      expect(rowText(screenRows(engine).get(0)!)).toBe("ALT");
+      expect(engine.frameScreen()).toMatchObject({ altScreen: true, screens: 1 });
+      expect(engine.modes()).toMatchObject({ altScreen: false, screens: 2 });
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it("engine core widths", () => {
     const family = bytesOf("ABC👨‍👩‍👧XYZ");
     const cursorAfter = (widths: EngineOptions["widths"]): number[] => {

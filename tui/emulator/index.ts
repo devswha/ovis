@@ -6,6 +6,7 @@ import type {
   EngineKey,
   EngineModes,
   EngineMouse,
+  EngineScreen,
   GhosttyRun,
   ScreenPoint,
   ScreenRange,
@@ -79,6 +80,8 @@ export interface Emulator {
   frameAll(draw: (y: number, runs: GhosttyRun<WrittenColor>[]) => void): EmulatorResult<void>;
   /** the cursor of the last frame; draw first */
   cursorState(): EmulatorResult<EngineCursor>;
+  /** the identity and viewport of the last frame, retained while output is held */
+  frameScreen(): EmulatorResult<EngineScreen | null>;
   modes(): EmulatorResult<EngineModes>;
   setMode(mode: number, on: boolean): EmulatorResult<void>;
   releaseHold(): EmulatorResult<void>;

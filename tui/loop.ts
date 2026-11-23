@@ -16,7 +16,7 @@ import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
 import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
-import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
+import { createPanes, type PaneInput, type PaneNotice, type Panes } from "./core/pane.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
 import { errorCode } from "./crash.ts";
 import { effectBytes, osc52 } from "./host/effects.ts";
@@ -31,7 +31,7 @@ import type { Effect } from "./model/effects.ts";
 import { focused } from "./model/focus.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
-import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
+import { type PaneLook, type PanePicture, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
 import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
 
@@ -128,9 +128,10 @@ export function startLoop(options: LoopOptions): Loop {
   let grids = new Map<string, { emulator: unknown; grid: PaneGrid }>();
   let shape: ScreenShape | null = null;
   const pointer = new Pointer();
-  /** the last frame's hit map and pane scenes: what the mouse lands on */
+  /** Published together only after a frame is taken: the cells and layout the mouse actually sees. */
   let hits: HitMap | null = null;
-  const drawn = new Map<string, PaneScene>();
+  let drawn = new Map<string, PanePicture>();
+  let paintedLayout: Pick<PointerScene, "tab" | "splits"> = { tab: null, splits: [] };
   let shownKey = "";
   let paneFocus: string | null = null;
   let hello: HelloInfo | null = null;
@@ -389,20 +390,20 @@ export function startLoop(options: LoopOptions): Loop {
     dispatch({ type: "notice", code: "copied", data: { bytes: data.length }, at: clock.now() });
   }
 
-  /** What the pointer reads of a shown pane as the last frame drew it; null for a pane not drawn or with no picture. */
-  function lookOf(pane: string, view: PaneView | undefined = panes.view(pane), scene: PaneScene | undefined = drawn.get(pane)): PaneLook | null {
+  /** Live modes and identity for routing and validation, located in the last accepted frame. */
+  function lookOf(pane: string): PaneLook | null {
+    const view = panes.view(pane);
+    const picture = drawn.get(pane);
     const emulator = view?.emulator;
-    if (!emulator || !view.actual || !scene) return null;
+    if (!emulator || !view.actual || !picture) return null;
     const modes = emulator.modes();
     const history = emulator.history();
     if (!modes.ok || !history.ok) return null;
-    return { rect: scene.rect, top: scene.view?.row ?? 0, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, screen: modes.value.screens, emulator, history: history.value };
+    return { ...picture, grid: view.actual, programMouse: modes.value.mouse !== "none", altScreen: modes.value.altScreen, screen: modes.value.screens, emulator, history: history.value };
   }
 
   function pointerScene(): PointerScene {
-    const tab = focused(state.world, state.focus).tab;
-    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
-    return { hits, focus: paneFocus, tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: shape?.splits ?? [], look: (pane) => lookOf(pane) };
+    return { hits, focus: paneFocus, ...paintedLayout, look: lookOf, painted: (pane) => drawn.get(pane) ?? null };
   }
 
   /** The shown tab's panes with their cells, told to the pane machine when anything about them changed. */
@@ -479,6 +480,10 @@ export function startLoop(options: LoopOptions): Loop {
 
   function pass(now: number): void {
     if (!painter || !shape || ended) return;
+    const frameShape = shape;
+    const tab = focused(state.world, state.focus).tab;
+    const tree = tab ? dividers.shape(tab.id, world.view().tabs.get(tab.id)) : undefined;
+    const nextLayout = { tab: tab && tree ? { id: tab.id, root: tree.root } : null, splits: frameShape.splits };
     passOwed = false;
     lastPass = now;
     passes++;
@@ -486,8 +491,8 @@ export function startLoop(options: LoopOptions): Loop {
     if (painter.styles.get(STYLE_TABLE_LIMIT) !== undefined) rebuildPainter();
     const scenes: PaneScene[] = [];
     const copied = new Set<string>();
-    drawn.clear();
-    for (const spot of shape.spots) {
+    const nextDrawn = new Map<string, PanePicture>();
+    for (const spot of frameShape.spots) {
       if (spot.covered) continue;
       const view = panes.view(spot.pane);
       // the grid of the picture drawn, never a size a newer attach was told before its first paint: with none, the visible cells
@@ -499,23 +504,25 @@ export function startLoop(options: LoopOptions): Loop {
         grids.set(spot.pane, held);
       }
       held.grid.resize(actual.cols, actual.rows);
-      if (emulator) {
-        held.grid.copy(emulator, held.grid.allDirty);
-        copied.add(spot.pane);
-      }
+      const copy = emulator ? held.grid.copy(emulator, held.grid.allDirty) : null;
+      if (copy?.ok) copied.add(spot.pane);
       const live = paneLive(view, shown);
       const scene = paneScene(spot, held.grid, actual, { live, hold: holds.has(spot.pane), dim: !live });
-      drawn.set(spot.pane, scene);
-      const look = lookOf(spot.pane, view, scene);
+      const snapshot = copy?.ok && emulator ? emulator.frameScreen() : null;
+      const look: PanePicture | null = snapshot?.ok && snapshot.value && emulator ? {
+        rect: scene.rect, top: scene.view?.row ?? 0, grid: actual, emulator,
+        altScreen: snapshot.value.altScreen, screen: snapshot.value.screens, history: snapshot.value.history,
+      } : null;
+      if (look) nextDrawn.set(spot.pane, look);
       const selection = pointer.shown(spot.pane, paneFocus, look);
       scenes.push({ ...scene, scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(selection ? { selection } : {}) });
     }
     const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
     const chrome = buildChrome({
-      regions: shape.regions,
-      spots: shape.spots,
-      splits: shape.splits,
+      regions: frameShape.regions,
+      spots: frameShape.spots,
+      splits: frameShape.splits,
       state,
       world: world.view(),
       panes: paneViews,
@@ -529,7 +536,6 @@ export function startLoop(options: LoopOptions): Loop {
       width: size.cols, height: size.rows, parts: chrome.parts,
       panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input,
     });
-    hits = frame.hits;
     let taken = true;
     if (frame.bytes.length > 0) {
       writes++;
@@ -537,9 +543,12 @@ export function startLoop(options: LoopOptions): Loop {
     }
     painter.taken(taken);
     if (ended || !taken) return;
+    hits = frame.hits;
+    drawn = nextDrawn;
+    paintedLayout = nextLayout;
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
-    const order = [...shape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
+    const order = [...frameShape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));
     for (const spot of order) {
       if (budget <= 0) break;
       budget -= panes.credit(spot.pane, budget);

@@ -312,6 +312,13 @@ export interface EngineHistory {
   viewportTop: number;
 }
 
+/** The identity and viewport captured with a render state, including a synchronized-output snapshot. */
+export interface EngineScreen {
+  readonly altScreen: boolean;
+  readonly screens: number;
+  readonly history: EngineHistory;
+}
+
 export type Rgb = readonly [number, number, number];
 
 /** The terminal's colours; a null one is left as it is. */
@@ -565,6 +572,7 @@ export class GhosttyEngine {
   private size: { cols: number; rows: number; cellW: number; cellH: number };
   /** whether a synchronized-output hold is on: frames then come from the render state captured when it began */
   private held = false;
+  private renderedScreen: EngineScreen | null = null;
   /** since the last resize the program switched its columns (DECCOLM), or the terminal was reset: the grid may not be the size the engine was given */
   private gridTouched = false;
   private win32Input = false;
@@ -918,7 +926,7 @@ export class GhosttyEngine {
     if (held === this.held) return;
     if (held) this.callback(() => {
       try {
-        this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update");
+        this.updateRenderState();
       } catch (error) {
         if (error instanceof WebAssembly.RuntimeError) this.module.trap = error;
         throw error;
@@ -1038,11 +1046,25 @@ export class GhosttyEngine {
     this.guard(() => this.drawRows(draw as (y: number, runs: GhosttyRun<string | WrittenColor>[]) => void, true, colors === "written"));
   }
 
+  /** Read after frame/frameAll: the screen those cells came from, not the terminal behind a held snapshot. */
+  frameScreen(): EngineScreen | null {
+    return this.guard(() => this.renderedScreen);
+  }
+
+  private updateRenderState(): void {
+    this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update");
+    if (this.events) {
+      this.check(this.x.ghostty_terminal_get(this.terminal, this.e.GhosttyTerminalData.SCREEN_GENERATION, this.scratch), "screen generation");
+      const screens = Number(this.view().getBigUint64(this.scratch, true));
+      this.renderedScreen = { screens, altScreen: this.onAlternate(), history: this.readHistory() };
+    }
+  }
+
   private drawRows(draw: (y: number, runs: GhosttyRun<string | WrittenColor>[]) => void, all: boolean, written: boolean): boolean {
     const x = this.x;
     const rs = this.e.GhosttyRenderStateData, rowData = this.e.GhosttyRenderStateRowData, cellsData = this.e.GhosttyRenderStateRowCellsData;
     const wides = this.e.GhosttyCellWide, tags = this.e.GhosttyCellContentTag;
-    if (!this.held) this.check(x.ghostty_render_state_update(this.state, this.terminal), "render_state_update");
+    if (!this.held) this.updateRenderState();
     const c = this.readCursor();
     const cursor = `${c.visible} ${c.x} ${c.y} ${c.style}`;
     const cursorMoved = cursor !== this.lastCursor;
@@ -1361,15 +1383,17 @@ export class GhosttyEngine {
   }
 
   history(): EngineHistory {
-    return this.guard(() => {
-      const data = this.e.GhosttyTerminalData;
-      const scrollbar = this.scratch + AT.scrollbar, bar = this.f.GhosttyTerminalScrollbar;
-      this.check(this.x.ghostty_terminal_get(this.terminal, data.SCROLLBAR, scrollbar), "scrollbar");
-      const dv = this.view();
-      const total = Number(dv.getBigUint64(scrollbar + bar.total, true));
-      const viewportTop = Number(dv.getBigUint64(scrollbar + bar.offset, true));
-      return { scrollback: this.getU32(data.SCROLLBACK_ROWS), total, viewportTop };
-    });
+    return this.guard(() => this.readHistory());
+  }
+
+  private readHistory(): EngineHistory {
+    const data = this.e.GhosttyTerminalData;
+    const scrollbar = this.scratch + AT.scrollbar, bar = this.f.GhosttyTerminalScrollbar;
+    this.check(this.x.ghostty_terminal_get(this.terminal, data.SCROLLBAR, scrollbar), "scrollbar");
+    const dv = this.view();
+    const total = Number(dv.getBigUint64(scrollbar + bar.total, true));
+    const viewportTop = Number(dv.getBigUint64(scrollbar + bar.offset, true));
+    return { scrollback: this.getU32(data.SCROLLBACK_ROWS), total, viewportTop };
   }
 
   /** the grid reference of a screen point at `out`; false when the point is outside the kept rows */

@@ -38,6 +38,9 @@ export interface PaneLook {
   readonly history: EngineHistory;
 }
 
+/** A pane's displayed cells: program mouse routing still reads the live modes separately. */
+export type PanePicture = Omit<PaneLook, "programMouse">;
+
 /** What the pointer reads of the screen at an event. */
 export interface PointerScene {
   readonly hits: HitMap | null;
@@ -47,6 +50,7 @@ export interface PointerScene {
   readonly tab: { readonly id: string; readonly root: LayoutNode } | null;
   readonly splits: readonly SplitCells[];
   look(pane: string): PaneLook | null;
+  painted(pane: string): PanePicture | null;
 }
 
 export type PointerAct =
@@ -75,15 +79,15 @@ interface Selection extends ScreenOf { readonly pane: string; readonly start: Sc
 
 /** The screen a selection lies on: its emulator, the active screen, and the count of switches that led to it. */
 interface ScreenOf { readonly emulator: object; readonly altScreen: boolean; readonly screen: number }
-const screenOf = (look: PaneLook): ScreenOf => ({ emulator: look.emulator, altScreen: look.altScreen, screen: look.screen });
-const onScreen = (look: PaneLook, held: ScreenOf): boolean =>
+const screenOf = (look: PanePicture): ScreenOf => ({ emulator: look.emulator, altScreen: look.altScreen, screen: look.screen });
+const onScreen = (look: ScreenOf, held: ScreenOf): boolean =>
   look.emulator === held.emulator && look.altScreen === held.altScreen && look.screen === held.screen;
 
 const NONE: Grab = { kind: "none" };
 const isWheel = (event: MouseInput): boolean => event.button !== undefined && event.button.startsWith("wheel");
 
 /** How many rows above its newest rows a pane's screen shows. */
-export function rowsAboveBottom(look: PaneLook): number {
+export function rowsAboveBottom(look: PanePicture): number {
   return Math.max(0, look.history.total - look.grid.rows - look.history.viewportTop);
 }
 
@@ -159,7 +163,7 @@ export class Pointer {
    * with another emulator or screen than its press is cancelled too, so its release copies nothing even after the
    * pane switched back. A drag whose pane only lost the focus keeps its anchor.
    */
-  shown(pane: string, focus: string | null, look: PaneLook | null): { start: GridCell; end: GridCell } | null {
+  shown(pane: string, focus: string | null, look: PanePicture | null): { start: GridCell; end: GridCell } | null {
     const grab = this.grab;
     if (grab.kind === "select" && grab.pane === pane && look && !onScreen(look, grab)) this.grab = NONE;
     const selection = this.selection;
@@ -186,7 +190,11 @@ export class Pointer {
         this.grab = { kind: "forward", pane: hit.pane };
         return [...dropped, { kind: "forward", pane: hit.pane, event: inGrid(event, look) }];
       }
-      if (event.button === "left") this.grab = { kind: "select", pane: hit.pane, anchor: pointOf(event, look), ...screenOf(look) };
+      const picture = scene.painted(hit.pane);
+      if (event.button === "left" && picture && onScreen(look, picture)) {
+        // Wheel events can move this same screen's viewport before a paint; keep their existing coordinate behavior.
+        this.grab = { kind: "select", pane: hit.pane, anchor: pointOf(event, look), ...screenOf(picture) };
+      }
       return dropped;
     }
     if (event.button !== "left") return dropped;
@@ -222,16 +230,16 @@ export class Pointer {
   }
 
   private extend(grab: Extract<Grab, { kind: "select" }>, event: MouseInput, scene: PointerScene): PointerAct[] {
-    const look = scene.look(grab.pane);
-    if (!look) return [];
-    if (!onScreen(look, grab)) {
+    const look = scene.painted(grab.pane);
+    const live = scene.look(grab.pane);
+    if (!look || !live || !onScreen(look, grab) || !onScreen(live, grab)) {
       // the pane's screen changed under the drag: nothing of it is selected or copied
       this.grab = NONE;
       const shown = this.selection !== null;
       this.selection = null;
       return shown ? [{ kind: "redraw" }] : [];
     }
-    const end = pointOf(event, look);
+    const end = pointOf(event, live);
     const moved = this.selection !== null || end.x !== grab.anchor.x || end.y !== grab.anchor.y;
     if (moved) this.selection = { pane: grab.pane, start: grab.anchor, end, emulator: grab.emulator, altScreen: grab.altScreen, screen: grab.screen };
     const acts: PointerAct[] = moved ? [{ kind: "redraw" }] : [];
@@ -269,7 +277,7 @@ function pathOf(id: string): boolean[] | null {
 }
 
 /** The event's cell in the pane's grid: clamped into the pane's rectangle, then through the rows the frame clips. */
-function gridCell(event: MouseInput, look: PaneLook): GridCell {
+function gridCell(event: MouseInput, look: PanePicture): GridCell {
   const { rect } = look;
   const col = Math.min(Math.max(event.col, rect.x), rect.x + Math.max(0, rect.width - 1));
   const row = Math.min(Math.max(event.row, rect.y), rect.y + Math.max(0, rect.height - 1));
@@ -285,7 +293,7 @@ function inGrid(event: MouseInput, look: PaneLook): MouseInput {
 }
 
 /** The event's cell in the whole kept screen (history included), where a selection is kept. */
-function pointOf(event: MouseInput, look: PaneLook): ScreenPoint {
+function pointOf(event: MouseInput, look: PanePicture): ScreenPoint {
   const cell = gridCell(event, look);
   return { x: cell.x, y: look.history.viewportTop + cell.y };
 }

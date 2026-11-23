@@ -215,6 +215,7 @@ class GhosttyEmulator implements Emulator {
   frame: Emulator["frame"] = (draw) => this.call((engine) => engine.frame(this.live(draw), "written"));
   frameAll: Emulator["frameAll"] = (draw) => this.call((engine) => engine.frameAll(this.live(draw), "written"));
   cursorState: Emulator["cursorState"] = () => this.call((engine) => engine.cursorState());
+  frameScreen: Emulator["frameScreen"] = () => this.call((engine) => engine.frameScreen());
   modes: Emulator["modes"] = () => this.call((engine) => engine.modes());
   setMode: Emulator["setMode"] = (mode, on) => this.call((engine) => engine.setMode(mode, on));
   releaseHold: Emulator["releaseHold"] = () => this.call((engine) => engine.releaseHold());

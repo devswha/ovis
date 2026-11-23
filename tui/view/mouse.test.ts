@@ -40,6 +40,7 @@ function sceneOf(focus: string, look: PaneLook | null): PointerScene {
     tab: { id: "T1", root: { split: "right", ratio: 0.5, first: { leaf: "a" }, second: { leaf: "b" } } },
     splits: [{ id: "split_0_root", direction: "right", rect: { x: 0, y: 1, width: 20, height: 5 }, divider: { x: 9, y: 1, width: 2, height: 5 } }],
     look: (pane) => (pane === "a" ? look : null),
+    painted: (pane) => (pane === "a" ? look : null),
   };
 }
 
@@ -585,6 +586,35 @@ describe("mouse on the whole screen", () => {
     expect(run.loop.model().notices.find((notice) => notice.code === "copy_refused")?.data).toMatchObject({ reason: "too_large" });
   }, TEST_MS);
 
+  for (const held of [false, true]) for (const beforePress of [false, true]) {
+    it(`selection uses the displayed screen when it switches ${beforePress ? "before" : "after"} press, ${held ? "during a hold" : "before repaint"}`, async () => {
+      const run = await demo120();
+      await run.advance(20);
+      const program = run.core.program("t1");
+      program.output("\x1b[H\x1b[2JVISIBLE-A");
+      await run.settle();
+      const passes = run.loop.report().passes;
+      const from = run.host.output().length;
+      if (!beforePress) await run.keys("press@25:2");
+      program.output(`${held ? "\x1b[?2026h" : ""}\x1b[?1049h\x1b[H\x1b[2JREPLACED-B`);
+      await run.settle();
+      expect(run.loop.report().passes).toBe(passes);
+      if (held) await run.advance(20);
+      expect((await hostScreen(run)).text(2, 25, 33)).toBe("VISIBLE-A");
+      if (beforePress) await run.keys("press@25:2");
+      await run.keys("drag@28:2,release@28:2");
+      expect(run.host.output().slice(from)).not.toContain("]52;");
+      expect(notices(run)).not.toContain("copied");
+      program.output("\x1b[?2026l");
+      await run.advance(20);
+      expect((await hostScreen(run)).text(2, 25, 34)).toBe("REPLACED-B");
+      // Once B is actually displayed, a new selection belongs to B and can copy it.
+      const after = run.host.output().length;
+      await run.keys("press@25:2,drag@28:2,release@28:2");
+      expect(run.host.output().slice(after)).toContain(osc52Of("REPL"));
+    }, TEST_MS);
+  }
+
   it("a drag whose pane switches to its alternate screen before the release copies nothing", async () => {
     const run = await demo120();
     const from = run.host.output().length;
@@ -876,6 +906,25 @@ describe("mouse on the whole screen", () => {
     await run.live();
     // the core's 72 of 96 columns: t1's box ends at x 95, t2's starts at x 96
     expect((await hostScreen(run)).text(10, 94, 97)).toBe(" || ");
+  }, TEST_MS);
+
+  for (const editBeforePress of [true, false]) it(`divider drag is stale after a foreign edit ${editBeforePress ? "before" : "after"} the press, before repaint`, async () => {
+    const run = await demo120();
+    await run.advance(20);
+    run.core.program("t1").output("paint");
+    await run.settle();
+    const passes = run.loop.report().passes;
+    if (!editBeforePress) await run.keys("press@71:10");
+    const rival = await rivalWrites(run.core, (value) => ({ ...value, workspaces: value.workspaces.map((workspace) => ({ ...workspace, tabs: workspace.tabs.map((tab) => tab.id === "t-main" ? { ...tab, root: { split: "down", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } } } : tab) })) }));
+    await run.settle();
+    expect(run.loop.report().passes).toBe(passes);
+    expect((await hostScreen(run)).text(10, 70, 73)).toBe(" || ");
+    if (editBeforePress) await run.keys("press@71:10");
+    await run.keys("drag@60:10,release@60:10");
+    await run.advance(20);
+    expect(docSets(run)).toEqual([]);
+    expect(notices(run)).toContain("stale");
+    expect(run.core.docs.get(OVIS_LAYOUT_DOC)!.value).toEqual(rival);
   }, TEST_MS);
 
   it("divider drag is stale after a foreign edit", async () => {
