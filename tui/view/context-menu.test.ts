@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { leaves, OVIS_LAYOUT_DOC, parseOvisLayout } from "../../server/herdr-core/layout-doc.ts";
+import { editLayout, passthroughEdit } from "../../server/herdr-core/layout-ops.ts";
 import { PANE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
 import { WORKTREE_LABEL } from "../../server/herdr-core/worktrees.ts";
 import type { ContextAction } from "../model/context.ts";
@@ -284,6 +285,28 @@ describe("a pane's entries (R4)", () => {
     await run.keys(`click@${back.x + 1}:${back.y}`);
     await run.advance(50);
     expect(passthrough()).toEqual([]);
+  }, TEST_MS);
+
+  it("a pane sent to another workspace keeps Send right-clicks to pane: the screen shows it there, and the next edit of anything else writes it there", async () => {
+    const run = await start();
+    const right = paneId(run, "RIGHT");
+    const text = cellOf(run, "RIGHT-READY");
+    await choose(run, { x: text.x + 3, y: text.y }, "Send right-clicks to pane");
+    const kept = () => layoutDoc(run)!.workspaces.flatMap((workspace) => workspace.tabs).flatMap((tab) => (tab.passthrough ?? []).map((pane) => [tab.id, pane]));
+    expect(kept()).toEqual([[tabId(run, "one"), right]]);
+    // focused, then sent to a new tab of the docs workspace (navigate mode: the workspace below, then m): its labels move, nothing else
+    await run.keys(`click@${text.x + 3}:${text.y}`);
+    await run.advance(400);
+    await run.keys("ctrl+b,w,down,m");
+    await run.advance(400);
+    const holder = () => run.loop.model().world.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => ({ workspace: workspace.name, tab }))).find(({ tab }) => tab.panes.some((pane) => pane.id === right))!;
+    expect([holder().workspace, holder().tab.id === tabId(run, "one"), holder().tab.passthrough]).toEqual(["docs", false, [right]]);
+    // the menu there offers to turn it back, as it does where it was set
+    const notes = paneId(run, "NOTES");
+    await editLayout(run.loop.link, passthroughEdit(notes, true));
+    await run.advance(100);
+    expect(kept().sort()).toEqual([[holder().tab.id, right], [tabId(run, "notes"), notes]].sort());
+    expect(holder().tab.passthrough).toEqual([right]);
   }, TEST_MS);
 });
 

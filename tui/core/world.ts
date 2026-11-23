@@ -7,8 +7,8 @@
  */
 
 import type { CoreChange } from "../../server/herdr-core/core-model.ts";
-import { type LayoutNode, OVIS_LAYOUT_DOC, parseOvisLayout } from "../../server/herdr-core/layout-doc.ts";
-import { buildSnapshot, coreHost, type FirstTurn, type HcTerminal, isRecord, LAYOUT_DOC } from "../../server/herdr-core/snapshot.ts";
+import { type LayoutNode, OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
+import { buildSnapshot, coreHost, type FirstTurn, type HcTerminal, isRecord, keptLayout, LAYOUT_DOC } from "../../server/herdr-core/snapshot.ts";
 import { nestHelpers, sidebarAgents } from "../../shared/agent-roster.ts";
 import { type AgentGroup, groupAgentRows, knownStatus, type KnownStatus, rollupStatus } from "../../shared/attention.ts";
 import type { AgentStatus, PaneLayoutSnapshot } from "../../shared/herdr-api.generated.ts";
@@ -286,7 +286,8 @@ export class CoreWorld {
     this.stale = false;
     const appDoc = this.docs.get(LAYOUT_DOC) ?? null;
     const ovisDoc = this.docs.get(OVIS_LAYOUT_DOC) ?? null;
-    const snapshot = buildSnapshot([...this.records.values()] as unknown as HcTerminal[], appDoc, this.version, this.model.firstTurn, ovisDoc, undefined, this.model.host);
+    const terminals = [...this.records.values()] as unknown as HcTerminal[];
+    const snapshot = buildSnapshot(terminals, appDoc, this.version, this.model.firstTurn, ovisDoc, undefined, this.model.host);
     const tabs = new Map<string, TabShape>();
     for (const layout of snapshot.layouts) {
       const root = treeOf(layout);
@@ -343,10 +344,11 @@ export class CoreWorld {
     // until the next read: such a pane is no agent row meanwhile
     const agentless = new Set([...this.told].flatMap(([address, told]) => (told.agent === null ? [address] : [])));
     const agents = buildAgents({ ...snapshot, agents: snapshot.agents.filter((agent) => !agentless.has(agent.pane_id)) }, panes, since);
-    // what only the terminal screen keeps in Ovis's layout document: the panes that take right presses, the folded groups
-    const kept = parseOvisLayout(ovisDoc);
-    const keptTabs = new Map((kept?.workspaces ?? []).flatMap((workspace) => workspace.tabs).map((tab) => [tab.id, tab]));
-    const folded = new Set((kept?.workspaces ?? []).filter((workspace) => workspace.collapsed).map((workspace) => workspace.id));
+    // what only the terminal screen keeps in Ovis's layout document (the panes that take right presses, the folded
+    // groups), read as every edit of the document reads it (`keptLayout`): a pane moved to another tab keeps its setting
+    const kept = keptLayout(terminals, ovisDoc);
+    const keptTabs = new Map(kept.workspaces.flatMap((workspace) => workspace.tabs).map((tab) => [tab.id, tab]));
+    const folded = new Set(kept.workspaces.filter((workspace) => workspace.collapsed).map((workspace) => workspace.id));
     const groups = worktreeGroups(snapshot.workspaces);
     const parents = new Map(groups.flatMap(({ workspace, children }) => children.map((child) => [child.workspace_id, workspace.workspace_id] as const)));
     const withChildren = new Set(groups.filter(({ children }) => children.length > 0).map(({ workspace }) => workspace.workspace_id));

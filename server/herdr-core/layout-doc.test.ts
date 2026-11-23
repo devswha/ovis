@@ -32,6 +32,22 @@ describe("the terminal screen's own keys", () => {
   });
 });
 
+describe("a pane's own setting", () => {
+  it("follows the pane to the tab that holds it now, and stays there when the document is read again", () => {
+    const doc = parseOvisLayout({ schema: 1, workspaces: [
+      { id: "S", tabs: [{ id: "T", zoomed: null, root: split("right", 0.5, leaf("a"), leaf("b")), passthrough: ["b"] }] },
+      { id: "U", tabs: [{ id: "V", zoomed: null, root: leaf("c"), passthrough: ["c"] }] },
+    ] });
+    // b's labels place it in a new tab of U now: the document was not written for that
+    const shown = [{ id: "S", tabs: [{ id: "T", panes: ["a"] }] }, { id: "U", tabs: [{ id: "V", panes: ["c"] }, { id: "M", panes: ["b"] }] }];
+    const moved = reconcile(doc, shown);
+    expect(moved.workspaces.map((workspace) => workspace.tabs.map((tab) => [tab.id, tab.passthrough]))).toEqual([[["T", undefined]], [["V", ["c"]], ["M", ["b"]]]]);
+    expect(reconcile(parseOvisLayout(JSON.parse(JSON.stringify(moved))), shown)).toEqual(moved);
+    // a pane that left every tab Ovis lays out takes its setting with it: nothing is kept for a pane the document cannot hold
+    expect(reconcile(doc, [{ id: "S", tabs: [{ id: "T", panes: ["a"] }] }, { id: "U", tabs: [{ id: "V", panes: ["c"] }] }]).workspaces[0]!.tabs[0]).toEqual({ id: "T", zoomed: null, root: leaf("a") });
+  });
+});
+
 describe("resizeLeaf", () => {
   it("moves the nearest split whose cut is the pane's edge, else the one on its other side", () => {
     const root = split("right", 0.5, leaf("a"), split("down", 0.5, leaf("b"), leaf("c")));

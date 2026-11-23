@@ -18,7 +18,8 @@ export type SplitDirection = "right" | "down";
 export type LayoutNode = { leaf: string } | { split: SplitDirection; ratio: number; first: LayoutNode; second: LayoutNode };
 /**
  * `passthrough`: the tab's panes whose right press goes to the program that asked for the mouse instead of opening the
- * terminal screen's menu (herdr's "Send right-clicks to pane"); absent when none. The browser reads nothing of it.
+ * terminal screen's menu (herdr's "Send right-clicks to pane"); absent when none. The browser reads nothing of it. The
+ * setting is the pane's: `reconcile` lists it under whichever tab holds the pane now.
  */
 export interface TabLayout { id: string; root: LayoutNode; zoomed: string | null; passthrough?: string[] }
 /** `collapsed`: a repository's workspace whose worktree workspaces the terminal screen's sidebar folds; absent when not. */
@@ -88,6 +89,9 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
     const ids = new Set(known.map((entry) => entry.id));
     return [...known.map((entry) => ({ live: byId.get(entry.id)!, kept: entry })), ...live.filter((entry) => !ids.has(entry.id)).map((entry) => ({ live: entry, kept: undefined }))];
   };
+  // a pane moves to another tab by its labels alone, and no writer of this document hears of it: what is kept for a
+  // pane is read from whichever tab listed it and written under the tab that holds it now
+  const passing = new Set((doc?.workspaces ?? []).flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.passthrough ?? [])));
   return {
     schema: OVIS_LAYOUT_SCHEMA,
     workspaces: order(doc?.workspaces ?? [], shown).map(({ live, kept }) => ({
@@ -105,7 +109,8 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
           root = { split: "right", ratio: clampRatio(before / (before + orphans.length)), first: root, second: sideBySide(orphans) };
         }
         const zoomed = stored?.zoomed && panes.has(stored.zoomed) ? stored.zoomed : null;
-        const passthrough = (stored?.passthrough ?? []).filter((pane) => panes.has(pane));
+        const own = (stored?.passthrough ?? []).filter((pane) => panes.has(pane));
+        const passthrough = [...own, ...tab.panes.filter((pane) => passing.has(pane) && !own.includes(pane))];
         return { id: tab.id, root, zoomed, ...(passthrough.length > 0 ? { passthrough } : {}) };
       }),
     })),
