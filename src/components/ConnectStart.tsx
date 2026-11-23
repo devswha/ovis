@@ -230,9 +230,9 @@ function PcRow({ pc, editing = false, asking, onAsk, onKeep }: { readonly pc: Ph
           <ChevronDown aria-hidden="true" />
         </button>
       )}
-      {others.length > 0 && more && (
-        <div className="my-pc-others" id={othersId} role="group" aria-label={t("More ways to open {name}", { name: pc.name })}>
-          {others.map((line) => <OtherWayButton key={line.key} way={line.way} host={line.host} onClick={line.open} />)}
+      {others.length > 0 && (
+        <div className="my-pc-others" id={othersId} role="group" aria-label={t("More ways to open {name}", { name: pc.name })} hidden={!more}>
+          {more && others.map((line) => <OtherWayButton key={line.key} way={line.way} host={line.host} onClick={line.open} />)}
         </div>
       )}
       {editing && lines === undefined && (pc.forget ? forgetting(pc.key, pc.name, pc.forget, pc.word === "in-use") : pc.kept !== undefined && <span className="my-pc-kept" data-kept={pc.kept}>{keptText(pc.kept)}</span>)}
@@ -473,8 +473,10 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
       const used = relayUsed(relay);
       return { key: relay.server_id, name: relay.name ?? t("Unnamed PC"), way: "relay", ways: lines, others: phones.map(otherLine), word: used ? "in-use" : relay.status, ...(used && goBack ? { open: goBack } : { href: serverScopePath(relay.server_id), onLink: offlineLink }), data };
     }
-    const shown = by ?? phones[0]!;
-    const used = phones.some((pc) => isCurrent(pc.origin, current));
+    // the way the app keeps open, where one is: the row's tap goes back to it, so the row shows it and More ways the rest
+    const kept = phones.find((pc) => isCurrent(pc.origin, current));
+    const shown = kept ?? by ?? phones[0]!;
+    const used = kept !== undefined;
     return {
       key: shown.serverId ?? shown.origin, name: shown.name, way: shown.way, ways: lines, others: phones.filter((pc) => pc !== shown).map(otherLine), address: shown.host, ...(used ? { word: "in-use" as const } : {}),
       open: used && goBack ? goBack : () => openSaved(shown, otherWay(group, shown)), data,

@@ -1285,11 +1285,11 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   Tailscale), then the relay, probing earlier routes after admission, every 5 minutes at most and
   when its own addresses change or it wakes. It opens the session on the proven carrier before it
   closes the relay one, so the PC never shows as lost.
-- **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows
-  **Direct connection** with its one switch, which governs the home network and the Tailscale
-  listener together, and one line: off, "Relay connections stay on the relay."; on, that a device
-  that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct connection, faster, and
-  that this PC listens for it on those addresses. Each device paired with a relay key says there how it
+- **Said where it is.** While the relay is on, Settings → Devices and PCs → More settings → Devices and
+  access shows **Direct connection** with its one switch, which governs the home network and the Tailscale
+  listener together, and one line: off, "Relay connections stay on the relay."; on, that the Ovis
+  app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct
+  connection, faster, and that this PC listens for it on those addresses. Each device paired with a relay key says there how it
   reaches the PC right now (**Same Wi-Fi, direct**, **Tailscale, direct**, the relay it uses, or
   **Offline** with when it was last seen and why), with the round trip of its session's keepalive:
   `GET /api/devices` adds `connection` to a device with a session up, and `?check=1` (**Check now**)

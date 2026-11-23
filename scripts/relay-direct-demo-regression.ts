@@ -34,7 +34,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   if (EVIDENCE) await group.screenshot({ path: join(EVIDENCE, `relay-direct-${width}-${theme}.png`) });
 
   await toggle.click();
-  await row.getByText("A device that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct connection: faster, and this PC listens for it on those addresses.", { exact: true }).waitFor();
+  await row.getByText("The Ovis app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct connection: faster, and this PC listens for it on those addresses.", { exact: true }).waitFor();
   assert.equal(await toggle.getAttribute("aria-checked"), "true", `${tag}: turned on`);
   await row.getByText("Direct connection", { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll, on`);

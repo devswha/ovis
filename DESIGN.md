@@ -5082,12 +5082,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   because to the person they are one thing: something connected to this PC. Rows are as short as
   the page allows; what pairing means is one folded sentence, and what few people change is in
   More settings. Old links to the Phone, Remote PCs and Portal groups land on My devices.
-- While the relay is on, My devices has one **Direct connection** row (`RelayDirectRow` in `components/RelayPanel.tsx`),
+- While the relay is on, Devices and PCs has one **Direct connection** row in More settings, under Devices and access
+  (`RelayDirectRow` in `components/RelayPanel.tsx`; not in My devices, which lists what is connected),
   its label the same whether on or off and its switch named the same, with one line under it: off, "Relay connections
-  stay on the relay."; on, "A device that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct
-  connection: faster, and this PC listens for it on those addresses." It is off by default: one switch for the home
-  network and the Tailscale carrier, since both are a listener on this PC, and a person who wants the faster path turns
-  it on; the relay never moves a connection off itself unasked.
+  stay on the relay."; on, "The Ovis app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a
+  direct connection: faster, and this PC listens for it on those addresses." (the app, since a browser always stays on
+  the relay). It is off by default: one switch for the home network and the Tailscale carrier, since both are a
+  listener on this PC, and a person who wants the faster path turns it on; the relay never moves a connection off
+  itself unasked. Settings search finds it by Wi-Fi, Tailscale, LAN, same Wi-Fi or home network (`keywords`, in each
+  language), whichever line it shows.
 - My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
@@ -5242,7 +5245,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   relay PC is) and a tap on it always opens by the relay, whose key is checked and whose connection stays on the relay
   unless that PC's Direct connection is on (off by default); an address way never names it or states it, and its
   address is not shown on the row. A row of saved ways alone opens by the one whose page loaded last in the app, and
-  shows that one's address on the wide screen. Since the relay no longer moves to a faster way by itself, a row of
+  shows that one's address on the wide screen; while the app keeps one of its ways open, the row shows that one and
+  goes back to it. Since the relay no longer moves to a faster way by itself, a row of
   several ways has **More ways** beside its link (a round outlined chevron in the column Forget takes, named "More ways
   to open {name}", `aria-expanded`, closed at first, its glyph turned up when open; a row of one way has none): open, it
   lists under the row, one to a line, each saved way the row's tap does not open as the failure's other-way button

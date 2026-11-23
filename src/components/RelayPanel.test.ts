@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { ApiError } from "../lib/api.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { SettingsQuery, settingsQueryWords } from "./SettingsControls.tsx";
 import type { RelayState } from "../lib/useRelay.ts";
 import { failureText, RelayDirectRow, statusText } from "./RelayPanel.tsx";
 
@@ -32,13 +33,14 @@ test("a machine's refusal to make a pairing code is said in words, and any other
   expect(failureText(new ApiError("/api/relay/offer", 409, "This PC is already in an Ovis account.", "in_account"))).toBe("This PC is already in an Ovis account.");
 });
 
-/** the Direct connection row as Settings draws it, in `language`: its name, its one line and its switch */
-function directRow(direct: NonNullable<RelayStatus["direct"]>, language = "en"): { label: string; line: string; toggle: string } {
+/** the Direct connection row as Settings draws it, in `language`, under a Settings search for `query`: its name, its one line and its switch */
+function directRow(direct: NonNullable<RelayStatus["direct"]>, language = "en", query = ""): { label: string; line: string; toggle: string } {
   const relay = { status: { ...base, direct }, pending: false, request: async () => ({ ...base, direct }) } as unknown as RelayState;
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: [language] });
   try {
-    const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayDirectRow, { relay, readOnly: false }) }));
+    const row = createElement(RelayDirectRow, { relay, readOnly: false });
+    const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(SettingsQuery.Provider, { value: settingsQueryWords(query) }, row) }));
     const text = (pattern: RegExp): string => pattern.exec(html)?.[1]?.replace(/<[^>]+>/g, "") ?? "";
     const toggle = /<button[^>]*role="switch"[^>]*>/.exec(html)?.[0] ?? "";
     const name = /aria-label="([^"]*)"/.exec(toggle)?.[1];
@@ -52,9 +54,21 @@ function directRow(direct: NonNullable<RelayStatus["direct"]>, language = "en"):
 
 test("the Direct connection row says what its switch does, off and on, and names the Tailscale carrier too", () => {
   expect(directRow({ on: false, carriers: [] })).toEqual({ label: "Direct connection", line: "Relay connections stay on the relay.", toggle: "Direct connection off" });
-  const on = "A device that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct connection: faster, and this PC listens for it on those addresses.";
+  const on = "The Ovis app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct connection: faster, and this PC listens for it on those addresses.";
   expect(directRow({ on: true, carriers: ["ws://192.168.0.10:7319"] })).toEqual({ label: "Direct connection", line: on, toggle: "Direct connection on" });
   expect(directRow({ on: true, carriers: ["ws://192.168.0.10:7319", "ws://100.64.0.7:7319"] }).line).toBe(on);
   expect(directRow({ on: true, carriers: [] }).line).toBe(on);
   expect(directRow({ on: false, carriers: [] }, "ko").label).toBe("직접 연결");
+});
+
+test("Settings search finds the Direct connection row by the networks it governs, off or on, in every language", () => {
+  const found = (query: string, language = "en", on = false): boolean => directRow({ on, carriers: [] }, language, query).label !== "";
+  for (const query of ["Wi-Fi", "Tailscale", "LAN", "same Wi-Fi", "home network", "direct"]) {
+    expect([query, found(query)]).toEqual([query, true]);
+    expect([query, found(query, "en", true)]).toEqual([query, true]);
+  }
+  for (const [language, queries] of [["ko", ["같은 Wi-Fi", "Tailscale", "LAN", "집 네트워크", "직접 연결"]], ["ja", ["同じWi-Fi", "Tailscale", "自宅ネットワーク"]], ["zh", ["同一 Wi-Fi", "Tailscale", "局域网"]]] as const) {
+    for (const query of queries) expect([language, query, found(query, language)]).toEqual([language, query, true]);
+  }
+  expect(found("printer")).toBe(false);
 });

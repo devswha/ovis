@@ -575,7 +575,7 @@ Good to know:
 
 #### Which way the app connects
 
-A connection through the relay stays on the relay. To let the iPhone and Android apps move to a faster direct connection when they can reach this PC, turn on **Direct connection** under **Settings → Devices and PCs → My devices** (it is off by default). While it and the relay are on, this PC also takes connections straight from the apps: on its home network addresses and, when Tailscale runs on it, on its Tailscale address. Each time the app opens the PC, it has three ways in:
+A connection through the relay stays on the relay. To let the iPhone and Android apps move to a faster direct connection when they can reach this PC, turn on **Direct connection** under **Settings → Devices and PCs → More settings → Devices and access** (it is off by default). While it and the relay are on, this PC also takes connections straight from the apps: on its home network addresses and, when Tailscale runs on it, on its Tailscale address. Each time the app opens the PC, it has three ways in:
 
 - **Same Wi-Fi**: the PC's home network address.
 - **Tailscale**: the PC's Tailscale address, when the phone has Tailscale on.

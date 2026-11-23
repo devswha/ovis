@@ -1931,11 +1931,15 @@ describe("the hosted front page", () => {
           // one disclosure, on the row of several ways alone, closed, named for its PC
           expect(moreWays().map((node) => [node.props["aria-label"], node.props["aria-expanded"]])).toEqual([["More ways to open hasang-uui-MacBookPro", false]]);
           expect(wayLines()).toEqual([]);
+          // what it controls is there while closed too, hidden
+          const controlled = () => renderer!.root.findAll((node) => typeof node.type === "string" && node.props.id === moreWays()[0]!.props["aria-controls"]).map((node) => node.props.hidden);
+          expect(controlled()).toEqual([true]);
           // the row's own tap is still the relay's page
           expect(openers()[0]!.type).toBe("a");
           expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
           await act(async () => { moreWays()[0]!.props.onClick(); });
           expect(moreWays()[0]!.props["aria-expanded"]).toBe(true);
+          expect(controlled()).toEqual([false]);
           // each other way, one to a line: its tag and the host it opens, whole, in its accessible name too
           expect(wayLines()).toEqual([
             ["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"],
@@ -1966,6 +1970,22 @@ describe("the hosted front page", () => {
         await act(async () => { wayButtons()[0]!.props.onClick(); });
         for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
+      });
+    });
+
+    it("shows, on a row of saved ways alone, the way the app keeps open, whose row goes back to it, and lists the others under More ways", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        // the address loaded last, but the app keeps the Tailscale way open while the person chooses another
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "backToCurrent"] }], (method) =>
+          method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac }, choosing: true, current: tail } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317In use now"]]);
+        await act(async () => { moreWays()[0]!.props.onClick(); });
+        expect(wayLines()).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
+        await act(async () => { openers()[0]!.props.onClick(); });
+        expect(called).toContain("HerdrShell.backToCurrent");
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
       });
     });
 
