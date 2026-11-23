@@ -124,11 +124,8 @@ function announceFromRelay(code: AnnouncedCode): void {
  * (`x-ovis-no-account-only`), which makes it only while it is in no account, with a code of its own that no other
  * place started; New code ends that code and asks again. `onInAccount`: the PC refused the offer for its account: it is
  * in one by now, or none is named for it.
- * `digits` (with `compact`): the Tailscale tab's top, as the relay tab of this PC's own window in its account draws it:
- * the offer's QR code beside the six digits it carries (the PC's one pending code, typed where this PC's address
- * opens), one Refresh and one Copy for both, asked for at once and renewed as it runs out; no relay code to type.
  */
-export function RelayPairing({ phone = false, compact = false, qrOnly = false, digits = false, onInAccount, onOffer }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; digits?: boolean; onInAccount?: () => void; onOffer?: (offer: RelayOffer) => void }) {
+export function RelayPairing({ phone = false, compact = false, qrOnly = false, onInAccount, onOffer }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; onInAccount?: () => void; onOffer?: (offer: RelayOffer) => void }) {
   const t = useT();
   const [offer, setOffer] = useState<RelayOffer | null>(null);
   const [left, setLeft] = useState("");
@@ -154,7 +151,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, d
 
   useEffect(() => {
     // Asked for together, a new six-digit code the offer starts ends the code being minted on the PC.
-    if (compact && !qrOnly && !digits && generation === 0) return;
+    if (compact && !qrOnly && generation === 0) return;
     let cancelled = false;
     let finishing: number | undefined;
     const asked = taken.current;
@@ -261,7 +258,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, d
         setOffer(null);
         // a code that ran out while shown is replaced by itself; one that arrived already expired
         // (the PC's clock and this one apart) is not, or the asking would never end
-        if (wasLive) { if (!compact || qrOnly || digits) again(); } else setState("expired");
+        if (wasLive) { if (!compact || qrOnly) again(); } else setState("expired");
         return;
       }
       wasLive = true;
@@ -318,16 +315,6 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, d
       {state === "failed" && failure !== null && <p className="settings-hint relay-error" role="alert">{failure}</p>}
     </div>
   );
-  if (compact && digits) {
-    const code = offer === null ? null : decodeOffer(offer.url)?.code ?? null;
-    return (
-      <div className="relay-pairing-compact" role="status">
-        <CompactPair qr={offer?.url ?? null} qrLabel={t("QR code that pairs a phone through the relay")} code={code} shown={code === null ? null : `${code.slice(0, 3)} ${code.slice(3)}`}
-          codeLabel={t("Pairing code")} busy={state === "minting"} qrNote={state === "expired" ? t("This code expired.") : undefined} onRefresh={() => void renew()} />
-        {state === "failed" && failure !== null && <p className="settings-hint relay-error" role="alert">{failure}</p>}
-      </div>
-    );
-  }
   if (compact) return <CompactRelay qr={offer?.url ?? null} qrExpires={offer?.expires_at ?? null} failure={state === "failed" ? failure : null} reset={typedReset} onMinted={again} />;
   const countdown = (
     <>

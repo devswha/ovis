@@ -1411,6 +1411,7 @@ describe("the relay tab's QR code behind a press", () => {
         return new Response(null, { status: 204 });
       }
       if (path === "/api/relay/code") return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID });
+      if (path === "/api/devices/pair/start") return Response.json({ code: "246813", expires_at });
       if (path === "/api/relay/offer") {
         offerMarks.push(new Headers(input instanceof Request ? input.headers : init?.headers).get("x-ovis-no-account-only"));
         return offerAnswer?.() ?? Response.json({ url: OFFER_URL, expires_at, ...(offerAccount === undefined ? {} : { account: offerAccount }) });
@@ -1501,19 +1502,21 @@ describe("the relay tab's QR code behind a press", () => {
     expect(renderer!.root.findAllByProps({ "data-testid": "connect-phone-scan" })).toHaveLength(1);
     expect(minted()).toEqual([]);
   });
-  it("in this PC's own window where Add PC over SSH adds to the account, draws the relay's pairing QR code and code at once, as the Tailscale tab does, the account's line under it", async () => {
+  it("in this PC's own window where Add PC over SSH adds to the account, lays the account QR code out as the Tailscale tab's top, its six digits only on a press", async () => {
     pcAccount = ACCOUNT_ID;
     await mount({ joinBySignIn: true, provider: "github", addsOverSsh: true });
-    const scan = renderer!.root.findByProps({ "data-testid": "connect-phone-scan" });
-    // as the Tailscale tab's top: the relay's own offer as the QR code, made as the tab opens (never the account QR
-    // code's), beside the six digits it carries, with one Refresh and one Copy; no relay code to type is asked for
-    expect(scan.findAllByType(QrCode).map((qr) => qr.props.value)).toEqual([OFFER_URL]);
-    expect(text(scan.findByProps({ className: "compact-pair-code" }))).toBe("482 913");
-    expect(text(scan)).not.toContain("7K3QD-M2XHA");
-    expect(scan.findAll((node) => node.type === "button").map((node) => text(node).trim())).toEqual(["Refresh", "Copy"]);
-    expect(minted()).toEqual(["/api/relay/offer"]);
-    expect(offerMarks).toEqual([null]);
-    // the QR code that opens this PC's page gives way to it: one QR code a phone scans
+    const scan = () => renderer!.root.findByProps({ "data-testid": "connect-phone-scan" });
+    // the QR code is the account's, as on main: it opens this PC's page in the Ovis app, which signs in to the account and
+    // joins it there; nothing that admits a device by itself is made as the tab opens
+    expect(scan().findAllByType(QrCode).map((qr) => qr.props.value)).toEqual([`${new URL(ONLINE.app).origin}/s/${SERVER_ID}/#sign-in=github`]);
+    expect(minted()).toEqual([]);
+    expect(scan().findAllByProps({ className: "compact-pair-code" })).toHaveLength(0);
+    // beside it, the six digits a device types where this PC's address opens, made only by a press of the person here
+    await act(async () => { scan().find((node) => node.type === "button" && text(node).trim() === "Get a pairing code").props.onClick(); });
+    await flush();
+    expect(minted()).toEqual(["/api/devices/pair/start"]);
+    expect(text(scan().findByProps({ className: "compact-pair-code" }))).toBe("246 813");
+    expect(scan().findAll((node) => node.type === "button").map((node) => text(node).trim())).toEqual(["Refresh", "Copy"]);
     expect(qrCodes()).toHaveLength(1);
     const parts = section().children.filter((child): child is ReactTestInstance => typeof child !== "string");
     const at = (match: (node: ReactTestInstance) => boolean) => parts.findIndex((part) => match(part) || part.findAll(match).length > 0);
