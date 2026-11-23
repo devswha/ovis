@@ -112,8 +112,8 @@ pub struct Hub {
     pub generation: u64,
     /// When the switch to the real TUI was asked for; the run loop carries it out.
     pub want_terminal: Option<Instant>,
-    /// Whether the pane is a terminal the real TUI can be given.
-    pub tty: bool,
+    /// Whether the pane is a terminal with job control, which the real TUI can be given.
+    pub job_control: bool,
     next: u64,
     own: HashMap<String, Own>,
     routes: HashMap<String, Route>,
@@ -127,7 +127,7 @@ pub struct Hub {
 
 impl Hub {
     /// `resumed`: the session to load came from the archive, so a failed load opens a new one.
-    pub fn new(archive: Arc<Archive>, agent: UnboundedSender<Vec<u8>>, opts: Opts, resumed: bool, tty: bool) -> Hub {
+    pub fn new(archive: Arc<Archive>, agent: UnboundedSender<Vec<u8>>, opts: Opts, resumed: bool, job_control: bool) -> Hub {
         // Ids the keeper makes up (`keeper-N`, `client-C-N`, `agent-N`) count on from the archive's
         // last row, so no id of an earlier run in the same ROOT is ever given out again.
         let next = archive.replay_from(1).map(|(_, _, last)| last).unwrap_or(0);
@@ -140,7 +140,7 @@ impl Hub {
             mode: Mode::Acp,
             generation: 0,
             want_terminal: None,
-            tty,
+            job_control,
             next,
             own: HashMap::new(),
             routes: HashMap::new(),
@@ -173,8 +173,8 @@ impl Hub {
     fn switch_blocker(&self) -> Option<&'static str> {
         if self.mode != Mode::Acp {
             Some("already switching")
-        } else if !self.tty {
-            Some("the pane has no terminal (headless)")
+        } else if !self.job_control {
+            Some("the pane has no terminal with job control")
         } else if self.agent.is_none() {
             Some("the agent has exited")
         } else if self.resume_argv().is_none() {
@@ -201,22 +201,34 @@ impl Hub {
             self.model.error(format!("진짜 TUI로 열지 않았습니다: {reason}"));
             return Err(reason);
         }
+        // From here on nothing new reaches the agent: it is about to be ended for the real TUI.
+        self.mode = Mode::Switching;
         self.want_terminal = Some(Instant::now());
         Ok(())
+    }
+
+    /// Agent requests the ended agent can no longer receive an answer to: noted as expired, so
+    /// clients close their cards, and any later answer is dropped.
+    pub fn expire_pending(&mut self, reason: &str) {
+        for pending in std::mem::take(&mut self.model.pending) {
+            self.agent_ids.remove(&pending.key);
+            self.note_row("_keeper/expired", json!({"id": pending.id, "seq": pending.seq, "reason": reason}));
+        }
     }
 
     /// A new ACP agent after the real TUI: everything the old one had open is gone, and the same
     /// session is loaded (a new one opens when the agent cannot load it).
     pub fn restarted(&mut self, agent: UnboundedSender<Vec<u8>>) {
+        self.fail_routes("the agent was ended for the real TUI");
         self.agent = Some(agent);
         self.own.clear();
         self.prompts.clear();
-        self.agent_ids.clear();
-        self.model.pending.clear();
+        self.expire_pending("the agent that asked it was ended for the real TUI");
         self.model.working = false;
         self.model.agent_gone = None;
         self.opts.load = self.model.session.clone();
-        self.resumed = true;
+        // The conversation the TUI just had must come back; a failed load is reported, never replaced by a new session.
+        self.resumed = false;
         self.start();
     }
 
@@ -237,13 +249,25 @@ impl Hub {
     /// sent from now on are answered the same way instead of waiting forever.
     pub fn agent_gone(&mut self) {
         self.agent = None;
+        self.fail_routes("the agent has exited");
+        self.expire_pending("the agent that asked it has exited");
+        self.prompts.clear();
+        self.model.working = false;
+    }
+
+    fn fail_routes(&mut self, message: &str) {
         let routes: Vec<Route> = self.routes.drain().map(|(_, route)| route).collect();
         for route in routes {
             self.client_ids.remove(&(route.conn, key_of(&route.id)));
-            self.reply(route.conn, &json!({"jsonrpc": "2.0", "id": route.id, "error": {"code": -32603, "message": "the agent has exited"}}));
+            self.reply(route.conn, &json!({"jsonrpc": "2.0", "id": route.id, "error": {"code": -32603, "message": message}}));
         }
-        self.prompts.clear();
-        self.model.working = false;
+    }
+
+    fn back_failed(&mut self, reason: &str) {
+        if self.mode == Mode::Switching {
+            self.mode = Mode::Acp;
+            self.mode_note("acp", "failed", json!({"reason": reason}));
+        }
     }
 
     fn reply(&self, conn: u64, msg: &Value) {
@@ -380,6 +404,7 @@ impl Hub {
         match own {
             Own::Initialize => {
                 if let Some(e) = error {
+                    self.back_failed(&e);
                     self.model.error(format!("initialize 실패: {e}"));
                     return;
                 }
@@ -405,10 +430,7 @@ impl Hub {
                     return;
                 }
                 self.model.session = None;
-                if self.mode == Mode::Switching {
-                    self.mode = Mode::Acp;
-                    self.mode_note("acp", "failed", json!({"reason": e}));
-                }
+                self.back_failed(&e);
                 let auth = msg.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64) == Some(-32000);
                 self.model.error(if auth {
                     format!("로그인이 필요합니다: {e}. 에이전트의 진짜 TUI나 로그인 명령으로 먼저 로그인하세요")
@@ -524,6 +546,10 @@ impl Hub {
         let id: Value = serde_json::from_str(key).unwrap_or(Value::Null);
         if let Some(reason) = self.model.pending.iter().find(|p| p.key == key).and_then(|p| invalid_answer(p, &answer)) {
             self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": reason}));
+            return;
+        }
+        if self.agent.is_none() {
+            self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": "the agent that asked it is gone"}));
             return;
         }
         let Some(pending) = self.model.resolve(key) else {

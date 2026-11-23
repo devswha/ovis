@@ -39,8 +39,8 @@ pub fn key(event: &Event) -> Option<Key> {
         return None;
     }
     match key.code {
-        KeyCode::F(4) => Some(Key::OpenTui),
-        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Key::Quit),
+        KeyCode::F(4) if key.modifiers.is_empty() => Some(Key::OpenTui),
+        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => Some(Key::Quit),
         _ => None,
     }
 }
@@ -102,17 +102,33 @@ pub fn restore_terminal() {
 
 pub struct Status {
     drawn: Vec<String>,
+    /// The terminal's settings when the keeper started: a real TUI that exits without restoring
+    /// its own (raw mode left on) must not become what the pane is left with.
+    #[cfg(unix)]
+    original: Option<libc::termios>,
 }
 
 impl Status {
     pub fn enter() -> std::io::Result<Status> {
-        let mut status = Status { drawn: vec![] };
+        let mut status = Status {
+            drawn: vec![],
+            #[cfg(unix)]
+            original: unsafe {
+                let mut termios = std::mem::zeroed::<libc::termios>();
+                (libc::tcgetattr(0, &mut termios) == 0).then_some(termios)
+            },
+        };
         status.resume()?;
         Ok(status)
     }
 
-    /// Takes the pane (again): raw keys, its own screen, no cursor; the next draw paints everything.
+    /// Takes the pane (again): the settings it started with, then raw keys, its own screen and no
+    /// cursor; the next draw paints everything.
     pub fn resume(&mut self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        if let Some(original) = &self.original {
+            unsafe { libc::tcsetattr(0, libc::TCSANOW, original) };
+        }
         terminal::enable_raw_mode()?;
         execute!(std::io::stdout(), EnterAlternateScreen, Hide)?;
         self.drawn.clear();
@@ -158,6 +174,8 @@ mod tests {
             assert_eq!(key(&press(code, KeyModifiers::NONE)), None, "{code:?} did something");
         }
         assert_eq!(key(&press(KeyCode::Char('c'), KeyModifiers::CONTROL)), None);
+        assert_eq!(key(&press(KeyCode::F(4), KeyModifiers::SHIFT)), None, "Shift+F4 opened the real TUI");
+        assert_eq!(key(&press(KeyCode::Char('q'), KeyModifiers::CONTROL | KeyModifiers::ALT)), None);
     }
 
     #[test]

@@ -45,16 +45,19 @@ agent did not offer, is dropped with a note, and the request stays pending.
 Without `--headless` and on a terminal (a herdr-core pane), the keeper shows one status line:
 `ACP로 실행 중 · <agent> · 모델 … · 모드 …`, a running turn, how many approvals wait (answered in
 Ovis), how many clients are attached, `F4: 진짜 TUI로 열기 · Ctrl+Q: 닫기`, and the last notice.
-F4 and Ctrl+Q are the only keys it acts on; every other key is dropped.
+F4 and Ctrl+Q, without other modifiers, are the only keys it acts on; every other key is dropped.
 
 F4, or a client's `_keeper/open_terminal` request, hands the pane to the agent's real TUI on the
 same conversation, once the turn is over and nothing waits (otherwise `_keeper/switch_refused`
-with the reason, and an error answer to the client). The keeper ends the ACP agent with its whole
-tree, starts the resume command (`--resume`, or a default for gjc, agy, claude, codex, hermes and
+with the reason, and an error answer to the client). Once a switch is accepted nothing new reaches
+the agent; it needs a terminal with job control. The keeper ends the ACP agent with its whole tree
+(approvals it still asked are noted `_keeper/expired`), starts the resume command (`--resume`, or a default for gjc, agy, claude, codex, hermes and
 opencode) in the agent's scope as the terminal's foreground job, and stops reading keys. Client
 requests in the meantime get an error: one conversation is never driven by ACP and a live TUI at
 once. When the TUI exits, the keeper takes the terminal back, ends what the TUI left, starts the
-ACP agent again and loads the same session, now with the turns made in the TUI. `_keeper/mode`
+ACP agent again (on the terminal settings the pane started with, whatever the TUI left) and loads
+the same session, now with the turns made in the TUI; if it cannot, `acp` `failed` says why and no
+other conversation takes its place. `_keeper/mode`
 notes mark each step: `terminal` `start`/`ready`/`failed`, then `acp` `start`/`ready`/`failed`.
 Switching needs job control (the pane's terminal) and is not built for Windows.
 
@@ -69,7 +72,7 @@ Switching needs job control (the pane's terminal) and is not built for Windows.
 | `_keeper/client` | a client connected, with its number |
 | `_keeper/rejected` | a client reused an id it still has in flight, or sent a request while the real TUI had the pane |
 | `_keeper/oversize` | a line longer than 64 MiB was dropped (`dir`, `bytes`, `id`); a request among them is answered with an error so nobody waits for it (unless its id is longer than 64 KiB: then the note has no id) |
-| `_keeper/expired` | on restart: an approval the agent that asked it can no longer receive (`_keeper/resolved` is written before an answer goes out, so an approval the agent received is never expired) |
+| `_keeper/expired` | an approval the agent that asked it can no longer receive (it was ended for the real TUI, it exited, or the keeper restarted) (`_keeper/resolved` is written before an answer goes out, so an approval the agent received is never expired) |
 
 ## Ending and starting again
 

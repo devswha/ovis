@@ -10,7 +10,9 @@
 //! - `quit`: one `agent_message_chunk` saying `bye`, then the agent exits without answering
 //! - `big N`: one `agent_message_chunk` line of exactly N bytes, then the end of the turn
 //!
-//! With `--linger` it stays alive after its stdin closes, as an agent busy elsewhere would.
+//! `session/load` adopts the loaded id, and fails while the file named by `--refuse-load FILE`
+//! exists. With `--ask-on-close` it asks for one more approval as its stdin closes, and with
+//! `--linger` it stays alive after that, as an agent busy elsewhere would.
 
 use std::io::{BufRead, Write};
 
@@ -52,7 +54,9 @@ fn helpers(dir: &str) {
 fn helpers(_dir: &str) {}
 
 fn main() {
-    let session = format!("fake-{}", std::process::id());
+    let args: Vec<String> = std::env::args().collect();
+    let refuse_load = args.iter().position(|a| a == "--refuse-load").and_then(|at| args.get(at + 1)).cloned();
+    let mut session = format!("fake-{}", std::process::id());
     let mut out = std::io::stdout().lock();
     let mut held: Vec<Value> = vec![];
     let mut asked: Option<Value> = None;
@@ -85,7 +89,15 @@ fn main() {
                 "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
                 "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
             }),
-            "session/load" | "session/set_mode" | "session/set_model" | "session/set_config_option" => json!({}),
+            "session/load" if refuse_load.as_ref().is_some_and(|f| std::path::Path::new(f).exists()) => {
+                send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the session is locked"}}));
+                continue;
+            }
+            "session/load" => {
+                session = msg.pointer("/params/sessionId").and_then(Value::as_str).unwrap_or(&session).to_string();
+                json!({})
+            }
+            "session/set_mode" | "session/set_model" | "session/set_config_option" => json!({}),
             "session/prompt" => {
                 let text = msg.pointer("/params/prompt/0/text").and_then(Value::as_str).unwrap_or("").to_string();
                 let mut words = text.split_whitespace();
@@ -136,7 +148,17 @@ fn main() {
         };
         send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "result": result}));
     }
-    if std::env::args().any(|a| a == "--linger") {
+    if args.iter().any(|a| a == "--ask-on-close") {
+        send(
+            &mut out,
+            &json!({"jsonrpc": "2.0", "id": "perm-close", "method": "session/request_permission", "params": {
+                "sessionId": session,
+                "toolCall": {"toolCallId": "t-close", "title": "rm -rf x", "kind": "execute"},
+                "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}],
+            }}),
+        );
+    }
+    if args.iter().any(|a| a == "--linger") {
         loop {
             std::thread::park();
         }

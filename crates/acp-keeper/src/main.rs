@@ -13,6 +13,7 @@ mod status;
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -71,7 +72,7 @@ impl Gate {
     }
 }
 
-async fn serve_client<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(conn: u64, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>, stream: S) {
+async fn serve_client<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(conn: u64, archive: Arc<Archive>, pid: Arc<AtomicU32>, tx: UnboundedSender<Ev>, stream: S) {
     let (mut input, output) = tokio::io::split(stream);
     let mut framer = Framer::new(MAX_LINE);
     let mut chunk = vec![0u8; PUSH];
@@ -103,7 +104,7 @@ async fn serve_client<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(conn: 
                 let Ok(Value::Object(request)) = serde_json::from_str::<Value>(&text) else { continue };
                 let Some(n) = request.get("replay").and_then(Value::as_u64) else { continue };
                 let Some((cursor, boundary, through)) = archive.replay_from(n) else { continue };
-                let (archive, mut out) = (archive.clone(), output.take().expect("one replay per connection"));
+                let (archive, mut out, pid) = (archive.clone(), output.take().expect("one replay per connection"), pid.load(Ordering::Relaxed));
                 pumping = Some(tokio::spawn(async move {
                     let _ = pump(&archive, &mut out, cursor, boundary, through, pid, conn).await;
                     let _ = out.shutdown().await;
@@ -143,7 +144,7 @@ fn check_root(root: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>, mut conn: u64) -> std::io::Result<impl std::future::Future<Output = ()>> {
+async fn listen(root: &Path, archive: Arc<Archive>, pid: Arc<AtomicU32>, tx: UnboundedSender<Ev>, mut conn: u64) -> std::io::Result<impl std::future::Future<Output = ()>> {
     let path = root.join("acp.sock");
     match std::fs::remove_file(&path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
@@ -153,13 +154,13 @@ async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSende
     Ok(async move {
         while let Ok((stream, _)) = listener.accept().await {
             conn += 1;
-            tokio::spawn(serve_client(conn, archive.clone(), pid, tx.clone(), stream));
+            tokio::spawn(serve_client(conn, archive.clone(), pid.clone(), tx.clone(), stream));
         }
     })
 }
 
 #[cfg(windows)]
-async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSender<Ev>, mut conn: u64) -> std::io::Result<impl std::future::Future<Output = ()>> {
+async fn listen(root: &Path, archive: Arc<Archive>, pid: Arc<AtomicU32>, tx: UnboundedSender<Ev>, mut conn: u64) -> std::io::Result<impl std::future::Future<Output = ()>> {
     use tokio::net::windows::named_pipe::ServerOptions;
     let name = format!(r"\\.\pipe\acp-keeper-{}", std::process::id());
     std::fs::write(root.join("acp.pipe"), &name)?;
@@ -172,7 +173,7 @@ async fn listen(root: &Path, archive: Arc<Archive>, pid: u32, tx: UnboundedSende
             let Ok(next) = ServerOptions::new().create(&name) else { return };
             let stream = std::mem::replace(&mut server, next);
             conn += 1;
-            tokio::spawn(serve_client(conn, archive.clone(), pid, tx.clone(), stream));
+            tokio::spawn(serve_client(conn, archive.clone(), pid.clone(), tx.clone(), stream));
         }
     })
 }
@@ -444,7 +445,9 @@ async fn run(mut opts: Opts) -> i32 {
     let mut acp = Some(agent);
     let mut reader = Some(reader);
     let mut tui: Option<Agent> = None;
-    let accept = match listen(&root, archive.clone(), child_pid, tx.clone(), previous.last_client).await {
+    // The pid a replaying client is told: the ACP agent's, or the real TUI's while it has the pane.
+    let agent_pid = Arc::new(AtomicU32::new(child_pid));
+    let accept = match listen(&root, archive.clone(), agent_pid.clone(), tx.clone(), previous.last_client).await {
         Ok(accept) => accept,
         Err(e) => {
             eprintln!("listen: {e}");
@@ -508,7 +511,7 @@ async fn run(mut opts: Opts) -> i32 {
             while std::io::Read::read(&mut stdin, &mut sink).is_ok_and(|n| n > 0) {}
         });
     }
-    let mut hub = Hub::new(archive.clone(), agent_tx, opts, resumed, tty);
+    let mut hub = Hub::new(archive.clone(), agent_tx, opts, resumed, job_control);
     hub.note_row(
         "_keeper/ready",
         json!({"sinceStartMs": ms(started), "keeper": std::process::id(), "child": child_pid, "tty": tty, "jobControl": job_control, "scope": acp.as_ref().and_then(|a| a.scope.clone()), "resumed": resumed, "expired": previous.pending.len()}),
@@ -570,6 +573,7 @@ async fn run(mut opts: Opts) -> i32 {
                 }
                 hub.mode_note("acp", "start", json!({"tuiExit": code, "tuiRanMs": ran}));
                 if let Some((agent, task)) = restart_acp(&mut hub, &stderr, &tx).await {
+                    agent_pid.store(agent.pid, Ordering::Relaxed);
                     acp = Some(agent);
                     reader = Some(task);
                     exited = None;
@@ -598,6 +602,7 @@ async fn run(mut opts: Opts) -> i32 {
             while let Ok(ev) = rx.try_recv() {
                 hub.handle(ev);
             }
+            hub.expire_pending("the agent that asked it was ended for the real TUI");
             hub.generation += 1;
             let agent_ended = ms(pressed);
             gate.pause();
@@ -610,6 +615,7 @@ async fn run(mut opts: Opts) -> i32 {
                     hub.mode = Mode::Terminal;
                     hub.mode_note("terminal", "ready", json!({"tuiPid": agent.pid, "agentEndedMs": agent_ended, "spawnedMs": ms(pressed)}));
                     write_process(&root, None, Some(&agent));
+                    agent_pid.store(agent.pid, Ordering::Relaxed);
                     tui = Some(agent);
                 }
                 Err(e) => {
@@ -617,6 +623,7 @@ async fn run(mut opts: Opts) -> i32 {
                     hub.model.error(format!("진짜 TUI를 띄우지 못했습니다 ({}: {e})", argv[0]));
                     hub.mode_note("terminal", "failed", json!({"reason": e.to_string()}));
                     if let Some((agent, task)) = restart_acp(&mut hub, &stderr, &tx).await {
+                        agent_pid.store(agent.pid, Ordering::Relaxed);
                         acp = Some(agent);
                         reader = Some(task);
                     }
