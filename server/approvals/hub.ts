@@ -49,8 +49,11 @@ export interface ApprovalDialog {
   command: string | null;
 }
 
-/** A turn of the agent's that its hook told began or ended. */
-export type TurnEvent = "began" | "ended";
+/** A turn of the agent's that its hook told began (its prompt) or ended, with the prompt's id where the agent gives one. */
+export interface TurnEvent {
+  turn: "began" | "ended";
+  prompt: string | null;
+}
 
 export interface HeldApproval extends ApprovalRequest {
   /** what a card built on this request carries in its id, so that its answer settles this request and no other */

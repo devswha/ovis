@@ -1,6 +1,7 @@
 import type { TailnetPcsOptions } from "../tailnet-pcs.ts";
 import type { SshCandidatesOptions } from "../ssh-candidates.ts";
 import { createAlertWebhook } from "../alert-webhook.ts";
+import { closeSync, openSync, readSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { RelaySocket } from "../../shared/relay-channel.ts";
@@ -223,16 +224,18 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const restedOnTranscript = new Set<string>();
   /**
    * Claude panes whose turn the Stop hook of a Claude this server started told ended (server/approvals/claude.ts), herdr
-   * still reading them at work: at rest on the hook's word until herdr reads the rest, or a working it tells anew, or
-   * the UserPromptSubmit hook tells a turn began.
+   * still reading them at work, with where the session's transcript ended at that Stop: at rest on the hook's word until
+   * herdr reads the rest, or a working it tells anew, or the UserPromptSubmit hook tells a turn began, or Claude answers
+   * again in the transcript (another Stop hook, the user's or a plugin's, kept the turn going: hookTurnWentOn).
    */
-  const stoppedOnHook = new Set<string>();
+  const stoppedOnHook = new Map<string, { path: string; id: string; size: number }>();
   /**
-   * The prompts each Claude pane's UserPromptSubmit hook told of whose turn no Stop has ended yet, since herdr last read
-   * it at rest: Claude tells a prompt typed under a turn as it is queued, before that turn's Stop (2.1.330), and a turn
-   * may take it in and end once for both. Only a Stop that leaves none open is the rest.
+   * The prompts each Claude pane's UserPromptSubmit hook told of whose turn no Stop has ended yet, oldest first, since
+   * herdr last told the pane at rest: Claude tells a prompt typed under a turn as it is queued, before that turn's Stop
+   * (2.1.330), and a turn may take it in and end once for both. A Stop ends its own prompt and those before it; only one
+   * that leaves none open is the rest, and one for a prompt not open (late, after herdr's rest) tells nothing.
    */
-  const hookPrompts = new Map<string, number>();
+  const hookPrompts = new Map<string, (string | null)[]>();
   /**
    * Claude keeps its busy title up while a background subagent works after its turn ended, and herdr reads `working` (#2069).
    * Nor is a turn its Stop hook ended still at work.
@@ -249,7 +252,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function hearClaude(paneId: string, agent: string | null | undefined, status: AgentStatus, event: boolean): void {
     if (agent !== "claude" || status !== "working") restedOnTranscript.delete(paneId);
     if (agent !== "claude" || status !== "working" || event) stoppedOnHook.delete(paneId);
-    if (agent !== "claude" || status !== "working") hookPrompts.delete(paneId);
+    if (agent !== "claude" || (event && status !== "working")) hookPrompts.delete(paneId);
     if (agent !== "claude") { heard.delete(paneId); return; }
     const before = heard.get(paneId);
     heard.set(paneId, status);
@@ -770,19 +773,54 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * whether it failed), once no prompt it told of is left open (hookPrompts). A Stop after herdr's rest tells nothing
    * new. Claude's UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
    */
-  function hookTurn(paneId: string, kind: string, turn: TurnEvent): void {
+  function hookTurn(paneId: string, kind: string, { turn, prompt }: TurnEvent): void {
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
-    const open = hookPrompts.get(paneId) ?? 0;
+    const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {
-      hookPrompts.set(paneId, open + 1);
-      if (stoppedOnHook.delete(paneId) && heard.get(paneId) === "working") reportStatus(paneId, restingClaude(paneId, "claude", "working"), "claude");
+      hookPrompts.set(paneId, [...open, prompt]);
+      hookRestEnds(paneId);
       return;
     }
-    if (open > 1) { hookPrompts.set(paneId, open - 1); return; }
+    const at = open.indexOf(prompt);
+    const left = at >= 0 ? open.slice(at + 1) : open;
+    if (left.length > 0) { hookPrompts.set(paneId, left); return; }
     hookPrompts.delete(paneId);
-    if (completions.current(paneId) !== "working") return;
-    stoppedOnHook.add(paneId);
+    // what the transcript holds at this Stop: an answer written after it is the turn going on. None known, no early rest
+    const session = claudeAgents.sessionOf(paneId);
+    const file = session?.live === true ? plain(session.path) : null;
+    if (completions.current(paneId) !== "working" || session === null || file === null) return;
+    stoppedOnHook.set(paneId, { path: session.path, id: file.id, size: file.size });
     reportStatus(paneId, "idle", "claude");
+  }
+
+  /** The hook's rest of `paneId` is over: what herdr reads stands again. */
+  function hookRestEnds(paneId: string): void {
+    if (stoppedOnHook.delete(paneId) && heard.get(paneId) === "working") reportStatus(paneId, restingClaude(paneId, "claude", "working"), "claude");
+  }
+
+  /** The most of a transcript read past a Stop: Claude's next answer comes in its first entries. */
+  const WENT_ON_READ = 256 * 1024;
+  /**
+   * Whether Claude answered again after the Stop its hook told (another Stop hook blocked that stop, and the turn goes
+   * on with no prompt and, to herdr, no change). Read on the wait timer's tick, so a DONE told in error is taken back
+   * within a second or two, before push's short wait sends its alert.
+   */
+  function hookTurnWentOn(): void {
+    for (const [paneId, mark] of stoppedOnHook) {
+      const file = plain(mark.path);
+      if (file === null || file.id !== mark.id || file.size <= mark.size) continue;
+      const length = Math.min(file.size - mark.size, WENT_ON_READ);
+      const bytes = Buffer.alloc(length);
+      let fd: number | undefined;
+      try {
+        fd = openSync(mark.path, "r");
+        readSync(fd, bytes, 0, length, mark.size);
+      } catch { continue; } finally { if (fd !== undefined) closeSync(fd); }
+      const answered = bytes.toString("utf8").split("\n").some((line) => {
+        try { return (JSON.parse(line) as { type?: unknown }).type === "assistant"; } catch { return false; }
+      });
+      if (answered) hookRestEnds(paneId);
+    }
   }
 
   function codexRest(paneId: string, snapshot?: SessionSnapshot): Promise<void> {
@@ -950,7 +988,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (codexFailed.delete(from)) codexFailed.add(to);
       if (claudeLooked.has(from)) { claudeLooked.set(to, claudeLooked.get(from)!); claudeLooked.delete(from); }
       if (claudeFailed.delete(from)) claudeFailed.add(to);
-      if (stoppedOnHook.delete(from)) stoppedOnHook.add(to);
+      if (stoppedOnHook.has(from)) { stoppedOnHook.set(to, stoppedOnHook.get(from)!); stoppedOnHook.delete(from); }
       if (hookPrompts.has(from)) { hookPrompts.set(to, hookPrompts.get(from)!); hookPrompts.delete(from); }
       if (claudeFailHeld.has(from)) { claudeFailHeld.set(to, claudeFailHeld.get(from) ?? null); claudeFailHeld.delete(from); }
       if (claudeRested.has(from)) { claudeRested.set(to, claudeRested.get(from)!); claudeRested.delete(from); }
@@ -992,7 +1030,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   claudeAgents.start();
   opencodeAgents.start();
   taskAgents.start();
-  const waitTimer = setInterval(waitsRanOut, 1000);
+  const waitTimer = setInterval(() => { waitsRanOut(); hookTurnWentOn(); }, 1000);
   waitTimer.unref?.();
   /** the panes a page in use shows: its terminal attached (the chat lens's too), or its chat or prompt followed without one */
   const shownPanes = (): Set<string> => {

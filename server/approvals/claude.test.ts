@@ -564,14 +564,14 @@ describe("Claude's other tools on a card from the hook's request", () => {
     const root = tempRoot();
     const turns: string[] = [];
     const told = Promise.withResolvers<void>();
-    const hooks = new ApprovalHub(join(root, "h"), [claudeApprovals], { onTurn: (paneId, kind, turn) => { turns.push(`${paneId} ${kind} ${turn}`); if (turns.length === 2) told.resolve(); } });
+    const hooks = new ApprovalHub(join(root, "h"), [claudeApprovals], { onTurn: (paneId, kind, { turn, prompt }) => { turns.push(`${paneId} ${kind} ${turn} ${prompt}`); if (turns.length === 2) told.resolve(); } });
     started.push(hooks);
     const hook = ourHook(launch(hooks, "p1", undefined)!);
     const stop = recorded.find((event) => event["hook_event_name"] === "Stop")!;
-    const outputs = await Promise.all([ask(hook, { ...stop, hook_event_name: "UserPromptSubmit", prompt: "go" }).answer(), ask(hook, stop).answer()]);
+    const outputs = await Promise.all([ask(hook, { ...stop, hook_event_name: "UserPromptSubmit", prompt_id: "p-next", prompt: "go" }).answer(), ask(hook, stop).answer()]);
     await told.promise;
     expect(outputs).toEqual([null, null]);
-    expect(turns.sort()).toEqual(["p1 claude began", "p1 claude ended"]);
+    expect(turns.sort()).toEqual(["p1 claude began p-next", `p1 claude ended ${stop["prompt_id"]}`]);
     expect(hooks.held("p1")).toEqual([]);
     // a turn left with background or scheduled work can begin again with no prompt: no rest from its Stop
     expect(claudeApprovals.turn!({ ...stop, background_tasks: [{ id: "b1" }] })).toBeNull();

@@ -86,16 +86,18 @@ export const claudeApprovals: ApprovalAdapter = {
   },
 
   /**
-   * A prompt begins a turn; a Stop ends one, unless background tasks or scheduled ones are still there (2.1.330 lists
-   * them in the event), whose notice can start a turn with no prompt: that rest stays the screen's and transcript's.
+   * A prompt begins a turn; a Stop ends the turn of its prompt (both carry its id, 2.1.330), unless background tasks or
+   * scheduled ones are still there (it lists them), whose notice can start a turn with no prompt: that rest stays the
+   * screen's and transcript's.
    */
   turn(event) {
-    const input = event as { hook_event_name?: unknown; background_tasks?: unknown; session_crons?: unknown } | null;
+    const input = event as { hook_event_name?: unknown; prompt_id?: unknown; background_tasks?: unknown; session_crons?: unknown } | null;
     const name = input?.hook_event_name;
-    if (name === "UserPromptSubmit") return "began";
+    const prompt = typeof input?.prompt_id === "string" && input.prompt_id !== "" ? input.prompt_id : null;
+    if (name === "UserPromptSubmit") return { turn: "began", prompt };
     if (name !== "Stop") return null;
     const none = (list: unknown) => list === undefined || (Array.isArray(list) && list.length === 0);
-    return none(input!.background_tasks) && none(input!.session_crons) ? "ended" : null;
+    return none(input!.background_tasks) && none(input!.session_crons) ? { turn: "ended", prompt } : null;
   },
 
   decision: permissionDecision,
