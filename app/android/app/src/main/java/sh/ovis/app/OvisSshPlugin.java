@@ -82,7 +82,7 @@ public class OvisSshPlugin extends Plugin {
     @PluginMethod
     public void add(PluginCall call) {
         // the hosted app's front page of a release before HerdrShell openSshSetup calls this itself: it gets what that
-        // hand-over gives, the app's own page on SSH, where the person adds the PC. Any other PC's page is refused
+        // gives, the setup screen over the page (MainActivity.openSshSetup). Any other PC's page is refused
         if (getBridge().getServerUrl() != null) {
             String user = call.getString("user"), host = call.getString("host");
             Integer asked = call.getInt("port");

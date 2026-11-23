@@ -130,6 +130,18 @@ final class SshPcsTests: XCTestCase {
         XCTAssertEqual(store.list().count, 1)
     }
 
+    func testReadsAPagesSshLoginAsTheSetupScreensFields() {
+        // HerdrShell openSshSetup's target, as the hosted app's SSH tab and the app's own page write it (sshOrAddress)
+        let read = { (text: String?) in SshPcs.login(text).map { "\($0.user) \($0.host) \($0.port)" } }
+        XCTAssertEqual(read(" me@studio.lan "), "me studio.lan 22")
+        XCTAssertEqual(read("pi@192.168.0.20:2222"), "pi 192.168.0.20 2222")
+        XCTAssertEqual(read("ssh://dev@nas.tail1e211e.ts.net/"), "dev nas.tail1e211e.ts.net 22")
+        XCTAssertEqual(read("me@[fd7a:115c:a1e0::1]:22"), "me fd7a:115c:a1e0::1 22")
+        // anything else leaves the screen's fields empty
+        for text in ["", "studio.lan", "https://me@studio.lan", "me@host:70000", "me@host/path", "a b@host"] { XCTAssertNil(read(text), text) }
+        XCTAssertNil(read(nil))
+    }
+
     func testOnlyTheAppsOwnPagesAndTheHostedAppOpenTheSshSetup() {
         let store = URL(string: "https://app.ovis.sh")
         XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html"), appOrigin: store))
