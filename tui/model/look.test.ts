@@ -75,6 +75,8 @@ const select = async (run: Run, id: string) => {
 
 const alertNotices = (run: Run) => run.loop.model().notices.filter((notice) => notice.code.startsWith("agent_")).map((notice) => [notice.code, notice.data["agent"], notice.calm]);
 
+const shownPane = (run: Run) => focused(run.loop.model().world, run.loop.model().focus).pane?.id;
+
 describe("the look rule", () => {
   const LOOKING: LookState = { hostFocused: true, inputAfterTurn: false, pane: "t1", live: true, drawn: true, overlay: false, online: true };
   const table: [name: string, change: Partial<LookState>, looked: string | null][] = [
@@ -394,5 +396,64 @@ describe("read state through herdr.seen (UB Q7)", () => {
     await endTurn(run, "t2");
     await endTurn(run, "t1");
     expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }, { terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("a pane the focus passed over between two frames was never shown: its turn stays unread; shown focused, it is read", async () => {
+    // navigate mode, l then h as two reads with no frame between them: the host never showed t2 focused
+    const passed = await started(twoAgents());
+    await hostFocus(passed, FOCUS_IN);
+    await endTurn(passed, "t2");
+    await passed.keys("ctrl+b,w");
+    passed.type("l");
+    passed.type("h");
+    await passed.advance(20);
+    expect([shownPane(passed), seenWrites(passed), passed.core.terminal("t2").labels[SEEN]]).toEqual(["t1", [], "0"]);
+
+    // the same keys with a frame between them: the host showed t2 focused, so its turn is read
+    const shown = await started(twoAgents());
+    await hostFocus(shown, FOCUS_IN);
+    await endTurn(shown, "t2");
+    await shown.keys("ctrl+b,w");
+    shown.type("l");
+    await shown.advance(20);
+    shown.type("h");
+    await shown.advance(20);
+    expect([shownPane(shown), seenWrites(shown), shown.core.terminal("t2").labels[SEEN]]).toEqual(["t1", [{ terminal: "t2", seen: "1" }], "1"]);
+  }, TEST_MS);
+
+  it("an agent list closed and opened again between two frames uncovered nothing: the turn under it stays unread; a close the host was shown reads it", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    await run.keys("ctrl+b,a");
+    await endTurn(run, "t1");
+    const written = run.host.bytes().length;
+    run.type("q\x02a");
+    await run.advance(20);
+    // the list is back before any frame: the host was sent nothing, so nothing showed the pane
+    expect([run.loop.report().mode.overlays, run.host.bytes().length - written, seenWrites(run), run.core.terminal("t1").labels[SEEN]]).toEqual([["agents"], 0, [], "0"]);
+    await run.keys("q");
+    await run.advance(20);
+    expect([run.loop.report().mode.overlays, seenWrites(run)]).toEqual([[], [{ terminal: "t1", seen: "1" }]]);
+  }, TEST_MS);
+
+  it("a seen write marks the turn that was looked at: a turn that ends after the person left stays unread, however late the write runs", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    // the core is slow to answer the read every seen write starts with
+    const answer = Promise.withResolvers<void>();
+    const call = run.loop.link.call.bind(run.loop.link);
+    run.loop.link.call = async (method, params, timeout) => {
+      if (method === "terminal.get") await answer.promise;
+      return call(method, params, timeout);
+    };
+    // turn 1 ends in front of the person; they leave, and turn 2 ends behind them before the write for turn 1 ran
+    await endTurn(run, "t1");
+    await select(run, "t2");
+    await endTurn(run, "t1");
+    expect(seenWrites(run)).toEqual([]);
+    answer.resolve();
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+    expect([run.core.terminal("t1").turn, run.core.terminal("t1").labels[SEEN]]).toEqual([2, "1"]);
   }, TEST_MS);
 });

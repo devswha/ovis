@@ -2,7 +2,7 @@
  * The screen's read state: `herdr.seen` raised on the terminal a person looks at, through the shared SeenMarker
  * (server/herdr-core/seen-label.ts) on the screen's own line, so every Herdr client (the browser, the phone, the Herdr
  * app) counts that turn as read. Who looks at what is `look` (tui/model/look.ts); this keeps what it needs between two
- * looks: the last look, and whether input came after each terminal's last turn.
+ * looks: the last look, whether input came after each terminal's last turn, and the turn each terminal is at.
  */
 import type { SeenMarker } from "../../server/herdr-core/seen-label.ts";
 import { look, type LookState } from "../model/look.ts";
@@ -19,12 +19,19 @@ export class SeenWrites {
   /** input events read so far, and how many had been read when each terminal's last turn ended */
   private inputs = 0;
   private readonly turnsAt = new Map<string, number>();
+  /** each terminal's turn as the core last told it: the turn a look that begins now, or a turn that ends now, is about */
+  private readonly turns = new Map<string, number>();
 
   /** `failed` hears a write that did not get through (its line ended): it is not tried again */
   constructor(private readonly marker: Pick<SeenMarker, "mark" | "unread">, private readonly failed: (error: unknown) => void) {}
 
   get current(): string | null {
     return this.looked;
+  }
+
+  /** The core told `terminal`'s turn: in its record, or as a turn of it ended. */
+  observe(terminal: string, turn: number): void {
+    this.turns.set(terminal, turn);
   }
 
   /** What the screen shows changed: a look that begins (a new pane, or the same one back in view) writes, even for a turn written before. */
@@ -45,7 +52,7 @@ export class SeenWrites {
     this.turnsAt.set(terminal, this.inputs);
     const before = this.looked;
     this.again();
-    if (before === terminal && this.looked === terminal) this.marker.mark(terminal, false).catch(this.failed);
+    if (before === terminal && this.looked === terminal) this.mark(terminal, false);
   }
 
   /** "Mark unread" on `terminal`: its last turn shows as done again, on every client. */
@@ -58,6 +65,11 @@ export class SeenWrites {
     const now = facts === null ? null : look({ ...facts, inputAfterTurn: facts.pane !== null && this.inputs > (this.turnsAt.get(facts.pane) ?? 0) });
     const begins = now !== null && now !== this.looked;
     this.looked = now;
-    if (begins) this.marker.mark(now, true).catch(this.failed);
+    if (begins) this.mark(now, true);
+  }
+
+  /** The write is for the turn the terminal is at now: one that ends before the write runs was not looked at. */
+  private mark(terminal: string, again: boolean): void {
+    this.marker.mark(terminal, again, this.turns.get(terminal)).catch(this.failed);
   }
 }

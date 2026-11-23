@@ -9,6 +9,7 @@ import { REATTACH_DEADLINE } from "./core/pane.ts";
 import { type LoopEnd, startLoop } from "./loop.ts";
 import { ending, EXIT_FAILED } from "./start.ts";
 import { BEHIND_WRITE_BYTES, BEHIND_WRITE_EVENTS, FRAME_PASS_MS, HOLD_RELEASE_MS, LAYOUT_SHOWN_WAIT_MS, NOTICE_SHOW_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, PASTE_LIMIT_BYTES, QUIT_BOUND_MS, RECONNECT_MOST_MS } from "./model/deadlines.ts";
+import { focused } from "./model/focus.ts";
 import { demo } from "./testing/fixtures/demo.ts";
 import { place } from "./testing/fixtures/fixture.ts";
 import { SCALE_LARGEST_TAB, SCALE_TERMINALS, SCALE_WORKSPACES, scale } from "./testing/fixtures/scale.ts";
@@ -47,6 +48,31 @@ function oneTab(count: number, zoomed = false): FakeHcCore {
     core.docs.set(OVIS_LAYOUT_DOC, { value: { schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root, zoomed: panes[0] }] }] }, version: 1 });
   }
   return core;
+}
+
+/** Two agents side by side in one tab, neither with a read turn yet. */
+function agentPair(): FakeHcCore {
+  const core = oneTab(2);
+  for (const terminal of ["t1", "t2"]) core.reportStatus(terminal, { state: "idle", app: "claude" });
+  return core;
+}
+
+/** The agent in `terminal` works, then rests: its turn ends. */
+async function endTurn(run: Run, terminal: string): Promise<void> {
+  run.core.reportStatus(terminal, { state: "working", app: "claude" });
+  run.core.reportStatus(terminal, { state: "idle", app: "claude" });
+  await run.advance(20);
+}
+
+/** Each terminal's `herdr.seen` as any client of the core reads it (null: no label). */
+async function seenLabels(run: Run): Promise<Record<string, string | null>> {
+  const client = new HcConnection(() => run.core.transport());
+  try {
+    const { terminals } = await client.call("terminal.list", { all: true });
+    return Object.fromEntries(terminals.map((terminal) => [terminal.address, terminal.labels?.["herdr.seen"] ?? null]));
+  } finally {
+    client.close();
+  }
 }
 
 const channelOf = (run: Run, terminal: string): number => run.core.viewers(terminal).at(-1)!.channel;
@@ -772,12 +798,17 @@ describe("the loop", () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    const outcome = async (prefix: string, reads: Uint8Array[], zoomed = false, settleBetween = !zoomed) => {
-      const run = await Run.start(zoomed ? { core: oneTab(3, true) } : { fixture: demo });
+    /** Where a sequence is read: the core, and what happened on the screen before its first read. */
+    interface Scene { readonly options: () => RunOptions; readonly given?: (run: Run) => Promise<void> }
+    const DEMO: Scene = { options: () => ({ fixture: demo }) };
+    const ZOOMED: Scene = { options: () => ({ core: oneTab(3, true) }) };
+    const outcome = async (prefix: string, reads: Uint8Array[], scene = DEMO, settleBetween = scene === DEMO) => {
+      const run = await Run.start(scene.options());
       try {
         await run.live();
         if (prefix !== "\x02") run.loop.dispatch({ type: "keys", keys: { prefix }, at: run.clock.current });
         await run.advance(1);
+        await scene.given?.(run);
         let ended = false;
         void run.loop.done.then(() => { ended = true; });
         for (const [at, read] of reads.entries()) {
@@ -801,9 +832,11 @@ describe("the loop", () => {
           return made.get(id)!;
         }));
         return named({
-          ended, busy: model.notices.some((notice) => notice.code === "layout_busy"), focus: model.focus, mode: model.mode.name, panes: model.world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort(), zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
+          ended, busy: model.notices.some((notice) => notice.code === "layout_busy"), focus: model.focus, shown: focused(model.world, model.focus).pane?.id ?? null, mode: model.mode.name, panes: model.world.workspaces.flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.panes.map((pane) => pane.id))).sort(), zoomed: layout?.workspaces.flatMap((workspace) => workspace.tabs.map((tab) => tab.zoomed)) ?? [],
           overlays: model.overlays.map((overlay) => ("field" in overlay ? `${overlay.kind}:${overlay.field.graphemes.join("|")}` : overlay.kind)),
           received: received(run),
+          // the read state every Herdr client shares: who looked at what must not depend on the cut either
+          seen: await seenLabels(run),
         });
       } finally {
         await run.close();
@@ -811,8 +844,10 @@ describe("the loop", () => {
     };
     // A detach never waits for a layout write (it leaves at once), so a write still under way when the screen left may
     // or may not have landed: for a run that detached, only that it left and what each program was sent are compared.
+    // Reads with the screen settled between them are each followed by a frame, so a person saw every pane the focus
+    // stopped on, and read whole they saw only the last: who looked at what is compared where no frame came between.
     type Outcome = Awaited<ReturnType<typeof outcome>>;
-    const compared = (seen: Outcome) => (seen.ended ? { ended: true, received: seen.received } : seen);
+    const compared = (seen: Outcome, framesBetween = false) => (seen.ended ? { ended: true, received: seen.received } : framesBetween ? { ...seen, seen: null } : seen);
     // A hold refuses every action except detach, and every overlay or mode input, so a read with one after a possible
     // layout write differs by design from split reads, where the write may finish first. Such a sequence is marked
     // generously from tokens: any possible write followed by a non-detach action. Any other must never be refused.
@@ -826,34 +861,77 @@ describe("the loop", () => {
         return false;
       });
     };
-    const variants: [prefix: string, zoomed: boolean, runs: number, tokens: string[]][] = [
-      ["\x02", false, 10, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
-      ["-", false, 10, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
-      ["\x02", true, 30, ["\x02w", "\x02l", "\x02h", "\x02z", "\x02x", "l", "h", "a", "Z", "\r"]],
+    const FOCUS_IN = "\x1b[I";
+    const FOCUS_OUT = "\x1b[O";
+    const hostFocus = async (run: Run, report: string) => {
+      run.type(report);
+      await run.advance(20);
+    };
+    /** Another client marks `terminal`'s turn unread. */
+    const markUnread = async (run: Run, terminal: string) => {
+      const other = new HcConnection(() => run.core.transport());
+      await other.call("terminal.label", { terminal, labels: { "herdr.seen": "0" } });
+      other.close();
+      await run.advance(20);
+    };
+    /** Two agents side by side, and what happened on the screen before the reads. */
+    const agents = (given: (run: Run) => Promise<void>): Scene => ({ options: () => ({ core: agentPair() }), given });
+    // under a host that reports its focus, t2 with a turn nobody read, in navigate mode: every read comes with no frame between
+    const UNREAD = agents(async (run) => { await hostFocus(run, FOCUS_IN); await endTurn(run, "t2"); await run.keys("ctrl+b,w"); });
+    const variants: [prefix: string, scene: Scene, runs: number, tokens: string[]][] = [
+      ["\x02", DEMO, 10, [...ACTIONS.map((action) => "\x02" + action), ...TEXT]],
+      ["-", DEMO, 10, [...ACTIONS.map((action) => "-" + action), ...TEXT]],
+      ["\x02", ZOOMED, 30, ["\x02w", "\x02l", "\x02h", "\x02z", "\x02x", "l", "h", "a", "Z", "\r"]],
+      // moves there and back in navigate mode, the mode left and entered again, the agent list opened, chosen from and closed
+      ["\x02", UNREAD, 15, ["l", "h", "l", "h", "\x02a", "q", "\r", "\x02w", "a"]],
     ];
-    for (const [prefix, zoomed, runs, tokens] of variants) {
+    for (const [prefix, scene, runs, tokens] of variants) {
       for (let n = 0; n < runs; n++) {
         const picked = Array.from({ length: 3 + Math.floor(random() * 4) }, () => tokens[Math.floor(random() * tokens.length)]!);
         const text = picked.join("");
-        const settleBetween = !zoomed && !refusesInHold(picked, prefix);
+        const settleBetween = scene === DEMO && !refusesInHold(picked, prefix);
         const bytes = new TextEncoder().encode(text);
-        const whole = await outcome(prefix, [bytes], zoomed);
+        const whole = await outcome(prefix, [bytes], scene);
         if (settleBetween) expect({ text, busy: whole.busy }).toEqual({ text, busy: false });
-        const joined = compared(whole);
-        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), zoomed, settleBetween)) }).toEqual({ text, outcome: joined });
+        const joined = compared(whole, settleBetween);
+        expect({ text, outcome: compared(await outcome(prefix, [...bytes].map((byte) => Uint8Array.of(byte)), scene, settleBetween), settleBetween) }).toEqual({ text, outcome: joined });
         for (let cut = 1; cut < bytes.length; cut++) {
-          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], zoomed, settleBetween)) }).toEqual({ text, cut, outcome: joined });
+          expect({ text, cut, outcome: compared(await outcome(prefix, [bytes.slice(0, cut), bytes.slice(cut)], scene, settleBetween), settleBetween) }).toEqual({ text, cut, outcome: joined });
         }
       }
     }
     // Keep the write pending across the cuts: splitting bytes must not turn a refused move, close, or zoom into a later command.
     for (const pinned of ["\x02wll\rZ", "\x02l\x02lZ", "\x02ll\x02lh", "\x02lab\x02hcd", "\x02l\x02xZ", "\x02l\x02zZ"]) {
       const gate = new TextEncoder().encode(pinned);
-      const result = await outcome("\x02", [gate], true);
+      const result = await outcome("\x02", [gate], ZOOMED);
       expect({ pinned, busy: result.busy }).toEqual({ pinned, busy: true });
       const whole = compared(result);
-      expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), true)) }).toEqual({ pinned, outcome: whole });
-      for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], true)) }).toEqual({ pinned, cut, outcome: whole });
+      expect({ pinned, outcome: compared(await outcome("\x02", [...gate].map((byte) => Uint8Array.of(byte)), ZOOMED)) }).toEqual({ pinned, outcome: whole });
+      for (let cut = 1; cut < gate.length; cut++) expect({ pinned, cut, outcome: compared(await outcome("\x02", [gate.slice(0, cut), gate.slice(cut)], ZOOMED)) }).toEqual({ pinned, cut, outcome: whole });
+    }
+    // What a person was shown is named, not only compared: reads that all agree on a turn nobody saw being read fail
+    // too. No frame comes between the reads.
+    const told: [name: string, scene: Scene, typed: string, leaves: Record<string, unknown>][] = [
+      ["a pane passed over in navigate mode was never shown focused: its turn stays unread", UNREAD, "lh", { shown: "t1", mode: "navigate", seen: { t1: "0", t2: null } }],
+      ["an agent list closed and opened again uncovered nothing: the turn that ended under it stays unread",
+        agents(async (run) => { await hostFocus(run, FOCUS_IN); await run.keys("ctrl+b,a"); await endTurn(run, "t1"); }),
+        "q\x02a", { overlays: ["agents"], seen: { t1: "0", t2: null } }],
+      ["a look neither ends nor begins again between two frames: a turn another client marked unread stays unread through a move away and back",
+        agents(async (run) => { await hostFocus(run, FOCUS_IN); await endTurn(run, "t1"); await markUnread(run, "t1"); await run.keys("ctrl+b,w"); }),
+        "lh", { shown: "t1", seen: { t1: "0", t2: null } }],
+      ["the host's focus coming back between a list's close and its reopening finds the list still on the screen",
+        agents(async (run) => { await hostFocus(run, FOCUS_IN); await run.keys("ctrl+b,a"); await hostFocus(run, FOCUS_OUT); await endTurn(run, "t1"); }),
+        `q${FOCUS_IN}\x02a`, { overlays: ["agents"], seen: { t1: "0", t2: null } }],
+      ["the host's focus coming back between a move and the move back finds the pane moved to not on the screen",
+        agents(async (run) => { await hostFocus(run, FOCUS_OUT); await endTurn(run, "t2"); await run.keys("ctrl+b,w"); }),
+        `l${FOCUS_IN}h`, { shown: "t1", seen: { t1: "0", t2: null } }],
+    ];
+    for (const [name, scene, typed, leaves] of told) {
+      const bytes = new TextEncoder().encode(typed);
+      const whole = await outcome("\x02", [bytes], scene, false);
+      expect({ name, outcome: whole }).toMatchObject({ name, outcome: leaves });
+      expect({ name, outcome: await outcome("\x02", [...bytes].map((byte) => Uint8Array.of(byte)), scene, false) }).toEqual({ name, outcome: whole });
+      for (let cut = 1; cut < bytes.length; cut++) expect({ name, cut, outcome: await outcome("\x02", [bytes.slice(0, cut), bytes.slice(cut)], scene, false) }).toEqual({ name, cut, outcome: whole });
     }
   }, SOAK_MS);
 
@@ -1476,7 +1554,8 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     run.core.reportStatus("t1", { state: "working", app: "claude" });
     run.core.reportStatus("t1", { state: "idle", app: "claude" });
     await run.advance(20);
-    expect(run.core.calls().filter((call) => call.method === "terminal.label").map((call) => call.params["labels"])).toEqual([{ "herdr.seen": "1" }]);
+    // the look began at turn 0, which had no label yet, then turn 1 ended in front of the person: each write marks its own turn
+    expect(run.core.calls().filter((call) => call.method === "terminal.label").map((call) => call.params["labels"])).toEqual([{ "herdr.seen": "0" }, { "herdr.seen": "1" }]);
     return { run };
   }],
   ["a view kept by an earlier run restored", async () => {

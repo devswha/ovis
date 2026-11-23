@@ -18,8 +18,12 @@ export class SeenMarker {
     if (seen !== null && seen >= turn && turn > (this.written.get(address) ?? -1)) this.written.set(address, turn);
   }
 
-  mark(address: string, again = false): Promise<void> {
-    return this.queue(address, () => this.write(address, again));
+  /**
+   * `looked`: the turn the person looked at, when the caller knows it. The write runs later (behind another for the same
+   * terminal, or a slow answer) and marks that turn and none after it: a turn that ended meanwhile stays unread.
+   */
+  mark(address: string, again = false, looked?: number): Promise<void> {
+    return this.queue(address, () => this.write(address, again, looked));
   }
 
   /**
@@ -45,10 +49,10 @@ export class SeenMarker {
     return run;
   }
 
-  private async write(address: string, again: boolean): Promise<void> {
+  private async write(address: string, again: boolean, looked: number | undefined): Promise<void> {
     const record = await this.hc.call("terminal.get", { terminal: address });
     if (record.state !== "live") return;
-    const turn = record.turn ?? 0;
+    const turn = Math.min(record.turn ?? 0, looked ?? Infinity);
     if (!again && turn <= (this.written.get(address) ?? -1)) return;
     const seen = seenTurnOf(record.labels);
     if (seen !== null && seen >= turn) {
