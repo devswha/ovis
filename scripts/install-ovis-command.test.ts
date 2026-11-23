@@ -20,7 +20,7 @@ const WAITS_LINE = "the app is not running yet, so this PC was not added to your
 const OLD_READER_LINE = "this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings → Updates, then run in a terminal on this PC: ";
 const UPDATE_LINE = "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again";
 const TOKEN_LINE = "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC";
-const USAGE = "usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add [--account <id>]]";
+const USAGE = "usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add [--account <id>]] [--no-service]";
 const ACCOUNT = "acct_1a2b3c4d5e6f";
 const NOT_ADDED_LINE = "this PC was not added to your Ovis account; what the add said is above. To try again: ";
 const NO_ACCOUNT_CHECK_LINE = "this Ovis release does not check the account --account names, so the installer does not add this PC with it. Update Ovis in Settings → Updates, then run on this PC: ";
@@ -780,6 +780,20 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       expect(out.trim()).toBe(`Ovis: --account takes your Ovis account's id (ovis status on a PC already in it shows it). ${USAGE}`);
       expect(existsSync(pc.launcher)).toBe(false);
     }
+    const pc = new Pc();
+    const { out, exitCode } = await pc.unattended([], { OVIS_ADD_ACCOUNT: "--add" });
+    expect(exitCode, out).toBe(1);
+    expect(out.trim()).toBe(`Ovis: OVIS_ADD_ACCOUNT takes your Ovis account's id (ovis status on a PC already in it shows it). ${USAGE}`);
+    expect(existsSync(pc.launcher)).toBe(false);
+  });
+
+  it.concurrent("--no-service and OVIS_NO_SERVICE=1 still start herdr, once, and say what starts it again", async () => {
+    for (const [args, extra] of [[["--no-service"], {}], [[], { OVIS_NO_SERVICE: "1" }]] as const) {
+      const pc = new Pc().flag("herdr-starts");
+      const { out, exitCode } = await pc.unattended([...args], extra);
+      expect(exitCode, out).toBe(0);
+      expect(out).toContain(", in herdr, which was started for now, with no service (--no-service): after a restart herdr starts when you open it\n");
+    }
   });
 
   // a script's or a coding agent's add: nobody is there to type yes, so the account is named in advance
@@ -953,7 +967,7 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       expect(exitCode, out).toBe(0);
       expect(pc.addCalls()).toEqual([{ command: "add", rest: [], terminal: true }]);
       expect(out).toContain(STARTED_LINE);
-      expect(out).toContain(`see it: ${pc.launcher} status. Stop it: ${pc.launcher} stop (it starts again with herdr). Stop herdr and every terminal in it: herdr server stop`);
+      expect(out).toContain(`see them: ${pc.launcher} status, herdr status server. Stop Ovis: ${pc.launcher} stop (it starts again with herdr). Stop herdr and every terminal in it: herdr server stop`);
       expect(out).not.toContain(WAITS_LINE);
     });
 

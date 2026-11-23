@@ -12,10 +12,11 @@
 #    SHA-256; where it cannot run, they are mirrored.
 # 2. Installs Ovis as a herdr plugin (a small plugin folder, ~/.local/share/ovis/plugin, that herdr
 #    links and that runs the binary), so it starts with herdr, and starts it now when herdr is running.
-#    When herdr is not running (just installed, or installed and stopped), starts herdr's server headless
-#    from a user service that starts it again at login: ovis-herdr.service (systemd's) on Linux, turning on
-#    lingering when that needs no password, so it also starts at boot and runs past a logout; the Mac
-#    app's LaunchAgent sh.ovis.herdr-server on macOS. The app starts with it. Neither ever stops herdr.
+#    When herdr is not running (just installed, or installed and stopped), starts herdr's server headless,
+#    and the app with it. On a PC used without a desktop, a user service starts it again: on Linux
+#    ovis-herdr.service, where lingering is on or can be turned on without a password, so at boot and past
+#    every logout; on macOS the Mac app's LaunchAgent sh.ovis.herdr-server, at login. Elsewhere (a desktop's
+#    session, no lingering, --no-service) herdr is started once and outlives a logout. No service stops herdr.
 #
 # A release from before the compiled server, a branch (OVIS_REF), an install from source that is
 # already here, or OVIS_FROM_SOURCE=1 keep the earlier way instead: Bun (its own installer, into
@@ -55,6 +56,8 @@
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
 #   OVIS_ADD=1   the same as --add, for where the installer's arguments cannot be given
 #   OVIS_ADD_ACCOUNT=<id>   the same as --account <id>
+#   OVIS_NO_SERVICE=1   the same as --no-service: where herdr is not running, start it once and set up no service or
+#     lingering, so it starts again only when you open it
 set -eu
 
 REPO="devswha/ovis"
@@ -75,7 +78,7 @@ ACCOUNT_SINCE="0.5.10"
 NODE_VERSION="v22.23.2"
 # the second line of the `ovis` launcher this installer writes: a file of that name without it is not ours
 LAUNCHER_MARK="# ovis launcher, written by install.sh"
-USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add [--account <id>]]"
+USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add [--account <id>]] [--no-service]"
 OVIS_HOME="$HOME/.local/share/ovis"
 # The public half of the key every release's ovis-server.json is signed with: scripts/server-manifest.ts
 # RELEASE_PUBLIC_KEY, which the release jobs check against too. Nothing else can stand in for it.
@@ -619,11 +622,14 @@ add_pc() {
     token_line
     token_said=1
     add_result=done
+    # Ctrl-C ends the add, not the install, as at a terminal below
+    trap ':' INT
     if [ "${binary:-0}" = 1 ]; then
       ovis_cli "$add_name" --account "$account" </dev/null || add_result=failed
     else
       bun "$add_code/scripts/plugin.ts" "$add_name" --account "$account" </dev/null || add_result=failed
     fi
+    trap - INT
     return 0
   fi
   [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
@@ -660,29 +666,32 @@ running_lines() {
     say "Ovis runs now at $(link "$running_at"). See it: $(ovis_command) status. Stop it: $(ovis_command) stop"
     return 0
   fi
+  herdr_again=""
   case "${herdr_kept:-}" in
     systemd)
-      case "${lingering:-}" in
-        on | turned-on) herdr_way="the user service $HERDR_SERVICE starts again whenever this PC starts, with nobody logged in" ;;
-        *) herdr_way="the user service $HERDR_SERVICE starts again at your next login" ;;
-      esac
-      herdr_way="$herdr_way (systemctl --user status $HERDR_SERVICE)"
+      herdr_way="the user service $HERDR_SERVICE starts whenever this PC starts, with nobody logged in"
+      herdr_again="until this PC starts again"
       ;;
-    launchd) herdr_way="launchd starts again at your login ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)" ;;
-    login) herdr_way="was started in the background: launchd starts it from your next login at this Mac's screen ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)" ;;
+    launchd)
+      herdr_way="launchd starts at your login ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)"
+      herdr_again="until your next login"
+      ;;
+    login) herdr_way="was started in the background, and launchd starts from your next login at this Mac's screen ($HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist)" ;;
+    linger-off) herdr_way="was started in the background and keeps running after you log out. Nothing starts it after a restart: lingering is off for $(id -un), and turning it on needs an administrator (sudo loginctl enable-linger $(id -un)); then run this installer again and herdr starts whenever this PC starts" ;;
+    desktop) herdr_way="was started for now: this is a desktop's session, so after a restart herdr starts when you open it, as before" ;;
+    declined) herdr_way="was started for now, with no service (--no-service): after a restart herdr starts when you open it" ;;
     once) herdr_way="was started in the background: this PC has no user service manager, so after a restart run this installer again" ;;
     *) herdr_way="" ;;
   esac
-  if [ -n "$herdr_way" ]; then
-    say "Ovis runs now at $(link "$running_at"), in herdr, which $herdr_way"
-    say "see it: $(ovis_command) status. Stop it: $(ovis_command) stop (it starts again with herdr). Stop herdr and every terminal in it: $(herdr_command) server stop"
-  else
+  if [ -z "$herdr_way" ]; then
     say "Ovis runs now at $(link "$running_at"), and starts whenever herdr does. See it: $(ovis_command) status. Stop it: $(ovis_command) stop"
+    return 0
   fi
-  case "${herdr_kept:-}:${lingering:-}" in
-    systemd:turned-on) say "lingering is on for $(id -un) now, so herdr runs with nobody logged in; the guide's Uninstall turns it off again" ;;
-    systemd:off | systemd:unknown) say "to keep herdr and Ovis running after you log out, and start them when this PC starts, run once: loginctl enable-linger $(id -un)" ;;
-  esac
+  say "Ovis runs now at $(link "$running_at"), in herdr, which $herdr_way"
+  say "see them: $(ovis_command) status, $(herdr_command) status server. Stop Ovis: $(ovis_command) stop (it starts again with herdr). Stop herdr and every terminal in it: $(herdr_command) server stop"
+  # the service starts herdr; it does not watch it
+  [ -z "$herdr_again" ] || say "a herdr that stops or crashes is not started again $herdr_again, or until this installer runs again"
+  [ "${lingering:-}" != turned-on ] || say "lingering is on for $(id -un) now, so herdr runs with nobody logged in; the guide's Uninstall turns it off again"
 }
 
 # herdr as a command typed here runs it: by its name where the user's PATH finds this one, else by its path
@@ -1319,45 +1328,66 @@ keep_lingering() {
   esac
 }
 
-# herdr's server, started headless where none runs (herdr just installed, or installed and stopped), as the Mac app's
-# LaunchAgent starts it (app/mac/README.md): the plugin starts with it (its startup hook), so the app runs now, and the
-# user's service manager starts it again at login. Neither service ever stops herdr: herdr's own update hands its
-# terminals to a new server and exits, and a service that took that exit for the end of herdr would stop the new server
-# and every terminal with it; disabling the service (the guide's Uninstall) leaves herdr and its agents running. Without
-# a service manager, or where launchd does not take the agent now, herdr is started once in a session of its own, its
-# output (as the services') away from this installer's, which a script may be reading to its end. $herdr_kept says how:
-# systemd, launchd, login (launchd from the next login) or once. Fails when herdr does not answer within 20 s.
+# Whether this runs in a desktop's session: there herdr is the person's to open, as before, and a login service would
+# start it before the desktop gives the session its display, so its terminals would lack it.
+desktop_session() {
+  case "${XDG_SESSION_TYPE:-}" in x11 | wayland) return 0 ;; esac
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]
+}
+
+# The PATH a service gives herdr, and so its terminals: the user's own, in its order, with the folders this installer
+# puts herdr and Bun in added at the end where it lacks them (the plugin finds Ovis's own Node itself).
+service_path() {
+  service_path=${original_path:-$PATH}
+  for service_dir in "$BIN_DIR" "$HOME/.bun/bin"; do
+    case ":$service_path:" in *":$service_dir:"*) ;; *) service_path="$service_path:$service_dir" ;; esac
+  done
+}
+
+# A locale's name that says UTF-8 (en_US.UTF-8, C.utf8, ko_KR.UTF-8@euro).
+utf8_locale() { case "$1" in *.[Uu][Tt][Ff]-8 | *.[Uu][Tt][Ff]8 | *.[Uu][Tt][Ff]-8@* | *.[Uu][Tt][Ff]8@*) return 0 ;; esac; return 1; }
+
+# herdr's server, started headless where none runs (herdr just installed, or installed and stopped): the plugin starts
+# with it (its startup hook), so the app runs now. On a PC used without a desktop, the user's service manager starts it
+# again: on macOS the Mac app's LaunchAgent (app/mac/README.md) at login; on Linux ovis-herdr.service, only where
+# lingering is on (turned on here when no password is asked), so at boot and past every logout. Without lingering a
+# user service would run herdr inside the user's manager, which logind stops with the last session, and every terminal
+# with it: there, as in a desktop's session, with --no-service, or without a service manager, herdr is started once in a
+# session of its own, which outlives a logout as a herdr started by hand does, and nothing starts it after a restart.
+# Neither service ever stops herdr: herdr's own update hands its terminals to a new server and exits, and a service that
+# took that exit for the end of herdr would stop the new server with them; disabling it (the guide's Uninstall) leaves
+# herdr running. herdr's output (as the services') stays away from this installer's, which a script may be reading to
+# its end. $herdr_kept says how: systemd, launchd, login (launchd from the next login), linger-off, desktop, declined or
+# once. Fails when herdr does not answer within 20 s.
 start_herdr() {
   herdr_bin=$(command -v herdr)
-  herdr_kept=once
-  case "$PATH$HOME$herdr_bin" in *'
-'*) fail "a newline in PATH or HOME cannot go into a service file; remove it and run this again" ;; esac
-  if [ "$os" = darwin ]; then
+  service_path
+  case "$service_path$HOME$herdr_bin${HERDR_SESSION:-}${LANG:-}${LC_ALL:-}${LC_CTYPE:-}" in *'
+'*) fail "a newline in PATH, HOME, HERDR_SESSION or the locale cannot go into a service file; remove it and run this again" ;; esac
+  if [ "${no_service:-0}" = 1 ]; then
+    herdr_kept=declined
+  elif [ "$os" = darwin ]; then
+    herdr_kept=login
     herdr_agent="$HOME/Library/LaunchAgents/$HERDR_AGENT_LABEL.plist"
     mkdir -p "$(dirname "$herdr_agent")" "$HOME/Library/Logs/Ovis"
     # the Mac app's keys: launchd gives a job no locale, and the panes' shells read Korean and emoji as bytes without
     # LC_CTYPE; AbandonProcessGroup, or launchd would end the server herdr hands its terminals to when herdr exits
-    cat >"$herdr_agent.new" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$HERDR_AGENT_LABEL</string>
-  <key>ProgramArguments</key><array><string>$(xml_text "$herdr_bin")</string><string>server</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>WorkingDirectory</key><string>$(xml_text "$HOME")</string>
-  <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>$(xml_text "$PATH")</string>
-    <key>HOME</key><string>$(xml_text "$HOME")</string>
-    <key>LC_CTYPE</key><string>UTF-8</string>
-  </dict>
-  <key>AbandonProcessGroup</key><true/>
-  <key>StandardOutPath</key><string>$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")</string>
-  <key>StandardErrorPath</key><string>$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")</string>
-  <key>ProcessType</key><string>Interactive</string>
-</dict>
-</plist>
-EOF
+    {
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0">' '<dict>'
+      printf '  <key>Label</key><string>%s</string>\n' "$HERDR_AGENT_LABEL"
+      printf '  <key>ProgramArguments</key><array><string>%s</string><string>server</string></array>\n' "$(xml_text "$herdr_bin")"
+      printf '%s\n' '  <key>RunAtLoad</key><true/>'
+      printf '  <key>WorkingDirectory</key><string>%s</string>\n' "$(xml_text "$HOME")"
+      printf '%s\n' '  <key>EnvironmentVariables</key><dict>'
+      printf '    <key>PATH</key><string>%s</string>\n' "$(xml_text "$service_path")"
+      printf '    <key>HOME</key><string>%s</string>\n' "$(xml_text "$HOME")"
+      printf '%s\n' '    <key>LC_CTYPE</key><string>UTF-8</string>'
+      [ -z "${HERDR_SESSION:-}" ] || printf '    <key>HERDR_SESSION</key><string>%s</string>\n' "$(xml_text "$HERDR_SESSION")"
+      printf '%s\n' '  </dict>' '  <key>AbandonProcessGroup</key><true/>'
+      printf '  <key>StandardOutPath</key><string>%s</string>\n' "$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")"
+      printf '  <key>StandardErrorPath</key><string>%s</string>\n' "$(xml_text "$HOME/Library/Logs/Ovis/herdr-server.log")"
+      printf '%s\n' '  <key>ProcessType</key><string>Interactive</string>' '</dict>' '</plist>'
+    } >"$herdr_agent.new"
     mv -f "$herdr_agent.new" "$herdr_agent"
     herdr_job="gui/$(id -u)/$HERDR_AGENT_LABEL"
     # an agent the Mac app's Remove disabled stays off until enabled; a loaded one is kicked, never booted out
@@ -1367,41 +1397,46 @@ EOF
     elif launchctl bootstrap "gui/$(id -u)" "$herdr_agent" </dev/null >/dev/null 2>&1; then
       herdr_kept=launchd
     fi
-    # no login at this Mac's screen (reached over SSH alone): launchd loads the agent at the next one
-    [ "$herdr_kept" = launchd ] || herdr_kept=login
-  elif command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    # otherwise no login at this Mac's screen (reached over SSH alone): launchd loads the agent at the next one
+  elif desktop_session; then
+    herdr_kept=desktop
+  elif ! { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }; then
+    herdr_kept=once
+  elif keep_lingering; [ "$lingering" != on ] && [ "$lingering" != turned-on ]; then
+    herdr_kept=linger-off
+  else
+    herdr_kept=once
     herdr_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$HERDR_SERVICE.service"
     mkdir -p "$(dirname "$herdr_unit")"
+    # a UTF-8 locale, as the Mac app gives launchd's job: the installer's own when it has one, else C.UTF-8
+    herdr_ctype=C.UTF-8
+    for herdr_locale in "${LC_ALL:-}" "${LC_CTYPE:-}" "${LANG:-}"; do
+      if utf8_locale "$herdr_locale"; then herdr_ctype=$herdr_locale; break; fi
+    done
     # oneshot that stays active and starts herdr in the background: systemd follows no process of it, and with
     # KillMode=process and no ExecStop a stop or restart of the unit ends nothing that runs. herdr runs in the home
     # folder, as from a login, not in systemd's /, and its output goes to the journal (journalctl --user -u ovis-herdr)
-    cat >"$herdr_unit.new" <<EOF
-[Unit]
-Description=herdr for Ovis: herdr's server, headless, which starts Ovis
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-KillMode=process
-WorkingDirectory=~
-Environment="PATH=$(unit_text "$PATH")"
-ExecStart=/bin/sh -c '"\$\$0" server </dev/null &' "$(unit_text "$herdr_bin" exec)"
-
-[Install]
-WantedBy=default.target
-EOF
+    {
+      printf '%s\n' '[Unit]' "Description=herdr for Ovis: herdr's server, headless, which starts Ovis" '' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' 'KillMode=process' 'WorkingDirectory=~'
+      printf 'Environment="PATH=%s"\n' "$(unit_text "$service_path")"
+      printf 'Environment="LC_CTYPE=%s"\n' "$(unit_text "$herdr_ctype")"
+      ! utf8_locale "${LANG:-}" || printf 'Environment="LANG=%s"\n' "$(unit_text "$LANG")"
+      [ -z "${HERDR_SESSION:-}" ] || printf 'Environment="HERDR_SESSION=%s"\n' "$(unit_text "$HERDR_SESSION")"
+      # shellcheck disable=SC2016 # $$0 is systemd's escape for the $0 of sh -c
+      printf 'ExecStart=/bin/sh -c '\''"$$0" server </dev/null &'\'' "%s"\n' "$(unit_text "$herdr_bin" exec)"
+      printf '%s\n' '' '[Install]' 'WantedBy=default.target'
+    } >"$herdr_unit.new"
     mv -f "$herdr_unit.new" "$herdr_unit"
     # restart, not start: a unit still active from an earlier start whose herdr was stopped since would start nothing
     if systemctl --user daemon-reload </dev/null >/dev/null 2>&1 && systemctl --user enable "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1 \
       && systemctl --user restart "$HERDR_SERVICE.service" </dev/null >/dev/null 2>&1; then
       herdr_kept=systemd
-      keep_lingering
     else
-      say "systemd did not take $herdr_unit, so herdr does not start by itself at login"
+      say "systemd did not take $herdr_unit, so herdr does not start by itself"
     fi
   fi
   herdr_pid=""
-  if [ "$herdr_kept" = once ] || [ "$herdr_kept" = login ]; then
+  if [ "$herdr_kept" != systemd ] && [ "$herdr_kept" != launchd ]; then
     if command -v setsid >/dev/null 2>&1; then herdr_detach=setsid; elif command -v nohup >/dev/null 2>&1; then herdr_detach=nohup; else herdr_detach=""; fi
     # shellcheck disable=SC2086 # no word when there is neither
     (cd "$HOME" && exec $herdr_detach "$herdr_bin" server </dev/null >/dev/null 2>&1) &
@@ -1736,8 +1771,9 @@ install_plugin_binary() {
     fi
   fi
   ovis_wait=25
+  # the release's server outlives a stopped herdr: one from the binary before keeps serving unless stopped first
+  [ "$binary_changed" = 0 ] || ovis_cli stop </dev/null >/dev/null 2>&1 || true
   if herdr_running; then
-    [ "$binary_changed" = 0 ] || ovis_cli stop </dev/null >/dev/null 2>&1 || true
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
   elif start_herdr; then
     ovis_wait=60
@@ -1774,6 +1810,9 @@ main() {
   add=0
   [ "${OVIS_ADD:-}" != 1 ] || add=1
   account=${OVIS_ADD_ACCOUNT:-}
+  case "$account" in -*) fail "OVIS_ADD_ACCOUNT takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
+  no_service=0
+  [ "${OVIS_NO_SERVICE:-}" != 1 ] || no_service=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --add) add=1 ;;
@@ -1781,6 +1820,7 @@ main() {
         if [ "$1" = --account ]; then account=${2:-}; [ $# -lt 2 ] || shift; else account=${1#--account=}; fi
         case "$account" in "" | -*) fail "--account takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
         ;;
+      --no-service) no_service=1 ;;
       *) fail "does not know the option '$1'. $USAGE" ;;
     esac
     shift

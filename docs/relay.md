@@ -332,10 +332,10 @@ The installer runs `ovis add` as its last step when it is given `--add`
 while the app runs. What was typed in that terminal while the installer worked is discarded before
 the step starts, so it answers nothing the step asks; where the installer cannot discard it, it
 prints the command instead. On a PC where herdr was not running (installed just now, or stopped),
-the installer first starts it from a user service that starts it again at login, and at boot where
-lingering can be turned on ([Quick start](guide.md#quick-start)), so the app is up for the add and
-stays up. With the account named, nothing is asked, so one line adds a new server from a script or a
-coding agent, with no terminal:
+the installer first starts it, so the app is up for the add, and on a server sets up what starts it
+again at boot ([Quick start](guide.md#quick-start)). With the account named, nothing is asked, so one
+line adds a new server from a script or a coding agent, with no terminal
+([INSTALL.md](../INSTALL.md) says how an agent runs it and relays the sign-in code):
 
 ```bash
 curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>
