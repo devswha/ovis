@@ -15,6 +15,7 @@ import { appHome, appOrigin, writeNativeOrigin } from "./hosted-origin.ts";
 
 const app = join(import.meta.dir, "..");
 const www = join(app, "www");
+const appUrl = appOrigin(process.env["OVIS_APP_URL"]);
 rmSync(www, { recursive: true, force: true });
 cpSync(join(app, "web"), www, { recursive: true });
 // error.html stands alone: Android serves it without the files beside it while a PC is open
@@ -24,7 +25,6 @@ const errorHtml = readFileSync(errorPage, "utf8");
 if (!errorHtml.includes(link)) throw new Error("error.html no longer links shell.css the way build-web.ts inlines it");
 writeFileSync(errorPage, errorHtml.replace(link, `<style>${readFileSync(join(www, "shell.css"), "utf8")}</style>`));
 
-const appUrl = appOrigin(process.env["OVIS_APP_URL"]);
 if (appUrl) {
   const shellJs = join(www, "shell.js");
   const constant = 'export const APP_ORIGIN = "https://app.ovis.sh";';

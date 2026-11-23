@@ -10,12 +10,17 @@
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** `value` when it is an https origin with no path, null when it is unset or empty; anything else throws. */
+/**
+ * `value` when it is an https origin with no path whose host is a DNS name or an IPv4 address, null when it is unset or
+ * empty; anything else throws. URL takes a host such as `stage"blue` or `stage$(channel)`, which would end the Java
+ * string gradle writes or be expanded by the xcconfig, so the native code would trust another origin than the pages.
+ */
 export function appOrigin(value: string | undefined): string | null {
   if (!value) return null;
   let parsed: URL | null = null;
   try { parsed = new URL(value); } catch {}
   if (parsed?.protocol !== "https:" || parsed.origin !== value) throw new Error(`OVIS_APP_URL must be an https origin with no path, such as https://app.ovis.sh: ${value}`);
+  if (!/^[a-z0-9.-]+$/.test(parsed.hostname)) throw new Error(`OVIS_APP_URL's host must be a DNS name or an IPv4 address (letters, digits, dots and hyphens): ${value}`);
   return value;
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appHome, appOrigin, writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
@@ -323,6 +324,32 @@ describe("the hosted origin a build gives the native apps", () => {
     }
   });
 
+  it("refuses a host that would read differently in the files the native builds take it from", () => {
+    // a quote ends the Java string gradle writes; "$(...)" is a build setting an xcconfig expands
+    for (const text of ['https://stage"blue.example', "https://stage$(channel).example", "https://[::1]", "https://stage_blue.example"]) {
+      expect(() => appOrigin(text)).toThrow("OVIS_APP_URL's host must be a DNS name or an IPv4 address");
+    }
+    expect(appOrigin("https://100.64.0.1:8443")).toBe("https://100.64.0.1:8443");
+  });
+
+  it("fails an iOS build whose bundled pages name another hosted origin than the native code trusts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hosted-origin-check-"));
+    const check = (shellJs: string, origin: string) => spawnSync("sh", [join(app, "ios/check-hosted-origin.sh"), shellJs, origin], { encoding: "utf8" });
+    try {
+      const shellJs = join(dir, "shell.js");
+      writeFileSync(shellJs, `export const ACCOUNT_SIGN_IN = true;\nexport const APP_ORIGIN = ${JSON.stringify(preview)};\n`);
+      expect(check(shellJs, preview).status).toBe(0);
+      const mismatch = check(shellJs, "https://app.ovis.sh");
+      expect(mismatch.status).toBe(1);
+      expect(mismatch.stdout).toContain(`error: ${shellJs} names ${preview} and OVIS_APP_ORIGIN is https://app.ovis.sh`);
+      const missing = check(join(dir, "none.js"), "https://app.ovis.sh");
+      expect(missing.status).toBe(1);
+      expect(missing.stdout).toContain("names no hosted origin");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("writes it where the Android and iOS builds read it, and removes it for a build without one", () => {
     const dir = mkdtempSync(join(tmpdir(), "hosted-origin-"));
     try {
@@ -394,5 +421,10 @@ describe("the hosted origin a build gives the native apps", () => {
     const reference = /(\w+) \/\* hosted-origin\.xcconfig \*\/ = \{isa = PBXFileReference;[^}]*path = \.\.\/hosted-origin\.xcconfig;/.exec(project)?.[1];
     expect(reference).toBeDefined();
     expect(project.split(`baseConfigurationReference = ${reference} /* hosted-origin.xcconfig */;`).length - 1).toBe(2);
+    // and packaging checks the copied pages against it: the App target's build phase, Android's merge of assets
+    const phase = /(\w+) \/\* Check the hosted origin \*\/ = \{\s*isa = PBXShellScriptBuildPhase;[^}]*check-hosted-origin\.sh/.exec(project)?.[1];
+    expect(phase).toBeDefined();
+    expect(/504EC3031FED79650016851F \/\* App \*\/ = \{[^}]*buildPhases = \(([^)]*)\)/.exec(project)?.[1]).toContain(`${phase} /* Check the hosted origin */`);
+    expect(gradle).toContain('file("src/main/assets/public/shell.js")');
   });
 });
