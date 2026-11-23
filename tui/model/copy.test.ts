@@ -1,8 +1,10 @@
 import { afterEach, expect, it } from "bun:test";
 import { FRAME_DATA } from "../../server/herdr-core/connection.ts";
 import { place } from "../testing/fixtures/fixture.ts";
+import { keyBytes } from "../testing/keys.ts";
 import { Stage } from "../testing/pane-harness.ts";
 import { Run } from "../testing/run.ts";
+import { FRAME_PASS_MS } from "./deadlines.ts";
 
 const runs: Run[] = [];
 afterEach(async () => {
@@ -454,6 +456,42 @@ it.each([
     await rival.detach();
     rival.close();
   }
+});
+
+it.each([
+  ["a press its program got is released there as copy mode takes over, and the release read in copy mode goes nowhere",
+    ["press@4:4", "ctrl+b", "[", "release@4:4", "q", "Z"], "\x1b[<0;4;3M\x1b[<0;4;3mZ"],
+  ["a drag its program got is released at the last cell it reached",
+    ["press@4:4", "drag@6:4", "ctrl+b", "[", "release@8:4", "q", "Z"], "\x1b[<0;4;3M\x1b[<32;6;3M\x1b[<0;6;3mZ"],
+  ["a press that began in copy mode reaches the program neither there nor at its release after copy mode",
+    ["press@4:4", "ctrl+b", "[", "release@4:4", "press@6:4", "q", "release@6:4", "Z"], "\x1b[<0;4;3M\x1b[<0;4;3mZ"],
+] as const)("copy mode entered over a held mouse button: %s", async (_name, keys, wire) => {
+  // read whole, a read a key, and a read a key with a frame after each: the program is sent the same bytes
+  for (const reads of ["one read", "a read each", "a frame after each"] as const) {
+    const run = await start("\x1b[?1002h\x1b[?1006hpane\r");
+    await run.keys("q");
+    if (reads === "one read") run.type(keys.map(keyBytes).join(""));
+    else {
+      for (const key of keys) {
+        await run.keys(key);
+        if (reads === "a frame after each") await run.advance(FRAME_PASS_MS);
+      }
+    }
+    // and nothing more once the next frame is drawn
+    await run.advance(FRAME_PASS_MS);
+    expect([reads, data(run).join("")]).toEqual([reads, wire]);
+  }
+});
+
+it("copy mode refused over a held mouse button takes nothing over: the drag and its release go on to the program", async () => {
+  const run = await start("\x1b[?1002h\x1b[?1006hpane\r");
+  await run.keys("q");
+  // inside the program's synchronized update copy mode does not start
+  run.core.program("t1").output("\x1b[?2026h");
+  await run.advance(10);
+  await run.keys("press@4:4,ctrl+b,[,drag@6:4,release@6:4");
+  expect(run.loop.model().mode.name).toBe("terminal");
+  expect(data(run).join("")).toBe("\x1b[<0;4;3M\x1b[<32;6;3M\x1b[<0;6;3m");
 });
 
 it("copy consumes a click on the other pane", async () => {

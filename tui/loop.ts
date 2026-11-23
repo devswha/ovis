@@ -636,6 +636,9 @@ export function startLoop(options: LoopOptions): Loop {
         // mode, a label) acts as it does read apart, with a frame between each
         const spot = effect.command.kind === "leave" ? undefined : shape?.spots.find((spot) => spot.pane === effect.pane && !spot.covered);
         const answer = copyView.run(effect, panes.view(effect.pane), painter && spot ? sceneNow(painter.styles, spot).scene : undefined);
+        // copy mode takes the mouse from here and swallows what it reads of it, a release too: a gesture under way ends now,
+        // where its press went (a program that got the press gets its release, a divider its last ratio)
+        if (effect.command.kind === "enter" && !answer.close) for (const step of pointer.cancel(pointerScene(), clock.now())) performPointer(step);
         if (answer.text !== undefined) writeCopy(answer.text);
         if (answer.close) dispatch({ type: "copy_closed", pane: effect.pane });
         if (answer.unavailable) dispatch({ type: "notice", code: "copy_unavailable", at: clock.now() });
