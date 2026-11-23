@@ -704,7 +704,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
   for (const join of joins) {
     const label = plainLabel(join.label);
     const first = join.digits !== undefined;
-    const prompt = first ? `${firstJoinLead(join, options.account)} Type the six digits ${label} shows, or press Enter to skip: `
+    const prompt = first ? `${firstJoinLead(join, options.account)} Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to skip: `
       : `${label} asks to join your account. Type all six digits its screen shows to let it in (one wrong entry ends this request), or press Enter by itself to leave it waiting: `;
     for (;;) {
       const line = await askLine(options, prompt);
@@ -715,7 +715,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
       const outcome = await options.approve(join.id, typed);
       if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
       if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
-      out(outcome === "approved" ? first ? `${label} can open this PC now.\n` : `Approved: ${label} joins your account once it confirms.\n`
+      out(outcome === "approved" ? first ? `${label} is let in; it opens this PC in a moment.\n` : `Approved: ${label} joins your account once it confirms.\n`
         : outcome === "wrong_digits" ? first ? `That is not the number ${label} shows, so it was not let in. To try again, have ${label} ask again, then run ${command} again.\n`
           : `That is not the number ${label} shows. It was not let in; it can ask again.\n`
         : `${label} is no longer waiting.\n`);
@@ -926,6 +926,10 @@ interface Device {
   readonly added_by?: string;
   /** let in by the list of the account this PC is in, never by a code: that account vouches for it */
   readonly through_account?: true;
+  /** on a row `through_account`: the day it last signed in here (null before its first sign-in) */
+  readonly last_seen_at?: string | null;
+  /** to this PC's own window: while one of its sessions is up, and since when */
+  readonly connection?: { readonly since: string };
 }
 
 /**
@@ -1560,6 +1564,8 @@ interface Pressing {
   readonly unlist: () => Promise<Unlisted>;
   /** names the account that signed in as the one this PC's relay pass is asked under, which asks for the pass again */
   readonly named: () => Promise<void>;
+  /** ends the sign-in, which nothing needs once this PC is added, after a listing a renewal took away went back */
+  readonly signOut: () => Promise<void>;
 }
 
 /** How long `add` waits, once this PC is added, for the first device that opens it to ask for its six digits. */
@@ -1575,7 +1581,8 @@ const FIRST_JOIN_MS = 10 * 60_000;
  * the digits. A line answers only the question it was typed under, and only once that was on the screen long enough to
  * read (DWELL_MS); what the terminal held as a question first showed is discarded, as `asking` does. Enter by itself,
  * the input ending, Ctrl+C and the ten minutes end it, as does a device that got in through the account meanwhile (a
- * member, or a row of the account's list, that GET /api/devices did not show before). False, with nothing shown, where
+ * member or a row of the account's list that GET /api/devices did not show before, or such a row it showed that signs
+ * in during the wait); each end says how to let a device in later. False, with nothing shown, where
  * this PC lists no joins to its terminal (an Ovis from before the route), or the run stopped before the first question.
  */
 async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readonly name: string; readonly account: string; readonly hint: string }): Promise<boolean> {
@@ -1595,11 +1602,20 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
     if (signal.aborted || error instanceof LocalError && (error.status === 404 || error.status === 405)) return false;
     if (!(error instanceof LocalError || error instanceof AwayError)) throw error;
   }
-  // the devices that could open it already: one that comes after them got in by itself. Taken at the next look when unread
-  let known: ReadonlySet<string> | null;
+  // The devices that could open it already, and how far each was used: one that comes after them got in by itself, and
+  // so did a row of the account's list that signs in after them. One press reads the account's list before it answers,
+  // so the phone that pressed Add is usually such a row already, and it signs in with no join. GET /api/devices tells
+  // that by the day it last signed in (`last_seen_at`, null before its first) and, to this PC's own window, by a session
+  // that is up (`connection.since`). Taken at the next look when this read was not answered
+  interface Usage { readonly seen: string | null; readonly since: string | null }
+  const usage = (device: Device): Usage => ({ seen: device.last_seen_at ?? null, since: device.connection?.since ?? null });
+  // a session that ended, or a day that went back, is no sign-in
+  const signedIn = (before: Usage, device: Device): boolean => device.through_account === true
+    && ((device.last_seen_at ?? null) !== null && device.last_seen_at !== before.seen || (device.connection?.since ?? null) !== null && device.connection?.since !== before.since);
+  let known: ReadonlyMap<string, Usage> | null;
   try {
     const rows = await throughAccount();
-    known = rows === null ? null : new Set(rows.map((device) => device.id));
+    known = rows === null ? null : new Map(rows.map((device) => [device.id, usage(device)]));
   } catch { return false; }
   const stopAt = now() + FIRST_JOIN_MS;
   interface Question { readonly prompt: string; shownAt: number | null }
@@ -1648,7 +1664,7 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
         if (!SIX_DIGITS.test(typed)) { say(`That line answered nothing: type all six digits ${label} shows, or press Enter by itself to finish without. Answer again.\n`); continue; }
         try {
           await api("POST", "/api/relay/join", { body: { id, digits: typed } });
-          say(`${label} can open this PC now.\n`);
+          say(`${label} is let in; it opens this PC in a moment.\n`);
           return true;
         } catch (error) {
           if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error;
@@ -1681,12 +1697,13 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
         if (next !== undefined) {
           seen.add(next.id);
           const label = plainLabel(next.label);
-          asked = { id: next.id, label, prompt: `${firstJoinLead(next, account)} Type the six digits ${label} shows (Enter to finish without): `, shownAt: null };
+          asked = { id: next.id, label, prompt: `${firstJoinLead(next, account)} Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `, shownAt: null };
         }
         const rows = await throughAccount();
-        if (rows !== null && known === null) known = new Set(rows.map((row) => row.id));
-        const came = rows?.find((row) => !known!.has(row.id));
-        if (came !== undefined) { say(`${plainLabel(came.label)} can open this PC now: it got in through your account.\n`); return true; }
+        if (rows !== null && known === null) known = new Map(rows.map((row) => [row.id, usage(row)]));
+        // the device named may not be the phone in hand: the way to let that one in is said too
+        const came = rows?.find((row) => { const before = known!.get(row.id); return before === undefined || signedIn(before, row); });
+        if (came !== undefined) { say(`${plainLabel(came.label)} can open this PC now: it got in through your account. ${hint}`); return true; }
       } catch (error) {
         if (signal.aborted) break;
         if (error instanceof AwayError) {
@@ -1761,6 +1778,8 @@ async function addByPress(options: LinkOptions, api: Api, press: Pressing): Prom
       if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error;
       online = false;
     }
+    // what follows reads this PC only: the sign-in ends here, not with the run up to ten minutes later
+    await press.signOut();
     // the first device that opens this PC asks for six digits only this PC may let in (a first join): here, at a
     // terminal, they are typed in the same run; elsewhere it is said where to type them
     const hint = `If your phone asks for six digits when you open ${name}, run ${cli(options)} approve on this PC and type them.\n`;
@@ -1977,6 +1996,14 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   const signedIn = session?.account ?? null;
   const pending: { listing: Listing | null; kept: boolean } = { listing: null, kept: false };
   const unlisted = "This PC could not be listed in your account again just now; it is tried again until it is.\n";
+  let ended = false;
+  // the sign-in was only for this: it ends with it, and nothing of it stays on the PC. A listing a renewal took away goes back first
+  const signOut = async (): Promise<void> => {
+    if (ended) return;
+    ended = true;
+    if (pending.listing !== null && !await putListing(api, service, pending.listing)) out("This PC dropped out of your account's list; run link again to list it.\n");
+    await service.signOut().catch(() => out("The sign-in could not be ended at the account service; it ends by itself when it runs out.\n"));
+  };
   const kept = "This PC stays listed, but an earlier run listed it, so your other devices may no longer show it as new.\n";
   try {
     if (session === undefined || signedIn === null) throw new LocalError("The sign-in did not last. Run this again.");
@@ -2021,6 +2048,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         signedIn, name: first.entry.label, listedAt: Number.isFinite(at) ? at : null,
         confirmed: lists[1].some((pc) => pc.server_id === first.serverId),
         named: () => nameRelayAccount(api, service),
+        signOut,
         unlist: async () => {
           try { await service.deletePc(first.serverId); return "removed"; } catch (error) {
             if (!(error instanceof AccountServiceError && error.status === 403 && error.code === "own_sign_in_required")) return "failed";
@@ -2199,9 +2227,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       }
     }
   } finally {
-    if (pending.listing !== null && !await putListing(api, service, pending.listing)) out("This PC dropped out of your account's list; run link again to list it.\n");
-    // the sign-in was only for this: it ends with it, and nothing of it stays on the PC
-    await service.signOut().catch(() => out("The sign-in could not be ended at the account service; it ends by itself when it runs out.\n"));
+    await signOut();
   }
 }
 

@@ -8,13 +8,15 @@
  * online, so the command alone is told it is (GET /api/relay); every other call reaches the server. No test sleeps:
  * the command's waits between looks are released one at a time, each bounded.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { accountDeviceId, exportAccountKey } from "../shared/account-records.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import { channelBinding, importPublicKey } from "../shared/relay-e2ee.ts";
 import { FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../shared/relay-pair-sas.ts";
 import { PAIRING_LINK_MS } from "../server/devices.ts";
+import { JOIN_HOLD_MS } from "../server/account/join-hold.ts";
 import { ask, ended, linkRecord, pairingPc, phone, sendLink, signedInWith, vouchFor, type Pc, type Phone } from "../server/account/pairing.test-helpers.ts";
 import { bounded, deferred, relayConnection, TestClock } from "../server/relay/test-helpers.ts";
 import { approveJoins, link, type OwnJoin } from "./plugin-link.ts";
@@ -284,9 +286,12 @@ function joinWaiting(pc: Pc): Promise<void> {
   return bounded(found.promise).finally(stop);
 }
 
-test("ovis add at a terminal goes on after Added: the first device that opens the PC asks for a first join, and the six digits it shows, typed here, let it in", async () => {
-  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
-  pcs.push(made);
+/**
+ * `ovis add --account` at a terminal on a fresh PC, run until it is added and asks for a phone's digits (its watch). A
+ * device of the account presses Add as the command says to. `type` sends a line once the question could be read, on
+ * the command's own clock.
+ */
+async function addedAtTerminal(made: Pc) {
   const service = made.account;
   service.opensAll = true;
   const origin = `http://127.0.0.1:${made.app.port}`;
@@ -294,7 +299,6 @@ test("ovis add at a terminal goes on after Added: the first device that opens th
   const keys = terminalLines();
   const out: string[] = [];
   let signedIn = false;
-  // the command's own clock, moved on before a line is typed so the question was on the screen long enough to read
   let skew = 0;
   const watching = deferred<void>();
   const asked = deferred<string>();
@@ -322,6 +326,17 @@ test("ovis add at a terminal goes on after Added: the first device that opens th
   });
   await bounded(watching.promise);
   expect(made.devices.account()).toBe(OWNER);
+  return {
+    run, serverId, asked: asked.promise,
+    text: () => out.join(""),
+    type: (line: string) => { skew += 2_000; keys.type(line); },
+  };
+}
+
+test("ovis add at a terminal goes on after Added: the first device that opens the PC asks for a first join, and the six digits it shows, typed here, let it in", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  pcs.push(made);
+  const add = await addedAtTerminal(made);
   expect(made.devices.hasAccountApprover()).toBe(false);
   // the phone opens the PC from My PCs: no member could approve it, so this PC itself is asked
   const device = await phone();
@@ -330,16 +345,38 @@ test("ovis add at a terminal goes on after Added: the first device that opens th
   const join = await firstJoin(made, device);
   expect(join.approveOn).toBe("linux");
   await waiting;
-  const question = await bounded(asked.promise);
+  const question = await bounded(add.asked);
   expect(question).toContain("Android · Chrome asks to open this PC (from Ovis account acct_owner,");
   expect(question).not.toContain(join.digits.slice(3));
   join.confirm();
-  skew += 2_000;
-  keys.type(join.digits);
-  expect(await bounded(run)).toBe(0);
-  expect(out.join("")).toContain("Android · Chrome can open this PC now.\n");
+  add.type(join.digits);
+  expect(await bounded(add.run)).toBe(0);
+  expect(add.text()).toContain("Android · Chrome is let in; it opens this PC in a moment.\n");
   expect((await join.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
   expect(made.devices.hasKey(device.spki)).toBe(true);
+});
+
+test("ovis add at a terminal ends its watch when the phone, a row of the account's list it knew from the start, signs in with no join", async () => {
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  pcs.push(made);
+  // the phone is on the account's list before the press: the PC's first read of that list lets it in
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  const publicKey = await exportAccountKey(keys.publicKey);
+  made.account.registerDevice(OWNER, publicKey, "Pixel");
+  const add = await addedAtTerminal(made);
+  const id = accountDeviceId(add.serverId, publicKey);
+  const listed = (await made.listed()).find((row) => row.id === id);
+  expect(listed).toMatchObject({ through_account: true, last_seen_at: null });
+  // it opens the PC with its account key once its row's join hold is over: no join, nothing to type
+  const realNow = Date.now.bind(Date);
+  const clock = spyOn(Date, "now").mockImplementation(() => realNow() + JOIN_HOLD_MS);
+  try {
+    const session = await relayConnection(made, { serverId: add.serverId });
+    await session.auth({ keys, publicKey, id });
+    expect(await bounded(add.run)).toBe(0);
+  } finally { clock.mockRestore(); }
+  expect(add.text()).toContain("Pixel can open this PC now: it got in through your account. If your phone asks for six digits when you open ");
+  expect(add.text()).not.toContain("asks to open this PC");
 });
 
 /** A PC added to OWNER in one press, as `ovis add` leaves it: in the account, with no member to approve a join. */
@@ -415,7 +452,7 @@ test("ovis approve lets in a first join, listed to this PC's terminal, with the 
   join.confirm();
   const approved = await approving(pc, (said, type) => { if (said.includes("press Enter to skip")) type(join.digits); });
   expect(approved.code).toBe(0);
-  expect(approved.text).toContain("Android · Chrome can open this PC now.\n");
+  expect(approved.text).toContain("Android · Chrome is let in; it opens this PC in a moment.\n");
   expect((await join.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
   expect(pc.devices.hasKey(device.spki)).toBe(true);
 });

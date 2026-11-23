@@ -1642,13 +1642,13 @@ describe("pair --approve", () => {
     const { server, typed } = firstJoinWaitingPc();
     const terminal = atTerminal(server.port!, { TZ: "UTC" });
     try {
-      await terminal.shows(`${firstAsked("Pixel")}. Type the six digits Pixel shows, or press Enter to skip: `);
+      await terminal.shows(`${firstAsked("Pixel")}. Type the six digits Pixel shows (one wrong entry ends this request), or press Enter to skip: `);
       expect(terminal.screen).not.toMatch(/482|913/);
       // fixed wait: a line counts only a second and a half after its question showed, by the command's own clock
       await Bun.sleep(1_700);
       terminal.type("482913\n");
-      await terminal.shows("Pixel can open this PC now.");
-      await terminal.shows("Galaxy shows, or press Enter to skip: ");
+      await terminal.shows("Pixel is let in; it opens this PC in a moment.");
+      await terminal.shows("Galaxy shows (one wrong entry ends this request), or press Enter to skip: ");
       // fixed wait: as above, for the next question
       await Bun.sleep(1_700);
       terminal.type("\n");
@@ -1666,12 +1666,12 @@ describe("pair --approve", () => {
     const { server, typed } = firstJoinWaitingPc((body) => body.id === "f1" ? Response.json({ error: { code: "wrong_digits", message: "Those are not the digits the new device shows; it was not let in." } }, { status: 409 }) : undefined);
     const terminal = atTerminal(server.port!);
     try {
-      await terminal.shows("Pixel shows, or press Enter to skip: ");
+      await terminal.shows("Pixel shows (one wrong entry ends this request), or press Enter to skip: ");
       // fixed wait: a line counts only a second and a half after its question showed, by the command's own clock
       await Bun.sleep(1_700);
       terminal.type("000000\n");
       await terminal.shows("That is not the number Pixel shows, so it was not let in. To try again, have Pixel ask again, then run ovis approve again.");
-      expect(terminal.screen).not.toContain("Pixel can open this PC now");
+      expect(terminal.screen).not.toContain("Pixel is let in");
       expect(typed).toEqual([{ id: "f1", digits: "000000" }]);
     } finally {
       await terminal.close();

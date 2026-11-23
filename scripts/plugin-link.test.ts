@@ -1654,6 +1654,7 @@ describe("ovis link, on the PC itself", () => {
     let joinReads = 0;
     let deviceReads = 0;
     let added = false;
+    let signedOutBeforeAdded: boolean | undefined;
     let token = "";
     const pressAdd = async (): Promise<void> => {
       const own = service.issueToken("acct_1");
@@ -1718,6 +1719,7 @@ describe("ovis link, on the PC itself", () => {
         const request = new Request(input, init);
         const answer = await service.fetch(request);
         if (new URL(request.url).pathname === "/v1/token" && answer.ok) token = (await answer.clone().json() as { access_token: string }).access_token;
+        if (new URL(request.url).pathname === "/v1/signout") signedOutBeforeAdded ??= !added;
         return answer;
       },
       out: (text) => {
@@ -1737,7 +1739,7 @@ describe("ovis link, on the PC itself", () => {
     const listed = () => service.pcs("acct_1").filter((entry) => entry.server_id === pc.server_id);
     // the sign-in ends with the run, whatever ended it
     const signedOut = (await service.fetch(new Request(`${SERVICE}/v1/session`, { headers: { authorization: `Bearer ${token}` } }))).status === 401;
-    return { code, text: out.join(""), askedAt, pressed, named, typed, service, pc, listed, signedOut, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
+    return { code, text: out.join(""), askedAt, pressed, named, typed, service, pc, listed, signedOut, signedOutBeforeAdded, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
   }
 
   // the id first, with where to compare it; the PCs as what that account lists, which a decoy account can copy
@@ -2003,7 +2005,7 @@ describe("ovis link, on the PC itself", () => {
     const ASKED_AT = "2026-11-06T12:00:30.000Z";
     const at = new Date(ASKED_AT).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
     const first = (id: string, label: string, digits: string): OwnJoin => ({ id, label, asked_at: ASKED_AT, digits });
-    const asks = (label: string) => `${label} asks to open this PC (from Ovis account acct_1, asked at ${at}). Type the six digits ${label} shows (Enter to finish without): `;
+    const asks = (label: string) => `${label} asks to open this PC (from Ovis account acct_1, asked at ${at}). Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `;
     const after = (text: string) => text.slice(text.indexOf(WATCH));
 
     it("asks about the first join that comes by its device, shows none of its digits, and lets it in with the six typed here", async () => {
@@ -2013,9 +2015,10 @@ describe("ovis link, on the PC itself", () => {
         watch: (said, answer) => { if (said.endsWith(asks("Pixel"))) answer("482 913"); },
       });
       expect(run.code).toBe(0);
-      expect(after(run.text)).toBe(`${WATCH}\n${asks("Pixel")}Pixel can open this PC now.\n${CLOSING}`);
+      expect(after(run.text)).toBe(`${WATCH}\n${asks("Pixel")}Pixel is let in; it opens this PC in a moment.\n${CLOSING}`);
       expect(run.typed).toEqual([{ id: "f1", digits: "482913" }]);
-      expect(run.signedOut).toBe(true);
+      // the sign-in ended before the watch: nothing in it needs the account service
+      expect([run.signedOut, run.signedOutBeforeAdded]).toEqual([true, true]);
     });
 
     it("says so when the digits are wrong, which ends that join, and lets the device's next request in", async () => {
@@ -2033,7 +2036,7 @@ describe("ovis link, on the PC itself", () => {
       });
       expect(run.code).toBe(0);
       expect(run.typed).toEqual([{ id: "f1", digits: "111111" }, { id: "f2", digits: "555666" }]);
-      expect(after(run.text)).toContain(`${asks("Pixel")}That is not the number Pixel shows, so it was not let in. Have Pixel ask again: its request shows here.\n${asks("Pixel")}Pixel can open this PC now.\n`);
+      expect(after(run.text)).toContain(`${asks("Pixel")}That is not the number Pixel shows, so it was not let in. Have Pixel ask again: its request shows here.\n${asks("Pixel")}Pixel is let in; it opens this PC in a moment.\n`);
     });
 
     it("finishes without letting a device in on Enter by itself, also with a first join waiting, and says how to let it in later", async () => {
@@ -2065,6 +2068,30 @@ describe("ovis link, on the PC itself", () => {
       expect(after(run.text)).toContain("That line answered nothing: type all six digits Pixel shows, or press Enter by itself to finish without. Answer again.\n");
     });
 
+    it("says so and ends when a row of the account's list it knew from the start signs in: the phone that pressed Add, with no join", async () => {
+      // one press read the account's list before it answered, so the phone is a row already, never used here
+      const row = { id: "00000000000000c3", label: "Pixel", role: "drive", created_at: ASKED_AT, last_seen_at: null, current: false, via_relay: true, through_account: true };
+      const connection = { route: "relay", relay: RELAY, rtt_ms: null, since: "2026-11-06T12:01:00.000Z" };
+      for (const used of [{ connection }, { last_seen_at: "2026-11-06T00:00:00.000Z" }]) {
+        const run = await pressing({ pressAfter: 1, devices: (reads) => [reads < 3 ? row : { ...row, ...used }], watch: () => undefined });
+        expect(run.code).toBe(0);
+        expect(after(run.text)).toBe(`${WATCH}\nPixel can open this PC now: it got in through your account. ${FIRST_JOIN_HINT}${CLOSING}`);
+      }
+    });
+
+    it("takes no session that ended, nor a member in use, as a device getting in", async () => {
+      const row = { id: "00000000000000c3", label: "Pixel", role: "drive", created_at: ASKED_AT, last_seen_at: "2026-11-05T00:00:00.000Z", current: false, via_relay: true, through_account: true };
+      const member = { id: "00000000000000d4", label: "Desk", role: "drive", created_at: ASKED_AT, last_seen_at: ASKED_AT, current: false, via_relay: true, account: "acct_1" };
+      const run = await pressing({
+        pressAfter: 1, watch: () => undefined,
+        devices: (reads) => reads < 3
+          ? [{ ...row, connection: { route: "relay", rtt_ms: 40, since: "2026-11-06T11:00:00.000Z" } }, member]
+          : [row, { ...member, last_seen_at: "2026-11-06T12:05:00.000Z" }],
+      });
+      expect(run.code).toBe(0);
+      expect(after(run.text)).toBe(`${WATCH}\nStopped watching after 10 minutes. ${FIRST_JOIN_HINT}${CLOSING}`);
+    });
+
     it("says so and ends when a device got in through the account meanwhile", async () => {
       const run = await pressing({
         pressAfter: 1,
@@ -2072,7 +2099,7 @@ describe("ovis link, on the PC itself", () => {
         watch: () => undefined,
       });
       expect(run.code).toBe(0);
-      expect(after(run.text)).toBe(`${WATCH}\nPixel can open this PC now: it got in through your account.\n${CLOSING}`);
+      expect(after(run.text)).toBe(`${WATCH}\nPixel can open this PC now: it got in through your account. ${FIRST_JOIN_HINT}${CLOSING}`);
     });
 
     it("stops by itself after ten minutes, and on Ctrl+C; the PC stays added either way", async () => {
@@ -4000,7 +4027,7 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
     const clock = new Date(ASKED_AT).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
     // the digits come with a first join (its own window's card shows them); the terminal never does
     const firstOf = (id: string, digits: string) => ({ id, label: id === "f1" ? "Pixel" : "Galaxy", asked_at: ASKED_AT, digits });
-    const firstPrompt = (label: string) => `${label} asks to open this PC (from Ovis account acct_1a2b3c4, asked at ${clock}). Type the six digits ${label} shows, or press Enter to skip: `;
+    const firstPrompt = (label: string) => `${label} asks to open this PC (from Ovis account acct_1a2b3c4, asked at ${clock}). Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to skip: `;
 
     it("names the device, the account it comes from and when it asked, shows none of its digits, and lets it in with all six typed", async () => {
       let asked = 0;
@@ -4013,7 +4040,7 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
       expect(out[0]).toBe(firstPrompt("Pixel"));
       for (const said of out) expect(said).not.toMatch(/482|913/);
       expect(sent).toEqual([{ id: "f1", digits: "482913" }]);
-      expect(out.at(-1)).toBe("Pixel can open this PC now.\n");
+      expect(out.at(-1)).toBe("Pixel is let in; it opens this PC in a moment.\n");
     });
 
     it("says so when the digits are wrong, which ends that join, and how to try again; Enter by itself skips the next and sends nothing", async () => {
@@ -4039,7 +4066,7 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
           if (prompt(said, "j1")) answer("123456");
         },
       });
-      expect(out[0]).toBe(`Pixel asks to open this PC (asked at ${clock}). Type the six digits Pixel shows, or press Enter to skip: `);
+      expect(out[0]).toBe(`Pixel asks to open this PC (asked at ${clock}). Type the six digits Pixel shows (one wrong entry ends this request), or press Enter to skip: `);
       expect(out).toContain("Approved: Tablet one joins your account once it confirms.\n");
       expect(sent).toEqual([{ id: "f1", digits: "482913" }, { id: "j1", digits: "123456" }]);
     });
