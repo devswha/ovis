@@ -15,6 +15,7 @@ import { admissionDrops, directPeerAllowed, DirectCarrier, rankLanAddresses, tai
 import { openGate } from "./direct-gate.ts";
 import type { NetworkInterfaceInfo } from "node:os";
 import { loadRelayIdentity } from "./identity.ts";
+import { MIN_SUPPORTED_CLIENT_VERSION } from "./client-floor.ts";
 import { RelayService } from "./service.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "./test-helpers.ts";
 import { startBunRelay } from "../../relay/bun.ts";
@@ -22,11 +23,11 @@ import { startBunRelay } from "../../relay/bun.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step(); });
 
-async function directFixture(clock?: TestClock) {
+async function directFixture(clock?: TestClock, minSupportedClient?: string) {
   const fixture = relayFixture();
   const identity = loadRelayIdentity(fixture.stateDir);
   const direct = new DirectCarrier({ identity, services: fixture.app.context.services, port: fixture.app.port,
-    addresses: () => ["127.0.0.1"], preferredPort: 0, peerAllowed: () => true, ...(clock ? { clock } : {}) });
+    addresses: () => ["127.0.0.1"], preferredPort: 0, peerAllowed: () => true, ...(clock ? { clock } : {}), ...(minSupportedClient ? { minSupportedClient } : {}) });
   await direct.start();
   cleanup.push(() => fixture.close(), () => direct.stop());
   const offer: RelayOffer = { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: "wss://relay.ovis.example" };
@@ -62,6 +63,19 @@ describe("direct carrier", () => {
     expect(channel.device.device_id).toBe(device.id);
     expect(channel.role).toBe("drive");
     expect(direct.sessions).toBe(1);
+  });
+
+  it("names the oldest client it supports in its WELCOME, as the relay link does", async () => {
+    const { fixture, offer, url } = await directFixture();
+    const device = await relayDevice(fixture);
+    const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(url()) }));
+    cleanup.push(() => channel.close());
+    expect(channel.server.minSupportedClient).toBe(MIN_SUPPORTED_CLIENT_VERSION);
+    const raised = await directFixture(undefined, "9.8.7");
+    const raisedDevice = await relayDevice(raised.fixture);
+    const again = await bounded(openRelayChannel(raised.offer, { store: savedStore(raisedDevice, raised.offer), socket: () => new WebSocket(raised.url()) }));
+    cleanup.push(() => again.close());
+    expect(again.server.minSupportedClient).toBe("9.8.7");
   });
 
   it("is not the PC when the key it proves is another one", async () => {

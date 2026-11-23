@@ -1534,10 +1534,11 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
 
     {
       const shot19 = async (page: Page, name: string): Promise<void> => { if (evidence) await page.screenshot({ path: join(evidence, `task-19-${name}.png`) }); };
-      const skewPc = async (version: string, updates?: UpdateService) => {
+      /** `floor`: the oldest client it says it supports in WELCOME (server/relay/client-floor.ts), this checkout's servers only */
+      const skewPc = async (version: string, updates?: UpdateService, floor?: string) => {
         const dir = mkdtempSync(join(tmpdir(), "ovis-relay-skew-qa-"));
         const ready = deferred<void>();
-        const pcRelay = new RelayService({ stateDir: dir, relay: RELAY, serverVersion: version, connect: (url) => {
+        const pcRelay = new RelayService({ stateDir: dir, relay: RELAY, serverVersion: version, ...(floor ? { minSupportedClient: floor } : {}), connect: (url) => {
           const socket = new WebSocket(relayUrl(url));
           socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) ready.resolve(); });
           return socket;
@@ -1653,6 +1654,95 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
         note(`same version: ${shellVersion} -> app directly`);
         await closeMarked(context);
       }
+      if (resolve(tree.dir) === resolve(repo)) {
+        // the phone app's own copy of the client: what the app sets at document start (lib/appShell.ts)
+        const bundled = (context: BrowserContext) => context.addInitScript(() => {
+          Object.defineProperty(window, "__ovisAppShell", { value: { bundled: true, platform: "android", appVersion: "1.1.0", build: 15 } });
+          if (sessionStorage.getItem("qa-language") === "ko") localStorage.setItem("ovis:settings", JSON.stringify({ language: "ko", theme: "light" }));
+        });
+        {
+          const pc = await skewPc(newer, undefined, newer);
+          try {
+            const { context, page } = await open({ theme: "light" });
+            await bundled(context);
+            const loads: string[] = [];
+            page.on("load", () => loads.push(page.url()));
+            await pairFrom(page, pc.offer);
+            await state(page, "app-outdated").waitFor();
+            await page.getByRole("heading", { name: "Update the app" }).waitFor();
+            await page.getByText(`PC ${newer} needs a newer version of this app.`).waitFor();
+            const store = page.getByRole("link", { name: "Open the store" });
+            assert.equal(await store.getAttribute("href"), "https://play.google.com/store/apps/details?id=sh.ovis.app", "the store page of the app's platform");
+            assert.equal(await page.locator(".app").count(), 0, "no app for a PC that no longer supports this copy");
+            assert.equal(loads.length, 1, `the app's own copy never reloads for a newer PC (loads: ${JSON.stringify(loads)})`);
+            assert.equal(pc.devices.list(null).length, 1, "the pairing itself was made: the updated app opens the PC by it");
+            await shot19(page, "app-outdated-en");
+            await page.evaluate(() => sessionStorage.setItem("qa-language", "ko"));
+            await page.reload();
+            await state(page, "app-outdated").waitFor();
+            await page.getByRole("heading", { name: "앱을 업데이트하세요" }).waitFor();
+            await page.getByRole("link", { name: "스토어 열기" }).waitFor();
+            assert.equal(await page.locator(".app").count(), 0, "opened again, the PC is still held behind the update");
+            await shot19(page, "app-outdated-ko");
+            assert.equal(loads.length, 2, `only the reload this test made (loads: ${JSON.stringify(loads)})`);
+            await page.evaluate(() => sessionStorage.removeItem("qa-language"));
+            lines.push(`server ${newer} with floor ${newer}, the app's own copy at ${shellVersion}: paired, then Update the app (store link, Back), no app and no reload; again after a reload, in Korean`);
+            note(`app-outdated: WELCOME min_supported_client ${newer} > the app's own copy ${shellVersion} -> Update the app with the Google Play page; no app, no reload`);
+
+            const other = await skewPc(newer);
+            try {
+              await page.getByRole("button", { name: "뒤로" }).click();
+              await state(page, "app-outdated").waitFor({ state: "detached" });
+              const before = loads.length;
+              await pairFrom(page, other.offer);
+              await pairedStraightIn(page);
+              await inApp(page);
+              assert.equal(loads.length, before + 1, `a newer PC that still supports this copy opens with no reload (loads: ${JSON.stringify(loads)})`);
+              lines.push(`server ${newer} with the default floor, the same app copy: paired -> app, no reload`);
+              note(`app copy, newer PC: ${newer} > ${shellVersion} with the floor below it -> the app opens in this copy, no reload`);
+            } finally { await other.stop(); }
+            await closeMarked(context);
+          } finally { await pc.stop(); }
+        }
+        {
+          const { context, page } = await open();
+          const offer = await serverOffer("Same PC");
+          await pairFrom(page, offer);
+          await pairedStraightIn(page);
+          const scope = await page.evaluate(async () => (await navigator.serviceWorker.ready).scope);
+          assert.equal(scope, scopeOf(offer.server_id), "the hosted page registered its PC's worker");
+          await page.reload();
+          await inApp(page);
+          assert.ok(await page.evaluate(() => navigator.serviceWorker.controller !== null), "the hosted page is now served by its worker");
+          assert.ok((await page.evaluate(() => caches.keys())).length > 0, "the worker kept caches");
+          await bundled(context);
+          const loads: string[] = [];
+          page.on("load", () => loads.push(page.url()));
+          await page.reload();
+          await inApp(page);
+          for (const deadline = Date.now() + 20_000; loads.length < 2;) {
+            if (Date.now() > deadline) throw new Error(`the page a worker served did not load again from the app (loads: ${JSON.stringify(loads)})`);
+            await Bun.sleep(50);
+          }
+          await inApp(page);
+          const after = await page.evaluate(async () => ({
+            registrations: (await navigator.serviceWorker.getRegistrations()).length,
+            controlled: navigator.serviceWorker.controller !== null,
+            settings: localStorage.getItem("ovis:settings") !== null,
+          }));
+          assert.deepEqual(after, { registrations: 0, controlled: false, settings: true }, "no worker; web storage kept");
+          assert.ok((await saved(page, offer.server_id))?.device_id, "the pairing in IndexedDB stays");
+          await page.reload();
+          await inApp(page);
+          assert.equal(loads.length, 3, `once gone, a later load loads once (loads: ${JSON.stringify(loads)})`);
+          assert.equal(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length), 0, "the app's own copy registers none");
+          const left = await page.evaluate(async () => (await caches.keys()).filter((name) => name !== "ovis-files-v1"));
+          assert.deepEqual(left, [], "no worker's cache is left");
+          lines.push("the app's own copy over a hosted page's worker: unregistered, caches deleted, the page loaded once more without it; pairing and settings kept; none registered after");
+          note("app copy: the hosted page's worker and caches removed on its first load, one more load from the app, the pairing kept, no worker registered again");
+          await closeMarked(context);
+        }
+      } else note("the app's own copy: skipped against another server tree");
       keep("task-19-prev.txt", `${lines.join("\n")}\n`);
     }
 
