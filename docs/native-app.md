@@ -208,9 +208,9 @@ What is there:
   address `demo` opens the bundled demo, which has no button of its own: the store review notes (app/store) send
   reviewers there. `error.html` is shown when a PC cannot be reached or answers with an HTTP error (a 502 from
   `tailscale serve` while Ovis is stopped), with the reason, Try again and Change PC, in the same look; it stands alone
-  on Android, so `build-web.ts` puts `shell.css` and the sheep into it. Every page sets its `theme-color` (Android's
-  system bars) and, on iOS, SystemBars' style to its own colours, light or dark (`barsFor` in `shell.js`, copied into
-  `error.html`); a PC still opens on light icons. The native parts around them take the same colours, light or dark
+  on Android, so `build-web.ts` puts `shell.css` and the sheep into it. Every page sets its `theme-color` to its own
+  colour, light or dark (`barsFor` in `shell.js`, copied into `error.html`), which both apps' bars follow; a PC still
+  opens on the dark one until its page gives its own. The native parts around them take the same colours, light or dark
   as the phone is: the covers ("Opening…", Try again, Change PC: `MainActivity.showOpening` with `res/values*/colors.xml`,
   `HerdrBridgeViewController.showOpening`), the web view before a page paints (Android's window background,
   iOS's `instanceDescriptor().backgroundColor`), Android 12's launch screen and the SSH setup screen

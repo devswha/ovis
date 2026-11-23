@@ -55,18 +55,14 @@ export const SCREEN_LIGHT = "#ffffff";
 export const SCREEN_DARK = "#181818";
 
 /**
- * The system bars' icons for the screen's colours: Android takes them from the page's theme-color (MainActivity,
- * BAR_COLOR_SCRIPT), iOS from Capacitor's SystemBars, set to light icons for the app (capacitor.config.json). The app's
- * own screens follow the phone's light or dark mode (shell.css), so they ask for dark icons in light mode, and every PC
- * opens with light ones.
+ * The system bars for the screen's colours: both apps take them from the page's theme-color (Android's MainActivity,
+ * BAR_COLOR_SCRIPT; iOS's HerdrBridgeViewController, followPageColor), with icons that stand out on it. The app's own
+ * screens follow the phone's light or dark mode (shell.css), so their theme-color does too; every PC opens on the dark
+ * one, and its page then gives its own.
  */
 function barsFor(light) {
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = light ? SCREEN_LIGHT : SCREEN_DARK;
-  // on iOS a call to a plugin the app lacks never settles (src/lib/nativeApp.ts, hasNativePlugin): asked only when announced
-  if (window.Capacitor?.getPlatform?.() === "ios" && (window.Capacitor.PluginHeaders ?? []).some((header) => header.name === "SystemBars")) {
-    window.Capacitor.nativePromise("SystemBars", "setStyle", { style: light ? "LIGHT" : "DARK" }).catch(() => undefined);
-  }
 }
 
 /** The app's own screens follow the phone's light or dark mode, the system bars with them. */

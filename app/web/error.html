@@ -72,20 +72,15 @@
     }
     const capacitor = window.Capacitor;
     const android = window.HerdrErrorPage;
-    // the bars follow the page, light or dark as the phone is (shell.js barsFor, copied: this page stands alone): Android
-    // reads the theme-color (MainActivity's BAR_COLOR_SCRIPT), iOS takes SystemBars' style where the app announces it
+    // the bars follow the page, light or dark as the phone is (shell.js barsFor, copied: this page stands alone): both
+    // apps read its theme-color
     const light = matchMedia("(prefers-color-scheme: light)");
-    const iosBars = capacitor?.getPlatform?.() === "ios" && (capacitor.PluginHeaders ?? []).some((header) => header.name === "SystemBars");
-    const bars = (isLight) => {
-      document.querySelector('meta[name="theme-color"]').content = isLight ? "#ffffff" : "#181818";
-      if (iosBars) capacitor.nativePromise("SystemBars", "setStyle", { style: isLight ? "LIGHT" : "DARK" }).catch(() => undefined);
-    };
+    const bars = (isLight) => { document.querySelector('meta[name="theme-color"]').content = isLight ? "#ffffff" : "#181818"; };
     light.addEventListener("change", () => bars(light.matches));
     bars(light.matches);
     const ask = (method, androidMessage, path) => {
       if (android) android.postMessage(androidMessage);
-      // a PC's page draws its own bars on light icons, as every PC opens (shell.js shell): Try again goes back to one
-      else if (capacitor) { if (method === "retry") bars(false); void capacitor.nativePromise("HerdrShell", method, {}); }
+      else if (capacitor) void capacitor.nativePromise("HerdrShell", method, {});
       else location.href = path;
     };
     document.getElementById("retry").addEventListener("click", () => ask("retry", "retry", "/_ovis/retry"));
