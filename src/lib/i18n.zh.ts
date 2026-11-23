@@ -265,6 +265,7 @@ const BASE: Record<string, string> = {
   "{name} was added to your account before this device joined. Did you add it?": "{name} 在这台设备加入之前已添加到你的账号。是你自己添加的吗？",
   "Yes|account pc": "是",
   "No (remove)|account pc": "不是（移除）",
+  "Remove from my account": "从我的账号移除",
   "\"{name}\" asks to join your account": "\"{name}\" 请求加入你的账号",
   "Another device of your account declined adding this PC.": "你账号的另一台设备拒绝了添加这台电脑。",
   "The request could not be declined. Try again.": "无法拒绝该请求，请重试。",

@@ -899,44 +899,53 @@ page signs in on its own window.
 **Fresh, or proved with the sign-in's key.** Adding a PC asks for a sign-in from the last 10 minutes,
 or an older one that proves the key it registered with the service right after it was made (one key
 per sign-in, apart from the account key, made by WebCrypto as non-extractable and kept in this app's
-IndexedDB: `signin_key`, `src/lib/account/signInKey.ts`). That covers the admit, a confirm (`PUT /v1/pcs/{server_id}` with
-`confirm: true`) and, where Step 2 is on, a `PUT` that lists a PC the account does not list yet (the
-service holds a listing to it only once it turns that rule on; until then it judges a proof only when
-one is sent, and an old sign-in's listing without one goes through as before); upkeep of a listed PC
-and a device code's listing ask nothing. A sign-in this device made more than
-nine minutes ago by its own clock, or one saved before that time was kept, proves its key on every
-such add by itself (`AccountService.pcAddProof`): it asks `POST /v1/pcs/challenge` (`{}`) for `{
-challenge_id, challenge, expires_in: 120 }`, a challenge for this sign-in alone that any use spends,
-and sends `key_proof: { challenge_id, signature }`, the key's ECDSA P-256 / SHA-256 signature (raw r
-then s, base64url) over `ovis-pc-add/1` and six fields, each a 4-byte big-endian length and its UTF-8
-bytes: the purpose (`admit`, `confirm` or `list`), the account, the PC's `server_id`, the listing ID
-(the one a confirm names, else the PC's current one in `GET /v1/pcs?include=unconfirmed`, `""` when
-the account lists none), the challenge ID and the challenge (`shared/account-records.ts`
-`pcAddSigningBytes`). A fresh sign-in sends none. One proof per press, never asked again: a sign-in
-that registered no key sends none, a service without the route (404, one from before key proofs)
-gets none, a refusal of the field (400 `invalid_request`, the admit's body of such a service) is told
-as `session_not_fresh`, and a signature the service does not take is judged by the sign-in's age
-alone; each ends in **Sign in again**, as before. Where the listing itself is refused that way, the
-same offer stands in place: **Add this PC to my account** says to sign in again and offers it on the
-PC's own window and the desktop app, then presses again with the new sign-in, and a phone's **Add and
-pair** shows its sign-in screen and goes on with the same pairing after it. A malformed proof is 400 `invalid_request`, a
-challenge unknown, spent, expired or another sign-in's 400 `challenge_invalid`. The proof binds the
-add to this browser profile, not to a person: a copied access or refresh token alone adds no PC, but
-a script running in the app's page, or a copy of the whole browser profile, still can.
+IndexedDB: `signin_key`, `src/lib/account/signInKey.ts`). The service asks it of the admit, a confirm
+(`PUT /v1/pcs/{server_id}` with `confirm: true`) and, where Step 2 is on, a `PUT` that lists a PC the
+account does not list yet (it holds a listing to that only once it turns that rule on; until then it
+judges a proof only when one is sent, and an old sign-in's listing without one goes through as
+before); upkeep of a listed PC and a device code's listing ask nothing.
+
+Only the phone app and app.ovis.sh register such a key, for a sign-in made there outside a pairing;
+there a sign-in this device made more than nine minutes ago by its own clock, or one saved before that
+time was kept, proves its key by itself on an add a person presses: the card's **Add** (the admit) and
+**Add and pair** (the listing, and the enrollment of the pairing it just made; opening a saved pairing
+signs nothing). On a PC's own window, in the desktop app, and for a sign-in made from a pairing screen
+there is no such key, and an old sign-in is asked to **Sign in again**, as before. The proof: the app
+asks `POST /v1/pcs/challenge` (`{}`) for `{ challenge_id, challenge, expires_in: 120 }`, a challenge
+for this sign-in alone that any use spends, and sends `key_proof: { challenge_id, signature }`, the
+key's ECDSA P-256 / SHA-256 signature (raw r then s, base64url) over `ovis-pc-add/1` and six fields,
+each a 4-byte big-endian length and its UTF-8 bytes: the purpose (`admit` or `list`), the account,
+the PC's `server_id`, the listing ID (the PC's current one in `GET /v1/pcs?include=unconfirmed`, `""`
+when the account lists none), the challenge ID and the challenge (`shared/account-records.ts`
+`pcAddSigningBytes`). A fresh sign-in sends none. One proof per press: a service without the route
+(404, one from before key proofs) gets none, a refusal of the field (400 `invalid_request`, the
+admit's body of such a service) is told as `session_not_fresh`, and a signature the service does not
+take is judged by the sign-in's age alone; each ends in **Sign in again**, as before. A listing sent
+again after no answer whose challenge was spent on the way (400 `challenge_invalid`) gets a new proof
+once. Where the listing itself is refused for the sign-in, the same offer stands in place: **Add this
+PC to my account** says to sign in again and offers it on the PC's own window and the desktop app,
+then presses again with the new sign-in, and a phone's **Add and pair** shows its sign-in screen and
+goes on with the same pairing after it. The proof binds the add to this browser profile, not to a
+person: a copied access or refresh token alone adds no PC, but a script running in the app's page, or
+a copy of the whole browser profile, still can.
 
 **Add on another device.** The admit also confirms a listing a device code made (unconfirmed until
 then), so the same admission adds a PC that signed in on the link page. Every device of the account
 whose sign-in is its own shows such a PC's card, **Add this PC to your account?**, with the name the
 PC gave itself, who is asking under it (the system its listing named and where the service saw that
 listing come from, `asking_os`, `asking_country` and `asking_city`: "Linux · Seoul, South Korea", only
-what is known), when it was listed and the minutes left. That window is the service's
-(`asking_until`, 10 minutes from the sign-in code that listed the PC), and never longer than 10
-minutes from the listing, the whole window where the service names none. Once it passed, or the admit
-answers 409 `listing_expired`, the card says **This request ran out. To add this PC, start again on
-the PC.**, with **No** alone. **Add** reads the listing again and admits nothing when it is no longer
-the one on the card, then asks `POST /v1/pcs/{server_id}/admit` (with the key proof above when the
-sign-in is old), with **Sign in again** for `session_not_fresh` and `own_sign_in_required`, after
-which the add goes on; a 409 `listing_changed` reads the listing again and shows the one there now. The admit names the PC, not the listing, so a
+what is known), when it was listed and, for a listing that asks to join, the minutes left (at most
+10). That window is the service's (`asking_until`, 10 minutes from the sign-in code that listed the
+PC), and never longer than 10 minutes from the listing. Once it passed, or the admit answers 409
+`listing_expired`, the card says **This request ran out. To add this PC, start again on the PC.**,
+with **No** alone. An unconfirmed PC no window applies to (`asking_until` null: one a sign-in code
+listed while Step 2 was off, which may be a PC in use, or a service that names none) keeps the card
+as it was: **Add** and **No** for 10 minutes from its listing, then **Remove from my account**.
+**Add** reads the listing again and admits nothing when it is no longer the one on the card, then
+asks `POST /v1/pcs/{server_id}/admit` (with the key proof above when the sign-in is old), with **Sign
+in again** for `session_not_fresh` and `own_sign_in_required`, after which the add goes on; a 409
+`listing_changed`, or a `session_not_fresh` after which the listing reads as replaced (a proof signs
+the listing it read), reads the listing again and shows the one there now. The admit names the PC, not the listing, so a
 listing that replaces the card's in the moment between that read and the admit is admitted in its
 place; it is a listing of the same PC (its id derives from the PC's key), whose name may differ. An
 admit bound to the listing is the account service's to add. The card keeps a closed new-PC notice

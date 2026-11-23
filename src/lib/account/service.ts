@@ -120,7 +120,7 @@ const REFRESH_EARLY_MS = 60_000;
 export const PC_ADD_FRESH_MS = 9 * 60_000;
 
 /** `key_proof` of an add: a challenge of POST /v1/pcs/challenge and this sign-in's key's signature (raw r then s, base64url). */
-export interface PcAddProof { readonly challenge_id: string; readonly signature: string }
+interface PcAddProof { readonly challenge_id: string; readonly signature: string }
 
 /** `retryAfterMs`: the wait the answer's `retry-after` named (a 429's), or null without one. */
 export class AccountServiceError extends Error {
@@ -413,18 +413,15 @@ export class AccountService {
 
   /**
    * PCL-1/PCL-4: this own sign-in says the PC is the account's, with the key and relay its listing gave. The service refuses
-   * a device code's sign-in (`own_sign_in_required`), one older than ten minutes that proves no key (`session_not_fresh`;
-   * the proof: addProof), one without two-step in a used account (`two_step_required`) and a listing past its window (409
-   * `listing_expired`). The confirmed row comes back new for 24 hours (C3). It names the listing the card showed
-   * (account#67), so a replacement is never confirmed by it: the service answers 409 `listing_changed` (`listingChanged`);
-   * one that predates the field ignores it.
+   * a device code's sign-in (`own_sign_in_required`), one older than ten minutes (`session_not_fresh`) and one without
+   * two-step in a used account (`two_step_required`). The confirmed row comes back new for 24 hours (C3). It names the
+   * listing the card showed (account#67), so a replacement is never confirmed by it: the service answers 409
+   * `listing_changed` (`listingChanged`); one that predates the field ignores it.
    */
   async confirmPc(pc: DirectoryPc): Promise<DirectoryPc> {
     if (pc.public_key === null || pc.relay === null) throw new AccountServiceError(409, "unconfirmable", "The listing gives no key or relay to confirm");
-    const named = typeof pc.listing_id === "string" ? pc.listing_id : undefined;
-    const proof = await this.addProof("confirm", pc.server_id, async () => named ?? await this.listingOf(pc.server_id) ?? "");
-    const body = await this.proving(proof, () => this.call("PUT", `/v1/pcs/${pc.server_id}`, { label: pc.label, public_key: pc.public_key, relay: pc.relay, confirm: true,
-      ...(named === undefined ? {} : { listing_id: named }), ...(proof === null ? {} : { key_proof: proof }) }));
+    const body = await this.call("PUT", `/v1/pcs/${pc.server_id}`, { label: pc.label, public_key: pc.public_key, relay: pc.relay, confirm: true,
+      ...(typeof pc.listing_id === "string" ? { listing_id: pc.listing_id } : {}) });
     const row = isRecord(body) ? parsePc(body.pc) : null;
     if (row === null || row.server_id !== pc.server_id || row.unconfirmed === true) throw new AccountServiceError(502, "invalid_answer", "The account service did not confirm the PC");
     return row;
@@ -447,12 +444,23 @@ export class AccountService {
    * Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it; with
    * the PC's own proof (ownPcProof) when the PC itself lists it, which alone lists it again after it left (409 `pc_left`).
    * `os`: the system the PC runs, which a listing that asks to join shows the account's devices. A PC the account does not
-   * list yet is an add: an own sign-in older than ten minutes lists it only with a key proof (addProof), `list` over no
-   * listing, and is refused `session_not_fresh` without one; upkeep of a listed PC proves nothing.
+   * list yet is an add: once the account service holds listings to it, an own sign-in older than ten minutes lists it only
+   * with a key proof, `list` over no listing, and is refused `session_not_fresh` without one. `prove`: this listing is a
+   * person's press of an add, which proves the key (addProof) when the sign-in is old; nothing else ever signs (opening a
+   * saved pairing lists with no proof), and upkeep of a listed PC proves nothing. A proof whose challenge was spent or ran
+   * out on the way (a send again after no answer) is made anew once.
    */
-  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string; os?: AccountOs } & PcProofFields, signal?: AbortSignal, again?: SendAgain): Promise<void> {
-    const proof = await this.addProof("list", serverId, async () => await this.listingOf(serverId, signal) === null ? "" : null, signal);
-    await this.proving(proof, () => this.call("PUT", `/v1/pcs/${serverId}`, proof === null ? entry : { ...entry, key_proof: proof }, signal, again));
+  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string; os?: AccountOs } & PcProofFields, signal?: AbortSignal, again?: SendAgain, { prove = false }: { readonly prove?: boolean } = {}): Promise<void> {
+    const proved = (): Promise<PcAddProof | null> => prove
+      ? this.addProof("list", serverId, async () => await this.listingOf(serverId, signal, again) === null ? "" : null, signal, again)
+      : Promise.resolve(null);
+    const send = (proof: PcAddProof | null) => this.proving(proof, () => this.call("PUT", `/v1/pcs/${serverId}`, proof === null ? entry : { ...entry, key_proof: proof }, signal, again));
+    const proof = await proved();
+    try { await send(proof); }
+    catch (error) {
+      if (proof === null || !(error instanceof AccountServiceError && error.status === 400 && error.code === "challenge_invalid")) throw error;
+      await send(await proved());
+    }
   }
 
   /**
@@ -495,20 +503,14 @@ export class AccountService {
   }
 
   /**
-   * A proof by the key this sign-in registered (signInKey.ts) for adding `serverId` (docs/account.md, "In one press"): the
-   * service's single-use challenge (POST /v1/pcs/challenge), signed over pcAddSigningBytes. Null, and no challenge asked,
-   * when this sign-in registered no key; null when the service gives no challenge (404: one from before key proofs, or
-   * Step 2 off; 403 `own_sign_in_required`: a device code's sign-in, which the add then refuses as before).
+   * A proof by `key`, the key this sign-in registered (signInKey.ts), for adding `serverId` (docs/account.md, "In one
+   * press"): the service's single-use challenge (POST /v1/pcs/challenge), signed over pcAddSigningBytes. Null when the
+   * service gives no challenge (404: one from before key proofs, or Step 2 off; 403 `own_sign_in_required`: a device code's
+   * sign-in, which the add then refuses as before).
    */
-  async pcAddProof(purpose: PcAddPurpose, serverId: string, listingId: string, signal?: AbortSignal): Promise<PcAddProof | null> {
-    const session = await this.bound();
-    const key = await this.registeredKey(session);
-    return key === null ? null : this.signedAdd(session, key, purpose, serverId, listingId, signal);
-  }
-
-  private async signedAdd(session: AccountSession, key: AccountKey, purpose: PcAddPurpose, serverId: string, listingId: string, signal?: AbortSignal): Promise<PcAddProof | null> {
+  private async pcAddProof(session: AccountSession, key: AccountKey, purpose: PcAddPurpose, serverId: string, listingId: string, signal?: AbortSignal, again?: SendAgain): Promise<PcAddProof | null> {
     let issued: unknown;
-    try { issued = await this.call("POST", "/v1/pcs/challenge", {}, signal); }
+    try { issued = await this.call("POST", "/v1/pcs/challenge", {}, signal, again); }
     catch (error) {
       const refused = error instanceof AccountServiceError && !(error instanceof AccountRefreshError);
       if (refused && (error.status === 404 || (error.status === 403 && error.code === "own_sign_in_required"))) return null;
@@ -524,16 +526,16 @@ export class AccountService {
   /**
    * The proof an add sends: none while the sign-in is younger than PC_ADD_FRESH_MS by this device's clock, and none when it
    * registered no key; else pcAddProof over the listing `listing` names, read only then (null: this call adds nothing, and
-   * proves nothing). One proof per call, never asked again.
+   * proves nothing). One proof per call.
    */
-  private async addProof(purpose: PcAddPurpose, serverId: string, listing: () => Promise<string | null>, signal?: AbortSignal): Promise<PcAddProof | null> {
+  private async addProof(purpose: PcAddPurpose, serverId: string, listing: () => Promise<string | null>, signal?: AbortSignal, again?: SendAgain): Promise<PcAddProof | null> {
     const session = await this.bound();
     const age = session.signed_in_at === undefined ? Number.NaN : this.now() - session.signed_in_at;
     if (age >= 0 && age <= PC_ADD_FRESH_MS) return null;
     const key = await this.registeredKey(session);
     if (key === null) return null;
     const listingId = await listing();
-    return listingId === null ? null : this.signedAdd(session, key, purpose, serverId, listingId, signal);
+    return listingId === null ? null : this.pcAddProof(session, key, purpose, serverId, listingId, signal, again);
   }
 
   /**
@@ -551,8 +553,8 @@ export class AccountService {
   }
 
   /** The account's current listing of `serverId` as the service names it ("" when it names none), or null when the account lists no such PC. */
-  private async listingOf(serverId: string, signal?: AbortSignal): Promise<string | null> {
-    const body = await this.call("GET", "/v1/pcs?include=unconfirmed", undefined, signal);
+  private async listingOf(serverId: string, signal?: AbortSignal, again?: SendAgain): Promise<string | null> {
+    const body = await this.call("GET", "/v1/pcs?include=unconfirmed", undefined, signal, again);
     const pcs = isRecord(body) && Array.isArray(body.pcs) ? body.pcs : null;
     if (pcs === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no PC list");
     const pc = pcs.map(parsePc).find((each) => each?.server_id === serverId);

@@ -1751,7 +1751,7 @@ async function addByPress(options: LinkOptions, api: Api, press: Pressing): Prom
   const startedAt = now();
   const stopAt = Math.min(startedAt + PRESS_MS, press.listedAt === null ? Infinity : press.listedAt + PRESS_MS);
   if (stopAt <= startedAt) {
-    out(`An earlier ${command} listed this PC in your account at ${clockTime(press.listedAt!)}, more than 10 minutes ago, so your devices no longer offer Add for it. On a device of your account, choose No on its card, then run ${command} again.\n`);
+    out(`An earlier ${command} listed this PC in your account at ${clockTime(press.listedAt!)}, more than 10 minutes ago, so your devices no longer offer Add for it. On a device of your account, choose No or Remove from my account on its card, then run ${command} again.\n`);
     return 1;
   }
   // a terminal that went away takes no write: what is owed to this PC (its listing) comes first, then a word that may fail
@@ -1869,7 +1869,7 @@ async function addByPress(options: LinkOptions, api: Api, press: Pressing): Prom
         if (ended !== null) return ended;
       }
     }
-    tell(`Nobody pressed Add for ${name} within 10 minutes of its listing. ${left(off, `On a device of your account, choose No on its card, then run ${command} again.`, account === null)}\n`);
+    tell(`Nobody pressed Add for ${name} within 10 minutes of its listing. ${left(off, `On a device of your account, choose No or Remove from my account on its card, then run ${command} again.`, account === null)}\n`);
     return 1;
   } catch (error) {
     if (!signal.aborted && !(error instanceof LocalError || error instanceof AwayError)) throw error;

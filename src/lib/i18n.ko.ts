@@ -261,6 +261,7 @@ const BASE: Record<string, string> = {
   "{name} was added to your account before this device joined. Did you add it?": "{name}가 이 기기가 들어오기 전에 계정에 추가됐어요. 직접 추가하셨나요?",
   "Yes|account pc": "네",
   "No (remove)|account pc": "아니요(빼기)",
+  "Remove from my account": "계정에서 빼기",
   "\"{name}\" asks to join your account": "\"{name}\" 추가 요청",
   "Another device of your account declined adding this PC.": "내 계정의 다른 기기에서 이 PC 추가를 거절했어요.",
   "The request could not be declined. Try again.": "요청을 거절하지 못했어요. 다시 시도하세요.",

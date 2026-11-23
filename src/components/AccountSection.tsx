@@ -826,7 +826,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   };
   /**
    * The sign-in again a refused listing offers: this page's own, stored in the place of `from` only for the same account;
-   * then the same press, which lists with that fresh sign-in. Cancelled, failed or another account's, the offer stays.
+   * then the same press as that sign-in (`add` with its account, which lists nothing once another account is stored).
+   * Cancelled, failed or another account's, the offer stays.
    */
   const signInAgainToList = (from: AccountSession, message: string): void => {
     if (signInAgain === undefined) return;
@@ -842,7 +843,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (!running()) return;
       if (session === null) { offered(message); return; }
       againRun.current = null;
-      add();
+      // as a sign-in that just finished here: under that account only, cancellable, and given up with the screen
+      add(session.account);
     }, (error: unknown) => {
       if (!running()) return;
       if (error instanceof DOMException && error.name === "AbortError") { offered(message); return; }

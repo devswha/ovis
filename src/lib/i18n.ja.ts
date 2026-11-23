@@ -263,6 +263,7 @@ const BASE: Record<string, string> = {
   "{name} was added to your account before this device joined. Did you add it?": "{name}は、このデバイスが加わる前にアカウントに追加されました。ご自身で追加しましたか？",
   "Yes|account pc": "はい",
   "No (remove)|account pc": "いいえ（外す）",
+  "Remove from my account": "アカウントから外す",
   "\"{name}\" asks to join your account": "\"{name}\" がアカウントへの追加を求めています",
   "Another device of your account declined adding this PC.": "アカウントの別のデバイスがこの PC の追加を拒否しました。",
   "The request could not be declined. Try again.": "リクエストを拒否できませんでした。もう一度お試しください。",

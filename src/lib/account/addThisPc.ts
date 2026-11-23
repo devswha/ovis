@@ -255,7 +255,7 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
     // this PC's own proof, which alone lists it again after `ovis logout` left the account
     const proof = await ownPcProof(offer.server_id, postToThisPc);
     running();
-    await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay, ...listingOs(), ...proof });
+    await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay, ...listingOs(), ...proof }, undefined, undefined, { prove: true });
   }
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
   // (not for a wait or an attempt that ended while the entry was written: nobody waits for this PC under it)
@@ -344,5 +344,5 @@ export async function listOfferedPc(service: AccountService, offer: RelayOffer, 
   const directory = service.forSignIn(session);
   if ((await directory.listPcs()).some((pc) => pc.server_id === offer.server_id)) return;
   const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay, ...listingOs() });
+  await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay, ...listingOs() }, undefined, undefined, { prove: true });
 }

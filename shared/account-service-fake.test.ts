@@ -856,7 +856,7 @@ describe("adding a PC with an old sign-in's key proof, and who asks", () => {
     const typedOld = service.issueToken("acct_1", { device: true });
     pass(30 * DAY);
     expect(await answer(await send("PUT", `/v1/pcs/${kept.serverId}`, typedOld, entry(kept)))).toBe(200);
-    // with PC_LIST_PROOF off, as the service ships at first, a listing that sends no proof goes through; one sent is judged
+    // with the service's list rule off, as it ships at first, a listing that sends no proof goes through; one sent is judged
     service.listProofRequired = false;
     const [quiet, badly] = [pc(), pc()];
     expect(await answer(await send("PUT", `/v1/pcs/${quiet.serverId}`, own, entry(quiet)))).toBe(200);

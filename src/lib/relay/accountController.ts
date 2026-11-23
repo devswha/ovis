@@ -511,7 +511,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         try {
           if (!(await directory.listPcs(bounded())).some((pc) => pc.server_id === offer.server_id)) {
             const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
-            await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay }, bounded());
+            await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay }, bounded(), undefined, { prove: true });
           }
         } catch (error) {
           if (error instanceof SignedOutError) throw new ConsentChangedError();
@@ -732,7 +732,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const listing = { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay };
         const again = sendAgainWhenBack({ before: sending, signal });
         // listed first, so a removal this client signs from now on reaches it by mailbox too
-        await account.forSignIn(session).putPc(serverId, listing, signal, again);
+        // a key proof only for a pairing just made from the Add and pair confirm (`consent`): opening a saved pairing signs nothing
+        await account.forSignIn(session).putPc(serverId, listing, signal, again, { prove: fresh && consent != null });
         // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
         let signedIn = opened;
         // the account's other PCs this device is in, read first for what they keep out (docs/account.md, "Enrolling a PC")

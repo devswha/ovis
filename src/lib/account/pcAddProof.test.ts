@@ -164,45 +164,28 @@ describe("a sign-in's key proof for adding a PC", () => {
     expect(asked("/v1/pcs/challenge")).toBe(0);
   });
 
-  it("pcAddProof is null where the service has no challenge route, or this sign-in is a device code's", async () => {
+  it("a device code's sign-in gets no challenge: its admit goes with no proof, and is refused as before", async () => {
     const session = await signIn();
     await registerKey(session);
-    const pc = newPc();
-    fake.pcAddProofs = false;
-    expect(await service.pcAddProof("admit", pc.serverId, "")).toBeNull();
-    fake.pcAddProofs = true;
-    fake.opensAll = false;
-    expect(await service.pcAddProof("admit", pc.serverId, "")).toBeNull();
-    fake.opensAll = true;
-    const typed = fake.issueToken(ACCOUNT, { device: true });
-    await store.set("session", { ...session, access_token: typed });
-    expect(await service.pcAddProof("admit", pc.serverId, "")).toBeNull();
-  });
-
-  it("confirms with a proof for the confirm, over the listing it names", async () => {
-    const session = await signIn();
-    const key = await registerKey(session);
     now += 30 * DAY;
     const pc = await listedByDeviceCode();
-    const [unconfirmed] = await service.listUnconfirmedPcs();
-    const confirmed = await service.confirmPc(unconfirmed!);
-    expect(confirmed.unconfirmed).toBeUndefined();
-    const put = sent.find((each) => each.method === "PUT" && each.path === `/v1/pcs/${pc.serverId}`);
-    expect(put?.body?.listing_id).toBe(pc.listing);
-    expect(await provedBy(key, put!.body!.key_proof, "confirm", pc.serverId, pc.listing)).toBe(true);
+    await store.set("session", { ...session, access_token: fake.issueToken(ACCOUNT, { device: true }), expires_at: now + DAY });
+    await expect(service.admitPc(pc.serverId)).rejects.toMatchObject({ status: 403, code: "own_sign_in_required" });
+    expect(asked("/v1/pcs/challenge")).toBe(1);
+    expect(admitBodies(pc.serverId)).toEqual([{}]);
   });
 
-  it("lists a PC the account does not list yet with a proof for the listing, over no listing; upkeep of a listed PC proves nothing", async () => {
+  it("a pressed add lists a PC the account does not list yet with a proof for the listing, over no listing; upkeep of a listed PC proves nothing", async () => {
     const session = await signIn();
     const key = await registerKey(session);
     now += 30 * DAY;
     const pc = newPc();
-    await service.putPc(pc.serverId, { label: "Desk", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" });
+    await service.putPc(pc.serverId, { label: "Desk", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" }, undefined, undefined, { prove: true });
     const [listed] = sent.filter((each) => each.method === "PUT");
     expect(await provedBy(key, listed!.body!.key_proof, "list", pc.serverId, "")).toBe(true);
     expect((await service.listPcs()).map((row) => row.server_id)).toEqual([pc.serverId]);
     sent = [];
-    await service.putPc(pc.serverId, { label: "Desk 2", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" });
+    await service.putPc(pc.serverId, { label: "Desk 2", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" }, undefined, undefined, { prove: true });
     expect(asked("/v1/pcs/challenge")).toBe(0);
     expect(sent.filter((each) => each.method === "PUT").map((each) => each.body?.key_proof)).toEqual([undefined]);
   });
@@ -211,8 +194,55 @@ describe("a sign-in's key proof for adding a PC", () => {
     await signIn();
     now += 30 * DAY;
     const pc = newPc();
-    await expect(service.putPc(pc.serverId, { label: "Desk", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" })).rejects.toMatchObject({ code: "session_not_fresh" });
+    await expect(service.putPc(pc.serverId, { label: "Desk", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" }, undefined, undefined, { prove: true })).rejects.toMatchObject({ code: "session_not_fresh" });
     expect(fake.pcs(ACCOUNT)).toEqual([]);
+  });
+
+  it("a listing that is no person's press (a saved pairing's enrollment) signs nothing, whatever key the sign-in holds", async () => {
+    const session = await signIn();
+    await registerKey(session);
+    now += 30 * DAY;
+    const pc = newPc();
+    fake.listProofRequired = false;
+    await service.putPc(pc.serverId, { label: "Desk", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" });
+    expect(asked("/v1/pcs/challenge")).toBe(0);
+    expect(asked("/v1/pcs?include=unconfirmed")).toBe(0);
+    expect((await service.listPcs()).map((row) => row.server_id)).toEqual([pc.serverId]);
+  });
+
+  it("a listing sent again with a challenge spent on the way makes its proof anew, once", async () => {
+    const session = await signIn();
+    const key = await registerKey(session);
+    now += 30 * DAY;
+    const pc = newPc();
+    let spent = 1;
+    service = new AccountService({ store, lock: memoryLock(), now: () => now, fetch: recordingFetch(async (request) => {
+      if (request.method === "PUT" && spent-- > 0) return Response.json({ error: { code: "challenge_invalid", message: "x" } }, { status: 400 });
+      return fake.fetch(request);
+    }) });
+    await service.putPc(pc.serverId, { label: "Desk", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" }, undefined, undefined, { prove: true });
+    const puts = sent.filter((each) => each.method === "PUT");
+    expect(puts).toHaveLength(2);
+    expect(asked("/v1/pcs/challenge")).toBe(2);
+    expect(await provedBy(key, puts[1]!.body!.key_proof, "list", pc.serverId, "")).toBe(true);
+    // a second refusal of the new one is the answer
+    spent = 2;
+    sent = [];
+    const other = newPc();
+    await expect(service.putPc(other.serverId, { label: "Desk", public_key: other.publicKey, relay: "wss://relay.ovis.sh" }, undefined, undefined, { prove: true })).rejects.toMatchObject({ code: "challenge_invalid" });
+    expect(sent.filter((each) => each.method === "PUT")).toHaveLength(2);
+  });
+
+  it("a listing sent again when the network is back reads its listing and asks its challenge through that same wait", async () => {
+    const session = await signIn();
+    await registerKey(session);
+    now += 30 * DAY;
+    const pc = newPc();
+    const before: number[] = [];
+    await service.putPc(pc.serverId, { label: "Desk", public_key: pc.publicKey, relay: "wss://relay.ovis.sh" }, undefined,
+      { sends: 2, before: async (send) => { before.push(send); }, wait: async () => false }, { prove: true });
+    // the directory read, the challenge and the listing each went through it
+    expect(before).toEqual([1, 1, 1]);
   });
 });
 
@@ -252,17 +282,6 @@ describe("the fallbacks to Sign in again, one proof attempt per press", () => {
       return fake.fetch(request);
     }) });
     await expect(service.admitPc(pc.serverId)).rejects.toMatchObject({ status: 400, code: "invalid_request" });
-  });
-
-  it("a confirm the service judges by age alone (it ignored the proof) is refused session_not_fresh, once", async () => {
-    fake.pcAddProofs = false;
-    const session = await signIn();
-    await registerKey(session);
-    now += 30 * DAY;
-    await listedByDeviceCode();
-    const [unconfirmed] = await service.listUnconfirmedPcs();
-    await expect(service.confirmPc(unconfirmed!)).rejects.toMatchObject({ code: "session_not_fresh" });
-    expect(sent.filter((each) => each.method === "PUT")).toHaveLength(1);
   });
 
   it("a proof that does not hold (the service knows no key for this sign-in) is judged by age alone", async () => {

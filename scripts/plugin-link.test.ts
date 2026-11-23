@@ -1952,7 +1952,7 @@ describe("ovis link, on the PC itself", () => {
     const [, minutes, seconds] = /Waiting… \(up to (\d+):(\d\d), Ctrl\+C to stop\)/.exec(run.text) ?? [];
     expect(Number(minutes)).toBe(5);
     expect(run.askedAt.at(-1)! - run.askedAt[0]!).toBe((5 * 60 + Number(seconds)) * 1000);
-    expect(run.text).toContain("Nobody pressed Add for old-desktop within 10 minutes of its listing. This PC is in no account yet, but your account still lists it. On a device of your account, choose No on its card, then run ovis add again.\n");
+    expect(run.text).toContain("Nobody pressed Add for old-desktop within 10 minutes of its listing. This PC is in no account yet, but your account still lists it. On a device of your account, choose No or Remove from my account on its card, then run ovis add again.\n");
     expect(run.listed()).toHaveLength(1);
   });
 
@@ -1960,7 +1960,7 @@ describe("ovis link, on the PC itself", () => {
     const run = await pressing({ prepare: listedEarlier(11 * 60_000) });
     expect(run.code).toBe(1);
     expect(run.pressed).toEqual([]);
-    expect(run.text).toContain("more than 10 minutes ago, so your devices no longer offer Add for it. On a device of your account, choose No on its card, then run ovis add again.\n");
+    expect(run.text).toContain("more than 10 minutes ago, so your devices no longer offer Add for it. On a device of your account, choose No or Remove from my account on its card, then run ovis add again.\n");
     expect(run.text).not.toContain("2/2");
   });
 

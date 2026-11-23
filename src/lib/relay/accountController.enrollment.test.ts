@@ -498,11 +498,20 @@ describe("account enrollment ownership", () => {
       expect(run.service.pcs("account").map((pc) => pc.server_id)).toEqual([run.original.server_id]);
     });
 
-    it("an enrollment that lists the PC itself proves the key too, and completes", async () => {
+    it("the enrollment of a pairing just made from that confirm lists the PC with the key's proof, and completes", async () => {
       jest.useFakeTimers();
       const run = await fixture("unused", { old: { key: true } });
-      expect(await run.controller.enroll(await run.open(), run.original.server_id, true)).toEqual({ state: "complete", admitted: 2 });
+      expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: await consent(run) })).toEqual({ state: "complete", admitted: 2 });
       expect(run.sent("POST /v1/pcs/challenge")).toHaveLength(1);
+      expect(run.service.pcs("account").map((pc) => pc.server_id)).toEqual([run.original.server_id]);
+    });
+
+    it("opening a saved pairing signs nothing: its enrollment lists the PC with no proof, as before while the service's list rule is off", async () => {
+      jest.useFakeTimers();
+      const run = await fixture("unused", { old: { key: true } });
+      run.service.listProofRequired = false;
+      expect(await run.controller.enroll(await run.open(), run.original.server_id, false)).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent("POST /v1/pcs/challenge")).toEqual([]);
       expect(run.service.pcs("account").map((pc) => pc.server_id)).toEqual([run.original.server_id]);
     });
   });

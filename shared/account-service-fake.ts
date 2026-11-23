@@ -207,7 +207,7 @@ export class FakeAccountService {
    */
   pcAddProofs = true;
   /**
-   * With `pcAddProofs`, the service's PC_LIST_PROOF: on, an old own sign-in's PUT of a PC the account does not list yet is
+   * With `pcAddProofs`, the service's switch for its list rule: on, an old own sign-in's PUT of a PC the account does not list yet is
    * refused `session_not_fresh` without a key proof. Off (as the service ships at first), such a PUT lists the PC as before;
    * a proof that is sent is judged all the same.
    */
@@ -725,9 +725,12 @@ export class FakeAccountService {
       if (typeof body !== "object" || body === null || Object.keys(body).some((name) => !(this.pcAddProofs && name === "key_proof"))) return problem(400, "invalid_request", "Send {} or { key_proof }");
       // C1: an app's own sign-in, made within REAUTH_MS, or older with a proof by its own key for this PC's current listing
       if (this.deviceFamilies.has(session.family)) return problem(403, "own_sign_in_required", "Sign in in the app itself");
-      const proved = await this.provedKey(session, body.key_proof, "admit", admitted, directory.get(admitted)?.listing_id ?? "");
+      const signed = directory.get(admitted)?.listing_id ?? "";
+      const proved = await this.provedKey(session, body.key_proof, "admit", admitted, signed);
       if (proved instanceof Response) return proved;
       if (!recent && proved === null) return problem(403, "session_not_fresh", "Sign in again on this device first");
+      // as the service binds the signed listing into its write: one replaced while the proof was checked is not admitted
+      if (proved !== null && (directory.get(admitted)?.listing_id ?? "") !== signed) return problem(409, "listing_changed", "This add is no longer waiting for that action");
       // the first-PC exemption: an account never used (no other PC, no admit or removal, no device key ever) waives two-step
       const exempt = this.twoStep.get(session.family) !== true;
       const entry = directory.get(admitted);

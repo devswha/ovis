@@ -173,7 +173,50 @@ describe("a PC the account lists unconfirmed", () => {
     fake.pcAddProofs = false;
     await mount();
     expect(text()).not.toContain("macOS");
+    expect(text()).not.toContain("Expires in");
+  });
+
+  for (const [what, setUp] of [
+    ["one a sign-in code listed while Step 2 was off (asking_until null: no window applies, and it may be a PC in use)", () => { fake.opensAll = false; }],
+    ["one from an account service that names no window (no asking_until)", () => { fake.pcAddProofs = false; }],
+  ] as const) {
+    it(`keeps the card as it was for ${what}: Add and No for ten minutes, then Remove from my account, never that a request ran out`, async () => {
+      await signIn();
+      setUp();
+      await listedByDeviceCode();
+      fake.opensAll = true;
+      await mount();
+      expect(buttons()).toEqual(["Add", "No"]);
+      expect(text()).not.toContain("Expires in");
+      now += 11 * MINUTE;
+      await mount();
+      expect(buttons()).toEqual(["Remove from my account"]);
+      expect(text()).not.toContain("This request ran out");
+      expect(text()).toContain(`Name the PC gave itself: "${LABEL}"`);
+    });
+  }
+
+  it("never says more than ten minutes are left, whatever the two clocks say", async () => {
+    await signIn();
+    await listedByDeviceCode();
+    // the account service's clock runs three minutes ahead of this device's
+    const row = fake.pcs(ACCOUNT)[0]!;
+    row.added_at = new Date(now + 3 * MINUTE).toISOString();
+    row.asking_since = now + 3 * MINUTE;
+    await mount();
     expect(text()).toContain("Expires in 10 min");
+  });
+
+  it("shows the name the PC gave itself as one plain line, with no bidi controls", async () => {
+    await signIn();
+    const token = fake.issueToken(ACCOUNT, { device: true });
+    const response = await fake.fetch(`${ORIGIN}/v1/pcs/${PC}`, {
+      method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ label: "desk\u202etxt.exe", public_key: Buffer.from(key).toString("hex"), relay: "wss://relay.ovis.sh" }),
+    });
+    expect(response.ok).toBe(true);
+    await mount();
+    expect(text()).toContain('Name the PC gave itself: "desktxt.exe"');
   });
 
   it("goes by the account service's own window: past its asking_until the request ran out, whatever this device's clock says of the listing", async () => {
@@ -277,11 +320,11 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     await signIn();
     now += 11 * MINUTE;
     await mount();
-    await press("No");
+    await press("Remove from my account");
     expect(text()).toContain("Sign in again to remove it: your sign-in is more than ten minutes old.");
     expect(fake.pcs(ACCOUNT)).toHaveLength(1);
     // no sign-in in place here (no app, no PC window, no hosted shell): nothing to press but the removal again
-    expect(buttons()).toEqual(["No"]);
+    expect(buttons()).toEqual(["Remove from my account"]);
   });
 
   it("PCR-1: with an account service from before, Sign in again signs in fresh in place and removes the same PC", async () => {
@@ -293,7 +336,7 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
       freshSignIn: async () => { await signIn(); return (await store.get("session")) ?? null; } });
     try {
       await mount();
-      await press("No");
+      await press("Remove from my account");
       expect(fake.pcs(ACCOUNT)).toHaveLength(1);
       await press("Sign in again");
       expect(fake.requests.filter((request) => request === `DELETE /v1/pcs/${PC}`)).toHaveLength(2);
@@ -491,6 +534,23 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     expect(text()).not.toContain("The PC could not be added.");
     expect(text()).not.toContain("New PC added to your account");
     expect(buttons()).toEqual(["Add", "No"]);
+  });
+
+  it("an Add refused as the sign-in's age because the listing was replaced meanwhile reads the listing again, and asks no sign-in", async () => {
+    fake.completions = true;
+    await signIn();
+    await listedByDeviceCode();
+    service = new AccountService({ store, lock: memoryLock(), now: () => now, fetch: async (input: Request | string | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      // a key proof signs the listing it read: another one in its place by the time it arrives is refused as session_not_fresh
+      if (new URL(request.url).pathname.endsWith("/admit")) { await replacedBehindTheCard(); return Response.json({ error: { code: "session_not_fresh", message: "x" } }, { status: 403 }); }
+      return fake.fetch(request);
+    } });
+    await mount();
+    await press("Add");
+    expect(text()).not.toContain("Sign in again");
+    expect(buttons()).toEqual(["Add", "No"]);
+    expect(fake.pcs(ACCOUNT)[0]?.listed_by_device).toBe(true);
   });
 
   it("account#67: No names the listing its card showed: a replacement is not removed, and the card shows it as it is now", async () => {

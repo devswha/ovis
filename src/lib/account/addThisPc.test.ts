@@ -7,7 +7,7 @@ import { nativeTransport, setTransport } from "../transport.ts";
 import { AddPcWaitOver, addInOnePress, ownWindowHere, keepAddPcWaiting, listOfferedPc, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
 import { AccountService, AccountServiceError } from "./service.ts";
-import { memoryAccountStore, memoryLock, newKey } from "./store.ts";
+import { memoryAccountStore, memoryLock } from "./store.ts";
 
 afterEach(() => setTransport(nativeTransport));
 
@@ -345,20 +345,16 @@ test("one press names this PC for nobody when another tab signed in to another a
 });
 
 /**
- * The PC's own window signed in to the account with its own sign-in, made `age` ago, and the key that sign-in registered
- * with the account service (signInKey.ts does it right after a sign-in): the real client over the account service's fake.
+ * The PC's own window signed in to the account with its own sign-in, made `age` ago: the real client over the account
+ * service's fake. It registers no key of its own (only the phone app and app.ovis.sh do), so an old sign-in proves nothing.
  */
-async function ownWindowSignedIn(age: number, { key: registered = true }: { key?: boolean } = {}) {
+async function ownWindowSignedIn(age: number) {
   let now = Date.now();
   const fake = new FakeAccountService(() => now);
   fake.opensAll = true;
   const store = memoryAccountStore();
   const token = fake.issueToken("acct_1");
   await store.set("session", { service: "https://account.example", account: "acct_1", provider: "github", access_token: token, refresh_token: "r", expires_at: now + 365 * 86_400_000, sign_in_id: "this-sign-in", signed_in_at: now });
-  if (registered) {
-    const key = await newKey();
-    await store.set("signin_key", { account: "acct_1", sign_in_id: "this-sign-in", key, no: fake.registerSessionKey(token, key.public_spki, "Desk") });
-  }
   now += age;
   const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock(), now: () => now });
   const keys = generateKeyPair();
@@ -368,11 +364,8 @@ async function ownWindowSignedIn(age: number, { key: registered = true }: { key?
   return { fake, service, serverId, publicKey, challenges };
 }
 
-test.each([
-  ["made just now: as before, nothing is proved", 0, 0],
-  ["made three days ago: its key proves the listing and the admit, and no Sign in again is asked", 3 * 86_400_000, 2],
-] as const)("Add this PC in one press, from a sign-in %s", async (_what, age, proofs) => {
-  const signedIn = await ownWindowSignedIn(age);
+test("Add this PC in one press from a sign-in made just now: as before, nothing is proved", async () => {
+  const signedIn = await ownWindowSignedIn(0);
   const pcSide = async (input: RequestInfo | URL): Promise<Response> => {
     const path = new URL(String(input instanceof Request ? input.url : input), "http://localhost").pathname;
     if (path === "/api/account/status") return Response.json({ account: null });
@@ -387,13 +380,13 @@ test.each([
   try {
     const listed = await listThisPc(signedIn.service, { relistMs: 540_000 });
     expect(await addInOnePress(signedIn.service, listed.serverId, "acct_1", () => true, true)).toBe("added");
-    expect(signedIn.challenges()).toBe(proofs);
+    expect(signedIn.challenges()).toBe(0);
     expect(signedIn.fake.pcs("acct_1").map((pc) => [pc.server_id, pc.listed_by_device, pc.admitted_at !== null])).toEqual([[signedIn.serverId, false, true]]);
   } finally { fetchSpy.mockRestore(); warn.mockRestore(); }
 });
 
-test("one press from a sign-in days old that registered no key is refused as before: sign-in-again, after one bare admit", async () => {
-  const signedIn = await ownWindowSignedIn(3 * 86_400_000, { key: false });
+test("one press from a sign-in days old is refused as before: sign-in-again, after one bare admit", async () => {
+  const signedIn = await ownWindowSignedIn(3 * 86_400_000);
   // the PC listed itself with a sign-in code of its own, as ovis add does
   const typed = signedIn.fake.issueToken("acct_1", { device: true });
   const put = await signedIn.fake.fetch(`https://account.example/v1/pcs/${signedIn.serverId}`, { method: "PUT", headers: { authorization: `Bearer ${typed}`, "content-type": "application/json" },

@@ -1,6 +1,6 @@
 import { Monitor } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { ACCOUNT_OS_NAMES, placeName, type AccountAsker } from "../../shared/account-asker.ts";
+import { ACCOUNT_OS_NAMES, accountLabel, placeName, type AccountAsker } from "../../shared/account-asker.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
@@ -15,7 +15,8 @@ import "./UpdateControls.css";
 
 /**
  * security-triage condition 3: Add only while the listing is this young, by its added_at, and never past the account
- * service's own window for it (`asking_until`); after it, No alone
+ * service's own window for a listing that asks to join (`asking_until`); after it, that one's request ran out (No alone),
+ * and any other unconfirmed PC (`asking_until` null: one no window applies to, which may be a PC in use) offers its removal
  */
 const ADD_WINDOW_MS = 10 * 60_000;
 /** how often the time left is drawn again */
@@ -156,10 +157,14 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
   const t = useT();
   const { resolvedLanguage } = useSettings();
   const added = Date.parse(pc.added_at);
+  // the account service names a window only for a listing that asks to join; null or absent, the card is as it was
+  const [toldExpired, setToldExpired] = useState(false);
+  const asking = typeof pc.asking_until === "string" || toldExpired;
   const askedUntil = typeof pc.asking_until === "string" ? Date.parse(pc.asking_until) : Number.POSITIVE_INFINITY;
   const until = Math.min(added + ADD_WINDOW_MS, askedUntil);
   const youngAt = (at: number): boolean => !(at > until);
   const [young, setYoung] = useState(() => youngAt(now()));
+  const ranOut = asking && !young;
   const [, setTick] = useState(0);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
@@ -175,7 +180,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
     return () => { clearTimeout(timer); clearInterval(tick); };
   }, [young, until, now]);
   // what an Add was told says nothing once the request ran out
-  useEffect(() => { if (!young) setProblem(null); }, [young]);
+  useEffect(() => { if (ranOut) setProblem(null); }, [ranOut]);
 
   const act = async (work: () => Promise<void>, failed: (error: Error) => Problem): Promise<void> => {
     if (inFlight.current) return;
@@ -206,9 +211,12 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
     try { admitted = await directory.admitPc(pc.server_id, undefined, typeof waiting.listing_id === "string" ? waiting.listing_id : undefined); }
     catch (error) {
       // the service's own window for it ended: nothing was admitted, and the request is started again on the PC
-      if (error instanceof AccountServiceError && error.code === "listing_expired") { setYoung(false); return; }
-      // the account no longer lists it, or lists another listing of it: nothing was admitted, and the card is drawn again
-      if (!(error instanceof AccountServiceError && (error.code === "unknown_pc" || error.code === "listing_changed"))) throw error;
+      if (error instanceof AccountServiceError && error.code === "listing_expired") { setToldExpired(true); setYoung(false); return; }
+      // the account no longer lists it, or lists another listing of it: nothing was admitted, and the card is drawn again.
+      // A key proof signs the listing it read, so a listing replaced meanwhile is refused as the sign-in's age: read again
+      const changed = error instanceof AccountServiceError && (error.code === "unknown_pc" || error.code === "listing_changed"
+        || (error.code === "session_not_fresh" && await directory.listUnconfirmedPcs().then((pcs) => pcs.find((each) => each.server_id === pc.server_id)?.listing_id !== pc.listing_id, () => false)));
+      if (!changed) throw error;
       window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
       return;
     }
@@ -228,25 +236,28 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
   const time = new Date(added).toLocaleTimeString(resolvedLanguage, { hour: "2-digit", minute: "2-digit" });
   const asker = askerLine(pc.asking, resolvedLanguage);
   return (
-    <div className="update-notice is-paired device-notice" role="status" data-unconfirmed-pc={pc.server_id} data-asking={young ? "open" : "ran-out"}>
+    <div className="update-notice is-paired device-notice" role="status" data-unconfirmed-pc={pc.server_id} {...(asking ? { "data-asking": young ? "open" : "ran-out" } : {})}>
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
         {young && <span>{t("Add this PC to your account?")}</span>}
-        <span>{t("Name the PC gave itself: \"{name}\"", { name: pc.label })}</span>
+        <span>{t("Name the PC gave itself: \"{name}\"", { name: accountLabel(pc.label) })}</span>
         {asker !== null && <span className="settings-hint" data-asker>{asker}</span>}
         <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young ? ` ${t("Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.")}` : ""}</span>
-        {young
-          ? <span className="settings-hint">{t("Expires in {minutes} min", { minutes: Math.max(1, Math.ceil((until - now()) / 60_000)) })}</span>
-          : <span>{t("This request ran out. To add this PC, start again on the PC.")}</span>}
+        {asking && young && <span className="settings-hint">{t("Expires in {minutes} min", { minutes: Math.min(10, Math.max(1, Math.ceil((until - now()) / 60_000))) })}</span>}
+        {ranOut && <span>{t("This request ran out. To add this PC, start again on the PC.")}</span>}
         {problem !== null && <span className="account-error" role="alert">{problem.text}</span>}
         {removal.prompt}
       </span>
       <div className="device-paired-actions">
-        {young && problem?.signInAgain === true && onSignInAgain !== undefined && (
+        {!ranOut && problem?.signInAgain === true && onSignInAgain !== undefined && (
           <button type="button" className="btn" disabled={busy} onClick={() => { keepPendingAdd(session.account, pc); onSignInAgain(session.provider); }}>{t("Sign in again")}</button>
         )}
-        {young && <button type="button" className="btn" disabled={busy} onClick={add}>{t("Add|account pc")}</button>}
-        <button type="button" className="btn" disabled={busy} onClick={remove}>{t("No|account pc")}</button>
+        {young ? (
+          <>
+            <button type="button" className="btn" disabled={busy} onClick={add}>{t("Add|account pc")}</button>
+            <button type="button" className="btn" disabled={busy} onClick={remove}>{t("No|account pc")}</button>
+          </>
+        ) : <button type="button" className="btn" disabled={busy} onClick={remove}>{ranOut ? t("No|account pc") : t("Remove from my account")}</button>}
       </div>
     </div>
   );
