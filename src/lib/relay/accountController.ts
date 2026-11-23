@@ -517,6 +517,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           if (error instanceof SignedOutError) throw new ConsentChangedError();
           signal.throwIfAborted();
           console.warn("Ovis: this PC could not be listed in the account before pairing", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+          // refused for the sign-in itself (an old one with no key to prove, docs/account.md "In one press"): the failure
+          // screen signs in again right there, and the same pairing goes on after it
+          if (error instanceof AccountServiceError && error.code === "session_not_fresh") throw new AdmissionRefusedError("sign-in");
           throw new AdmissionRefusedError(error instanceof AccountServiceError && error.status === 429 ? "busy" : error instanceof AccountServiceError && error.status < 500 ? "refused" : "unanswered");
         }
       }
@@ -529,7 +532,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         signal.throwIfAborted();
         console.warn("Ovis: the account service did not take the admission", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
         if (!(error instanceof AccountServiceError)) throw new AdmissionRefusedError("unanswered");
-        throw new AdmissionRefusedError(error.code === "unknown_pc" ? "unlisted" : error.status === 429 ? "busy" : error.status >= 500 ? "unanswered" : "refused");
+        throw new AdmissionRefusedError(error.code === "session_not_fresh" ? "sign-in" : error.code === "unknown_pc" ? "unlisted" : error.status === 429 ? "busy" : error.status >= 500 ? "unanswered" : "refused");
       }
       // another tab signed out or in to another account while the post was out: no PAIR goes under the old one
       const now = await account.session();

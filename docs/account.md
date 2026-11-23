@@ -916,7 +916,10 @@ the account lists none), the challenge ID and the challenge (`shared/account-rec
 that registered no key sends none, a service without the route (404, one from before key proofs)
 gets none, a refusal of the field (400 `invalid_request`, the admit's body of such a service) is told
 as `session_not_fresh`, and a signature the service does not take is judged by the sign-in's age
-alone; each ends in **Sign in again**, as before. A malformed proof is 400 `invalid_request`, a
+alone; each ends in **Sign in again**, as before. Where the listing itself is refused that way, the
+same offer stands in place: **Add this PC to my account** says to sign in again and offers it on the
+PC's own window and the desktop app, then presses again with the new sign-in, and a phone's **Add and
+pair** shows its sign-in screen and goes on with the same pairing after it. A malformed proof is 400 `invalid_request`, a
 challenge unknown, spent, expired or another sign-in's 400 `challenge_invalid`. The proof binds the
 add to this browser profile, not to a person: a copied access or refresh token alone adds no PC, but
 a script running in the app's page, or a copy of the whole browser profile, still can.
