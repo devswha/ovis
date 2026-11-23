@@ -5100,8 +5100,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   lists its login's PCs one row a machine, as Tailscale's own machine list does (the model: one row per
   machine, by its machine name): the ssh config aliases the server resolved to one of them fold into
   that row only when they reach it the same way (the same User, ssh's port), under Tailscale's machine
-  name when that PC is reached only one such way. The dim text is what the row opens, before the
-  press: the alias when the name is not it, the user and the MagicDNS name. **Connect** opens the alias
+  name when that PC is reached only one such way. Each row is two lines: the name with its control or
+  state (a long state line wraps on the right), then, dim and whole, what the row opens before the
+  press (the alias when the name is not it, the user and the MagicDNS name), broken after its dots
+  (`atDots`, as My PCs does) and never cut with an ellipsis. **Connect** opens the alias
   named as the machine, else the first in config order. An alias on another port (an sshd in WSL or
   a container), as another user, or whose User a Match may set is a row of its own, by its alias,
   with its port in the dim text, and only the PC's own plain row takes that PC's Tailscale answer
@@ -5131,8 +5133,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`pc_add_from_account`), where a device that redeems a relay code waits for this PC's screen to
   approve the key it proved. The phone part is followed, behind a hairline (`.connect-reachable`), by
   the PCs this PC can reach: one line of
-  what Add does, then the Tailscale tab's rows and the ssh config's other hosts in one list, each the
-  name, then dim its way and what it opens (**Tailscale · mymac · devswha@macbookpro.tail….ts.net**,
+  what Add does, then the Tailscale tab's rows and the ssh config's other hosts in one list, two lines
+  each as there: the name, then dim its way and what it opens (**Tailscale · mymac · devswha@macbookpro.tail….ts.net**,
   **SSH config · root@hosthatch**), then **Add**, which opens the PC setup dialog with that host filled in and **Add
   it to my account** ticked, whose Connect runs the add over SSH (docs/account.md); or in words why
   not: **In your account** in the done green (its relay ID, as that PC's Tailscale answer or this

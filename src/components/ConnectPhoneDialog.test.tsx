@@ -970,6 +970,8 @@ describe("Connect a phone on a phone", () => {
     await flushReads();
     const rows = renderer!.root.findAll((node) => node.props.className === "connect-found-row");
     expect(rows.map((row) => text(row.findByProps({ className: "connect-found-name" })))).toEqual(["winvm", "macbookpro"]);
+    expect(renderer!.root.findByType("ul").props.className).toBe("connect-found-list connect-reach-list");
+    expect(rows[1]!.findByProps({ className: "connect-found-detail" }).findAllByType("wbr").length).toBeGreaterThan(2);
     await act(async () => { renderer!.root.findByProps({ "aria-label": "Connect macbookpro" }).props.onClick(); });
     expect(added).toEqual([{ destination: "mymac", name: "macbookpro" }]);
     // added under either alias, the one row says so
@@ -1013,6 +1015,9 @@ describe("Connect a phone on a phone", () => {
       ["winvm", "Tailscale · winvm.tail.ts.net"],
       ["macbookpro", "Tailscale · mymac · me@macbookpro.tail.ts.net"],
     ]);
+    // what each row opens is its second line, whole, breaking after its dots rather than cut, in both tabs' lists
+    expect(renderer!.root.findByType("ul").props.className).toBe("connect-found-list connect-reach-list");
+    expect(rows[2]!.findByProps({ className: "connect-found-detail" }).findAllByType("wbr").length).toBeGreaterThan(2);
     // a PC whose relay ID is the account's is in it: nothing to add
     expect(text(rows[1]!)).toContain("In your account");
     expect(renderer!.root.findAllByProps({ "aria-label": "Add winvm" })).toHaveLength(0);

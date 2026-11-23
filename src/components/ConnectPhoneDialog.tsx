@@ -33,6 +33,7 @@ import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
 import { RelaySignIn } from "./RelaySignIn.tsx";
+import { atDots } from "./RelayAddPc.tsx";
 import { SettingsQuery, Toggle } from "./SettingsControls.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { usePortal } from "../lib/portal.ts";
@@ -374,13 +375,13 @@ export function TailscaleTab({ found: { rows, unread, failed, withheld, rowState
       {pcs === null ? <p className="settings-hint" role="status">{t("Looking for PCs…")}</p>
         : pcs.length > 0 ? (
           <div className="connect-found">
-            <ul className="connect-found-list">
+            <ul className="connect-found-list connect-reach-list">
               {pcs.map((pc) => {
                 const state = rowState(pc);
                 return (
                   <li key={pc.key} className="connect-found-row">
                     <span className="connect-found-name">{pc.name}</span>
-                    <span className="connect-found-detail">{pc.address}</span>
+                    <span className="connect-found-detail">{atDots(pc.address)}</span>
                     {state === "added" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
                       : state === "outdated" ? <span className="settings-hint">{t("Update Ovis on that PC to 0.5 first.")}</span>
                       : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Connect")} ${pc.name}`} onClick={() => onAddPc({ destination: pc.destination, name: pc.name })}>{t("Connect")}</button>}
@@ -424,13 +425,13 @@ export function ReachablePcList({ found: { rows, failed, withheld, rowState, ret
       <p className="settings-description">{t("Other PCs this PC can reach. Add goes in over SSH, installs Ovis there if it is missing, and adds it to your account.")}</p>
       {rows === null ? <p className="settings-hint" role="status">{t("Looking for PCs…")}</p>
         : rows.length > 0 && (
-          <ul className="connect-found-list">
+          <ul className="connect-found-list connect-reach-list">
             {rows.map((pc) => {
               const state = rowState(pc, accountPcs);
               return (
                 <li key={pc.key} className="connect-found-row" data-reachable-state={state}>
                   <span className="connect-found-name">{pc.name}</span>
-                  <span className="connect-found-detail">{way[pc.way]} · {pc.address}</span>
+                  <span className="connect-found-detail">{way[pc.way]} · {atDots(pc.address)}</span>
                   {state === "in-account" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("In your account")}</span>
                     : state === "added" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
                     : state === "outdated" ? <span className="settings-hint">{t("Update Ovis on that PC to 0.5 first.")}</span>
