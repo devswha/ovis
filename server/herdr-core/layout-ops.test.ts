@@ -309,10 +309,17 @@ describe("closing and reading the core, shared with the screen", () => {
   it("end still tries every terminal and throws the first failure in request order", async () => {
     const core = fakeCore();
     const first = new HcError("blocked", "kill refused");
+    const secondFailed = Promise.withResolvers<void>();
     const call = core.hc.call.bind(core.hc);
     core.hc.call = async (method, params) => {
-      if (method === "terminal.kill" && params["terminal"] === "t1") throw first;
-      if (method === "terminal.rm" && params["terminal"] === "t2") throw new HcError("live", "remove refused");
+      if (method === "terminal.kill" && params["terminal"] === "t1") {
+        await secondFailed.promise;
+        throw first;
+      }
+      if (method === "terminal.rm" && params["terminal"] === "t2") {
+        secondFailed.resolve();
+        throw new HcError("live", "remove refused");
+      }
       return call(method, params);
     };
     await expect(core.store.end(["t1", "t2", "t3"])).rejects.toBe(first);
