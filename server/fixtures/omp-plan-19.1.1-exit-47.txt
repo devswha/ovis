@@ -1,0 +1,11 @@
+╭─ Exit plan mode? ───────────────────────────╮
+│                                             │
+│ This exits plan mode without approving a    │
+│ plan.                                       │
+│                                             │
+│  ❯ Yes                                      │
+│    No                                       │
+│                                             │
+│ ↑/↓ navigate  ⏎ select  ⎋ cancel            │
+│                                             │
+╰─────────────────────────────────────────────╯

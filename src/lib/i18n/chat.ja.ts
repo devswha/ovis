@@ -1,8 +1,8 @@
 /**
  * Japanese for the keys only the chat files use:
  * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
- * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
- * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
+ * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx, components/BackgroundRows.tsx,
+ * components/WorkCard.tsx, components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
  * lib/chatTimestamp.ts, lib/chatReadDeadline.ts, components/ConversationSearch.tsx.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
@@ -119,6 +119,11 @@ export const CHAT_JA: Record<string, string> = {
   "Background result delivered": "バックグラウンドの結果が届きました",
   "Background task ended": "バックグラウンドタスクが終了しました",
   "Goal continues": "目標の作業を再開",
+  "Plan mode on": "プランモード オン",
+  "Plan ready for review": "レビュー待ちのプラン",
+  "Plan mode paused": "プランモードを一時停止しました",
+  "Plan mode off": "プランモード オフ",
+  "Plan approved": "プランを承認しました",
   "background work": "バックグラウンド作業",
   "Goal waits on {what} · continues around {time}": "目標は待機中: {what} · {time}ごろ再開",
   "1 task": "タスク 1 件",

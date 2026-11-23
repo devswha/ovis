@@ -390,6 +390,7 @@ const BASE: Record<string, string> = {
   "Copied": "已复制",
   "Worked for {duration}": "工作了 {duration}",
   "Copy message": "复制消息",
+  "View plan": "查看计划",
   "terminal ended": "终端已结束",
   "{m}m": "{m} 分钟",
   "{h}h {m}m": "{h} 小时 {m} 分",

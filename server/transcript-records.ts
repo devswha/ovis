@@ -4,6 +4,7 @@ import type { SubagentDetail, TaskNotification } from "./claude-subagents.ts";
 import { skillInvocationPrompt, skillPromptMessage } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
 import { inlineImageType, ompBlobDigest, ompBlobImageType } from "./codex-images.ts";
+import { notePlanTool, ompPlanEvent, ompPlanNotice, reduceOmpPlan, type OmpPlanFiles, type OmpPlanState } from "./omp-plan.ts";
 
 type Row = Record<string, unknown>;
 export const record = (value: unknown): Row => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
@@ -366,10 +367,13 @@ interface OmpParseState {
   taskTitles: Map<string, string>;
   settled: boolean;
   wait: number | null;
+  /** omp's plan mode as the records so far left it (omp-plan.ts); a change of it is said by a notice */
+  plan: OmpPlanState;
+  planFiles: OmpPlanFiles;
 }
 
 function ompParseState(options: OmpTranscriptOptions): OmpParseState {
-  return { turns: [], pending: new Map(), taskTitles: options.taskTitles ?? new Map(), settled: false, wait: null };
+  return { turns: [], pending: new Map(), taskTitles: options.taskTitles ?? new Map(), settled: false, wait: null, plan: { mode: "none" }, planFiles: { dir: null, edits: new Map() } };
 }
 
 /**
@@ -414,8 +418,15 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
         continue; // a torn tail line while omp is mid-append
       }
       if (entry === null || typeof entry !== "object") continue;
-      if (isContextClear(entry, "omp-transcript")) { turns.length = 0; pending.clear(); state.wait = null; continue; }
+      if (isContextClear(entry, "omp-transcript")) { turns.length = 0; pending.clear(); state.wait = null; state.planFiles.edits.clear(); continue; }
       const timestamp = (entry as { timestamp?: string }).timestamp;
+      const planBefore = state.plan;
+      state.plan = reduceOmpPlan(planBefore, entry);
+      const planEvent = ompPlanEvent(planBefore, state.plan, entry);
+      if (record(entry).type === "mode_change") {
+        if (planEvent !== null) turns.push({ role: "user", ts: timestamp ?? null, parts: [ompPlanNotice(planEvent, state.planFiles)] });
+        continue;
+      }
       const goalWait = omoGoalWait(entry);
       if (goalWait !== null) {
         endWait();
@@ -465,6 +476,7 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
           if (!tool) continue;
           pending.delete(result.id);
           trimOutput(tool, result.text, result.id);
+          if (message.role === "toolResult") notePlanTool(state.planFiles, tool, message.details);
           if (result.error) tool.error = true;
           if (images && result.images.length > 0) {
             // addressed by the call it answers: a nested result shares its entry with other
@@ -475,6 +487,8 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
         }
       };
       if (message.role !== "assistant") applyResults();
+      // a plan sent to review: the result of `propose` says so in a line of its own, once the call it answers is done
+      if (planEvent !== null) turns.push({ role: "user", ts: timestamp ?? null, parts: [ompPlanNotice(planEvent, state.planFiles)] });
       omoTaskTitles(message, taskTitles);
 
       if (message.role === "user") {

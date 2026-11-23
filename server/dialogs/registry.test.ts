@@ -25,6 +25,8 @@ const snapshot: Record<string, readonly [DialogReader["reread"], DialogReader["l
   "omp-approval": ["none", "none"],
   "omp-model": ["each-move", "none"],
   "omp-handoff": ["before-commit", "none"],
+  "omp-plan": ["each-move", "none"],
+  "omp-plan-exit": ["before-commit", "none"],
   "omo-model": ["before-commit", "none"],
   "omo-question": ["before-commit", "none"],
   "omo-typing": ["none", "none"],
@@ -99,7 +101,7 @@ const order: Record<string, readonly string[]> = {
   letta: ["letta-model", "letta-effort", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   hermes: ["hermes-question", "hermes-input", "hermes-approval", "hermes-status", "hermes-version", "hermes-profile", "hermes-reload-skills", "hermes-help", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   omo: ["omo-model", "pi-question", "pi-confirm", "pi-input", "omo-question", "omo-typing", "omo-review", "omo-pending", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
-  omp: ["omp-question", "omp-submit", "omp-approval", "omp-model", "omp-handoff", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
+  omp: ["omp-question", "omp-submit", "omp-plan", "omp-plan-exit", "omp-approval", "omp-model", "omp-handoff", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   opencode: ["opencode-question", "opencode-permission", "opencode-v1-question", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
   pi: ["pi-thinking", "pi-model", "omo-model", "pi-questionnaire-question", "pi-questionnaire-submit", "pi-ask-question", "pi-ask-submit", "pi-ask-user", "pi-question", "pi-confirm", "pi-input", "omo-question", "omo-typing", "omo-review", "omo-pending", "fallback-menu", "fallback-gjc-menu", "fallback-keys"],
 };

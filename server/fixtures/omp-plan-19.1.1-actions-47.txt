@@ -1,0 +1,32 @@
+╭─ Plan Review ───────────────────────────────╮
+│  Add README.md to /tmp/omp-proto          █ │
+│                                           █ │
+│  Context                                  │ │
+│                                           │ │
+│  Add a README.md at                       │ │
+│  /tmp/omp-proto/README.md that explains   │ │
+│  what each file in this prototype folder  │ │
+│  is. The folder holds a git repo with no  │ │
+│  commits and these files, all checked this│ │
+│  session:                                 │ │
+│                                           │ │
+│  - blocks.json: 43 mermaid blocks ({file, │ │
+│    lang, src, ts}) taken from 22 session  │ │
+│    .jsonl logs.                           │ │
+│  - chat-before.png: the Ovis Terminal     │ │
+│    view. The table renders, mermaid falls │ │
+│    back to ASCII, and the SVG shows as a  │ │
+│    striped placeholder.                   │ │
+│  - chat-lens.png: the Ovis Chat view. The │ │
+│    table, the mermaid chart and the SVG   │ │
+├─────────────────────────────────────────────┤
+│ Plan mode - next step                       │
+│ continue with  ◂  smol  ◀ default ▶  slow … │
+│   ↳ Claude Opus 5.5                         │
+│ ❯ Approve and execute                       │
+│   Approve and compact context               │
+│   Approve and keep context (~60k / 1m)      │
+│   Save                                      │
+├─────────────────────────────────────────────┤
+│ ↑/↓ select · ⏎ confirm · ←/→ model · c cop… │
+╰─────────────────────────────────────────────╯

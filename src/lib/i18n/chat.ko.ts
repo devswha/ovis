@@ -1,8 +1,8 @@
 /**
  * Korean for the keys only the chat files use:
  * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
- * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
- * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
+ * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx, components/BackgroundRows.tsx,
+ * components/WorkCard.tsx, components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
  * lib/chatTimestamp.ts, lib/chatReadDeadline.ts, components/ConversationSearch.tsx.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
@@ -119,6 +119,11 @@ export const CHAT_KO: Record<string, string> = {
   "Background result delivered": "백그라운드 결과 도착",
   "Background task ended": "백그라운드 작업 끝남",
   "Goal continues": "목표 계속 진행",
+  "Plan mode on": "계획 모드 켜짐",
+  "Plan ready for review": "검토할 계획 준비됨",
+  "Plan mode paused": "계획 모드 일시중지됨",
+  "Plan mode off": "계획 모드 꺼짐",
+  "Plan approved": "계획 승인됨",
   "background work": "백그라운드 작업",
   "Goal waits on {what} · continues around {time}": "목표 대기 중: {what} · {time}쯤 이어서 진행",
   "1 task": "작업 1개",

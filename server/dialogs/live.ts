@@ -122,7 +122,8 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   if (prompt.responder === "claude-approval") return ends(/esc to cancel.*(?:tab|ctrl\+e)|ctrl\+e to explain|^esc to cancel(?:\s*·\s*ctrl\+x ctrl\+k twice to stop background agents)?$|^(?:❯\s*)?\d+\.\s+No, and tell Claude what to do differently \(esc\)$/i);
   if (prompt.responder === "claude-confirm") return ends(CLAUDE_CONFIRM_HINT_RE);
   if (prompt.responder === "claude-held") return true;
-  if (prompt.responder === "omp-handoff") return true;
+  // the plan review and its exit box are read only as the box that ends the screen (dialogs/omp-plan.ts), so they are live while read
+  if (prompt.responder === "omp-handoff" || prompt.responder === "omp-plan" || prompt.responder === "omp-plan-exit") return true;
   if (prompt.responder === "claude-goal") return ends(/esc to dismiss$/i);
   if (prompt.responder === "claude-model") return claudeModelListWaits(screen);
   if (prompt.responder === "claude-effort") return ends(CLAUDE_EFFORT_HINT_RE);

@@ -81,6 +81,13 @@ const CARD_TEXT = [
   "Use the tool {tool}",
   "Allows every {action} request in this project from now on",
   "Allows these in this project from now on: {patterns}",
+  "Plan review",
+  "Executes the plan now, starting fresh with just the plan",
+  "Executes the plan now, after summarizing this conversation",
+  "Executes the plan now, keeping this conversation",
+  "Sends your comments to the agent and keeps planning",
+  "Saves the plan to a file. The review stays open, and nothing runs",
+  "Closes the review. Plan mode stays on",
 ] as const;
 
 export type CardTextKey = (typeof CARD_TEXT)[number];

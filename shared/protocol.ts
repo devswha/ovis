@@ -49,7 +49,7 @@ export type HerdrTab = TabInfo;
 export type PaneContext = { used: number; window: number | null };
 
 /**
- * `background_tasks`: an OmO pane's `task` children, a Claude Code or OpenCode pane's subagents and background commands, or an agy or grok pane's background tasks, still running, counted by the server; absent when none.
+ * `background_tasks`: an OmO pane's `task` children, a Claude Code or OpenCode pane's subagents and background commands, an omp pane's subagents, or an agy or grok pane's background tasks, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
  * `plan`: how far the pane's agent's task list or checklist has progressed; absent when it keeps none.
  * `context`: how much of its context a Claude Code or Codex pane's last request filled, read from its transcript as the chat's ring reads it; absent before one reports it.
@@ -385,7 +385,7 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *  GET    /api/pane/commands?pane_id=   -> { commands: SlashCommand[] } (the agent's slash
  *         commands: built-ins per agent kind + the user's and the project's custom commands)
  *  GET    /api/pane/omo-tasks?pane_id=  -> OmoActivity (the background tasks and workflows the
- *         pane's OmO session started, or a Claude Code pane's subagents (no workflows): running ones, then
+ *         pane's OmO session started, or a Claude Code, OpenCode or omp pane's subagents (no workflows): running ones, then
  *         those that ended in the last day; empty for any other pane or one whose session is not
  *         known yet. server_time: that PC's clock, which the times are on)
  *  GET    /api/pane/artifacts?pane_id= -> { artifacts: ClaudeArtifact[] } (the pages a Claude Code
@@ -394,7 +394,7 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *  GET    /api/pane/btw?pane_id=        -> OmpBtwHistory (the side conversations an OMP pane's session
  *         saved with /btw, newest first, under hard caps; `more` when a cap left some out; empty for any
  *         other pane or one without any)
- *  GET    /api/pane/plan?pane_id=       -> PanePlan (the plan the pane's Claude Code, Codex or OmO session
+ *  GET    /api/pane/plan?pane_id=       -> PanePlan (the plan the pane's Claude Code, Codex, OmO or omp session
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
  *         cwd matching q, for @-mentions; git ls-files when the cwd is a repo, bounded walk otherwise)
@@ -744,6 +744,12 @@ export type ConversationPart =
      * Absent for other agents and older servers.
      */
     state?: "pending" | "ok" | "error";
+    /**
+     * omp: the call wrote or edited a plan file (`local://<slug>-plan.md`), and this is where it lies on disk, so the row opens it.
+     * An edit of a plan also holds the plan whole as that edit left it (`plan_text`), on the newest edit of the file alone.
+     */
+    plan_file?: string;
+    plan_text?: string;
   }
   /** A native Claude/Codex user image, addressed by an opaque ref and fetched on demand: GET /api/pane/conversation/image?pane_id=…&ref=… */
   | { kind: "image"; media_type: string; ref: string }
@@ -752,7 +758,11 @@ export type ConversationPart =
   | { kind: "compact"; text: string; tokens_before?: number; tokens_after?: number; tokens_saved?: number }
   /** a message the agent's runtime put in the user's seat (gjc's background-job result): it starts a turn, nobody typed it.
    * `source`: the runtime's name for it (pi's customType, e.g. "async-result", "irc:incoming", "omo-model-profile:unavailable") */
-  | { kind: "notice"; text: string; source?: string }
+  | {
+    kind: "notice"; text: string; source?: string;
+    /** omp's plan notices (`plan-ready:<slug>`, `plan-approved:<slug>`): the plan on disk, for the notice's View plan */
+    plan_file?: string;
+  }
   /** a shell command the user ran without the model (Claude Code's `!` bash mode), and what it printed: no stdout or
    * stderr until the agent records them */
   | { kind: "shell"; command: string; stdout?: string; stderr?: string }

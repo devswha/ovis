@@ -2,7 +2,7 @@ import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffec
 import { createPortal, flushSync } from "react-dom";
 import { legacyEditText } from "../../shared/edit-output.ts";
 import {
-  ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, Copy, Hourglass, Layers, SquareTerminal, Target,
+  ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, ClipboardList, Copy, FileText, Hourglass, Layers, SquareTerminal, Target,
   type LucideProps,
 } from "lucide-react";
 
@@ -60,6 +60,7 @@ import { FileNameLookupContext, useFileNameLookup } from "../lib/fileNameLookup.
 import { toolPathLabel, toolPathRoot } from "../lib/workspacePath.ts";
 import { linkFilePaths } from "./FilePathLink.tsx";
 import { patchText } from "../../shared/patch.ts";
+import { ompPlanEditTarget, ompPlanName, planNoticeOf } from "../../shared/omp-plan.ts";
 import { workRowLabel } from "../lib/workRowLabel.ts";
 import { toolDisplayName } from "../lib/toolVerbs.ts";
 import { machinePath, paneStorageId } from "../../shared/machines.ts";
@@ -324,12 +325,35 @@ function ompEditLineClass(line: string): string | undefined {
   return undefined;
 }
 
-function ToolFile({ path, suffix }: { path: string; suffix?: string }) {
+/** `to`: where the file opens when the path shown is not it (omp's `local://` names only its own folder knows); null: nowhere, the name is only shown */
+function ToolFile({ path, suffix, to = path }: { path: string; suffix?: string; to?: string | null }) {
   const t = useT();
   const open = useContext(OpenFileContext);
   const shown = toolPathLabel(path, useContext(ToolPathRootContext));
-  if (open === null) return <p className="chat-tool-file" title={path}><span data-raw-path={path}>{shown}</span>{suffix}</p>;
-  return <p className="chat-tool-file"><button type="button" className="chat-tool-file-link" title={t("Open {path}", { path })} data-raw-path={path} onClick={() => open(path)}>{shown}</button>{suffix}</p>;
+  if (open === null || to === null) return <p className="chat-tool-file" title={path}><span data-raw-path={path}>{shown}</span>{suffix}</p>;
+  return <p className="chat-tool-file"><button type="button" className="chat-tool-file-link" title={t("Open {path}", { path })} data-raw-path={path} onClick={() => open(to)}>{shown}</button>{suffix}</p>;
+}
+
+/** omp's plan as the document it is, not the source of the call that wrote it: its Markdown drawn, its diagrams too */
+function PlanDocument({ path, file, markdown }: { path: string; file: string | undefined; markdown: string }) {
+  return <div className="chat-plan-doc">
+    <ToolFile path={path} to={file ?? null} />
+    <div className="chat-plan-doc-body"><Markdown>{markdown}</Markdown></div>
+  </div>;
+}
+
+/** a line in the chat for a change of omp's plan mode, with the plan to open once it is proposed or approved */
+function PlanNotice({ notice, time }: { notice: Extract<ConversationPart, { kind: "notice" }>; time: React.ReactNode }) {
+  const t = useT();
+  const open = useContext(OpenFileContext);
+  const plan = planNoticeOf(notice.source);
+  if (plan === null) return null;
+  const words = { on: t("Plan mode on"), ready: t("Plan ready for review"), paused: t("Plan mode paused"), off: t("Plan mode off"), approved: t("Plan approved") }[plan.kind];
+  const file = notice.plan_file;
+  return <p className="chat-plan-notice">
+    <span><ClipboardList aria-hidden="true" />{plan.slug === null ? words : `${words} · ${plan.slug}`}{time !== null && <> · {time}</>}</span>
+    {file !== undefined && open !== null && <button type="button" className="btn btn-ghost chat-plan-notice-file" onClick={() => open(file)}><FileText aria-hidden="true" />{t("View plan")}</button>}
+  </p>;
 }
 
 function EditDiff({ before, after }: { before: string; after: string }) {
@@ -404,8 +428,16 @@ function ToolInputView({ part }: { part: ToolPartType }) {
     {sendUserFile.files.map((file, index) => <ToolFile key={`${index}:${file}`} path={file} />)}
   </div>;
   const editScript = str("input");
-  if (editScript !== undefined) return <pre className="chat-tool-io chat-diff">{editScript.split("\n").map((line, index) => <span key={index} className={ompEditLineClass(line)}>{line}{"\n"}</span>)}</pre>;
+  if (editScript !== undefined) {
+    // an edit of omp's plan: the plan as that edit left it where the row carries it, else its script under the plan's name
+    const plan = part.name === "edit" ? ompPlanEditTarget(editScript) : null;
+    if (plan !== null && part.plan_text !== undefined) return <PlanDocument path={plan} file={part.plan_file} markdown={part.plan_text} />;
+    const script = <pre className="chat-tool-io chat-diff">{editScript.split("\n").map((line, index) => <span key={index} className={ompEditLineClass(line)}>{line}{"\n"}</span>)}</pre>;
+    return plan === null ? script : <div className="chat-plan-doc"><ToolFile path={plan} to={part.plan_file ?? null} />{script}</div>;
+  }
   const content = str("content");
+  const written = part.name === "write" ? str("path") : undefined;
+  if (content !== undefined && written !== undefined && ompPlanName(written) !== null) return <PlanDocument path={written} file={part.plan_file} markdown={content} />;
   if (content !== undefined) return <div className="chat-tool-io">{(str("file_path") ?? str("path")) !== undefined && <ToolFile path={(str("file_path") ?? str("path"))!} />}<pre>{content}</pre></div>;
   const path = str("file_path") ?? str("path");
   if (path !== undefined) return <div className="chat-tool-io"><ToolFile path={path} suffix={str("pattern") !== undefined ? ` — /${str("pattern")}/` : undefined} /></div>;
@@ -1089,6 +1121,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
   }
   const notice = turn.parts.find((part): part is Extract<ConversationPart, { kind: "notice" }> => part.kind === "notice");
   if (notice !== undefined) {
+    if (planNoticeOf(notice.source) !== null) return <PlanNotice notice={notice} time={time} />;
     return <ChatDetails memoryKey="notice" className="chat-compact chat-notice">
       <summary><span className="chat-notice-label">{noticeLabel(t, notice)}</span>{time !== null && <> · {time}</>}</summary>
       <pre className="chat-compact-text chat-notice-text">{notice.text}</pre>

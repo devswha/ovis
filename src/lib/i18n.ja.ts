@@ -387,6 +387,7 @@ const BASE: Record<string, string> = {
   "Copied": "コピーしました",
   "Worked for {duration}": "{duration} 作業しました",
   "Copy message": "メッセージをコピー",
+  "View plan": "プランを表示",
   "terminal ended": "ターミナルが終了しました",
   "{m}m": "{m}分",
   "{h}h {m}m": "{h}時間 {m}分",

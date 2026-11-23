@@ -1788,7 +1788,8 @@ ol.markdown-list {
   text-overflow: ellipsis;
 }
 
-.chat-goal-wait {
+.chat-goal-wait,
+.chat-plan-notice {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -1798,23 +1799,63 @@ ol.markdown-list {
 }
 
 .chat-goal-wait::before,
-.chat-goal-wait::after {
+.chat-goal-wait::after,
+.chat-plan-notice::before,
+.chat-plan-notice::after {
   content: "";
   flex: 1 1 var(--space-4);
   border-top: var(--hairline) solid var(--border);
 }
 
-.chat-goal-wait svg {
+.chat-goal-wait svg,
+.chat-plan-notice svg {
   width: var(--icon-size-xs);
   height: var(--icon-size-xs);
   margin-inline-end: var(--space-1);
   vertical-align: -1px;
 }
 
-.chat-goal-wait > span {
+.chat-goal-wait > span,
+.chat-plan-notice > span {
   flex: 0 1 auto;
   min-width: 0;
   text-align: center;
+}
+
+/* a plan proposed or approved opens in the file panel, rendered, from a button beside its line */
+.chat-plan-notice-file {
+  flex: none;
+}
+
+/* omp's plan in the opened row of the call that wrote it: the document, which scrolls inside the row when it is long */
+.chat-plan-doc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.chat-plan-doc-body {
+  max-height: 70vh;
+  padding: var(--space-3);
+  overflow: auto;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+}
+
+.chat-plan-doc-body .markdown {
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
+}
+
+.chat-plan-doc-body .markdown :not(pre) > code {
+  font-size: var(--fs-xs);
+}
+
+.chat-plan-doc-body .markdown-code pre {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
 }
 
 .chat-notice-text {

@@ -1,8 +1,8 @@
 /**
  * Simplified Chinese for the keys only the chat files use:
  * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
- * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
- * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
+ * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx, components/BackgroundRows.tsx,
+ * components/WorkCard.tsx, components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
  * lib/chatTimestamp.ts, lib/chatReadDeadline.ts, components/ConversationSearch.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
@@ -119,6 +119,11 @@ export const CHAT_ZH: Record<string, string> = {
   "Background result delivered": "后台结果已送达",
   "Background task ended": "后台任务已结束",
   "Goal continues": "目标继续推进",
+  "Plan mode on": "计划模式已开启",
+  "Plan ready for review": "计划待审阅",
+  "Plan mode paused": "计划模式已暂停",
+  "Plan mode off": "计划模式已关闭",
+  "Plan approved": "计划已批准",
   "background work": "后台工作",
   "Goal waits on {what} · continues around {time}": "目标等待中：{what} · 约 {time} 继续",
   "1 task": "1 个任务",
