@@ -23,8 +23,8 @@ export type Overlay =
   /** `seen`: the terminals the close ends, as the screen showed them when the dialog opened */
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
   | { readonly kind: "goto"; readonly field: Field }
-  /** `cursor`: the index of the entry Enter chooses */
-  | ({ readonly kind: "menu"; readonly presented: MenuList } & MenuList);
+  /** `presented` is null after a stale choice: input waits for an accepted menu frame, never queued. */
+  | ({ readonly kind: "menu"; readonly presented: MenuList | null } & MenuList);
 
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
@@ -135,8 +135,9 @@ const run = (action: RunEffect["action"], target: Target | null, name: string | 
 
 /** The menu's answer to choosing entry `at`: the cursor moved there and kept open, or closed with the choice. */
 export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
+  if (overlay.presented === null) return { overlay, effects: [] };
   const chosen = chooseEntry(overlay.entries, at);
-  if (chosen === null) return { overlay, effects: [] };
+  if (chosen === null) return { overlay: { ...overlay, presented: null }, effects: [] };
   if (!("cursor" in chosen)) return { overlay: null, effects: [], choice: chosen.choice };
   const cursor = indexOfEntry(overlay.presented.entries, overlay.entries[chosen.cursor]!);
   return { overlay: { ...overlay, cursor: chosen.cursor, presented: { ...overlay.presented, cursor } }, effects: [] };
@@ -175,6 +176,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: () => null,
     input: (overlay, input) => {
       const presented = overlay.presented;
+      if (presented === null) return { overlay, effects: [] };
       const current = (at: number) => {
         const shown = presented.entries[at];
         return shown === undefined ? -1 : indexOfEntry(overlay.entries, shown);
@@ -189,7 +191,8 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
       }
       // a label is one character typed as it is: under an input method a letter arrives composed and chooses nothing
       const typed = input.kind === "paste" || (input.kind === "key" && (input.event.mods.alt || input.event.mods.ctrl)) ? "" : input.event.text ?? "";
-      return menuChoice(overlay, current(labelled(presented.entries, [...typed][0] ?? "")));
+      const at = labelled(presented.entries, [...typed][0] ?? "");
+      return at < 0 ? { overlay, effects: [] } : menuChoice(overlay, current(at));
     },
   },
 };

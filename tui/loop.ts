@@ -608,6 +608,7 @@ export function startLoop(options: LoopOptions): Loop {
     const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
     const frameMenu = state.overlays.at(-1);
+    const frameMenuDismissed = state.menuDismissed;
     const chrome = buildChrome({
       regions: shape.regions,
       spots: shape.spots,
@@ -633,7 +634,7 @@ export function startLoop(options: LoopOptions): Loop {
     painter.taken(taken);
     if (ended || !taken) return;
     hits = frame.hits;
-    state = presentedMenu(state, frameMenu);
+    state = presentedMenu(state, frameMenu, frameMenuDismissed);
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;
     const order = [...shape.spots].sort((a, b) => Number(b.pane === paneFocus) - Number(a.pane === paneFocus));

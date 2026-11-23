@@ -40,6 +40,8 @@ export interface ModelState {
   /** the prefix machine: Armed (true) or Idle; it waits without a deadline until a row of its table ends it */
   readonly armed: boolean;
   readonly overlays: readonly Overlay[];
+  /** Escape may dismiss a stale menu; its trailing input still waits for the host to accept that dismissal. */
+  readonly menuDismissed: boolean;
   readonly world: World;
   /** A new core line can reuse every local address and birth time. Its menu choices are distinct. */
   readonly worldEpoch: number;
@@ -93,7 +95,7 @@ export interface Step { readonly state: ModelState; readonly effects: readonly E
 
 export function initialState(keys: unknown): ModelState {
   return {
-    mode: { name: "terminal" }, locked: false, armed: false, overlays: [], world: EMPTY_WORLD, worldEpoch: 0, focus: NO_FOCUS, keymap: buildKeymap(keys),
+    mode: { name: "terminal" }, locked: false, armed: false, overlays: [], menuDismissed: false, world: EMPTY_WORLD, worldEpoch: 0, focus: NO_FOCUS, keymap: buildKeymap(keys),
     notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null, viewCore: null, restoring: null,
   };
 }
@@ -159,7 +161,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       select(acc, event.target, event.at);
       break;
     case "close_overlay":
-      if (acc.s.overlays.length > 0) acc.s = { ...acc.s, overlays: acc.s.overlays.slice(0, -1) };
+      if (acc.s.overlays.length > 0) answerOverlay(acc, { overlay: null, effects: [] }, event.at);
       break;
     case "notice":
       notice(acc, event.code, event.data ?? {}, event.at, event.calm === true);
@@ -171,7 +173,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     case "choose": {
       const top = acc.s.overlays.at(-1);
       const at = top?.kind === "menu" ? top.entries.findIndex((entry) => entryKey(entry) === event.entry) : -1;
-      if (top?.kind === "menu" && at >= 0) answerOverlay(acc, menuChoice(top, at), event.at);
+      if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, at), event.at);
       break;
     }
     case "restore": {
@@ -194,10 +196,11 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
 }
 
 /** Commit the key map of the frame the host took. Until the first menu frame, keys use the list at open. */
-export function presentedMenu(state: ModelState, frame: Overlay | undefined): ModelState {
+export function presentedMenu(state: ModelState, frame: Overlay | undefined, dismissed: boolean): ModelState {
   const menu = state.overlays.at(-1);
-  if (frame?.kind !== "menu" || menu?.kind !== "menu" || menu.presented.entries !== frame.presented.entries) return state;
-  if (frame.entries === menu.presented.entries && frame.cursor === menu.presented.cursor) return state;
+  if (dismissed && state.menuDismissed && menu === frame) return { ...state, menuDismissed: false };
+  if (frame?.kind !== "menu" || menu?.kind !== "menu" || menu.presented !== frame.presented) return state;
+  if (frame.entries === menu.presented?.entries && frame.cursor === menu.presented?.cursor) return state;
   return { ...state, overlays: [...state.overlays.slice(0, -1), { ...menu, presented: { entries: frame.entries, cursor: frame.cursor } }] };
 }
 
@@ -207,6 +210,7 @@ type Unit = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind
 /** A key or a paste down the ladder. */
 function ladder(acc: Acc, unit: Unit): void {
   const s = acc.s;
+  if (s.menuDismissed && s.overlays.length === 0) return;
   const at = unit.event.at;
   const chords = unit.kind === "key" ? keyChords(unit.event) : [];
   if (s.locked) {
@@ -285,6 +289,7 @@ function ladderText(acc: Acc, event: TextInput): void {
   let rest = event.text;
   while (rest.length > 0) {
     const s = acc.s;
+    if (s.menuDismissed) return;
     const run: TextInput = rest === event.text ? event : { type: "text", text: rest, at: event.at };
     if (s.locked) {
       toPane(acc, run);
@@ -369,7 +374,9 @@ function toOverlay(acc: Acc, input: OverlayInput): void {
 /** The top overlay replaced by its answer (or closed), its effects given, then what it chose done. */
 function answerOverlay(acc: Acc, answer: OverlayAnswer, at: number): void {
   const { overlays } = acc.s;
-  acc.s = { ...acc.s, overlays: answer.overlay === null ? overlays.slice(0, -1) : [...overlays.slice(0, -1), answer.overlay] };
+  const top = overlays.at(-1);
+  const dismissed = answer.overlay === null && top?.kind === "menu" && top.presented === null;
+  acc.s = { ...acc.s, menuDismissed: acc.s.menuDismissed || dismissed, overlays: answer.overlay === null ? overlays.slice(0, -1) : [...overlays.slice(0, -1), answer.overlay] };
   acc.effects.push(...answer.effects);
   if (answer.choice !== undefined) choose(acc, answer.choice, at);
 }
@@ -389,6 +396,7 @@ function restore(acc: Acc, core: string | null, at: number): void {
 }
 
 function mouse(acc: Acc, event: MouseInput): void {
+  if (acc.s.menuDismissed && acc.s.overlays.length === 0) return;
   if (event.action === "press") disarm(acc);
   const over = acc.s.overlays.length > 0 ? "overlay" : "screen";
   acc.levels.push(over === "overlay" ? 2 : 6);
