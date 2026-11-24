@@ -1312,6 +1312,38 @@ only watches, or one that may not write the list, is offered neither.
 Either way the entry is signed through the one write loop of
 [Letting a device in](#letting-a-device-in), for the account and the list the card was shown for.
 
+### Invites
+
+A device that may write the list makes an invite for one PC
+([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)). In the Mac app, **Add PC →
+Ovis relay → Invite a PC** makes one that a PC joins with by itself, for a PC an agent sets up.
+
+1. The device makes a key pair and writes the join line from it (`newInvite`). The line is the
+   only copy of the private key: it is shown once, on the device that made it, and never stored.
+2. The account service gets the public key (`POST /v1/pc-invites` `{ invite_key, auto }`), which
+   is what a PC redeems; the answer's `account` must be the device's own, or no line is shown.
+3. The device signs an `invite` entry for that key: `uses` 1, `exp` fourteen minutes from the time
+   the device judges by (its own clock, never the account service's), under the service's fifteen.
+   For an invite a PC joins with by itself the current epoch's key is wrapped to the invite's key,
+   so the PC that joins reads the list's names.
+4. Only when the device's own copy shows the entry is the line shown, with the minutes left and
+   the one line an agent runs on the PC (`--join-file ~/ovis-invite.txt --account <the account's
+   id>`). Where the service or the list refuses, nothing is shown, the service's invite is ended
+   again, and the key pair is gone.
+
+A sign-in older than ten minutes proves its registered key for that very invite, to the service's
+invite and to the entry alike (`ovis-pc-add/1`, purpose `invite` or `invite-auto`, the invite's
+key where a listing id stands otherwise).
+
+The list's invites are listed under it: **Expires in N min** while open, then **Expired**,
+**Used** or **Revoked**, for an hour after their end. **Revoke** signs a `remove` of the invite's
+key and ends the service's invite; for an invite a PC joins with by itself the same request opens
+the next epoch, since the holder of the line held the epoch's key. An invite past its `exp` by the
+device's clock is never shown as open.
+
+Not built here: an invite that waits for **Add** on a device (`auto` false). The library makes
+one; no screen does, until the card that adds the PC that joined with it exists.
+
 ### What a pinned PC asks of the app
 
 A PC that follows a list a person named (a pinned PC) lets a device of the account in by the key
