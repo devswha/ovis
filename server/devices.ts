@@ -1574,8 +1574,12 @@ export class DeviceStore {
     // a PC pinned to its account's signed list leaves on that list's word (LIST_REMOVED) or by an act at the PC, never
     // because the account service stopped listing it: that only costs it the service
     if (reason === "unlisted" && by !== LIST_REMOVED && this.listFollowed()) return false;
-    if (reason !== "revoke_all") this.resumeRevokeAll();
     const pc = this.pc ?? (existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath) : null);
+    // also where another Ovis server on this folder pinned the binding after this one read it: asked of the file,
+    // before a row is ended for a clear that will not be written
+    pc?.adoptPin();
+    if (reason === "unlisted" && by !== LIST_REMOVED && pc?.binding()?.list !== undefined) return false;
+    if (reason !== "revoke_all") this.resumeRevokeAll();
     const binding = pc?.binding();
     if (!pc || !binding || pc.strict !== null) return false;
     try {
@@ -2353,6 +2357,18 @@ export class DeviceStore {
     return { match: { id: current.id, label: current.label, role }, key };
   }
 
+  /**
+   * On a PC pinned to its list, the key of row `id` when that id is the account's own for the key
+   * (accountDeviceId): the id an app opens the PC through its account by. The list alone answers for such an id,
+   * whoever wrote the row and whenever (a member's v1 add before the pin, a join approved by digits): the row gives
+   * it no role, no time and no way in. Null for a pairing under an id of its own, and on a PC that follows no list.
+   */
+  listGoverned(id: string, serverId: string): string | null {
+    if (!this.listFollowed()) return null;
+    const key = this.devices.find((d) => d.id === id)?.relay_public_key;
+    return key !== undefined && accountDeviceId(serverId, key) === id ? key : null;
+  }
+
   /** The role the list this PC is pinned to gives `key` now; null when it lets the key in as nothing, and on a PC that follows no list. */
   listRoleOf(key: string): DeviceRole | null {
     return this.listFollowed() ? this.signedList?.role(key) ?? null : null;
@@ -2869,7 +2885,11 @@ export class DeviceStore {
   /** A drive account member: the only device that may approve a pairing or start a code through the relay (docs/account.md). */
   isAccountApprover(id: string): boolean {
     const device = this.devices.find((d) => d.id === id);
-    return device !== undefined && device.role === "drive" && device.account !== undefined && device.relay_public_key !== undefined && !this.stale(device) && this.canSpeak(id);
+    if (device === undefined || device.role !== "drive" || device.account === undefined || device.relay_public_key === undefined || this.stale(device) || !this.canSpeak(id)) return false;
+    // On a PC pinned to its account's list, what may add a device to the list may approve a join, and nothing else:
+    // a member of this PC's own devices counts only while the list holds its key to drive with full power, read from
+    // the PC's copy now. A row the list does not hold (a v1 add from before the pin, say) approves nobody
+    return !this.listFollowed() || this.signedList?.allowsJoins(device.relay_public_key) === true;
   }
 
   /** The account `id` may approve a pairing for (isAccountApprover), or null. */

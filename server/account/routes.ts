@@ -138,6 +138,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
       // a yes or no only, never the account asked for: the account is named here once this PC is in it
       waiting_for_add: waitingForAdd(devices),
+      // a PC pinned to its account's list: which list, where the PC stands in it, and why it lets nobody in when it does not
+      ...(context.services.accountList?.summary() ? { list: context.services.accountList.summary() } : {}),
     });
   }
   if (pathname === "/api/account/list" && request.method === "GET") {

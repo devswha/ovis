@@ -801,11 +801,16 @@ for it before they show or ask anything.
 
   `ovis status --json` prints where the PC stands, for an agent to read before or after:
   `{ "version", "running", "server_id", "relay": { "on", "connected", "phase" } | null, "account",
-  "account_known", "waiting_for_add" }`. `account` is the id of the account the PC is in (null for
+  "account_known", "waiting_for_add", "list", "problem" }`. `account` is the id of the account the PC is in (null for
   none), told only to the app's owner, as `ovis status` names it: `account_known` is false where the
   command was not let in as the owner. `waiting_for_add` is true while a run of `add` or `join`
   (or the PC's own window) asked for its admission in the last 30 seconds and found none yet (null
-  from an older Ovis). `server_id` comes from this PC's own window or CLI only (`GET /api/relay`
+  from an older Ovis). `list` is null unless the PC is pinned to its account's signed list; then it
+  is `{ "pinned", "standing", "reason" }`: the list's id, where the PC stands in it, and one
+  sentence saying why the PC lets no device of its account in (or nobody new) and what to do, null
+  while it follows its list as usual. `problem` is null unless the PC answered that it cannot read
+  its own account state and lets only itself in: then it is what the PC could not read (a file, a
+  folder), and the other account fields are unknown. `server_id` comes from this PC's own window or CLI only (`GET /api/relay`
   names it, and the account named for the relay pass, `relay_account`, to no other caller). Nothing in it is a token, a key or an e-mail address.
 
 **Which copy runs.** An in-app update (**Settings → Updates**) installs a new release beside the

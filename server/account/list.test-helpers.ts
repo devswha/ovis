@@ -92,10 +92,10 @@ export class TestList {
   /**
    * An entry of a kind this build does not know, as a member with a newer Ovis writes one after the last entry: a
    * reader of this build is behind from it on. Nothing is placed (the fake is of this build too, and places none): a
-   * test has the service show it (tamperList `inject`).
+   * test has the service show it (tamperList `inject`). `after`: the entry it follows, the last one by default.
    */
-  async signLater(signer: ListMember = this.first): Promise<string> {
-    const place = this.head;
+  async signLater(signer: ListMember = this.first, after: ListPlace = this.head): Promise<string> {
+    const place = after;
     const body = { issued_at: this.clock(), list: this.id, prev: place.hash, seq: place.seq + 1, signer: signer.key, own: [], kind: "later_kind", v: 2 } as unknown as EntryBody;
     return entryToText(await signEntry(body, signer.keys.privateKey));
   }

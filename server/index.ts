@@ -64,7 +64,7 @@ import { RelayService } from "./relay/service.ts";
 import { AccountMailbox, accountServiceUrl, passAccountService } from "./account/mailbox.ts";
 import { accountOpensAll } from "../shared/account-devices-api.ts";
 import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
-import { listPinOnDisk, PcAccountState } from "./account/pc-binding.ts";
+import { listPinOnDisk, listRemovalOnDisk, PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
 import { bringSiblingList, ListFollow } from "./account/list-follow.ts";
@@ -228,6 +228,8 @@ export function createServer(
     accountAddRelayMs?: number;
     /** The least time between two asks for the phone's next message while this PC is added by its account's list (list-add.ts ADD_POLL_MS). */
     accountListAddPollMs?: number;
+    /** How long a join a member allowed waits for that member's entry in the account's list (list-follow.ts LIST_MEMBER_WAIT_MS). */
+    accountListMemberWaitMs?: number;
     tailnetPcs?: TailnetPcsOptions;
     sshCandidates?: SshCandidatesOptions;
     /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
@@ -302,12 +304,18 @@ export function createServer(
   // A PC that is pinned to its account's signed list follows it whatever this start is told: the pin is one-way, and
   // with Step 2's parts left out nothing here would know of it, so a member's word could add a device the list does
   // not hold. Its own folder's pin, or its sibling folder's, turns them on
-  const pinnedHere = listPinOnDisk(stateDir) || (typeof provided.siblingStateDir === "string" && listPinOnDisk(provided.siblingStateDir));
-  const askedOpensAll = provided.accountOpensAll ?? accountOpensAll();
-  if (pinnedHere && !askedOpensAll) console.warn("[account] this PC is pinned to its account's signed list, so it follows the list although Step 2 is turned off here");
-  const opensAll = askedOpensAll || pinnedHere;
-  // A folder of another relay identity is another PC, not a source of rows or account state (P12, T48).
+  // A folder of another relay identity is another PC, not a source of rows or account state (P12, T48): asked before
+  // its pin counts for anything, so another PC's folder changes nothing for a PC that follows no list
   const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
+  const ownSibling = typeof provided.siblingStateDir === "string" && sameIdentity(provided.siblingStateDir) ? provided.siblingStateDir : null;
+  // so does the word that the list removed this PC under the relay identity it has: with Step 2's parts left out
+  // nothing would keep it, and a pairing that stayed could link the PC back into that account
+  const removedHere = [stateDir, ...(ownSibling === null ? [] : [ownSibling])].some((dir) => listRemovalOnDisk(dir, savedServerId(stateDir)));
+  const pinnedHere = listPinOnDisk(stateDir) || (ownSibling !== null && listPinOnDisk(ownSibling)) || removedHere;
+  const askedOpensAll = provided.accountOpensAll ?? accountOpensAll();
+  if (pinnedHere && !askedOpensAll) console.warn(removedHere ? "[account] this PC's account removed it by its signed list, so it keeps to that although Step 2 is turned off here"
+    : "[account] this PC is pinned to its account's signed list, so it follows the list although Step 2 is turned off here");
+  const opensAll = askedOpensAll || pinnedHere;
   const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
   const sibling = foreignSibling ? null : options.siblingStateDir;
   // the order is checked against this folder's own rows before the sibling merge, which may remove some (P21, S29)
@@ -441,6 +449,9 @@ export function createServer(
     leave: (serverId) => devices.clearAccountBinding("unlisted", LIST_REMOVED, serverId),
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
+    ...(options.accountListMemberWaitMs === undefined ? {} : { memberWaitMs: options.accountListMemberWaitMs }),
+    // a folder closed because its other folder's pin could not be taken with its keys and copy opens by itself once they can
+    retry: () => { if (pcAccount.retrySibling()) console.info("[account] this PC's list keys and its copy of the list could be read beside its pin: it follows its list again"); },
   });
   devices.attachList(accountList);
   // adding this PC to an account that keeps a list: the number a person compares with the phone that adds it (list-add.ts)

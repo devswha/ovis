@@ -4,25 +4,28 @@
  * shows two histories can and cannot bring about, whatever way it goes about it.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { loadRelayIdentity } from "../relay/identity.ts";
 import { readSave, writeSave } from "../../shared/account-list-follower.ts";
 import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { handleRequest } from "../dispatch.ts";
 import { bounded, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
-import { STALE_READ_MS } from "./account-devices.ts";
-import { JOIN_HOLD_MS } from "./join-hold.ts";
+import { ACCOUNT_DEVICES_FILE, STALE_READ_MS } from "./account-devices.ts";
 import { privateStateFs } from "../private-state.ts";
+import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT_LIST_FILE } from "./list-follow.ts";
 import { signCard } from "../../shared/account-list.ts";
 import { listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { pressOnce } from "./one-press.ts";
+import { AccountServiceRefusal } from "./mailbox.ts";
 import { applyAccountRecords } from "./records.ts";
 
 const closes: (() => void)[] = [];
@@ -385,7 +388,9 @@ describe("the account service cannot take a pinned PC out of its account, or shu
     await pc.pull();
     expect(pc.list.status().pinned).toBe(true);
     expect(await pc.signsIn(pc.idOf(tablet))).toBe("drive");
-    expect(await pc.signsIn(pc.idOf(outside))).toBe("drive");
+    // the other opens through the account too (its id is the account's for its key), and the list does not hold it:
+    // the row a member's add made gives it nothing on a pinned PC
+    expect(await pc.signsIn(pc.idOf(outside))).toBeNull();
 
     pc.reach.away = true;
     pc.fixture.app.stop();
@@ -395,7 +400,6 @@ describe("the account service cannot take a pinned PC out of its account, or shu
     await again.app.context.services.accountList!.settled();
     const signsIn = async (device: ListMember) => await (await relayConnection(again, { serverId: pc.serverId })).auth(pc.idOf(device)).then((ok) => ok.role, () => null);
     expect(await signsIn(tablet)).toBe("drive");
-    // the one the list does not hold is this PC's older business with the account service, and waits for it as before
     expect(await signsIn(outside)).toBeNull();
     // an hour on, still
     pc.time.advance(STALE_READ_MS + 60_000);
@@ -678,6 +682,29 @@ describe("a removal the PC has seen is final", () => {
     expect(pc.list.status().devices).toBe(1);
   });
 
+  test("a device whose time passed is refused also when the rows could not be written then", async () => {
+    const pc = await pinnedPc();
+    const borrowed = await listMember();
+    await pc.account.addDevice(borrowed, { power: "bound", until: pc.time.seconds() + 600 });
+    await pc.pull();
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    expect(await pc.signsIn(pc.idOf(borrowed))).toBe("drive");
+    // the disk takes no write of the account's rows when the time comes
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).endsWith(ACCOUNT_DEVICES_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+      renameSync(String(from), String(to));
+    });
+    try {
+      pc.time.advance(600_000);
+      pc.list.tick();
+      await pc.list.settled();
+      expect(await pc.signsIn(pc.idOf(borrowed))).toBeNull();
+    } finally { failing.mockRestore(); }
+    // the others are let in as before once the disk writes again
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+    expect(await pc.signsIn(pc.idOf(borrowed))).toBeNull();
+  });
+
   test("a device is let in only before its until, by the PC's clock, and a session open at that second closes", async () => {
     const pc = await pinnedPc();
     const borrowed = await listMember();
@@ -695,6 +722,38 @@ describe("a removal the PC has seen is final", () => {
     // the service's clock, and a log shown again, give it no more time
     await pc.pull();
     expect(await pc.signsIn(pc.idOf(borrowed))).toBeNull();
+  });
+});
+
+describe("who may let a device in from afar, on a pinned PC", () => {
+  test("a member of this PC's own devices only while the list holds its key to drive with full power", async () => {
+    const pc = await pinnedPc();
+    const { devices } = pc.services;
+    // the account phone is a drive member in this PC's devices.json, and the list does not hold its key
+    expect(devices.isAccountApprover(pc.member.id)).toBe(false);
+    expect(devices.hasAccountApprover()).toBe(false);
+    const phone = await listMember(pc.member.keys);
+    // held to watch, or with bound power: in the list, and it adds nobody to it
+    await pc.account.addDevice(phone, { role: "drive", power: "bound" });
+    await pc.pull();
+    expect(devices.isAccountApprover(pc.member.id)).toBe(false);
+    await pc.account.remove(phone.key);
+    await pc.pull();
+    expect(devices.isAccountApprover(pc.member.id)).toBe(false);
+  });
+
+  test("and it is one once the list holds its key so", async () => {
+    const pc = await pinnedPc();
+    const phone = await listMember(pc.member.keys);
+    await pc.account.addDevice(phone);
+    await pc.pull();
+    expect(pc.services.devices.isAccountApprover(pc.member.id)).toBe(true);
+    expect(pc.services.devices.hasAccountApprover()).toBe(true);
+  });
+
+  test("on a PC that is not pinned a drive member is one, as before", async () => {
+    const pc = await listedPc();
+    expect(pc.services.devices.isAccountApprover(pc.member.id)).toBe(true);
   });
 });
 
@@ -788,6 +847,19 @@ describe("the reset that makes a removed PC a new one", () => {
 });
 
 describe("a pin outlives this PC's own settings", () => {
+  test("the folder of another PC that is pinned to its list changes nothing for this PC: with Step 2 off here, it starts off", async () => {
+    const other = await pinnedPc();
+    other.fixture.app.stop();
+    // this PC has a relay identity of its own, and is told of the other's folder as its second folder
+    const dir = mkdtempSync(join(tmpdir(), "ovis-list-foreign-"));
+    closes.push(() => rmSync(dir, { recursive: true, force: true }));
+    expect(loadRelayIdentity(dir).server_id).not.toBe(other.serverId);
+    const mine = relayFixture(false, { stateDir: dir, siblingStateDir: other.fixture.stateDir, accountOpensAll: false });
+    closes.push(() => mine.app.stop());
+    expect(mine.app.context.services.devices.opensAll()).toBe(false);
+    expect(mine.app.context.services.accountList).toBeNull();
+  });
+
   test("started with Step 2 turned off here, a pinned PC still follows its list: a member's signed add adds nobody", async () => {
     const pc = await pinnedPc();
     const stranger = await listMember();
@@ -921,8 +993,29 @@ describe("a PC the list removed", () => {
     expect(await services.accountList!.wantList(pc.account.id)).toEqual({ refused: "not_in_account" });
     // another account is another matter, and so is this PC after a reset relay identity: a new PC
     expect(services.devices.listRemovedFrom("acct_other")).toBe(false);
-    await services.relay.resetIdentity();
-    expect(services.devices.listRemovedFrom(ACCOUNT)).toBe(false);
+    again.app.stop();
+    // with Step 2 turned off on this PC the removal stands all the same: nothing links the PC back under this identity
+    const off = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: false, accountService: pc.accountService });
+    closes.push(() => off.app.stop());
+    expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(true);
+    await off.app.context.services.relay.resetIdentity();
+    expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(false);
+  });
+});
+
+describe("one press, for an account that keeps a signed list", () => {
+  test("the account service's refusal to take the PC by an admission is said as that, not as a service that is away", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const fixture = relayFixture(false, { accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+    closes.push(() => fixture.close());
+    const { services } = fixture.app.context;
+    services.relay.setRelayAccount(ACCOUNT);
+    const refused = spyOn(services.accountMailbox, "admission").mockRejectedValue(new AccountServiceRefusal(409, "list_add", "/v1/pc/admission"));
+    try {
+      expect(await pressOnce(services, ACCOUNT)).toMatchObject({ refused: { code: "list_add", status: 409 } });
+    } finally { refused.mockRestore(); }
+    expect(services.devices.account()).toBeNull();
   });
 });
 

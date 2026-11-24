@@ -14,6 +14,7 @@ import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
+import { LIST_ALLOW_MS, LIST_MEMBER_WAIT_MS } from "./list-follow.ts";
 import { claimKey, listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
 import { ask, pairingPc, vouchFor, type Pc } from "./pairing.test-helpers.ts";
 
@@ -21,6 +22,9 @@ const ACCOUNT = "acct_1";
 const TOKEN = "list-allow-token";
 /** This PC's own window: the access token from loopback, no proxy (dispatch.ts ownWindow). */
 const own = { authorization: `Bearer ${TOKEN}` };
+
+/** How long the PCs of these tests wait for a member's entry: the real wait is LIST_MEMBER_WAIT_MS. */
+const MEMBER_WAIT_MS = 1_500;
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -30,7 +34,7 @@ type Hook = (request: Request, forward: () => Promise<Response>) => Promise<Resp
 /** A PC added to the account in one press, with no member in its devices.json: a join is decided in its own window. */
 async function boundPc() {
   const hook: { on: Hook | null } = { on: null };
-  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux", token: TOKEN }, startRelay: false,
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux", token: TOKEN, accountListMemberWaitMs: MEMBER_WAIT_MS }, startRelay: false,
     accountFetch: (request, service) => hook.on ? hook.on(request, () => service.fetch(request)) : service.fetch(request) });
   made.account.opensAll = true;
   made.account.listAccounts = "*";
@@ -205,6 +209,31 @@ describe("a PC that a person added lets a new device into the list from its own 
     // the comparison's session only told the device its place: the key was never signed with on it
     expect((await ask(link, "/api/preferences")).status).toBe(403);
     expect((await ask(link, "/api/devices")).status).toBe(403);
+  });
+
+  test("what the PC signs goes by its clock as it is now, never by the hour it saved: a device the saved hour would put past its time does not stop the names from being sealed", async () => {
+    const borrowed = await listMember();
+    const until = Math.floor(Date.now() / 1000) + 600;
+    const made = await allowingPc(async (account) => { await account.addDevice(borrowed, { power: "bound", until }); });
+    // the PC's clock once read a quarter of an hour ahead, and the PC saved that hour: for letting in, the borrowed device's time is over
+    const real = Date.now();
+    const ahead = spyOn(Date, "now").mockImplementation(() => real + 900_000);
+    try {
+      made.list.tick();
+      await made.pull();
+      expect(made.list.role(borrowed.key)).toBeNull();
+    } finally { ahead.mockRestore(); }
+    // the clock is right again: the borrowed device stays out (the saved hour refuses), and what the PC signs is by the clock now
+    expect(made.list.role(borrowed.key)).toBeNull();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    expect(await made.list.allowDevice({ key: phone.key, enc: phone.enc, card, label: "Phone" }, true)).toMatchObject({ allowed: { id: made.account.id } });
+    const held = made.pc.account.accountList(ACCOUNT)!;
+    const body = readBody(entryFromText(held.entries[held.state.signers[phone.key]!.seq]!).body);
+    const kind = readKind(body);
+    // signed at the clock's own hour, and with its names: by the clock now nobody who holds the names' key is over its time
+    expect(Math.abs(body.issued_at - Math.floor(Date.now() / 1000))).toBeLessThan(120);
+    expect(kind?.kind === "device" && kind.sealed !== null).toBe(true);
   });
 
   test("the device's name is sealed under the list's key, and the device is given that key", async () => {
@@ -821,6 +850,52 @@ describe("a device of the list at a pinned PC, over its own session", () => {
     const refused = await ask(member, "/api/relay/pairing", { method: "POST", body: { id: waiting.id, decision: "approve", digits: asked.digits } });
     expect([refused.status, refused.body.error?.code]).toEqual([404, "relay_pairing_gone"]);
     expect((await ownJoin(made)).id).toBe(waiting.id);
+  });
+});
+
+describe("a join into the list a member allows from afar, on a pinned PC", () => {
+  async function signedIn(made: Awaited<ReturnType<typeof allowingPc>>, device: ListMember) {
+    const link = await relayConnection(made.pc, { serverId: made.serverId });
+    await link.auth({ keys: device.keys, publicKey: device.key, id: accountDeviceId(made.serverId, device.key) }, [ACCOUNT_LIST_FEATURE], [ACCOUNT_LIST_FEATURE]);
+    return link;
+  }
+  const waitingFor = async (link: Awaited<ReturnType<typeof signedIn>>) => (await ask(link, "/api/relay/pairings")).body.pairings as { id: string; confirmed?: boolean }[];
+
+  test("the approver is told once the new device confirmed its digits, and signs only then: the PC waits for that entry from the confirm on", async () => {
+    const made = await allowingPc();
+    const member = await signedIn(made, made.account.first);
+    const phone = await listMember();
+    const asked = await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
+    await ownJoin(made);
+    const [waiting] = await waitingFor(member);
+    expect(waiting!.confirmed).toBeUndefined();
+    // the new device's person says the digits match: the join now says so to whoever may approve it
+    const told = deferred<void>();
+    const stop = made.services.relay.approvals.subscribeList((joins) => { if (joins.some((join) => join.confirmed === true)) told.resolve(); });
+    asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    await bounded(told.promise).finally(stop);
+    expect((await waitingFor(member))[0]).toMatchObject({ id: waiting!.id, confirmed: true });
+    // nothing is in the list for the device yet: a device that had cancelled before its confirm would be nobody's member
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+    // the member approves, then signs and places the entry: the PC is still waiting for it
+    expect((await ask(member, "/api/relay/pairing", { method: "POST", body: { id: waiting!.id, decision: "approve", digits: asked.digits } })).status).toBe(200);
+    await made.account.addDevice(phone);
+    expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.AUTH_OK, payload: { list: { id: made.account.id, ...made.account.place } } });
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
+  test("the PC waits half a minute for the member's entry, and no less", () => {
+    expect(LIST_MEMBER_WAIT_MS).toBeGreaterThanOrEqual(30_000);
+    // and the session and its carrier leave it that time
+    expect(LIST_ALLOW_MS).toBeGreaterThan(LIST_MEMBER_WAIT_MS);
+  });
+
+  test("a join nobody signs for ends as not in the list once that wait is over, and not before", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const began = performance.now();
+    expect(await made.list.allowDevice({ key: phone.key, enc: phone.enc, card: await memberCard(phone, made.account.id), label: "Phone" }, false)).toEqual({ refused: "not_in_list", detail: null });
+    expect(performance.now() - began).toBeGreaterThanOrEqual(MEMBER_WAIT_MS - 50);
   });
 });
 
