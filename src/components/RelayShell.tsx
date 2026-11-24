@@ -23,6 +23,7 @@ import { AddPcSheet } from "./AddPcSheet.tsx";
 import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, type ConnectWay, MyPcs, OfflineLine, savedWayTag, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
+import { ListWaitingNotice } from "./ListChangeNotice.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
@@ -340,6 +341,8 @@ export function RelayShell(props: RelayShellProps) {
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
         <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
           {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignIn} />{listUnread}{directoryError}</>, true)}
+          {/* a change here (a Remove) that was refused because an earlier one still waits: that one's card, to try it again or cancel it */}
+          <ListWaitingNotice />
           {!myPcsShown && listUnread}
           {!myPcsShown && directoryError}
         </div>

@@ -14,6 +14,12 @@ import type { ListClaim } from "./listAnswers.ts";
 import { listNames } from "./listGenesis.ts";
 import { WRITE_RESENDS, WRITE_TRIES, placeOf, signedNamed, writeNamed, type WriteRefusal } from "./listWrite.ts";
 
+/**
+ * What an approval is bound to from the first press on, kept by whoever offers Try again and handed to every try: the
+ * account it began under, and the list and the member key of its first read, which that read fills in.
+ */
+export interface AllowScope { account: string; list?: string; key?: string }
+
 /** The device a person is letting in: the key it showed the PC it asked, and the name and system it gave the account service. */
 export interface Newcomer {
   readonly key: string;
@@ -49,18 +55,23 @@ export async function allowDevice(list: AccountList, newcomer: Newcomer, options
    * (`changed`), and never leads to the way of an account with no list.
    */
   readonly account?: string;
+  /**
+   * The same, with the list and the member key of the first read, which this call fills in: handed again to every
+   * Try again, so that a retry under another list or another member key signs nothing (`changed`).
+   */
+  readonly scope?: AllowScope;
   /** how long the read of the claims, and one placement, wait; a test's own */
   readonly claimsMs?: number;
   readonly placeMs?: number;
 } = {}): Promise<AllowOutcome> {
   const names = listNames(newcomer.label, newcomer.os);
-  let bound: string | undefined;
   // The account the Allow began under: the one it was asked for, or the one this page's list was drawn for when it
-  // was called. Read at every try of every round, with the list of the first writer.
-  const began = options.account ?? list.view().account ?? undefined;
-  const held = { account: began ?? "", get list(): string | undefined { return bound; } };
+  // was called. Read at every try of every round, with the list and the member key of the first writer.
+  const began = options.scope?.account ?? options.account ?? list.view().account ?? undefined;
+  const held: AllowScope = options.scope ?? { account: began ?? "" };
   const outcome = await writeNamed<ListClaim, "removed">(list, async (writer) => {
-    bound ??= writer.list;
+    held.list ??= writer.list;
+    held.key ??= writer.keys.key;
     const row = writer.state.signers[newcomer.key];
     // the list holds the key already: let in before (the place handed on is where this device stands now), or put out for good
     // (the place handed on is that of the entry that let it in, where this device's copy shows it)

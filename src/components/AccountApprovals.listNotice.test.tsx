@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { keepStalled, ListAllowNotice } from "./AccountApprovals.tsx";
+import { keepStalled, ListAllowNotice } from "./ListChangeNotice.tsx";
 
 /** `pairedAtPc`: the PC let the device in by a pairing of its own (one that does not follow the list), as every case here but the last */
 function render(why: AllowRefusal, retryAfterMs: number | null = null, pairedAtPc = true): string {

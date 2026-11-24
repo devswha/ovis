@@ -154,14 +154,15 @@ describe("a signed request that still waits, and another change", () => {
 
   it("is sent again from the card of a change whose page is gone: Try again there sends what waits, as its own change", async () => {
     const { w, first, kept } = await waitingAllow();
+    const shown = (await first.list.waiting())!;
     // still refused: it waits on
-    expect(await resendWaiting(first.list, noWait)).toBe(false);
+    expect(await resendWaiting(first.list, shown, noWait)).toBe(false);
     w.fake.untamperList(w.held().id);
-    expect(await resendWaiting(first.list, noWait)).toBe(true);
+    expect(await resendWaiting(first.list, shown, noWait)).toBe(true);
     expect([w.held().entries.at(-1), await first.list.waiting()]).toEqual([kept[0]!, null]);
     // with nothing waiting it sends nothing
     const before = placements(first).length;
-    expect(await resendWaiting(first.list, noWait)).toBe(true);
+    expect(await resendWaiting(first.list, shown, noWait)).toBe(true);
     expect(placements(first).length).toBe(before);
   });
 
@@ -180,7 +181,7 @@ describe("a signed request that still waits, and another change", () => {
     const again = await waitingAllow();
     again.w.fake.untamperList(again.w.held().id);
     expect(await removeListPc(again.first.list, again.pc.endpoint, noWait)).toMatchObject({ removed: false, why: "waiting" });
-    await again.first.list.cancel();
+    await again.first.list.cancel((await again.first.list.waiting())!);
     expect(await again.first.list.waiting()).toBeNull();
     expect(await removeListPc(again.first.list, again.pc.endpoint, noWait)).toEqual({ removed: true });
   });

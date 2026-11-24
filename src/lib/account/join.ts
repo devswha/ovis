@@ -11,7 +11,7 @@ import { keyIdOf } from "../relay/shellState.ts";
 import { isListHash } from "../../../shared/account-list-entry.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList, AccountListView, ListOffer, ListWriter } from "./accountList.ts";
-import { allowDevice, type AllowOutcome, type AllowRefusal } from "./listAllow.ts";
+import { allowDevice, type AllowOutcome, type AllowRefusal, type AllowScope } from "./listAllow.ts";
 import { holdsList } from "./listWrite.ts";
 import type { AccountService, Admission } from "./service.ts";
 import { vouchedPcName, type MemberPcEvidence } from "./vouched-pc.ts";
@@ -354,7 +354,7 @@ export class ListAllowError extends Error {
  * this device follows no list or is not in it with power `full`, and then nothing is signed and the approval goes
  * on as for an account with no list. Otherwise the place to hand the new device, or a ListAllowError.
  */
-export async function allowIntoList(list: AccountList | null, joining: { key: string; label: string; os: Admission["os"] }, options: { wait?: (ms: number) => Promise<void>; account?: string } = {}): Promise<ListOffer | null> {
+export async function allowIntoList(list: AccountList | null, joining: { key: string; label: string; os: Admission["os"] }, options: { wait?: (ms: number) => Promise<void>; account?: string; scope?: AllowScope } = {}): Promise<ListOffer | null> {
   if (list === null) return null;
   const outcome: AllowOutcome = await allowDevice(list, joining, options);
   if (outcome.allowed) return outcome.offer;
@@ -370,7 +370,11 @@ export async function allowIntoList(list: AccountList | null, joining: { key: st
  * device stays let in at that PC alone. For any other account, and a device that is in no list, exactly
  * admitToAccount.
  */
-export async function admitWithList(list: AccountList | null, options: Omit<Parameters<typeof admitToAccount>[0], "allow"> & { joining: { key: string; label: string; os: Admission["os"] } }): Promise<AddRecord> {
+export async function admitWithList(list: AccountList | null, options: Omit<Parameters<typeof admitToAccount>[0], "allow"> & {
+  joining: { key: string; label: string; os: Admission["os"] };
+  /** what the approval is bound to, kept by the card for every Try again (listAllow.ts AllowScope): the list and the member key of its first read */
+  scope?: AllowScope;
+}): Promise<AddRecord> {
   // Whether this device goes by a list is read from what it holds itself: the view this page drew, or the copy in its
   // own store. With neither it has no list to write to, and the approval goes as before lists, at once: it waits for
   // no answer of the account service's about lists, and nothing that fails there holds it back.
@@ -382,10 +386,10 @@ export async function admitWithList(list: AccountList | null, options: Omit<Para
   const view = await list.sync();
   if (view.account !== options.account) throw new ListAllowError("changed", null);
   // what stops this device from writing is said before anything goes to the PC
-  const began = beganOn(list, view);
+  const began = beganOn(list, view, options.scope);
   let offer: ListOffer | null = null;
   const add = await admitToAccount({ ...options, allow: async () => {
-    offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.wait === undefined ? {} : { wait: options.wait }) });
+    offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.scope === undefined ? {} : { scope: options.scope }), ...(options.wait === undefined ? {} : { wait: options.wait }) });
     // an account that turns out to have no list for this device to write (it lost its copy meanwhile) admits nobody the old way from here
     if (offer === null) throw new ListAllowError("blocked", null);
     return offer;
@@ -412,10 +416,10 @@ function mayWrite(list: AccountList, view: AccountListView): ListWriter {
 /** What an approval into the list is bound to from its first read on: the account, the list and the member key that signs for it. */
 interface Began { readonly account: string; readonly list: string; readonly signer: string }
 
-/** mayWrite, and what the approval is bound to from here on. */
-function beganOn(list: AccountList, view: AccountListView): Began {
+/** mayWrite, and what the approval is bound to from here on: what `scope` holds from an earlier try, else this read's. */
+function beganOn(list: AccountList, view: AccountListView, scope?: AllowScope): Began {
   const writer = mayWrite(list, view);
-  return { account: writer.account, list: writer.list, signer: writer.keys.key };
+  return { account: writer.account, list: scope?.list ?? writer.list, signer: scope?.key ?? writer.keys.key };
 }
 
 /**
@@ -455,10 +459,12 @@ export class NotConfirmedError extends Error {
  */
 export async function allowOnPinnedPc(list: AccountList | null, options: {
   fetch: PcFetch; account: string; joining: { key: string; label: string; os: Admission["os"] }; wait?: (ms: number) => Promise<void>;
+  /** what the approval is bound to across every Try again (listAllow.ts AllowScope) */
+  scope?: AllowScope;
 }): Promise<ListOffer> {
   const view = list === null ? null : await list.sync();
   if (list === null || view === null || view.account !== options.account || !holdsList(view)) throw new ListAllowError("changed", null);
-  const offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.wait === undefined ? {} : { wait: options.wait }) });
+  const offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.scope === undefined ? {} : { scope: options.scope }), ...(options.wait === undefined ? {} : { wait: options.wait }) });
   if (offer === null) throw new ListAllowError("changed", null);
   await handListToPc(options.fetch, list, { seq: offer.seq, hash: offer.hash }).then((handed) => {
     if (!handed) console.info("Ovis: the PC was not handed the new device's entry over this session; it reads it from the account service");
@@ -496,7 +502,7 @@ export async function approveForAccount(options: {
    * `pairedAtPc`: X let the device in by a pairing of its own, so it is in at X whatever the list says; false on a PC
    * that lets devices in by the list alone, where it is in nowhere that the list does not hold it.
    */
-  onStalled: (stalled: { label: string; why: AllowRefusal; retryAfterMs: number | null; pairedAtPc: boolean; retry: () => Promise<void> } | null) => void;
+  onStalled: (stalled: { label: string; why: AllowRefusal; retryAfterMs: number | null; pairedAtPc: boolean; retry: () => Promise<void> } | null) => void | Promise<void>;
   wait?: (ms: number) => Promise<void>; now?: () => number;
 }): Promise<void> {
   const { request, pc } = options;
@@ -505,6 +511,8 @@ export async function approveForAccount(options: {
   const more = { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.now === undefined ? {} : { now: options.now }) };
   /** On such a PC: the account, list and member key the approval began with, from the check before it on */
   let began: Began | null = null;
+  /** What every try of the list is bound to, Try again included (listAllow.ts AllowScope): the account, and the list and member key of the first read */
+  const scope: AllowScope = { account: options.account };
   await approveJoin({
     request, digits: options.digits, through: options.through, service: options.service, decide: options.decide,
     ...(options.shown === undefined ? {} : { shown: options.shown }), ...(options.now === undefined ? {} : { now: options.now }),
@@ -513,6 +521,8 @@ export async function approveForAccount(options: {
       const view = options.list === null ? null : await options.list.sync();
       if (options.list === null || view === null || view.account !== options.account || !holdsList(view)) throw new ListAllowError("changed", null);
       began = beganOn(options.list, view);
+      scope.list = began.list;
+      scope.key = began.signer;
     } } : {}),
     admit: async (admission) => {
       const base = async () => ({
@@ -522,9 +532,9 @@ export async function approveForAccount(options: {
       const attempt = async (): Promise<void> => {
         try {
           if (pinned) {
-            await allowOnPinnedPc(options.list, { fetch: pc.fetch, account: options.account, joining: joiningOf(admission), ...(options.wait === undefined ? {} : { wait: options.wait }) });
+            await allowOnPinnedPc(options.list, { fetch: pc.fetch, account: options.account, joining: joiningOf(admission), scope, ...(options.wait === undefined ? {} : { wait: options.wait }) });
             // the list holds the device: the card that said otherwise goes, whatever the rest answers
-            options.onStalled(null);
+            await options.onStalled(null);
             const rest = await base();
             const { list } = options;
             const bound = began;
@@ -532,13 +542,13 @@ export async function approveForAccount(options: {
             await admitToAccount({ ...rest, inList: true, holds: () => { holdsStill(list, bound, rest.joining.key, rest.key.public_spki); } });
             return;
           }
-          await admitWithList(options.list, await base());
-          options.onStalled(null);
+          await admitWithList(options.list, { ...await base(), scope });
+          await options.onStalled(null);
         } catch (error) {
           // anything else failed after the list took the device (the introduction, the account's other PCs): the
           // card, which says that the list did not take it, goes, and the failure is the caller's to say
-          if (!(error instanceof ListAllowError)) { options.onStalled(null); throw error; }
-          options.onStalled({ label: admission.label, why: error.why, retryAfterMs: error.retryAfterMs, pairedAtPc: !pinned, retry: attempt });
+          if (!(error instanceof ListAllowError)) { await options.onStalled(null); throw error; }
+          await options.onStalled({ label: admission.label, why: error.why, retryAfterMs: error.retryAfterMs, pairedAtPc: !pinned, retry: attempt });
         }
       };
       await attempt();

@@ -1205,7 +1205,11 @@ the device asks with), and only then:
 member key and the head it was signed on, before it is sent. While the device's copy shows that
 head, that request is the only one that goes: from this call or a later one (**Try again**), from
 this page or another, whatever is asked for by then. Two pages that sign at one head keep one
-request, the first, and the other page's signature is never sent. The request is let go only
+request, the first, and the other page's signature is never sent. The page that lost the place
+never takes the first request for its own result: where that request is another change's, it sends
+nothing and says that the earlier change waits; where it is the same change's, the request goes
+again as one kept from before, and the list then says whether the change is in. So no change is
+ever reported done on the entry of another. The request is let go only
 when the account service's own refusal proved that it placed nothing, and a request kept from
 before that is placed or let go makes way for what was asked: it is signed on the head that
 follows. **A request that waits is its own change's to send again, never another's**: it goes
@@ -1215,7 +1219,10 @@ kept request is younger than ten minutes the other change is refused with **An e
 still waiting: try it again or cancel it first**, and the card of the earlier change is shown,
 with **Try again** and **Cancel**. Past ten minutes, or at Cancel, it is let go and the other
 change is signed: an attempt its writer left behind is no fork. So an Allow that stalled is never
-placed, later, by an unrelated Remove. Within one call the request goes again, with the same signatures, three
+placed, later, by an unrelated Remove. **A card acts on the request it was shown for**: it holds
+that request's account, list, signer, head and hash, and its Try again and its Cancel do nothing
+to a request that took its place since. The card of a change that waits is put up wherever
+another change was refused for it: inside an opened PC and on the start screen alike. Within one call the request goes again, with the same signatures, three
 times at most, while the device's own copy shows the head it was signed on: while the service
 says it is rebuilding the list (`503 list_rebuilding`) or asks for the request again, after an
 answer that never came, and while the log does not show the entry. Another entry is signed only
@@ -1228,6 +1235,13 @@ request goes again, or, where the log cannot be read either, it says that it is 
 whether the device is in the account. It never says "added to this PC only" for that. A placement
 waits thirty seconds for its answer, and the read of the claims as long.
 
+**What a change is bound to.** The account, the list and this device's member key, from the press
+on: what the caller names, and for what it leaves out, what the first read shows. Every read, every
+try and every Try again holds all three against the writer, and a difference ends the change with
+nothing signed (`changed`): a sign-in that another tab changed, another list, another member key.
+A change can also be called off (a signal): the write checks it before it signs, before it keeps
+the request and before each time it sends it.
+
 **Whose clock.** Two clocks, two jobs. What is *signed* (the time an entry is dated, whose time
 is over and so whether a removal and a new epoch go first, what is sealed and wrapped) goes by the
 device's own clock as it is now, held against the list's own time and nothing else. The latest
@@ -1235,15 +1249,23 @@ time the device saved (its floor) is not used for it: a floor that a date set ah
 forward would otherwise sign the removal of a key whose time is not over, and a removal cannot be
 undone. The floor is for what can be undone: whom the device lets in, refuses and shows as over.
 A device whose clock reads more than ten minutes under its own floor cannot tell which of the two
-is wrong: it signs nobody out for a time that is over, so no epoch is opened and the newcomer
-comes in with no name until a later writer seals one. The account service's clock decides nothing
+is wrong: it signs nobody out for a time that is over. That is the write loop's own rule and no
+caller's: one function there asks whose time is over, for every request that opens an epoch (an
+Allow, an Add, a Remove, a Revoke), and gives none to such a device. So its Remove puts out the PC
+that was asked for and nobody else, and where names cannot be sealed without a clean-up, no epoch
+is opened and the newcomer comes in with no name until a later writer seals one. The writer
+carries both clocks: `clock` signs, and `shown` (held against the floor too) is for what a screen
+shows as over and what a press admits. The account service's clock decides nothing
 and is never signed. Where the service refuses a request for its time or its epoch, the device
 signs nothing else and says that its clock looks wrong.
 
 **No request over sixteen entries.** The request that lets a device in holds the removal of
 everybody who is over their time, the epoch and the device. Where more are over their time than
 fit beside those two, they go out first, sixteen removals a request, four such requests at most,
-and the device's request follows on the head they leave.
+and the device's request follows on the head they leave. What a caller asks to follow the entry in
+the same request (the `remove` of the invite a PC joined by, with that PC's entry) is carried by
+every branch of the writer, named or not, with an epoch or without, and its places are kept free
+within the sixteen.
 
 **A device that is behind.** Once a member of a later level has written, this build lets nobody in
 on what it holds (the kinds refuse the entry, `behind`): the request is not sent, and the device

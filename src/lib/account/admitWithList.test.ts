@@ -5,8 +5,9 @@ import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { admitWithList, allowOnPinnedPc, approveForAccount, handListToPc, ListAllowError, NotConfirmedError, takeIntroduction, type PcFetch } from "./join.ts";
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import type { ListOffer } from "./accountList.ts";
+import type { AccountList, ListOffer } from "./accountList.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
+import { allowDevice } from "./listAllow.ts";
 import { memoryAccountStore } from "./store.ts";
 
 const THROUGH = "a1".repeat(16);
@@ -328,6 +329,30 @@ describe("an approval on a card, from the press to what is left to say", () => {
     other.member.wire.answer = stop;
     await other.approve(pcX(), false);
     expect([pinned.said, pinned.ways, other.said, other.ways]).toEqual([["stopped"], [false], ["stopped"], [true]]);
+  });
+
+  it.each([true, false])("on a PC that lets devices in by the list (%p) and on any other, a Try again after this device's account key was replaced by another member key ends as changed, and signs nothing", async (pinned) => {
+    const { w, member, key, said, retries, approve } = await rang();
+    // the page's copy of the list, as another tab may change it under the card: by this device's key, then by another
+    let current = member.list;
+    const page = new Proxy({} as AccountList, { get: (_target, name) => { const value = Reflect.get(current, name) as unknown; return typeof value === "function" ? value.bind(current) : value; } });
+    // the first try reads no claims: nothing is signed, and a card offers Try again
+    member.wire.answer = (request) => request.method === "GET" && new URL(request.url).pathname.endsWith("/claims") ? Response.json({ error: { code: "unavailable", message: "x" } }, { status: 503 }) : null;
+    await (pinned ? approve(pinnedPc(w), true, { list: true, confirmed: true }, page) : approve(pcX(), false, {}, page));
+    expect(said).toEqual(["unreached"]);
+    member.wire.answer = null;
+    // meanwhile another tab put another key on this device, one the list holds as a full member as well
+    const other = await w.device({ label: "Laptop" });
+    await other.list.sync();
+    const laptop = (await other.keys()).key;
+    const allowed = await allowDevice(member.list, { key: laptop, label: "Laptop", os: null }, { wait: noWait });
+    if (!allowed.allowed) throw new Error(`The laptop was not let in: ${allowed.why}`);
+    await other.list.adopt(allowed.offer);
+    current = other.list;
+    expect(page.writer()?.keys.key).toBe(laptop);
+    const entries = w.held().entries.length;
+    await retries[0]!();
+    expect([said, w.held().entries.length, w.held().state.signers[key]]).toEqual([["unreached", "changed"], entries, undefined]);
   });
 
   it("on any other PC: the approval first, then the entry once the PC holds the device's row, and a card where the list did not take it", async () => {
