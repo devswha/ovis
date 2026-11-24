@@ -17,7 +17,7 @@ import { privateStateFs } from "../private-state.ts";
 import type { ListCommit } from "./account-device-state.ts";
 import { ACCOUNT_LIST_FILE, ListFollow, type ListFollowDeps } from "./list-follow.ts";
 import { ListKeyStore } from "./list-keys.ts";
-import { listMember, memberCard, TestList } from "./list.test-helpers.ts";
+import { listMember, TestList } from "./list.test-helpers.ts";
 import { AccountServiceRefusal } from "./mailbox.ts";
 
 const ACCOUNT = "acct_1";
@@ -432,11 +432,8 @@ describe("what a pinned PC keeps beside its pin", () => {
   test("an alarm outlives the loss of the copy: the PC then lets nobody of its list in until a person unpins it", async () => {
     const pc = await following();
     await pc.pin();
-    // the first device signs another continuation from entry 0, with a device this PC never saw: the alarm rises
-    const one = await listMember();
-    const fork = await pc.account.sign({ kind: "device", key: one.key, power: "full", role: "drive", until: null, enc: one.enc, card: await memberCard(one, pc.account.id), sealed: null, rotates: false },
-      pc.account.first, { seq: 0, hash: pc.account.id });
-    pc.service.tamperList(pc.account.id, { reader: { server_id: pc.deps.identity()!.server_id }, fork: [fork] });
+    // the first device signs another continuation from entry 0, with a device this PC never saw, which signs on it: the alarm rises
+    pc.service.tamperList(pc.account.id, { reader: { server_id: pc.deps.identity()!.server_id }, fork: (await pc.account.forkFromStart()).texts });
     await pc.pull();
     pc.world.seconds += PC_READ_SECONDS;
     pc.list.tick();
