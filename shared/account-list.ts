@@ -18,7 +18,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { ACCOUNT_OSES, type AccountOs } from "./account-asker.ts";
 import {
-  ListEntryError, entryFromText, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readFieldsUnder, verifySignature, writeFieldsUnder,
+  ListEntryError, canonicalBase64Url, entryFromText, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readFieldsUnder, verifySignature, writeFieldsUnder,
   type EntryBody, type HeldEntry, type ListField, type ListRefusalCode, type SignerPower,
 } from "./account-list-entry.ts";
 import { ACCOUNT_LABEL_MAX } from "./account-records.ts";
@@ -26,7 +26,7 @@ import {
   firstSignersState, judgeEntry, readSignersState, replayEntries, shownEntries, signerPower,
   type PassedOverCode, type ShownAnswer, type ShownResult, type SignerRow, type SignersState,
 } from "./account-list-signers.ts";
-import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
+import { toBase64Url } from "./relay-pair-sas.ts";
 
 /** The level of this build: it reads every form of levels 1 to this. */
 export const LIST_LEVEL = 1;
@@ -279,13 +279,6 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 const NONE = new Uint8Array();
 
-/** The bytes a base64url text spells when it is their one spelling (no padding); null for anything else. */
-function oneSpelling(text: string): Uint8Array | null {
-  if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) return null;
-  const bytes = fromBase64Url(text);
-  return toBase64Url(bytes) === text ? bytes : null;
-}
-
 /** A key in its one spelling whose point is on the curve: what an encryption key and a PC's key must be to be of any use. */
 export function isListKey(text: string): boolean {
   return isListKeyEncoding(text) && isListPoint(text);
@@ -347,7 +340,7 @@ export function readKind(body: EntryBody): ListKind | null {
     return all.includes("sealed") && all.includes("epoch") && !Number.isNaN(epoch) && bytes("sealed").length >= SEALED_MIN_BYTES ? { epoch, bytes: bytes("sealed") } : undefined;
   };
   const key = (name: string): string | null => (isListKey(text(name)) ? text(name) : null);
-  const card = (): string | null => (text("card").length === CARD_SIGNATURE_CHARS && oneSpelling(text("card")) !== null ? text("card") : null);
+  const card = (): string | null => (text("card").length === CARD_SIGNATURE_CHARS && canonicalBase64Url(text("card")) !== null ? text("card") : null);
   const endpoint = (): string | null => (ENDPOINT.test(text("endpoint")) ? text("endpoint") : null);
   const role = (): ListRole | null => (text("role") === "drive" || text("role") === "watch" ? (text("role") as ListRole) : null);
   switch (kind) {
@@ -479,7 +472,7 @@ export async function signCard(card: ListCard, privateKey: CryptoKey): Promise<s
 
 /** Whether `signature` is the card's own: `key`'s signature over cardBytes. False for a card or a signature out of form. */
 export async function cardHolds(card: ListCard, signature: string): Promise<boolean> {
-  const signed = signature.length === CARD_SIGNATURE_CHARS ? oneSpelling(signature) : null;
+  const signed = signature.length === CARD_SIGNATURE_CHARS ? canonicalBase64Url(signature) : null;
   if (signed === null) return false;
   let bytes: Uint8Array;
   try {
@@ -949,7 +942,7 @@ export function readListState(value: unknown, level: number): ListState | null {
     const { opens, link, seq } = saved;
     const before = epochs.at(-1);
     if (typeof opens !== "string" || !isListHash(opens) || !isCount(seq) || seq > top || (before === undefined ? seq !== 0 : seq <= before.seq)) return null;
-    if (before === undefined ? link !== null : typeof link !== "string" || oneSpelling(link)?.length !== EPOCH_LINK_BYTES) return null;
+    if (before === undefined ? link !== null : typeof link !== "string" || canonicalBase64Url(link)?.length !== EPOCH_LINK_BYTES) return null;
     epochs.push({ opens, link: typeof link === "string" ? link : null, seq });
   }
   if (epochs.length === 0 || epoch !== epochs.length - 1) return null;
