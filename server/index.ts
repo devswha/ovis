@@ -24,7 +24,7 @@ import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
 import { readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
 import { ApprovalHub } from "./approvals/hub.ts";
-import { AcpChildren } from "./acp/children.ts";
+
 import { claudeApprovals } from "./approvals/claude.ts";
 import { CodexServers } from "./approvals/codex.ts";
 import { omoApprovals } from "./approvals/omo.ts";
@@ -41,7 +41,7 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { coreConnection, coreSeenMarker, hcBin, hcMachine, NoAltRuntimeError, NoHerdrCoreError, runtime, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
+import { coreAcp, coreConnection, coreSeenMarker, hcBin, hcMachine, NoAltRuntimeError, NoHerdrCoreError, runtime, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
 import { capabilities } from "./runtime/capabilities.ts";
 import { chooseRuntime, runtimeService, type RuntimeChoice, type RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { moveService, type HcInstaller } from "./runtime-move-service.ts";
@@ -64,10 +64,10 @@ import { RelayService } from "./relay/service.ts";
 import { AccountMailbox, accountServiceUrl, passAccountService } from "./account/mailbox.ts";
 import { accountOpensAll } from "../shared/account-devices-api.ts";
 import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
-import { PcAccountState } from "./account/pc-binding.ts";
+import { listPinOnDisk, PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
-import { ListFollow } from "./account/list-follow.ts";
+import { bringSiblingList, ListFollow } from "./account/list-follow.ts";
 import { LIST_REMOVED } from "./account/pc-binding.ts";
 import { ListAdd } from "./account/list-add.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
@@ -299,7 +299,13 @@ export function createServer(
   const token = options.token ?? process.env["OVIS_TOKEN"] ?? "";
   /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const ovisRelay = options.relay ?? new RelayService({ stateDir, accountService: passAccountService(options.accountService?.url), ...(options.accountService?.fetch ? { accountFetch: options.accountService.fetch } : {}) });
-  const opensAll = provided.accountOpensAll ?? accountOpensAll();
+  // A PC that is pinned to its account's signed list follows it whatever this start is told: the pin is one-way, and
+  // with Step 2's parts left out nothing here would know of it, so a member's word could add a device the list does
+  // not hold. Its own folder's pin, or its sibling folder's, turns them on
+  const pinnedHere = listPinOnDisk(stateDir) || (typeof provided.siblingStateDir === "string" && listPinOnDisk(provided.siblingStateDir));
+  const askedOpensAll = provided.accountOpensAll ?? accountOpensAll();
+  if (pinnedHere && !askedOpensAll) console.warn("[account] this PC is pinned to its account's signed list, so it follows the list although Step 2 is turned off here");
+  const opensAll = askedOpensAll || pinnedHere;
   // A folder of another relay identity is another PC, not a source of rows or account state (P12, T48).
   const sameIdentity = (other: string) => { const [mine, theirs] = [savedServerId(stateDir), savedServerId(other)]; return mine === undefined || theirs === undefined || mine === theirs; };
   const foreignSibling = opensAll && typeof options.siblingStateDir === "string" && !sameIdentity(options.siblingStateDir);
@@ -320,7 +326,7 @@ export function createServer(
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
   // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
+  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling, (pin) => bringSiblingList(stateDir, sibling, pin));
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
   const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
@@ -411,9 +417,10 @@ export function createServer(
   // the account's signed list, read beside the snapshot and compared with it: it lets nobody in yet (list-follow.ts)
   const accountList = pcAccount === null ? null : new ListFollow({
     stateDir, keys: new ListKeyStore(stateDir), identity: () => ovisRelay.currentIdentity(),
-    binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null }; },
+    binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null, alarmed: binding.list_alarm === true }; },
     bind: (account, list) => devices.bindByList(account, list),
     pin: (bindId, list) => pcAccount.pinToList(bindId, list),
+    alarm: (bindId) => pcAccount.alarmList(bindId),
     removedFrom: (account, serverId) => pcAccount.removedByList(account, serverId),
     call: (path, body) => accountMailbox.listRoute(path, body),
     rowKey: (id) => accountRows?.row(id)?.key ?? null,
@@ -471,7 +478,7 @@ export function createServer(
   const codexServers = new CodexServers(approvals);
   // the agents this server drives over ACP run under keepers in this PC's own herdr-core; the ones an earlier run
   // started are taken up again, as their keepers outlive the server
-  const acp = capabilities().acpChildren && hcMachine() === null ? new AcpChildren(join(stateDir, "acp")) : null;
+  const acp = coreAcp();
   void acp?.restore().catch((error: unknown) => console.warn(`acp: could not take up the earlier run's children: ${error instanceof Error ? error.message : String(error)}`));
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
   const stopPinBridge = capabilities().pins ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
@@ -569,7 +576,7 @@ export function createServer(
   // the credential it registered as its token: that server applies its own rows, so it gets every snapshot whole.
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
-  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {

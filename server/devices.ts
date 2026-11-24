@@ -27,7 +27,7 @@ import { HandedLifts } from "./account/handed-lift.ts";
 import type { AccessAnswer, AccountRow, AccountRowSource } from "./account/account-devices.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import { accountOpensAll, type DeviceNotice, type NoticeReplay } from "../shared/account-devices-api.ts";
-import { AccountRecordError, isDeviceSafetyRecord, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceLiftRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
+import { accountDeviceId, AccountRecordError, isDeviceSafetyRecord, isIsoTime, parseAccountRecord, parseSafetyRecord, verifySafetyRecord, type AddRecord, type BlockRecord, type DeviceLiftRecord, type RemoveRecord, type SafetyRecord } from "../shared/account-records.ts";
 import { PromotedHolds } from "./account/promoted-holds.ts";
 import { mayEndHold, type Sayer } from "./account/join-hold.ts";
 import type { BlockReceipt } from "../shared/account-devices-api.ts";
@@ -2331,6 +2331,32 @@ export class DeviceStore {
     return { refused: answer, holdUntil: this.joinedRows.row(deviceId)?.hold_until ?? null, readmission: this.joinedRows.readmission(deviceId) };
   }
 
+
+  /**
+   * On a PC pinned to its signed list: a sign-in under the account id of a key (`accountDeviceId(serverId, key)`)
+   * that the list lets in, where this PC holds that key only by a pairing of its own, whose row has an id of its own.
+   * An app that opens the PC through its account knows the key by that account id alone, and the list holds the key,
+   * so it is let in: as the role the list gives the key, whatever role the pairing has. The session is that row's, so
+   * a Revoke of the pairing ends it; the caller ends it when the list lets the key in no more (listRoleOf). Null for
+   * any other id, a signature that is not the key's, and on a PC that follows no list.
+   */
+  async matchListKey(deviceId: string, nonce: Uint8Array, signature: string, serverId: string, now = Date.now()): Promise<{ match: DeviceMatch; key: string } | null> {
+    if (!this.listFollowed() || this.failsClosed || nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
+    const row = this.devices.find((d) => d.relay_public_key !== undefined && d.id !== deviceId && accountDeviceId(serverId, d.relay_public_key) === deviceId);
+    const key = row?.relay_public_key;
+    if (row === undefined || key === undefined || this.stale(row)) return null;
+    const verified = await verifyRelayProof(key, { nonce, signature, serverId });
+    // whatever changed while the proof was checked is read again now (T66)
+    const current = this.devices.find((d) => d.id === row.id);
+    const role = this.listRoleOf(key);
+    if (!verified || this.failsClosed || current === undefined || current.relay_public_key !== key || this.stale(current) || !this.memberAdmitted(current, now) || role === null) return null;
+    return { match: { id: current.id, label: current.label, role }, key };
+  }
+
+  /** The role the list this PC is pinned to gives `key` now; null when it lets the key in as nothing, and on a PC that follows no list. */
+  listRoleOf(key: string): DeviceRole | null {
+    return this.listFollowed() ? this.signedList?.role(key) ?? null : null;
+  }
 
   /**
    * "It's me" (T53) from the row `sayerId` for the admission notice `noticeId`: the held account row it names ends its

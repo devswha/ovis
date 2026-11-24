@@ -459,6 +459,15 @@ describe("a join that brings the device's card for the account's signed list", (
     rejects(() => encodeFrame(request({ list_enc: spki, list_card: "A".repeat(85) })));
   });
 
+  it("reads a PAIR_REQUEST whose card is out of its form as the frame it was before the extension, and says so", () => {
+    for (const extra of [{ list_enc: spki }, { list_card: card }, { list_enc: "not a key", list_card: card }, { list_enc: spki, list_card: "A".repeat(85) }, { list_enc: 7, list_card: null }]) {
+      const read = decodeFrame(wire(FrameType.PAIR_REQUEST, JSON.stringify({ label: "Phone", public_key: spki, commitment: "A".repeat(43), ...extra }), 0, 0));
+      expect(read.payload).toEqual({ label: "Phone", public_key: spki, commitment: "A".repeat(43), list_malformed: true });
+    }
+    // nobody sends the mark itself
+    rejects(() => encodeFrame(request({ list_malformed: true })));
+  });
+
   it("names the list and the place of the entry that let the device in, in AUTH_OK", () => {
     const list = { id: "c".repeat(64), seq: 7, hash: "d".repeat(64) };
     expect(decodeFrame(encodeFrame(authOk(list))).payload).toEqual(authOk(list).payload);

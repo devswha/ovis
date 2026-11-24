@@ -177,8 +177,11 @@ type Payloads = {
   readonly 0x0a: { readonly code: string; readonly label: string; readonly public_key: string };
   readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string; readonly server_key?: string;
     /** ACCOUNT_LIST_ALLOW: the device's encryption key and its card for the list, both or neither. */
-    readonly list_enc?: string; readonly list_card?: string };
-  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string };
+    readonly list_enc?: string; readonly list_card?: string;
+    /** Set by the reader alone, in the place of `list_enc` and `list_card` that came out of their form. */
+    readonly list_malformed?: true };
+  /** `list`: with ACCOUNT_LIST_ALLOW selected, the id of the list the PC follows: the device stops early when its card names another. */
+  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string; readonly list?: string };
   readonly 0x0d: { readonly nonce: string; readonly server_proof?: string };
   readonly 0x0e: { readonly confirmed: true };
   readonly 0x10: { readonly device_id: string; readonly method: Method; readonly target: string; readonly headers: HeaderList; readonly body: "none" | "stream" };
@@ -458,12 +461,12 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { code, label: pairLabel(v.label), public_key: p256Spki(v.public_key) } };
     }
     case FrameType.PAIR_REQUEST:
-      requireProtocol((v.list_enc === undefined) === (v.list_card === undefined), "A list card comes with its encryption key");
       return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32), ...(v.server_key === undefined ? {} : { server_key: hex(v.server_key, 64) }),
-        ...(v.list_enc === undefined ? {} : { list_enc: p256Spki(v.list_enc), list_card: base64url(v.list_card, 64) }) } };
+        ...listCard(v) } };
     case FrameType.PAIR_CHALLENGE:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_challenge === undefined ? {} : { server_challenge: text(v.server_challenge, 512) }),
-        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }) } };
+        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }),
+        ...(v.list === undefined ? {} : { list: hex(v.list, 64) }) } };
     case FrameType.PAIR_REVEAL:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_proof === undefined ? {} : { server_proof: text(v.server_proof, 256) }) } };
     case FrameType.KEY_CHALLENGE:
@@ -566,6 +569,24 @@ function parseMetadata(bytes: Uint8Array): unknown {
   }
 }
 
+/**
+ * The card a join may bring in PAIR_REQUEST (ACCOUNT_LIST_ALLOW): `list_enc` and `list_card`, both in their form. They
+ * are an extension only a PC that selected the feature reads. So a frame whose members are out of that form (one
+ * without the other, a key that is none) is still the PAIR_REQUEST it was before the extension: it is read, with
+ * `list_malformed` in the members' place, and a PC that takes no card pairs as it always did. One that selected the
+ * feature refuses it.
+ */
+function listCard(v: JsonObject): { list_enc: string; list_card: string } | { list_malformed: true } | Record<string, never> {
+  if (v.list_enc === undefined && v.list_card === undefined && v.list_malformed === undefined) return {};
+  try {
+    if (v.list_malformed !== undefined) throw new MuxProtocolError("protocol_error", "Malformed list card");
+    return { list_enc: p256Spki(v.list_enc), list_card: base64url(v.list_card, 64) };
+  } catch (error) {
+    if (!(error instanceof MuxProtocolError)) throw error;
+    return { list_malformed: true };
+  }
+}
+
 export function decodeFrame(bytes: Uint8Array, filterRequestHeaders = false): MuxFrame {
   // These gates precede views, slices, UTF-8 decoding and JSON parsing.
   requireProtocol(bytes instanceof Uint8Array && bytes.byteLength >= ENVELOPE_BYTES && bytes.byteLength <= MAX_FRAME_BYTES, "Invalid frame length");
@@ -638,6 +659,8 @@ export function encodeFrame(frame: MuxFrame): Uint8Array {
     }
     default:
       payload = object(metadata(type, flags, stream_id, frame.payload).payload);
+      // nobody sends a card that is out of its form; only the reader lets one pass, as a member it then ignores
+      requireProtocol(!(frame.type === FrameType.PAIR_REQUEST && payload.list_malformed === true), "A list card comes with its encryption key, each in its form");
       size = jsonBytes(payload);
   }
   envelope(type, flags, stream_id, size + ENVELOPE_BYTES);

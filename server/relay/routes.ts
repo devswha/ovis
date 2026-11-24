@@ -144,7 +144,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "decline")) {
           return fail("invalid_relay_pairing", "Send the pairing's id and a decision of approve or decline.", 400);
         }
-        if (!service.approvals.decide(body.id, body.decision === "approve")) {
+        if (!service.approvals.decide(body.id, body.decision === "approve", own)) {
           return fail("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
         }
         return reply({ ok: true });

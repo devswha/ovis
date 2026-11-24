@@ -4,7 +4,7 @@
  * that lets the device in with its own list key. A PC that follows no list, and a join that brings no card, are let in
  * as before.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { entryFromText, entryHash, readBody } from "../../shared/account-list-entry.ts";
 import { openSealed, openWrap, wrapFromText } from "../../shared/account-list-seal.ts";
@@ -69,7 +69,9 @@ async function allowingPc() {
 type Bound = Awaited<ReturnType<typeof boundPc>>;
 
 /** The new device's join: its admission, then PAIR_REQUEST with the account intent, with its card where it says so. */
-async function join(made: Bound, device: ListMember, options: { card?: { enc: string; card: string }; features?: readonly string[] } = {}) {
+async function join(made: Bound, device: ListMember, options: { card?: { enc: string; card: string }; features?: readonly string[];
+  /** members written into the PAIR_REQUEST as they are, past the encoder: what an app of another build might send */
+  raw?: Record<string, unknown> } = {}) {
   await vouchFor(made.pc, ACCOUNT, { keys: device.keys, spki: device.key });
   const link = await relayConnection(made.pc, { serverId: made.serverId });
   const frames: MuxFrame[] = [];
@@ -84,6 +86,17 @@ async function join(made: Bound, device: ListMember, options: { card?: { enc: st
       await bounded(arrived.promise, 30_000);
     }
   };
+  if (options.raw !== undefined) {
+    const { raw } = options;
+    link.transformClientFrame = (bytes) => {
+      if (bytes[1] !== FrameType.PAIR_REQUEST) return bytes;
+      const payload = new TextEncoder().encode(JSON.stringify({ ...JSON.parse(new TextDecoder().decode(bytes.subarray(8))) as object, ...raw }));
+      const frame = new Uint8Array(8 + payload.length);
+      frame.set(bytes.subarray(0, 8));
+      frame.set(payload, 8);
+      return frame;
+    };
+  }
   await link.hello(options.features ?? [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT, ACCOUNT_LIST_ALLOW]);
   // the answer to this HELLO, not the WELCOME with no feature that rides ahead of it
   const welcome = await next(FrameType.WELCOME);
@@ -99,17 +112,17 @@ async function join(made: Bound, device: ListMember, options: { card?: { enc: st
   if (challenge.type !== FrameType.PAIR_CHALLENGE) throw new Error(`The join was refused: ${JSON.stringify(challenge.payload)}`);
   link.mux.sendSession({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(nonce) } });
   const digits = pairDigits(binding, device.key, nonce, fromBase64Url(challenge.payload.nonce));
-  return { link, next, digits, features: welcome.payload.features };
+  return { link, next, digits, features: welcome.payload.features, list: challenge.payload.list };
 }
 
-async function ownJoin(made: Bound): Promise<{ id: string; digits?: string }> {
+async function ownJoin(made: Bound): Promise<{ id: string; digits?: string; list?: boolean }> {
   const approvals = made.services.relay.approvals;
   const found = deferred<void>();
   const stop = approvals.subscribe(() => { if (approvals.ownJoins().length > 0) found.resolve(); });
   if (approvals.ownJoins().length > 0) found.resolve();
   await bounded(found.promise).finally(stop);
   const base = `http://127.0.0.1:${made.pc.app.port}`;
-  const listed = await (await fetch(`${base}/api/relay/joins`, { headers: own })).json() as { joins: { id: string; digits?: string }[] };
+  const listed = await (await fetch(`${base}/api/relay/joins`, { headers: own })).json() as { joins: { id: string; digits?: string; list?: boolean }[] };
   return listed.joins[0]!;
 }
 
@@ -123,6 +136,8 @@ async function allowed(made: Bound, device: ListMember, card: { enc: string; car
   const asked = await join(made, device, { card });
   const waiting = await ownJoin(made);
   expect(waiting.digits).toBe(asked.digits);
+  // the PC's own window and `ovis approve` are told that the list lets this join in
+  expect(waiting.list).toBe(true);
   expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
   asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
   return { ...asked, answer: await asked.next(FrameType.AUTH_OK) };
@@ -160,6 +175,32 @@ describe("a PC that a person added lets a new device into the list from its own 
     const again = await relayConnection(made.pc, { serverId: made.serverId });
     expect(await again.auth({ keys: phone.keys, publicKey: phone.key, id: accountDeviceId(made.serverId, phone.key) }, [ACCOUNT_LIST_FEATURE], [ACCOUNT_LIST_FEATURE])).toMatchObject({ role: "drive" });
     expect((await ask(again, "/api/preferences")).status).toBe(200);
+  });
+
+  test("the session of the join serves nothing also where this PC already holds that key by a pairing of its own", async () => {
+    const bound = await boundPc();
+    const phone = await listMember();
+    // the phone paired here by digits before the PC followed a list: a row of this PC's own, under the key's account id
+    const before = await join(bound, phone);
+    const first = await ownJoin(bound);
+    expect(await decide(bound, { id: first.id, decision: "approve" })).toBe(200);
+    before.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect((await before.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
+    expect(bound.pc.devices.has(accountDeviceId(bound.serverId, phone.key))).toBe(true);
+    // then the PC is pinned, and the phone is let into the list from this PC's own window
+    const account = await TestList.start(bound.pc.account, ACCOUNT);
+    await bound.pull();
+    await bound.list.wantList(account.id);
+    await account.addPostedPc(bound.endpoint);
+    await bound.pull();
+    expect(bound.list.status()).toMatchObject({ pinned: true, standing: "in" });
+    const made = { ...bound, account, ownKey: bound.pc.account.accountList(ACCOUNT)!.state.pcs[bound.endpoint]!.key! };
+    const card = await claimKey(made.pc.account, ACCOUNT, account.id, phone);
+    const { answer, link } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer.type).toBe(FrameType.AUTH_OK);
+    // the comparison's session only told the device its place: the key was never signed with on it
+    expect((await ask(link, "/api/preferences")).status).toBe(403);
+    expect((await ask(link, "/api/devices")).status).toBe(403);
   });
 
   test("the device's name is sealed under the list's key, and the device is given that key", async () => {
@@ -235,6 +276,218 @@ describe("what the PC does when the entry does not go in", () => {
     await refused(made, phone, { enc: phone.enc, card: await memberCard(other, made.account.id) });
     await refused(made, phone, { enc: phone.enc, card: await memberCard(phone, "ab".repeat(32)) });
     expect(entriesPlaced(made)).toBe(0);
+  });
+
+  test("one signature per place: an answer that is lost, and a read that fails after it, send the same entry again", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const sent: string[] = [];
+    let lost = false;
+    let reads = 0;
+    made.hook.on = async (request, forward) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/v2/pc/list/entries") {
+        sent.push(((await request.clone().json()) as { entries: string[] }).entries[0]!);
+        const answer = await forward();
+        // the service placed it, and its answer never arrives
+        if (!lost) { lost = true; throw new Error("the answer was lost"); }
+        return answer;
+      }
+      // and the read that would have shown it fails once
+      if (path === "/v2/pc/list/log" && lost && reads++ === 0) throw new Error("the read failed");
+      return await forward();
+    };
+    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    // the name is sealed with fresh random bytes each time it is sealed: one text means one signature
+    expect(sent.length).toBeGreaterThan(1);
+    expect(new Set(sent).size).toBe(1);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toMatchObject({ by: made.ownKey });
+  });
+
+  test("the PC signs by its own clock, whatever hour the account service names", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    // every answer of the log says it is tomorrow
+    made.hook.on = async (request, forward) => {
+      const answer = await forward();
+      if (new URL(request.url).pathname !== "/v2/pc/list/log" || !answer.ok) return answer;
+      return Response.json({ ...await answer.json() as object, now: Math.floor(Date.now() / 1000) + 86_400 });
+    };
+    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    const held = made.pc.account.accountList(ACCOUNT)!;
+    const signed = readBody(entryFromText(held.entries[held.state.signers[phone.key]!.seq]!).body).issued_at;
+    expect(Math.abs(signed - Math.floor(Date.now() / 1000))).toBeLessThan(120);
+  });
+
+  test("a lock or a hold that comes while the entry is prepared signs nobody in: this PC's own word is asked again before each submission", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    // this PC comes to hold the key back while the Allow reads the list: after its first look, before it signs
+    let denied = false;
+    let armed = false;
+    made.hook.on = async (request, forward) => {
+      if (armed && new URL(request.url).pathname === "/v2/pc/list/log") denied = true;
+      return await forward();
+    };
+    const admits = spyOn(made.services.devices, "admitsFromList").mockImplementation(() => !denied);
+    try {
+      const asking = await join(made, phone, { card: { enc: phone.enc, card } });
+      const waiting = await ownJoin(made);
+      armed = true;
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asking.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asking.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
+    } finally { admits.mockRestore(); }
+    expect(denied).toBe(true);
+    expect(entriesPlaced(made)).toBe(0);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+  });
+});
+
+describe("what the PC does when the entry does not go in", () => {
+  /** A join the person allowed that the PC did not let in: the device hears what a refused join always heard. */
+  async function refused(made: Awaited<ReturnType<typeof allowingPc>>, phone: ListMember, card: { enc: string; card: string }) {
+    const before = made.pc.account.accountList(ACCOUNT)!.head;
+    const { answer } = await allowed(made, phone, card);
+    expect(answer.type === FrameType.SESSION_ERROR && answer.payload.code).toBe("auth_failed");
+    // nothing was written in its place: no entry, no device of the list, no pairing of this PC's own
+    expect(made.pc.account.accountList(ACCOUNT)!.head).toEqual(before);
+    expect(made.pc.devices.hasKey(phone.key)).toBe(false);
+    expect(made.services.accountRows!.rows().some((row) => row.key === phone.key)).toBe(false);
+  }
+
+  test("a device whose key no sign-in of the account claimed is not let in: the service's lock holds, and the PC asks once", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    await refused(made, phone, { enc: phone.enc, card: await memberCard(phone, made.account.id) });
+    expect(entriesPlaced(made)).toBe(1);
+  });
+
+  test("a card that is not this key's for this list is never signed over, and the service is not asked", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const other = await listMember();
+    // another device's card, and this device's card for another list
+    await refused(made, phone, { enc: phone.enc, card: await memberCard(other, made.account.id) });
+    await refused(made, phone, { enc: phone.enc, card: await memberCard(phone, "ab".repeat(32)) });
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
+  test("one signature per place: an answer that is lost, and a read that fails after it, send the same entry again", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const sent: string[] = [];
+    let lost = false;
+    let reads = 0;
+    made.hook.on = async (request, forward) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/v2/pc/list/entries") {
+        sent.push(((await request.clone().json()) as { entries: string[] }).entries[0]!);
+        const answer = await forward();
+        // the service placed it, and its answer never arrives
+        if (!lost) { lost = true; throw new Error("the answer was lost"); }
+        return answer;
+      }
+      // and the read that would have shown it fails once
+      if (path === "/v2/pc/list/log" && lost && reads++ === 0) throw new Error("the read failed");
+      return await forward();
+    };
+    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    // the name is sealed with fresh random bytes each time it is sealed: one text means one signature
+    expect(sent.length).toBeGreaterThan(1);
+    expect(new Set(sent).size).toBe(1);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toMatchObject({ by: made.ownKey });
+  });
+
+  test("the PC signs by its own clock, whatever hour the account service names", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    // every answer of the log says it is tomorrow
+    made.hook.on = async (request, forward) => {
+      const answer = await forward();
+      if (new URL(request.url).pathname !== "/v2/pc/list/log" || !answer.ok) return answer;
+      return Response.json({ ...await answer.json() as object, now: Math.floor(Date.now() / 1000) + 86_400 });
+    };
+    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    const held = made.pc.account.accountList(ACCOUNT)!;
+    const signed = readBody(entryFromText(held.entries[held.state.signers[phone.key]!.seq]!).body).issued_at;
+    expect(Math.abs(signed - Math.floor(Date.now() / 1000))).toBeLessThan(120);
+  });
+
+  test("a lock or a hold that comes while the entry is prepared signs nobody in: this PC's own word is asked again before each submission", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    // this PC comes to hold the key back while the Allow reads the list
+    const admits = spyOn(made.services.devices, "admitsFromList");
+    let asked = 0;
+    admits.mockImplementation(() => ++asked === 1);
+    try {
+      const asking = await join(made, phone, { card: { enc: phone.enc, card } });
+      const waiting = await ownJoin(made);
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asking.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asking.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
+    } finally { admits.mockRestore(); }
+    expect(entriesPlaced(made)).toBe(0);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+  });
+
+  test("a service that is reading the list again is asked after the time it names, and no sooner", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const at: number[] = [];
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/entries") return await forward();
+      at.push(Date.now());
+      if (at.length === 1) return Response.json({ error: { code: "list_rebuilding", message: "reading the list again" } }, { status: 503, headers: { "retry-after": "2" } });
+      return await forward();
+    };
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    const waiting = await ownJoin(made);
+    expect(asked.link.session.placing).toBe(false);
+    expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+    asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    // while the entry waits to be placed the session says so, which is what keeps its carrier open past the sign-in grace
+    const deadline = Date.now() + 10_000;
+    while (at.length === 0) { if (Date.now() > deadline) throw new Error("Nothing was placed"); await Bun.sleep(10); }
+    expect(asked.link.session.placing).toBe(true);
+    const answer = await asked.next(FrameType.AUTH_OK);
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    expect(asked.link.session.placing).toBe(false);
+    expect(at).toHaveLength(2);
+    expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(1_900);
+  });
+
+  test("the PC signs only for an approval from its own window: one from another browser that drives it signs nobody in", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const base = `http://127.0.0.1:${made.pc.app.port}`;
+    // the pairing window is open, so the comparison is this PC's to decide, by any browser that drives it
+    expect((await made.pc.local("/api/relay/link", { method: "POST", headers: { ...own, "x-herdr-update": "1" } })).status).toBe(200);
+    const asking = await join(made, phone, { card: { enc: phone.enc, card } });
+    const shown = deferred<{ id: string }>();
+    const stop = made.services.relay.approvals.subscribe((listed) => { if (listed[0]) shown.resolve(listed[0]); });
+    const waiting = await bounded(shown.promise).finally(stop);
+    // a browser on the LAN with the access token: it drives this PC, and is not this PC's own window
+    const answer = await fetch(`${base}/api/relay/pairing`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", "x-forwarded-for": "100.64.0.9", ...own },
+      body: JSON.stringify({ id: waiting.id, decision: "approve" }) });
+    expect(answer.status).toBe(200);
+    asking.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect(await asking.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
+    expect(entriesPlaced(made)).toBe(0);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
   });
 
   test("a head that moved under it is read, and the entry signed again on the new head", async () => {
@@ -323,6 +576,28 @@ describe("what the PC does when the entry does not go in", () => {
 });
 
 describe("a PC that cannot sign for a list lets a device in as before", () => {
+  test("a PC that follows no list takes a PAIR_REQUEST whose list members are out of their form as it always did", async () => {
+    // an app that sends the extension to a PC with no list must still pair there, whatever it sent
+    for (const raw of [{ list_enc: "x" }, { list_card: "A".repeat(86) }, { list_enc: 7, list_card: "short" }]) {
+      const made = await boundPc();
+      const phone = await listMember();
+      const asked = await join(made, phone, { raw });
+      expect(asked.features).not.toContain(ACCOUNT_LIST_ALLOW);
+      const waiting = await ownJoin(made);
+      expect(waiting.digits).toBe(asked.digits);
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect((await asked.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
+      expect(made.pc.devices.hasKey(phone.key)).toBe(true);
+    }
+  });
+
+  test("a PC that takes a card refuses one that is out of its form", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    await expect(join(made, phone, { raw: { list_enc: phone.enc } })).rejects.toThrow("protocol_error");
+  });
+
   test("a PC that follows no list does not take a card: the join makes its own pairing, and no list is named", async () => {
     const made = await boundPc();
     const phone = await listMember();
@@ -342,6 +617,8 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     const made = await allowingPc();
     const phone = await listMember();
     const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
+    // a join that takes no card is told no list
+    expect(asked.list).toBeUndefined();
     const waiting = await ownJoin(made);
     expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
     asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
@@ -369,6 +646,51 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     const phone = await listMember();
     const asked = await join(made, phone, { card: { enc: phone.enc, card: await memberCard(phone, made.account.id) } });
     expect(asked.features).not.toContain(ACCOUNT_LIST_ALLOW);
+  });
+
+  test("the challenge names the list this PC follows, and a refusal says which cause it was", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    // no sign-in of the account claimed this key: the service places no entry for it
+    const card = await memberCard(phone, made.account.id);
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    expect(asked.list).toBe(made.account.id);
+    const waiting = await ownJoin(made);
+    expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+    asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_not_claimed" } });
+  });
+
+  test("a device a person at this PC allows waits no join hold, also when a read let it in a moment before", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    // another member places the same device, and a pull makes its row here, in its hold, just before the Allow
+    await made.account.addDevice(phone);
+    await made.pull();
+    expect(made.services.accountRows!.rows().find((row) => row.key === phone.key)).toMatchObject({ state: "hold" });
+    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    expect(made.services.accountRows!.rows().find((row) => row.key === phone.key)).toMatchObject({ state: "live" });
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
+  test("a member's approval signs nothing here: the PC waits a few seconds for the member's entry, and lets the device in by it", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const device = { key: phone.key, enc: phone.enc, card, label: "Phone" };
+    // the member's entry reaches the account service a moment after its approval reached this PC
+    const waiting = made.list.allowDevice(device, false);
+    await made.account.addDevice(phone);
+    const outcome = await waiting;
+    expect(outcome).toMatchObject({ allowed: { id: made.account.id, seq: made.account.place.seq } });
+    expect(entriesPlaced(made)).toBe(0);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toMatchObject({ by: made.account.first.key });
+    // with no entry at all, it gives up and says the device is not in the list
+    const other = await listMember();
+    expect(await made.list.allowDevice({ key: other.key, enc: other.enc, card: await memberCard(other, made.account.id), label: "Other" }, false)).toMatchObject({ refused: "not_in_list" });
+    expect(entriesPlaced(made)).toBe(0);
   });
 
   test("a PC the list removed is in no list, and says so before any card is sent", async () => {

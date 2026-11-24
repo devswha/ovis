@@ -403,7 +403,8 @@ describe("an account join on this PC's own window", () => {
     const approvals = f.open();
     const right = join(approvals, f.clock.at);
     expect(approvals.decideTyped(approvals.ownJoins()[0]!.id, "654321")).toBe("decided");
-    expect(await right.decision).toEqual({ approved: true });
+    // decided in this PC's own window, which the decision keeps
+    expect(await right.decision).toEqual({ approved: true, own: true });
     const wrong = join(approvals, f.clock.at);
     const id = approvals.ownJoins()[0]!.id;
     expect(approvals.decideTyped(id, "123456")).toBe("wrong_digits");

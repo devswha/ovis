@@ -5,8 +5,8 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { entryFromText, entryHash, entryToText, signEntry, type EntryBody, type SignerPower } from "./account-list-entry.ts";
 import {
-  DEVICE_READ_SECONDS, FRESH_SECONDS, LIST_ENTRIES_MAX, LIST_SAVE_PREFIX, LOOSE_ENTRIES_MAX, PAGE_ENTRIES_MAX, PC_BUSY_READ_SECONDS, PC_READ_SECONDS, SESSION_WAIT_SECONDS,
-  admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, listCopy, memberClock, nextUntil, pcOfKey, pinList, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
+  DEVICE_READ_SECONDS, FRESH_SECONDS, LIST_ENTRIES_MAX, LIST_SAVE_PREFIX, LOOSE_ENTRIES_MAX, READ_PAGES_MAX, PAGE_ENTRIES_MAX, PC_BUSY_READ_SECONDS, PC_READ_SECONDS, SESSION_WAIT_SECONDS,
+  admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, listCopy, memberClock, nextUntil, pcOfKey, pinList, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, withClock, writeSave,
   type FollowRead, type FollowVerdict, type FollowerCopy, type FollowerSelf, type ListChanges, type ListPage, type ListPin, type PageResult,
 } from "./account-list-follower.ts";
 import { signingPlace, type ListPlace } from "./account-list-signers.ts";
@@ -40,6 +40,12 @@ const pool = await newKey("pool");
 const box = await newKey("box");
 const mallory = await newKey("mallory");
 const eve = await newKey("eve");
+/** Keys made as a test asks for them: devices that come and go. */
+const spare: Key[] = [];
+const spareKey = async (index: number): Promise<Key> => {
+  while (spare.length <= index) spare.push(await newKey(`spare${spare.length}`));
+  return at(spare, index);
+};
 /** A PC's relay key. */
 const E = (n: number) => n.toString(16).padStart(2, "0").repeat(32);
 const at = <Item>(items: readonly Item[], index: number): Item => {
@@ -118,16 +124,16 @@ function pinned(log: Pick<Log, "list">, me: FollowerSelf, pin: ListPin, account 
 const allowedAt = (log: Log, seq = log.texts.length - 1): ListPin => ({ how: "allowed", seq, hash: at(log.hashes, seq) });
 
 interface Read { readonly copy: FollowerCopy; readonly verdicts: readonly FollowVerdict[]; readonly last: PageResult; readonly changes: readonly ListChanges[]; readonly pages: number }
-/** One read, to its end: each request is the one the page before asked for. A read that does not end fails the test. */
-async function reads(copy: FollowerCopy, answer: (read: FollowRead) => ListPage | null, source: "service" | "peer" = "service", now = NOW): Promise<Read> {
+/** One read, to its end: each request is the one the page before asked for, from `first` or from the member's head. A read that does not end fails the test. */
+async function reads(copy: FollowerCopy, answer: (read: FollowRead) => ListPage | null, source: "service" | "peer" = "service", now = NOW, first: FollowRead = startRead(copy, source)): Promise<Read> {
   let held = copy;
-  let read: FollowRead | null = startRead(copy, source);
+  let read: FollowRead | null = first;
   const verdicts: FollowVerdict[] = [];
   const changes: ListChanges[] = [];
   let last: PageResult | null = null;
   let pages = 0;
   while (read !== null) {
-    if (++pages > 400) throw new Error("the read does not end");
+    if (++pages > READ_PAGES_MAX) throw new Error("the read does not end");
     const page = answer(read);
     if (page === null) throw new Error("no page");
     last = await takePage(held, read, page, now);
@@ -157,14 +163,14 @@ async function gossip(a: FollowerCopy, b: FollowerCopy, limit = PAGE_ENTRIES_MAX
     const mine = compareHeads(left, gossipHead(right));
     if (mine.read !== null) {
       const from = right;
-      const read = await reads(left, (ask) => servePage(from, ask, limit), "peer");
+      const read = await reads(left, (ask) => servePage(from, ask, limit), "peer", NOW, mine.read);
       left = read.copy;
       said.push(`a ${mine.verdict} ${lastOf(read)}`);
     }
     const theirs = compareHeads(right, gossipHead(left));
     if (theirs.read !== null) {
       const from = left;
-      const read = await reads(right, (ask) => servePage(from, ask, limit), "peer");
+      const read = await reads(right, (ask) => servePage(from, ask, limit), "peer", NOW, theirs.read);
       right = read.copy;
       said.push(`b ${theirs.verdict} ${lastOf(read)}`);
     }
@@ -432,6 +438,35 @@ describe("taking pages", () => {
     }
   });
 
+  test("a read ends, whatever its pages say: a source that sends it back and forth for ever gets a set number of requests", async () => {
+    const log = await grow(BASE, [[owner, deviceOf(tablet)], [owner, epochOf(0)]]);
+    const copy = await followed(upTo(log, 5), PC(desk, 1), { how: "added" });
+    // Asked after an entry before its head, the source shows the next entry and says more follows; asked after its head, it says its head is another entry.
+    let asked = 0;
+    const liar = (read: FollowRead): ListPage => {
+      asked++;
+      const last = read.after ?? 0;
+      return last < 6 ? { entries: [at(log.texts, last + 1)], head: { seq: 60, hash: "ab".repeat(32) } } : { entries: [], head: { seq: 6, hash: "ab".repeat(32) } };
+    };
+    let held = copy;
+    let read: FollowRead | null = startRead(copy, "service");
+    const verdicts: FollowVerdict[] = [];
+    while (read !== null && asked < 4 * READ_PAGES_MAX) {
+      const taken: PageResult = await takePage(held, read, liar(read), NOW);
+      [held, read] = [taken.copy, taken.read];
+      verdicts.push(taken.verdict);
+    }
+    expect([asked, read, [...new Set(verdicts)].sort(), held.entries, held.alarm]).toEqual([READ_PAGES_MAX, null, ["more", "stuck"], log.texts.slice(0, 7), null]);
+    // An honest read that needs more requests than one read makes goes on at the next read, from where it came to.
+    let long = BASE;
+    for (let index = 0; index < READ_PAGES_MAX + 6; index++) long = await add(long, owner, deviceOf(await spareKey(index)));
+    const first = await reads(await followed(BASE, PC(desk, 1), { how: "added" }), serves(long, 1));
+    expect([first.pages, lastOf(first), first.last.read, first.copy.entries.length, first.copy.read_at]).toEqual([READ_PAGES_MAX, "more", null, BASE.texts.length + READ_PAGES_MAX, NOW]);
+    const second = await reads(first.copy, serves(long, 1), "service", NOW + 30);
+    expect([second.pages, lastOf(second), second.copy.entries, second.copy.read_at]).toEqual([6, "caught_up", long.texts, NOW + 30]);
+    expect(takePage(copy, { ...startRead(copy, "service"), left: -1 }, pageOf(log, 5), NOW)).rejects.toThrow(RangeError);
+  });
+
   test("a second other continuation in one read waits for the next read", async () => {
     const copy = await followed(BASE, PC(desk, 1), { how: "added" });
     const junk = (seed: Key) => grow(BASE, [[seed, epochOf(0)], [seed, epochOf(0)]]);
@@ -518,6 +553,19 @@ describe("taking pages", () => {
     }
     expect(followStep(kept, NOW, { event: "tick", asked_at: null, busy: true })).toEqual({ do: "wait", until: null });
     expect(followStep(kept, NOW, { event: "session", since: null })).toEqual({ do: "decide" });
+    // Who went out on the page it stopped in is told all the same: the removal was taken before the stop.
+    const removing = await addRaw(await add(behind, owner, removeOf(phone)), mallory, { kind: "later_kind", v: 2 });
+    const went = await reads(copy, serves(removing));
+    expect([lastOf(went), standing(went.copy), went.last.changes.devices.removed.map((row) => who(row.key)), went.last.changes.devices.added]).toEqual(["needs_newer_client", "stopped", ["phone"], []]);
+    // It stopped right after more entries that no signer signed than a copy keeps: it keeps them all, since the entry it stopped at follows them, and its save reads.
+    let padded = behind;
+    for (let index = 0; index < LOOSE_ENTRIES_MAX + 4; index++) padded = await add(padded, mallory, epochOf(0));
+    const late = await reads(copy, serves(await addRaw(padded, eve, { kind: "later_kind", v: 2 })));
+    expect([lastOf(late), late.copy.entries.length, stateOf(late.copy).needs_replay?.seq, late.copy.stop !== null]).toEqual(["needs_newer_client", padded.texts.length, padded.texts.length, true]);
+    expect(await saved(late.copy)).toEqual(late.copy);
+    // A member that stopped before the list showed what its pin asks for is stopped, not waiting: it reads no more by the clock either.
+    const unmet = (await reads(pinned(stopping, PC(tower, 3), { how: "added" }), serves(stopping))).copy;
+    expect([standing(unmet), followStep(unmet, NOW, { event: "tick", asked_at: null, busy: true }), followStep(unmet, NOW, { event: "doorbell" })]).toEqual(["stopped", { do: "wait", until: null }, { do: "wait", until: null }]);
   });
 });
 
@@ -533,8 +581,8 @@ describe("two members and a service that shows them two things", () => {
     expect([verdict(long, { list: OTHER.list, place: null }), verdict(long, null), verdict(long, { list: OTHER.list, place: gossipHead(long).place })]).toEqual(["not_my_list", "not_my_list", "not_my_list"]);
     // Only a verdict that asks carries a request: for what follows the member's head, or for the very entry the other stands at.
     expect(compareHeads(long, gossipHead(short)).read).toBeNull();
-    expect(compareHeads(short, gossipHead(long)).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false });
-    expect(compareHeads(long, { list: BASE.list, place: { seq: 3, hash: "ab".repeat(32) } }).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false });
+    expect(compareHeads(short, gossipHead(long)).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1 });
+    expect(compareHeads(long, { list: BASE.list, place: { seq: 3, hash: "ab".repeat(32) } }).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1 });
     expect([compareHeads(long, { list: BASE.list, place: { seq: 0, hash: "ab".repeat(32) } }).read, compareHeads(long, { list: BASE.list, place: "x" } as unknown as ReturnType<typeof gossipHead>).read]).toEqual([null, null]);
   });
 
@@ -602,6 +650,11 @@ describe("two members and a service that shows them two things", () => {
     const other = await grow(BASE, [[phone, removeOf(owner)]]);
     const shown = await takePage(copy, { ...startRead(copy, "service"), after: 4 }, pageOf(other, 4), NOW);
     expect([shown.verdict, shown.at, shown.copy.alarm?.source, shown.copy.alarm?.by, shown.copy.entries, opens(shown.copy, owner), opens(shown.copy, phone)]).toEqual(["fork", 5, "service", phone.key, real.texts, "drive", "removed"]);
+    // What stands before an entry that is no entry proves what it proves; a page that begins with one proves nothing.
+    const cut = await takePage(copy, { ...startRead(copy, "service"), after: 4 }, { ...pageOf(other, 4), entries: [at(other.texts, 5), "junk"] }, NOW);
+    expect([cut.verdict, cut.at, cut.copy.alarm?.by]).toEqual(["fork", 5, phone.key]);
+    const none = await takePage(copy, { ...startRead(copy, "service"), after: 4 }, { ...pageOf(other, 4), entries: ["junk", at(other.texts, 5)] }, NOW);
+    expect([none.verdict, none.copy.alarm, none.copy.entries]).toEqual(["stuck", null, real.texts]);
     // The other history may begin with entries that no signer signed: the key named is the first signer's, not theirs.
     const padded = await grow(BASE, [[mallory, epochOf(0)], [phone, removeOf(owner)]]);
     const led = await takePage(copy, { ...startRead(copy, "service"), after: 4 }, pageOf(padded, 4), NOW);
@@ -723,6 +776,12 @@ describe("what a PC decides from its copy", () => {
     expect(heardHead(later.copy, { list: OTHER.list, place: null }, NOW - 9).copy).toBe(later.copy);
     expect((await saved(later.copy)).seen_at).toBe(NOW + 100);
     expect(takePage(copy, startRead(copy, "service"), pageOf(log, 5), 1.5)).rejects.toThrow(RangeError);
+    // With the account service away no page comes: the PC notes the hour itself whenever it reads its clock, and a clock set back after that lets nobody in again.
+    expect([opens(copy, browser, NOW + 61), opens(copy, browser, NOW + 59)]).toEqual(["expired", "drive"]);
+    const noted = withClock(copy, NOW + 61);
+    expect([noted.seen_at, opens(noted, browser, NOW + 59), withClock(noted, NOW + 5), { ...noted, seen_at: NOW }]).toEqual([NOW + 61, "expired", noted, copy]);
+    expect(withClock(noted, NOW + 5)).toBe(noted);
+    expect(() => withClock(copy, -1)).toThrow(RangeError);
     // Nor for less than the list's own time: the hour a full signer wrote into an entry that counted. A stranger's hour moves nothing.
     const strange = await reads(copy, serves(await add(log, mallory, epochOf(0), NOW + 900)));
     expect([memberClock(strange.copy, NOW), opens(strange.copy, browser, NOW)]).toEqual([NOW, "drive"]);
@@ -834,11 +893,6 @@ function seeded(seed: number): () => number {
 describe("over generated histories, with a service that lies", () => {
   /** What the test itself knows of a history it wrote, kept beside the log and never read from the library: who is in after each entry. */
   interface World { readonly log: Log; readonly devices: readonly Key[]; readonly out: readonly Key[]; readonly pcs: number; readonly epoch: number }
-  const spare: Key[] = [];
-  const spareKey = async (index: number): Promise<Key> => {
-    while (spare.length <= index) spare.push(await newKey(`spare${spare.length}`));
-    return at(spare, index);
-  };
   /** A history that members wrote: the owner, a phone and the desk PC, then devices and PCs that come and go. `used` counts the keys it took. */
   async function history(random: () => number, length: number, first = 0): Promise<{ readonly worlds: readonly World[]; readonly used: number }> {
     let world: World = { log: await grow(await start(), [[owner, deviceOf(phone)], [owner, pcOf(desk, 1)]]), devices: [owner, phone], out: [], pcs: 1, epoch: 0 };
@@ -1127,7 +1181,8 @@ describe("the save", () => {
     expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 8), seq: 8 }; }))).toEqual({ read: false, why: "broken" });
     expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 8), seq: 8 }; save["level"] = 2; }))).toEqual({ read: false, why: "version" });
     // A footing named before the true one costs nothing: the replay holds the whole history the entries give.
-    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 3), seq: 3 }; }))).toEqual({ read: true, copy: loose, rebuilt: false });
+    // The save is written again with the true one, which is what `rebuilt` says.
+    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 3), seq: 3 }; }))).toEqual({ read: true, copy: loose, rebuilt: true });
     // An alarm in its form is kept, whatever it names: nothing about it makes a save unreadable.
     const alarm = { at: NOW, by: mallory.key, code: "fork", devices: [mallory.key], pcs: [E(9)], seq: 30, source: "peer" };
     expect(await readSave(rewritten(text, (save) => { save["alarm"] = alarm; }))).toEqual({ read: true, copy: { ...copy, alarm } as FollowerCopy, rebuilt: false });
@@ -1221,7 +1276,7 @@ describe("the vectors of save/", () => {
       }
       // Written again it is the same text: a save has one form. One that was rebuilt is written as this build writes it, and reads as it is from then on.
       const again = writeSave(copy);
-      expect(again === vector.save).toBe(!read.rebuilt);
+      expect(again !== vector.save).toBe(read.rebuilt);
       expect(await readSave(again)).toEqual({ read: true, copy, rebuilt: false });
     });
   }
