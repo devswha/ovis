@@ -632,6 +632,19 @@ describe("a removal the PC has seen is final", () => {
     expect((await call()).status).toBe(200);
   });
 
+  test("a page nobody asked for whose first entry follows no entry this PC holds is refused before any of it is checked", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    // entries a member signed, but after a place this PC's copy does not hold
+    const elsewhere = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, pc.first, { seq: head.seq + 5, hash: "ab".repeat(32) });
+    const handed = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: head.seq, entries: [elsewhere], head: { seq: head.seq + 6, hash: "cd".repeat(32) } } });
+    expect([handed.status, handed.body.error?.code]).toEqual([409, "not_continued"]);
+    // and nothing of it counts: the laptop is in
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+  });
+
   test("a page the disk does not take is acted on, and the device is told it was not saved", async () => {
     const pc = await pinnedPc();
     const held = pc.list.status().head!;
