@@ -30,7 +30,9 @@ are ([Ovis Mux v1](relay.md#ovis-mux-v1)).
 2. **One account key per client.** A client (phone app, browser, the desktop app's view of other
    PCs) holds one ECDSA P-256 key for the account, made by WebCrypto as non-extractable and kept in
    its own IndexedDB database (`ovis-account`). On every PC of the account that key is the device's
-   `relay_public_key`, and `AUTH` signs with it as with any device key.
+   `relay_public_key`, and `AUTH` signs with it as with any device key. Where the account service
+   keeps a [signed list](account-list.md#on-a-device) for the account, the same key signs the
+   device's entries in it; nothing on this page decides by that list yet.
 3. **A PC holds no account key and signs nothing.** Only clients sign records. A coding agent that
    runs as the user on a PC therefore cannot add a device to the account's other PCs. The desktop
    app is both a PC and a client, so an agent on that machine could drive the app's key: that risk is
@@ -1438,14 +1440,16 @@ still do is said under [what the service still can](#what-the-account-service-st
 - The PC has two keys of its own for the list, in `account-list-keys.json` (readable by your user
   only): one that signs and one that the names of the list are encrypted to. They are made for the
   PC's relay identity and go with it: **Reset relay identity** removes them, and the PC it becomes
-  makes new ones. They are never logged and never sent. The file is created only where none is
-  there, and the PC uses the pair it then reads from disk: two Ovis servers on one state folder end
-  with one pair. A keys file that will not read is not
+  makes new ones. They are never logged and never sent. One Ovis at a time makes them (a lock file
+  beside the keys file), and every Ovis uses the pair it then reads from disk: several servers on
+  one state folder end with one pair. Keys whose making began before a reset are not written after
+  it. A keys file that will not read is not
   replaced by itself; the PC says so in `GET /api/account/list` and reads no list until the file is
   restored or the relay identity is reset.
 - While the list does not hold the PC, the PC posts its two public keys and its
   [card](account-list.md#a-card) to the account service (`POST /v2/pc/list/keys`, with the same
-  proof), so that a member can add it. A post lasts ten minutes and is renewed.
+  proof), so that a member can add it. A post lasts ten minutes and is renewed, with each mailbox
+  pull and by the PC's own clock.
 - A PC that is not pinned writes one line to its log, `account.list.differs`, where the list would
   decide otherwise than the snapshot (a device only one of them lets in, a device the list lets in
   only to watch or only until a time that has passed, a PC the list does not hold), with what each
@@ -2052,6 +2056,8 @@ Seoul, South Korea", leaving out what is unknown ([Adding a PC](#adding-a-pc), "
 
 - [`shared/account-records.ts`](../shared/account-records.ts): record types, parsing, signing bytes,
   signing and verification.
+- [`src/lib/account/accountList.ts`](../src/lib/account/accountList.ts): a device's own copy of the
+  account's signed list ([account-list.md](account-list.md#on-a-device)).
 - [`shared/account-service-fake.ts`](../shared/account-service-fake.ts): the account service API in
   memory, for tests, the signed list's routes included
   ([account-list.md](account-list.md#the-list-routes-in-tests)).

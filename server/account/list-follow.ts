@@ -43,6 +43,8 @@ import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
 import type { Readmission } from "./readmission.ts";
 
 export const ACCOUNT_LIST_FILE = "account-list.json";
+/** A post the account service did not confirm is made again after this long. */
+const POST_RETRY_MS = 60_000;
 /** A post of the PC's keys lasts ten minutes at the account service: an end named further off than this is no end it gave. */
 const POST_UNTIL_MAX_SECONDS = 24 * 60 * 60;
 /** The PC's post of its keys lasts ten minutes at the account service; it is made again when it is this old. */
@@ -59,6 +61,7 @@ export const DIFFERENCES_MAX = 1000;
 export const LIST_DEVICE_LABEL = "Device";
 
 const BIND_ID = /^[0-9a-f]{32}$/;
+const REFUSAL_CODE = /^[a-z][a-z0-9_]{0,39}$/;
 
 /**
  * `account-list.json`. `save` is the follower's own text (writeSave), which carries its sum; null while a list is
@@ -332,9 +335,20 @@ export class ListFollow implements ListAuthority {
   // What reaches the list from outside.
 
   /** What a mailbox pull's answer named as the account's list. Starts a read in turn and returns at once. */
-  heard(account: string, named: NamedList | null): void {
+  heard(account: string, named: NamedList | null, asked?: string | null): void {
     if (this.stopped) return;
-    void this.enqueue(() => this.follow(account, named));
+    // `asked`: what scopeToken answered when the pull began. A hint for another binding or relay identity than the PC
+    // has when its turn comes is dropped
+    void this.enqueue(async () => {
+      if (asked !== undefined && asked !== this.scopeToken()) return;
+      await this.follow(account, named);
+    });
+  }
+
+  /** The relay identity and binding the PC has now, as one word: what a mailbox pull keeps to say which PC its answer was for. Null for none. */
+  scopeToken(): string | null {
+    const scope = this.bound();
+    return scope === null ? null : `${scope.serverId} ${scope.bindId}`;
   }
 
   /**
@@ -397,6 +411,13 @@ export class ListFollow implements ListAuthority {
     const busy = this.isPinned ? this.deps.busy?.() === true : waited !== null && waited >= 0 && waited < LIST_WANT_BUSY_MS;
     const step = followStep(copy, now, { event: "tick", asked_at: this.askedAt, busy });
     if (step.do === "read") void this.readNow();
+    // a PC that waits to be added keeps its post alive by its own clock too, whatever the mailbox says
+    if (standing(copy) === "waiting") void this.enqueue(async () => {
+      const held = this.copy;
+      if (held === null || standing(held) !== "waiting" || !this.live(scope)) return;
+      const keys = await this.keysOf(scope);
+      if (keys !== null && this.live(scope) && this.copy !== null && this.copy.me.key === keys.key && standing(this.copy) === "waiting") await this.post(this.copy, keys, scope);
+    });
   }
 
   /**
@@ -473,12 +494,14 @@ export class ListFollow implements ListAuthority {
       if (copy === null) return;
       const key = this.deps.rowKey(given.deviceId) ?? this.idsOf(copy).get(given.deviceId) ?? null;
       if (key === null) return;
-      const list = admitsSession(copy, key, this.seconds());
+      const list = this.shadowAnswer(copy, key);
       if (given.snapshot === "admitted") { this.compare(key, "admitted", list.role ?? list.why); return; }
       // No row here: the list alone would let it in only for the proof of its key
       if (list.role === null) return;
       const role = list.role;
-      void this.enqueue(() => verifyRelayProof(key, given).then((proved) => { if (proved) this.compare(key, "none", role); }));
+      const scope = this.bound();
+      // the proof is checked later: what it shows is said only of the binding the sign-in came under
+      void this.enqueue(() => verifyRelayProof(key, given).then((proved) => { if (proved && scope !== null && this.live(scope) && this.shadow() !== null) this.compare(key, "none", role); }));
     } catch { /* a shadow never stands in the way of a sign-in */ }
   }
 
@@ -490,12 +513,11 @@ export class ListFollow implements ListAuthority {
     void this.enqueue(() => {
       const copy = this.shadow();
       if (copy === null) return;
-      const now = this.seconds();
       const named = new Set(eligible);
-      for (const key of named) { const list = admitsSession(copy, key, now); this.compare(key, "admitted", list.role ?? list.why); }
+      for (const key of named) { const list = this.shadowAnswer(copy, key); this.compare(key, "admitted", list.role ?? list.why); }
       for (const key of this.idsOf(copy).values()) {
         if (named.has(key)) continue;
-        const list = admitsSession(copy, key, now);
+        const list = this.shadowAnswer(copy, key);
         if (list.role !== null) this.compare(key, "none", list.role);
       }
     });
@@ -517,7 +539,14 @@ export class ListFollow implements ListAuthority {
 
   /** The copy a PC that is not pinned compares its snapshot with; null on a pinned PC, which decides by the list. */
   private shadow(): FollowerCopy | null {
-    return this.bound() === null || this.isPinned ? null : this.copy;
+    return this.bound() === null || this.isPinned ? null : this.clocked();
+  }
+
+  /** The list's answer for `key` on the copy a shadow compares with; an answer that turned on the hour saves that hour first. */
+  private shadowAnswer(copy: FollowerCopy, key: string): ReturnType<typeof admitsSession> {
+    const answer = admitsSession(copy, key, this.seconds());
+    if (answer.why === "expired") this.saveFloor(copy.state?.devices[key]?.until ?? null);
+    return answer;
   }
 
   /** One thing at a time, in the order asked. What it throws is said in the status and goes no further. */
@@ -541,7 +570,8 @@ export class ListFollow implements ListAuthority {
   private seconds(): number { return Math.floor(this.deps.now() / 1000); }
 
   private words(error: unknown): string {
-    if (error instanceof AccountServiceRefusal) return `The account service answered ${error.status}${error.code === null ? "" : ` ${error.code}`} to ${error.path}`;
+    // a code is said only in the form the service's own codes have: nothing longer, and nothing that could be a key
+    if (error instanceof AccountServiceRefusal) return `The account service answered ${error.status}${error.code !== null && REFUSAL_CODE.test(error.code) ? ` ${error.code}` : ""} to ${error.path}`;
     if (error instanceof ListKeysError) return error.message;
     return error instanceof Error ? error.name : "The list could not be followed";
   }
@@ -602,6 +632,7 @@ export class ListFollow implements ListAuthority {
     this.ready = Promise.resolve();
     this.differences.clear();
     this.lastVerdict = this.error = null;
+    this.keysState = null;
     this.postedAt = this.postedUntil = this.askedAt = this.untilAt = this.wantedAt = this.savedAt = null;
     this.dirty = false;
   }
@@ -752,10 +783,11 @@ export class ListFollow implements ListAuthority {
       const still = this.sync();
       if (this.stopped || still === null || still.serverId !== scope.serverId || still.bindId !== scope.bindId) return;
       const answer = await this.deps.call("/v2/pc/list/keys", { list: copy.list, key: keys.key, enc: keys.enc, card });
-      this.postedAt = now;
       const { until } = answer;
-      const ends = typeof until === "number" && Number.isSafeInteger(until) && until >= 0 && until - this.seconds() <= POST_UNTIL_MAX_SECONDS;
+      const ends = typeof until === "number" && Number.isSafeInteger(until) && until > this.seconds() && until - this.seconds() <= POST_UNTIL_MAX_SECONDS;
       this.postedUntil = ends ? until : null;
+      // an answer that names no end ahead is no post the PC can count on: it is made again in a minute, not in four
+      this.postedAt = ends ? now : now - LIST_POST_RENEW_MS + POST_RETRY_MS;
       if (!ends) this.error = "The account service did not say until when it holds this PC's keys";
     } catch (error) {
       this.postedUntil = null;
