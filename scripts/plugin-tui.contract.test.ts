@@ -235,8 +235,10 @@ else process.exit(await (await import(${JSON.stringify(join(ROOT, "scripts", "pl
     expect([screen["HC_TERMINAL_ID"], screen["HC_TERMINAL_SOCKET"], screen["HC_SCOPE"]]).toEqual([at.env["HC_TERMINAL_ID"], at.env["HC_TERMINAL_SOCKET"], undefined]);
   }, CASE_MS);
 
-  it("a core already listens: no question, and the screen has the shell's environment", async () => {
-    const at = scene();
+  it("a core already listens: no question, and the screen has the shell's environment without the Ovis server's own settings", async () => {
+    // a shell that also runs the Ovis server exports its settings, a key and a secret among them
+    const server = { OVIS_OPENAI_API_KEY: "canary", OVIS_PORTAL_OIDC_CLIENT_SECRET: "canary" };
+    const at = scene(server);
     const core = new IsolatedCore(HC, at.folder);
     cores.push(core);
     await core.start();
@@ -244,7 +246,10 @@ else process.exit(await (await import(${JSON.stringify(join(ROOT, "scripts", "pl
     try {
       await run.until(FIRST_FRAME_END, "the first frame");
       expect(run.output()).not.toContain("[Y/n]");
-      shellOnly(at, environOf(screenPid(at)));
+      const screen = environOf(screenPid(at));
+      shellOnly(at, screen);
+      // of Ovis's own names the screen has the two the launcher hands it, and none the shell exported
+      expect(Object.keys(screen).filter((name) => name.startsWith("OVIS_")).sort()).toEqual(["OVIS_TUI_CWD", "OVIS_TUI_HOLD"]);
       expect(existsSync(at.record)).toBe(false);
       run.type("\x02q");
       await run.until("detached from herdr-core", "the detach line");

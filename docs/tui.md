@@ -207,7 +207,9 @@ opening, right after you switch to it, are refused with a notice rather than kep
   edge (above the pane when it has no border) until you type in it.
 - Leaving the screen never ends a program. Closing a workspace asks first.
 - It starts no program of its own: no clipboard helper, no browser for links, no editor.
-- It never talks to the Ovis server and drops the server's credentials from its environment.
+- It never talks to the Ovis server, and gets none of the server's settings: every `OVIS_*` name
+  your shell exports (and `HERDR_WEB_*`, their old names) is left out of its environment, except
+  the ones the screen reads itself, such as `OVIS_TUI_STATE_DIR`.
 - It refuses to run inside one of its own panes, where it would draw itself into itself.
 - If it crashes it gives your terminal back first, then writes a record holding codes only, never
   anything you typed.

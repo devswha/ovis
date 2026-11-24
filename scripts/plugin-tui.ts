@@ -28,13 +28,25 @@ type Env = Readonly<Record<string, string | undefined>>;
 /** The setting that named the old hc-tui program: the screen is part of Ovis now. */
 const TUI_BIN_VARIABLE = "OVIS_TUI_BIN";
 
-/** What the screen never gets: it talks to herdr-core alone. */
-const WITHHELD = ["OVIS_TOKEN", "OVIS_URL", "HERDR_WEB_TOKEN", "HC_SCOPE"] as const;
+/** Ovis's own names, and the names they had before (server/legacy-env.ts): the server's settings, its tokens and keys. */
+const OVIS_OWN = /^(?:OVIS_|HERDR_WEB_)/;
 
-/** The screen's environment: the caller's (with the chosen core), without the Ovis server's token or address and without Ovis's SSH askpass. */
+/**
+ * The Ovis names the screen reads itself: where it keeps its state (tui/start.ts), and the switch of the guard that
+ * keeps a test off the user's own core (server/herdr/test-session.ts). The folder and the hold file it is handed are
+ * the launcher's to name, never the caller's.
+ */
+const SCREEN_READS: ReadonlySet<string> = new Set(["OVIS_TUI_STATE_DIR", "OVIS_ALLOW_LIVE_HERDR"]);
+
+/**
+ * The screen's environment: the caller's (with the chosen core), without any of Ovis's own names but the ones the
+ * screen reads, without another core's scope and without Ovis's SSH askpass. The screen talks to herdr-core alone.
+ */
 export function tuiEnv(caller: Env): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(withoutAskpass(caller))) if (value !== undefined && !(WITHHELD as readonly string[]).includes(key)) env[key] = value;
+  for (const [key, value] of Object.entries(withoutAskpass(caller))) {
+    if (value !== undefined && key !== "HC_SCOPE" && (SCREEN_READS.has(key) || !OVIS_OWN.test(key))) env[key] = value;
+  }
   return env;
 }
 

@@ -502,9 +502,21 @@ describe("the screen's start", () => {
     expect(reached.filter((file) => /^tui\/(view|emulator|core)\//.test(file))).toEqual([]);
   });
 
-  it("gives the screen the caller's environment without the Ovis server's token or address", () => {
-    expect(tuiEnv({ TERM: "xterm", OVIS_TOKEN: "exported", OVIS_URL: "http://127.0.0.1:9", HERDR_WEB_TOKEN: "old-name", HC_SESSION: "s" }))
-      .toEqual({ TERM: "xterm", HC_SESSION: "s" });
+  /** Ovis's own names as a shell that also runs the server exports them: a token, keys and secrets, by the name of today and the one before */
+  const SERVER = { OVIS_TOKEN: "exported", OVIS_URL: "http://127.0.0.1:9", OVIS_OPENAI_API_KEY: "sk-canary", OVIS_PORTAL_OIDC_CLIENT_SECRET: "canary", OVIS_HC_BIN: "/bin/hc", HERDR_WEB_TOKEN: "old-name", HERDR_WEB_PASSWORD: "old-name" };
+
+  it("gives the screen the caller's environment with none of Ovis's own names but the two it reads", () => {
+    expect(tuiEnv({ TERM: "xterm", HC_SESSION: "s", HERDR_CONFIG_PATH: "/keys.toml", ...SERVER, OVIS_TUI_STATE_DIR: "/state", OVIS_ALLOW_LIVE_HERDR: "1" }))
+      .toEqual({ TERM: "xterm", HC_SESSION: "s", HERDR_CONFIG_PATH: "/keys.toml", OVIS_TUI_STATE_DIR: "/state", OVIS_ALLOW_LIVE_HERDR: "1" });
+  });
+
+  it("names the screen's folder and hold file itself: the caller's own values for them are not handed on", async () => {
+    const caller = { HOME, HC_SOCKET: SOCKET, ...SERVER, OVIS_TUI_STATE_DIR: "/state", OVIS_TUI_CWD: "/from/the/caller", OVIS_TUI_HOLD: "/from/the/caller/held" };
+    for (const [held, hold] of [["none", { OVIS_TUI_HOLD: HOLD }], [null, {}]] as const) {
+      const run = fake({ held, over: { caller } });
+      expect(await launchTui([], run.parts)).toBe(0);
+      expect(run.runs[0]!.env).toEqual({ HOME, HC_SOCKET: SOCKET, OVIS_TUI_STATE_DIR: "/state", OVIS_TUI_CWD: "/home/me/project", ...hold });
+    }
   });
 });
 
