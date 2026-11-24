@@ -33,8 +33,8 @@ numbers and every id the keeper makes up count on across restarts in the same RO
 an earlier run looks like this run's. A client reusing an id still in flight gets error -32600. Once
 the agent has exited, every request still waiting for it, and every new one, gets error -32603.
 
-An agent request (an approval) is archived under a keeper id too (`agent-N`; `fs/*` and
-`terminal/*` requests, answered by the keeper itself, keep the agent's id). An answer meant for one
+Every agent request is archived under a keeper id (`agent-N`), including `fs/*` and
+`terminal/*` requests the keeper answers itself. An answer meant for one
 approval therefore never resolves a later one the agent asks under the same id. The request waits
 for the first answer from any client; the pane never answers one. That answer alone goes to the agent, under the
 agent's own id. An answer to a permission request that is no outcome, or that selects an option the
@@ -120,8 +120,8 @@ numbers and every id the keeper makes up count on across restarts in the same RO
 an earlier run looks like this run's. A client reusing an id still in flight gets error -32600. Once
 the agent has exited, every request still waiting for it, and every new one, gets error -32603.
 
-An agent request (an approval) is archived under a keeper id too (`agent-N`; `fs/*` and
-`terminal/*` requests, answered by the keeper itself, keep the agent's id). An answer meant for one
+Every agent request is archived under a keeper id (`agent-N`), including `fs/*` and
+`terminal/*` requests the keeper answers itself. An answer meant for one
 approval therefore never resolves a later one the agent asks under the same id. The request waits
 for the first answer from any client; the pane never answers one. That answer alone goes to the agent, under the
 agent's own id. An answer to a permission request that is no outcome, or that selects an option the

@@ -352,17 +352,17 @@ impl Hub {
         let Some(mut msg) = rpc(&text) else { return };
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
         match (method, msg.get("id").cloned()) {
-            (Some(method), Some(id)) if method.starts_with("fs/") || method.starts_with("terminal/") => {
-                self.archive.append("from-agent", &text);
-                let raw = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}).to_string();
-                self.forward(&raw);
-                self.note_row("_keeper/auto_answered", json!({"id": id, "method": method}));
-            }
-            (Some(_), Some(id)) => {
+            (Some(method), Some(id)) => {
                 self.next += 1;
                 let ours = Value::String(format!("agent-{}", self.next));
                 msg.insert("id".into(), ours.clone());
                 let seq = self.archive.append("from-agent", &Value::Object(msg.clone()).to_string());
+                if method.starts_with("fs/") || method.starts_with("terminal/") {
+                    let raw = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}).to_string();
+                    self.forward(&raw);
+                    self.note_row("_keeper/auto_answered", json!({"id": ours, "method": method}));
+                    return;
+                }
                 self.agent_ids.insert(key_of(&ours), id);
                 self.model.request(key_of(&ours), ours, seq, &msg);
             }
@@ -602,6 +602,22 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let opts = crate::parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
         (Hub::new(Arc::new(archive), tx, opts, false, false), rx)
+    }
+
+    #[test]
+    fn replay_keeps_the_approval_when_a_file_request_reuses_its_keeper_id() {
+        let dir = std::env::temp_dir().join(format!("ak-unit-{}-fs-id", std::process::id()));
+        let (mut hub, mut sent) = hub(&dir);
+        hub.handle(Ev::Agent(0, json!({"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {}}).to_string()));
+        let id = hub.model.pending[0].id.clone();
+        hub.handle(Ev::Agent(0, json!({"jsonrpc": "2.0", "id": id, "method": "fs/read_text_file", "params": {}}).to_string()));
+        let response: Value = serde_json::from_slice(&sent.try_recv().unwrap()).unwrap();
+        assert_eq!(response["id"], id);
+        let path = dir.join("archive.jsonl");
+        drop(hub);
+        let previous = Archive::open(path).unwrap().1;
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(previous.pending, vec![(id, 1)]);
     }
 
     #[test]
