@@ -13,7 +13,7 @@
  */
 import { cardHolds } from "../../shared/account-list.ts";
 import type { AccountAddNamed } from "../account-add-channel.ts";
-import type { AccountAddCard } from "../machines.ts";
+import { AccountAddError, type AccountAddCard } from "../machines.ts";
 import type { AccountAddRelay } from "../../shared/machines.ts";
 import type { AllowOutcome, AllowRefusal, ListFollow } from "./list-follow.ts";
 
@@ -102,11 +102,35 @@ export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken 
   const own = await list.own();
   if (pinned === null || own === null) return refuse("list_cannot_add", cannotAdd("unavailable"), 409);
   const named: AccountAddNamed = { list: pinned, adder: own.keys.key };
-  let taken = await deps.take(named);
+  let taken: Awaited<ReturnType<SshListDeps["take"]>>;
+  try { taken = await deps.take(named); } catch (error) {
+    // its answer lost: nothing is signed yet, and whether it follows the list is not known
+    if (error instanceof AccountAddError && error.code === "take_lost") return refuse("take_unanswered", error.message, 409);
+    throw error;
+  }
+  // that PC says it follows the list: added once this PC's own copy holds it too
   if (!("waiting" in taken)) return await seen(deps, taken);
+  try {
+    return await signedIn(deps, named, pinned, taken.waiting);
+  } catch (error) {
+    // whatever stopped it, the forward to that PC's owner socket goes with this add
+    await deps.end();
+    throw error;
+  }
+}
+
+/** That PC answered with its card for the list: this PC checks it, signs that PC's entry, and has it take the entry. */
+async function signedIn(deps: SshListDeps, named: AccountAddNamed, pinned: string, card: AccountAddCard): Promise<SshListTaken | { readonly refused: SshListRefusal }> {
+  const { list } = deps;
+  // a PC that cannot read the list, or that the list put out, would never take an entry: none is signed for it
+  if (card.standing !== "waiting") {
+    await deps.end();
+    return card.standing === "out"
+      ? refuse("list_removed", "That PC was removed from your account's list. It comes back only as a new PC: run ovis add on it.", 409)
+      : refuse("that_pc_behind", "That PC's Ovis cannot read your account's list. Update Ovis there, then add it again.", 409);
+  }
   // That PC's card, as it handed it over this SSH session, must be its key's own for this list and the relay key the
   // inspect read over the same session, before anything is signed. Nothing the account service holds stands in for it
-  const card = taken.waiting;
   if (card.endpoint !== deps.endpoint || !await cardHolds({ key: card.key, enc: card.enc, list: pinned, endpoint: deps.endpoint, invite: null }, card.card)) {
     await deps.end();
     return refuse("list_not_added", "That PC's card is not its own for your account's list and the relay key read over SSH, so nothing was signed.", 409);
@@ -121,7 +145,15 @@ export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken 
   // the entry is in this PC's own copy: that PC reads it at its next take
   for (let tried = 1; tried <= tries; tried++) {
     if (tried > 1) await wait(AFTER_PLACED_WAIT_MS);
-    taken = await deps.take(named);
+    let taken: Awaited<ReturnType<SshListDeps["take"]>>;
+    try { taken = await deps.take(named); } catch (error) {
+      // The entry is in the list, and that PC did not say it took it (its answer was lost, or it refused): this add
+      // stopped there, never "not added", and adding it again finishes it with nothing more signed
+      if (!(error instanceof AccountAddError)) throw error;
+      console.warn(`[account] the PC an add over SSH reached did not take its entry: ${error.code}`);
+      await deps.end();
+      return refuse("list_unbound", UNBOUND, 409);
+    }
     if (!("waiting" in taken)) return await seen(deps, { ...taken, listJoined: true });
   }
   await deps.end();

@@ -167,8 +167,14 @@ export function accountAddTarget(value: unknown): AccountAddTarget | null {
   return deriveServerId(key) === server_id ? { server_id, public_key, relay, label, account } : null;
 }
 
-/** That PC's card for the account's signed list, as a take that names the list answers it over SSH, at the relay key and with the name the inspect read. */
-export interface AccountAddCard { readonly key: string; readonly enc: string; readonly card: string; readonly endpoint: string; readonly label: string }
+/**
+ * That PC's card for the account's signed list, as a take that names the list answers it over SSH, at the relay key and
+ * with the name the inspect read, and where that PC says it stands in the list (`waiting` until an entry adds it).
+ */
+export interface AccountAddCard { readonly key: string; readonly enc: string; readonly card: string; readonly endpoint: string; readonly label: string; readonly standing: string }
+
+/** What an Ovis from before lists answers a take that names one: its parser refuses the field. */
+const OLD_OVIS_REFUSAL = /^Unexpected field (?:list|adder)$/;
 
 export const ACCOUNT_ADD_LIST_OLD_OVIS = "That PC's Ovis is too old to join your account's signed list. Update Ovis there, then add it again.";
 export const ACCOUNT_ADD_BRIDGE_ONLY = "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.";
@@ -1324,6 +1330,9 @@ export class MachineManager {
     let answer: Record<string, unknown> | null;
     try { answer = await reached.channel.take(account, serverId, named) as Record<string, unknown> | null; }
     catch {
+      // For a take that names a list, a second look is no answer: that PC being in the account (one press before the
+      // list, say) says nothing of whether it follows the list. The caller says where the add stopped
+      if (named !== undefined) throw new AccountAddError("take_lost", "That PC's answer to the take was lost. Connect again to check.");
       // the take may have gone out and its answer been lost (the forward or the connection dropped while that PC waited
       // for its relay): it may be bound, so this PC asks it once more which account it is in, and never says "not added"
       // on a take that got no answer
@@ -1333,20 +1342,25 @@ export class MachineManager {
       throw new AccountAddError("refused", "That PC did not take the account");
     }
     if (answer !== null && typeof answer === "object" && typeof answer.error === "string") {
-      // an Ovis from before lists refuses the take's list as a field it does not know, with no code of its own
-      if (named !== undefined && typeof answer.code !== "string") throw new AccountAddError("that_pc_old", ACCOUNT_ADD_LIST_OLD_OVIS);
+      // an Ovis from before lists refuses the take's list as a field it does not know, with no code of its own. Any
+      // other error with no code (a log it cannot read, a failure of its own) is no sign of its age: it could not answer
+      if (named !== undefined && typeof answer.code !== "string") {
+        if (OLD_OVIS_REFUSAL.test(answer.error)) throw new AccountAddError("that_pc_old", ACCOUNT_ADD_LIST_OLD_OVIS);
+        console.warn(`[account] the PC an add over SSH reached could not answer its take: ${answer.error.slice(0, 200)}`);
+        throw new AccountAddError("that_pc_error", "That PC could not answer. Try again.");
+      }
       throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
     }
     if (named !== undefined && answer !== null && typeof answer === "object" && answer.state === "waiting") {
-      const { key, enc, card } = answer;
-      if (typeof key !== "string" || typeof enc !== "string" || typeof card !== "string" || key.length > 256 || enc.length > 256 || card.length > 256) {
+      const { key, enc, card, standing } = answer;
+      if (typeof key !== "string" || typeof enc !== "string" || typeof card !== "string" || typeof standing !== "string" || key.length > 256 || enc.length > 256 || card.length > 256 || standing.length > 32) {
         await reached.channel.close();
         throw new AccountAddError("refused", "That PC answered with a card this app cannot use");
       }
       // the relay key is the one this PC read at the inspect, checked there against that PC's ID: never one the take names
       const target = job.public.account_add;
       if (target === undefined) { await reached.channel.close(); throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again."); }
-      return { waiting: { key, enc, card, endpoint: bytesToHex(importPublicKey(target.public_key)), label: target.label } };
+      return { waiting: { key, enc, card, endpoint: bytesToHex(importPublicKey(target.public_key)), label: target.label, standing } };
     }
     if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
     // a take that named the list: that PC joined it by this take, not one that followed it already

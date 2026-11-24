@@ -344,7 +344,8 @@ test.skipIf(process.platform === "win32")("a run that stopped after this PC sign
   expect([finished.status, finished.body.account]).toEqual([200, ACCOUNT]);
   expect(a.pc.account.accountList(ACCOUNT)!.head).toEqual(head);
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
-});
+// five takes a second apart before it says so
+}, 20_000);
 
 test.skipIf(process.platform === "win32")("a PC the add puts in the list: the answer says it joined the list now; added again, it does not", async () => {
   const a = await addingPc({ list: true });

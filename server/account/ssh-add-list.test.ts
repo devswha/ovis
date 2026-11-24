@@ -6,7 +6,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { signCard } from "../../shared/account-list.ts";
 import { exportAccountKey } from "../../shared/account-records.ts";
 import type { AccountAddNamed } from "../account-add-channel.ts";
-import type { AccountAddCard } from "../machines.ts";
+import { AccountAddError, type AccountAddCard } from "../machines.ts";
 import type { AddedPc, AllowOutcome, AllowRefusal } from "./list-follow.ts";
 import { addOverSshByList, type SshListDeps, type SshListTaken } from "./ssh-add-list.ts";
 
@@ -23,7 +23,7 @@ async function cardOf(list = LIST, endpoint = ENDPOINT): Promise<AccountAddCard>
   const enc = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const key = await exportAccountKey(pair.publicKey);
   const encKey = await exportAccountKey(enc.publicKey);
-  return { key, enc: encKey, card: await signCard({ key, enc: encKey, list, endpoint, invite: null }, pair.privateKey), endpoint, label: "Other PC" };
+  return { key, enc: encKey, card: await signCard({ key, enc: encKey, list, endpoint, invite: null }, pair.privateKey), endpoint, label: "Other PC", standing: "waiting" };
 }
 
 let CARD: AccountAddCard;
@@ -134,4 +134,36 @@ test("a take the other PC refuses is thrown on as it came", async () => {
   const made = fixture({ answers: [] });
   made.deps.take = async () => { throw Object.assign(new Error("That PC is in another account"), { code: "other_account" }); };
   await expect(addOverSshByList(made.deps)).rejects.toMatchObject({ code: "other_account" });
+});
+
+test("a take lost before anything was signed is not known; one lost or refused after the entry is placed is in the list and not taken yet, never not added", async () => {
+  const lost = () => new AccountAddError("take_lost", "That PC's answer to the take was lost");
+  const before = fixture({ answers: [] });
+  before.deps.take = async () => { throw lost(); };
+  expect(await addOverSshByList(before.deps)).toMatchObject({ refused: { code: "take_unanswered" } });
+  expect(before.signed).toEqual([]);
+  for (const error of [lost(), new AccountAddError("identity_changed", "reset"), new AccountAddError("refused", "That PC did not take the account")]) {
+    const made = fixture({ answers: [{ waiting: CARD }] });
+    const take = made.deps.take;
+    made.deps.take = async (named) => made.takes.length === 0 ? await take(named) : (() => { made.takes.push(named); throw error; })();
+    expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_unbound" } });
+    expect(made.signed).toHaveLength(1);
+    expect(made.ended()).toBe(1);
+  }
+});
+
+test("a PC that cannot read the list, or that the list put out, is signed nothing: what to do is said, and the forward closes", async () => {
+  for (const [standing, code] of [["stopped", "that_pc_behind"], ["out", "list_removed"]] as const) {
+    const made = fixture({ answers: [{ waiting: { ...CARD, standing } }] });
+    expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code } });
+    expect(made.signed).toEqual([]);
+    expect(made.ended()).toBe(1);
+  }
+});
+
+test("an error of any other kind once that PC answered with its card closes the forward and is thrown on", async () => {
+  const made = fixture({ answers: [{ waiting: CARD }] });
+  made.deps.list.addPc = async () => { throw new TypeError("the disk went away"); };
+  await expect(addOverSshByList(made.deps)).rejects.toThrow("the disk went away");
+  expect(made.ended()).toBe(1);
 });

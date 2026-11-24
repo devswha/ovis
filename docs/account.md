@@ -1390,7 +1390,8 @@ list and admit with its own sign-in, `POST /api/account/ssh-add`); the rest happ
    (`POST /v2/pc/list/keys`, the second lock of the entry). The forward stays open for this answer.
 4. A checks that card itself: it is B's key's own for that list and the relay key A read at the inspect
    over the same SSH session (never one B's answer names); otherwise `409 list_not_added` and nothing
-   is signed. Then A signs a `pc` entry with its own list key for exactly that card, its name sealed
+   is signed. A B whose `standing` is not `waiting` gets nothing signed either: `out` (the list put it
+   out) is `409 list_removed`, `stopped` (its Ovis cannot read the list) `409 that_pc_behind`. Then A signs a `pc` entry with its own list key for exactly that card, its name sealed
    under the current epoch with the key wrapped to B's encryption key when A holds it, and places it
    with its own proof (`POST /v2/pc/list/entries`) through its Allow's keeper: one signed request per
    place, kept beside the copy (`account-list-allow.json`) across calls and a restart. A lost answer, a
@@ -1421,13 +1422,16 @@ Where a run stops, the window says so, and running the add again goes on from th
 |---|---|---|
 | `that_pc_old` | B's Ovis refuses a take that names a list: nothing is posted or signed | after Ovis there is updated |
 | `list_not_added` | B posted its keys, and no entry of it is in the list (its card did not hold, or the account service refused the entry: it asks B's own post and a listing an own sign-in made or let in, so a B the window did not list is refused `not_posted`) | B posts again and A signs on the head it reads then |
-| `list_unbound` | the entry is in the list, and B has not taken it within the five takes | B finds the entry at the first take and joins; A signs nothing more |
-| `take_unanswered` | the entry may be in the list (no answer from the account service), or B said it joined and A's copy does not show it | A sends the kept request again, or finds the entry |
+| `list_unbound` | the entry is in the list, and B has not taken it: five takes found it waiting, or a take after the placement was lost or refused (never "not added" while B is in the list) | B finds the entry at the first take and joins; A signs nothing more |
+| `take_unanswered` | the entry may be in the list (no answer from the account service), B said it joined and A's copy does not show it, or the first take's answer was lost (nothing signed) | A sends the kept request again, or finds the entry |
+| `that_pc_error` | B's Ovis answered the take with an error of its own and no code (a log it cannot read, say): its words go to A's log | as it was |
+| `that_pc_behind` | B's Ovis cannot read the list it was named: nothing is signed | after Ovis there is updated |
 | `list_budget` | the account service takes no more additions to the list for now (`429 entry_budget`) | later |
 
 With no list (A not pinned), every step is the one above, byte for byte: the inspect and the take go
 over the socket as `{"act":"account_add_inspect"}` and `{"act":"account_add_take","account":…,"server_id":…}`,
-exactly as before.
+exactly as before. A take that names a list whose answer is lost is never followed by a second
+inspect: B being in the account (by one press before the list, say) says nothing of the list.
 
 ### Introductions
 
@@ -2592,7 +2596,9 @@ Seoul, South Korea", leaving out what is unknown ([Adding a PC](#adding-a-pc), "
 | `list_unbound` | 409 | `POST /api/account/ssh-add`: the entry that adds that PC is in the list, and that PC has not taken it yet: adding it again finishes |
 | `list_budget` | 409 | `POST /api/account/ssh-add`: the account service takes no more additions to the list for now; add that PC again later |
 | `other_keys` | 409 | an add over SSH: the list holds this PC by an entry with other keys than the ones it posted, so it follows no list by that add |
-| `that_pc_old` | 409 | `POST /api/account/ssh-add`: the other PC's Ovis cannot be named a list over SSH: update Ovis there |
+| `that_pc_old` | 409 | `POST /api/account/ssh-add`: the other PC's Ovis cannot be named a list over SSH (it refuses the field as one it does not know): update Ovis there |
+| `that_pc_behind` | 409 | `POST /api/account/ssh-add`: the other PC's Ovis cannot read the account's list: update Ovis there |
+| `that_pc_error` | 409 | `POST /api/account/ssh-add`: the other PC's Ovis answered the take with an error of its own and no code: try again |
 | `in_account` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: this PC is in an account, so it makes no QR code that would put it in one |
 | `listing_expired` | 409 | `POST /api/account/one-press`: the listing a plain invite made is past its card's 10 minutes, so no Add can come for it; a new invite opens it again |
 | `no_account_named` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: no account was named for this PC (`relay-account`), so it makes no QR code yet |
