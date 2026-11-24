@@ -2,7 +2,7 @@ import { expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLAUDE_REVIEW, OPEN_REVIEW, askable, claudeManagedPolicy, permissionLaunch } from "./permission-launch.ts";
+import { CLAUDE_REVIEW, OPEN_REVIEW, askable, claudeManagedPaths, claudeManagedPolicy, permissionLaunch } from "./permission-launch.ts";
 
 it("an unknown parent can launch only the named all-ask profile, never an adapter default", () => {
   const cmd = { argv: ["/bin/opencode", "acp"] };
@@ -23,11 +23,19 @@ it("an unknown parent can launch only the named all-ask profile, never an adapte
 
 it("Claude's all-ask launch sets its mode before the session answers and loads no user, project or hook setting", () => {
   const cmd = { argv: ["/bin/claude-agent-acp", "--hide-claude-auth"], env: { CLAUDE_CODE_EXECUTABLE: "/bin/claude" } };
+  const before = process.env["CLAUDE_CONFIG_DIR"];
+  delete process.env["CLAUDE_CONFIG_DIR"];
   const recipe = permissionLaunch("claude", undefined, "abc123", cmd);
+  process.env["CLAUDE_CONFIG_DIR"] = "/config";
+  const named = permissionLaunch("claude", undefined, "abc123", cmd);
+  if (before === undefined) delete process.env["CLAUDE_CONFIG_DIR"]; else process.env["CLAUDE_CONFIG_DIR"] = before;
   if (!recipe) throw new Error("No all-ask launch for Claude");
-  expect(recipe).toMatchObject({ argv: cmd.argv, env: cmd.env, askEveryTime: true, ceiling: { profile: CLAUDE_REVIEW, mode: "default" },
+  expect(recipe.argv).toEqual(["/usr/bin/env", "-u", "CLAUDE_CONFIG_DIR", ...cmd.argv]);
+  expect(named).toMatchObject({ argv: cmd.argv, env: { ...cmd.env, CLAUDE_CONFIG_DIR: "/config" } });
+  expect(recipe).toMatchObject({ env: cmd.env, askEveryTime: true, ceiling: { profile: CLAUDE_REVIEW, mode: "default" },
     configOptions: [{ configId: "mode", value: "default" }] });
-  expect(recipe.sessionMeta).toEqual({ claudeCode: { options: { settingSources: [], allowDangerouslySkipPermissions: false, settings: {
+  expect(recipe.sessionMeta).toEqual({ claudeCode: { options: { settingSources: [], allowDangerouslySkipPermissions: false,
+    tools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "WebSearch"], settings: {
     disableAllHooks: true, sandbox: { autoAllowBashIfSandboxed: false },
     permissions: { defaultMode: "default", ask: ["Write", "Edit", "Bash", "WebFetch", "WebSearch", "mcp__ovis-agent"] } } } } });
   expect(permissionLaunch("claude", OPEN_REVIEW, "abc123", cmd)?.ceiling.profile).toBe(CLAUDE_REVIEW);
@@ -43,4 +51,13 @@ it("a managed Claude Code policy file refuses the Claude launch", () => {
     writeFileSync(policy, "{}");
     expect(claudeManagedPolicy([policy])).not.toBeNull();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("the Claude launch also looks for an MDM profile and a claude.ai organization's cached policy", () => {
+  const before = process.env["CLAUDE_CONFIG_DIR"];
+  process.env["CLAUDE_CONFIG_DIR"] = "/config";
+  try {
+    expect(claudeManagedPaths()).toEqual(expect.arrayContaining(["/etc/claude-code/managed-settings.json", "/etc/claude-code/managed-mcp.json",
+      "/Library/Managed Preferences/com.anthropic.claudecode.plist", "/config/remote-settings.json"]));
+  } finally { if (before === undefined) delete process.env["CLAUDE_CONFIG_DIR"]; else process.env["CLAUDE_CONFIG_DIR"] = before; }
 });

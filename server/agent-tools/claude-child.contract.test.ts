@@ -11,12 +11,12 @@ import { KEEPER_BUILD, keeperBuilt, until } from "../acp/keeper.fake.ts";
 import { lineCall } from "../line-call.ts";
 import { AgentToolHub } from "./hub.ts";
 
-const FIXTURE = join(import.meta.dir, "fixtures", "claude-agent-acp-0.110.0-ask.jsonl");
 const REPLAY = join(import.meta.dir, "replay-agent.fake.ts");
 const ASKED = ["Write", "Bash", "Bash", "WebFetch", "WebSearch", "mcp__ovis-agent__ovis_lookup"];
 
-/** A Claude child of a parent whose permissions Ovis cannot prove, against the recorded real adapter (0.110.0, Claude Code 2.1.330). */
-describe.skipIf(!keeperBuilt)("a Claude child in its ask-for-everything launch", () => {
+/** A Claude child of a parent whose permissions Ovis cannot prove, against each recorded real adapter (with Claude Code 2.1.330). */
+describe.skipIf(!keeperBuilt).each(["0.110.0", "0.112.0"])("a Claude child of claude-agent-acp %s in its ask-for-everything launch", adapter => {
+  const FIXTURE = join(import.meta.dir, "fixtures", `claude-agent-acp-${adapter}-ask.jsonl`);
   let dir: string, hub: AgentToolHub, acp: AcpChildren, token: string, connection: HcConnection;
   const programs = new Map<string, ReturnType<typeof Bun.spawn>>();
   beforeEach(() => {
@@ -70,7 +70,7 @@ describe.skipIf(!keeperBuilt)("a Claude child in its ask-for-everything launch",
     const session = started.session.address;
     const opened = replayed()[0]!.sessionNew;
     expect(opened.configOptions).toEqual([{ configId: "mode", value: "default" }]);
-    expect(opened._meta.claudeCode.options).toMatchObject({ settingSources: [], allowDangerouslySkipPermissions: false,
+    expect(opened._meta.claudeCode.options).toMatchObject({ settingSources: [], allowDangerouslySkipPermissions: false, tools: expect.not.arrayContaining(["EnterWorktree", "Agent", "Skill"]),
       settings: { disableAllHooks: true, permissions: { defaultMode: "default", ask: expect.arrayContaining(["Write", "Edit", "Bash", "WebFetch", "WebSearch", "mcp__ovis-agent"]) } } });
     expect(acp.forPane(session)?.client.sessionMode).toBe("default");
     await rejectEveryCard(session);

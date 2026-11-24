@@ -205,7 +205,7 @@ export class AgentToolHub {
     if (own.length + [...this.ledger.launches.values()].filter(i => i.starter === run.id).length >= HARNESS_LIMITS.children) return refuse("children_limit", "Four child slots are in use.");
     const command = (this.options.resolve ?? resolveHarness)(kind);
     if (!command) return refuse("start_failed", "This harness has no supported ACP adapter.");
-    if (!command.ceiling) {
+    if (command.ceiling?.profile !== run.ceiling || !run.ceiling) {
       const refusal = await askRefusal(kind, command);
       if (refusal) return refuse("not_granted", refusal);
     }

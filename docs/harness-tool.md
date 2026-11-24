@@ -16,13 +16,20 @@ the user's and the project's own approvals in place. Only the versions those run
 - **Claude Code 2.1.330 through `claude-agent-acp` 0.110.0 or 0.112.0.** The adapter starts in
   `auto` and reads `permissions.defaultMode` itself, so Ovis sets the `default` mode on
   `session/new` (`configOptions`), loads no user, project or local setting (`settingSources: []`),
-  turns hooks off and adds `ask` rules for writes, Bash, web fetch and search, and its own MCP
-  server. A PC with a managed Claude Code policy (`/etc/claude-code/managed-settings.json` or
-  `managed-settings.d/`) gets `not_granted`: such a policy outranks the launch. The adapter's
+  offers only the built-in tools the runs covered (Read, Glob, Grep, Write, Edit, Bash, WebFetch,
+  WebSearch: `EnterWorktree`, for one, makes a git worktree unasked), turns hooks off and adds `ask`
+  rules for writes, Bash, web fetch and search, and its own MCP server. The keeper sends the same
+  settings when it loads the session again after the real TUI. A PC with a managed Claude Code policy gets `not_granted`, as such a policy outranks the
+  launch: a `managed-settings.json`, `managed-settings.d/` or `managed-mcp.json` in
+  `/etc/claude-code/` or `/Library/Application Support/ClaudeCode/`, the macOS managed preferences
+  `com.anthropic.claudecode`, or the cached policy of a claude.ai organization
+  (`~/.claude/remote-settings.json`). An organization policy sent for the first time while the
+  child starts is not seen. The start alone is checked; a later send checks the mode. The adapter's
   `--hide-claude-auth` refuses a claude.ai Free, Pro, Max or Team sign-in, so such a child needs
   an API key, a Console sign-in or another provider.
 
-Cards offer only one-time choices. The child must report its mode over ACP before receiving a
+A child in one of these launches may start a child in either of them, depth allowing: each asks for
+everything. Cards offer only one-time choices. The child must report its mode over ACP before receiving a
 task, and the keeper checks the mode again at every prompt. A changed mode is refused, not reset
 behind the person's back. With an independently verified parent profile, the child's profile must
 match instead.

@@ -20,8 +20,10 @@ export function resolveHarness(kind: string): HarnessCommand | null {
     }
     case "claude": case "codex": {
       const adapter = adapters[kind];
-      const path = Bun.which(adapter.command, { PATH: process.env["PATH"] }), executable = Bun.which(kind, { PATH: process.env["PATH"] });
-      if (!path || !executable) return null;
+      const path = Bun.which(adapter.command, { PATH: process.env["PATH"] }), found = Bun.which(kind, { PATH: process.env["PATH"] });
+      if (!path || !found) return null;
+      // the file whose version is checked is the one that runs, whatever its link points to later
+      const executable = realpathSync(found);
       let dir = dirname(realpathSync(path));
       while (dir !== dirname(dir)) {
         const file = join(dir, "package.json");

@@ -1,9 +1,12 @@
 import { existsSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { join } from "node:path";
 import { runVersion, VERSION_TIMEOUT_MS } from "../agent-catalog-detect.ts";
 import type { HarnessCommand } from "./harnesses.ts";
 
 /** The name Ovis gives its own MCP server in a child, which the Claude recipe's ask rule names. */
 export const AGENT_MCP_SERVER = "ovis-agent";
+const CLAUDE_TOOLS = ["Read", "Glob", "Grep", "Write", "Edit", "Bash", "WebFetch", "WebSearch"];
 export const OPEN_REVIEW = "opencode/all-tools-ask/v1";
 export const CLAUDE_REVIEW = "claude/all-tools-ask/v1";
 
@@ -25,13 +28,19 @@ interface AskRecipe {
   versions: RegExp;
   /** a reason this PC's own setup could answer for the person, which the launch cannot override */
   blocked?: () => string | null;
-  launch: (command: HarnessCommand, runId: string) => Omit<Verified, "ceiling" | keyof HarnessCommand> & { mode: string; env?: Record<string, string> };
+  launch: (command: HarnessCommand, runId: string) => Omit<Verified, "ceiling" | keyof HarnessCommand> & { mode: string; env?: Record<string, string>; argv?: readonly string[] };
 }
 
-const CLAUDE_MANAGED = ["/etc/claude-code/managed-settings.json", "/etc/claude-code/managed-settings.d",
-  "/Library/Application Support/ClaudeCode/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.d"];
+/** Where Claude Code finds a managed policy on Linux and macOS: the system folder's files, the managed-preferences
+ * domain an MDM profile installs (for the machine or this user), and the cache of a policy a claude.ai organization
+ * sent. A policy an organization sends for the first time during the child's own start is not seen here. */
+export const claudeManagedPaths = (): string[] => [
+  ...["/etc/claude-code", "/Library/Application Support/ClaudeCode"].flatMap(dir => ["managed-settings.json", "managed-settings.d", "managed-mcp.json"].map(name => join(dir, name))),
+  "/Library/Managed Preferences/com.anthropic.claudecode.plist", join("/Library/Managed Preferences", userInfo().username, "com.anthropic.claudecode.plist"),
+  join(process.env["CLAUDE_CONFIG_DIR"] || join(homedir(), ".claude"), "remote-settings.json"),
+];
 /** Managed settings outrank every setting a launch can pass, and their rules and hooks may answer for the person. */
-export const claudeManagedPolicy = (paths: readonly string[] = CLAUDE_MANAGED): string | null =>
+export const claudeManagedPolicy = (paths: readonly string[] = claudeManagedPaths()): string | null =>
   paths.some(path => existsSync(path)) ? "A managed Claude Code policy on this PC could answer for the person." : null;
 
 /**
@@ -65,12 +74,16 @@ const ASK_RECIPES: Record<string, AskRecipe> = {
     blocked: () => claudeManagedPolicy(),
     // The adapter starts in `auto` and reads `permissions.defaultMode` itself, past `settingSources`:
     // the mode option is applied before `session/new` answers, so no other mode runs first.
-    launch: () => ({
+    launch: command => ({
       mode: "default",
+      // the config folder whose managed policy was looked for is the one the child reads, whatever herdr-core's environment holds
+      ...(process.env["CLAUDE_CONFIG_DIR"] ? { env: { CLAUDE_CONFIG_DIR: process.env["CLAUDE_CONFIG_DIR"] } } : { argv: ["/usr/bin/env", "-u", "CLAUDE_CONFIG_DIR", ...command.argv] }),
       configOptions: [{ configId: "mode", value: "default" }],
       sessionMeta: { claudeCode: { options: {
         settingSources: [],
         allowDangerouslySkipPermissions: false,
+        // only the built-in tools the runs covered: EnterWorktree, for one, makes a worktree in default mode unasked
+        tools: CLAUDE_TOOLS,
         settings: {
           disableAllHooks: true,
           permissions: { defaultMode: "default", ask: ["Write", "Edit", "Bash", "WebFetch", "WebSearch", `mcp__${AGENT_MCP_SERVER}`] },
