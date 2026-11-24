@@ -109,9 +109,18 @@ describe.skipIf(!bin || process.platform === "win32")("screen ownership beside a
     expect(count).toBe(3);
     const chosen = { cols: 93, rows: 39 }; // the sidebar, the tab bar and the scrollbar column are not part of its terminal
     expect(await pane.nextSize()).toEqual(chosen);
-    // fixed wait: proves that no further attach arrives
-    await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
-    expect(attachRequests(pane.id)).toHaveLength(count);
+    // The barrier: the small screen closed its first attach before its repaint left, so it draws a line printed now only
+    // through that repaint, which the core has then applied. A second line, printed after that, follows on each screen's
+    // line everything the core said while it applied the three attaches: a screen that drew it has heard all of it.
+    pane.emit("REPAINT-IN-USE\r\n");
+    await small.until("REPAINT-IN-USE");
+    pane.emit("BOTH-LINES-READ\r\n");
+    await Promise.all([small.until("BOTH-LINES-READ"), big.until("BOTH-LINES-READ")]);
+    // Behind it nothing is on its way and nothing is owed: the repaint advertised the size the big screen chose, not the
+    // small one's rectangle, so it took nothing, and the terminal rests at the size both attaches in use advertise. A
+    // pane attaches again only when its rectangle changes or it hears a size that is neither (size.ts). That no wait
+    // outlives its cause and sends an attach later is the stepped clock's to show: size.test.ts "two idle screens settle".
+    expect(attachRequests(pane.id).map(({ params }) => [params["cols"], params["rows"]])).toEqual([[53, 23], [93, 39], [93, 39]]);
     expect(await pane.nextSize()).toEqual(chosen);
     expect(takes()).toEqual([]);
     big.type(DETACH);
