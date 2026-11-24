@@ -10,7 +10,7 @@
  * signature of the line is no such proof: its challenge is the account service's to choose.
  */
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { cardHolds, inviteRefusal, listClock, listView, type ListNames } from "../../../shared/account-list.ts";
+import { cardHolds, inviteRefusal, listView, type ListNames } from "../../../shared/account-list.ts";
 import { verifyLineProof } from "../../../shared/account-list-invite.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { AccountList, ListWriter } from "./accountList.ts";
@@ -36,7 +36,7 @@ export interface InvitedPc extends PostedPc {
  */
 export function inviteLetsIn(writer: ListWriter, invite: string, nowS: number): boolean {
   const row = writer.state.invites[invite];
-  return row !== undefined && !row.auto && row.joins < row.uses && listClock(writer.state, nowS, writer.floor) <= row.exp && inviteRefusal(writer.state, invite) === null;
+  return row !== undefined && !row.auto && row.joins < row.uses && Math.max(writer.shown, nowS) <= row.exp && inviteRefusal(writer.state, invite) === null;
 }
 
 /**

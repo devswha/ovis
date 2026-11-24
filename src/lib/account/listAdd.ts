@@ -208,7 +208,9 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
    */
   readonly invite?: { readonly key: string; readonly open: (writer: ListWriter) => boolean };
 }): Promise<AddPcOutcome> {
-  const { member, admit, invite, ...writeOptions } = options;
+  const { member, admit, invite, ...rest } = options;
+  // the member key goes into the write's own scope too, so every read and retry holds it (X3)
+  const writeOptions = rest.expect === undefined || member === undefined ? rest : { ...rest, expect: { ...rest.expect, key: member } };
   const changed = (writer: ListWriter | null): boolean => writer === null || writer.list !== post.list
     || (options.expect !== undefined && writer.account !== options.expect.account) || (member !== undefined && writer.keys.key !== member);
   const pcHeld = (writer: ListWriter): boolean => {
@@ -244,7 +246,7 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
       return { go: "pc" };
     }, (writer, go) => go === "ends" ? signedOn(writer, ends)
       : signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed }), ends),
-    { ...writeOptions, operation: `add-pc:${post.endpoint}` });
+    { ...writeOptions, operation: `add-pc:${post.endpoint}`, reserve: ends.length });
     if (!outcome.written) return { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
     if (invite === undefined) return { added: true };
     const now = list.writer();

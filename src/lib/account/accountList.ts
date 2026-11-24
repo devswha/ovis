@@ -392,22 +392,22 @@ export interface ListWriter {
   readonly keys: DeviceListKeys;
   readonly epochs: ReadonlyMap<number, EpochKey>;
   /**
-   * The time the device judges whose time is over by, in seconds: its own clock, never less than the floor it saved
-   * and the list's own time. Never the account service's.
+   * The time by which the device signs: whose time is over, and whether names may be sealed, in seconds. Its own clock,
+   * never less than the list's own time, and never the latest time it saved (`shown`) nor the account service's.
    */
   readonly clock: number;
   /** The time an entry is dated, in seconds: the device's own clock. */
   readonly issued_at: number;
   /**
+   * The time by which this device shows whose time is over and judges what a press admits, in seconds: its own clock,
+   * never less than the latest time it saved and the list's own time. It signs nothing: `clock` alone does.
+   */
+  readonly shown: number;
+  /**
    * This device's clock reads more than ten minutes under the latest time it saved. It cannot tell which of the two
    * is wrong, so it signs nobody out for a time that is over (no clean-up removal); what a person asked for goes on.
    */
   readonly adrift: boolean;
-  /**
-   * The latest time this device saved for its clock, in seconds, or null: what a screen shows as over, and what it lets
-   * in, goes by the own clock held against it and the list's time (`listClock(state, now, floor)`). Nothing signed does.
-   */
-  readonly floor: number | null;
   readonly service: AccountService;
 }
 
@@ -433,6 +433,13 @@ export interface KeptRequest {
   /** When it was kept, in seconds, by this device's clock. */
   readonly at: number;
 }
+
+/** A request that waits, as a card names it: which account's, and the list, signer, head and place it was signed for, with no entry of it. */
+export type WaitingRequest = Pick<KeptRequest, "list" | "key" | "on" | "place" | "for" | "at"> & { readonly account: string };
+
+/** Whether what waits now is the very request a card was shown for. */
+export const sameWaiting = (one: WaitingRequest | null, other: WaitingRequest | null): boolean => one !== null && other !== null
+  && one.account === other.account && one.list === other.list && one.key === other.key && one.on.seq === other.on.seq && one.on.hash === other.on.hash && one.place.hash === other.place.hash;
 
 /** A place in a list as a member hands it to a device it let in: the list id and the member's own head. */
 export interface ListOffer {
@@ -466,10 +473,13 @@ export interface AccountList {
   keep(writer: ListWriter, request: Pick<KeptRequest, "entries" | "wraps" | "place" | "for" | "invite">): Promise<KeptRequest>;
   /** Lets `request` go: the account service proved that it placed nothing of it, or its time ran out, so another may be signed on that head. */
   unkeep(account: string, request: KeptRequest): Promise<void>;
-  /** The request kept for the head this device holds now, if one still waits: what it is for, and when it was kept (seconds, this device's clock). */
-  waiting(): Promise<{ readonly for: string | null; readonly at: number } | null>;
-  /** Lets the request that waits go, at the person's word (Cancel): another change may then be signed on that head. */
-  cancel(): Promise<void>;
+  /** The request kept for the head this device holds now, if one still waits: what it is for, when it was kept (seconds, this device's clock), and what names it. */
+  waiting(): Promise<WaitingRequest | null>;
+  /**
+   * Lets `request` go, at the person's word (Cancel on the card that was shown for it): another change may then be
+   * signed on that head. A request that waits in its place by now, signed for another change, is left as it is.
+   */
+  cancel(request: WaitingRequest): Promise<void>;
   view(): AccountListView;
   /** Hears each view that differs from the one before. */
   subscribe(listener: (view: AccountListView) => void): () => void;
@@ -1119,12 +1129,13 @@ export function accountList(options: AccountListOptions): AccountList {
     async waiting() {
       const writer = this.writer({ self: true });
       const kept = writer === null ? null : await this.kept(writer);
-      return kept === null ? null : { for: kept.for, at: kept.at };
+      return writer === null || kept === null ? null : { account: writer.account, list: kept.list, key: kept.key, on: kept.on, place: kept.place, for: kept.for, at: kept.at };
     },
-    async cancel() {
+    async cancel(request) {
       const writer = this.writer({ self: true });
       const kept = writer === null ? null : await this.kept(writer);
-      if (writer !== null && kept !== null) await this.unkeep(writer.account, kept);
+      if (writer === null || kept === null || !sameWaiting(request, { ...kept, account: writer.account })) return;
+      await this.unkeep(writer.account, kept);
     },
     async adopt(offer) {
       const session = await service.session();
@@ -1157,8 +1168,8 @@ export function accountList(options: AccountListOptions): AccountList {
         // member sign a removal, or a time, that nothing undoes
         clock: listClock(copy.state, at, null),
         issued_at: at,
+        shown: listClock(copy.state, at, copy.seen_at),
         adrift: copy.seen_at !== null && at < copy.seen_at - ADRIFT_SECONDS,
-        floor: copy.seen_at,
       };
     },
     holdsEntry(place) {

@@ -8,12 +8,12 @@
  * that joins reads the list's names. Revoking an invite is a `remove` of its key, and for such an invite the next
  * epoch after it.
  */
-import { lapsedRemovals, listClock, listView, readKind, sealEpoch, signListEntries, type ListKind, type Sealed } from "../../../shared/account-list.ts";
+import { ListWriteError, listView, readKind, sealEpoch, signListEntries, type ListKind, type Sealed } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { newInvite } from "../../../shared/account-list-join.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList, ListWriter } from "./accountList.ts";
-import { WRITE_ENTRIES_MAX, placeOf, signedNamed, signedOn, signedWithEpoch, writeNamed, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
+import { placeOf, signedNamed, signedOn, signedWithEpoch, writeNamed, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
 import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, SignedOutError } from "./service.ts";
 
 /**
@@ -191,7 +191,7 @@ export interface ShownInvite {
 export function invitesOf(list: AccountList, nowMs: number): ShownInvite[] {
   const writer = list.writer();
   if (writer === null) return [];
-  const clock = listClock(writer.state, Math.floor(nowMs / 1000), writer.floor);
+  const clock = Math.max(writer.shown, Math.floor(nowMs / 1000));
   return listView(writer.state).invites.map((row): ShownInvite => ({
     key: row.key, auto: row.auto, exp: row.exp, seq: row.seq, mine: row.by === writer.keys.key,
     state: row.refusal === "invite_spent" ? "used" : row.refusal === "invite_revoked" ? endOf(list, writer.state.signers[row.key]?.ended ?? null, row.exp)
@@ -240,13 +240,14 @@ export async function revokeInvite(list: AccountList, key: string, options: Pick
     if (current === null) return { request: await signedOn(writer, [remove]) };
     // what the kinds say of the list after the removal: names may still be sealed, or the next epoch is called for
     const after = await signListEntries(state, [remove], { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
-    // A device whose clock reads far under the time it saved signs no clean-up (it cannot tell which of the two is
-    // wrong), and with keys over their time still in no epoch may be opened: the removal goes alone, and a later
-    // writer opens the epoch
-    if (sealEpoch(after.state, clock) !== null || writer.adrift) return { request: await signedOn(writer, [remove]) };
-    // with the epoch this request opens anyway, as many of the keys over their time as one request holds beside them
-    const lapsed = lapsedRemovals(state, clock).filter((each) => !(each.kind === "remove" && "ends" in each && each.ends === key)).slice(0, WRITE_ENTRIES_MAX - 2);
-    return { request: await signedWithEpoch(writer, current, [remove, ...lapsed]) };
+    if (sealEpoch(after.state, clock) !== null) return { request: await signedOn(writer, [remove]) };
+    // the epoch this request opens, with the clean-up the write loop adds beside it (signedWithEpoch)
+    try { return { request: await signedWithEpoch(writer, current, [remove]) }; } catch (error) {
+      // A device whose clock reads far under the time it saved signs no clean-up, and with keys over their time still
+      // in no epoch may be opened: the removal goes alone, and a later writer opens the epoch
+      if (writer.adrift && error instanceof ListWriteError) return { request: await signedOn(writer, [remove]) };
+      throw error;
+    }
   }, { ...options, operation: `revoke:${key}` });
   if (!outcome.written) return { revoked: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
   await endAtService(list, key);

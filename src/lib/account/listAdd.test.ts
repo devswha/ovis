@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readKind, signCard } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { askingPc, listWorld, pcComparing, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
+import type { AccountList } from "./accountList.ts";
 import { addPostedPc, numberWith, postedPcs, type AddNumber } from "./listAdd.ts";
 import { allowDevice } from "./listAllow.ts";
 
@@ -189,6 +190,34 @@ describe("Add, beside the number", () => {
     // and an account other than the one the card was shown for is refused before the admission too
     expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => { admitted.push("admitted"); }, expect: { account: "acct_another", list: number.post.list } })).toMatchObject({ added: false, why: "changed" });
     expect([admitted, w.held().entries.length]).toEqual([[], before]);
+  });
+
+  it("reports nothing as its own where another Add took its place at the same head: two Adds at once, one PC placed at most (C1)", async () => {
+    const { w, phone, play } = await asking();
+    const first = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));
+    // a second PC asks too, and its number is compared on this device
+    const other = await askingPc();
+    await postPcKeys(w.fake.fetch, w.origin, phone.session.access_token, other, w.held().id);
+    const otherPlay = pcComparing(w, other, w.held().id);
+    const second = shown(await numberWith(phone.list, (await postedPcs(phone.list)).find((each) => each.endpoint === other.endpoint)!, pcTurn(otherPlay)));
+    const entries = w.held().entries.length;
+    let raced = false;
+    // another page of this device presses Add for the first PC between this Add's look at the head and its own keep:
+    // its request is kept for that head (the account service turns it away for now), and this Add's keep gets it back
+    const page: AccountList = { ...phone.list, keep: async (writer, request) => {
+      if (!raced) {
+        raced = true;
+        w.fake.tamperList(w.held().id, { headMoved: true });
+        await addPostedPc(phone.list, first.post, null, { wait: async () => {}, admit: async () => {} });
+        w.fake.untamperList(w.held().id);
+      }
+      return phone.list.keep(writer, request);
+    } };
+    const outcome = await addPostedPc(page, second.post, null, { wait: async () => {}, admit: async () => {}, member: second.member, expect: { account: w.account, list: second.post.list } });
+    expect(outcome).toMatchObject({ added: false, why: "waiting" });
+    // nothing was placed for either: the other page's request waits for its own Try again
+    expect(w.held().entries.length).toBe(entries);
+    expect((await phone.list.sync()).pcs).toEqual([]);
   });
 
   it("signs nothing for another account or list than the one the card was shown for", async () => {
