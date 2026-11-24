@@ -185,4 +185,5 @@ export const RELAY_JA: Record<string, string> = {
   "More ways to open {name}": "{name}を別の方法で開く",
   "This device was removed from your account. To use it again, sign in and allow it from another device.": "このデバイスはアカウントから外されました。もう一度使うには、サインインして別のデバイスで許可してください。",
   "This device signed out, but your account still lists it. Remove it from another device.": "サインアウトしましたが、アカウントの一覧にはまだこのデバイスがあります。別のデバイスから外してください。",
+  "No device was signed out: the other devices could not be removed from your account. Try again.": "ほかのデバイスをアカウントから外せなかったため、どのデバイスもサインアウトしていません。もう一度お試しください。",
 };

@@ -5,7 +5,7 @@ import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList } from "../account/accountList.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
-import { forgetMembership, leaveList, tidyOnRead, watchRemoval } from "../account/listLeave.ts";
+import { forgetMembership, leaveList, removeOthers, tidyOnRead, watchRemoval } from "../account/listLeave.ts";
 import type { RemoveOutcome } from "../account/listRemoveDevice.ts";
 import { listNames } from "../account/listGenesis.ts";
 import { myPcs } from "../account/myPcs.ts";
@@ -424,6 +424,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const from = accountView?.kind === "signed-in" ? shownFor : undefined;
     return (async (): Promise<string | null> => {
       if (from === undefined) throw new SignedOutError();
+      // on an account whose list this device is in, every other device leaves the list first: signed out, it would still
+      // hold a key that opens the account's PCs. Where the list does not take that, nobody is signed out.
+      const others = lists === null ? null : await removeOthers(lists, from.account);
+      if (others !== null && !others.removed) {
+        return others.why === "stopped" ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.")
+          : t("No device was signed out: the other devices could not be removed from your account. Try again.");
+      }
       try { await signedOutEverywhere(from); }
       catch (error) {
         if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !current()) throw error;

@@ -7,7 +7,7 @@
  * And the tidying a device of power `full` does by itself while it reads the list: what is over its time goes.
  */
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
-import { removeSelf, tidyList, type RemoveOutcome } from "./listRemoveDevice.ts";
+import { removeFromList, removeSelf, tidyList, type RemoveOutcome } from "./listRemoveDevice.ts";
 import { sameSignIn } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
@@ -25,6 +25,18 @@ export function inList(view: AccountListView, account: string): boolean {
 export async function leaveList(list: AccountList, account: string, writer: () => ListWriter | null, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
   if (!inList(list.view(), account)) return null;
   return removeSelf(list, writer, options);
+}
+
+/**
+ * Sign out every device, on an account whose list this device is in: every other device the list holds leaves it
+ * first, in one request with the epoch after it, since a device that is only signed out still holds a key that opens
+ * the account's PCs. This device stays. Null for a device that is in no list of that account.
+ */
+export async function removeOthers(list: AccountList, account: string, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
+  const view = list.view();
+  if (!inList(view, account)) return null;
+  const keys = view.devices.filter((device) => !device.self).map((device) => device.key);
+  return keys.length === 0 ? { removed: true } : removeFromList(list, { keys, pcs: [] }, options);
 }
 
 /**

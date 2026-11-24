@@ -26,7 +26,8 @@ async function until(done: () => boolean | Promise<boolean>): Promise<void> {
 
 /** An account whose first device let a second in; the second is the page under test. */
 async function twoDevices() {
-  const w = listWorld();
+  // the shell judges its sign-in by the real clock: the world starts now
+  const w = listWorld("acct_owner", Date.now());
   const first = await w.device({ label: "Dana's phone" });
   await first.list.sync();
   const second = await w.device({ label: "Dana's tablet" });
@@ -42,10 +43,20 @@ describe("the hosted shell and a device's place in its account's signed list", (
   beforeEach(() => { browser = createShellTestPage(); });
   afterEach(() => browser.dispose());
 
+  /** What the shells under test asked of the account service, as `METHOD path`. */
+  let asked: string[] = [];
+  beforeEach(() => { asked = []; });
   /** The shell of `device`'s page: its account store and its list; the directory the shell reads is empty. */
   const shellOf = (device: WorldDevice) => createAccountController({
     container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore: device.store, accountService: device.session.service,
-    accountFetch: async (input) => (new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs: [] }) : Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 })),
+    accountFetch: async (input, init) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      asked.push(`${request.method} ${pathname}`);
+      if (pathname === "/v1/pcs") return Response.json({ pcs: [] });
+      if (pathname === "/v1/signout/all") return new Response(null, { status: 204 });
+      return Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
+    },
     renderApp: () => ({ render() {}, unmount() {} }),
     accountList: device.list,
   }, { active: () => true, changed: async () => {}, outdated: () => new Set() });
@@ -99,5 +110,30 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(await shell.leave()).toEqual({ left: false, message: "The account service cannot change the list right now. To remove a device, use Revoke on each PC." });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
     expect(await second.store.get("session")).toBeDefined();
+  });
+
+  it("sign out every device on a list account puts every other device out of the list first, then signs out", async () => {
+    const { w, first, second } = await twoDevices();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    const other = (await second.keys()).key;
+    await shell.signOutEverywhere();
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch"]);
+    expect(readBody(entryFromText(w.held().entries[2]!).body).ends).toBe(other);
+    expect(asked).toContain("POST /v1/signout/all");
+  });
+
+  it("sign out every device signs nobody out where the list does not take the removal, and says so", async () => {
+    const { w, first } = await twoDevices();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    w.fake.tamperList(w.held().id, { stopped: true });
+    asked = [];
+    expect(await shell.signOutEverywhere()).toBe("The account service cannot change the list right now. To remove a device, use Revoke on each PC.");
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
+    expect(asked).not.toContain("POST /v1/signout/all");
+    expect(await first.store.get("session")).toBeDefined();
   });
 });

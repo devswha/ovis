@@ -4,7 +4,6 @@ import * as ReactDom from "react-dom";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { listView, signListEntry } from "../../shared/account-list.ts";
-import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import { entryFromText, readBody } from "../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "../lib/account/accountList.test-helpers.ts";
 import { allowDevice } from "../lib/account/listAllow.ts";
@@ -12,7 +11,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ListDevices, ListNotMeAction, listAnswersNotice, showsListDevices } = await import("./ListDevices.tsx");
+const { ListDevices, showsListDevices } = await import("./ListDevices.tsx");
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 const kinds = (texts: readonly string[]): string[] => texts.map((text) => readBody(entryFromText(text).body).kind);
@@ -129,7 +128,6 @@ describe("Manage account's devices from the account's signed list", () => {
     return { w, first, second, third, pc };
   }
   const through = (root: ReactTestInstance) => dialog(root).find((node) => node.props["data-testid"] === "came-in-through");
-  const toggle = (root: ReactTestInstance) => through(root).find((node) => node.props.role === "switch");
   const boxes = (root: ReactTestInstance) => through(root).findAll((node) => node.type === "input");
   const addedAgain = (root: ReactTestInstance) => dialog(root).findAll((node) => node.props["data-testid"] === "pcs-added-again").map(textOf);
   const live = async (w: World) => {
@@ -137,14 +135,14 @@ describe("Manage account's devices from the account's signed list", () => {
     return [view.devices.filter((row) => row.ended === null).length, view.pcs.filter((row) => row.removed === null).length];
   };
 
-  it("removes the device alone by default: one switch, off, says what it added, and a confirm says it is done", async () => {
+  it("removes the device alone unless the person ticks what it added, and says it is done", async () => {
     const { w, first, third } = await withAdditions();
     const root = await mount(first);
     expect(rows(root)).toEqual(["Dana's phoneThis device", "Lost phoneRemove", "LaptopRemove"]);
     await act(async () => { root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-device")[0]!.props.onClick(); });
     expect(textOf(dialog(root))).toContain("Remove Lost phone from your account?");
-    expect(textOf(through(root))).toBe("If Lost phone was stolen, also remove what it added (2)");
-    expect([toggle(root).props["aria-checked"], boxes(root).length, addedAgain(root)]).toEqual([false, 0, []]);
+    expect(textOf(through(root))).toBe("Came in through Lost phone:LaptopUnnamed PCIf Lost phone was stolen, tick what you did not add yourself.");
+    expect([boxes(root).map((node) => node.props.checked), addedAgain(root)]).toEqual([[false, false], []]);
     await confirm(root, "Remove");
     expect(kinds(w.held().entries).slice(-2)).toEqual(["remove", "epoch"]);
     expect(listView(w.held().state).devices.filter((row) => row.ended === null).map((row) => row.key)).toEqual([(await first.keys()).key, (await third.keys()).key]);
@@ -152,25 +150,21 @@ describe("Manage account's devices from the account's signed list", () => {
     expect(textOf(root.find((node) => node.props["data-testid"] === "list-device-note"))).toBe("Lost phone was removed from your account.");
   });
 
-  it("with the switch on lists what it added, every item ticked, each can be left out, and says when PCs must be added again", async () => {
+  it("puts out what the person ticks in the same request, and says when PCs must be added again", async () => {
     const { w, first } = await withAdditions();
     const root = await mount(first);
     await act(async () => { root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-device")[0]!.props.onClick(); });
-    await act(async () => { toggle(root).props.onClick(); });
-    expect(textOf(through(root))).toContain("LaptopUnnamed PC");
-    expect(boxes(root).map((node) => node.props.checked)).toEqual([true, true]);
-    expect(addedAgain(root)).toEqual(["These PCs will need to be added again."]);
-    // the PC left out: nothing more to add again
+    await act(async () => { boxes(root)[0]!.props.onChange(); });
+    expect(addedAgain(root)).toEqual([]);
     await act(async () => { boxes(root)[1]!.props.onChange(); });
-    expect([boxes(root).map((node) => node.props.checked), addedAgain(root)]).toEqual([[true, false], []]);
-    await act(async () => { boxes(root)[1]!.props.onChange(); });
+    expect([boxes(root).map((node) => node.props.checked), addedAgain(root)]).toEqual([[true, true], ["These PCs will need to be added again."]]);
     await confirm(root, "Remove");
     // one request: the three removes, then one epoch
     expect(kinds(w.held().entries).slice(-4)).toEqual(["remove", "remove", "remove", "epoch"]);
     expect(await live(w)).toEqual([1, 0]);
   });
 
-  it("has no switch for a device that added nothing", async () => {
+  it("names nothing for a device that added nothing", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });
     await first.list.sync();
@@ -205,43 +199,4 @@ describe("Manage account's devices from the account's signed list", () => {
     expect(rows(renderer!.root)).toEqual(["Dana's phoneThis device", "Dana's tablet"]);
   });
 
-  describe("Not me on a PC's notice of a device the list let in", () => {
-    const noticeOf = (key: string | null, account: string, label = "Dana's tablet"): DeviceNotice => ({
-      seq: 1, id: "n1", at: "2026-11-24T00:00:00.000Z", kind: "admit", how: "account", key, no: null, row: null, label, by: null, account, open: true,
-      method: null, two_step: "unknown",
-    });
-
-    it("is the list's to answer only for another device the list holds, and only where this device may remove it", async () => {
-      const w = listWorld();
-      const first = await w.device({ label: "Dana's phone" });
-      await first.list.sync();
-      const second = await letIn(w, first, "Dana's tablet");
-      const view = await first.list.sync();
-      expect(listAnswersNotice(first.list, view, noticeOf((await second.keys()).key, w.account))).toBe(true);
-      expect(listAnswersNotice(first.list, view, noticeOf((await first.keys()).key, w.account))).toBe(false);
-      expect(listAnswersNotice(first.list, view, noticeOf("not-a-member", w.account))).toBe(false);
-      expect(listAnswersNotice(first.list, view, noticeOf((await second.keys()).key, "acct_other"))).toBe(false);
-      expect(listAnswersNotice({ ...first.list, writer: () => null }, view, noticeOf((await second.keys()).key, w.account))).toBe(false);
-      expect(listAnswersNotice(null, null, noticeOf((await second.keys()).key, w.account))).toBe(false);
-    });
-
-    it("asks Remove's question with the switch on, what it added ticked, and says the device is out", async () => {
-      const { w, first, second } = await withAdditions();
-      const key = (await second.keys()).key;
-      await first.list.sync();
-      await act(async () => {
-        renderer = create(createElement(SettingsProvider, { children: createElement(ListNotMeAction, { list: first.list, notice: { ...noticeOf(key, w.account, "Pixel"), key } }) }));
-      });
-      const root = renderer!.root;
-      await act(async () => { root.find((node) => node.type === "button" && textOf(node) === "Not me").props.onClick(); });
-      // named as the list names it, not as the PC's notice did
-      expect(textOf(dialog(root))).toContain("Remove Lost phone from your account?");
-      expect([toggle(root).props["aria-checked"], boxes(root).map((node) => node.props.checked), addedAgain(root)]).toEqual([true, [true, true], ["These PCs will need to be added again."]]);
-      await confirm(root, "Remove");
-      expect(textOf(root.find((node) => node.props["data-testid"] === "list-not-me"))).toBe("Lost phone was removed from your account.");
-      expect(kinds(w.held().entries).slice(-4)).toEqual(["remove", "remove", "remove", "epoch"]);
-      expect(await live(w)).toEqual([1, 0]);
-      expect(root.findAll((node) => node.type === "button")).toHaveLength(0);
-    });
-  });
 });

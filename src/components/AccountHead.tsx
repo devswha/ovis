@@ -9,6 +9,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { AccountManageLists } from "./AccountManage.tsx";
+import { SignOutEverywhereSays } from "./ListDevices.tsx";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -121,7 +122,7 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
       {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={() => leave(signIn)} />}
       {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
       {signIn !== null && <div className="settings-item account-sign-out-everywhere">
-        {everywhere === "asked" && <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p>}
+        {everywhere === "asked" && <SignOutEverywhereSays account={signIn.account}><p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p></SignOutEverywhereSays>}
         <div className="account-delete-actions">
           <button type="button" className={everywhere === "asked" ? "btn btn-danger" : "btn"} data-action="sign-out-everywhere" data-confirm={everywhere === "asked" ? "sign-out-everywhere" : undefined}
             disabled={everywhere === "out"} aria-busy={everywhere === "out" ? "true" : undefined} onClick={() => signOutEverywhere(signIn)}>{everywhere === "asked" ? t("Sign out every device?") : t("Sign out every device")}</button>

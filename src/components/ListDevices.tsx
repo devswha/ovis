@@ -1,20 +1,18 @@
 /**
- * Manage account's devices for an account whose signed list this device is in (docs/account-list.md, "On a
- * device"): the devices the list holds, by the names this device opens, each saying what it may do, and a key the
- * list holds with no name. A device of power `full` removes any of them, and with it what came in through it where
- * the person ticks it; the removal is the list's, so the key never comes back.
+ * Manage account's devices for an account whose signed list this device is in (docs/account-list.md, "Putting a
+ * member out"): the devices the list holds, by the names this device opens, each saying what it may do, and a key
+ * the list holds with no name. A device of power `full` removes any of them, and with it what came in through it
+ * where the person ticks it; the removal is the list's, so the key never comes back.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { listView } from "../../shared/account-list.ts";
-import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import type { AccountList, AccountListView, ListedDevice } from "../lib/account/accountList.ts";
 import { inList } from "../lib/account/listLeave.ts";
 import { cameInThrough, removeFromList, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
-import { NotMeButton } from "./BlockOutcomes.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
-import { Toggle } from "./SettingsControls.tsx";
 
 /** The page's list as it shows now, kept current. */
 export function useListView(list: AccountList | null): AccountListView | null {
@@ -38,7 +36,7 @@ type Row = { readonly kind: "device"; readonly device: ListedDevice } | { readon
 const keyOf = (row: Row): string => (row.kind === "device" ? row.device.key : row.key);
 
 /** What a row says besides its name: this device, a device that only watches, a browser that is let in for a while. */
-function roleOf(t: Translate, device: ListedDevice): string | null {
+export function roleOf(t: Translate, device: ListedDevice): string | null {
   if (device.self) return t("This device");
   if (device.role === "watch") return t("View only");
   if (device.until !== null) return t("Borrowed browser, until {time}", { time: new Date(device.until * 1000).toLocaleString(currentLocale(), { weekday: "short", hour: "2-digit", minute: "2-digit" }) });
@@ -52,7 +50,7 @@ function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true
 }
 
 /** The name a removal's question gives what came in through a key: by the view's names. */
-function arrivalNameOf(t: Translate, view: AccountListView, arrival: Arrival): string {
+export function arrivalNameOf(t: Translate, view: AccountListView, arrival: Arrival): string {
   if (arrival.kind === "pc") return view.pcs.find((pc) => pc.endpoint === arrival.endpoint)?.name?.label ?? t("Unnamed PC");
   if (arrival.kind === "signer") return t("Unknown key");
   return view.devices.find((device) => device.key === arrival.key)?.name?.label ?? t("Unnamed device");
@@ -93,7 +91,7 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
           confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave(); setAsked(null); }} />
       )}
       {asked !== null && asked !== "self" && (
-        <RemoveDialog list={list} view={view} removing={keyOf(asked)} name={nameOf(asked)} also={false}
+        <RemoveDialog list={list} view={view} removing={keyOf(asked)} name={nameOf(asked)} ticked={false}
           onClose={() => setAsked(null)} onRemoved={(name) => { setAsked(null); setNote(t("{name} was removed from your account.", { name })); }} />
       )}
     </section>
@@ -101,18 +99,17 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
 }
 
 /**
- * Remove's question (Doriterm's rule: a plain removal by default, a compromised one on request). The key goes for
- * good; one switch also removes what came in through it, each listed by name, ticked, and each can be left out. With
- * nothing that came in through it, there is no switch. `also`: whether the switch is on at first, as for Not me on
- * a device the person does not know, whose additions are suspect. Invites it placed go void by themselves and are
- * not named.
+ * Remove's question. The key goes for good; what came in through it is listed by name below, each to tick: a lost
+ * phone may have let in the person's own PCs, a stolen one the thief's devices. `ticked`: whether every item is
+ * ticked at first, as for Not me on a device the person does not know, whose additions are suspect; each can be
+ * left out either way. Invites it placed go void by themselves and are not named.
  */
-function RemoveDialog({ list, view, removing, name, also, onClose, onRemoved }: {
+export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRemoved }: {
   readonly list: AccountList;
   readonly view: AccountListView;
   readonly removing: string;
   readonly name: string;
-  readonly also: boolean;
+  readonly ticked: boolean;
   readonly onClose: () => void;
   readonly onRemoved: (name: string) => void;
 }) {
@@ -122,9 +119,8 @@ function RemoveDialog({ list, view, removing, name, also, onClose, onRemoved }: 
     const writer = list.writer();
     return writer === null ? [] : cameInThrough(writer.state, removing, writer.keys.key);
   });
-  const [withThem, setWithThem] = useState(also && arrivals.length > 0);
-  const [left, setLeft] = useState<ReadonlySet<number>>(new Set());
-  const picked = withThem ? arrivals.filter((_, index) => !left.has(index)) : [];
+  const [chosen, setChosen] = useState<ReadonlySet<number>>(() => new Set(ticked ? arrivals.map((_, index) => index) : []));
+  const picked = arrivals.filter((_, index) => chosen.has(index));
   const remove = async (): Promise<void> => {
     const outcome = await removeFromList(list, {
       keys: [removing, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))],
@@ -136,54 +132,42 @@ function RemoveDialog({ list, view, removing, name, also, onClose, onRemoved }: 
     if (!outcome.removed) throw new Error(failureOf(t, outcome, name));
     onRemoved(name);
   };
-  const switchLabel = t("If {name} was stolen, also remove what it added ({n})", { name, n: String(arrivals.length) });
   return (
     <ConfirmDialog title={t("Remove {name} from your account?|device", { name })}
       body={t("{name} loses access to every PC of your account for good. To use it again, sign in on it and allow it from another device.", { name })}
       confirmLabel={t("Remove")} onClose={onClose} onConfirm={remove}>
       {arrivals.length > 0 && (
-        <div className="account-manage-through" data-testid="came-in-through">
-          <div className="account-manage-also">
-            <Toggle checked={withThem} label={switchLabel} onChange={setWithThem} />
-            <span className="settings-label" aria-hidden="true">{switchLabel}</span>
-          </div>
-          {withThem && arrivals.map((arrival, index) => (
+        <fieldset className="account-manage-through" data-testid="came-in-through">
+          <legend className="settings-description">{t("Came in through {name}:", { name })}</legend>
+          {arrivals.map((arrival, index) => (
             <label key={arrival.kind === "pc" ? arrival.endpoint : arrival.key} className="account-manage-through-row">
-              <input type="checkbox" checked={!left.has(index)}
-                onChange={() => setLeft((now) => { const next = new Set(now); if (!next.delete(index)) next.add(index); return next; })} />
+              <input type="checkbox" checked={chosen.has(index)}
+                onChange={() => setChosen((now) => { const next = new Set(now); if (!next.delete(index)) next.add(index); return next; })} />
               <span className="settings-label">{arrivalNameOf(t, view, arrival)}</span>
             </label>
           ))}
+          <p className="settings-hint">{t("If {name} was stolen, tick what you did not add yourself.", { name })}</p>
           {picked.some((arrival) => arrival.kind === "pc") && <p className="settings-hint" data-testid="pcs-added-again">{t("These PCs will need to be added again.")}</p>}
-        </div>
+        </fieldset>
       )}
     </ConfirmDialog>
   );
 }
 
 /**
- * Whether "Not me" on a PC's notice of a new device is the list's to answer: the device it names is one the list
- * holds, other than this one, and this device may remove it. Otherwise the notice keeps today's blocks.
+ * Sign out every device's question, for an account whose list this device is in: every other device leaves the
+ * list first, by name, since a device that is only signed out keeps a key that opens the account's PCs. `children`:
+ * what the question says for any other account.
  */
-export function listAnswersNotice(list: AccountList | null, view: AccountListView | null, notice: DeviceNotice): list is AccountList {
-  if (list === null || view === null || view.account === null || notice.kind !== "admit" || !notice.open || notice.key === null || notice.account !== view.account) return false;
-  return inList(view, view.account) && view.devices.some((device) => device.key === notice.key && !device.self) && list.writer() !== null;
-}
-
-/**
- * "Not me" on a new device the list let in: Remove's question, with the switch for what the device added on at
- * first, since the person does not know the device. The notice then says it is out.
- */
-export function ListNotMeAction({ list, notice }: { readonly list: AccountList; readonly notice: DeviceNotice & { readonly key: string } }) {
+export function SignOutEverywhereSays({ account, children }: { readonly account: string; readonly children: ReactNode }) {
   const t = useT();
-  const [asking, setAsking] = useState(false);
-  const [done, setDone] = useState<string | null>(null);
-  if (done !== null) return <p className="settings-hint" role="status" data-testid="list-not-me">{done}</p>;
-  const view = list.view();
-  const name = view.devices.find((device) => device.key === notice.key)?.name?.label ?? notice.label;
-  return <>
-    <NotMeButton sending={asking} onPress={() => setAsking(true)} />
-    {asking && <RemoveDialog list={list} view={view} removing={notice.key} name={name} also
-      onClose={() => setAsking(false)} onRemoved={(gone) => { setAsking(false); setDone(t("{name} was removed from your account.", { name: gone })); }} />}
-  </>;
+  const view = useListView(pageAccountList());
+  if (view === null || !inList(view, account)) return <>{children}</>;
+  const others = view.devices.filter((device) => !device.self).map((device) => device.name?.label ?? t("Unnamed device"));
+  return (
+    <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">
+      {others.length === 0 ? t("Every browser and app is signed out of the account.")
+        : t("These devices leave your account for good, then every browser and app is signed out: {names}", { names: others.join(", ") })}
+    </p>
+  );
 }
