@@ -225,10 +225,10 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     }
     expect(await call("send", args)).toMatchObject({ turn_id: first.turn_id, duplicate: true });
   }, 30000);
-  it("five concurrent starts start four; old children accept no new work but stay alive", async () => {
-    const outputs = await Promise.all(Array.from({ length: 5 }, () => call("start", { harness: "test", cwd: dir })));
-    expect(outputs.filter(v => v.kind === "session")).toHaveLength(4);
-    expect(outputs.find(v => v.kind === "refusal")).toMatchObject({ error: { code: "children_limit" } });
+  it("six concurrent starts from one parent all start; old children accept no new work but stay alive", async () => {
+    const outputs = await Promise.all(Array.from({ length: 6 }, () => call("start", { harness: "test", cwd: dir })));
+    expect(outputs.filter(v => v.kind === "session")).toHaveLength(6);
+    expect(programs.size).toBe(6);
     now += 3_600_000;
     for (const [session, proc] of programs) {
       expect(await call("send", { session, task: "late" })).toMatchObject({ error: { code: "time_limit" } });
