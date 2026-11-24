@@ -30,6 +30,22 @@ describe("a polled prompt card (#2220 review)", () => {
     expect(fallen).toMatchObject({ question: plain.question, options: plain.options });
   });
 
+  it("takes the body that goes with the words of the same card: gjc's whole question takes the rows its screen read put in the body", () => {
+    const screen = { ...plain, agent: "gjc", question: "Which one?", body: "First paragraph.\n- item" };
+    const rebound = { ...screen, question: "First paragraph.\n\n- item\n\nWhich one?", body: null, text_format: "markdown" as const };
+    expect(polledPrompt(screen, rebound)).toMatchObject({ question: rebound.question, body: null, text_format: "markdown" });
+    const fallen = polledPrompt(rebound, screen)!;
+    expect(fallen).toMatchObject({ question: "Which one?", body: "First paragraph.\n- item" });
+    expect(fallen.text_format).toBeUndefined();
+  });
+
+  it("reads gjc's ` (Recommended)` off a Markdown label as the tag, and only that suffix", () => {
+    const card = { ...markdown, agent: "gjc" };
+    expect(optionName(card, "Keep `local` socket (Recommended)")).toEqual({ text: "Keep `local` socket", recommended: true, words: "Keep local socket" });
+    expect(optionName(card, "Keep socket (recommended)")).toMatchObject({ recommended: false });
+    expect(optionName(card, "[x](recommended)")).toMatchObject({ recommended: false, words: "x" });
+  });
+
   it("takes the words read off the screen over the same card as they change (#2088)", () => {
     const worded = polledPrompt(plain, { ...plain, screen_words: "There are two ways to fix it." })!;
     expect(worded.screen_words).toBe("There are two ways to fix it.");

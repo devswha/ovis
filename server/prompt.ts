@@ -15,6 +15,7 @@ import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
+import { withGjcAsk } from "./gjc-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
@@ -737,7 +738,8 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
     || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
-  return { prompt: await withAgentRecord(paneId, agent, parseFallbackPrompt(agent, screen), screen), screen };
+  const card = await withAgentRecord(paneId, agent, parseFallbackPrompt(agent, screen), screen);
+  return { prompt: card === null || agent !== "gjc" ? card : await withGjcAsk(paneId, card), screen };
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
@@ -1229,7 +1231,10 @@ async function readKnownPrompt(
   if (agent === "pi" && approvalDialog(prompt) === null && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc" && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
-    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: await withAgentRecord(paneId, agent, fallback, screen), screen };
+    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {
+      const card = await withAgentRecord(paneId, agent, fallback, screen);
+      return { prompt: card === null ? null : await withGjcAsk(paneId, card), screen };
+    }
   }
   const count = agent === "codex" && prompt === null ? queuedQuestionCount(screen) : 0;
   let settled: InteractivePrompt | undefined;

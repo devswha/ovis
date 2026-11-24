@@ -8,10 +8,14 @@ import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
  * (#2220): an omp card in Markdown shows its label whole (InlineMarkdown), and `words` are the
  * characters that shows (shownText, which the server held to omp's screen); another card reads a
  * trailing "(Recommended)" off as the Recommended tag (Claude draws its own pick as "Redis (Recommended)").
- * A Markdown link to `recommended` is an omp option's words, never that tag.
+ * In Markdown only gjc's own suffix is that tag, ` (Recommended)` as gjc adds it (server/gjc-ask.ts): a Markdown link
+ * to `recommended` is an omp option's words, never that tag.
  */
 export function optionName(prompt: InteractivePrompt, label: string): { text: string; recommended: boolean; words: string } {
-  if (prompt.text_format === "markdown") return { text: label, recommended: false, words: shownText(parseInline(label, false)) ?? label };
+  if (prompt.text_format === "markdown") {
+    const text = label.replace(/ \(Recommended\)$/, "");
+    return { text, recommended: text !== label, words: shownText(parseInline(text, false)) ?? text };
+  }
   const text = label.replace(/^\(recommended\)\s+|\s*\(recommended\)$/i, "");
   return { text, recommended: text !== label, words: text };
 }
@@ -81,12 +85,12 @@ export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly Con
 
 export function polledPrompt(current: InteractivePrompt | null, next: InteractivePrompt | null): InteractivePrompt | null {
   if (current === null || next === null || current.id !== next.id) return next;
-  const shown = (prompt: InteractivePrompt) => JSON.stringify([prompt.steps, prompt.can_step_back, prompt.own_text, prompt.question, prompt.options, prompt.text_format ?? null, prompt.screen_words ?? null, prompt.option_preview ?? null]);
+  const shown = (prompt: InteractivePrompt) => JSON.stringify([prompt.steps, prompt.can_step_back, prompt.own_text, prompt.question, prompt.body, prompt.options, prompt.text_format ?? null, prompt.screen_words ?? null, prompt.option_preview ?? null]);
   if (shown(current) === shown(next)) return current;
   const { text_format: _format, screen_words: _words, option_preview: _preview, ...kept } = current;
   return {
     ...kept, steps: next.steps, can_step_back: next.can_step_back, own_text: next.own_text,
-    question: next.question, options: next.options, ...(next.text_format ? { text_format: next.text_format } : {}),
+    question: next.question, body: next.body, options: next.options, ...(next.text_format ? { text_format: next.text_format } : {}),
     ...(next.screen_words !== undefined ? { screen_words: next.screen_words } : {}),
     ...(next.option_preview !== undefined ? { option_preview: next.option_preview } : {}),
   };
