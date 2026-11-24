@@ -80,7 +80,11 @@ export type AccountView =
   | { kind: "signed-out"; error: string | null; provider?: AccountProvider; notice?: string }
   | { kind: "signing-in"; provider?: AccountProvider }
   /** `known`: the read failed, and these are the account's PCs this device listed at its last read that answered (knownPcs) */
-  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null; deleteError?: string; known?: readonly KnownPc[] };
+  | {
+    kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null; deleteError?: string; known?: readonly KnownPc[];
+    /** this device cannot read its list of the account: only a newer app reads it (`newer`), or what it saved does not read (`damaged`). Its PCs are then the directory's, each marked, and none opens by itself */
+    list?: "newer" | "damaged";
+  };
 
 export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }
 

@@ -149,7 +149,7 @@ writer holds no key to seal its names with carries neither, and counts all the s
 | `epoch` | a number: the epoch whose key sealed this entry's names; in an `epoch` entry, the epoch that is current where it stands |
 | `epoch_link` | 61 bytes: the key of the current epoch, under the key of the epoch the entry opens |
 | `epoch_opens` | a hash: the commitment to the key of the epoch the entry opens (epoch 0 in a `genesis`) |
-| `exp` | a number, at most `issued_at` and 604800 (7 days): the invite lets no PC in once a `full` signer has signed an entry at a later time. The account service also judges it against its own clock |
+| `exp` | a number, at most `issued_at` + 604800 (7 days after the entry was signed): the invite lets no PC in once a `full` signer has signed an entry at a later time. The account service also judges it against its own clock |
 | `pc` | a PC's signing key: a key whose point is on the curve |
 | `role` | `drive` (types into terminals) or `watch` (only reads them) |
 | `sealed` | the entry's [names](#what-is-sealed), sealed: at least 47 bytes |
@@ -189,8 +189,10 @@ What the kinds add to the signers' rule:
   holder of the line still reads the names sealed before.
 - **A relay key comes in once** (`endpoint_reused`), also after its PC was put out. One row waits
   for more: a carried PC that is still in gets its keys from a person's `pc` at its relay key, and
-  never from an invite's `join`. **A PC's key comes in once**, at one relay key, and a key that is
-  or was a signer is no PC's (`key_reused`).
+  never from an invite's `join`. **A PC's key comes in once**, at one relay key: a key that any PC
+  ever had here names no other PC, device or invite (`key_reused`). A person's `pc` makes its
+  fresh key a `full` signer in that same entry; the `pc` key of an invite's `join` is never one,
+  and a key that is or was a signer cannot stand there (`key_reused`).
 - **`remove` with `endpoint`** puts out a PC whose key is no signer (one that joined or was
   carried), and only a `full` signer's does (`signer_not_allowed`, then `already_out`). Where the
   key of a PC that joined was made a signer afterwards, the PC goes with its key like one a person
@@ -271,7 +273,18 @@ What stays true all the same, and what to do about it:
 
 A member that reads an entry whose `v` is above its level applies `adds` and `ends` and nothing of
 the kind, and from an entry of a `full` signer that it cannot read it is behind: it lets nobody new
-in, and still applies every removal.
+in, and still applies every removal. Besides removals, the one thing it takes in is the keys that
+a person's `pc` gives a carried PC that is in, and only where that `pc` passes every check it
+passes for a member that reads everything. The reason is a sequence: a carried PC is in; the member
+falls behind; a `pc` gives that PC its keys; the key is ended. Without the keys the member could
+not tell which PC that end means, and would hold a PC that every other member had put out. Nobody
+new comes in by this, and no PC moves to another relay key.
+
+One thing a member that is behind cannot follow: which keys PCs that joined after it fell behind
+have. A `pc` that names such a key for a carried PC has no effect for a member that reads
+everything (`key_reused`), and the member that is behind takes it. No member that signs only what
+counts writes such an entry; one that does can leave a member that is behind holding that carried
+PC after the others put it out by its relay key, until that member is updated and replays.
 
 ### A card
 
@@ -302,8 +315,8 @@ bytes = "ovis-list-card/1" and the fields enc, key and list, for a PC endpoint, 
 
 A member's name and OS word are not needed to decide who is in, so they are not in the clear: the
 entry carries them in `sealed`, encrypted under the key of an epoch, which the members share and
-the account service never has. How they are sealed and how members share the keys is not part of
-this section. No rule above reads `sealed` beyond its length, or needs a key: so a member that was
+the account service never has. How they are sealed and how members share the keys is under
+[Names the service cannot read](#names-the-service-cannot-read). No rule above reads `sealed` beyond its length, or needs a key: so a member that was
 given no key to the names, or a wrong one, lets in and puts out exactly whom every other member
 does, and so does the account service.
 
@@ -375,303 +388,6 @@ for the start), `at` (when it was made), `key` (the invite's key) and `list`, in
 body's fields, signed with the invite's key and written as one text like an entry. The account
 service checks the form (`proof_malformed`), then the signature (`signature_invalid`), then what
 the list holds of that invite, and judges `at` and the invite's `exp` by its own clock.
-
-## Following a list
-
-A member (a device or a PC) keeps its own copy of the list and lets in whom its copy says. The
-account service only stores the log, and it may be wrong, late or lying: it can withhold entries,
-answer with an old part of the log, or show two members two different histories. So nothing below
-takes the service's word for who is in. The code is
-[`shared/account-list-follower.ts`](../shared/account-list-follower.ts); it has no I/O, no storage
-and no clock of its own: a caller hands it the saved text, a page, the hour (seconds since 1970)
-and what happened, and gets back the new copy, what changed and what to do next. Every entry is
-taken by the rules above, and none of them is changed here.
-
-### The pin
-
-A member follows exactly one list id for an account, and the id never comes from the account
-service's word. Where it came from is the member's **pin**, and it says what the list must show
-before the member acts on it:
-
-| pin | who | the list id came from | the member is in when |
-|---|---|---|---|
-| `genesis` | a device | the entry 0 it made itself, once the service took it | entry 0 is signed by its own key |
-| `allowed` | a device | the member that allowed it, with that member's head (`seq`, `hash`) | the log reaches that very entry, and its key is a device |
-| `carried` | a device | an account in use before it had a list; a PC the device had paired with names the same id | its key was carried in |
-| `added` | a PC | what a person compared, scanned or sent at that PC, or a join line | its relay key is in the list with its own signing key |
-| `migrated` | a PC | an account in use before it had a list; `admitted` is the device keys the PC let in then | entry 0's signer and every device that was carried in are among `admitted` |
-
-- **A pin is one-way.** A member that has saved a copy is pinned: no page, no hint and no second
-  pin changes its list id. Only a person's reset at the member, which deletes its save, takes the
-  pin off. A save that does not read is still a pin.
-- Entry 0 must be a `genesis` with the pinned list id and the member's own account. Anything else
-  is `not_my_list`, and nothing of it is kept.
-- Before it is in, a member lets nobody in and shows no PC, though it holds entries.
-- A device that was allowed takes, at the place of the head it was handed, no other entry: a log
-  with another entry there is not the list it was let into.
-- A PC that was `migrated` never widens, all or nothing. A list whose first signer it never let in
-  is `not_my_list`. A list that carries in a device the PC never let in is one it follows none of:
-  a carried key is a `full` signer, so it could add whom it likes. Such a PC lets nobody in.
-
-### A page
-
-A member asks for the entries after a place it holds and gets a **page**: the entries, and the
-head (`seq`, `hash`) of whoever answers. The entries are taken as above; then the head is held
-against the copy. A member is caught up only when it holds the entry at the head's place and that
-entry has the head's hash, so a head that the entries do not reach never counts. What a member
-holds after a read does not depend on where the pages were cut.
-
-| verdict | when | then |
-|---|---|---|
-| `caught_up` | it holds every entry up to the head | from the account service this is a full read |
-| `more` | it took what was shown and the head lies further | ask for the next part at once |
-| `asks_after` | another continuation above its footing | ask again from the footing, once in a read |
-| `withheld` | the head lies past what was shown, and nothing new was shown | wait for the next read |
-| `older` | the head is an earlier place of its own history | nothing changes |
-| `refused` | an entry does not hold, or the page is out of form | what held before it is kept |
-| `stuck` | another history at or under its footing, with no member's signature shown for it | nothing of it is taken |
-| `fork` | the same, signed by a member | the alarm is set |
-| `needs_newer_client` | it stopped at an entry its build cannot place | it answers for nobody until an update |
-| `not_my_list` | another list or account than it is pinned to | nothing changes |
-
-- No page makes a copy shorter under its footing, and none takes out a member that no signer's
-  entry put out. So an old part of the log served again undoes no removal.
-- A copy holds at most 20480 entries, and at most 16 past its footing: an honest log has none
-  there, since each is an entry that no signer signed. Such entries let nobody in, are told to no
-  other member, and give way to what a member signs.
-- A read ends by itself: each next request follows a page that showed something new, and a read
-  goes back to its footing once.
-- A head the service names beside something else (a PC's mailbox answer) is only a hint to read.
-  One that equals the member's own head counts as a full read; one behind its copy changes nothing,
-  and neither does a service that names no list: that is no hint, never the word that the list is
-  gone.
-
-### Two histories
-
-`stuck` costs nothing to cause: a head with a made-up hash is enough. So it changes nothing and
-raises no alarm; the member just takes nothing from that answer.
-
-A **fork** is proven. When an answer shows another history under the footing, the member looks for
-the place where the two part, asking from earlier places (twice as far back each time). At that
-place it replays its own history up to there with the shown entries after it. If a key that was a
-signer there signed on the other history, two histories are each backed by a member: that is the
-fork. An entry by a key that was no signer at that place, the account service's own included,
-proves nothing.
-
-A member with the alarm:
-
-- keeps its own history and never takes the other one;
-- still takes what continues its own history, so a removal still reaches it;
-- lets in no device and shows no PC that it did not hold when the alarm rose;
-- keeps the alarm over a restart, with the place where the two histories part (`seq`) and the key
-  that signed the other one (`by`), so that it can say which device or PC that key is or was.
-
-**Who can raise it.** Any key that was ever a signer, together with whoever can show a member the
-entry: a device or a PC of the account, a browser that was allowed for a day, an invite's key, and
-also one that was removed since, for a place before its removal. The account service alone cannot,
-since it holds no such key. Nobody gets in by it: it only stops a member from letting in anyone
-new.
-
-**What a person does.** The alarm names a key. If that device or PC is still in the account and
-the person does not trust it, they remove it from a device they do trust. The alarm itself does not
-go away by anything the log or the service says: on each member that has it, a person resets the
-list there and pins again (a device is allowed again from a device or PC of the account; a PC is
-added again at the PC). A member that was reset reads the list from entry 0 and holds whatever
-history it is then shown and can check, so the person resets after the key was removed, not
-before.
-
-### Two members meet
-
-When a device and a PC are connected, each tells the other its list id and its **footing**, the
-last entry a member signed in its copy. Comparing gives `same`, `behind` (it asks the other for
-entries), `ahead` (the other asks), `differs` (the other holds another entry at a place this member
-holds: it asks for that entry) or `not_my_list` (another list id: nothing is asked, nothing
-changes).
-
-The answer is a page of the other member's own entries up to its footing, and it is taken exactly
-as a page from the account service, except that it is no full read. So a removal the service
-withholds from a PC reaches it from any device that has it. Two members whose histories parted both
-ask, and each proves the fork from what the other shows: both get the alarm. Two members that met
-stand at the same entry, or both have the alarm.
-
-### What a PC decides
-
-A PC decides from its copy alone, never from an answer of the service and never from how old the
-copy is. A service that is away or withholds takes out no device the PC holds.
-
-- **A device opens a session** when the PC is in, the device's key is in and, where it has an
-  `until`, before that second by the PC's clock. It opens as its `role`. Otherwise the refusal is
-  the first of: the PC itself is `waiting`, `stopped` or `out`; `never_added`; `removed`; `frozen`
-  (the alarm); `expired`.
-- **The PC's clock never counts for less than it showed before**, nor for less than the list's own
-  time (`listClock`). Each page and each hint is taken at the hour the clock shows, the copy keeps
-  the latest (`seen_at`), and a clock that was set back lets no device in past its `until`.
-- **A PC is a member** when its signing key belongs to a relay key that is in.
-- **A device shows** the PCs that are in. The account service's directory only says how to reach
-  them.
-
-### When a member reads
-
-| member | reads |
-|---|---|
-| a PC | every 300 seconds; every 30 while a session is open |
-| a device | every 30 seconds while its app is in front, and when it is rung |
-
-The time runs from when the last read began, also one that failed, so a service that is away is not
-asked faster. Before it lets a new session in, a PC whose last full read is older than 30 seconds
-reads first, and the session waits at most 5 seconds; then the PC decides on its copy as it is. A
-member that is out, or that needs a newer client, reads no more.
-
-### The save
-
-A member saves its copy as one text: JSON in one form (each object's members in ascending order of
-name, no white space).
-
-| member | value |
-|---|---|
-| `v` | `1`: the version of the save's own members |
-| `account`, `list` | the account's id and the list id it is pinned to |
-| `me` | `key`, its signing key, and `endpoint`, a PC's relay key (`null` for a device) |
-| `pin` | `how`, and with it `seq` and `hash` (`allowed`) or `admitted` (`migrated`, in ascending order) |
-| `entries` | every entry it took, from entry 0, each as its text |
-| `footing` | the place (`seq`, `hash`) of the last entry a member signed; `null` before entry 0 |
-| `level` | the [level](#levels) of the build that saved |
-| `state` | [the state](#the-state) those entries gave that build; `null` before entry 0 |
-| `stop` | the text of the entry it stopped at for a newer client, or `null` |
-| `read_at` | when it last held everything the account service showed, or `null` |
-| `seen_at` | the latest hour its own clock showed when it took a page or a hint, or `null` |
-| `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `by`, `at`, and the `devices` and `pcs` it held then |
-| `sum` | SHA-256 over `ovis-list-save/1` and the text of the same object without `sum`, as a hash |
-
-It holds nothing secret.
-
-**The entries are what a save holds as true; its state is only what they gave the build that
-saved.** A member that starts replays its entries from entry 0, checks each as when it first took
-it, and holds the state the replay gives. Where that is not the saved state, the save is
-**rebuilt**: the member goes on with the replayed state and notes it once. That happens when a
-later build holds other things in a state or judges an entry by a later rule, and when the saved
-state was changed. So no update of the app or of a PC makes a member start over, and no state
-reads that the entries do not give. The replay never gives a shorter history than the saved one:
-it must reach the saved `footing`, with the very entry there.
-
-A build reads its own `v` and every earlier one, each by replay. A save reads whole or not at all:
-
-| refusal | when |
-|---|---|
-| `form` | no JSON, a member missing, extra or out of form, or not the one form |
-| `version` | a later build's save: a later `v`, or entries that only a later level can place |
-| `sum` | the text is not the one that was written |
-| `broken` | the entries do not hold: one does not verify or does not continue the one before it, they end before the saved footing or show another entry there, entry 0 is not the pinned list's, is of another account or is not signed by whom the pin asks for, or the stopped entry is not the next one |
-
-The sum finds a damaged file. It does not stop whoever can write the member's store, who holds the
-member's private key too. A save that does not read is still a pin: only a person's reset at the
-member starts it over.
-
-## The join line
-
-A machine joins an account by an invite. The device that makes the invite shows one line, once, and
-the machine is given that line. The code is
-[`shared/account-list-join.ts`](../shared/account-list-join.ts); the vectors are in
-[`shared/account-list-vectors/join/`](../shared/account-list-vectors/join).
-
-```
-line = "ovis-join:1:" base64url(json)       at most 1024 characters in all
-json = {"v":1,"service":S,"account":A,"list":L,"secret":K}
-```
-
-| member | value |
-|---|---|
-| `v` | the number `1` |
-| `service` | the account service's origin, as the URL standard serializes the origin of an `https` URL: `https://host` or `https://host:port`, the host in lower case, with no default port, path, query, fragment or user. A text is in this form when parsing it as a URL and serializing that URL's origin gives the same text back |
-| `account` | the id of the account the invite is for: 1 to 64 of `A-Z a-z 0-9 _ -`. It is not secret: a machine shows it and asks before it joins |
-| `list` | the list id, or the empty text while the account has no list |
-| `secret` | the invite's P-256 private key: the base64url (184 characters) of its PKCS8 in one fixed form of 138 bytes, which holds the public point too |
-
-- The line has one form. The JSON is those five members in that order, written as `JSON.stringify`
-  writes them, with no white space; the base64url has no padding and is in its one spelling. A
-  reader writes the line again from what it read and refuses a line that differs (`not_one_form`).
-- A reader refuses with the code `line_malformed` and one reason. For a line that is not in its
-  form: `prefix`, `length`, `base64url`, `json`, `members`, `version`, `service`, `account`, `list`,
-  `secret`, `scalar` (a private value not from 1 to n-1) or `not_one_form`. For a line in its form
-  that the reader's caller must not act on: `other_service` or `needs_lists`. The line carries a
-  private key, so no refusal holds any part of it.
-- **A line's `service` is never a destination.** A reader is told the account service its caller
-  already uses (the build's, or the one the PC is set to: production, staging or a self-hosted one)
-  and takes only a line whose `service` is that service's origin; any other is refused
-  (`other_service`) before anything is sent anywhere. The two are compared as text, after the
-  caller's own is parsed as a URL and its origin serialized: the scheme, the host and the port
-  count, and a path does not. So a line somebody else made cannot send a machine's proof or its
-  listing to an origin of their choosing. What `service` is for, then: it binds the line to one
-  service, so that a line made for one (staging, say) is no line at another, and it is the service
-  whose entries the list's `invite` and `join` will be placed at.
-- **A caller that does not follow lists is given no line that names a list** (`needs_lists`): the
-  list id says the account has a signed list, and joining it on the service's word alone would undo
-  what the list is for.
-- A line that reads gives the service, the account, the list id (or none) and the invite's public
-  key as [a key](#the-form). It gives no private key. It signs three things and nothing a caller
-  composes: the message a machine redeems an invite with ([An invite is a key](#an-invite-is-a-key)),
-  for the line's own account; a `join` entry of its own key on its own list that adds no key and
-  ends none, which a PC builds from its own keys and never from what it was sent; and the proof by
-  which its holder reads its own list ([Reading the log with an invite](#reading-the-log-with-an-invite)).
-  And it holds the secret once more as a key that only agrees on a shared secret (ECDH), which
-  opens what was encrypted to the invite's key. Neither can be exported.
-- No released build wrote a line before the account was in it, so there is one form and one
-  version. A line without `account` is refused (`members`).
-
-## An invite is a key
-
-An invite is a P-256 key pair. The code is
-[`shared/account-list-invite.ts`](../shared/account-list-invite.ts); the vectors are in
-[`shared/account-list-vectors/invite/`](../shared/account-list-vectors/invite).
-
-- The **device** makes the key pair, gives the account service the public key alone, as
-  [a key](#the-form), and writes the line. It keeps nothing: the line is the only copy of the
-  private key.
-- The **account service** stores the public key and never sees the private key or the line. So it
-  cannot use an invite, and it cannot sign for one. This is about what an invite is worth, not
-  about who is in an account: until an account has a signed list, the service admits a PC on its
-  own word, with an invite or without one.
-- The **machine** that joins proves it holds the line: it signs these bytes with the line's private
-  key, and sends the invite's public key and the signature.
-
-```
-bytes = "ovis-invite-redeem/1" len(account) account len(server_id) server_id
-        len(public_key) public_key len(challenge_id) challenge_id
-len(x) = the number of bytes of x, as 4 bytes, big-endian
-```
-
-| value | |
-|---|---|
-| `account` | the account's id, as in the line |
-| `server_id` | the machine's id: 32 of `0-9a-f` |
-| `public_key` | the machine's relay key: 64 of `0-9a-f` |
-| `challenge_id` | the id of the account service's challenge that the machine's own proof answers in the same request: 32 of `0-9a-f` |
-
-- The signature is ECDSA P-256 with SHA-256 over those bytes, `r || s`, sent as 86 characters of
-  base64url with no padding, in its one spelling. It is checked as an entry's signature is: any `r`
-  and `s` from 1 to n-1 that verify count, and a key whose point is not on the curve verifies
-  nothing.
-- The service finds the invite by its public key and checks the signature with the account that
-  invite belongs to. The bytes name the account, the machine and one challenge, which the service
-  uses up, so a signature that was seen once joins nothing else.
-- What the service learns at a redeem: the invite's public key (which it has), the signature, and
-  the machine's id, relay key and challenge id, which the machine's own proof gives it too. A
-  redeem signature counts nowhere else: no entry and no other proof starts with its bytes.
-- These are values and lengths with no names, as in the other proofs a device or a machine signs
-  for the account service; an entry's body has named fields.
-
-A device whose sign-in is older than ten minutes proves its registered key when it makes an invite,
-as it does when it adds a PC ([Linking devices with an account](account.md#rules)). What it signs
-names the invite's public key, so a proof made for one invite registers no other:
-
-```
-bytes = "ovis-pc-add/1" len(purpose) purpose len(account) account len("") "" len(invite_key) invite_key
-        len(challenge_id) challenge_id len(challenge) challenge
-```
-
-`purpose` is `invite`, or `invite-auto` for an invite a machine joins with by itself; the empty
-value stands where a PC's id stands in the other proofs of this form, and `invite_key`, the
-invite's public key as [a key](#the-form), where a listing id does.
 
 ## Names the service cannot read
 
@@ -806,11 +522,15 @@ The library sees no list, so these are rules for the member that writes an entry
   into the entry that opens the epoch, and gives the service a wrap for every member that stays,
   in the same request. What was sealed before stays readable to the removed member, its own
   removal included; its key and its old wraps open nothing sealed under the new key.
-- Every attempt makes a new key. A key whose wraps went out in a request that did not place its
-  entry is never used again: by the next attempt the members that stay may be others.
+- Every attempt to open an epoch makes a new key. A key whose wraps went out in a request that did
+  not place its entry is never used again: by the next attempt the members that stay may be
+  others.
 - A member that adds another wraps the current epoch key to it, in the request that places the
-  entry. If that entry never gets its place, the key has been wrapped to a key that is no
-  member's: the member opens the next epoch before it seals again.
+  entry. If that request does not place the entry, the member signs the entry again on the new
+  head and goes on under the current epoch; it opens no epoch for that. The service keeps nothing
+  of a request that does not place, the wrap included. If the addition is given up for good, a
+  wrap for a key that never became a member's exists only at a service that kept it against this
+  rule: it opens names, until the next removal moves the epoch, and never a way in.
 - A member whose encryption key is not a point of the curve gets no wrap; the removal or the
   addition goes on without it.
 
@@ -839,6 +559,309 @@ or PC is then shown without its name:
 | `other_key` | a wrap or a link that opens, to a key that is not the one the list commits to. The name is hidden like any other, and the member also says so, because this is no lost or stale wrap. From a wrap it means the account service gave a wrong key: the service stores the wraps, and this is a sign of tampering. From a link it means the member that signed the entry which opened that epoch wrote a wrong link: the link is in the signed list, not the service's to change |
 | `bound` | the walk back opened as many links as one walk may |
 | `unavailable` | the runtime could not do it (no WebCrypto on a page on plain http): a fault of the place, not a verdict on the bytes |
+
+## Following a list
+
+A member (a device or a PC) keeps its own copy of the list and lets in whom its copy says. The
+account service only stores the log, and it may be wrong, late or lying: it can withhold entries,
+answer with an old part of the log, or show two members two different histories. So nothing below
+takes the service's word for who is in. The code is
+[`shared/account-list-follower.ts`](../shared/account-list-follower.ts); it has no I/O, no storage
+and no clock of its own: a caller hands it the saved text, a page, the hour (seconds since 1970)
+and what happened, and gets back the new copy, what changed and what to do next. Every entry is
+taken by the rules above, and none of them is changed here.
+
+### The pin
+
+A member follows exactly one list id for an account, and the id never comes from the account
+service's word. Where it came from is the member's **pin**, and it says what the list must show
+before the member acts on it:
+
+| pin | who | the list id came from | the member is in when |
+|---|---|---|---|
+| `genesis` | a device | the entry 0 it made itself, once the service took it | entry 0 is signed by its own key |
+| `allowed` | a device | the member that allowed it, with that member's head (`seq`, `hash`) | the log reaches that very entry, and its key is a device |
+| `carried` | a device | an account in use before it had a list; a PC the device had paired with names the same id | its key was carried in |
+| `added` | a PC | what a person compared, scanned or sent at that PC, or a join line | its relay key is in the list with its own signing key |
+| `migrated` | a PC | an account in use before it had a list; `admitted` is the device keys the PC let in then | entry 0's signer and every device that was carried in are among `admitted` |
+
+- **A pin is one-way.** A member that has saved a copy is pinned: no page, no hint and no second
+  pin changes its list id. Only a person's reset at the member, which deletes its save, takes the
+  pin off. A save that does not read is still a pin.
+- Entry 0 must be a `genesis` with the pinned list id and the member's own account, signed by whom
+  the pin asks for. An entry 0 of another list, of another account or by another signer is
+  `not_my_list`. One that is no entry at all, or whose signature does not verify, is `refused` like
+  any entry that does not hold, and a `genesis` of a level the build cannot read is
+  `needs_newer_client`. In each case nothing of it is kept.
+- Before it is in, a member lets nobody in and shows no PC, though it holds entries.
+- A device that was allowed takes, at the place of the head it was handed, no other entry: a log
+  with another entry there is not the list it was let into.
+- A PC that was `migrated` never widens, all or nothing. A list whose first signer it never let in
+  is `not_my_list`. A list that carries in a device the PC never let in is one it follows none of:
+  a carried key is a `full` signer, so it could add whom it likes. Such a PC lets nobody in.
+
+### A page
+
+A member asks for the entries after a place it holds and gets a **page**: the entries, and the
+head (`seq`, `hash`) of whoever answers. The entries are taken as above; then the head is held
+against the copy. A member is caught up only when it holds the entry at the head's place and that
+entry has the head's hash, so a head that the entries do not reach never counts. What a member
+holds after a read does not depend on where the pages were cut.
+
+| verdict | when | then |
+|---|---|---|
+| `caught_up` | it holds every entry up to the head | from the account service this is a full read |
+| `more` | it took what was shown and the head lies further | ask for the next part at once |
+| `asks_after` | another continuation above its footing | ask again from the footing, once in a read |
+| `withheld` | the head lies past what was shown, and nothing new was shown | wait for the next read |
+| `older` | the head is an earlier place of its own history | nothing changes |
+| `refused` | an entry does not hold, or the page is out of form | what held before it is kept |
+| `stuck` | another history at or under its footing, with no member's signature shown for it | nothing of it is taken |
+| `fork` | the same, signed by a member | the alarm is set |
+| `needs_newer_client` | it stopped at an entry its build cannot place | it answers for nobody until an update |
+| `not_my_list` | another list or account than it is pinned to | nothing changes |
+
+- No page makes a copy shorter under its footing, and none takes out a member that no signer's
+  entry put out. So an old part of the log served again undoes no removal.
+- A copy holds at most 20480 entries, and at most 16 past its footing: an honest log has none
+  there, since each is an entry that no signer signed. Such entries let nobody in, are told to no
+  other member, and give way to what a member signs.
+- A read ends by itself, whatever its pages say: it makes at most 128 requests, and goes back to
+  its footing once. What is left is asked at the member's next read, from where this one came to.
+- A head the service names beside something else (a PC's mailbox answer) is only a hint to read.
+  One that equals the member's own head counts as a full read; one behind its copy changes nothing,
+  and neither does a service that names no list: that is no hint, never the word that the list is
+  gone.
+
+### Two histories
+
+`stuck` costs nothing to cause: a head with a made-up hash is enough. So it changes nothing and
+raises no alarm; the member just takes nothing from that answer.
+
+A **fork** is proven. When an answer shows another history under the footing, the member looks for
+the place where the two part, asking from earlier places (twice as far back each time). At that
+place it replays its own history up to there with the shown entries after it. If a key that was a
+signer there signed on the other history, two histories are each backed by a member: that is the
+fork. An entry by a key that was no signer at that place, the account service's own included,
+proves nothing.
+
+A member with the alarm:
+
+- keeps its own history and never takes the other one;
+- still takes what continues its own history, so a removal still reaches it;
+- lets in no device and shows no PC that it did not hold when the alarm rose;
+- keeps the alarm over a restart, with the place where the two histories part (`seq`) and the key
+  that signed the other one (`by`), so that it can say which device or PC that key is or was.
+
+**Who can raise it.** Any key that was ever a signer, together with whoever can show a member the
+entry: a device or a PC of the account, a browser that was allowed for a day, an invite's key, and
+also one that was removed since, for a place before its removal. The account service alone cannot,
+since it holds no such key. Nobody gets in by it: it only stops a member from letting in anyone
+new.
+
+**What a person does.** The alarm names a key. If that device or PC is still in the account and
+the person does not trust it, they remove it from a device they do trust. The alarm itself does not
+go away by anything the log or the service says: on each member that has it, a person resets the
+list there and pins again (a device is allowed again from a device or PC of the account; a PC is
+added again at the PC). A member that was reset reads the list from entry 0 and holds whatever
+history it is then shown and can check, so the person resets after the key was removed, not
+before.
+
+### Two members meet
+
+When a device and a PC are connected, each tells the other its list id and its **footing**, the
+last entry a member signed in its copy. Comparing gives `same`, `behind` (it asks the other for
+entries), `ahead` (the other asks), `differs` (the other holds another entry at a place this member
+holds: it asks for that entry) or `not_my_list` (another list id: nothing is asked, nothing
+changes).
+
+The answer is a page of the other member's own entries up to its footing, and it is taken exactly
+as a page from the account service, except that it is no full read. So a removal the service
+withholds from a PC reaches it from any device that has it. Two members whose histories parted both
+ask, and each proves the fork from what the other shows: both get the alarm. Two members that met
+stand at the same entry, or both have the alarm.
+
+### What a PC decides
+
+A PC decides from its copy alone, never from an answer of the service and never from how old the
+copy is. A service that is away or withholds takes out no device the PC holds.
+
+- **A device opens a session** when the PC is in, the device's key is in and, where it has an
+  `until`, before that second by the PC's clock. It opens as its `role`. Otherwise the refusal is
+  the first of: the PC itself is `waiting`, `stopped` or `out`; `never_added`; `removed`; `frozen`
+  (the alarm); `expired`.
+- **The PC's clock never counts for less than it showed before**, nor for less than the list's own
+  time (`listClock`). Each page and each hint is taken at the hour the clock shows, and the copy
+  keeps the latest (`seen_at`). With the account service away no page comes, so a PC also notes the
+  hour whenever it reads its clock to decide (`withClock`) and saves it now and then. A clock that
+  was set back then lets no device in past its `until`.
+- **A PC is a member** when its signing key belongs to a relay key that is in.
+- **A device shows** the PCs that are in. The account service's directory only says how to reach
+  them.
+
+### When a member reads
+
+| member | reads |
+|---|---|
+| a PC | every 300 seconds; every 30 while a session is open |
+| a device | every 30 seconds while its app is in front, and when it is rung |
+
+The time runs from when the last read began, also one that failed, so a service that is away is not
+asked faster. Before it lets a new session in, a PC whose last full read is older than 30 seconds
+reads first, and the session waits at most 5 seconds; then the PC decides on its copy as it is. A
+member that is out, or that needs a newer client, reads no more.
+
+### The save
+
+A member saves its copy as one text: JSON in one form (each object's members in ascending order of
+name, no white space).
+
+| member | value |
+|---|---|
+| `v` | `1`: the version of the save's own members |
+| `account`, `list` | the account's id and the list id it is pinned to |
+| `me` | `key`, its signing key, and `endpoint`, a PC's relay key (`null` for a device) |
+| `pin` | `how`, and with it `seq` and `hash` (`allowed`) or `admitted` (`migrated`, in ascending order) |
+| `entries` | every entry it took, from entry 0, each as its text |
+| `footing` | the place (`seq`, `hash`) of the last entry a member signed; `null` before entry 0 |
+| `level` | the [level](#levels) of the build that saved |
+| `state` | [the state](#the-state) those entries gave that build; `null` before entry 0 |
+| `stop` | the text of the entry it stopped at for a newer client, or `null` |
+| `read_at` | when it last held everything the account service showed, or `null` |
+| `seen_at` | the latest hour its own clock showed when it took a page or a hint or noted the hour, or `null` |
+| `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `by`, `at`, and the `devices` and `pcs` it held then |
+| `sum` | SHA-256 over `ovis-list-save/1` and the text of the same object without `sum`, as a hash |
+
+It holds nothing secret.
+
+**The entries are what a save holds as true; its state is only what they gave the build that
+saved.** A member that starts replays its entries from entry 0, checks each as when it first took
+it, and holds the state the replay gives. Where that is not what was saved, the save is
+**rebuilt**: the member goes on with the replayed state, notes it once and saves again. `rebuilt`
+says exactly that the member now writes its save as another text than the one it read. That happens when a
+later build holds other things in a state or judges an entry by a later rule, and when the saved
+state was changed. So no update of the app or of a PC makes a member start over, and no state
+reads that the entries do not give. The replay never gives a shorter history than the saved one:
+it must reach the saved `footing`, with the very entry there.
+
+A build reads its own `v` and every earlier one, each by replay. A save reads whole or not at all:
+
+| refusal | when |
+|---|---|
+| `form` | no JSON, a member missing, extra or out of form, or not the one form |
+| `version` | a later build's save: a later `v`, or entries that only a later level can place |
+| `sum` | the text is not the one that was written |
+| `broken` | the entries do not hold: one does not verify or does not continue the one before it, they end before the saved footing or show another entry there, entry 0 is not the pinned list's, is of another account or is not signed by whom the pin asks for, or the stopped entry is not the next one |
+
+The sum finds a damaged file. It does not stop whoever can write the member's store, who holds the
+member's private key too. A save that does not read is still a pin: only a person's reset at the
+member starts it over.
+
+## The join line
+
+A machine joins an account by an invite. The device that makes the invite shows one line, once, and
+the machine is given that line. The code is
+[`shared/account-list-join.ts`](../shared/account-list-join.ts); the vectors are in
+[`shared/account-list-vectors/join/`](../shared/account-list-vectors/join).
+
+```
+line = "ovis-join:1:" base64url(json)       at most 1024 characters in all
+json = {"v":1,"service":S,"account":A,"list":L,"secret":K}
+```
+
+| member | value |
+|---|---|
+| `v` | the number `1` |
+| `service` | the account service's origin, as the URL standard serializes the origin of an `https` URL: `https://host` or `https://host:port`, the host in lower case, with no default port, path, query, fragment or user. A text is in this form when parsing it as a URL and serializing that URL's origin gives the same text back |
+| `account` | the id of the account the invite is for: 1 to 64 of `A-Z a-z 0-9 _ -`. It is not secret: a machine shows it and asks before it joins |
+| `list` | the list id, or the empty text while the account has no list |
+| `secret` | the invite's P-256 private key: the base64url (184 characters) of its PKCS8 in one fixed form of 138 bytes, which holds the public point too |
+
+- The line has one form. The JSON is those five members in that order, written as `JSON.stringify`
+  writes them, with no white space; the base64url has no padding and is in its one spelling. A
+  reader writes the line again from what it read and refuses a line that differs (`not_one_form`).
+- A reader refuses with the code `line_malformed` and one reason. For a line that is not in its
+  form: `prefix`, `length`, `base64url`, `json`, `members`, `version`, `service`, `account`, `list`,
+  `secret`, `scalar` (a private value not from 1 to n-1) or `not_one_form`. For a line in its form
+  that the reader's caller must not act on: `other_service` or `needs_lists`. The line carries a
+  private key, so no refusal holds any part of it.
+- **A line's `service` is never a destination.** A reader is told the account service its caller
+  already uses (the build's, or the one the PC is set to: production, staging or a self-hosted one)
+  and takes only a line whose `service` is that service's origin; any other is refused
+  (`other_service`) before anything is sent anywhere. The two are compared as text, after the
+  caller's own is parsed as a URL and its origin serialized: the scheme, the host and the port
+  count, and a path does not. So a line somebody else made cannot send a machine's proof or its
+  listing to an origin of their choosing. What `service` is for, then: it binds the line to one
+  service, so that a line made for one (staging, say) is no line at another, and it is the service
+  whose entries the list's `invite` and `join` will be placed at.
+- **A caller that does not follow lists is given no line that names a list** (`needs_lists`): the
+  list id says the account has a signed list, and joining it on the service's word alone would undo
+  what the list is for.
+- A line that reads gives the service, the account, the list id (or none) and the invite's public
+  key as [a key](#the-form). It gives no private key. It signs three things and nothing a caller
+  composes: the message a machine redeems an invite with ([An invite is a key](#an-invite-is-a-key)),
+  for the line's own account; a `join` entry of its own key on its own list that adds no key and
+  ends none, which a PC builds from its own keys and never from what it was sent; and the proof by
+  which its holder reads its own list ([Reading the log with an invite](#reading-the-log-with-an-invite)).
+  And it holds the secret once more as a key that only agrees on a shared secret (ECDH), which
+  opens what was encrypted to the invite's key. Neither can be exported.
+- No released build wrote a line before the account was in it, so there is one form and one
+  version. A line without `account` is refused (`members`).
+
+## An invite is a key
+
+An invite is a P-256 key pair. The code is
+[`shared/account-list-invite.ts`](../shared/account-list-invite.ts); the vectors are in
+[`shared/account-list-vectors/invite/`](../shared/account-list-vectors/invite).
+
+- The **device** makes the key pair, gives the account service the public key alone, as
+  [a key](#the-form), and writes the line. It keeps nothing: the line is the only copy of the
+  private key.
+- The **account service** stores the public key and never sees the private key or the line. So it
+  cannot use an invite, and it cannot sign for one. This is about what an invite is worth, not
+  about who is in an account: until an account has a signed list, the service admits a PC on its
+  own word, with an invite or without one.
+- The **machine** that joins proves it holds the line: it signs these bytes with the line's private
+  key, and sends the invite's public key and the signature.
+
+```
+bytes = "ovis-invite-redeem/1" len(account) account len(server_id) server_id
+        len(public_key) public_key len(challenge_id) challenge_id
+len(x) = the number of bytes of x, as 4 bytes, big-endian
+```
+
+| value | |
+|---|---|
+| `account` | the account's id, as in the line |
+| `server_id` | the machine's id: 32 of `0-9a-f` |
+| `public_key` | the machine's relay key: 64 of `0-9a-f` |
+| `challenge_id` | the id of the account service's challenge that the machine's own proof answers in the same request: 32 of `0-9a-f` |
+
+- The signature is ECDSA P-256 with SHA-256 over those bytes, `r || s`, sent as 86 characters of
+  base64url with no padding, in its one spelling. It is checked as an entry's signature is: any `r`
+  and `s` from 1 to n-1 that verify count, and a key whose point is not on the curve verifies
+  nothing.
+- The service finds the invite by its public key and checks the signature with the account that
+  invite belongs to. The bytes name the account, the machine and one challenge, which the service
+  uses up, so a signature that was seen once joins nothing else.
+- What the service learns at a redeem: the invite's public key (which it has), the signature, and
+  the machine's id, relay key and challenge id, which the machine's own proof gives it too. A
+  redeem signature counts nowhere else: no entry and no other proof starts with its bytes.
+- These are values and lengths with no names, as in the other proofs a device or a machine signs
+  for the account service; an entry's body has named fields.
+
+A device whose sign-in is older than ten minutes proves its registered key when it makes an invite,
+as it does when it adds a PC ([Linking devices with an account](account.md#rules)). What it signs
+names the invite's public key, so a proof made for one invite registers no other:
+
+```
+bytes = "ovis-pc-add/1" len(purpose) purpose len(account) account len("") "" len(invite_key) invite_key
+        len(challenge_id) challenge_id len(challenge) challenge
+```
+
+`purpose` is `invite`, or `invite-auto` for an invite a machine joins with by itself; the empty
+value stands where a PC's id stands in the other proofs of this form, and `invite_key`, the
+invite's public key as [a key](#the-form), where a listing id does.
 
 ## On a device
 
@@ -889,6 +912,7 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
 | `genesis` | an entry 0 that this device signed and has not yet found in its copy, to send again as it is |
 | `shadow` | what the copy and the directory differed in |
 | `asked` | when the account service last said that it keeps no list for the account |
+| `dropped` | the ids of the entries 0 this device signed and gave up for good |
 | `offer` | the place in a list that a member who let this device in handed it, until the log shows it |
 | `seen` | for each PC that is new to this device, the place of its entry and when the device first held it |
 
@@ -914,9 +938,12 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
   Whoever can change the script the app's origin serves can use the keys, here as before.
 - **A sign-in that ends** (a sign-out, a sign-in the service ended) forgets the wraps and a genesis
   that was not seen placed, as it forgets the names of the account's PCs: nothing left on the
-  device opens a name. The copy stays, since the device is still a member with the key it has: a
-  later sign-in takes up where this one stood, and asks the account service for the wraps again.
-- Leaving the account and deleting it forget everything kept for it.
+  device opens a name, and the names a page had open go from what it shows. The copy stays, since
+  the device is still a member with the key it has: a later sign-in takes up where this one stood,
+  and asks the account service for the wraps again. A read that ends after another sign-in was
+  stored, or none, shows nothing of the account it began with.
+- Leaving the account and deleting it forget everything kept for it, and end the read under way
+  for it rather than wait for it: that read writes and shows nothing after.
 
 ### Starting the list
 
@@ -931,36 +958,49 @@ It does so by itself only when all of these hold, asked in this order at each re
 1. the account service says the account may have a list and has none (`GET /v2/lists/mine` answers
    `list: null`);
 2. the device has saved no copy for the account, not even one that does not read;
-3. the sign-in is new: made at most nine minutes ago, by the device's clock;
-4. the key this sign-in registered with the account service is the first in the account's order:
+3. the sign-in is new: made at most nine minutes ago, by the device's clock. A device that signed
+   an entry 0 while its sign-in was new, and has not seen it placed, is not asked this again;
+4. what the page stores lasts: it runs inside the app, or the browser already says that it keeps
+   this site's data (`navigator.storage.persisted()`; the browser is never asked to, which prompts
+   in some). A list whose one member lost its keys lets nobody in, so a browser tab whose data may
+   be cleared waits for another device to start the list, and the account goes on without one;
+5. the key this sign-in registered with the account service is the first in the account's order:
    no device registered a key for the account before it;
-5. the device holds no pairing that is linked to the account;
-6. the sign-in is an app's own (`GET /v1/session`);
-7. the account's directory lists no PC, confirmed or not.
+6. the device holds no pairing that is linked to the account;
+7. the sign-in is an app's own (`GET /v1/session`);
+8. the account's directory lists no PC, confirmed or not.
 
 So a list starts by itself for a new account whose first device is this one, and for no account
 that was in use: such an account has devices and PCs that entry 0 could not account for, and
 bringing them into a list is not built yet. Setting `localStorage["ovis-account-list-genesis"]` to
-`always` in the app's page starts a list whatever 3, 4, 5 and 7 say (who was in the account is then
+`always` in the app's page starts a list whatever 3, 4, 5, 6 and 8 say (who was in the account is then
 not in the list), and `never` starts none; both are for testing.
 
 - **A genesis is kept before it is sent, and sent again as it is.** A lost answer or a closed page
   never makes a second one: the device finds the entry it kept, and once the account service names
-  a list it reads entry 0 and sees whether it is its own. Two tabs take turns, so one of them signs
+  a list it reads entry 0 and sees whether it is its own. It sends the entry again at its next
+  reads, also when the sign-in is more than nine minutes old by then; the proof below goes with it
+  once the account service asks for one. Two tabs take turns, so one of them signs
   it and the other finds it; in a browser without Web Locks both may sign one, and the account
   service takes one of the two.
-- **Entry 0 is dated by the device's clock, and no later than the account service's**, which the
-  answer to `GET /v2/lists/mine` carries: the service takes no entry dated more than ten minutes
-  ahead of its own clock. A genesis that the service refuses as an entry was not placed and never
-  will be as it is, so the device forgets it and signs another at its next read.
+- **Entry 0 is dated by the device's own clock**, whatever the account service says the time is: a
+  member signs no time on the service's word. The service takes no entry dated more than ten
+  minutes ahead of its own clock, and where it refuses entry 0 for that the device says that its
+  clock looks wrong (`clock`).
+- **An entry 0 that is given up is given up for good.** One that the service refuses as an entry
+  was not placed and never will be as it is, and one that lost to another device's is not the
+  account's. The device forgets it, writes its id down (`dropped`), signs another at its next read
+  where it still may, and never follows the list of an entry it gave up, whoever names it later
+  and after a reload too.
 - **One list per account.** Of two devices that start at once the account service takes one
   (`409 list_exists` for the other). The other device reads entry 0 of the list the service then
   names, sees that it is not signed with its own key, and follows none of it: it is in no list
   until a member lets it in.
 - **An old sign-in proves itself with its registered key** instead of signing in again, as for
   adding a PC ([In one press](account.md#adding-a-pc)): the purpose is `list-genesis`, with the
-  list id where a PC's id stands and no listing. By itself a device starts a list only from a new
-  sign-in, which needs no proof.
+  list id where a PC's id stands and no listing. By itself a device signs an entry 0 only from a
+  new sign-in, which needs no proof; it sends the proof only with an entry 0 that it signed then
+  and sends again later.
 
 ### What a device writes after entry 0
 
@@ -985,15 +1025,19 @@ So far a device writes entry 0, the entry that lets another device in
   where `sealEpoch` says no right before it (`epoch_not_needed` otherwise), and for an invite or a
   device whose time is over only directly after its `remove` (`epoch_no_use`). A device never
   opens one for any other reason, and after a request that was not placed it makes the next
-  epoch's key anew: none of that request's wraps were kept. The service judges by its own clock,
-  so right at an `exp` or an `until` its answer and the device's can differ for a moment:
-  `epoch_not_needed` and `epoch_stale` mean "read and sign again", not a fault.
-- **It dates an entry by its own clock, and no later than the account service's.** The service
-  takes no entry dated more than ten minutes ahead of its clock, and the list's own time never
-  goes back, so a device whose clock runs ahead uses the time the service's last answer carried.
-- **What the service answers a placement** besides taking it: `409 head_moved` (read, sign
-  again), `503 list_rebuilding` (the same request again, the same signatures), `429 entry_budget`
-  (wait as long as it says), and `503 list_stopped`, which is told in these words and never as a
+  epoch's key anew: none of that request's wraps were kept.
+- **It judges time by its own clock and dates an entry by it**: its clock, held against the floor
+  it saved and the list's own time (`memberClock`). The account service's clock decides nothing
+  and is never signed. The service judges by its own, so its answer and the device's can differ:
+  `epoch_not_needed`, `epoch_stale`, `epoch_no_use` and `issued_at_ahead` then end the write with
+  nothing else signed, and the device says that its clock looks wrong.
+- **One signature per place.** A request that was signed goes again as it is while the device's
+  own copy shows the head it was signed on; another is signed only after the copy shows a new
+  head. One request holds 16 entries at most.
+- **What the service answers a placement** besides taking it: `409 head_moved` (read; sign again
+  only on a head that did move), `503 list_rebuilding` and `409 try_again` (the same request
+  again, the same signatures), `429 entry_budget` (wait as long as it says), and
+  `503 list_stopped`, which is told in these words and never as a
   removal: "The account service cannot change the list right now. To remove a device, use Revoke
   on each PC."
 - **A device of power `full` that is in front does that tidying by itself** when it sees such an
@@ -1036,21 +1080,40 @@ only then:
 5. It reads the list again. The newcomer is in when the device's own copy shows the entry at its
    place, whatever the service answered to the placement.
 
-It tries again where the list moved under it (`409 head_moved`: read, sign again on the new head)
-or the service judged an epoch otherwise than the device did, four times at most. While the
-service says it is rebuilding the list (`503 list_rebuilding`) the same request goes again, with
-the same signatures, three times at most. It gives up, and says why, where the service holds no
-claim of that key, where the list put that key out before (a key that is out never comes back),
-where the list took as many additions as it takes for now, and where the service cannot change
-the list.
+**One signature per place.** The request as signed goes again, with the same signatures, three
+times at most, while the device's own copy shows the head it was signed on: while the service
+says it is rebuilding the list (`503 list_rebuilding`) or asks for the request again, after an
+answer that never came, and while the log does not show the entry. Another entry is signed only
+after the device's own copy shows a new head (`409 head_moved`, and the read that follows shows
+it), four times at most. After a request whose answer never came, the device reads the log before
+it says anything: the entry is there, or the request goes again, or, where the log cannot be read
+either, it says that it is **not known yet** whether the device is in the account. It never says
+"added to this PC only" for that.
+
+**Whose clock.** Whether an invite's or a device's time is over, and so whether a removal and a
+new epoch go first, is judged by the device's own clock, held against the floor it saved and the
+list's own time, and the entry is dated by that clock. The account service's clock decides
+nothing and is never signed: a service that said "tomorrow" could otherwise make a member sign a
+removal that nothing undoes. Where the service refuses a request for its time or its epoch, the
+device signs nothing else and says that its clock looks wrong.
+
+It gives up, and says why, where the service holds no claim of that key, where the list put that
+key out before (a key that is out never comes back), where the list took as many additions as it
+takes for now (with the wait the service named), where the service cannot change the list, and
+where the device itself may not write: it follows a list and is not in it with power `full`, was
+shown another history, stopped at an entry this build cannot place, or cannot read its copy. That
+last one is never taken for "the account has no list": nothing of the ways from before lists is
+signed for the newcomer then.
 
 **The place handed over.** The device that let the newcomer in hands it the list id and the place
 of the newcomer's own entry (`seq` and hash), in the introduction it leaves with the PC
 ([Introductions](account.md#introductions)): `POST /api/account/introduce` carries `list`:
 `{ "id", "seq", "hash" }`, and `GET /api/account/introduction` gives it to the new device over
 its own session. The PC only carries it. The new device asks that PC for it for a minute after
-the approval, and then follows that list when the log shows its own key let in, up to that very
-entry. A log that ends before that place, or shows another entry there, is followed by nobody:
+the approval, and then follows that list when the log shows its own key let in at that place or
+before it: an entry that lets it in only after the place it was handed is not what the member
+vouched for. The copy is saved before the place is forgotten, so a save that fails keeps the
+place. A log that ends before that place, or shows another entry there, is followed by nobody:
 the device keeps the place it was handed and reads again at its own pace. So a new device takes
 the list from a member, through the one PC it compared digits with, and never from the account
 service. A device that follows a list takes no place from anybody. A PC that does not carry the
@@ -1196,16 +1259,29 @@ start of the PC's id, never as the account service's word for it. The directory
 | the relay of a PC | the row's relay key is the very key the list holds |
 | when the PC was last there (`last_seen_at`) | the same; it only says whether the row reads as offline |
 
-A PC that the directory alone names gets no row, and nothing opens it through the account. A PC
-the list holds with no route in the directory keeps its row and cannot be opened from it. What the
-directory says of a PC being new, or added before this device joined, is not read. A pairing this
-device made with a PC stays a row of its own, whatever either says.
+A PC the list holds with no route in the directory keeps its row and cannot be opened from it.
+What the directory says of a list PC being new, or added before this device joined, is not read. A
+pairing this device made with a PC stays a row of its own, whatever either says.
+
+**A PC that only the directory names stays on the screen**, after the list's own, with **Not in
+your account's list yet** on its row. A person never loses a PC from view: a PC on an Ovis from
+before lists cannot be in one, and a PC added while the account service kept no list is not in
+it yet. Such a row is the directory's as it is. Nothing opens it by itself, a start of the app
+does not ask to join it, and no notice tells of it; a tap opens it the way from before
+([Linking devices with an account](account.md)).
+
+**A device that cannot read its list** lists the directory's PCs, every one marked the same way
+and none opened by itself, under one line that says so: **This device cannot read your account's
+list. Update the app.** where only a newer app reads it (a later build saved the copy, or the list
+holds an entry this build cannot place), and **This device cannot read your account's list.**
+where what it saved does not read.
 
 The list is read before the account's PCs are first drawn on a device that keeps a copy of one, so
-no row is drawn by the account service's word alone, not even for a moment.
+no row is drawn as the account's own by the account service's word alone, not even for a moment.
 
 **What opens by itself.** A PC the list holds, that the directory gives a route for, and that is
-not new to this device. That the account service ever saw the PC is not asked: the entry is what
+not new to this device; never a PC the list does not hold. The sidebar of a PC's page adds none
+of those by itself either. That the account service ever saw the PC is not asked: the entry is what
 makes it the account's. The sign-in is the one of
 [What a pinned PC asks of the app](#what-a-pinned-pc-asks-of-the-app).
 
@@ -1226,12 +1302,26 @@ PC is out once the device's own copy shows the last entry at its place, as for a
 same tries. A device that holds no key of the current epoch signs the removal alone. A PC that is
 out never comes back with its key: it joins again only as a new PC.
 
+- **The removal belongs to the account and the list whose row was pressed.** Both are held against
+  the device's writer after every read; where another tab's sign-in changed either, nothing is
+  signed and the removal says that it failed.
+- **One request holds 16 entries at most.** The PC's own removal and the epoch always go; of the
+  keys whose time is over, as many as fit beside them, and the rest waits for a later writer.
+- **A pairing this device made with the PC itself stays.** The PC leaves the account; the key of a
+  pairing made at the PC still opens it, as the question before the removal says, and only Forget
+  takes that key from the device.
+- **A PC the list holds with no route** reads as off in Settings, where it can be removed, and has
+  a row in the sidebar that says it cannot be reached. Settings draws its rows again when the list
+  moves.
+
 **A pairing that was only opened lists nothing.** Opening a saved pairing used to list the PC in
 the directory and enroll it where an enrollment was planned. On an account with a list, the
 account service refuses that listing, and a PC comes into the account by an entry. So for a saved
 pairing on such an account the app sends no listing and starts no enrollment, sends no link to a
 PC that is in no account, and says nothing at the row: the pairing opens the PC as before. This
-holds for a device that follows the list and for one that waits to be let in. A new pairing made
+holds for a device that follows the list and for one that waits to be let in, and while the
+account service has not answered whether the account has a list: those writes wait for a read
+that tells. A new pairing made
 from **Add** is not changed by this.
 
 **A PC that lets devices in by the list alone** answers a link `409 list_followed` and writes
@@ -1248,11 +1338,14 @@ the list holds for it, the account key, and no longer by the key a sign-in regis
   required only when the device comes with the key the list holds.
 - **A PC the device's list holds** is opened with the account key, under the device id that key
   gives for that PC, with `account-list-1` required. A PC that does not select it follows no
-  list: the device comes once more the way from before, with the key its sign-in registered.
+  list: the device comes once more the way from before, with the key its sign-in registered, and
+  only while its list still holds that PC.
 - **`account_list_required`** is the PC's answer to a device that offered the feature and came
   with another key. The device reads its list at once, and comes again with the account key if
-  the list now holds it and the PC. A device the list does not hold is led to the join: it asks
-  to be let in, and nothing says it was removed.
+  the list holds the device, whether or not its copy names that PC: a PC that follows the
+  device's list lets in the keys that list holds, and one that follows another list refuses the
+  key. A device that is in no list is led to the join: it asks to be let in, and nothing says it
+  was removed.
 - **A PC that pins under an open session** ends that session as a row that changed
   (`auth_changed`). The transport comes back by itself, is answered `account_list_required`, and
   the app opens the PC again with the account key. Nothing typed is sent by this: what was typed
@@ -1298,9 +1391,25 @@ It reads:
   also how a ring of the account's doorbell reaches a page that was not in front;
 - every five minutes in front while the account may have a list and has none, or the device is
   in none;
-- never twice within five seconds, whatever answers;
-- one read at a time for an account among the tabs of a browser, and a read's requests end after
-  30 seconds.
+- by the clock and by the app coming to the front, never twice within five seconds, whatever
+  answers. A read that a part of the app asks for itself (a sign-in that was just read) begins at
+  once, and one asked for while another is under way begins when that one ends;
+- one read at a time for an account among the tabs of a browser. Each request ends after 30
+  seconds, each page of the log with 30 seconds of its own, and a round asks for no further page
+  once it has read for 30 seconds.
+
+**Every page is saved as it is taken**, before the next is asked for. A round that ends early (a
+page that does not come, the 30 seconds, the follower's 128 pages) keeps what it took, and the
+next round goes on from there, five seconds later while the app is in front. So a device that is
+n entries behind has the list after at most n / 256 rounds that each got one page, whatever is cut
+in between. A round whose first page does not come counts as one that did not reach the service.
+
+**A save never goes over a newer one.** The copy is written only over the very text this page
+read, in one IndexedDB transaction; where another page saved meanwhile, nothing is written and the
+round reads what is saved now and takes its pages again, three times at most. That holds in a
+browser without Web Locks too, and it is what keeps an alarm one page saved from being written
+over by another. The time of the last full read and the floor of the clock are saved with every
+round that reached the service, so a page loaded again knows both.
 
 An account service that is away, slow, or off its switch again leaves the copy as it is: the
 device shows what it saved, and says that it did not reach the service.
@@ -1313,11 +1422,12 @@ out. Only `404` to `GET /v2/lists/mine` says that the service keeps no list for 
 
 How often the device asks while it gets no list:
 
-- after that `404`, once a day at most for the account (the time is kept on the device, so a new
-  page or a new start of the app asks nothing in between);
+- after that `404`, once a day at most for the account, counted from when the answer came (the
+  time is kept on the device, so a new page or a new start of the app asks nothing in between);
 - after a round that did not reach the service (no answer, or any other refusal), in 5 minutes,
   then 15, then an hour, then every 6 hours, until one round reaches it. That holds for a device
-  that follows a list too, for which a `404` is the service being away;
+  that follows a list too, for which a `404` is the service being away, and for a round in which
+  the service named another list or none and did not answer for the device's own log;
 - never while signed out.
 
 ### What the device says is wrong
@@ -1401,11 +1511,21 @@ Each file of [`shared/account-list-vectors/kinds/`](../shared/account-list-vecto
 from entry 0: `name`, `level` (the member's), `keys`, `entries` as above (`sealed` is shown as
 base64url), and `expect`: either `outcomes` (what became of each entry after entry 0, as
 `counts`, `cannot_read`, or the outcome and its name) with the whole `state` after the last entry,
-or `stops`. [`card/`](../shared/account-list-vectors/card) holds cards (`card`, its `bytes` where
-it is in form, a `signature`, `expect.holds`) and [`names/`](../shared/account-list-vectors/names)
+or `stops`. A list that no member follows has `stops` alone; a member that stopped after entries
+it took (at one that does not hold, or at one it cannot place) has `stops` with the `outcomes` and
+the `state` of what it kept. [`card/`](../shared/account-list-vectors/card) holds cards (`card`,
+its `bytes` where it is in form, a `signature`, `expect.holds`) and [`names/`](../shared/account-list-vectors/names)
 holds names (`fields`, each a name and its value as base64url, and `expect.names`, which is `null`
 for fields that give none; `written` says that a writer writes exactly those fields for those
 names).
+
+Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vectors/save) is one
+[save](#the-save): `name`, `about`, `keys`, the `save` text, `now` (the member's clock for
+`opens`) and `expect`: either `reads` (`account`, `list`, `me`, `pin`, the copy's `head` and
+`footing`, whether it was `rebuilt`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it
+holds a `stop`, the `seq` and `by` of its `alarm`, `read_at`, `seen_at`, and `opens`: for each
+named key the role it opens a session as, or the refusal) or `refused` (the refusal). A save that reads and was not rebuilt is written back
+to the same text; one that was rebuilt is written as the build that read it writes it.
 
 ### The vectors of seal/
 
@@ -1429,14 +1549,6 @@ code with either, using `hashlib` and the `cryptography` library; the same scrip
 vector and gave its `expect`. Devices use WebCrypto with a key that
 cannot be exported, so [`scripts/account-list-seal-browser-qa.ts`](../scripts/account-list-seal-browser-qa.ts)
 reads every vector in a real browser too.
-
-Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vectors/save) is one
-[save](#the-save): `name`, `about`, `keys`, the `save` text, `now` (the member's clock for
-`opens`) and `expect`: either `reads` (`account`, `list`, `me`, `pin`, the copy's `head` and
-`footing`, whether it was `rebuilt`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it holds a `stop`, the
-`seq` and `by` of its `alarm`, `read_at`, `seen_at`, and `opens`: for each named key the role it opens a session as,
-or the refusal) or `refused` (the refusal). A save that reads is written back to the same text,
-unless it was rebuilt: then it is written as the build that read it writes it.
 
 ## The list routes in tests
 
@@ -1466,10 +1578,14 @@ every route in use.
 - **PCs** prove their relay key in the body of each call (a challenge of `POST /v1/pc/challenge`
   answered with the role `account`, one per call): `POST /v2/pc/list`, `/v2/pc/list/log`,
   `/v2/pc/list/wraps`, `/v2/pc/list/entries`, `/v2/pc/list/keys` and `/v2/pc/list/attempt`. A
-  mailbox pull with `with_list: true` also gets the list's id and head.
+  mailbox pull with `with_list: true` also gets the list's id and head, and `list: null` unless the
+  account is on the switch, has a list, and lists that PC confirmed: so `null` tells a test no
+  more than that, never that the account has no list.
 - **The number a person compares** when adding a PC rides on the PC's post: the adder opens an
   attempt with its key and commitment, the PC answers it with its nonce once, the adder reveals.
-  The fake only carries them, as the service does; six openings per post in ten minutes.
+  The fake only carries them, as the service does. Openings are counted per PC endpoint and
+  account, six in ten minutes, whichever post or keys they were for; only a call that opens one
+  counts.
 - **What a placement checks**, in order, nothing stored on a refusal: every text in its form, and
   the first at the head (`409 head_moved` names the head; a batch already in the log text for text
   is `200` with `placed: 0`); then entry by entry, that it holds and counts for the library

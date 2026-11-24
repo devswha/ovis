@@ -16,15 +16,26 @@ import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableErro
 /**
  * Why nothing was placed.
  *
- * - `no_list`: this device follows no list, is not in it with power `full`, or was shown another history: it signs nothing.
+ * - `no_list`: this device follows no list of the account, or is in none.
+ * - `blocked`: it follows a list and may not write to it: it is not in with power `full`, it was shown another
+ *   history, it stopped at an entry this build cannot place, or its copy does not read. Never taken for `no_list`:
+ *   an account with a list lets nobody in by the ways from before it had one.
+ * - `clock`: the account service judged the request by another time than this device's own, which signs no time on
+ *   the service's word: this device's clock looks wrong.
  * - `not_claimed`: the account service holds no claim of a key by a sign-in of the account, so it places no entry for it.
  * - `budget`: the list took as many changes as it takes for now; `retryAfterMs` says how long.
  * - `stopped`: the account service cannot change the list right now.
  * - `busy`: the list kept moving, or the account service kept asking for the request again, for every try.
  * - `refused`: the account service refused the entry, or this device would not count it.
- * - `unreached`: the account service did not answer.
+ * - `unreached`: the account service did not answer, and nothing was sent that could have been placed.
+ * - `unknown`: the request went out, no answer came, and the list could not be read since: whether the entries were
+ *   placed is not known yet.
+ * - `changed`: the account or the list is no longer the one the write was begun for (WriteOptions.expect): nothing was signed.
  */
-export type WriteRefusal = "no_list" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached";
+export type WriteRefusal = "no_list" | "blocked" | "clock" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "unknown" | "changed";
+
+/** The most entries one request places (the account service takes no more). */
+export const WRITE_ENTRIES_MAX = 16;
 
 /** How often one write reads the list and signs anew, after the head moved under it or the account service judged otherwise. */
 export const WRITE_TRIES = 4;
@@ -96,6 +107,11 @@ export async function signedWithEpoch(writer: ListWriter, current: EpochKey, bef
 
 export interface WriteOptions {
   readonly wait?: (ms: number) => Promise<void>;
+  /**
+   * The account and the list the write was begun for: what the person saw when they pressed. Held against the writer
+   * after every read, so a sign-in that another tab changed, or another list, ends the write with nothing signed.
+   */
+  readonly expect?: { readonly account: string; readonly list: string };
   /** The writer to sign on, read after each read of the list: for a device's removal of its own key, `list.writer({ self: true })`. The list's own by default. */
   readonly writer?: () => ListWriter | null;
   /**
@@ -115,9 +131,11 @@ const unanswered = (error: unknown): boolean => error instanceof AccountServiceU
 
 /**
  * Places what `step` signs on the list this device follows. It reads the list first, and `step` signs on what the
- * device then holds. When the head moved under it, or the account service judged the request by a clock a moment
- * apart from this device's, it reads and signs again, WRITE_TRIES times at most; while the service says it is
- * rebuilding the list, the same request goes again, WRITE_RESENDS times at most. Only a sign-in that ended throws.
+ * device then holds. One signature per place: the request as signed goes again, WRITE_RESENDS times at most, while
+ * the device's own copy shows the head it was signed on (the service is rebuilding the list or asks for the request
+ * again, no answer came, the log does not show the entries yet); only when the copy shows a new head is another
+ * signed, WRITE_TRIES times at most. A request the service judged by another time than this device's is not signed
+ * again (`clock`). Only a sign-in that ended throws.
  */
 export async function writeToList<Why extends string = never>(list: AccountList, step: (writer: ListWriter) => Promise<WriteStep<Why>>, options: WriteOptions = {}): Promise<WriteOutcome<Why>> {
   const wait = options.wait ?? pause;
@@ -125,7 +143,13 @@ export async function writeToList<Why extends string = never>(list: AccountList,
   for (let tries = 0; tries < WRITE_TRIES; tries += 1) {
     const view = await list.sync();
     const writer = (options.writer ?? (() => list.writer()))();
-    if (writer === null) return refused(view.status.at === "following" && !view.reached ? "unreached" : "no_list");
+    if (options.expect !== undefined && (view.account !== options.expect.account || (writer !== null && (writer.account !== options.expect.account || writer.list !== options.expect.list)))) return refused("changed");
+    if (writer === null) {
+      // a device that holds a list goes by it also where it cannot write: only one with no list of its own has none
+      const { status } = view;
+      const holds = status.at === "damaged" || status.at === "newer_save" || (status.at === "following" && status.standing !== "out" && status.standing !== "waiting");
+      return refused(!holds ? "no_list" : status.at === "following" && status.standing === "in" && status.trouble === null && !view.reached ? "unreached" : "blocked");
+    }
     let request: Written;
     try {
       const next = await step(writer);
@@ -139,44 +163,48 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       if (unanswered(error) || refusalOf(error) !== null) return refused("unreached");
       throw error;
     }
-    let placed = false;
-    let again = false;
+    // One signature per place: the request as signed goes again while this device's own copy shows the head it was
+    // signed on, and another is signed only after the copy shows a new head.
+    const signedOn = writer.state.footing;
+    let moved = false;
     let retryAfterMs: number | null = null;
-    for (let sends = 0; sends < WRITE_RESENDS; sends += 1) {
+    for (let sends = 0; sends < WRITE_RESENDS && !moved; sends += 1) {
       try {
         await writer.service.placeEntries(writer.list, request.entries, request.wraps);
-        placed = true;
-        break;
+        if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };
       } catch (error) {
         if (error instanceof SignedOutError) throw error;
         const said = refusalOf(error);
-        if (said === null) {
-          if (unanswered(error)) return refused("unreached");
-          throw error;
+        // no answer came: the request may have been placed all the same, and the log below says which
+        if (said === null && !unanswered(error)) throw error;
+        if (said !== null) {
+          if ((said.status === 503 && said.code === "list_rebuilding") || (said.status === 409 && said.code === "try_again")) {
+            // the same request again, the same signatures, after the pause the account service asks for
+            ({ retryAfterMs } = said);
+            if (sends + 1 < WRITE_RESENDS) await wait(Math.min(retryAfterMs ?? 1_000, RESEND_MAX_MS));
+            continue;
+          }
+          if (said.status === 503 && said.code === "list_stopped") return refused("stopped");
+          // the list's own budget of additions, as against a request too many: each by its code, with the wait it names
+          if (said.status === 429) return refused(said.code === "entry_budget" ? "budget" : "busy", said.retryAfterMs);
+          if (said.status === 403 && said.code === "not_claimed") return refused("not_claimed");
+          // The account service's clock says otherwise of an epoch, or of the entry's time, than this device's did. The
+          // device signs nothing by the service's clock, and no second entry on a head that did not move: it says so
+          if (said.status === 400 && said.code === "entry_refused"
+            && (said.reason === "epoch_not_needed" || said.reason === "epoch_stale" || said.reason === "epoch_no_use" || said.reason === "issued_at_ahead")) return refused("clock");
+          if (!(said.status === 409 && said.code === "head_moved")) return refused(said.status >= 500 ? "unreached" : "refused");
         }
-        if (said.status === 503 && said.code === "list_rebuilding") {
-          // the same request again, the same signatures, after the pause the account service asks for
-          ({ retryAfterMs } = said);
-          if (sends + 1 < WRITE_RESENDS) await wait(Math.min(retryAfterMs ?? 1_000, RESEND_MAX_MS));
-          continue;
-        }
-        if (said.status === 503 && said.code === "list_stopped") return refused("stopped");
-        if (said.status === 429) return refused("budget", said.retryAfterMs);
-        if (said.status === 403 && said.code === "not_claimed") return refused("not_claimed");
-        // the head moved, or the service's clock says otherwise of an epoch than this device's did: read and sign again
-        const moved = said.status === 409 && (said.code === "head_moved" || said.code === "try_again");
-        const judged = said.status === 400 && said.code === "entry_refused" && (said.reason === "epoch_not_needed" || said.reason === "epoch_stale" || said.reason === "epoch_no_use");
-        if (!moved && !judged) return refused(said.status >= 500 ? "unreached" : "refused");
-        again = true;
-        break;
       }
+      // Placed, refused for a head that moved, or no answer at all: this device's own copy says which. The account
+      // service's answer is no word on what the list holds.
+      const after = await list.sync();
+      if (list.holdsEntry(request.place)) return { written: true, list: writer.list, place: request.place };
+      // the log could not be read: whether the entries were placed is not known yet, and nothing else is signed
+      if (!after.reached) return refused("unknown");
+      const now = (options.writer ?? (() => list.writer()))();
+      moved = now === null || now.list !== writer.list || now.state.footing.seq !== signedOn.seq || now.state.footing.hash !== signedOn.hash;
     }
-    if (!placed && !again) return refused("busy", retryAfterMs);
-    if (again) continue;
-    if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };
-    // the answer is no word on what the list holds: the entries are placed once this device's own copy shows the last at its place
-    await list.sync();
-    if (list.holdsEntry(request.place)) return { written: true, list: writer.list, place: request.place };
+    if (!moved) return refused("busy", retryAfterMs);
   }
   return refused("busy");
 }

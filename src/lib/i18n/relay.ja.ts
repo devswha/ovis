@@ -188,4 +188,6 @@ export const RELAY_JA: Record<string, string> = {
   "No device was signed out: the other devices could not be removed from your account. Try again.": "ほかのデバイスをアカウントから外せなかったため、どのデバイスもサインアウトしていません。もう一度お試しください。",
   "{done} of {total} other devices left your account; the others did not. Try again.": "ほかのデバイス {total} 台のうち {done} 台だけがアカウントから外れました。もう一度お試しください。",
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "確認のあとに {names} がアカウントに入りました。誰もサインアウトしていません。もう一度確認してください。",
+  "This device cannot read your account's list. Update the app.": "この端末ではアカウントの名簿を読めません。アプリを更新してください。",
+  "This device cannot read your account's list.": "この端末ではアカウントの名簿を読めません。",
 };

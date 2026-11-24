@@ -3,7 +3,7 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList } from "../account/accountList.ts";
-import { pcsByList } from "../account/listPcs.ts";
+import { listReading, pcsByList } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
 import { forgetMembership, leaveList, otherDevices, removeOthers, tidyOnRead, watchRemoval } from "../account/listLeave.ts";
@@ -135,6 +135,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * the directory only as the way to reach them (account/listPcs.ts); the directory as it is otherwise.
    */
   const drawnPcs = (rows: readonly DirectoryPc[], account: string, now: number): readonly DirectoryPc[] => (lists === null ? null : pcsByList(lists.view(), account, rows, now)) ?? rows;
+  /** That this device cannot read its list of the account, and which way, for the line My PCs then shows; nothing where it can, or has none. */
+  const unreadList = (account: string): { list?: "newer" | "damaged" } => {
+    const reading = lists === null ? null : listReading(lists.view(), account);
+    return reading === "newer" || reading === "damaged" ? { list: reading } : {};
+  };
   /** `at`: when the account last answered; the rows of a failed read are aged to then, never past what it confirmed */
   let listedFor: { readonly epoch: number; readonly projection: { readonly accountKey: string; readonly account: string; readonly registered: boolean }; readonly at: number; readonly openKey: SignInKey | null } | undefined;
   let shownFor: AccountSession | undefined;
@@ -221,7 +226,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const at = Date.now();
         const projection = { accountKey: key.public_spki, account: session.account, registered: openKey !== null };
         listedFor = { epoch, projection, at, openKey };
-        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(drawnPcs(listed, session.account, at), devices, { now: at, ...projection, outdated: view.outdated() }) };
+        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(drawnPcs(listed, session.account, at), devices, { now: at, ...projection, outdated: view.outdated() }), ...unreadList(session.account) };
         keepKnownPcs(session.account, accountView.pcs ?? []);
         void compareList();
         sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
@@ -256,15 +261,24 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   /** Holds this device's list against the directory last read, for the record (account/listShadow.ts): it changes nothing drawn. */
   const compareList = async (): Promise<void> => {
-    if (lists === null || shownFor === undefined || listedFor?.epoch !== generation || accountView?.kind !== "signed-in" || accountView.pcs === null) return;
-    const here = { account: shownFor.account, devices: await store.list(), now: Date.now() };
+    const comparable = (): boolean => shownFor !== undefined && listedFor?.epoch === generation && accountView?.kind === "signed-in" && accountView.pcs !== null;
+    if (lists === null || !comparable()) return;
+    const [epoch, account] = [generation, shownFor!.account];
+    // nothing to compare where this device is in no list of the account: its pairings are not read for it
+    const listed = lists.view();
+    if (listed.account !== account || listed.status.at !== "following" || listed.status.standing !== "in") return;
+    const devices = await store.list().catch(() => null);
+    // the sign-in ended, or another took its place, while the pairings were read: its rows are not this comparison's
+    if (devices === null || epoch !== generation || !comparable() || shownFor!.account !== account || accountView?.kind !== "signed-in" || accountView.pcs === null) return;
+    const here = { account, devices, now: Date.now() };
     const opens = new Set(accountOpenablePcs(accountView.pcs, here).map((pc) => pc.server_id));
     await lists.shadow(here.account, directory, opens).catch((error: unknown) => console.warn("Ovis: the account's list was not compared", error instanceof Error ? error.name : error));
   };
   // the list moved: the rows are drawn again from it and the directory last read, and the two are compared again
   lists?.subscribe(() => {
-    if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList);
-    else void compareList();
+    const failed = (error: unknown): void => console.warn("Ovis: the account's PCs were not drawn again by its list", error instanceof Error ? error.name : error);
+    if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList).catch(failed);
+    else void compareList().catch(failed);
   });
   /** A sign-in to `account` ended on this device: as its PCs' names go (dropKnownPcs), so does what opens the names in its list. */
   const forgetNames = (account: string | undefined): void => {
@@ -276,7 +290,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const devices = await store.list();
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) {
       const now = Date.now();
-      accountView = { ...accountView, pcs: myPcs(drawnPcs(directory, listedFor.projection.account, now), devices, { now, ...listedFor.projection, outdated: view.outdated() }) };
+      const { list: _before, ...rest } = accountView;
+      accountView = { ...rest, pcs: myPcs(drawnPcs(directory, listedFor.projection.account, now), devices, { now, ...listedFor.projection, outdated: view.outdated() }), ...unreadList(listedFor.projection.account) };
     }
     await changed();
   };
@@ -761,7 +776,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (lists === null) return false;
     let view = lists.view();
     if (view.account !== account) view = await lists.sync().catch(() => lists.view());
-    return view.account === account && view.status.at !== "off" && view.status.at !== "none";
+    // Not answered (no word of the account service this round, and no copy here that says): the writes of the way from
+    // before wait for a round that tells. The pairing opens all the same.
+    if (view.account !== account || (!view.reached && (view.status.at === "off" || view.status.at === "none"))) return true;
+    return view.status.at !== "off" && view.status.at !== "none";
   };
   const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled, signal }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
     signal?.throwIfAborted();

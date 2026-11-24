@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { sealEpoch } from "../../../shared/account-list.ts";
+import { sealEpoch, signListEntry } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice } from "./listAllow.ts";
@@ -82,6 +82,40 @@ describe("a device puts a PC out of its account's list", () => {
     second.wire.answer = (request) => request.method === "POST" && request.url.endsWith("/entries") ? Response.json({ head: w.held().head }) : null;
     expect(await removeListPc(second.list, desk.endpoint, noWait)).toMatchObject({ removed: false, why: "busy" });
     expect(second.list.holdsPc(desk.endpoint)).toBe(true);
+  });
+
+  it("removes nothing for another account or another list than the one the row came from, and says so", async () => {
+    const { w, second, desk } = await account();
+    const before = placements(second).length;
+    expect(await removeListPc(second.list, desk.endpoint, { ...noWait, expect: { account: "acct_another", list: w.held().id } })).toEqual({ removed: false, why: "changed", retryAfterMs: null });
+    expect(await removeListPc(second.list, desk.endpoint, { ...noWait, expect: { account: w.account, list: "5c".repeat(32) } })).toEqual({ removed: false, why: "changed", retryAfterMs: null });
+    // a PC the other list would not hold is not reported as out either
+    expect(await removeListPc(second.list, "ab".repeat(32), { ...noWait, expect: { account: "acct_another", list: w.held().id } })).toMatchObject({ removed: false, why: "changed" });
+    expect([placements(second).length, second.list.holdsPc(desk.endpoint)]).toEqual([before, true]);
+    expect(await removeListPc(second.list, desk.endpoint, { ...noWait, expect: { account: w.account, list: w.held().id } })).toEqual({ removed: true });
+  });
+
+  it("never signs more entries than one request takes: the PC's removal and the epoch go, and what is left of the tidying waits", async () => {
+    const { w, first, second, desk } = await account();
+    // fifteen borrowed browsers whose time is over
+    const writer = first.list.writer()!;
+    let state = writer.state;
+    const texts: string[] = [];
+    for (let n = 0; n < 15; n += 1) {
+      const browser = await w.device({ label: `Browser ${n}` });
+      await browser.list.sync();
+      const key = (await browser.keys()).key;
+      const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === key)!;
+      const written = await signListEntry(state, { kind: "device", key: claim.key, power: "bound", role: "drive", until: writer.issued_at + 60, enc: claim.enc, card: claim.card, sealed: null, rotates: false }, { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+      texts.push(written.text);
+      ({ state } = written);
+    }
+    await writer.service.placeEntries(writer.list, texts, []);
+    w.clock.now += 5 * 60_000;
+    expect(await removeListPc(second.list, desk.endpoint, noWait)).toEqual({ removed: true });
+    const sent = placements(second).at(-1)!.body!.entries as string[];
+    expect([sent.length, kinds(sent).at(-2), kinds(sent).at(-1)]).toEqual([16, "remove", "epoch"]);
+    expect(second.list.holdsPc(desk.endpoint)).toBe(false);
   });
 
   it("says so when the account service cannot change the list, or has taken as many changes as it takes for now", async () => {

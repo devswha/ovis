@@ -25,6 +25,11 @@ export class ListPcRemovalError extends Error {
   }
 }
 
+/** What to say of a removal that failed: what the list said where that tells the person more, the surface's own words otherwise. */
+export function pcRemovalFailure(error: unknown, t: ReturnType<typeof useT>, otherwise: string): string {
+  return error instanceof ListPcRemovalError && error.why === "stopped" ? t("The account service cannot change the list right now.") : otherwise;
+}
+
 type Asked = {
   readonly session: AccountSession;
   readonly serverId: string;
@@ -46,7 +51,7 @@ type Asked = {
  * A PC that this device's list of the account holds leaves by an entry of that list, which this device signs
  * (listRemove.ts): the account service removes nothing for it, and asks for no sign-in.
  */
-export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed: (serverId: string) => void | Promise<void>): {
+export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed: (serverId: string, how: "list" | "directory") => void | Promise<void>): {
   readonly remove: (session: AccountSession, serverId: string, listingId?: string) => Promise<boolean>;
   readonly prompt: ReactNode;
   /** the PC \`prompt\` speaks of, for a surface that draws one row per PC; null with no prompt */
@@ -64,10 +69,12 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
     setAsked(null);
     const list = pageAccountList();
     const endpoint = list === null ? null : pageListPc(session.account, serverId);
-    if (list !== null && endpoint !== null) {
-      const outcome = await removeListPc(list, endpoint);
+    const { status } = list?.view() ?? { status: null };
+    if (list !== null && endpoint !== null && status?.at === "following") {
+      // for the account and the list whose row the person pressed: another tab's sign-in changes neither under it
+      const outcome = await removeListPc(list, endpoint, { expect: { account: session.account, list: status.list } });
       if (!outcome.removed) throw new ListPcRemovalError(outcome.why);
-      await removed(serverId);
+      await removed(serverId, "list");
       return true;
     }
     try { await service.forSignIn(session).deletePc(serverId, listingId); }
@@ -78,7 +85,7 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
       setAsked({ session, serverId, listingId, refusal, step: "offered", link: null });
       return false;
     }
-    await removed(serverId);
+    await removed(serverId, "directory");
     return true;
   };
 

@@ -326,6 +326,12 @@ export function RelayShell(props: RelayShellProps) {
   // yet, the same page, the rows saying Off or the list saying to sign in on a PC); a code typed from Add PC's relay tab
   // goes on in the pairing dialog over it
   if (account?.kind === "signed-in") {
+    // this device cannot read its account's list: the PCs below are then the account service's word, each marked, and none opens by itself
+    const listUnread = account.list !== undefined && (
+      <p className="account-error relay-add-directory-error" role="status" data-list-unread={account.list}>
+        {account.list === "newer" ? t("This device cannot read your account's list. Update the app.") : t("This device cannot read your account's list.")}
+      </p>
+    );
     const directoryError = account.error !== null && !offline && (
       <p className="account-error relay-add-directory-error" role="alert">{account.error}{onRefreshAccount && <> <button type="button" className="account-link" onClick={() => { void onRefreshAccount(); }}>{t("Try again")}</button></>}</p>
     );
@@ -333,7 +339,8 @@ export function RelayShell(props: RelayShellProps) {
       <main className={frontClass(myPcsShown)} data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
         <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
-          {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignIn} />{directoryError}</>, true)}
+          {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignIn} />{listUnread}{directoryError}</>, true)}
+          {!myPcsShown && listUnread}
           {!myPcsShown && directoryError}
         </div>
         {addingPc && (
