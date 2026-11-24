@@ -122,6 +122,8 @@ export async function addOverSsh(service: AccountService, job: { readonly id: st
   if (still === undefined || !sameSignIn(still, session) || !options.running()) return "refused";
   const outcome = await taken(take, job.id, target.server_id, false);
   // this device added that PC over SSH: kept in its own record of its PCs, by the relay key the PC gave over that channel
-  if (outcome.startsWith("added")) void noteAct(session.account, hex(target.public_key), "ssh");
+  if (outcome.startsWith("added")) {
+    try { void noteAct(session.account, hex(target.public_key), "ssh").catch(() => undefined); } catch { /* it only records: a key that does not read keeps nothing */ }
+  }
   return outcome;
 }

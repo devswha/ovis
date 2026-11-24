@@ -58,7 +58,7 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
       return false;
     }
     // the person took the PC out of the account here: this device's own record of it goes too
-    void forgetSeenPc(session.account, serverId);
+    void forgetSeenPc(session.account, serverId).catch(() => undefined);
     await removed(serverId);
     return true;
   };

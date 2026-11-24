@@ -260,9 +260,12 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   }
   // The person adds this PC from this page: kept in this device's own record of its PCs, by the relay key of the PC's
   // own pairing link. On the PC's own address the page is that PC's own window; from anywhere else it is an add.
+  // It only records: a link whose key does not read, or storage that is not there, changes nothing of the add.
   if (session) {
-    const own = typeof location !== "undefined" && isLoopbackHost(location.hostname);
-    void noteAct(session.account, Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), own ? "window" : "added");
+    try {
+      const own = typeof location !== "undefined" && isLoopbackHost(location.hostname);
+      void noteAct(session.account, Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), own ? "window" : "added").catch(() => undefined);
+    } catch { /* nothing is kept of this add */ }
   }
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
   // (not for a wait or an attempt that ended while the entry was written: nobody waits for this PC under it)
