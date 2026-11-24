@@ -13,6 +13,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { listMember, TestList } from "./list.test-helpers.ts";
 import { pairingPc, setUpFor, type Pc } from "./pairing.test-helpers.ts";
 import { askRecovery } from "./recovery.ts";
+import { link } from "../../scripts/plugin-link.ts";
 
 const ACCOUNT = "acct_1";
 
@@ -192,4 +193,20 @@ test.skipIf(process.platform === "win32")("a PC in the account from before its l
   await b.app.context.services.accountList!.settled();
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: false, want: null });
   expect(b.devices.account()).toBe(ACCOUNT);
+});
+
+test.skipIf(process.platform === "win32")("ovis add --account, as an agent runs it on a PC an add over SSH put in the account's list: one line says it is in that account, and nothing is asked or listed", async () => {
+  const b = await addedPc();
+  const list = await TestList.start(b.account, ACCOUNT);
+  await listAndAdmit(b);
+  await takeByList(b, list.id, list.first.key);
+  await list.addPostedPc(endpointOf(b));
+  expect(await takeByList(b, list.id, list.first.key)).toMatchObject({ account: ACCOUNT });
+  const out: string[] = [];
+  const code = await link(["--account", ACCOUNT], {
+    origin: `http://127.0.0.1:${b.app.port}`, headers: {}, accountService: "https://account.test", serviceFetch: b.account.fetch, signal: new AbortController().signal,
+    lines: { next: () => new Promise(() => {}) }, terminal: false, isTty: false, out: (text) => { out.push(text); },
+  });
+  expect([code, out.join("")]).toEqual([0, `This PC is already in an Ovis account (${ACCOUNT}).\n`]);
+  expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, pinned_list: list.id });
 });
