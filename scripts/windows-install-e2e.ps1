@@ -35,6 +35,14 @@ function Find-Plugin {
     (herdr plugin list --json | ConvertFrom-Json).result.plugins | Where-Object { $_.plugin_id -eq $pluginId } | Select-Object -First 1
 }
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+# Ovis, then herdr, stopped: the action only queues Ovis's stop, which a herdr stopped at once can cut off half done,
+# leaving a server that answers no health, so herdr is stopped once Ovis's port is closed
+function Stop-OvisAndHerdr {
+    if (Find-Plugin) { herdr plugin action invoke "$pluginId.stop-windows" | Out-Null }
+    Wait-Until { -not (Get-NetTCPConnection -LocalPort 7317 -State Listen -ErrorAction SilentlyContinue) } 30 'Ovis to stop' | Out-Null
+    herdr server stop | Out-Null
+    Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
+}
 # herdr's server: the herdr process that started first (a command's herdr comes and goes)
 function Get-HerdrServer { Get-Process herdr -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1 }
 # what the installer leaves where it started herdr: its own sign-in start (the Run value Ovis, its launcher) and no task
@@ -126,9 +134,7 @@ function Assert-App([string]$Expected) {
 
 if ($StopHerdr -and (Test-ServerRunning)) {
     Write-Host 'e2e: stopping the herdr that runs, so the installer has to start it'
-    if (Find-Plugin) { herdr plugin action invoke "$pluginId.stop-windows" | Out-Null }
-    herdr server stop | Out-Null
-    Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
+    Stop-OvisAndHerdr
 }
 if ($Fresh) {
     Assert (-not (Test-Herdr)) '-Fresh: herdr is already installed'
@@ -177,9 +183,7 @@ try {
         Assert ($failed -match 'was not added to your Ovis account' -and ($said -join "`n") -match 'The account service is off on this PC') "-Account must fail the install with the add's own words when the add cannot run: $failed $($said -join ' / ')"
         # over SSH (session 0) with this account signed in at the desktop, as here: herdr starts in the desktop session
         Write-Host 'e2e: installing again from session 0, as over SSH, with herdr stopped'
-        herdr plugin action invoke "$pluginId.stop-windows" | Out-Null
-        herdr server stop | Out-Null
-        Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
+        Stop-OvisAndHerdr
         $run = Invoke-InSession0 "-Ref '$Ref'"
         if ($null -eq $run -or $run.Session -ne '0') {
             # what runs the installer here, not the installer, kept it out of session 0: said, and not counted
