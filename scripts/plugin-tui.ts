@@ -88,6 +88,18 @@ const CORE_WAIT_MS = 30_000;
 const CORE_RETRY_MS = 100;
 
 /**
+ * Whether a core answers at `socket` before `ms` are over: `probe` connects every CORE_RETRY_MS until one does. A core
+ * that was just started listens a moment later, and nothing but a connect says when.
+ */
+export async function answersWithin(probe: (socket: string) => Promise<Probe>, socket: string, ms: number): Promise<boolean> {
+  for (const deadline = performance.now() + ms; performance.now() < deadline; ) {
+    if ((await probe(socket)).kind === "core") return true;
+    await Bun.sleep(CORE_RETRY_MS);
+  }
+  return false;
+}
+
+/**
  * The core the screen joins, as the environment the screen and a core it starts get: a `--session` flag (it clears an
  * inherited HC_SOCKET), else HC_SOCKET or HC_SESSION of the caller, else the ones Ovis's settings files name (the
  * installer writes them there), else hc's own `default`.
@@ -177,6 +189,8 @@ export interface LaunchParts {
   /** the folder `ovis tui` was typed in: a new workspace starts there, the first one too */
   readonly folder: string;
   probe(socket: string): Promise<Probe>;
+  /** whether the core that was just started answers at `socket` within `ms` (`answersWithin`) */
+  answers(socket: string, ms: number): Promise<boolean>;
   /**
    * hc with its trust checks, without the login shell's PATH; null when there is none. `env`: where it is looked for
    * and what its `--version` runs in, the environment its core would start in. `selector`: which hc the settings or
@@ -196,8 +210,6 @@ export interface LaunchParts {
   /** listens for a signal; what it returns stops listening */
   on(signal: "SIGINT" | "SIGTERM" | "SIGHUP", handler: () => void): () => void;
   err(text: string): void;
-  now(): number;
-  wait(ms: number): Promise<void>;
 }
 
 /**
@@ -243,12 +255,7 @@ export async function launchTui(argv: readonly string[], parts: LaunchParts): Pr
       say("start_failed", `${hc} server start exited ${started.code}${started.err.trim() === "" ? "" : `: ${started.err.trim()}`}`);
       return EXIT_FAILED;
     }
-    let answered = false;
-    for (const deadline = parts.now() + CORE_WAIT_MS; !answered && parts.now() < deadline; ) {
-      answered = (await parts.probe(target.path)).kind === "core";
-      if (!answered) await parts.wait(CORE_RETRY_MS);
-    }
-    if (!answered) {
+    if (!(await parts.answers(target.path, CORE_WAIT_MS))) {
       say("no_answer", `herdr-core was started but did not answer at ${target.path} within ${CORE_WAIT_MS / 1000} s`);
       return EXIT_FAILED;
     }
@@ -356,6 +363,17 @@ function systemHoldFile(temp: string): HoldFile | null {
  * Bun.spawn, hc. `home` is where Ovis's settings and hc's usual folders are looked for.
  */
 export function systemParts(caller: Env, home: string): LaunchParts {
+  const probe = async (socket: string): Promise<Probe> => {
+    const { connectCoreSocket } = await import("../server/herdr-core/socket-transport.ts");
+    try {
+      (await connectCoreSocket(socket)).kill();
+      return { kind: "core" };
+    } catch (error) {
+      const kind = (error as { kind?: unknown }).kind;
+      if (kind === "no_core") return { kind: "none" };
+      return { kind: "failed", code: typeof kind === "string" ? kind : "connect_failed", reason: error instanceof Error ? error.message : String(error) };
+    }
+  };
   return {
     platform: process.platform,
     isTty: isatty(0) && isatty(1),
@@ -363,17 +381,8 @@ export function systemParts(caller: Env, home: string): LaunchParts {
     settings: readSettings(caller, home),
     screen: screenStart(),
     folder: process.cwd(),
-    probe: async (socket) => {
-      const { connectCoreSocket } = await import("../server/herdr-core/socket-transport.ts");
-      try {
-        (await connectCoreSocket(socket)).kill();
-        return { kind: "core" };
-      } catch (error) {
-        const kind = (error as { kind?: unknown }).kind;
-        if (kind === "no_core") return { kind: "none" };
-        return { kind: "failed", code: typeof kind === "string" ? kind : "connect_failed", reason: error instanceof Error ? error.message : String(error) };
-      }
-    },
+    probe,
+    answers: (socket, ms) => answersWithin(probe, socket, ms),
     findHc: async (env, selector) => {
       const { findHc } = await import("../server/herdr-core/discovery.ts");
       // `home` is given, never read from `env`: with no HOME there, hc's usual folders would be looked for under the working folder
@@ -401,9 +410,6 @@ export function systemParts(caller: Env, home: string): LaunchParts {
       return () => process.off(signal, handler);
     },
     err: (text) => process.stderr.write(text),
-    now: () => performance.now(),
-    // fixed wait: the pause between two connects of launchTui's loop, which CORE_WAIT_MS bounds
-    wait: (ms) => Bun.sleep(ms),
   };
 }
 

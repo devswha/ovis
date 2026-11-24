@@ -6,7 +6,7 @@ import { ENTRIES } from "../server/entries.ts";
 import { type Held, LEAVE, LEAVE_ALL } from "../tui/host/guard.ts";
 import * as libc from "./libc.ts";
 import { importClosure, read } from "./source-scan.ts";
-import { callerEnv, launchTui, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
+import { answersWithin, callerEnv, launchTui, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
 
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
@@ -31,7 +31,7 @@ const HOME = "/nonexistent-home";
 type End = { code: number | null; signal: NodeJS.Signals | null };
 
 interface Fake {
-  /** what the launcher did, in order: probe, ask, find, start, wait, run, kill, on and off */
+  /** what the launcher did, in order: probe, ask, find, start, answers, run, kill, on and off */
   readonly calls: string[];
   /** each stderr line's stable code */
   readonly codes: () => string[];
@@ -49,10 +49,11 @@ interface Fake {
 
 /**
  * The launcher's parts as data: `probes` answer the connects in turn (the last one again after that), `answer` is the
- * line typed at the question, `hc` what the finder finds, `started` the exit of `hc server start`, `end` the screen's,
- * `held` what the screen's hold file says when it ended (null: no hold file could be made).
+ * line typed at the question, `hc` what the finder finds, `started` the exit of `hc server start`, `answers` whether the
+ * core that was started answers in time, `end` the screen's exit, `held` what the screen's hold file says when it ended
+ * (null: no hold file could be made).
  */
-function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; end?: End | Promise<End>; held?: Held | null; over?: Partial<LaunchParts> } = {}): Fake {
+function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; answers?: boolean; end?: End | Promise<End>; held?: Held | null; over?: Partial<LaunchParts> } = {}): Fake {
   const calls: string[] = [];
   const said: string[] = [];
   const runs: Fake["runs"] = [];
@@ -61,7 +62,6 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
   const handlers = new Map<string, () => void>();
   const finds: Fake["finds"] = [];
   const probes = [...options.probes ?? [{ kind: "core" } as const]];
-  let clock = 0;
   let unheld = 0;
   const parts: LaunchParts = {
     platform: "linux",
@@ -73,6 +73,10 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
     probe: async (socket) => {
       calls.push(`probe ${socket}`);
       return probes.length > 1 ? probes.shift()! : probes[0]!;
+    },
+    answers: async (socket, ms) => {
+      calls.push(`answers ${socket} within ${ms}`);
+      return options.answers ?? true;
     },
     findHc: async (env, selector) => {
       calls.push("find");
@@ -104,11 +108,6 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
       return () => { calls.push(`off ${signal}`); };
     },
     err: (text) => { said.push(text); },
-    now: () => clock,
-    wait: async (ms) => {
-      calls.push("wait");
-      clock += ms;
-    },
     ...options.over,
   };
   const codes = () => said.flatMap((text) => [...text.matchAll(/^ovis tui: ([a-z_]+): /gm)].map((match) => match[1]!));
@@ -118,7 +117,9 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
 /** the launcher's work, without its signal listeners */
 const work = (calls: string[]) => calls.filter((call) => !/^(on|off) /.test(call));
 const RAN = ["probe /scratch/hc.sock", "run screen"];
-const STARTED = ["probe /scratch/hc.sock", "discard", "ask", "find", "start /bin/hc", "probe /scratch/hc.sock", "wait", "probe /scratch/hc.sock", "run screen"];
+/** up to the start of a core, and the 30 s it has to answer */
+const START = ["probe /scratch/hc.sock", "discard", "ask", "find", "start /bin/hc", "answers /scratch/hc.sock within 30000"];
+const STARTED = [...START, "run screen"];
 const none: Probe = { kind: "none" };
 const core: Probe = { kind: "core" };
 
@@ -128,9 +129,10 @@ describe("the launch decision table", () => {
     ["a core answers: the screen, nothing asked", {}, [], 0, RAN, []],
     ["on macOS too", { over: { platform: "darwin" } }, [], 0, RAN, []],
     ["the screen's exit code is the launcher's", { end: { code: 3, signal: null } }, [], 3, RAN, []],
-    ["no core, Enter: hc found, a core started, the screen once it answers", { probes: [none, none, core] }, [], 0, STARTED, []],
-    ["no core, y", { probes: [none, none, core], answer: "y" }, [], 0, STARTED, []],
-    ["no core, Yes with blanks", { probes: [none, none, core], answer: " Yes " }, [], 0, STARTED, []],
+    ["no core, Enter: hc found, a core started, the screen once it answers", { probes: [none] }, [], 0, STARTED, []],
+    ["no core, y", { probes: [none], answer: "y" }, [], 0, STARTED, []],
+    ["no core, Yes with blanks", { probes: [none], answer: " Yes " }, [], 0, STARTED, []],
+    ["a core that was started and does not answer in time: no screen", { probes: [none], answers: false }, [], 1, START, ["no_answer"]],
     ["an Enter typed ahead that cannot be thrown away is no yes: nothing asked, found or started, the start command", { probes: [none], flushed: false, answer: "" }, [], 1, ["probe /scratch/hc.sock", "discard"], ["no_core"]],
     ["no core, n: the start command, nothing started", { probes: [none], answer: "n" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
     ["no core, no", { probes: [none], answer: "no" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
@@ -153,13 +155,20 @@ describe("the launch decision table", () => {
     if (options?.over?.platform === "win32") expect(run.said).toEqual([WINDOWS_MESSAGE]);
   });
 
-  it("waits 30 s for a core it started, trying every 100 ms, then gives up without the screen", async () => {
-    const run = fake({ probes: [none] });
-    expect(await launchTui([], run.parts)).toBe(1);
-    expect(run.calls.filter((call) => call.startsWith("probe")).length).toBe(1 + 300);
-    expect(run.calls.filter((call) => call === "wait").length).toBe(300);
-    expect(run.runs).toEqual([]);
-    expect(run.codes()).toEqual(["no_answer"]);
+  it("asks a core that was just started again until it answers", async () => {
+    const asked: string[] = [];
+    const replies: Probe[] = [none, { kind: "failed", code: "closed", reason: "ECONNRESET" }, core];
+    // a limit no slow run reaches: only the third reply ends the wait
+    expect(await answersWithin(async (socket) => { asked.push(socket); return replies.shift()!; }, SOCKET, 600_000)).toBe(true);
+    expect(asked).toEqual([SOCKET, SOCKET, SOCKET]);
+  });
+
+  it("gives a core that never answers up once its time is over, never before", async () => {
+    let asked = 0;
+    const from = performance.now();
+    expect(await answersWithin(async () => { asked += 1; return none; }, SOCKET, 150)).toBe(false);
+    expect(performance.now() - from).toBeGreaterThanOrEqual(150);
+    expect(asked).toBeGreaterThanOrEqual(1);
   });
 
   it("says once that OVIS_TUI_BIN is no longer used, from the caller or the settings, and runs the screen", async () => {
@@ -484,7 +493,7 @@ describe.skipIf(process.platform === "win32")("a recording stand-in hc", () => {
   const launching = { OVIS_TOKEN: "secret", OVIS_URL: "http://127.0.0.1:7317", PORT: "7317", HERDR_PANE_ID: "w1:p1", BUN_BE_BUN: "1", HC_TERMINAL_ID: "t-1", SSH_TTY: "/dev/pts/3", SSH_CONNECTION: "10.0.0.2 5000 10.0.0.1 22", SSH_CLIENT: "10.0.0.2 5000 22", SSH_AUTH_SOCK: "/tmp/ssh-x/agent.1", TMUX: "/tmp/tmux-1/default,1,0", TMUX_PANE: "%1", STY: "1.pts-1.host", WINDOWID: "42" };
 
   function parts(answer: string, caller: Record<string, string>) {
-    return fake({ probes: [none, core], answer, over: { ...withSystem(caller), caller } });
+    return fake({ probes: [none], answer, over: { ...withSystem(caller), caller } });
   }
   /** the system's finder and starter for `caller`, as the launcher runs them */
   function withSystem(caller: Record<string, string>): Partial<LaunchParts> {
@@ -562,11 +571,10 @@ for (const path of ["kernel", "fallback"]) {
   if (path === "kernel" && kernel === null) throw new Error("could not read the exec-time environment");
   const caller = callerEnv({ kernel: () => kernel, env: process.env, cwd: process.cwd() });
   if (path === "kernel" && caller.DOUBLE !== "fromshell") throw new Error("kernel snapshot lost the shell's DOUBLE");
-  let probes = 0;
   const code = await launchTui([], {
-    ...systemParts(caller, caller.HOME), isTty: true, probe: async () => ({ kind: probes++ === 0 ? "none" : "core" }), discard: () => true, ask: async () => "y",
+    ...systemParts(caller, caller.HOME), isTty: true, probe: async () => ({ kind: "none" }), answers: async () => true, discard: () => true, ask: async () => "y",
     screen: { command: [process.execPath, "--no-env-file", ${JSON.stringify(recorder)}], cwd: out, file: null },
-    terminal: { save: () => null, restore() {}, write() {} }, on: () => () => {}, wait: async () => {},
+    terminal: { save: () => null, restore() {}, write() {} }, on: () => () => {},
   });
   renameSync(out + "/screen.json", out + "/screen-" + path + ".json");
   renameSync(out + "/hc.env", out + "/hc-" + path + ".env");
