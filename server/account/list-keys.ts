@@ -9,14 +9,13 @@
  * has, with no word of it. The PC follows its list all the same and says so (`ListKeysError`); a reset relay identity
  * makes new keys.
  */
-import { randomBytes } from "node:crypto";
-import { linkSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { closeSync, linkSync, openSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { verifySignature } from "../../shared/account-list-entry.ts";
 import { generateStoredEncryptionKey, ListSealError, LIST_STORED_KEY_TEXT_LENGTH, readStoredEncryptionKey } from "../../shared/account-list-seal.ts";
 import { SERVER_ID_PATTERN } from "../../shared/relay-offer.ts";
 import { fromBase64Url } from "../../shared/relay-pair-sas.ts";
-import { preparePrivateState, syncDirectory } from "../private-state.ts";
+import { preparePrivateState, syncDirectory, writePrivateState } from "../private-state.ts";
 
 export const ACCOUNT_LIST_KEYS_FILE = "account-list-keys.json";
 
@@ -62,8 +61,16 @@ export const listKeysPath = (stateDir: string): string => join(stateDir, ACCOUNT
  * and is replaced then.
  */
 export function forgetListKeys(stateDir: string): void {
-  try { rmSync(listKeysPath(stateDir), { force: true }); }
-  catch (error) { console.error(`[account] ${ACCOUNT_LIST_KEYS_FILE} could not be removed: ${(error as NodeJS.ErrnoException).code ?? "unknown error"}`); }
+  const path = listKeysPath(stateDir);
+  // keys whose making began before this reset are the old PC's: they are not written after it (writeKeys)
+  RESETS.set(path, (RESETS.get(path) ?? 0) + 1);
+  try { rmSync(path, { force: true }); }
+  catch (error) {
+    // tried again at the next use of the keys; until then the file names the old identity, and is never used
+    LEFTOVER.add(path);
+    console.error(`[account] ${ACCOUNT_LIST_KEYS_FILE} could not be removed: ${(error as NodeJS.ErrnoException).code ?? "unknown error"}`);
+  }
+  sweepLeftovers();
 }
 
 function parseFile(text: string): KeysFile {
@@ -94,52 +101,68 @@ async function importKeys(file: KeysFile): Promise<PcListKeys> {
   }
 }
 
-/** How often one call looks again at the file after another server instance changed it under it. */
+/** How often one call looks again at the file after it wrote it. */
 const CREATE_TRIES = 4;
+/** A lock older than this was left by an Ovis that stopped while it made keys: it is taken over. */
+const LOCK_STALE_MS = 15_000;
+/** How long a call waits for another Ovis on the same state folder to finish making this PC's keys. */
+export const LIST_KEYS_LOCK_WAIT_MS = 10_000;
+const LOCK_POLL_MS = 20;
+
+/** How often each keys file was forgotten in this process (forgetListKeys): keys whose making began before a reset are never written after it. */
+const RESETS = new Map<string, number>();
+/** Names of a keys file that could not be removed when they should have been (a spare name of a pair, a forgotten file): tried again at every use. */
+const LEFTOVER = new Set<string>();
+
+function sweepLeftovers(): void {
+  for (const path of [...LEFTOVER]) {
+    try { rmSync(path, { force: true }); LEFTOVER.delete(path); } catch { /* tried again at the next use */ }
+  }
+}
 
 /**
- * Puts a new pair in the file only if no file is there (an exclusive create: a hard link of the finished, flushed
- * temporary file). True when this call's file is the one there now. Another server instance on this state folder may
- * be doing the same at the same moment: one of the two wins, and both then read what is on disk.
+ * One maker of keys per state folder, among every Ovis that runs on it: a lock file beside the keys file, created
+ * exclusively. Whoever holds it reads the keys file, writes it when it holds no keys of this identity, and reads it
+ * back; everybody else waits and then reads what it wrote.
  */
-async function createKeys(path: string, serverId: string): Promise<boolean> {
+async function locked<T>(path: string, waitMs: number, work: () => Promise<T>): Promise<T> {
+  const lock = `${path}.lock`;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try { closeSync(openSync(lock, "wx", 0o600)); break; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new ListKeysError("its folder cannot be written");
+      let age: number;
+      try { age = Date.now() - statSync(lock).mtimeMs; } catch { continue; }
+      if (age > LOCK_STALE_MS) { try { unlinkSync(lock); } catch { /* another call took it over */ } continue; }
+      if (Date.now() > deadline) throw new ListKeysError("another Ovis on this state folder is making this PC's keys");
+      await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+    }
+  }
+  try { return await work(); } finally { try { unlinkSync(lock); } catch { /* a stale lock is taken over */ } }
+}
+
+/**
+ * Writes a new pair for `serverId`, under the lock. Where no file is there it is created exclusively (a hard link of
+ * the finished, flushed temporary file); another identity's file is replaced. Nothing is written when the relay
+ * identity was reset since `resets` was read: those keys would be the old PC's.
+ */
+async function writeKeys(path: string, serverId: string, replace: boolean, resets: number): Promise<void> {
   const signing = await generateStoredEncryptionKey();
   const encryption = await generateStoredEncryptionKey();
   const file: KeysFile = { v: 1, server_id: serverId, signing: signing.secret, encryption: encryption.secret };
   // a pair that does not import is never written
   await importKeys(file);
+  if ((RESETS.get(path) ?? 0) !== resets) throw new ListKeysError("this PC's relay identity was reset while its keys were being made");
+  if (replace) { writePrivateState(path, file); return; }
   const temporary = preparePrivateState(path, file);
   try {
     linkSync(temporary, path);
     syncDirectory(dirname(path), process.platform);
-    return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    return false;
   } finally {
-    try { unlinkSync(temporary); } catch { /* the pair in it is nobody's */ }
-  }
-}
-
-/**
- * Takes another identity's file out of the way, so that the new identity's pair can be created exclusively. The file
- * is moved aside first, which only one of two instances can do, and looked at where nobody else writes: if it turns
- * out to be this identity's (another instance made it a moment ago), it is put back and nothing is lost.
- */
-function setAside(path: string, serverId: string): void {
-  const aside = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.old`;
-  try { renameSync(path, aside); } catch (error) {
-    // gone already: another instance took it
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  try {
-    let ours = false;
-    try { ours = parseFile(readFileSync(aside, "utf8")).server_id === serverId; } catch { /* not this identity's keys */ }
-    // put back only where nothing took its place meanwhile; otherwise the file there now is the one both read
-    if (ours) try { linkSync(aside, path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-  } finally {
-    try { unlinkSync(aside); } catch { /* a stale copy of keys that no identity uses */ }
+    // the spare name of the pair: when it cannot be removed now, it is removed at a later use and at a reset
+    try { unlinkSync(temporary); } catch { LEFTOVER.add(temporary); }
   }
 }
 
@@ -148,36 +171,48 @@ export class ListKeyStore {
   private held: PcListKeys | null = null;
   private turn: Promise<unknown> = Promise.resolve();
 
-  constructor(stateDir: string) { this.path = listKeysPath(stateDir); }
+  /** `lockWaitMs`: how long a call waits for another Ovis on the folder to finish making keys (LIST_KEYS_LOCK_WAIT_MS). */
+  constructor(stateDir: string, private readonly lockWaitMs = LIST_KEYS_LOCK_WAIT_MS) { this.path = listKeysPath(stateDir); }
 
   /**
    * The keys of the relay identity `serverId`: read from the file, made when there is none, and made anew when the
    * file holds another identity's (the old ones go). Throws ListKeysError for a file that will not read. One caller
-   * at a time in this process, and one winner per state folder among processes: the file is created exclusively, and
+   * at a time in this process, and one maker per state folder among processes (a lock file beside the keys file):
    * every caller answers with the pair it then reads from disk.
    */
   keysFor(serverId: string): Promise<PcListKeys> {
-    const next = this.turn.then(() => this.load(serverId), () => this.load(serverId));
+    // read now, as the keys are asked for: a reset that comes before they are written makes them the old PC's
+    const resets = RESETS.get(this.path) ?? 0;
+    const next = this.turn.then(() => this.load(serverId, resets), () => this.load(serverId, resets));
     this.turn = next.catch(() => undefined);
     return next;
   }
 
-  private async load(serverId: string): Promise<PcListKeys> {
+  private async load(serverId: string, resets: number): Promise<PcListKeys> {
     if (this.held?.serverId === serverId) return this.held;
-    // Whatever this call makes, the keys it answers with are the ones on disk: read back after every write, so two
-    // server instances on one state folder never hold two pairs for one PC
-    for (let tries = 0; tries < CREATE_TRIES; tries++) {
+    sweepLeftovers();
+    const read = async (): Promise<{ readonly keys: PcListKeys } | { readonly other: boolean }> => {
       let text: string | null;
       try { text = readFileSync(this.path, "utf8"); } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new ListKeysError("the file cannot be read");
         text = null;
       }
       const file = text === null ? null : parseFile(text);
-      if (file !== null && file.server_id === serverId) return this.held = await importKeys(file);
-      // another identity's keys are no PC's any more: out of the way, then a pair for this one
-      if (file !== null) setAside(this.path, serverId);
-      await createKeys(this.path, serverId);
-    }
-    throw new ListKeysError("it changed while this PC's keys were being made");
+      return file !== null && file.server_id === serverId ? { keys: await importKeys(file) } : { other: file !== null };
+    };
+    // the usual case takes no lock: the file holds this identity's keys
+    const first = await read();
+    if ("keys" in first) return this.held = first.keys;
+    // Whatever this call makes, the keys it answers with are the ones on disk, read back under the lock: every Ovis on
+    // this state folder ends with one pair for one PC
+    return this.held = await locked(this.path, this.lockWaitMs, async () => {
+      for (let tries = 0; tries < CREATE_TRIES; tries++) {
+        const now = await read();
+        if ("keys" in now) return now.keys;
+        // another identity's keys are no PC's any more: replaced by a pair for this one
+        await writeKeys(this.path, serverId, now.other, resets);
+      }
+      throw new ListKeysError("it changed while this PC's keys were being made");
+    });
   }
 }

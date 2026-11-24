@@ -35,6 +35,8 @@ export const ACCOUNT_LIST_FILE = "account-list.json";
 export const LIST_TICK_MS = 30_000;
 /** The hour the copy's clock shows is saved when it moved on by this much, and at once when a decision turned on it. */
 const CLOCK_SAVE_SECONDS = 60;
+/** A post the account service did not confirm is made again after this long. */
+const POST_RETRY_MS = 60_000;
 /** A post of the PC's keys lasts ten minutes at the account service: an end named further off than this is no end it gave. */
 const POST_UNTIL_MAX_SECONDS = 24 * 60 * 60;
 /** The PC's post of its keys lasts ten minutes at the account service; it is made again when it is this old. */
@@ -44,6 +46,7 @@ export const LIST_POST_RENEW_MS = 4 * 60_000;
 export const DIFFERENCES_MAX = 1000;
 
 const BIND_ID = /^[0-9a-f]{32}$/;
+const REFUSAL_CODE = /^[a-z][a-z0-9_]{0,39}$/;
 
 /** `account-list.json`: `save` is the follower's own text (writeSave), which carries its sum. */
 interface ListFile {
@@ -127,10 +130,23 @@ export class ListFollow {
 
   constructor(private readonly deps: ListFollowDeps) { this.path = join(deps.stateDir, ACCOUNT_LIST_FILE); }
 
-  /** What a mailbox pull's answer named as the account's list. Starts a read in turn and returns at once. */
-  heard(account: string, named: NamedList | null): void {
+  /**
+   * What a mailbox pull's answer named as the account's list. Starts a read in turn and returns at once. `asked`: what
+   * `scopeToken` answered when the pull began; a hint for another binding or relay identity than the PC has when its
+   * turn comes is dropped.
+   */
+  heard(account: string, named: NamedList | null, asked?: string | null): void {
     if (this.stopped) return;
-    this.enqueue(() => this.follow(account, named));
+    this.enqueue(async () => {
+      if (asked !== undefined && asked !== this.scopeToken()) return;
+      await this.follow(account, named);
+    });
+  }
+
+  /** The relay identity and binding the PC has now, as one word: what a mailbox pull keeps to say which PC its answer was for. Null for none. */
+  scopeToken(): string | null {
+    const scope = this.scopeNow();
+    return scope === null ? null : `${scope.serverId} ${scope.bindId}`;
   }
 
   /**
@@ -152,6 +168,15 @@ export class ListFollow {
       if (scope === null) return;
       await this.load(scope);
       await this.readWhenDue(scope);
+      // a PC that waits to be added keeps its post alive by its own clock too, whatever the mailbox says
+      const copy = this.current();
+      if (copy === null || standing(copy) !== "waiting" || !this.live(scope)) return;
+      let keys: PcListKeys;
+      try { keys = await this.deps.keys.keysFor(scope.serverId); } catch (error) {
+        if (!(error instanceof ListKeysError)) throw error;
+        return;
+      }
+      if (this.live(scope) && this.copy === copy && copy.me.key === keys.key) await this.post(copy, keys, scope);
     });
   }
 
@@ -172,6 +197,9 @@ export class ListFollow {
   status(): ListStatus {
     const copy = this.current();
     const view = copy?.state ? listView(copy.state) : null;
+    // what was said of another binding or relay identity than the PC has now is not said of this one
+    const scope = this.scopeNow();
+    const mine = scope !== null && this.scope !== null && scope.serverId === this.scope.serverId && scope.bindId === this.scope.bindId;
     // a post is spent by the entry that adds the PC: one that is in, or out, has none
     const posted = copy !== null && standing(copy) === "waiting" ? this.postedUntil : null;
     return {
@@ -184,11 +212,11 @@ export class ListFollow {
       pcs: view?.pcs.filter((row) => row.removed === null).length ?? 0,
       alarm: copy?.alarm ? "fork" : null,
       last_read_at: copy?.read_at == null ? null : new Date(copy.read_at * 1000).toISOString(),
-      last_verdict: this.lastVerdict,
-      differences: this.differences.size,
-      keys: this.keysState,
+      last_verdict: mine ? this.lastVerdict : null,
+      differences: mine ? this.differences.size : 0,
+      keys: mine ? this.keysState : null,
       posted_until: posted === null ? null : new Date(posted * 1000).toISOString(),
-      error: this.problem ?? this.error,
+      error: mine ? this.problem ?? this.error : null,
     };
   }
 
@@ -208,7 +236,9 @@ export class ListFollow {
       // No row here: the list alone would let it in only for the proof of its key
       if (list.role === null) return;
       const role = list.role;
-      const prove = () => verifyRelayProof(key, given).then((proved) => { if (proved) this.compare(key, "none", role); }, () => undefined);
+      const scope = this.scope;
+      // the proof is checked later: what it shows is said only of the binding the sign-in came under
+      const prove = () => verifyRelayProof(key, given).then((proved) => { if (proved && scope !== null && this.scope === scope && this.live(scope)) this.compare(key, "none", role); }, () => undefined);
       this.turn = this.turn.then(prove, prove);
     } catch { /* a shadow never stands in the way of a sign-in */ }
   }
@@ -300,7 +330,8 @@ export class ListFollow {
   private seconds(): number { return Math.floor(this.deps.now() / 1000); }
 
   private words(error: unknown): string {
-    if (error instanceof AccountServiceRefusal) return `The account service answered ${error.status}${error.code === null ? "" : ` ${error.code}`} to ${error.path}`;
+    // a code is said only in the form the service's own codes have: nothing longer, and nothing that could be a key
+    if (error instanceof AccountServiceRefusal) return `The account service answered ${error.status}${error.code !== null && REFUSAL_CODE.test(error.code) ? ` ${error.code}` : ""} to ${error.path}`;
     if (error instanceof ListKeysError) return error.message;
     return error instanceof Error ? error.name : "The list could not be followed";
   }
@@ -379,10 +410,13 @@ export class ListFollow {
       // a service that is away, or that serves this PC no list, is no word on the list: the copy stays as it is
       this.error = this.words(error);
     } finally {
-      // The PC left its account, or is another PC, while the service answered: nothing of that read is kept
-      if (this.live(scope) && this.copy === before) {
-        const changed = copy.entries !== before.entries || copy.state !== before.state || copy.alarm !== before.alarm || copy.stop !== before.stop;
-        this.keep(copy, scope, changed || (copy.state !== null && copy.seen_at !== null && (this.savedSeenAt === null || copy.seen_at - this.savedSeenAt >= CLOCK_SAVE_SECONDS)));
+      // The PC left its account, or is another PC, while the service answered: nothing of that read is kept. The
+      // copy the read began on may have had its clock moved on meanwhile (a sign-in decided on it): that is the same
+      // history, and the latest hour is kept with what was read
+      const held = this.copy;
+      if (this.live(scope) && held !== null && sameHistory(held, before)) {
+        const read = held.seen_at === null ? copy : withClock(copy, held.seen_at);
+        this.keep(read, scope, !sameHistory(read, before) || (read.state !== null && read.seen_at !== null && (this.savedSeenAt === null || read.seen_at - this.savedSeenAt >= CLOCK_SAVE_SECONDS)));
       }
     }
   }
@@ -396,10 +430,11 @@ export class ListFollow {
       // nothing is posted for an account the PC has left meanwhile
       if (!this.live(scope)) return;
       const answer = await this.deps.call("/v2/pc/list/keys", { list: copy.list, key: keys.key, enc: keys.enc, card });
-      this.postedAt = now;
       const { until } = answer;
-      const ends = typeof until === "number" && Number.isSafeInteger(until) && until >= 0 && until - this.seconds() <= POST_UNTIL_MAX_SECONDS;
+      const ends = typeof until === "number" && Number.isSafeInteger(until) && until > this.seconds() && until - this.seconds() <= POST_UNTIL_MAX_SECONDS;
       this.postedUntil = ends ? until : null;
+      // an answer that names no end ahead is no post the PC can count on: it is made again in a minute, not in four
+      this.postedAt = ends ? now : now - LIST_POST_RENEW_MS + POST_RETRY_MS;
       if (!ends) this.error = "The account service did not say until when it holds this PC's keys";
     } catch (error) {
       this.postedUntil = null;
@@ -429,6 +464,8 @@ export class ListFollow {
     this.problem = null;
     this.scope = { serverId: scope.serverId, bindId: scope.bindId };
     this.differences.clear();
+    this.lastVerdict = this.error = null;
+    this.keysState = null;
     this.postedAt = this.postedUntil = this.askedAt = this.savedSeenAt = null;
     let text: string;
     try { text = readFileSync(this.path, "utf8"); } catch (error) {
@@ -443,6 +480,8 @@ export class ListFollow {
     // another identity's or binding's copy is not this PC's, and neither is a file that is no copy: the next save replaces it
     if (file === null || file.server_id !== scope.serverId || file.bind_id !== scope.bindId) return;
     const saved = await readSave(file.save);
+    // the PC stopped, left its account or became another PC while the save was replayed: that copy is nobody's
+    if (!this.live(scope) || this.scope?.serverId !== scope.serverId || this.scope.bindId !== scope.bindId) { this.loaded = false; return; }
     // a copy that does not read is read again from the service: it decides nothing
     if (!saved.read) return;
     this.copy = saved.copy;
@@ -453,6 +492,11 @@ export class ListFollow {
       this.keep(saved.copy, scope, true);
     }
   }
+}
+
+/** Whether two copies hold one history: the same entries and what they add up to, whatever hour their clocks show. */
+function sameHistory(one: FollowerCopy, other: FollowerCopy): boolean {
+  return one.list === other.list && one.entries === other.entries && one.state === other.state && one.alarm === other.alarm && one.stop === other.stop;
 }
 
 function parseFile(text: string): ListFile | null {

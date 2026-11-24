@@ -34,7 +34,7 @@ async function following(options: { stateDir?: string; seconds?: number; account
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "ovis-list-follow-"));
   if (options.stateDir === undefined) dirs.push(stateDir);
   const world = {
-    seconds: options.seconds ?? 1_800_000_000, bound: true, calls: [] as string[],
+    seconds: options.seconds ?? 1_800_000_000, bound: true, bind: BIND, calls: [] as string[],
     /** what the service answers a log request with, in the log's place */
     log: null as ((body: Record<string, unknown>) => Record<string, unknown>) | null,
     /** each call waits for this before it answers */
@@ -56,7 +56,7 @@ async function following(options: { stateDir?: string; seconds?: number; account
   };
   const deps: ListFollowDeps = {
     stateDir, keys: new ListKeyStore(stateDir), identity: () => identity,
-    binding: () => world.bound ? { account: ACCOUNT, id: BIND } : null,
+    binding: () => world.bound ? { account: ACCOUNT, id: world.bind } : null,
     rowKey: () => null,
     now: () => world.seconds * 1000,
     call: async (path, body) => {
@@ -75,9 +75,14 @@ async function following(options: { stateDir?: string; seconds?: number; account
   /** A mailbox pull that named the list as the service holds it, followed to its end. */
   const pull = async () => { list.heard(ACCOUNT, hint()); await list.settled(); };
   const reads = () => world.calls.filter((path) => path === "/v2/pc/list/log").length;
+  /** Resolves once a log request is out that was not when this was called (`after`: the count then), within ten seconds. */
+  const asked = async (after = 0) => {
+    const deadline = Date.now() + 10_000;
+    while (reads() <= after) { if (Date.now() > deadline) throw new Error("The PC asked for no log"); await Bun.sleep(5); }
+  };
   /** A member adds this PC from the keys it posted: from then on the list answers for its devices. */
   const addPc = async () => { await pull(); await account.addPostedPc(endpoint); await pull(); };
-  return { list, world, service, account, stateDir, pull, reads, hint, deps, addPc };
+  return { list, world, service, account, stateDir, pull, reads, hint, deps, addPc, asked };
 }
 
 describe("a PC that holds a list reads it at its own pace", () => {
@@ -171,8 +176,9 @@ describe("the PC's clock never counts for less than it once showed", () => {
     const said: string[] = [];
     const log = spyOn(console, "info").mockImplementation((line: unknown) => { said.push(String(line)); });
     try {
-      // the same head, ten seconds past the device's time: the shadow says the list would not let it in
-      pc.world.seconds = 1_800_000_060;
+      // the same head, five seconds past the device's time and under a minute since the last save: only the
+      // decision itself saves the hour. The shadow says the list would not let it in
+      pc.world.seconds = 1_800_000_055;
       await pc.pull();
       pc.list.shadowSnapshot([watcher.key]);
       await pc.list.settled();
@@ -197,7 +203,7 @@ describe("work in flight when the PC leaves its account", () => {
     pc.world.gate = new Promise((resolve) => { release = resolve; });
     pc.list.heard(ACCOUNT, pc.hint());
     // the log request is out
-    while (pc.reads() === 0) await new Promise((resolve) => setImmediate(resolve));
+    await pc.asked();
     pc.world.bound = false;
     release();
     await pc.list.settled();
@@ -211,7 +217,7 @@ describe("work in flight when the PC leaves its account", () => {
     let release = () => {};
     pc.world.gate = new Promise((resolve) => { release = resolve; });
     pc.list.heard(ACCOUNT, pc.hint());
-    while (pc.reads() === 0) await new Promise((resolve) => setImmediate(resolve));
+    await pc.asked();
     pc.list.stop();
     release();
     await pc.list.settled();
@@ -271,5 +277,77 @@ describe("what the PC says of itself", () => {
     } finally { log.mockRestore(); }
     const differences = said.filter((line) => line.event === "account.list.differs").map(({ snapshot, list, of }) => ({ snapshot, list, of }));
     expect(differences).toEqual([{ snapshot: "admitted", list: "never_added", of: "credential" }, { snapshot: "none", list: "drive", of: "credential" }]);
+  });
+});
+
+describe("found in review", () => {
+  test("a read that ends after a sign-in moved the copy's clock on is kept", async () => {
+    const pc = await following();
+    await pc.addPc();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    let release = () => {};
+    pc.world.gate = new Promise((resolve) => { release = resolve; });
+    const before = pc.reads();
+    pc.list.heard(ACCOUNT, pc.hint());
+    await pc.asked(before);
+    // a sign-in is decided on the copy meanwhile, a second later
+    pc.world.seconds += 1;
+    pc.list.shadowSignIn({ deviceId: "0".repeat(16), nonce: new Uint8Array(32), signature: "x", serverId: pc.deps.identity()!.server_id, snapshot: "admitted" });
+    pc.list.shadowSnapshot([pc.account.first.key]);
+    release();
+    pc.world.gate = null;
+    await pc.list.settled();
+    expect(pc.list.status()).toMatchObject({ head: pc.account.place, devices: 2 });
+  });
+
+  test("what was said of a binding the PC left is not said of the next", async () => {
+    const pc = await following();
+    pc.world.log = () => { throw new AccountServiceRefusal(500, "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE", "/v2/pc/list/log"); };
+    await pc.pull();
+    // the code the service sent is no code of its own form: it is not repeated
+    expect(pc.list.status().error).toBe("The account service answered 500 to /v2/pc/list/log");
+    expect(pc.list.status().last_verdict).not.toBeNull();
+    pc.world.bound = false;
+    expect(pc.list.status()).toMatchObject({ account: null, list: null, last_verdict: null, error: null, keys: null, differences: 0 });
+  });
+
+  test("a hint asked for under one binding is not followed under the next", async () => {
+    const pc = await following();
+    const asked = pc.list.scopeToken();
+    pc.world.bind = "cd".repeat(16);
+    pc.list.heard(ACCOUNT, pc.hint(), asked);
+    await pc.list.settled();
+    expect(pc.world.calls).toEqual([]);
+    expect(pc.list.status().list).toBeNull();
+    // one asked for under the binding the PC has is
+    pc.list.heard(ACCOUNT, pc.hint(), pc.list.scopeToken());
+    await pc.list.settled();
+    expect(pc.list.status().list).toBe(pc.account.id);
+  });
+
+  test("a PC that waits to be added renews its post by its own clock, with no mailbox answer", async () => {
+    const pc = await following();
+    await pc.pull();
+    const posts = () => pc.world.calls.filter((path) => path === "/v2/pc/list/keys").length;
+    expect(posts()).toBe(1);
+    pc.world.seconds += PC_READ_SECONDS;
+    pc.list.tick();
+    await pc.list.settled();
+    expect(posts()).toBe(2);
+  });
+
+  test("a post whose end is not ahead is no post: it is not named, and is made again within a minute", async () => {
+    const pc = await following();
+    pc.world.until = 0;
+    await pc.pull();
+    const posts = () => pc.world.calls.filter((path) => path === "/v2/pc/list/keys").length;
+    expect(pc.list.status().posted_until).toBeNull();
+    expect(posts()).toBe(1);
+    pc.world.until = null;
+    pc.world.seconds += 61;
+    await pc.pull();
+    expect(posts()).toBe(2);
+    expect(pc.list.status().posted_until).not.toBeNull();
   });
 });
