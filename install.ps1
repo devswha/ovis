@@ -504,6 +504,8 @@ function Set-SignInStart([string]$Herdr) {
     if ($kind -in 'app', 'other') { return $kind }
     try {
         Write-HerdrLauncher $Herdr
+        # every profile has the key; one made without it is given it
+        if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey -Force | Out-Null }
         Set-ItemProperty -Path $runKey -Name $signInName -Value "`"$windowsPowerShell`" $(Get-LauncherArguments)" -ErrorAction Stop
         'ours'
     } catch {
@@ -643,8 +645,12 @@ function Write-HerdrLines($Herdr, [string]$Ovis) {
     }
     if ($Herdr.Started -eq 'desktop') {
         Write-Host "Ovis: signing out of Windows ends herdr and every terminal in it (lock the PC instead); a herdr that stops or crashes is not started again until $(if ($signIn) { 'your next sign-in, or ' })this installer runs again"
+        # herdr in the desktop gets this account's environment, not this run's, and hands it to Ovis
+        if ($env:OVIS_TOKEN) { Write-Host "Ovis: the OVIS_TOKEN set for this run does not reach the herdr started in your desktop$(if ($signIn) { ' or at your sign-in' }), so Ovis runs without it: $tokenWhere" }
     }
 }
+# where Ovis reads OVIS_TOKEN at every start, whatever started herdr
+$tokenWhere = 'put OVIS_TOKEN=<token> in the file env in the folder `herdr plugin config-dir devswha.ovis` prints, then restart Ovis (herdr plugin action invoke devswha.ovis.stop-windows, then devswha.ovis.start-windows)'
 
 # `ovis` in any new terminal, as install.sh's launcher gives Linux and macOS: cmd\ovis.cmd runs the release's server as
 # `ovis-server plugin <command>`. It is kept beside bin\, not in it, since an update replaces bin\ whole; its folder is
@@ -1399,7 +1405,7 @@ if ($wantAdd) {
         if (-not $takesAccount) { $addResult = 'old' }
         else {
             Write-Host ''
-            Write-Host "Ovis: on a PC other people sign in to, set OVIS_TOKEN first: without it any local user counts as this PC (https://github.com/devswha/ovis/blob/main/docs/relay.md#a-pc-with-no-screen)"
+            Write-Host "Ovis: on a PC other people sign in to, set OVIS_TOKEN first, where Ovis reads it at every start: without it any local user counts as this PC (https://github.com/devswha/ovis/blob/main/docs/relay.md#a-pc-with-no-screen); $tokenWhere"
             @() | & $ovisCli[0] $ovisCli[1] add --account $addAccount
             $addResult = if ($LASTEXITCODE -eq 0) { 'done' } else { 'failed' }
         }

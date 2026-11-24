@@ -116,8 +116,11 @@ in a file (your tool's own background run, where it ends what its commands start
 
 ```powershell
 $env:OVIS_ADD_ACCOUNT = '<id>'
-Start-Process powershell -WindowStyle Hidden -RedirectStandardOutput "$HOME\ovis-install.log" -RedirectStandardError "$HOME\ovis-install.err" -ArgumentList '-NoProfile', '-Command', 'try { irm https://ovis.sh/install.ps1 | iex; "install-exit=0" } catch { "$_"; "install-exit=1" }'
+Start-Process powershell -WindowStyle Hidden -RedirectStandardOutput "$HOME\ovis-install.log" -RedirectStandardError "$HOME\ovis-install.err" -ArgumentList '-NoProfile -Command try { irm https://ovis.sh/install.ps1 | iex; Write-Output install-exit=0 } catch { Write-Output $_; Write-Output install-exit=1 }'
 ```
+
+(One string for `-ArgumentList`, with no double quotes in it: Windows PowerShell joins a list unquoted, and the
+command line would lose them.)
 
 Then read `~\ovis-install.log` every few seconds, give the user the address and code as soon as it
 shows `1. On any device, open: <address>` and `2. Enter this code: <code>`, and keep reading until it

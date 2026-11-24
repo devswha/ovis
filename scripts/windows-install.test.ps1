@@ -809,6 +809,10 @@ exit /b 1
     $state.runValue = $ourSignIn; $state.running = $false; $env:OVIS_NO_SERVICE = '1'
     try { $out = & $run } finally { Remove-Item Env:\OVIS_NO_SERVICE }
     Assert (-not $out.Message -and $out.Starts -eq 'desktop' -and $null -eq $state.runValue -and $out.Said -match 'started in your desktop for now, with no sign-in start \(-NoService\)') "OVIS_NO_SERVICE=1 with herdr stopped must start herdr once and leave no sign-in start: $($out.Message) $($out.Said)"
+    # an OVIS_TOKEN of this run's own does not reach a herdr the desktop starts: said, with where it goes, never printed
+    $givenToken = $env:OVIS_TOKEN; $env:OVIS_TOKEN = 'a-token-of-this-run'; $state.running = $false
+    try { $out = & $run } finally { if ($null -eq $givenToken) { Remove-Item Env:\OVIS_TOKEN } else { $env:OVIS_TOKEN = $givenToken } }
+    Assert (-not $out.Message -and $out.Starts -eq 'desktop' -and $out.Said -match 'the OVIS_TOKEN set for this run does not reach the herdr started in your desktop or at your sign-in, so Ovis runs without it: put OVIS_TOKEN=<token> in the file env' -and $out.Said -notmatch 'a-token-of-this-run') "An OVIS_TOKEN of this run must be said not to reach the desktop's herdr, with where it goes: $($out.Message) $($out.Said)"
     foreach ($case in @(
         @{ value = $appSignIn; said = 'herdr was started in your desktop for Ovis, and the Ovis app starts it at your sign-in' },
         @{ value = $appSignIn; noService = $true; said = "the Ovis app's sign-in start is still there.*Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name Ovis" },
