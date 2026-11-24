@@ -91,7 +91,36 @@ Then read the file every few seconds (`tail -n 30 ~/ovis-install.log`). As soon 
 on a PC with a desktop), give the user that address and code at once: they sign in there with GitHub
 or Google, then press **Add** for this PC in Ovis on a device of that account. Keep reading until the
 file ends with `install-exit=<n>`, for at most 15 minutes: `install-exit=0` means the PC was added
-(`Added. Open (this PC) from My PCs.`), anything else means it was not, and the lines above it say why. Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
+(`Added. Open (this PC) from My PCs.`), anything else means it was not, and the lines above it say why.
+After `install-exit=0` the user sees the PC in **My PCs** on their devices, and the installer's last
+lines say what runs (`Ovis runs now at …`). To confirm it yourself, run `ovis status --json` on the PC:
+`account` is the account's id (compare it with the one the user gave you), and `relay.connected` turns
+`true` once its relay is online, within seconds (the PC is in the account either way).
+
+**Set up a PC from an agent.** The way with nothing for the user to relay is an invite: the user makes
+one on a device signed in to their account (one line, `ovis-join:1:…`, which works once, for 15
+minutes) and gives it to you with the account's id. The line is a key: put it in a file only the user
+can read, with your file tool, never in a command line (that shows in the process list) or a log. Then
+run the one line for the PC's system, in the background with its output in a file, as above:
+
+```bash
+curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ~/ovis-invite.txt --account <id>
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -JoinFile $HOME\ovis-invite.txt -Account <id>
+```
+
+The PC joins with no sign-in. An invite made to add the PC at once ends within seconds; any other waits
+up to 10 minutes for **Add**: when the file says `press Add for <name>`, tell the user to press it on a
+device of that account. The file ends with `install-exit=0` once the PC is in the account (`this PC
+is in the Ovis account the invite is for`), and `ovis status --json` confirms it as above; anything
+else means it did not join, and the last `Ovis:` line says why (a used or expired invite needs a new
+one). `OVIS_JOIN=<line>` gives the line where arguments cannot be given; `--join <line>` works too but
+puts it in the process list. Without `--account` the installer asks at a terminal whether the
+invite's account is the user's, and elsewhere refuses. Never guess the id.
+
+Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
 take turns through an install lock in `~/.local/share/ovis`: a waiter breaks the lock once the holder's pid no
 longer runs, one breaker at a time. A release
 from before the compiled server, a branch in `OVIS_REF`, an install from source already on the PC, or

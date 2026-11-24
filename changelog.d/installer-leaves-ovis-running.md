@@ -15,3 +15,9 @@
   `OVIS_ADD_ACCOUNT=<id>`) adds a new server to your Ovis account with no terminal, as a script or a
   coding agent runs it: the installer runs `ovis add --account <id>` and exits non-zero when the PC
   was not added.
+- `curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file <file> --account <id>` (or the line in
+  `OVIS_JOIN`) joins a new PC to your Ovis account with an invite a device of it made, with no sign-in
+  on the PC: once Ovis runs, the installer runs `ovis join` with the line in its environment, never on
+  a command line, and exits non-zero unless the PC joined, saying why in one line. Without `--account`
+  it runs the join at a terminal, which asks whether the invite's account is yours. `--help` lists
+  the installer's options.

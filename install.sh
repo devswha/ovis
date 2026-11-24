@@ -43,6 +43,14 @@
 #
 #   curl -fsSL https://ovis.sh/install.sh | sh -s -- --add --account <id>
 #
+# Or the PC joins the account with an invite a device signed in to it made (one line, ovis-join:1:…), with no sign-in
+# here: the installer ends with `ovis join`, which takes the line in its environment, never on a command line. The line
+# is a key, so give it in a file (--join-file <path>) or in OVIS_JOIN: `--join <line>` works too, but shows in the process
+# list to every user of this PC while the install runs. `ovis join` asks at a terminal whether the invite's account is
+# yours; --account <id> answers that where nobody can type, and the installer then exits non-zero unless the PC joined:
+#
+#   curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ./ovis-invite.txt --account <id>
+#
 # On a PC with herdr-core (hc, the core the Herdr app runs on) and no herdr, steps 1 and 2 are instead:
 # the compiled server alone (from source: Bun, and Ovis in its own checkout, ~/.local/share/ovis/app),
 # started on herdr-core (OVIS_RUNTIME=herdr-core) as a user service that starts again at login
@@ -57,6 +65,7 @@
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
 #   OVIS_ADD=1   the same as --add, for where the installer's arguments cannot be given
 #   OVIS_ADD_ACCOUNT=<id>   the same as --account <id>
+#   OVIS_JOIN=<line>   the same as --join <line>, kept out of the process list; the installer removes it from what it starts
 #   OVIS_NO_SERVICE=1   the same as --no-service: where herdr is not running, start it once and set up no service or
 #     lingering, so it starts again only when you open it
 set -eu
@@ -77,11 +86,16 @@ HERDR_UNIT_DESCRIPTION="herdr for Ovis: herdr's server, headless, which starts O
 HERDR_AGENT_LABEL="sh.ovis.herdr-server"
 # the first release whose `ovis add` takes --account (scripts/plugin-link.ts): an older one would not check the account
 ACCOUNT_SINCE="0.5.10"
+# the first release with `ovis join` (scripts/plugin-join.ts), and the shape of the line it takes
+# (shared/account-list-join.ts: JOIN_LINE_PREFIX, then base64url, JOIN_LINE_MAX_CHARS in all)
+JOIN_SINCE="0.5.10"
+JOIN_PREFIX="ovis-join:1:"
+JOIN_MAX=1024
 # Official digests from nodejs.org/dist/v22.23.2/SHASUMS256.txt, as scripts/build-remote-bundle.ts pins them
 NODE_VERSION="v22.23.2"
 # the second line of the `ovis` launcher this installer writes: a file of that name without it is not ours
 LAUNCHER_MARK="# ovis launcher, written by install.sh"
-USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add [--account <id>]] [--no-service]"
+USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add | --join-file <path>] [--account <id>] [--no-service] [--help]"
 OVIS_HOME="$HOME/.local/share/ovis"
 # The public half of the key every release's ovis-server.json is signed with: scripts/server-manifest.ts
 # RELEASE_PUBLIC_KEY, which the release jobs check against too. Nothing else can stand in for it.
@@ -429,6 +443,17 @@ case "${1:-}" in
       fi
     fi
     ;;
+  join)
+    # a checkout from before ovis join: the release Settings → Updates installed may have it
+    if [ ! -f "$root/scripts/plugin-join.ts" ]; then
+      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
+      [ -n "$code" ] || code=$root
+      if [ ! -f "$code/scripts/plugin-join.ts" ]; then
+        echo "ovis: this Ovis is from before ovis join. Update it in Settings → Updates, then run this again" >&2
+        exit 1
+      fi
+    fi
+    ;;
 esac
 exec bun "$code/scripts/plugin.ts" "$@"
 EOF
@@ -658,6 +683,96 @@ add_pc() {
   trap - INT
 }
 
+# Whether the release that runs has `ovis join`: from source, as add_takes_account reads it, since the checkout's script
+# hands a command on to the release that runs. $join_code: the script that runs it, the checkout's where that has it.
+join_takes() {
+  if [ "${binary:-0}" = 1 ]; then
+    at_least "$JOIN_SINCE" "$version"
+  else
+    join_code=$root
+    [ -f "$root/scripts/plugin-join.ts" ] || join_code=${code:-$root}
+    [ -f "${code:-$root}/scripts/plugin-join.ts" ]
+  fi
+}
+
+# `ovis join` as a person runs it again: from the file the invite came in, never with the line itself.
+join_command() {
+  printf '%s join --invite-file ' "$(ovis_command)"
+  if [ "${join_given:-}" = file ]; then quoted "$join_path"; else printf '%s' '<a file holding the invite>'; fi
+  [ -z "${account:-}" ] || printf ' --account %s' "$(quoted "$account")"
+}
+
+# The join, once Ovis runs (an invite's line: --join-file, OVIS_JOIN or --join): `ovis join` lists this PC in the invite's
+# account on its own key's proof, with no sign-in here. The line goes to it in its environment (OVIS_INVITE), never on a
+# command line, and to nothing else. Whoever handed the invite over chose the account, so it is confirmed here first:
+# with --account (OVIS_ADD_ACCOUNT), and nothing is read, as a script or an agent runs it; or at a terminal, where `ovis
+# join` asks for yes, once what was typed before is discarded, as for the add. $join_result: none (no invite), old (a
+# release without it), waits (Ovis does not run), unconfirmed (nobody can confirm the account), or the exit code of
+# `ovis join` (scripts/plugin-join.ts, JOIN_EXIT).
+join_pc() {
+  join_result=none
+  [ -n "${join_given:-}" ] || return 0
+  if ! join_takes; then
+    join_result=old
+    return 0
+  fi
+  if ! { if [ "${binary:-0}" = 1 ]; then ovis_cli status; else bun "$root/scripts/plugin.ts" status; fi; } </dev/null 2>/dev/null | grep -q '^running'; then
+    join_result=waits
+    return 0
+  fi
+  join_input=/dev/null
+  set -- join
+  if [ -n "${account:-}" ]; then
+    set -- join --account "$account"
+  else
+    join_result=unconfirmed
+    [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
+    (exec 3<>/dev/tty) 2>/dev/null || return 0
+    in_foreground || return 0
+    trap ':' INT
+    if ! discard_typed; then
+      trap - INT
+      return 0
+    fi
+    join_input=/dev/tty
+  fi
+  echo
+  token_line
+  token_said=1
+  join_result=0
+  # Ctrl-C ends the join, not the install
+  trap ':' INT
+  if [ "${binary:-0}" = 1 ]; then
+    OVIS_INVITE=$join_line "$OVIS_HOME/bin/ovis-server" plugin "$@" <"$join_input" || join_result=$?
+  else
+    OVIS_INVITE=$join_line bun "$join_code/scripts/plugin.ts" "$@" <"$join_input" || join_result=$?
+  fi
+  trap - INT
+}
+
+# What became of the join, in one line ($join_result): what `ovis join` said is above it.
+join_lines() {
+  case "${join_result:-none}" in
+    none) ;;
+    old) say "this Ovis release has no ovis join (it came in $JOIN_SINCE), so this PC did not join your Ovis account. Update Ovis in Settings → Updates, then run on this PC: $(join_command)" ;;
+    waits) say "the app is not running, so this PC did not join your Ovis account. Once it runs, run on this PC: $(join_command)" ;;
+    unconfirmed) say "nobody here can confirm the account the invite is for, so this PC did not join it, and the invite was not used. Name that account: run this again with --account <id> (the id shown with the invite, or ovis status --json on a PC already in it), or run in a terminal on this PC: $(join_command)" ;;
+    0) say "this PC is in the Ovis account the invite is for. Check: $(ovis_command) status --json" ;;
+    3) say "the invite did not work: it is mistyped, used or expired (an invite works once, for 15 minutes), or for another account service. Ask for a new one on a device signed in to your account" ;;
+    4) say "the account the invite is for was not confirmed, so this PC did not join it, and the invite was not used" ;;
+    5) say "the invite is for another Ovis account than --account names, so this PC did not join it, and the invite was not used" ;;
+    6) say "this PC is in another Ovis account, so it did not join the invite's, and the invite was not used. To move it: $(ovis_command) logout, then run on this PC: $(join_command)" ;;
+    7) say "the account service asks this PC to wait, so it did not join your Ovis account yet; what ovis join said is above" ;;
+    8) say "your Ovis account has added as many PCs as it may for now, so this PC did not join it, and the invite was not used; what ovis join said is above" ;;
+    9) say "your Ovis account holds as many PCs as it can, so this PC did not join it: remove one in the Ovis app, then try again with a new invite" ;;
+    10) say "the account service did not answer, so this PC did not join your Ovis account. Try again in a moment (the invite works for 15 minutes): $(join_command)" ;;
+    12) say "the relay or the account service is off on this PC, so it did not join your Ovis account; what ovis join said is above" ;;
+    13) say "the app stopped running, so this PC did not join your Ovis account. Once it runs, run on this PC: $(join_command)" ;;
+    14) say "nobody pressed Add for this PC while its card showed, so it did not join your Ovis account. Ask for a new invite" ;;
+    *) say "this PC did not join your Ovis account; what ovis join said is above" ;;
+  esac
+}
+
 # Who counts as this PC while it has no token: said before the PC is added, by whichever adds it.
 token_line() {
   say "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC ($(link "https://github.com/$REPO/blob/main/docs/relay.md#a-pc-with-no-screen"))"
@@ -728,7 +843,9 @@ herdr_command() {
 closing_lines() {
   echo
   running_lines
-  if [ "$add_result" = done ]; then
+  if [ -n "${join_given:-}" ]; then
+    join_lines
+  elif [ "$add_result" = done ]; then
     :
   elif [ -z "$add_name" ]; then
     say "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again"
@@ -1905,6 +2022,46 @@ install_core_binary() {
   ovis_cli start </dev/null || say "Ovis did not start; what it said is above. Start it again with: $start_line"
 }
 
+usage_help() {
+  cat <<EOF
+$USAGE
+
+Installs Ovis for this user (and herdr where it is missing), and leaves it running.
+
+  --add               end with \`ovis add\`: this PC signs in to your Ovis account, at a terminal you answer at
+  --account <id>      your Ovis account's id (ovis status on a PC already in it shows it): the add asks nothing
+                      (alone, it means --add), and a join checks the invite is for that account
+  --join-file <path>  join your Ovis account with an invite a device signed in to it made: a file holding its one
+                      line ($JOIN_PREFIX…). Nothing is signed in to on this PC
+  --join <line>       the same with the line itself, which then shows in the process list to every user of this PC:
+                      use --join-file or OVIS_JOIN instead
+  --no-service        where herdr is not running, start it once and set up no service or lingering
+  --help              this text
+
+Where arguments cannot be given, the same as variables: OVIS_ADD=1, OVIS_ADD_ACCOUNT=<id>, OVIS_JOIN=<line>,
+OVIS_NO_SERVICE=1. Also OVIS_REF=<branch or tag>, OVIS_FROM_SOURCE=1, OVIS_RUNTIME=herdr|herdr-core and
+OVIS_TAILSCALE_HTTPS_PORT=<port>. More: https://github.com/$REPO/blob/main/docs/guide.md#quick-start
+EOF
+}
+
+# The invite's line, from where it was given ($join_given: argument, file or env), trimmed as `ovis join` trims it, and
+# refused before anything is installed unless it has a join line's shape (shared/account-list-join.ts): its prefix,
+# then base64url only, at most JOIN_MAX characters. `ovis join` reads the rest. Nothing of it is ever printed: it holds the
+# invite's key. A file is read only when it is a regular file (a FIFO would hold the install), and never named back.
+read_join() {
+  if [ "$join_given" = file ]; then
+    case "$join_file" in /*) join_path=$join_file ;; *) join_path="$(pwd)/$join_file" ;; esac
+    [ -f "$join_path" ] && [ -r "$join_path" ] || fail "--join-file names no file you can read (a file holding the invite's line). Nothing was installed. $USAGE"
+    join_line=$(dd if="$join_path" bs=4097 count=1 2>/dev/null) || fail "could not read the file --join-file names. Nothing was installed. $USAGE"
+  fi
+  join_line=$(printf '%s\n' "$join_line" | awk '{ sub(/^[ \t\r]+/, ""); sub(/[ \t\r]+$/, ""); if ($0 != "") { out = out (n++ ? "\n" : "") $0 } } END { printf "%s", out }')
+  join_shaped=1
+  case "$join_line" in "$JOIN_PREFIX"?*) ;; *) join_shaped=0 ;; esac
+  case "${join_line#"$JOIN_PREFIX"}" in *[!A-Za-z0-9_-]*) join_shaped=0 ;; esac
+  [ "${#join_line}" -le "$JOIN_MAX" ] || join_shaped=0
+  [ "$join_shaped" = 1 ] || fail "that is not an Ovis invite: an invite is one line that starts with $JOIN_PREFIX, made on a device signed in to your account. Nothing was installed. $USAGE"
+}
+
 main() {
   # before anything is installed: a misspelt option must not install without what it asked for
   add=0
@@ -1913,6 +2070,10 @@ main() {
   case "$account" in -*) fail "OVIS_ADD_ACCOUNT takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
   no_service=0
   [ "${OVIS_NO_SERVICE:-}" != 1 ] || no_service=1
+  join_given=""
+  join_line=""
+  join_file=""
+  join_path=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --add) add=1 ;;
@@ -1920,13 +2081,40 @@ main() {
         if [ "$1" = --account ]; then account=${2:-}; [ $# -lt 2 ] || shift; else account=${1#--account=}; fi
         case "$account" in "" | -*) fail "--account takes your Ovis account's id (ovis status on a PC already in it shows it). $USAGE" ;; esac
         ;;
+      # the line itself is never named back, in any refusal
+      --join | --join=*)
+        [ -z "$join_given" ] || fail "give the invite one way only: --join-file <path>, OVIS_JOIN, or --join <line>. $USAGE"
+        if [ "$1" = --join ]; then join_line=${2:-}; [ $# -lt 2 ] || shift; else join_line=${1#--join=}; fi
+        case "$join_line" in "" | -*) fail "--join takes the invite's line, which starts with $JOIN_PREFIX. $USAGE" ;; esac
+        join_given=argument
+        ;;
+      --join-file | --join-file=*)
+        [ -z "$join_given" ] || fail "give the invite one way only: --join-file <path>, OVIS_JOIN, or --join <line>. $USAGE"
+        if [ "$1" = --join-file ]; then join_file=${2:-}; [ $# -lt 2 ] || shift; else join_file=${1#--join-file=}; fi
+        case "$join_file" in "" | -*) fail "--join-file takes the path of a file holding the invite's line. $USAGE" ;; esac
+        join_given=file
+        ;;
       --no-service) no_service=1 ;;
+      --help | -h)
+        usage_help
+        exit 0
+        ;;
       *) fail "does not know the option '$1'. $USAGE" ;;
     esac
     shift
   done
-  # the account named is the add asked for
-  [ -z "$account" ] || add=1
+  if [ -z "$join_given" ] && [ -n "${OVIS_JOIN:-}" ]; then
+    join_line=$OVIS_JOIN
+    join_given=env
+  fi
+  # the line is the installer's alone from here: nothing it starts (herdr, and so every terminal in it) is given it
+  unset OVIS_JOIN
+  if [ -n "$join_given" ]; then
+    [ "$add" = 0 ] || fail "a join adds this PC with an invite, and --add (OVIS_ADD=1) with a sign-in: give one of them. $USAGE"
+    read_join
+  fi
+  # the account named is the add asked for, or with an invite, the account the invite must be for
+  [ -z "$account" ] || [ -n "$join_given" ] || add=1
   case "$(uname -s)" in
     Linux) os=linux ;;
     Darwin) os=darwin ;;
@@ -2027,6 +2215,7 @@ main() {
 
   open_app
   add_pc
+  join_pc
 
   case ":$original_path:" in
     *":$BIN_DIR:"*) ;;
@@ -2057,8 +2246,10 @@ main() {
       [ "$star" != no ] || offer_star
     fi
   fi
-  # --account is a script's add, or an agent's: the exit status tells it whether this PC was added
-  [ -z "$account" ] || [ "$add_result" = done ] || exit 1
+  # --account is a script's add, or an agent's, and a join was asked for with a key: the exit status tells whether this
+  # PC was added, or joined
+  [ -z "$account" ] || [ -n "$join_given" ] || [ "$add_result" = done ] || exit 1
+  [ -z "$join_given" ] || [ "$join_result" = 0 ] || exit 1
 }
 
 # the whole script is read before anything runs: under `curl | sh`, a command that reads stdin
