@@ -922,7 +922,8 @@ export class RelaySession {
       if (!this.rowNow(device.id)) { this.close("auth_revoked"); return; }
       // the frame waited in the queue past the listing's answer: the device asks again rather than enter on an old one
       if (this.listedFor !== undefined && !this.options.services.accountMailbox.listingFresh(this.listedFor)) { this.close("timeout"); return; }
-      this.mux.authenticate(device.id);
+      // the id the answer named, which the app stamps on every stream it opens
+      this.mux.authenticate(this.signedInAs ?? device.id);
       this.state = "ready";
       logAccess({ event: "relay.session.accepted", origin: devices.accountOnly(device.id) ? "account" : "local-pairing",
         role: device.role, device_no: devices.deviceNumber(device.id) });
