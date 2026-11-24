@@ -333,7 +333,7 @@ export const DEVICES_KO: Record<string, string> = {
   "{done} of {total} were removed. Try again for the rest.": "{total}개 중 {done}개만 뺐어요. 나머지는 다시 시도하세요.",
   "Came in through {name}:": "{name} 기기로 들어온 것:",
   "If {name} was stolen, tick what you did not add yourself.": "{name} 기기를 도난당했다면 직접 추가하지 않은 것을 고르세요.",
-  "{device} was allowed into your account by {approver}.": "{approver}에서 {device} 기기를 계정에 허용했어요.",
+  "{device} was allowed into your account by {approver}.": "{approver}에서 새 기기를 계정에 허용했어요: {device}",
   "These devices leave your account for good, then every browser and app is signed out: {names}": "이 기기들은 계정에서 완전히 빠지고, 그다음 모든 브라우저와 앱이 로그아웃돼요: {names}",
   "Every browser and app is signed out of the account.": "계정의 모든 브라우저와 앱이 로그아웃돼요.",
   "Remove {name} from your account?|device": "계정에서 {name} 기기를 뺄까요?",
@@ -364,4 +364,5 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "확인한 뒤에 {name} 기기가 새 키로 바뀌었어요. 아무것도 제거하지 않았으니, 제거하려면 다시 제거를 누르세요.",
   "Moved to a new key on {day}": "{day}에 새 키로 바뀜",
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "이 기기의 계정 자리가 새 키({name})로 넘어갔어요. 직접 한 일이 아니라면 다른 기기에서 그 기기를 제거하세요.",
+  "a device that is no longer in your account": "이제 계정에 없는 기기",
 };

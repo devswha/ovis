@@ -68,6 +68,8 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
     if (device !== undefined) return device.name?.label ?? t("Unnamed device");
     const endpoint = active.list.pcOfKey(key);
     if (endpoint !== null) return active.view.pcs.find((pc) => pc.endpoint === endpoint)?.name?.label ?? t("Unnamed PC");
+    // a member the list has put out since: it has no name to open any more, and it is no unknown key
+    if (active.writer.state.signers[key]?.ended != null) return t("a device that is no longer in your account");
     return t("Unknown key");
   };
   return <>

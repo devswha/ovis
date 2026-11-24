@@ -7,6 +7,8 @@ import { listView, signListEntry } from "../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "../lib/account/accountList.test-helpers.ts";
 import { allowDevice } from "../lib/account/listAllow.ts";
+import { removeFromList } from "../lib/account/listRemoveDevice.ts";
+import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
@@ -214,6 +216,18 @@ describe("the new-device notice of an account with a signed list", () => {
     expect(root.findAll((node) => node.props["data-testid"] === "list-device-handed-away").map((node) => textOf(node))).toEqual([
       "This device's place in your account was handed to a new key (Unnamed device). If you did not do this, remove that device from another of your devices.",
     ]);
+  });
+
+  it("names an approver that is no longer in the list as such, and the Korean words name an unnamed device once", async () => {
+    const { w, phone, tablet, root } = await looked();
+    await letIn(w, tablet, "Laptop");
+    await read(phone);
+    // the tablet that let the laptop in is put out, alone
+    const out = await removeFromList(phone.list, { keys: [(await tablet.keys()).key], pcs: [] }, { wait: async () => {} });
+    expect(out).toEqual({ removed: true });
+    await read(phone);
+    expect(notices(root)).toEqual(["Laptop was allowed into your account by a device that is no longer in your account."]);
+    expect(translate("ko", "{device} was allowed into your account by {approver}.", { device: translate("ko", "Unnamed device"), approver: "Dana's phone" })).not.toContain("기기 기기");
   });
 
   it("tells a device that may not remove anybody nothing", async () => {
