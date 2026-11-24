@@ -378,9 +378,19 @@ public class MainActivity extends BridgeActivity {
         boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         boolean hostedOrigin = origin != null && PCStore.sameOrigin(origin, BuildConfig.APP_ORIGIN);
         shell = hostedOrigin && BuildConfig.SHELL_BUNDLED ? BundledShell.at(this, BuildConfig.APP_ORIGIN) : null;
-        if (hostedOrigin && shell == null) BundledShell.loadedFromNetwork(this);
+        if (hostedOrigin && !BuildConfig.SHELL_BUNDLED) BundledShell.loadedFromNetwork(this);
         booting = shell != null && BundledShell.needsBoot(this);
-        if (host != null) {
+        // a build that carries the shell and cannot serve it (a WebView without what that needs, a damaged copy) shows the
+        // app's own error page, never the shell from the network; its Change PC leads to the app's own page (homeFailed)
+        boolean shellMissing = hostedOrigin && BuildConfig.SHELL_BUNDLED && shell == null;
+        if (shellMissing) {
+            PCStore.fail(BundledShell.missingReason(BundledShell.supported(), korean()), "app-shell");
+            PCStore.homeFailed = true;
+            home = null;
+            screen = Home.Screen.BUNDLED;
+        }
+        String pageHost = shellMissing ? null : host;
+        if (pageHost != null) {
             String start = home != null ? "/" + homeStart : PCStore.startPath(PCStore.pendingStart, pc);
             // Capacitor makes server.url the bridge's origin rule, which takes no path, query or
             // trailing slash: such a rule throws, and Capacitor falls back to a bridge that every
@@ -412,10 +422,11 @@ public class MainActivity extends BridgeActivity {
                 // otherwise follow the phone's light mode with dark icons
                 .setPluginsConfiguration(new JSObject().put("SystemBars", new JSObject().put("style", "DARK")))
                 .create();
-        } else if (screen == Home.Screen.DEMO) {
-            // the bundled demo as the first page, with what capacitor.config.json sets for the app's own pages
+        } else if (screen == Home.Screen.DEMO || shellMissing) {
+            // the bundled demo, or the app's own error page, as the first page, with what capacitor.config.json sets for the
+            // app's own pages
             config = new CapConfig.Builder(this)
-                .setStartPath("/demo/index.html")
+                .setStartPath(shellMissing ? "/error.html" : "/demo/index.html")
                 .setBackgroundColor(pageColor())
                 .setWebContentsDebuggingEnabled(debuggable)
                 .setLoggingEnabled(false)
@@ -436,7 +447,7 @@ public class MainActivity extends BridgeActivity {
         String appOrigin = bridge.getScheme() + "://" + bridge.getHost();
         BundledShell served = shell;
         getOnBackPressedDispatcher().addCallback(this, pageBack);
-        if (host == null) {
+        if (pageHost == null) {
             bridge.setWebViewClient(
                 new BridgeWebViewClient(bridge) {
                     @Override
@@ -447,8 +458,8 @@ public class MainActivity extends BridgeActivity {
                 }
             );
         }
-        followThemeColor(host == null ? Collections.singleton(appOrigin) : new HashSet<>(Arrays.asList(appOrigin, origin)));
-        if (host != null) {
+        followThemeColor(pageHost == null ? Collections.singleton(appOrigin) : new HashSet<>(Arrays.asList(appOrigin, origin)));
+        if (pageHost != null) {
             // CapacitorCookies is off (not in the plugins configuration), yet its load() still adds a
             // JavaScript interface whose setCookie writes a cookie for any origin, open to every page
             // and frame: a sign-in page in front of the PC must not reach it. Capacitor's page script
@@ -532,8 +543,9 @@ public class MainActivity extends BridgeActivity {
                         if (
                             request.isForMainFrame() &&
                             ("https".equals(url.getScheme()) || "http".equals(url.getScheme())) &&
-                            !PCStore.sameOrigin(url.toString(), origin) &&
-                            !PCStore.sameOrigin(url.toString(), appOrigin)
+                            // read from the URL's parts: one java.net.URI refuses (a raw `|` in its query) is still this origin
+                            !BundledShell.onOrigin(url.getScheme(), url.getHost(), url.getPort(), origin) &&
+                            !BundledShell.onOrigin(url.getScheme(), url.getHost(), url.getPort(), appOrigin)
                         ) {
                             Intent browse = new Intent(Intent.ACTION_VIEW, url).addCategory(Intent.CATEGORY_BROWSABLE);
                             try {

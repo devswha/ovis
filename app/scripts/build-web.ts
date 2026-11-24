@@ -9,15 +9,15 @@
  * native code otherwise opens the hosted shell's (hosted-origin.ts, appHome).
  *
  * The Android app also carries the shell itself (bundled-shell.ts): OVIS_APP_SHELL=bundled, the default for a build of
- * the production origin, copies OVIS_APP_SHELL_DIR's dist-shell (or one built from this checkout) into
- * app/bundled-shell, where the native builds take it from; OVIS_APP_SHELL=hosted, the default with OVIS_APP_URL, loads
- * it from the network instead.
+ * the production origin, copies a release's verified archive (OVIS_APP_SHELL_ARCHIVE, _SHA256, _TAG: what a store
+ * build takes), a folder (OVIS_APP_SHELL_DIR) or one built from this checkout into app/bundled-shell, where the native
+ * builds take it from; OVIS_APP_SHELL=hosted, the default with OVIS_APP_URL, loads it from the network instead.
  */
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildDemoApp } from "../../scripts/demo-build.ts";
-import { appShell, buildShell, packShell, SHELL_ASSETS } from "./bundled-shell.ts";
+import { appShell, buildShell, packShell, provenanceOf, SHELL_ASSETS, shellSource, unpackRelease } from "./bundled-shell.ts";
 import { appHome, appOrigin, writeNativeOrigin } from "./hosted-origin.ts";
 import { pretendardCss } from "./pretendard.ts";
 
@@ -58,14 +58,16 @@ writeNativeOrigin(app, appUrl, home, shell);
 const shellAssets = join(app, SHELL_ASSETS);
 rmSync(shellAssets, { recursive: true, force: true });
 if (shell === "bundled") {
-  const given = process.env["OVIS_APP_SHELL_DIR"];
-  const from = given || mkdtempSync(join(tmpdir(), "ovis-app-shell-"));
+  const source = shellSource(process.env);
+  const from = source.kind === "folder" ? source.dir : mkdtempSync(join(tmpdir(), "ovis-app-shell-"));
   try {
-    if (!given) buildShell(from);
-    const packed = packShell(from, shellAssets);
-    console.log(`The Android app carries the shell from ${given || "this checkout"}: ${packed.files} files, ${(packed.bytes / 1048576).toFixed(1)} MB`);
+    if (source.kind === "release") unpackRelease(source.archive, source.sha256, from);
+    else if (source.kind === "checkout") buildShell(from);
+    const packed = packShell(from, shellAssets, provenanceOf(source));
+    const named = source.kind === "release" ? `release ${source.tag}` : source.kind === "folder" ? source.dir : "this checkout";
+    console.log(`The Android app carries the shell of ${named}: ${packed.files} files, ${(packed.bytes / 1048576).toFixed(1)} MB`);
   } finally {
-    if (!given) rmSync(from, { recursive: true, force: true });
+    if (source.kind !== "folder") rmSync(from, { recursive: true, force: true });
   }
 }
 
