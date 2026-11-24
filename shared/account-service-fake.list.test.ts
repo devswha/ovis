@@ -196,7 +196,10 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: [] }, w.token))).toBe("400 invalid_request");
       expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: Array(17).fill("x") }, w.token))).toBe("400 invalid_request");
       expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: ["x".repeat(600 * 1024)] }, w.token))).toBe("413 too_large");
-      // another account's sign-in, on the switch, sees no such list
+      // any sign-in of the account reads, a device code's included; another account's sign-in sees no such list
+      expect((await w.log(list, "", w.service.issueToken(ACCOUNT, { device: true }))).status).toBe(200);
+      expect(refusal(await w.log("0".repeat(64)))).toBe("404 not_found");
+      expect(refusal(await w.log("short"))).toBe("404 not_found");
       const stranger = w.service.issueToken("acct_2");
       expect(refusal(await w.log(list, "", stranger))).toBe("404 not_found");
       expect((await w.call("GET", "/v2/lists/mine", undefined, stranger)).body.list).toBeNull();
@@ -216,6 +219,14 @@ describe("the fake account service's list routes (Part D)", () => {
       expect([refusal(again), again.body.error?.list, again.body.error?.head]).toEqual(["409 list_exists", list, head]);
       const other = await sign(await newKey(), { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
       expect(refusal(await w.call("POST", "/v2/lists", { entry: other.text }, w.token))).toBe("409 list_exists");
+      // two that race for an account with none: one list, the other is told which
+      const racer = w.service.issueToken("acct_2");
+      const [a, b] = await Promise.all([newKey(), newKey()]);
+      const zeros = await Promise.all([a, b].map((by) => sign(by, { seq: 0, list: "", prev: "" }, genesisOf(by, "acct_2"), w.seconds())));
+      const raced = await Promise.all(zeros.map(({ text }) => w.call("POST", "/v2/lists", { entry: text }, racer)));
+      expect(raced.map(({ status }) => status).sort()).toEqual([201, 409]);
+      expect(raced.find(({ status }) => status === 409)?.body.error?.list).toBe(w.service.accountList("acct_2")?.id);
+      expect(raced.find(({ status }) => status === 201)?.body.list).toBe(w.service.accountList("acct_2")?.id);
       // the account's deletion is the only thing that deletes it
       expect((await w.call("DELETE", "/v1/account", undefined, w.token)).status).toBe(204);
       expect(w.service.accountList(ACCOUNT)).toBeNull();
