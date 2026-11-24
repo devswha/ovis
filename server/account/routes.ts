@@ -247,6 +247,15 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (body.run !== undefined && (typeof body.run !== "string" || !RUN_ID.test(body.run))) return fail("invalid_run", "Name the run by its id", 400);
       return reply(noted(await add.cancel(body.run)));
     }
+    case "/api/account/list/allow/cancel": {
+      setRequestRoute(pathname);
+      // the person at this PC gives up an entry it signed for a device it has since held back (dispatch.ts ownWindow):
+      // that entry is never sent, and the next Allow may take its place now
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      if (typeof body.key !== "string" || !isAccountKeyEncoding(body.key)) return fail("invalid_key", "Name the device by its key", 400);
+      return reply({ cancelled: list.cancelKept(body.key) });
+    }
     case "/api/account/list/join":
     case "/api/account/list/join/prepare":
     case "/api/account/list/join/body":

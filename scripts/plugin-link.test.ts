@@ -4346,6 +4346,16 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
       expect(out.join("")).not.toMatch(/is let in|was received/);
     });
 
+    it("says that this PC lets nobody into the list itself where it joined by an invite, and never that the approval was received", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true, list_not_signer: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("Pixel was not let in: this PC joined your account by an invite, and a PC that did lets nobody into your account's list itself. Allow Pixel on another device of your account.\n");
+      expect(out.join("")).not.toMatch(/is let in|was received/);
+    });
+
     it("says so when the digits are wrong, which ends that join, and how to try again; Enter by itself skips the next and sends nothing", async () => {
       const { code, out, sent } = await joining({
         joins: [firstOf("f1", "482913"), firstOf("f2", "111222")], account: "acct_1a2b3c4d5e6f",
