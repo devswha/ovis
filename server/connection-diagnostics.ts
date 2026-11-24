@@ -11,7 +11,7 @@ type AccessEvent =
   | { event: "account.binding.cleared"; reason: ClearReason }
   | { event: "account.sessions.closed"; count: number }
   /** The signed list would have decided a sign-in otherwise than the snapshot did (server/account/list-follow.ts): no key, no name. */
-  | { event: "account.list.differs"; snapshot: "admitted" | "none"; list: string }
+  | { event: "account.list.differs"; snapshot: "admitted" | "none"; list: string; of: "credential" | "device" }
   /** This PC lets its account's devices in by its signed list from now on. */
   | { event: "account.list.pinned" }
   /** The list this PC is pinned to removed it: the PC leaves its account. */

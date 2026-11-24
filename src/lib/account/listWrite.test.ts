@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { signListEntry } from "../../../shared/account-list.ts";
+import { ListWriteError, signListEntries, signListEntry } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { placeOf, signedOn, writeToList } from "./listWrite.ts";
@@ -77,5 +77,27 @@ describe("a write that is over once the account service took it", () => {
     browser.wire.answer = (request) => request.method === "GET" && placements(browser).length > 0 ? new Response("away", { status: 503 }) : null;
     const outcome = await writeToList(browser.list, async (writer) => ({ request: await signedOn(writer, [{ kind: "remove", ends: key }]) }), { ...noWait, writer: () => browser.list.writer({ self: true }) });
     expect(outcome.written).toBe(false);
+  });
+});
+
+describe("a device that is behind", () => {
+  it("says so where the kinds refuse to sign somebody in on what it holds, and sends nothing", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const second = await w.device({ label: "Dana's tablet" });
+    await second.list.sync();
+    const outcome = await writeToList(first.list, async (writer) => {
+      const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key !== writer.keys.key)!;
+      // what this device holds once a member of a later level wrote at place 1: the kinds sign nobody in on it
+      const behind = { ...writer.state, behind: 1 };
+      const signed = await signListEntries(behind, [{ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: false }],
+        { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+      return { request: { entries: signed.entries.map((entry) => entry.text), wraps: [], place: placeOf(signed.state) } };
+    }, noWait);
+    expect(outcome).toEqual({ written: false, why: "behind", retryAfterMs: null });
+    expect(placements(first)).toEqual([]);
+    // any other entry the kinds do not sign stays a plain refusal
+    expect(await writeToList(first.list, async () => { throw new ListWriteError(null, "not that key's card"); }, noWait)).toMatchObject({ written: false, why: "refused" });
   });
 });

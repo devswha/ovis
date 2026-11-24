@@ -284,6 +284,31 @@ describe("an account service that answers the list's questions as it does not fo
     }
   });
 
+  it("signs nobody out where it refuses the challenge for the proof of a claim: a device that waits, with an old sign-in, asks by itself", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    const tablet = await device({ label: "Dana's tablet" });
+    // the tablet's sign-in is older than ten minutes: its claim goes with a proof by its registered key
+    now += 11 * MINUTE;
+    const before = (await tablet.store.get("session"))!;
+    tablet.wire.answer = answers(401, "unauthorized")((pathname) => pathname === "/v1/pcs/challenge");
+    const view = await tablet.list.sync();
+    expect(view.status).toMatchObject({ at: "not_in", why: "not_mine" });
+    expect(asked(tablet, "POST /v1/pcs/challenge")).toBe(1);
+    expect(await tablet.store.get("session")).toEqual(before);
+    expect(asked(tablet, "POST /v1/token")).toBe(0);
+  });
+
+  it("holds its clock to the floor another page saved, though the list itself did not move", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    const floor = Math.floor(now / 1000) + 3600;
+    // another page of this device saw a later time, and kept it beside the copy
+    await phone.lists.set("times", ACCOUNT, { v: 1, list: held().id, read_at: floor, seen_at: floor });
+    await phone.list.sync();
+    expect(phone.list.writer()!.clock).toBeGreaterThanOrEqual(floor);
+  });
+
   it("signs nobody out where it refuses the log or the wraps of a list the device follows: the copy stands", async () => {
     const phone = await device();
     const view = await phone.list.sync();

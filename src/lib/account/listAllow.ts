@@ -8,11 +8,11 @@
  * copy shows the entry at its place, and that place is what the newcomer is handed.
  */
 import type { AccountOs } from "../../../shared/account-asker.ts";
-import type { ListKind, ListNames } from "../../../shared/account-list.ts";
-import type { AccountList, ListOffer, ListWriter } from "./accountList.ts";
+import type { ListKind } from "../../../shared/account-list.ts";
+import type { AccountList, ListOffer } from "./accountList.ts";
 import type { ListClaim } from "./listAnswers.ts";
 import { listNames } from "./listGenesis.ts";
-import { WRITE_RESENDS, WRITE_TRIES, placeOf, signedNamed, writeToList, type WriteRefusal, type Written } from "./listWrite.ts";
+import { WRITE_RESENDS, WRITE_TRIES, placeOf, signedNamed, writeNamed, type WriteRefusal } from "./listWrite.ts";
 
 /** The device a person is letting in: the key it showed the PC it asked, and the name and system it gave the account service. */
 export interface Newcomer {
@@ -32,9 +32,8 @@ export type AllowOutcome =
 export const ALLOW_TRIES = WRITE_TRIES;
 export const ALLOW_RESENDS = WRITE_RESENDS;
 
-/** The request that lets the newcomer in (listWrite.ts, signedNamed): its `device` entry, power `full` and role `drive`, with the card its own sign-in claimed. */
-const written = (writer: ListWriter, claim: ListClaim, names: ListNames | null): Promise<Written> =>
-  signedNamed(writer, names, claim.enc, (sealed): ListKind => ({ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed, rotates: false }));
+/** How long the read of the newcomer's claim waits for its answer. */
+const CLAIMS_MS = 30_000;
 
 /**
  * Lets `newcomer` into the list this device follows. It reads the list first, signs on what it then holds, and
@@ -42,17 +41,33 @@ const written = (writer: ListWriter, claim: ListClaim, names: ListNames | null):
  * apart from this device's, it reads and signs again, ALLOW_TRIES times at most; while the service says it is
  * rebuilding the list, the same request goes again, ALLOW_RESENDS times at most. Only a sign-in that ended throws.
  */
-export async function allowDevice(list: AccountList, newcomer: Newcomer, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<AllowOutcome> {
+export async function allowDevice(list: AccountList, newcomer: Newcomer, options: {
+  readonly wait?: (ms: number) => Promise<void>;
+  /**
+   * The account the approval was begun under. The write is bound to it, and to the list of its first read, across
+   * every retry and every request of removals: a sign-in another tab changed meanwhile ends it with nothing signed
+   * (`changed`), and never leads to the way of an account with no list.
+   */
+  readonly account?: string;
+  /** how long the read of the claims waits; a test's own */
+  readonly claimsMs?: number;
+} = {}): Promise<AllowOutcome> {
   const names = listNames(newcomer.label, newcomer.os);
-  const outcome = await writeToList<"removed">(list, async (writer) => {
+  let bound: string | undefined;
+  // read at every try of every round: the list is fixed from the first writer on
+  const held = { account: options.account ?? "", get list(): string | undefined { return bound; } };
+  const outcome = await writeNamed<ListClaim, "removed">(list, async (writer) => {
+    bound ??= writer.list;
     const row = writer.state.signers[newcomer.key];
     // the list holds the key already: let in before (the place handed on is where this device stands now), or put out for good
     // (the place handed on is that of the entry that let it in, where this device's copy shows it)
     if (row !== undefined) return row.ended !== null || row.as !== "device" ? { refused: "removed" } : { done: list.placeAt(row.seq) ?? placeOf(writer.state) };
-    const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === newcomer.key);
-    if (claim === undefined) return { refused: "not_claimed" };
-    return { request: await written(writer, claim, names) };
-  }, options);
+    const claim = (await writer.service.listClaims(writer.list, AbortSignal.timeout(options.claimsMs ?? CLAIMS_MS))).find((each) => each.key === newcomer.key);
+    return claim === undefined ? { refused: "not_claimed" } : { go: claim };
+  }, (writer, claim) => signedNamed(writer, names, claim.enc, (sealed): ListKind => ({ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed, rotates: false })),
+  { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.account === undefined ? {} : { expect: held }) });
+  // a device that is in no list of the account it was asked for is not "an account with no list"
+  if (!outcome.written && outcome.why === "no_list" && options.account !== undefined && list.view().account !== options.account) return { allowed: false, why: "changed", retryAfterMs: null };
   return outcome.written ? { allowed: true, offer: { list: outcome.list, seq: outcome.place.seq, hash: outcome.place.hash } }
     : { allowed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
 }
