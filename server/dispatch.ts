@@ -66,6 +66,7 @@ import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { accountRowsFor } from "./account/account-devices.ts";
 import type { ListAdd } from "./account/list-add.ts";
 import type { ListFollow } from "./account/list-follow.ts";
+import type { AccountWitness } from "./account/witness.ts";
 import { accountDispatchRefusal } from "./account/dispatch-rights.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
 import type { RelayService } from "./relay/service.ts";
@@ -127,6 +128,8 @@ export interface RequestServices {
   readonly accountList: ListFollow | null;
   /** Adding this PC to an account that keeps a signed list (server/account/list-add.ts); null with the release flag off. */
   readonly listAdd: ListAdd | null;
+  /** For how long this PC has let each key of its account in (server/account/witness.ts); null with the release flag off. */
+  readonly accountWitness: AccountWitness | null;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */

@@ -67,10 +67,11 @@ import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
 import { listPinOnDisk, listRemovalOnDisk, PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
-import { bringSiblingList, ListFollow } from "./account/list-follow.ts";
+import { ListFollow } from "./account/list-follow.ts";
 import { LIST_REMOVED } from "./account/pc-binding.ts";
 import { ListAdd } from "./account/list-add.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
+import { AccountWitness } from "./account/witness.ts";
 import type { Readmission } from "./account/readmission.ts";
 import { AccountOrder } from "./account/account-order.ts";
 import { accountRowsFor } from "./account/account-devices.ts";
@@ -334,7 +335,7 @@ export function createServer(
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
   // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling, (pin) => bringSiblingList(stateDir, sibling, pin));
+  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
   const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
@@ -382,7 +383,7 @@ export function createServer(
   // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
   const serverIdNow = () => ovisRelay.currentIdentity()?.server_id ?? null;
   // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
-  const opened: { rows: ReturnType<typeof accountRowsFor> | null } = { rows: null };
+  const opened: { rows: ReturnType<typeof accountRowsFor> | null; witness: AccountWitness | null } = { rows: null, witness: null };
   // Recovery can use row ports inside the DeviceStore constructor, before its caller has a reference.
   const rowsForDevices = (devices: DeviceStore) => opened.rows = safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
     evidence: removals,
@@ -409,6 +410,8 @@ export function createServer(
     },
     admitListedRows: write => devices.admitListedRows(write),
     admitted: (rows) => { devices.announceListAdmissions(rows); },
+    // a row that goes and comes back between two of the record's own steps is not taken for one that stayed
+    rowsWritten: () => { opened.witness?.step(); },
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
@@ -422,6 +425,17 @@ export function createServer(
   devices.onListAdmissions((rows) => joins.addListed(rows.map(({ id, label }) => ({ id, label })), rows[0]!.confirmed_at));
   devices.onListedChange(() => joins.settleListed());
   const accountRows = opened.rows;
+  // for how long this PC has let each key of its account in: it only records, and nothing decides by it yet (witness.ts)
+  const accountWitness = opened.witness = pcAccount === null || accountRows === null ? null : new AccountWitness({
+    stateDir,
+    scope: () => {
+      const serverId = serverIdNow();
+      if (serverId === null) return null;
+      const binding = pcAccount.binding();
+      return { account: binding === null || binding.pending === true ? null : binding.account, serverId };
+    },
+    rows: () => accountRows.store()?.witnessed() ?? null,
+  });
   // the account's signed list, read beside the snapshot and compared with it: it lets nobody in yet (list-follow.ts)
   const accountList = pcAccount === null ? null : new ListFollow({
     stateDir, keys: new ListKeyStore(stateDir), identity: () => ovisRelay.currentIdentity(),
@@ -441,7 +455,12 @@ export function createServer(
     },
     mayAdmit: (key) => { const account = devices.account(); return account !== null && devices.admitsFromList(key, account) && !accountMailbox.listHeld(key); },
     // while the rows still stand, so their sessions end as `auth_changed` and each app signs in again by itself
-    repinned: () => { for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id); },
+    repinned: () => {
+      for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id);
+      // and the sessions of this PC's own rows under an account's id: a member's add before the pin, a join by digits
+      const serverId = serverIdNow();
+      if (serverId !== null) devices.closeListGovernedSessions(serverId);
+    },
     removed: (key, removal) => {
       const account = devices.account();
       if (account !== null) devices.removeAccountKey(key, account, { id: removal.id, issuedAt: new Date(removal.at * 1000).toISOString() });
@@ -450,8 +469,9 @@ export function createServer(
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
     ...(options.accountListMemberWaitMs === undefined ? {} : { memberWaitMs: options.accountListMemberWaitMs }),
-    // a folder closed because its other folder's pin could not be taken with its keys and copy opens by itself once they can
-    retry: () => { if (pcAccount.retrySibling()) console.info("[account] this PC's list keys and its copy of the list could be read beside its pin: it follows its list again"); },
+    // what another Ovis server on this folder wrote to the PC's place in its account since this one read it (a pin, a
+    // clear) is taken in at each look at the clock, so this server decides by it within seconds
+    retry: () => { pcAccount.refresh(); },
   });
   devices.attachList(accountList);
   // adding this PC to an account that keeps a list: the number a person compares with the phone that adds it (list-add.ts)
@@ -772,6 +792,9 @@ export function createServer(
     ? (readmission?: Readmission) => snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
       // the read's commit turn: the account rows take its list, idle rows expire (T54), and the wait after a start ends
       commitList: (snapshot) => {
+        // an admission by the account: what another Ovis server on this folder wrote to the PC's place in its account
+        // (a pin, a clear) is taken in first, so a snapshot adds nobody to a PC that server pinned a moment ago
+        pcAccount.refresh();
         accountCatchUp.commitList(snapshot, readmission);
         const removed = new Set(snapshot.removed.map((row) => row.key));
         accountList?.shadowSnapshot(snapshot.devices.flatMap((row) => row.eligible && !removed.has(row.key) ? [row.key] : []));
@@ -793,7 +816,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, listAdd, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, listAdd, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
@@ -808,6 +831,7 @@ export function createServer(
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);
   accountList?.start();
+  accountWitness?.start();
   accountMailbox.start();
 
   // one listener per address on one port, all or none: a half-bound set would answer where nobody asked it to
@@ -884,6 +908,7 @@ export function createServer(
       services.runtimeMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
+      accountWitness?.stop();
       accountRows?.stop();
       accountCatchUp.stop();
       void ovisRelay.shutdown();

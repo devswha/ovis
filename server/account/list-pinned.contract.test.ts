@@ -1003,6 +1003,23 @@ describe("a PC the list removed", () => {
   });
 });
 
+describe("a second Ovis server on the same state folder", () => {
+  test("does not let the snapshot add a device once the other server pinned the PC: it takes the pin in before the snapshot's rows are committed", async () => {
+    const pc = await listedPc();
+    const path = join(pc.fixture.stateDir, "account-pc.json");
+    // the other server pins the binding: the file gains the pin, this server's memory does not
+    const disk = JSON.parse(readFileSync(path, "utf8")) as { gen: number; binding: object };
+    writeFileSync(path, JSON.stringify({ ...disk, v: 2, gen: disk.gen + 1, binding: { ...disk.binding, list: pc.account.id } }));
+    expect(pc.services.devices.listFollowed()).toBe(false);
+    // the account service names a device its snapshot lets in
+    const stranger = await listMember();
+    pc.service.registerDevice(ACCOUNT, stranger.key, "Stranger");
+    await pc.services.accountMailbox.readSnapshot();
+    expect(pc.services.devices.listFollowed()).toBe(true);
+    expect(pc.rowKeys()).not.toContain(stranger.key);
+  });
+});
+
 describe("one press, for an account that keeps a signed list", () => {
   test("the account service's refusal to take the PC by an admission is said as that, not as a service that is away", async () => {
     const service = new FakeAccountService();

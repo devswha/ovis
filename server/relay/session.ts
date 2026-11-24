@@ -741,6 +741,15 @@ export class RelaySession {
     // pairRelayApproved counted a refused key itself; one admitNewDevice turned away is not counted
     this.endPairing(true);
     if (this.refused) return;
+    // On a pinned PC the row a comparison makes has the account's id for the key, and the list alone answers for a
+    // session under that id: the pairing is recorded, and this session, whose key was sent and never signed with,
+    // opens nothing by it. The device gets in by a sign-in the list answers. Another PC of the account is the one
+    // exception: the list answered for its relay key in this very turn (vouchedInList), and it only watches
+    if (device && this.intent !== "vouched" && devices.listGoverned(device.id, this.options.serverId) !== null) {
+      if (this.listOffered) this.mux.fail("account_list_required", "This PC lets devices of its account in by the account's signed list. Sign in with the key the list holds for this device.");
+      else this.close("auth_failed");
+      return;
+    }
     this.enter(device);
   }
 
