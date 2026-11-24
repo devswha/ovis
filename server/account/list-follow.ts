@@ -197,6 +197,8 @@ export interface ListAuthority {
   role(key: string): ListRole | null | undefined;
   /** Whether the list holds `key` to drive with full power now: null on a PC that is not pinned and for a key it does not let in. */
   allowsJoins(key: string): boolean | null;
+  /** Whether the PC at the relay key `endpoint` is in the list this PC is pinned to. */
+  holdsPc(endpoint: string): boolean;
   /** Whether this PC acted on a removal of `key` by its list that it has not on disk yet: every row of that key stays out meanwhile, a pairing of this PC's own too. */
   owesRemoval(key: string): boolean;
   /** Whether this relay identity was removed from `account` by that account's list. */
