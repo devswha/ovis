@@ -61,7 +61,8 @@ export interface RunEffect {
  * a group's fold, close a repository's workspace with its worktree workspaces, list a repository's checkouts (opening
  * Open worktree... with them), open one.
  */
-export type ContextRun = "swap_with" | "passthrough" | "collapse_group" | "close_group" | "list_worktrees" | "open_checkout";
+export type ContextRun = "swap_with" | "passthrough" | "collapse_group" | "close_group" | "list_worktrees" | "open_checkout"
+  | "prepare_worktree" | "create_worktree" | "prepare_remove" | "remove_worktree";
 
 export type Effect =
   | { readonly type: "copy"; readonly pane: string; readonly command: CopyCommand }

@@ -16,7 +16,7 @@ import { chosenAt, chosenHeading, type Place, pickerMatches, pickerRows, placeTa
 /** A one-line text field of graphemes, the cursor after the text it opened with; `original` that text; `edited`: a key changed the text since. */
 export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly edited: boolean; readonly original: string }
 
-export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab";
+export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "new_tab" | "create_worktree";
 
 export type Overlay =
   /**
@@ -24,12 +24,13 @@ export type Overlay =
    * height and keeps `scroll` in range), its filter, and whether keys go to the filter now
    */
   | { readonly kind: "help"; readonly scroll: number; readonly paged: number; readonly filter: Field; readonly filtering: boolean }
-  | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field }
+  /** `repo`: for New worktree, the repository's name, which names the checkout's folder */
+  | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field; readonly repo?: string }
   /**
    * `seen`: the terminals the close ends, as the screen showed them when the dialog opened; `close_group` closes a
    * repository's workspace and the worktree workspaces under it (`spaces`: how many)
    */
-  | { readonly kind: "confirm"; readonly purpose: "close_workspace" | "close_group"; readonly target: Target; readonly seen: readonly Seen[]; readonly spaces?: number }
+  | { readonly kind: "confirm"; readonly purpose: "close_workspace" | "close_group" | "remove_worktree"; readonly target: Target; readonly seen: readonly Seen[]; readonly spaces?: number; readonly path?: string }
   /**
    * a right-click menu (context.ts): what it is for, its entries, the chosen one, and the cell it was opened at; `epoch`
    * the core line it was opened on and `created` when the core made its pane's terminal, so another terminal at that
@@ -341,6 +342,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: (overlay) => overlay.target,
     input: (overlay, input) => fieldInput(overlay, input, (name) => {
       if (overlay.purpose === "new_tab") return { overlay: null, effects: [run("new_tab", overlay.target, name)] };
+      if (overlay.purpose === "create_worktree") return name.trim() === "" ? { overlay, effects: [] } : { overlay: null, effects: [run("create_worktree", overlay.target, name.trim())] };
       // herdr sends a rename only when the name changed; a name past the field's bounds shows cut, and that cut value
       // accepted as shown is no change either: Enter never shortens a name nobody edited
       const unchanged = !overlay.field.edited || name === overlay.field.original;

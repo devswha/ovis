@@ -94,6 +94,10 @@ export type ScreenEvent =
   | { readonly type: "context"; readonly target: Target; readonly cell: { readonly x: number; readonly y: number }; readonly at: number }
   /** a repository's checkouts, read for Open worktree...: the dialog opens with them */
   | { readonly type: "worktrees"; readonly target: Target; readonly checkouts: readonly CheckoutRow[]; readonly at: number }
+  /** New worktree's dialog: the repository's name and the branch herdr's form starts with */
+  | { readonly type: "new_worktree"; readonly target: Target; readonly repo: string; readonly branch: string; readonly at: number }
+  /** Delete worktree checkout...'s question: the checkout's folder */
+  | { readonly type: "remove_worktree"; readonly target: Target; readonly path: string; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
   | { readonly type: "restore"; readonly core: string; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number }
   /** the prefix state the input read behind a layout write left once it went through: armed, or back to Idle */
@@ -235,6 +239,12 @@ export function reduce(state: ModelState, event: ModelEvent, holding = false): S
     }
     case "worktrees":
       acc.s = { ...acc.s, overlays: [...acc.s.overlays, { kind: "worktrees", target: event.target, checkouts: event.checkouts, field: field(""), searching: false, cursor: 0 }] };
+      break;
+    case "new_worktree":
+      acc.s = { ...acc.s, overlays: [...acc.s.overlays, { kind: "text", purpose: "create_worktree", target: event.target, field: field(event.branch), repo: event.repo }] };
+      break;
+    case "remove_worktree":
+      acc.s = { ...acc.s, overlays: [...acc.s.overlays, { kind: "confirm", purpose: "remove_worktree", target: event.target, seen: [], path: event.path }] };
       break;
     case "restore": {
       const s = acc.s;
@@ -543,6 +553,12 @@ function runContext(acc: Acc, action: ContextAction, on: Target, at: number): vo
       return;
     case "open_worktree":
       effect("list_worktrees");
+      return;
+    case "new_worktree":
+      effect("prepare_worktree");
+      return;
+    case "delete_checkout":
+      effect("prepare_remove");
       return;
     case "close_group": {
       const children = s.world.workspaces.filter((workspace) => workspace.parent === place.workspace.id);
