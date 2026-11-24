@@ -2,12 +2,12 @@ import { ACCOUNT_FEATURE } from "../../../shared/relay-mux.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
-import { accountList, type ListOffer } from "../account/accountList.ts";
+import { accountList, type AccountListView, type ListOffer } from "../account/accountList.ts";
 import { listReading, pcsByList } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
-import { forgetMembership, leaveList, otherDevices, removeOthers, tidyOnRead, watchRemoval } from "../account/listLeave.ts";
-import { scopeOf, type RemoveOutcome } from "../account/listRemoveDevice.ts";
+import { forgetMembership, inList, leaveList, otherDevices, removeOthers, tidyOnRead, watchRemoval, type EverywhereAsked, type Shown } from "../account/listLeave.ts";
+import { scopeOf, type RemoveOutcome, type WriteScope } from "../account/listRemoveDevice.ts";
 import { listNames } from "../account/listGenesis.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { signInKey } from "../account/signInKey.ts";
@@ -347,17 +347,23 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     : outcome.why === "unknown" ? t("This device signed out. Whether your account still lists it is not known yet: check its devices from another device.")
     : t("This device signed out, but your account still lists it. Remove it from another device.");
   const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); };
-  const signOut = (): void => {
+  /**
+   * Signs out. `shown`: the account the person signed out of, and its list and this device's key in it, as the page
+   * showed them (hostedSignIn.ts): where the sign-in stored by the time it is read is another account's, or the list
+   * or the key is another (another tab), nothing is signed and nothing is ended, and the page reads what is stored.
+   */
+  const signOut = (shown?: Shown): void => {
     // the sign-in the person ended, read before anything waits: one made meanwhile stays (service.ts, forSignIn)
     const ending = account.session();
-    // the key this device is in its account's list with, as the page shows it now
-    const member = lists === null ? null : scopeOf(lists.view())?.member ?? null;
+    // the key this device is in its account's list with, as the person saw it, or as the page shows it now
+    const member = shown?.scope?.member ?? (lists === null ? null : scopeOf(lists.view())?.member ?? null);
+    const another = ending.then((session) => shown !== undefined && session !== undefined && session.account !== shown.account, () => false);
     // a device that is in its account's list puts itself out of it first, while its sign-in still stands: signing in
     // again is a new device (account/listLeave.ts); for any other device this is null at once
-    const left = ending.then((session) => {
-      if (session === undefined || lists === null) return null;
+    const left = Promise.all([ending, another]).then(([session, elsewhere]) => {
+      if (session === undefined || lists === null || elsewhere) return null;
       leavingList = session.account;
-      return leaveList(lists, session.account);
+      return leaveList(lists, session.account, { scope: shown?.scope ?? null });
     }).catch((error: unknown): RemoveOutcome => {
       console.warn("Ovis: this device did not put itself out of the account's list", error instanceof Error ? error.name : error);
       return { removed: false, why: "unreached", retryAfterMs: null, placed: 0 };
@@ -365,25 +371,30 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const epoch = generation + 1;
     invalidate();
     void changed();
-    void left.then(() => ending).then((session) => session === undefined ? undefined : account.forSignIn(session).signOut()).catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error))
+    void Promise.all([ending, another, left]).then(async ([session, elsewhere, out]) => {
+      // the sign-in, the list or the key is another than the one the person signed out of: nothing more is done
+      if (elsewhere || (out !== null && !out.removed && out.why === "changed")) {
+        leavingList = null;
+        if (epoch === generation) await refresh(true);
+        return;
+      }
+      if (session !== undefined) await account.forSignIn(session).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
       // the stored sign-in is gone by now: the list's view goes with it, and so does what opens its names
-      .finally(() => {
-        void Promise.all([ending, left]).then(async ([session, out]) => {
-          if (out === null || session === undefined || lists === null) { forgetNames(session?.account); return; }
-          // its own store did not say whether it keeps the account's list: it forgets nothing it cannot see, and says so
-          if (!out.removed && out.why === "unread") {
-            if (epoch === generation) { accountView = { kind: "signed-out", error: t("This device signed out, but it could not read what it keeps of your account's list, so your account may still list it.") }; await changed(); }
-            return;
-          }
-          // a member signs out for good: the key it was a member with goes, whatever the list took
-          await forgetMembership(accountStore, lists, session, member);
-          if (!out.removed && epoch === generation) { accountView = { kind: "signed-out", error: leaveFailure(out) }; await changed(); }
-        }).catch((error: unknown) => console.warn("Ovis: this device did not forget its account", error instanceof Error ? error.name : error))
-          .finally(() => { leavingList = null; followed?.poke(); });
-      });
+      try {
+        if (out === null || session === undefined || lists === null) { forgetNames(session?.account); return; }
+        // its own store did not say whether it keeps the account's list: it forgets nothing it cannot see, and says so
+        if (!out.removed && out.why === "unread") {
+          if (epoch === generation) { accountView = { kind: "signed-out", error: t("This device signed out, but it could not read what it keeps of your account's list, so your account may still list it.") }; await changed(); }
+          return;
+        }
+        // a member signs out for good: the key it was a member with goes, whatever the list took
+        await forgetMembership(accountStore, lists, session, member);
+        if (!out.removed && epoch === generation) { accountView = { kind: "signed-out", error: leaveFailure(out) }; await changed(); }
+      } finally { leavingList = null; followed?.poke(); }
+    }).catch((error: unknown) => console.warn("Ovis: this device did not forget its account", error instanceof Error ? error.name : error));
   };
   /** This device leaves the account; the outcome is the asking page's to show (hostedSignIn.ts, LeaveOutcome). */
-  const leave = (): Promise<LeaveOutcome> => {
+  const leave = (shown?: Shown): Promise<LeaveOutcome> => {
     if (leaving) return Promise.resolve({ left: false, message: null });
     deletion = undefined;
     leaving = true;
@@ -401,12 +412,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     let unsure = false;
     return from.then(async (session) => {
       if (session === undefined) throw new SignedOutError();
+      // the question was drawn for another account than the one stored now (another tab): nothing is signed or left
+      if (shown !== undefined && session.account !== shown.account) { refused.why = "changed"; throw new Error("The sign-in changed since the question was drawn"); }
       departing = session.account;
       // a device that is in its account's list puts itself out of it first; where the list does not take that, nothing is left
       leavingList = session.account;
-      const member = lists === null ? null : scopeOf(lists.view())?.member ?? null;
+      const member = shown?.scope?.member ?? (lists === null ? null : scopeOf(lists.view())?.member ?? null);
       departingKey = member ?? (await accountStore.key()).public_spki;
-      const out = lists === null ? null : await leaveList(lists, session.account);
+      const out = lists === null ? null : await leaveList(lists, session.account, { scope: shown?.scope ?? null });
       unsure = out !== null && !out.removed && out.why === "unknown";
       if (out !== null && !out.removed && !unsure) { refused.why = out.why; throw new Error(`The list did not take this device's removal (${out.why})`); }
       // one account key serves every account of this device: where another account's list still holds it, it stays
@@ -435,6 +448,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       return { left: true, message };
     }, async (error: unknown): Promise<LeaveOutcome> => {
       console.warn("Ovis: this device did not leave the account", error instanceof Error ? error.name : error);
+      if (refused.why === "changed") {
+        // the page reads the sign-in that took the place of the one the question was drawn for
+        if (epoch === generation) void refresh(true);
+        return { left: false, message: t("Your sign-in changed while this was asked. Nothing was removed.") };
+      }
       if (epoch === generation) await changed();
       return { left: false, message: refused.why === "stopped" ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.") : t("This device could not leave the account. Try again.") };
     }).finally(() => { leaving = false; leavingList = null; });
@@ -496,7 +514,28 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     return outcome.why === "stopped" ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.")
       : t("No device was signed out: the other devices could not be removed from your account. Try again.");
   };
-  const signOutEverywhere = (pc?: string, confirmed?: readonly string[]): Promise<string | null> => {
+  /**
+   * Sign out every device's removal of the others, and its look right before the sign-out (dev13b): the devices the
+   * question named leave the list, as the key and the list it was drawn for (`scope`), and this device's own read of
+   * the log must then show no other device in that the question did not name; one that came in meanwhile is asked
+   * about, and nobody is signed out. Answers why the sign-out does not go on, or null (also for an account with no list).
+   */
+  const everyOtherOut = async (on: string, named: readonly string[], scope: WriteScope | null): Promise<string | null> => {
+    if (lists === null) return null;
+    const outcome = await removeOthers(lists, on, named, { scope }).catch((error: unknown): RemoveOutcome => {
+      // a removal that failed is no word that nobody else is in
+      console.warn("Ovis: the other devices were not put out of the account's list", error instanceof Error ? error.name : error);
+      return { removed: false, why: "unread", retryAfterMs: null, placed: 0 };
+    });
+    if (outcome === null) return null;
+    const refused = othersRefused(outcome, named.length);
+    if (refused !== null) return refused;
+    const read = await lists.sync({ read: true }).catch((): AccountListView | null => null);
+    if (read === null || !read.reached || !inList(read, on)) return othersRefused({ removed: false, why: "unknown", retryAfterMs: null, placed: 0 }, named.length);
+    const newcomers = otherDevices(read, on).filter((key) => !named.includes(key));
+    return newcomers.length === 0 ? null : othersRefused({ removed: false, why: "unconfirmed", retryAfterMs: null, placed: named.length, unconfirmed: newcomers }, named.length);
+  };
+  const signOutEverywhere = (pc?: string, asked?: EverywhereAsked): Promise<string | null> => {
     if (deletion !== undefined || leaving) return Promise.resolve(null);
     const mine = {};
     deletion = mine;
@@ -506,12 +545,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const from = accountView?.kind === "signed-in" ? shownFor : undefined;
     return (async (): Promise<string | null> => {
       if (from === undefined) throw new SignedOutError();
+      // the question was drawn for another account than the one the page shows now
+      if (asked !== undefined && asked.shown.account !== from.account) throw new AnotherAccountError();
       // on an account whose list this device is in, every other device leaves the list first: signed out, it would still
       // hold a key that opens the account's PCs. The devices the person's question named, and no others: where another
       // came in since, or the list does not take it, nobody is signed out
-      const named = confirmed ?? (lists === null ? [] : otherDevices(lists.view(), from.account));
-      const others = lists === null ? null : await removeOthers(lists, from.account, named);
-      const refusedOthers = othersRefused(others, named.length);
+      const named = asked?.confirmed ?? (lists === null ? [] : otherDevices(lists.view(), from.account));
+      const scope = asked?.shown.scope ?? null;
+      const refusedOthers = await everyOtherOut(from.account, named, scope);
       if (refusedOthers !== null) return refusedOthers;
       try { await signedOutEverywhere(from); }
       catch (error) {
@@ -519,8 +560,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (nativeSignInAvailable()) {
           const fresh = await signInAgainInPlace(from, accountService, current, error);
           // the list is read again after the sign-in again: a device let in meanwhile is asked about first
-          const again = lists === null ? null : await removeOthers(lists, fresh.account, named);
-          const refusedAgain = othersRefused(again, named.length);
+          const refusedAgain = await everyOtherOut(fresh.account, named, scope);
           if (refusedAgain !== null) return refusedAgain;
           await signedOutEverywhere(fresh);
         }
@@ -674,11 +714,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
         // back from a sign-in again for Sign out every device: the list is read again first, and a device that came in while
         // the browser was away (the question named none still in) keeps everybody signed in, to be asked about
-        else if (pending?.sign_out_everywhere === session.account && (lists === null || (await removeOthers(lists, session.account, []).catch((error: unknown): RemoveOutcome => {
-          // a removal that failed is no word that nobody else is in: nobody is signed out
-          console.warn("Ovis: the other devices were not put out of the account's list", error instanceof Error ? error.name : error);
-          return { removed: false, why: "unread", retryAfterMs: null, placed: 0 };
-        }))?.removed !== false) && await signedOutEverywhere(session).then(() => true, (error: unknown) => {
+        else if (pending?.sign_out_everywhere === session.account && await everyOtherOut(session.account, [], null) === null && await signedOutEverywhere(session).then(() => true, (error: unknown) => {
           // still signed in, with a fresh sign-in now: pressing again in Manage account goes through
           console.warn("Ovis: every device was not signed out after the sign-in again", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
           return false;

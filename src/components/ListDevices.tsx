@@ -8,7 +8,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { listView } from "../../shared/account-list.ts";
 import type { AccountList, AccountListView, ListedDevice } from "../lib/account/accountList.ts";
-import { inList } from "../lib/account/listLeave.ts";
+import { inList, type Shown } from "../lib/account/listLeave.ts";
 import { cameInThrough, removeFromList, scopeOf, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
@@ -66,9 +66,11 @@ export function arrivalNameOf(t: Translate, view: AccountListView, arrival: Arri
   return view.devices.find((device) => device.key === arrival.key)?.name?.label ?? t("Unnamed device");
 }
 
-export function ListDevices({ list, view, onLeave }: { readonly list: AccountList; readonly view: AccountListView; readonly onLeave?: () => Promise<void> }) {
+export function ListDevices({ list, view, onLeave }: { readonly list: AccountList; readonly view: AccountListView; readonly onLeave?: (shown: Shown) => Promise<void> }) {
   const t = useT();
   const [asked, setAsked] = useState<Row | "self" | null>(null);
+  // what Disconnect's question was drawn for: the account, the list and this device's key in it, as shown when it opened
+  const [leaving, setLeaving] = useState<Shown | null>(null);
   const [note, setNote] = useState<string | null>(null);
   // what this device may sign on, as its copy stands with this view: only a device of power `full` removes anybody
   const writer = list.writer();
@@ -89,16 +91,16 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
                 <span className="account-manage-line">{nameOf(row)}</span>
                 {role !== null && <span className="account-manage-dim account-manage-tag">{role}</span>}
               </span>
-              {self && onLeave && <button type="button" className="btn account-head-btn" data-action="leave-account" onClick={() => setAsked("self")}>{t("Disconnect")}</button>}
+              {self && onLeave && view.account !== null && <button type="button" className="btn account-head-btn" data-action="leave-account" onClick={() => { setLeaving({ account: view.account!, scope: scopeOf(view) }); setAsked("self"); }}>{t("Disconnect")}</button>}
               {!self && writer !== null && <button type="button" className="btn account-head-btn" data-action="remove-device" onClick={() => { setNote(null); setAsked(row); }}>{t("Remove")}</button>}
             </li>
           );
         })}
       </ul>
       {note !== null && <p className="settings-condition" role="status" data-testid="list-device-note">{note}</p>}
-      {asked === "self" && onLeave && (
+      {asked === "self" && onLeave && leaving !== null && (
         <ConfirmDialog title={t("Remove this device?")} body={t("Every PC of the account removes this device. To use it again, sign in on it and allow it from another device.")}
-          confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave(); setAsked(null); }} />
+          confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave(leaving); setAsked(null); }} />
       )}
       {asked !== null && asked !== "self" && (
         <RemoveDialog list={list} view={view} removing={keyOf(asked)} name={nameOf(asked)} ticked={false}
@@ -168,14 +170,15 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
 
 /**
  * Sign out every device's question, for an account whose list this device is in: every other device leaves the
- * list first, by name, since a device that is only signed out keeps a key that opens the account's PCs. `children`:
- * what the question says for any other account.
+ * list first, by name, since a device that is only signed out keeps a key that opens the account's PCs. `named`: the
+ * devices the question was drawn with, which the press passes on, and no others. `children`: what the question says
+ * for any other account.
  */
-export function SignOutEverywhereSays({ account, children }: { readonly account: string; readonly children: ReactNode }) {
+export function SignOutEverywhereSays({ account, named, children }: { readonly account: string; readonly named: readonly string[]; readonly children: ReactNode }) {
   const t = useT();
   const view = useListView(pageAccountList());
   if (view === null || !inList(view, account)) return <>{children}</>;
-  const others = view.devices.filter((device) => !device.self).map((device) => device.name?.label ?? t("Unnamed device"));
+  const others = named.map((key) => view.devices.find((device) => device.key === key)?.name?.label ?? t("Unnamed device"));
   return (
     <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">
       {others.length === 0 ? t("Every browser and app is signed out of the account.")

@@ -7,9 +7,35 @@
  * And the tidying a device of power `full` does by itself while it reads the list: what is over its time goes.
  */
 import type { AccountList, AccountListView } from "./accountList.ts";
-import { removeOtherDevices, removeSelf, scopeOf, tidyList, type RemoveOutcome } from "./listRemoveDevice.ts";
+import { removeOtherDevices, removeSelf, scopeOf, tidyList, type RemoveOutcome, type WriteScope } from "./listRemoveDevice.ts";
 import { sameSignIn } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
+
+/**
+ * What a question was drawn for (the lead's X3, and dev13b's first finding): the account it named, and the list and
+ * the member key this device was in it with as the page showed it (null where the page showed no list). A sign-out, a
+ * leave or Sign out every device carries it from the press into the controller, and ends with nothing signed where the
+ * sign-in, the list or the key is another by any later step.
+ */
+export interface Shown {
+  readonly account: string;
+  readonly scope: WriteScope | null;
+}
+
+/** What the page shows now for `account`: its list and this device's key in it, where the list it shows is that account's. */
+export function shownOf(list: AccountList | null, account: string): Shown {
+  const view = list?.view() ?? null;
+  return { account, scope: view === null || view.account !== account ? null : scopeOf(view) };
+}
+
+/** Sign out every device's question as it was drawn: the other devices it named, and what it was drawn for. */
+export interface EverywhereAsked {
+  readonly confirmed: readonly string[];
+  readonly shown: Shown;
+}
+
+const sameScope = (a: WriteScope, b: WriteScope): boolean => a.account === b.account && a.list === b.list && a.member === b.member;
+const CHANGED: RemoveOutcome = { removed: false, why: "changed", retryAfterMs: null, placed: 0 };
 
 /** Whether this device follows the account's list and is in it, as the view says. */
 export function inList(view: AccountListView, account: string): boolean {
@@ -40,12 +66,14 @@ const UNREAD: RemoveOutcome = { removed: false, why: "unread", retryAfterMs: nul
  * of that account's list: nothing is asked of the list, and its sign-out is what it always was. A device the list
  * already shows out is out (`removed`). One whose copy cannot be written to says so (`no_list`).
  */
-export async function leaveList(list: AccountList, account: string, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
+export async function leaveList(list: AccountList, account: string, options: { readonly wait?: (ms: number) => Promise<void>; readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome | null> {
   const view = await viewFor(list, account);
   if (view === null || view === "unread") return view === null ? null : UNREAD;
   if (view.status.at === "following" && view.status.standing === "out") return { removed: true };
   const scope = scopeOf(view);
   if (scope === null) return { removed: false, why: "no_list", retryAfterMs: null, placed: 0 };
+  // the list or the key the question was drawn for is no longer the one this device is in by
+  if (options.scope != null && !sameScope(options.scope, scope)) return CHANGED;
   return removeSelf(list, scope, options);
 }
 
@@ -60,11 +88,12 @@ export function otherDevices(view: AccountListView, account: string): string[] {
  * the account's PCs. This device stays. `confirmed`: the devices the person's question named; a device it did not name
  * ends the removal with nothing signed (`unconfirmed`). Null for a device that keeps no copy of that account's list.
  */
-export async function removeOthers(list: AccountList, account: string, confirmed: readonly string[], options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
+export async function removeOthers(list: AccountList, account: string, confirmed: readonly string[], options: { readonly wait?: (ms: number) => Promise<void>; readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome | null> {
   const view = await viewFor(list, account);
   if (view === null || view === "unread") return view === null ? null : UNREAD;
   const scope = scopeOf(view);
   if (scope === null) return { removed: false, why: "no_list", retryAfterMs: null, placed: 0 };
+  if (options.scope != null && !sameScope(options.scope, scope)) return CHANGED;
   return removeOtherDevices(list, scope, confirmed, options);
 }
 
