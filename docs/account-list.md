@@ -1429,11 +1429,24 @@ its card for the list (`POST /v2/pc/list/keys`).
    and nobody between them can steer the number. The account service only carries the messages.
 3. The card shows the six digits with **Check that the PC shows this number and confirm it there,
    then Add**. The person confirms at the PC first; that is what lets the PC follow this list. A
-   number lives two minutes from the PC's answer.
+   number lives two minutes from the earliest the PC can have answered (the last read of the posts
+   that did not show its answer yet), never from when its answer came, and the press of **Add**
+   checks that again. The whole wait ends at its deadline (thirty seconds): the commitment, each
+   read of the posts and the reveal end by then, answered or not, and an answer that comes later
+   counts for nothing.
 4. **Add** beside the number: the account admits the PC (`POST /v1/pcs/{id}/admit`; the service
    places a `pc` entry only for a PC an own sign-in admitted), and the device signs the `pc` entry
    with exactly the card the number came from, the name the PC gave itself sealed, and the epoch
-   key wrapped to the PC's encryption key. **Not the same** adds nothing.
+   key wrapped to the PC's encryption key, signed by the very member key the number was worked
+   out with (another key, after another page replaced this device's membership, signs nothing).
+   **Not the same** adds nothing.
+
+One card, or one dialog, asks for three numbers at most: a number that was not the same, ran out,
+or got no answer counts. After the third it says **Too many tries for this PC. Start again on the
+PC in a few minutes.** and offers only **No** (or **Close**). On an account with a list, the card
+never falls back to the admission of the account's directory alone: a post that is gone, or a
+device that cannot write the list, is said as such. A listing whose window ended (`409
+listing_expired`) turns the card to "This request ran out", as on an account with no list.
 
 A number that is shown proves nothing by itself: only the two confirmations do, each for its own
 end. The PC's yes says that the adder is the device in the person's hand; the device's Add says
@@ -1444,9 +1457,17 @@ card is taken from that session and no number is compared. In place of the link,
 its list to the PC (`POST /api/account/list/named` `{ account, list }`), checks the card the PC
 answers with (its own, for this list and the relay key this session is bound to), has the account
 admit the PC, signs the `pc` entry, and asks the PC again, four times at most, until it says it
-read the entry. The pairing that named the list is spent then: its row goes, and the PC is opened
-as any PC of the list, with the key the list holds for the device. A PC with no such call (it
-follows no list, or is from before lists) gets the link, as before.
+read the entry. The person's Cancel is checked before the admission, before signing, before the
+request is kept and before every send. The PC's word that it read its entry spends nothing by
+itself: the device reads its own copy from the log, and only where that copy holds the PC is the
+pairing that named the list spent. Its row goes then, by that very row inside the delete (a newer
+pairing another page saved meanwhile stays), and the PC is opened as any PC of the list, with the
+key the list holds for the device. An entry the copy holds and the PC has not read yet (`placed`)
+spends nothing: the pairing stays the device's own, nothing is opened over its session, and the
+PC opens from its row once it took the list. A refusal at a later ask is said as the PC's
+refusal. A PC with no such call (it follows no list, or is from before lists) gets the link, as
+before; so does one whose pairing's session answers the first ask with `403 link_required` (a PC
+from before this call lets only the status and the link through that session).
 
 **A PC the account names that the list does not hold yet.** Such a PC keeps its row, marked **Not
 in your account's list yet** ([PCs of a list account](#pcs-of-a-list-account)). In Settings, on a
