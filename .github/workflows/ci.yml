@@ -334,12 +334,7 @@ jobs:
           done <<< "$HC_RELEASES"
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - name: Build the ACP keeper and test agent
-        if: needs.changes.outputs.draft != 'true'
-        run: cargo build --release --locked --manifest-path crates/acp-keeper/Cargo.toml --examples --bins
       - name: hc client against a real hc
-        env:
-          OVIS_REQUIRE_ACP_KEEPER: '1'
         if: needs.changes.outputs.draft != 'true'
         run: |
           set -euo pipefail

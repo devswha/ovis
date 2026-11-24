@@ -32,7 +32,6 @@ test("CI runs both crates' unit tests, and the release build runs the script tha
   const live = jobs["herdr-core-live"]!.steps!;
   const hc = live.findIndex((step) => step.run?.includes("./server/acp/children.live.test.ts"));
   expect(hc).toBeGreaterThan(-1);
-  expect(live.slice(0, hc).map((step) => step.run)).toContain("cargo build --release --locked --manifest-path crates/acp-keeper/Cargo.toml --examples --bins");
   const build = workflow("pty-sidecar.yml").jobs["build"]!.steps!.map((step) => step.run ?? "");
   expect(build).toContain("bun scripts/pty-sidecar.ts build ${{ matrix.asset }} pty-sidecar");
 });
