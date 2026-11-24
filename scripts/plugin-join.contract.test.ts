@@ -10,9 +10,12 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
+import { TestList } from "../server/account/list.test-helpers.ts";
 import { pairingPc, type Pc } from "../server/account/pairing.test-helpers.ts";
 import { bounded } from "../server/relay/test-helpers.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
+import { entryFromText, readBody } from "../shared/account-list-entry.ts";
+import { readKind } from "../shared/account-list.ts";
 import { signInviteRedeem } from "../shared/account-list-invite.ts";
 import { newInvite, readJoinLine } from "../shared/account-list-join.ts";
 import { join, JOIN_EXIT } from "./plugin-join.ts";
@@ -121,6 +124,96 @@ test("an auto invite: the PC is in the account at once, with no Add", async () =
   expect(run.asked).toEqual([200]);
   expect(made.devices.account()).toBe(OWNER);
   for (const text of stateFiles(made.stateDir)) for (const secret of secrets(line)) expect(text.includes(secret)).toBe(false);
+});
+
+/** A PC whose account keeps a signed list, and that list as its members write it. */
+async function listed() {
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  made.account.opensAll = true;
+  made.account.listAccounts = "*";
+  made.account.completions = true;
+  pcs.push(made);
+  const list = await TestList.start(made.account, OWNER);
+  const endpoint = bytesToHex(importPublicKey(made.app.context.services.relay.currentIdentity()!.public_key));
+  return { made, list, endpoint };
+}
+
+/** `ovis join --account OWNER --json` on a line that names the list. `joinAsked`: after this PC answered each ask of its join by the list. */
+async function joiningList(made: Pc, line: string, joinAsked: (count: number) => Promise<void> = async () => undefined) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const sent: string[] = [];
+  const pressed: string[] = [];
+  let asks = 0;
+  const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    const path = new URL(request.url).pathname;
+    if (path === "/api/relay" && request.method === "GET") return Response.json({ ...await (await globalThis.fetch(request)).json() as object, phase: made.devices.account() === null ? "connecting" : "online" });
+    const body = request.method === "POST" ? await request.clone().text() : "";
+    sent.push(body);
+    if (path === "/api/account/one-press" && body !== "{}") pressed.push(body);
+    const response = await globalThis.fetch(request);
+    if (path === "/api/account/list/join") await joinAsked(++asks);
+    return response;
+  };
+  const code = await bounded(join(["--invite-file", "/invite", "--account", OWNER, "--json"], {
+    origin: `http://127.0.0.1:${made.app.port}`, headers: {}, fetch, accountService: SERVICE, serviceFetch: made.account.fetch, signal: new AbortController().signal,
+    lines: { next: () => new Promise(() => {}) }, terminal: false, isTty: false, running: true, platform: "linux",
+    wait: (_ms, signal) => new Promise((resolve, reject) => { if (signal.aborted) reject(signal.reason); else setTimeout(resolve, 0); }),
+    readFile: () => `${line}\n`, readStdin: async () => "",
+    out: (text) => out.push(text), err: (text) => { err.push(text); },
+  }), 60_000);
+  return { code, out: out.join(""), err: err.join(""), sent, pressed };
+}
+
+test("an auto invite of an account that keeps a signed list: the PC joins by an entry of its own that the line signs, pinned to that list, and the line stays with the command", async () => {
+  const { made, list, endpoint } = await listed();
+  const invite = await list.invite({ auto: true });
+  const run = await joiningList(made, invite.line);
+  expect(run.err).not.toContain("Could not add");
+  expect(run.code).toBe(0);
+  expect(JSON.parse(run.out)).toEqual({ ok: true, account: OWNER, added: true, online: true });
+  expect(made.devices.account()).toBe(OWNER);
+  // by the list alone: no admission of the account service bound it, and the list holds the PC as one that joined by that invite
+  expect(run.pressed).toEqual([]);
+  expect(made.devices.serviceBinding()).toBeNull();
+  expect(made.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in", list: list.id });
+  const held = made.account.accountList(OWNER)!;
+  expect(held.state.pcs[endpoint]).toMatchObject({ how: "joined", invite: invite.key });
+  // with its name sealed and the names' key wrapped for it
+  expect(readKind(readBody(entryFromText(held.entries.at(-1)!).body))).toMatchObject({ kind: "join", sealed: { epoch: 0 } });
+  expect(held.wraps.some((wrap) => wrap.member === held.state.pcs[endpoint]!.enc)).toBe(true);
+  // nothing of the line went to this PC's server, into its files or onto the screen
+  for (const text of [run.out, run.err, ...run.sent, ...stateFiles(made.stateDir)]) for (const secret of secrets(invite.line)) expect(text.includes(secret)).toBe(false);
+});
+
+test("a plain invite of an account that keeps a signed list: the PC posts its card, a device of the account adds it, and it joins by the list", async () => {
+  const { made, list, endpoint } = await listed();
+  const invite = await list.invite({ auto: false });
+  const serverId = made.app.context.services.relay.currentIdentity()!.server_id;
+  const run = await joiningList(made, invite.line, async (count) => {
+    if (count !== 2) return;
+    // a device of the account chooses Add on the card of the PC that joined with its invite
+    const admitted = await made.account.fetch(new Request(`${SERVICE}/v1/pcs/${serverId}/admit`, { method: "POST", headers: { authorization: `Bearer ${made.account.issueToken(OWNER, { twoStep: true })}` }, body: "{}" }));
+    expect(admitted.status).toBe(200);
+    await list.addPostedPc(endpoint);
+  });
+  expect(run.err).not.toContain("Could not add");
+  expect(run.code).toBe(0);
+  expect(run.pressed).toEqual([]);
+  expect(made.devices.account()).toBe(OWNER);
+  expect(made.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in", list: list.id });
+  expect(made.account.accountList(OWNER)!.state.pcs[endpoint]).toMatchObject({ how: "added" });
+  for (const text of [run.out, run.err, ...run.sent, ...stateFiles(made.stateDir)]) for (const secret of secrets(invite.line)) expect(text.includes(secret)).toBe(false);
+});
+
+test("a line that names no list, for an account that keeps one, adds this PC nowhere: the account service's word is not taken", async () => {
+  const { made } = await listed();
+  const line = await inviteFor(made, true);
+  const run = await joining(made, line);
+  expect(run.code).toBe(JOIN_EXIT.not_added);
+  expect(run.err).toContain("This account keeps a signed list of its devices");
+  expect(made.devices.account()).toBeNull();
 });
 
 test("stopped while it waits, the PC takes itself off the account's list by its own proof, and keeps nothing of the invite", async () => {

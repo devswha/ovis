@@ -55,6 +55,8 @@ export const SIGN_IN_PULL_MS = 60_000;
 /** The same after such a pull could not read the mailbox (the service was down, or did not answer): it found nothing out. */
 export const SIGN_IN_PULL_RETRY_MS = ASKED_PULL_MS;
 export const SIGN_IN_WAIT_MS = 5_000;
+/** How long the account service's word on whether an account keeps a signed list is kept (AccountMailbox.listNamed). */
+const LIST_NAMED_MS = 30_000;
 /** The least time between two reads of an account's admissions for links (vouch): a 429 may name a longer one. */
 export const VOUCH_READ_GAP_MS = ASKED_PULL_MS;
 /** How long one such read has for its two calls together. */
@@ -506,6 +508,44 @@ export class AccountMailbox {
     const answer = await this.call(path, { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)), ...await this.prove(identity), ...body });
     if (answer === null || typeof answer !== "object" || Array.isArray(answer)) throw new Error(`The account service sent a malformed answer to ${path}`);
     return answer;
+  }
+
+  /**
+   * This PC joined `account` by the account's signed list. The account's own page shows a PC as only listed until its
+   * admission is taken and answered as complete, so that is done here, on the PC's own proof. It lets nobody in and
+   * binds nothing: the PC is in the account by its list already. It never throws.
+   */
+  async joinedByList(account: string): Promise<void> {
+    try {
+      const admitted = await this.admission(account);
+      if (admitted !== null && admitted.account === account && admitted.listing_id !== undefined) await this.complete(account, admitted.listing_id);
+    } catch (error) { console.warn(`[account] the account service was not told that this PC joined by its list: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  private readonly listNames = new Map<string, { readonly list: string | null; readonly at: number }>();
+
+  /**
+   * The list the account service names for `account` to this PC (POST /v2/pc/list), or null for none: its word, good
+   * for telling a PC in no account that the account keeps a signed list, and for nothing else. Null on a PC that
+   * follows no list, which asks nothing. Kept for half a minute. Throws when the service could not be asked.
+   */
+  async listNamed(account: string, now = Date.now()): Promise<string | null> {
+    if (this.options.list === undefined) return null;
+    const identity = this.options.identity();
+    if (!identity) throw new Error("This PC has no relay identity");
+    const scope = `${identity.server_id} ${account}`;
+    const kept = this.listNames.get(scope);
+    if (kept !== undefined && now - kept.at >= 0 && now - kept.at < LIST_NAMED_MS) return kept.list;
+    let list: string | null = null;
+    try {
+      const said = (await this.listRoute("/v2/pc/list", { account })).list;
+      if (typeof said === "string" && isListHash(said)) list = said;
+    } catch (error) {
+      // the unknown route: an account with no list, one that does not list this PC, a service from before lists
+      if (!(error instanceof AccountServiceRefusal && error.status === 404)) throw error;
+    }
+    this.listNames.set(scope, { list, at: now });
+    return list;
   }
 
   /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */

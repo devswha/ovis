@@ -1453,6 +1453,19 @@ export class DeviceStore {
     this.pc.bindByService(account, listingId);
   }
 
+  /**
+   * Binds this PC, in no account, to `account` by the account's signed list (PcAccountState.bindByList): its own entry
+   * on a list a person at this PC confirmed. Only with the release flag on. An account whose list removed this relay
+   * identity takes it back on no path. Returns the binding's id.
+   */
+  bindByList(account: string, list: string): string {
+    this.assertWritable();
+    if (this.pc === null) throw new Error("A signed list needs OVIS_ACCOUNT_OPENS_ALL");
+    if (this.account() !== null) throw new Error("This PC is already in an account");
+    if (this.listRemovedFrom(account)) throw new Error("This PC was removed from that account");
+    return this.pc.bindByList(account, list);
+  }
+
   /** The id of this PC's binding when it stands on the account service's word alone (bindByService), else null. */
   serviceBinding(): string | null { const binding = this.pc?.binding(); return binding?.service === true ? binding.bind_id : null; }
 

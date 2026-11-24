@@ -303,17 +303,53 @@ describe("ovis join: the invite", () => {
     }
   });
 
-  it("acts only on a line for this PC's own account service, and only on one for an account with no list yet; nothing is sent otherwise", async () => {
+  it("acts only on a line for this PC's own account service; nothing is sent otherwise", async () => {
     for (const other of ["https://account.ovis.sh", "https://account.test:8443", "https://evil.example"]) {
       const run = await joining({ inviteService: other });
       expect([other, run.code]).toEqual([other, JOIN_EXIT.invite_invalid]);
       expect(run.out).toBe("This invite is for another account service than the one this PC uses (https://account.test). Nothing was sent. Ask for an invite on a device signed in to that service, or check OVIS_ACCOUNT_SERVICE_URL here.\n");
       expect([run.local, run.calls]).toEqual([[], []]);
     }
-    const listed = await joining({ inviteList: "0f484e9226ad290aaac6dea9244aced4e2b7b97297ecd8d52d437a57c33e5383" });
-    expect(listed.code).toBe(JOIN_EXIT.not_available);
-    expect(listed.out).toBe("This invite is for an account with a signed member list, which needs a newer Ovis on this PC. Update it in Settings → Updates, then run this again. Nothing was sent.\n");
-    expect([listed.local, listed.calls]).toEqual([[], []]);
+  });
+
+  describe("a line that names the account's signed list", () => {
+    const LIST = "0f484e9226ad290aaac6dea9244aced4e2b7b97297ecd8d52d437a57c33e5383";
+    /** this PC as one that follows lists: it says so, and answers the joins by the list as `joins` has them */
+    const following = (joins: (count: number, body: Record<string, unknown>) => Response) => {
+      const asked: Record<string, unknown>[] = [];
+      return { asked, localAnswer: (path: string, request: Request): Promise<Response> | Response | undefined => {
+        if (path === "/api/account/list" && request.method === "GET") return Response.json({ pinned: false });
+        if (path !== "/api/account/list/join") return undefined;
+        return request.json().then((body) => { asked.push(body as Record<string, unknown>); return joins(asked.length, body as Record<string, unknown>); });
+      } };
+    };
+
+    it("is refused on an Ovis that follows no list, before anything is sent: the invite stays unused", async () => {
+      const listed = await joining({ inviteList: LIST });
+      expect(listed.code).toBe(JOIN_EXIT.not_available);
+      expect(listed.out).toBe("This invite is for an account with a signed member list, which needs a newer Ovis on this PC. Update it in Settings → Updates, then run this again. Nothing was sent.\n");
+      expect(listed.calls).toEqual([]);
+      expectNoInvite(listed);
+    });
+
+    it("joins by that list: this PC is asked whether its list holds it, with the account and the list the line names, and never for the account service's admission", async () => {
+      const pc = following((count) => Response.json(count < 3 ? { state: "waiting", standing: "waiting" } : { state: "added", account: "acct_1" }));
+      const run = await joining({ inviteList: LIST, localAnswer: pc.localAnswer });
+      expect(run.code).toBe(0);
+      expect(pc.asked).toEqual([{ account: "acct_1", list: LIST }, { account: "acct_1", list: LIST }, { account: "acct_1", list: LIST }]);
+      expect(run.pressed).toEqual([]);
+      expect(run.out).toContain("Added: this PC is in your account (acct_1)");
+      expectNoInvite(run);
+    });
+
+    it("ends with this PC's own words where it will not join that list, and takes itself off the account's list", async () => {
+      const pc = following(() => Response.json({ error: { code: "list_removed", message: "This PC was removed from this Ovis account. It can come back only as a new PC: on the PC, reset its relay identity, then add it again." } }, { status: 409 }));
+      const run = await joining({ inviteList: LIST, localAnswer: pc.localAnswer });
+      expect(run.code).toBe(JOIN_EXIT.not_added);
+      expect(run.out).toContain("Could not add this PC: This PC was removed from this Ovis account.");
+      expect(run.listed()).toEqual([]);
+      expect(run.pressed).toEqual([]);
+    });
   });
 
   it("sends the invite's public key and a signature over this account, this PC and this challenge: never the line or its secret", async () => {

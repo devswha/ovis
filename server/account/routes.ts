@@ -1,5 +1,8 @@
+import { canonicalBase64Url } from "../../shared/account-list-entry.ts";
+import type { Sealed } from "../../shared/account-list.ts";
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
+import { toBase64Url } from "../../shared/relay-pair-sas.ts";
 import type { Access } from "../access.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
@@ -7,7 +10,9 @@ import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedPcs } from "./introductions.ts";
 import { ACCOUNT_HELD_MAX } from "./holds.ts";
 import { AccountAddError } from "../machines.ts";
-import { notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
+import { ListAddAway, type AddState } from "./list-add.ts";
+import type { JoinOutcome } from "./list-follow.ts";
+import { noteListAdd, notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
 import { applyAccountRecords, applyEnrollment, applyLink, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
@@ -17,6 +22,25 @@ const LINK_STATUS: Record<LinkRefusal, number> = {
   replacement_needs_app: 409, list_followed: 409, list_removed: 409,
 };
 
+/** What `ovis join` is told where this PC joins no list (POST /api/account/list/join…), by the refusal's name. */
+const JOIN_REFUSALS: Readonly<Record<string, string>> = {
+  invalid_list: "Name the account, its list and the invite by their ids.",
+  other_account: "This PC is in another account.",
+  pinned: "This PC already follows another list. Revoke all on this PC to leave its account first.",
+  removed: LIST_REMOVED_FROM,
+  unavailable: "This PC's relay identity, its list or its keys cannot be read or written.",
+  other_adder: "The list holds this PC already, by another entry than this invite's.",
+  not_read: "The account's list could not be read from the account service.",
+  invite_unknown: "The account's list holds no such invite.",
+  invite_revoked: "This invite was revoked.",
+  invite_void: "This invite no longer counts: the device that made it is out of the account.",
+  invite_spent: "This invite was used already.",
+  invite_expired: "This invite ran out.",
+  invite_plain: "This invite adds a PC only once a device of the account chooses Add.",
+  invite_uses: "This invite lets more than one PC in, so no PC joins with it by itself.",
+  not_written: "This PC's join would not count on the account's list.",
+};
+
 /**
  * /api/account/* (docs/account.md, "PC API"): drive access only, directly or through the relay,
  * and the app's own mutation guard for changes.
@@ -24,6 +48,8 @@ const LINK_STATUS: Record<LinkRefusal, number> = {
 export async function handleAccountRequest(request: Request, pathname: string, context: ServerContext, access: Access): Promise<Response> {
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
   const fail = (code: string, message: string, status: number) => reply({ error: { code, message } }, status);
+  // an add by the list that still runs counts as waiting for Add (GET /api/account/status)
+  const noted = (state: AddState): AddState => { noteListAdd(devices, state.state === "waiting" || state.state === "number" || state.state === "confirmed"); return state; };
   const devices = context.services.devices;
   const peer = context.peer;
   // a device that waits to link (it paired with a code made for a PC in no account; docs/account.md, "Who may admit
@@ -65,6 +91,13 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     // this PC's own window and CLI alone (dispatch.ts ownWindow)
     const list = context.services.accountList;
     return list === null ? fail("not_found", "This PC follows no list", 404) : reply(list.status());
+  }
+  if (pathname === "/api/account/list/add" && request.method === "GET") {
+    setRequestRoute(pathname);
+    // this PC's own window and CLI alone (dispatch.ts ownWindow): the number is shown only at this PC
+    const add = context.services.listAdd;
+    if (add === null) return fail("not_found", "This PC follows no list", 404);
+    return reply(noted(await add.state()));
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
@@ -113,6 +146,90 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       } as const;
       const [message, status] = refusals[named.refused];
       return fail(named.refused === "removed" ? "list_removed" : named.refused, message, status);
+    }
+    case "/api/account/list/add": {
+      setRequestRoute(pathname);
+      // a person at this PC adds it to an account that keeps a signed list (dispatch.ts ownWindow): the PC posts its
+      // card, and shows the number to compare with the phone that adds it. `no_list`: the account keeps none
+      const add = context.services.listAdd;
+      if (add === null) return fail("not_found", "This PC follows no list", 404);
+      const account = body.account;
+      if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
+      // as one press: the account named for this PC, a PC in no account, and never one that account's list removed
+      if (context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
+      if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
+      if (devices.listRemovedFrom(account)) return fail("list_removed", LIST_REMOVED_FROM, 409);
+      try { return reply(noted(await add.start(account))); }
+      catch (error) {
+        if (!(error instanceof ListAddAway)) throw error;
+        return fail("account_unavailable", error.message, 503);
+      }
+    }
+    case "/api/account/list/add/confirm": {
+      setRequestRoute(pathname);
+      // the person at this PC says the phone shows the same number, and says which: only that names the list
+      const add = context.services.listAdd;
+      if (add === null) return fail("not_found", "This PC follows no list", 404);
+      if (typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) return fail("invalid_digits", "Send the six digits this PC shows", 400);
+      return reply(noted(await add.confirm(body.digits)));
+    }
+    case "/api/account/list/add/cancel": {
+      setRequestRoute(pathname);
+      const add = context.services.listAdd;
+      if (add === null) return fail("not_found", "This PC follows no list", 404);
+      return reply(noted(await add.cancel()));
+    }
+    case "/api/account/list/join":
+    case "/api/account/list/join/prepare":
+    case "/api/account/list/join/body":
+    case "/api/account/list/join/place": {
+      setRequestRoute(pathname);
+      // `ovis join` at this PC, with the line of an invite that names the account's list (dispatch.ts ownWindow): a
+      // person confirmed the account there, and the line names the list. The line itself stays with the command
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      const { account, list: id } = body;
+      if (typeof account !== "string" || typeof id !== "string") return fail("invalid_list", "Name the account and its list", 400);
+      const inAccount = devices.account();
+      if (inAccount !== null && inAccount !== account) return fail("in_account", "This PC is already in an account", 409);
+      if (inAccount === null && context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
+      if (devices.listRemovedFrom(account)) return fail("list_removed", LIST_REMOVED_FROM, 409);
+      const refusal = (code: string, detail?: string | null) => fail(code === "removed" ? "list_removed" : code, JOIN_REFUSALS[code] ?? `This PC could not join the account's list (${detail ?? code}).`, code === "unavailable" || code === "not_read" ? 503 : 409);
+      const ended = async (outcome: JoinOutcome | { readonly again: true } | { readonly refused: string; readonly detail?: string | null }): Promise<Response> => {
+        if ("again" in outcome) return reply({ state: "again" });
+        if ("refused" in outcome) return refusal(outcome.refused, "detail" in outcome ? outcome.detail : null);
+        if ("waiting" in outcome) return reply({ state: "waiting", standing: outcome.waiting });
+        await context.services.accountMailbox.joinedByList(account);
+        return reply({ state: "added", account });
+      };
+      // a plain invite, or the ask again after a join was placed: the PC joins once the list holds its entry
+      if (pathname === "/api/account/list/join") return await ended(await list.joinList({ account, list: id, by: null }));
+      const invite = body.invite;
+      if (typeof invite !== "string") return fail("invalid_invite", "Name the invite by its key", 400);
+      if (pathname === "/api/account/list/join/prepare") {
+        const prepared = await list.joinPrepare({ account, list: id, invite });
+        return "prepared" in prepared ? reply({ state: "prepared", ...prepared.prepared }) : await ended(prepared);
+      }
+      if (pathname === "/api/account/list/join/body") {
+        const { seq, sealed } = body as { seq?: unknown; sealed?: unknown };
+        if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return fail("invalid_join", "Name the place the join takes", 400);
+        let names: Sealed | null = null;
+        if (sealed !== undefined && sealed !== null) {
+          const { epoch, bytes } = sealed as { epoch?: unknown; bytes?: unknown };
+          const read = typeof bytes === "string" && bytes.length <= 4096 ? canonicalBase64Url(bytes) : null;
+          if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 0 || read === null) return fail("invalid_join", "The sealed names are an epoch and bytes", 400);
+          names = { epoch, bytes: read };
+        }
+        const built = await list.joinBody({ account, list: id, invite, seq, sealed: names });
+        return "body" in built ? reply({ state: "body", body: toBase64Url(built.body) }) : await ended(built);
+      }
+      const { entry, wraps } = body as { entry?: unknown; wraps?: unknown };
+      const given = wraps === undefined ? [] : Array.isArray(wraps) && wraps.length <= 4 ? wraps.flatMap((wrap: unknown) => {
+        const { epoch, member, wrap: text } = (typeof wrap === "object" && wrap !== null ? wrap : {}) as { epoch?: unknown; member?: unknown; wrap?: unknown };
+        return typeof epoch === "number" && Number.isSafeInteger(epoch) && typeof member === "string" && typeof text === "string" && text.length <= 1024 ? [{ epoch, member, wrap: text }] : [];
+      }) : null;
+      if (typeof entry !== "string" || entry.length > 16_384 || given === null || (Array.isArray(wraps) && given.length !== wraps.length)) return fail("invalid_join", "Send the signed join and its wraps", 400);
+      return await ended(await list.joinPlace({ account, list: id, invite, entry, wraps: given }));
     }
     case "/api/account/one-press": {
       if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);

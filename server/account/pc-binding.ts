@@ -386,6 +386,20 @@ export class PcAccountState {
     this.write({ ...this.doc, binding: { account, bind_id: randomBytes(16).toString("hex"), service: true, listing_id: listingId }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0 });
   }
 
+  /**
+   * Binds a PC in no account to `account` by the account's signed list `list`: the PC has read that list itself and
+   * found the entry that adds its own key, on a list a person at this PC confirmed. The binding is pinned to the list
+   * from its first moment, so nothing the account service says ever let a device in under it. No row is written with it
+   * and no device is its first (T67). Returns the binding's id.
+   */
+  bindByList(account: string, list: string): string {
+    if (this.doc.binding !== null) throw new Error("This PC is already in an account");
+    if (!ACCOUNT.test(account) || !LIST.test(list)) throw new Error("A PC joins an account's list by the account's id and the list's id");
+    const bind_id = randomBytes(16).toString("hex");
+    this.write({ ...this.doc, binding: { account, bind_id, list }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0, gen: this.doc.gen + 1 });
+    return bind_id;
+  }
+
   pinListing(bindId: string, listingId: string): void {
     const binding = this.doc.binding;
     if (binding !== null && binding.pending !== true && binding.bind_id === bindId && binding.listing_id === undefined) {

@@ -64,6 +64,7 @@ import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { accountRowsFor } from "./account/account-devices.ts";
+import type { ListAdd } from "./account/list-add.ts";
 import type { ListFollow } from "./account/list-follow.ts";
 import { accountDispatchRefusal } from "./account/dispatch-rights.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
@@ -124,6 +125,8 @@ export interface RequestServices {
   readonly accountRows: ReturnType<typeof accountRowsFor> | null;
   /** This PC following its account's signed list (server/account/list-follow.ts); null with the release flag off. */
   readonly accountList: ListFollow | null;
+  /** Adding this PC to an account that keeps a signed list (server/account/list-add.ts); null with the release flag off. */
+  readonly listAdd: ListAdd | null;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */
@@ -485,8 +488,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
   }
   // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
-  // this PC names the list it pins
-  if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin") && !ownWindow) {
+  // this PC names the list it pins, by its id, by the number it compares with the phone that adds it, or by the line of an invite
+  if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin" || pathname === "/api/account/list/add" || pathname.startsWith("/api/account/list/add/")
+    || pathname === "/api/account/list/join" || pathname.startsWith("/api/account/list/join/")) && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Read this on this PC itself." } }, 403);
   }

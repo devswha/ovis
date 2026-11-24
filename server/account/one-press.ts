@@ -27,6 +27,8 @@ export const ADDED_RELAY_ONLINE_MS = 30_000;
 const RELAY_POLL_MS = 250;
 
 const refuse = (code: string, message: string, status: number): { readonly refused: PressRefusal } => ({ refused: { code, message, status } });
+/** Said where an account with a signed list is asked to take this PC on the account service's word. */
+export const LIST_ADD_ONLY = "This account keeps a signed list of its devices, and takes a PC only by that list. Run ovis add on this PC, or ovis join with an invite made since the account has its list.";
 const SET_UP_FOR_ANOTHER = "This PC was set up for another account. Sign in to that one, or add this PC again.";
 
 export async function pressOnce(services: PressServices, account: string): Promise<PressOutcome> {
@@ -36,6 +38,10 @@ export async function pressOnce(services: PressServices, account: string): Promi
   if (devices.account() !== null) return refuse("in_account", "This PC is already in an account", 409);
   // an account whose signed list removed this PC takes it back on no path: only as a new PC, after a reset relay identity
   if (devices.listRemovedFrom(account)) return refuse("list_removed", LIST_REMOVED_FROM, 409);
+  // an account that keeps a signed list takes a PC by that list alone: never on the account service's word
+  try {
+    if (await accountMailbox.listNamed(account) !== null) return refuse("list_add", LIST_ADD_ONLY, 409);
+  } catch (error) { return refuse("account_unavailable", error instanceof Error ? error.message : String(error), 503); }
   // a Revoke all, a reset or a denial while the service answers raises this: the press then binds nothing (PADD-1)
   const generation = devices.gen();
   // a relay identity reset meanwhile makes this another PC to the account service: its answer was for the old one
@@ -82,6 +88,12 @@ const lastWaits = new WeakMap<DeviceStore, number>();
  */
 export function notePressAsk(devices: DeviceStore, outcome: PressOutcome, now = Date.now()): void {
   if ("refused" in outcome && (outcome.refused.code === "no_admission" || outcome.refused.code === "account_unavailable")) lastWaits.set(devices, now);
+  else lastWaits.delete(devices);
+}
+
+/** The same for an add by the account's signed list (POST /api/account/list/add): waiting while a number is to come, shows, or was confirmed. */
+export function noteListAdd(devices: DeviceStore, waiting: boolean, now = Date.now()): void {
+  if (waiting) lastWaits.set(devices, now);
   else lastWaits.delete(devices);
 }
 
