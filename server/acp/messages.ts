@@ -42,7 +42,20 @@ function parseOptions(value: unknown): AcpOption[] {
   });
 }
 
-export function parseLine(line: string): { client: number } | { row: Row; message: Message } | null {
+function validMessage(body: Record<string, unknown>): boolean {
+  if ("method" in body && typeof body.method !== "string") return false;
+  if (body.method !== "session/update") return true;
+  const update = record(record(body.params)?.update);
+  if (!update || typeof update.sessionUpdate !== "string") return false;
+  if (["kind", "status"].some(key => key in update && typeof update[key] !== "string")) return false;
+  const blocks = Array.isArray(update.content) ? update.content : [update.content];
+  return blocks.every(value => {
+    const block = record(value);
+    return !block || !("type" in block) || typeof block.type === "string";
+  });
+}
+
+export function parseLine(line: string): { client: number } | { row: Row; message: Message | null } | null {
   let parsed: unknown;
   try { parsed = JSON.parse(line); } catch { return null; }
   const object = record(parsed);
@@ -54,7 +67,7 @@ export function parseLine(line: string): { client: number } | { row: Row; messag
   try { message = JSON.parse(raw); } catch { return null; }
   const body = record(message);
   if (!body) return null;
-  return { row: { seq, dir, raw, ...(typeof object["ts"] === "number" ? { ts: object["ts"] } : {}), ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message: body };
+  return { row: { seq, dir, raw, ...(typeof object["ts"] === "number" ? { ts: object["ts"] } : {}), ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message: validMessage(body) ? body : null };
 }
 
 export function approval(row: Row, keeperId: string, params: Record<string, unknown>): AcpApproval {

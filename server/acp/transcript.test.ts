@@ -1,13 +1,12 @@
 import { expect, it } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HistoryChanged } from "../conversation-shared.ts";
 import { KeeperClient } from "./client.ts";
 
-// Live prompt plus the user echo gjc sends, Codex-style edits, and a session/load replay.
-it("pages prompts once, folds tool updates and replaces the visible history only on a complete replay", async () => {
+function archive() {
   const root = mkdtempSync(join(tmpdir(), "archive-"));
   const socket = new Socket();
   const client = new KeeperClient(root, { connect: () => socket });
@@ -20,6 +19,31 @@ it("pages prompts once, folds tool updates and replaces the visible history only
   const chunk = (sessionUpdate: string, text: string) => update({ sessionUpdate, content: { type: "text", text } });
   const prompt = (text: string) => row("to-agent", { id: "p" + seq, method: "session/prompt", params: { sessionId: "child", prompt: [{ type: "text", text }] } });
   const mode = (phase: string) => row("keeper", { method: "_keeper/mode", params: { mode: "acp", phase } });
+  return { client, root, row, update, chunk, prompt, mode, close: () => { client.close(); rmSync(root, { recursive: true, force: true }); } };
+}
+
+it("counts and skips non-string discriminators both live and on restore", async () => {
+  const { root, client, row, prompt, chunk, update, close } = archive();
+  const replay = new Socket();
+  const restored = new KeeperClient(root, { connect: () => replay });
+  try {
+    prompt("Hello");
+    for (const kind of [{}, [], 1, null]) {
+      update({ sessionUpdate: kind });
+      row("from-agent", { method: kind });
+    }
+    chunk("agent_message_chunk", "Still here");
+    replay.emit("data", readFileSync(join(root, "archive.jsonl"), "utf8"));
+    for (const reader of [client, restored]) {
+      expect(reader.malformedRows).toBe(8);
+      expect((await reader.history.page({})).turns.at(-1)?.parts).toEqual([{ kind: "text", text: "Still here" }]);
+    }
+  } finally { restored.close(); close(); }
+});
+
+// Live prompt plus the user echo gjc sends, Codex-style edits, and a session/load replay.
+it("pages prompts once, folds tool updates and replaces the visible history only on a complete replay", async () => {
+  const { client, row, prompt, chunk, update, mode, close } = archive();
   try {
     prompt("First"); chunk("user_message_chunk", "First"); chunk("agent_message_chunk", "One");
     prompt("Edit"); chunk("agent_thought_chunk", "Check the note");
@@ -40,5 +64,5 @@ it("pages prompts once, folds tool updates and replaces the visible history only
     expect((await client.history.page({})).turns.map(t => t.parts)).toEqual([[{ kind: "text", text: "From the TUI" }], [{ kind: "text", text: "Reply" }]]);
     expect(client.history.plan).toBeNull();
     await expect(client.history.page({ before: last.cursor })).rejects.toBeInstanceOf(HistoryChanged);
-  } finally { client.close(); rmSync(root, { recursive: true, force: true }); }
+  } finally { close(); }
 });

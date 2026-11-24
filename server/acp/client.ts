@@ -32,6 +32,7 @@ export class KeeperClient {
   session: string | null = null;
   turn: AcpTurn | null = null;
   agentGone = false;
+  malformedRows = 0;
   private inTerminal = false;
 
   get status(): "working" | "blocked" | "idle" | "done" | "unknown" {
@@ -212,6 +213,7 @@ export class KeeperClient {
     const previousStatus = this.status;
     const previousPlan = this.history.plan;
     this.history.observe(entry, Buffer.byteLength(line) + 1);
+    if (entry.message === null) { this.malformedRows++; return false; }
     const changed = this.row(entry.row, entry.message) || this.history.plan !== previousPlan;
     // A short prompt and its stopReason can share one socket read: the queue needs both edges.
     if (this.status !== previousStatus) this.changed();

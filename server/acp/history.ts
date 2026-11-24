@@ -12,7 +12,7 @@ interface Prompt { start: number; end: number; replay: boolean }
 interface History { generation: number; prompts: Prompt[]; plan: PlanStep[] | null; user: boolean }
 const empty = (generation: number): History => ({ generation, prompts: [], plan: null, user: false });
 const MAX_BYTES = 64 * 1024 * 1024;
-type Entry = { row: Row; message: Message };
+type Entry = { row: Row; message: Message | null };
 
 function planSteps(entries: unknown[]): PlanStep[] {
   return entries.flatMap((value, i) => {
@@ -45,6 +45,7 @@ export class AcpHistory {
       if (stat?.isFile()) this.fileId = { dev: stat.dev, ino: stat.ino };
     }
     this.position += length;
+    if (message === null) return;
     const params = message.params;
     if (row.dir === "keeper" && message.method === "_keeper/mode" && params?.mode === "acp") {
       if (params.phase === "start") this.loading = empty(row.seq);
@@ -57,7 +58,7 @@ export class AcpHistory {
     if (update?.sessionUpdate === "plan" && Array.isArray(update.entries)) state.plan = planSteps(update.entries);
     const prompt = row.dir === "to-agent" && message.method === "session/prompt";
     const user = update?.sessionUpdate === "user_message_chunk";
-    if (!prompt && (!update || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan", "user_message_chunk"].includes(String(update.sessionUpdate)))) return;
+    if (!prompt && (typeof update?.sessionUpdate !== "string" || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan", "user_message_chunk"].includes(update.sessionUpdate))) return;
     if (user && !this.loading) return; // the agent's echo of the outgoing prompt, not another user turn
     if (prompt || (user && !state.user) || !state.prompts.length) state.prompts.push({ start, end: this.position, replay: this.loading !== null });
     const last = state.prompts.at(-1);
@@ -86,6 +87,7 @@ export class AcpHistory {
         const entry = parseLine(line);
         if (!entry || !("row" in entry)) continue;
         const { row, message } = entry;
+        if (!message) continue;
         const ts = typeof row.ts === "number" && Number.isFinite(row.ts) && Math.abs(row.ts) <= 8.64e15 ? new Date(row.ts).toISOString() : null;
         if (row.dir === "to-agent" && message.method === "session/prompt" && Array.isArray(message.params?.prompt)) {
           for (const content of message.params.prompt) yield { ts, update: { sessionUpdate: "user_message_chunk", content } };

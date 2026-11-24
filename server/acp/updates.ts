@@ -93,7 +93,7 @@ export function projectUpdates(events: Iterable<UpdateEvent | null>, options: Pr
     }
     const plan = options.keeper && u.sessionUpdate === "plan" && Array.isArray(u.entries);
     const thought = options.keeper && u.sessionUpdate === "agent_thought_chunk";
-    if (!plan && !thought && !["agent_message_chunk", "tool_call", "tool_call_update"].includes(String(u.sessionUpdate))) continue;
+    if (!plan && !thought && (typeof u.sessionUpdate !== "string" || !["agent_message_chunk", "tool_call", "tool_call_update"].includes(u.sessionUpdate))) continue;
     if (prompt === undefined && !options.keeper) throw new UpdateUnavailable();
     if (!assistant) { assistant = { role: "assistant", ts: event.ts, parts: [] }; turns.push(assistant); }
     if (event.ts !== null) assistant.end_ts = event.ts;
