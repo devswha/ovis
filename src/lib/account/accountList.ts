@@ -361,7 +361,7 @@ export interface AccountList {
    * since the sign-in may have changed under it. An account service that is away, slow or lying is a state of the
    * view; only a sign-in that ended throws (SignedOutError).
    */
-  sync(): Promise<AccountListView>;
+  sync(options?: { /** read the log past this device's head whatever head the account service names: after a write whose outcome only the log says */ readonly read?: boolean }): Promise<AccountListView>;
   view(): AccountListView;
   /** Hears each view that differs from the one before. */
   subscribe(listener: (view: AccountListView) => void): () => void;
@@ -423,6 +423,8 @@ export function accountList(options: AccountListOptions): AccountList {
   let askedAt: number | null = null;
   /** The account the pacing below is counted for. */
   let pacedFor: string | null = null;
+  /** The next read of the list reads its log whatever head the account service names (sync's `read`). */
+  let readAsked = false;
   /** The last round took pages of the log and left some: the next one is due at once. */
   let behind = false;
   /** The round under way and what ends it. */
@@ -452,7 +454,12 @@ export function accountList(options: AccountListOptions): AccountList {
     if (saved === undefined) return fresh;
     if (typeof saved !== "string") return "form";
     // the copy this page holds, while it is the one saved and this device's key is the one it was pinned under
-    if (held !== null && held.account === account && held.saved === saved && held.copy !== null && held.copy.me.key === keys.key) return held;
+    if (held !== null && held.account === account && held.saved === saved && held.copy !== null && held.copy.me.key === keys.key) {
+      // with what another page kept beside the copy since: its last full read, and the floor of its clock
+      const beside = readTimes(await store.get("times", account), held.copy.list);
+      const [read_at, seen_at] = [later(held.copy.read_at, beside?.read_at ?? null), later(held.copy.seen_at, beside?.seen_at ?? null)];
+      return read_at === held.copy.read_at && seen_at === held.copy.seen_at ? held : { ...held, copy: { ...held.copy, read_at, seen_at } };
+    }
     const read = await readSave(saved);
     if (!read.read) return read.why;
     // saved under another account key: this device has a new one since, and is another member
@@ -758,7 +765,10 @@ export function accountList(options: AccountListOptions): AccountList {
     let unread = false;
     let behind = false;
     let saved: string;
-    if (heard.verdict === "read" || other || heard.verdict === "none") {
+    // asked for by a write whose outcome only the log says: the head the account service names proves nothing of it
+    const forced = readAsked;
+    readAsked = false;
+    if (heard.verdict === "read" || other || heard.verdict === "none" || forced) {
       const had = copy.entries.length;
       const got = await read(bound, copy, loaded, stopped);
       ({ copy, saved } = got);
@@ -895,7 +905,8 @@ export function accountList(options: AccountListOptions): AccountList {
     }
   };
 
-  const sync = (): Promise<AccountListView> => {
+  const sync = (options: { readonly read?: boolean } = {}): Promise<AccountListView> => {
+    if (options.read === true) readAsked = true;
     if (running !== null) {
       queued ??= running.then(() => undefined, () => undefined).then(() => {
         queued = null;

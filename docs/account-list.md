@@ -1096,9 +1096,13 @@ older than ten minutes proves itself with its registered key (purpose `list-clai
 id and the claimed key); one that registered none signs in again.
 
 **The device that lets it in.** Once the PC took the number (it checks the digits, as today), and
-only then:
+once the PC holds the new device's row (the new device confirmed its own digits: until then the
+PC answers `404 introduction_unknown_key` to an introduction with nothing in it, which is what
+the device asks with), and only then:
 
-1. It reads the list, so that it signs on what the log holds now.
+1. It reads the list, so that it signs on what the log holds now. The write belongs to the account
+   the approval was begun under and to the list of this first read: a sign-in another tab changed
+   meanwhile ends it with nothing signed, and never leads to the way of an account with no list.
 2. It takes the newcomer's card from the claims the service lists
    (`GET /v2/lists/{list}/claims`), for the key whose digits were compared. The key comes from
    the comparing, never from that answer; the card proves itself, and an entry whose card is not
@@ -1117,10 +1121,13 @@ times at most, while the device's own copy shows the head it was signed on: whil
 says it is rebuilding the list (`503 list_rebuilding`) or asks for the request again, after an
 answer that never came, and while the log does not show the entry. Another entry is signed only
 after the device's own copy shows a new head (`409 head_moved`, and the read that follows shows
-it), four times at most. After a request whose answer never came, the device reads the log before
-it says anything: the entry is there, or the request goes again, or, where the log cannot be read
-either, it says that it is **not known yet** whether the device is in the account. It never says
-"added to this PC only" for that.
+it), four times at most. Only an answer that proves that nothing was placed is taken as that: the
+service's own refusals below 500. After an answer that never came, a 5xx (a gateway may answer one
+after the service placed the entry) or a 200 that does not read, the device reads the log past its
+own head, whatever head the service names, before it says anything: the entry is there, or the
+request goes again, or, where the log cannot be read either, it says that it is **not known yet**
+whether the device is in the account. It never says "added to this PC only" for that. A placement
+waits thirty seconds for its answer, and the read of the claims as long.
 
 **Whose clock.** Whether an invite's or a device's time is over, and so whether a removal and a
 new epoch go first, is judged by the device's own clock, held against the floor it saved and the
@@ -1168,12 +1175,14 @@ the PC need not wait for its next read: it says where it stands
 (`POST /api/account/list/head`), and where the PC stands earlier in the same history, hands it
 the entries after that place (`POST /api/account/list/page`), 256 a call. Where the PC asks for
 an earlier place (`asks`), that page goes next, eight calls at most. The hand-over counts as
-done only when the PC says it stands at the newcomer's entry or past it; a page it refused or
-took in part is none, and the PC then reads the account service as ever. Entries prove
+done only when the PC says it stands at the newcomer's entry or past it, at a place of the
+device's own history: the same number with another entry at it is another history. A page the PC
+refused or took in part is none, whatever place its answer names, and the PC then reads the
+account service as ever. Only pages of the list the hand-over began for are sent. Entries prove
 themselves. A PC that follows no list a person named answers 404, and nothing is handed.
 
 **Where the list does not take the newcomer**, the device signs nothing else for it: no `add` for
-the account's other PCs and no introduction. The new device stays let in at that PC alone, and
+the account's other PCs, and no PC is introduced. The new device stays let in at that PC alone, and
 the device in use says so on a card, **{device} was added to {pc} only**, with why and **Try
 again**.
 

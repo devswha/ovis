@@ -56,6 +56,9 @@ async function written(writer: ListWriter, claim: ListClaim, names: ListNames | 
     (next) => [async (after) => device(await seal(after, next.epoch, next.commitment))]);
 }
 
+/** How long the read of the newcomer's claim waits for its answer. */
+const CLAIMS_MS = 30_000;
+
 /** How many requests of removals alone one Allow places before the newcomer's: 64 keys over their time. */
 const TIDY_ROUNDS = 4;
 
@@ -65,8 +68,21 @@ const TIDY_ROUNDS = 4;
  * apart from this device's, it reads and signs again, ALLOW_TRIES times at most; while the service says it is
  * rebuilding the list, the same request goes again, ALLOW_RESENDS times at most. Only a sign-in that ended throws.
  */
-export async function allowDevice(list: AccountList, newcomer: Newcomer, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<AllowOutcome> {
+export async function allowDevice(list: AccountList, newcomer: Newcomer, options: {
+  readonly wait?: (ms: number) => Promise<void>;
+  /**
+   * The account the approval was begun under. The write is bound to it, and to the list of its first read, across
+   * every retry and every request of removals: a sign-in another tab changed meanwhile ends it with nothing signed
+   * (`changed`), and never leads to the way of an account with no list.
+   */
+  readonly account?: string;
+  /** how long the read of the claims waits; a test's own */
+  readonly claimsMs?: number;
+} = {}): Promise<AllowOutcome> {
   const names = listNames(newcomer.label, newcomer.os);
+  let bound: string | undefined;
+  // read at every try of every round: the list is fixed from the first writer on
+  const held = { account: options.account ?? "", get list(): string | undefined { return bound; } };
   // No request is built that the account service must refuse for its size. The newcomer's request holds every key
   // that is over its time, the epoch and the newcomer; where those keys are more than fit, they go out first, a
   // request of removals at a time, and the newcomer's request follows on the head they leave.
@@ -74,11 +90,12 @@ export async function allowDevice(list: AccountList, newcomer: Newcomer, options
     let tidied = false;
     const outcome = await writeToList<"removed">(list, async (writer) => {
       tidied = false;
+      bound ??= writer.list;
       const row = writer.state.signers[newcomer.key];
       // the list holds the key already: let in before (the place handed on is where this device stands now), or put out for good
       // (the place handed on is that of the entry that let it in, where this device's copy shows it)
       if (row !== undefined) return row.ended !== null || row.as !== "device" ? { refused: "removed" } : { done: list.placeAt(row.seq) ?? placeOf(writer.state) };
-      const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === newcomer.key);
+      const claim = (await writer.service.listClaims(writer.list, AbortSignal.timeout(options.claimsMs ?? CLAIMS_MS))).find((each) => each.key === newcomer.key);
       if (claim === undefined) return { refused: "not_claimed" };
       const lapsed = writer.epochs.has(writer.state.epoch) && sealEpoch(writer.state, writer.clock) === null ? lapsedRemovals(writer.state, writer.clock) : [];
       if (lapsed.length > WRITE_ENTRIES_MAX - 2) {
@@ -86,7 +103,9 @@ export async function allowDevice(list: AccountList, newcomer: Newcomer, options
         return { request: await signedOn(writer, lapsed.slice(0, WRITE_ENTRIES_MAX)) };
       }
       return { request: await written(writer, claim, names) };
-    }, options);
+    }, { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.account === undefined ? {} : { expect: held }) });
+    // a device that is in no list of the account it was asked for is not "an account with no list"
+    if (!outcome.written && outcome.why === "no_list" && options.account !== undefined && list.view().account !== options.account) return { allowed: false, why: "changed", retryAfterMs: null };
     if (!outcome.written) return { allowed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
     if (!tidied) return { allowed: true, offer: { list: outcome.list, seq: outcome.place.seq, hash: outcome.place.hash } };
   }
