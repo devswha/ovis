@@ -1482,8 +1482,10 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   came by the list.
 - **A device the list put out is out for good.** Its sessions close, and the PC keeps the removal
   as it keeps a member's signed `remove`: every row of that key goes, a pairing this PC made itself
-  included, and nothing brings that key back, a pairing at this PC included. The device comes back
-  as a new one, with a new key: allowed into the list again, or paired by a person at this PC.
+  included, and nothing brings that key back, a pairing at this PC included: a list's removal is
+  the same kind as an account's removal before it. The device comes back as a new one, with a new
+  key: it signs in again, which makes a new key, and is allowed into the list again, or is paired
+  by a person at this PC.
 - **Before a session opens, the PC reads the list** when its last full read is older than 30
   seconds, and the sign-in waits for that for 5 seconds at most; then the PC decides on its copy as
   it is. That holds for every sign-in, a device this PC paired itself included. With a session open
