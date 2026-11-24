@@ -47,7 +47,8 @@ function validMessage(body: Record<string, unknown>): boolean {
   if (body.method !== "session/update") return true;
   const update = record(record(body.params)?.update);
   if (!update || typeof update.sessionUpdate !== "string") return false;
-  if (["kind", "status"].some(key => key in update && typeof update[key] !== "string")) return false;
+  const nullable = update.sessionUpdate === "tool_call_update";
+  if (["kind", "status"].some(key => key in update && !(nullable && update[key] === null) && typeof update[key] !== "string")) return false;
   const blocks = Array.isArray(update.content) ? update.content : [update.content];
   return blocks.every(value => {
     const block = record(value);

@@ -121,8 +121,8 @@ export function projectUpdates(events: Iterable<UpdateEvent | null>, options: Pr
     }
     if (!call) throw new UpdateUnavailable();
     for (const [key, value] of Object.entries(u)) {
-      // ACP optional nullable raw fields and name use null for "unchanged".
-      if (value === null && ["rawInput", "rawOutput", "name"].includes(key)) continue;
+      // ACP uses null for "unchanged" in these optional fields.
+      if (value === null && (["rawInput", "rawOutput", "name"].includes(key) || (u.sessionUpdate === "tool_call_update" && (key === "kind" || key === "status")))) continue;
       call.fields[key] = value;
     }
     const fields = call.fields;

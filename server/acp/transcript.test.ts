@@ -128,3 +128,18 @@ it("pages prompts once, folds tool updates and replaces the visible history only
     await expect(client.history.page({ before: last.cursor })).rejects.toBeInstanceOf(HistoryChanged);
   } finally { close(); }
 });
+
+it("applies nullable tool updates during replay without clearing the earlier kind or status", async () => {
+  const { client, chunk, update, mode, close } = archive();
+  try {
+    mode("start");
+    chunk("user_message_chunk", "Edit the note");
+    update({ sessionUpdate: "tool_call", toolCallId: "t1", kind: "edit", title: "Change note", status: "in_progress" });
+    update({ sessionUpdate: "tool_call_update", toolCallId: "t1", kind: null, status: "completed" });
+    update({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: null, content: [{ type: "diff", path: "note.txt", oldText: "A", newText: "B" }] });
+    mode("ready");
+    expect((await client.history.page({})).turns.at(-1)?.parts).toMatchObject([
+      { kind: "tool", name: "edit", state: "ok", edits: [{ path: "note.txt", before: "A", after: "B" }] },
+    ]);
+  } finally { close(); }
+});
