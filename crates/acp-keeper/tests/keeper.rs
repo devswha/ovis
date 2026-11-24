@@ -7,6 +7,24 @@ use serde_json::json;
 
 const LIMIT: usize = 64 << 20;
 
+#[tokio::test]
+async fn a_stuck_scope_probe_does_not_stop_the_keeper_running() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let root = Root::new("stuck-scope");
+    let probe = root.0.join("systemd-run");
+    std::fs::write(&probe, "#!/bin/sh\n: >\"$0.ran\"\nexec /bin/sleep 7\n").unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut keeper = tokio::process::Command::new(env!("CARGO_BIN_EXE_ovis-acp-keeper"));
+    keeper.env("PATH", &root.0).arg(&root.0).args(["--headless", "--", "/bin/true"]).kill_on_drop(true).stdin(Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(6), keeper.output()).await.expect("the scope probe blocked startup").unwrap();
+    assert!(probe.with_extension("ran").exists());
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"KEEPER_READY\n");
+}
+
 #[test]
 fn a_prompt_above_the_old_line_limit_reaches_the_agent() {
     let root = Root::new("big-prompt");

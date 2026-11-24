@@ -151,15 +151,18 @@ enum Signal {
 }
 
 fn quiet(cmd: &mut Command) -> &mut Command {
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true)
 }
+
+const SCOPE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[cfg(target_os = "linux")]
 async fn scope_for(root: &Path) -> Option<String> {
-    let usable = quiet(Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "true"]))
-        .status()
+    let mut probe = Command::new("systemd-run");
+    probe.args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "true"]);
+    let usable = tokio::time::timeout(SCOPE_COMMAND_TIMEOUT, quiet(&mut probe).status())
         .await
-        .is_ok_and(|s| s.success());
+        .is_ok_and(|status| status.is_ok_and(|s| s.success()));
     if !usable {
         return None;
     }
@@ -167,8 +170,7 @@ async fn scope_for(root: &Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     let hash = root.as_os_str().as_bytes().iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
     let unit = format!("acp-keeper-{hash:016x}");
-    stop_scope(&unit).await;
-    Some(unit)
+    stop_scope(&unit).await.then_some(unit)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -176,8 +178,15 @@ async fn scope_for(_root: &Path) -> Option<String> {
     None
 }
 
-async fn stop_scope(unit: &str) {
-    let _ = quiet(Command::new("systemctl").args(["--user", "stop"]).arg(format!("{unit}.scope"))).status().await;
+async fn stop_scope(unit: &str) -> bool {
+    let mut stop = Command::new("systemctl");
+    stop.args(["--user", "stop"]).arg(format!("{unit}.scope"));
+    if tokio::time::timeout(SCOPE_COMMAND_TIMEOUT, quiet(&mut stop).status()).await.is_err() {
+        eprintln!("systemctl stop timed out for {unit}.scope; scope cleanup is unconfirmed");
+        return false;
+    }
+    // A nonzero status is normal when a collected scope already went away.
+    true
 }
 
 /// Whether the pane's terminal has job control with the keeper as its foreground job, so the real
