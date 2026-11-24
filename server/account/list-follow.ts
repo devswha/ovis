@@ -44,7 +44,7 @@ import type { ListCommit } from "./account-device-state.ts";
 import { ListKeysError, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
 import { ACCOUNT_LIST_VOUCHES_FILE, ListVouches } from "./list-vouches.ts";
 import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
-import type { ListBound } from "./pc-binding.ts";
+import { RemovedOnDiskError, type ListBound } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
 
 export const ACCOUNT_LIST_FILE = "account-list.json";
@@ -292,7 +292,7 @@ export interface ListFollowDeps {
    * Binds this PC, in no account, to `account` by its list `list`, pinned from the start (DeviceStore.bindByList): the
    * binding the file holds after the write, which another Ovis on this folder may have made (`won` false). Throws when it cannot.
    */
-  bind(account: string, list: string): ListBound;
+  bind(account: string, list: string, serverId: string): ListBound;
   /**
    * This PC joined `account` by its list under the binding `bindId` (AccountMailbox.listJoined): what it then owes the
    * account service, its completion, is kept on disk at once. Never throws.
@@ -1133,6 +1133,8 @@ export class ListFollow implements ListAuthority {
             try { this.vouches.keepCardBy({ serverId: read.bound.serverId, bindId: read.bound.bindId }, held.list, by); } catch { return { refused: "unavailable" }; }
           }
         }
+        // and only by a copy that shows it in: one it is still reading from the start (its copy was lost) says where it stands
+        if (this.copy.list !== list || standing(this.copy) !== "in") return { waiting: this.copy.list === list ? standing(this.copy) : "waiting" };
         // joined by this list, and the copy is still not on disk: offered to it again before the PC says so
         if (this.unsaved) this.unsaved = !this.persist(read.bound);
         return this.unsaved ? { waiting: "in" } : { joined: this.status() };
@@ -1147,13 +1149,15 @@ export class ListFollow implements ListAuthority {
       if (by !== null && addedBy(copy) !== by) return { refused: "other_adder" };
       // the line named this list: the list must hold the line's invite, or the line was for no list at all
       if (invite !== undefined && (copy.state === null || !Object.hasOwn(copy.state.invites, invite))) return { refused: "invite_unknown" };
-      // still in no account, and the same PC: whatever happened while the list was read
+      // still in no account, the same PC, and a follower that runs: whatever happened while the list was read
       const now = this.sync();
-      if (now === null || now.serverId !== scope.serverId || now.bindId !== null) return { refused: "unavailable" };
+      if (this.stopped || now === null || now.serverId !== scope.serverId || now.bindId !== null) return { refused: "unavailable" };
       // what the join is for still stands at the write itself (an add's ten minutes, the person's No)
       if (given.live?.() === false) return { refused: "ended" };
       let held: ListBound;
-      try { held = this.deps.bind(account, list); } catch (error) {
+      try { held = this.deps.bind(account, list, now.serverId); } catch (error) {
+        // the list removed this PC from that account (another Ovis on this folder read it so a moment ago)
+        if (error instanceof RemovedOnDiskError) return { refused: "removed" };
         this.error = `This PC could not join the account (${error instanceof Error ? error.message : String(error)})`;
         return { refused: "unavailable" };
       }
@@ -1196,6 +1200,10 @@ export class ListFollow implements ListAuthority {
     if (!first.pinned) return { refused: "invalid_list" };
     const copy = await this.readInto(first.copy);
     if (!this.live(scope)) return { refused: "unavailable" };
+    // pinned another way while the list was read (a member's page, another Ovis on this folder): that pin stands, and
+    // the copy it holds too; this read changes nothing of it
+    const pinned = this.deps.binding()?.list ?? null;
+    if (pinned !== null) return pinned === list ? { waiting: this.copy?.list === list ? standing(this.copy) : "waiting" } : { refused: "pinned" };
     const stands = standing(copy);
     if (stands !== "in") {
       if (stands === "waiting" && post) await this.post(copy, keys, scope);
@@ -1282,7 +1290,7 @@ export class ListFollow implements ListAuthority {
       const row = state.invites[invite];
       if (row === undefined || !row.auto) return { refused: "invite_plain" };
       if (row.uses !== 1) return { refused: "invite_uses" };
-      const seal = sealEpoch(state, Math.max(this.joinClock(), copy.seen_at ?? 0));
+      const seal = sealEpoch(state, this.joinClock(state));
       let wraps: { epoch: number; wrap: string }[] = [];
       if (seal !== null) {
         try {
@@ -1317,7 +1325,7 @@ export class ListFollow implements ListAuthority {
       try {
         // the invite's key is the line's alone: the body is taken as it would be signed, and signed where the line is
         await joinEntry({ key: invite, list, signJoin: async (built) => { body = writeBody(built); throw capture; } },
-          { key: keys.key, privateKey: keys.privateKey, enc: keys.enc, endpoint: scope.endpoint }, state, this.joinClock(), sealed);
+          { key: keys.key, privateKey: keys.privateKey, enc: keys.enc, endpoint: scope.endpoint }, state, this.joinClock(state), sealed);
       } catch (error) {
         if (error instanceof ListWriteError && error.reason === "behind") return { refused: "behind" as const };
         if (error instanceof ListWriteError) { this.error = `This PC's join would not count (${error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome})`; return { refused: "not_written" as const }; }
@@ -1348,21 +1356,27 @@ export class ListFollow implements ListAuthority {
       try {
         await this.deps.call("/v2/pc/list/entries", { list, entries: [entry], ...(wraps.length > 0 ? { wraps } : {}) });
       } catch (error) {
-        if (error instanceof AccountServiceRefusal) {
+        // no answer, or a 5xx that says nothing of the entry (a gateway in front of the service): it may be placed all
+        // the same, which only the log says. The service's own answers are taken as it gave them
+        const named = error instanceof AccountServiceRefusal && error.status === 503 && (error.code === "list_rebuilding" || error.code === "list_stopped");
+        if (error instanceof AccountServiceRefusal && (error.status < 500 || named)) {
           if (error.status === 409 && (error.code === "head_moved" || error.code === "try_again")) return { again: true as const };
           if (error.status === 503 && error.code === "list_rebuilding") return { again: true as const };
           return { refused: "refused" as const, detail: `${error.status}${error.code === null ? "" : ` ${error.code}`}` };
         }
-        // no answer: it may be placed all the same, which only the log says
       }
       const joined = await this.joining({ account, list, by: invite }, false);
       return "waiting" in joined && joined.waiting === "waiting" ? { again: true as const } : joined;
     });
   }
 
-  /** The time a `join` of this PC is signed at: its own clock, never an hour the account service names. */
-  private joinClock(): number {
-    return this.seconds();
+  /**
+   * The time a `join` of this PC is signed at, and its names sealed by (X1 amended): its own clock as it reads now, held
+   * against the list's own time (listClock with no saved hour), never an hour the account service names, and never the
+   * hour it saved (that floor lets in and refuses, and signs nothing).
+   */
+  private joinClock(state: ListState): number {
+    return listClock(state, this.seconds(), null);
   }
 
   /**

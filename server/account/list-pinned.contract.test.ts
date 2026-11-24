@@ -13,6 +13,7 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { loadRelayIdentity } from "../relay/identity.ts";
 import { readSave, writeSave } from "../../shared/account-list-follower.ts";
+import { entryFromText, entryHash } from "../../shared/account-list-entry.ts";
 import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { handleRequest } from "../dispatch.ts";
 import { bounded, deferred, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
@@ -630,6 +631,29 @@ describe("a removal the PC has seen is final", () => {
     expect((await call()).status).toBe(429);
     pc.time.advance(61_000);
     expect((await call()).status).toBe(200);
+  });
+
+  test("a device on another history is followed back over its calls, by its key, until the PC sees where the two part", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    // the device holds another history from entry 0: two entries no other member saw
+    const { texts } = await pc.account.forkFromStart();
+    const history = [texts[0], texts[1]];
+    const theirs = { seq: 2, hash: entryHash(entryFromText(texts[1]).body) };
+    let answer = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: theirs } });
+    expect(answer.status).toBe(200);
+    // the device hands what the PC asks for, from the place it names, one call at a time
+    const asked: number[] = [];
+    for (let calls = 0; calls < 4 && answer.body.asks !== undefined && pc.list.status().alarm === null; calls++) {
+      const after = (answer.body.asks as { after: number }).after;
+      asked.push(after);
+      answer = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after, entries: history.slice(after), head: theirs } });
+      expect(answer.status).toBe(200);
+    }
+    // it took more than one call to find where the two histories part, and the PC found it
+    expect(asked.length).toBeGreaterThan(1);
+    expect(pc.list.status().alarm).toBe("fork");
   });
 
   test("a page nobody asked for whose first entry follows no entry this PC holds is refused before any of it is checked", async () => {

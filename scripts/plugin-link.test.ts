@@ -1917,6 +1917,22 @@ describe("ovis link, on the PC itself", () => {
       expect(run.listCalls.at(-1)).toEqual({ action: "cancel", body: { run: RUN } });
     });
 
+    it("gives its add up also when its terminal fails after the number was confirmed", async () => {
+      const actions: string[] = [];
+      const answers = adding({ added: false });
+      let failed = false;
+      const ended = await pressing({ list: (call) => { actions.push(call.action); return answers(call); }, watch: () => undefined,
+        said: (text, type) => {
+          if (text.endsWith(NUMBER)) type("yes");
+          // the terminal the command writes to goes away as it says the number was confirmed
+          if (!failed && text.includes("Confirmed. Press Add")) { failed = true; throw new Error("The terminal is gone"); }
+        } }).then((run) => run.code, (error: unknown) => error);
+      expect(failed).toBe(true);
+      // the command ends, whichever way it reports that
+      expect(ended).not.toBe(0);
+      expect(actions.at(-1)).toBe("cancel");
+    });
+
     it("reports nothing of an add that took its place on this PC", async () => {
       const run = await pressing({ list: ({ action }) => action === "start" ? state({ state: "waiting" }) : Response.json({ state: "replaced" }) });
       expect(run.code).toBe(1);

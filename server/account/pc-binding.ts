@@ -277,6 +277,9 @@ function reconciled(base: PcDoc, next: PcDoc, disk: PcDoc | null, path: string):
 /** The binding the file holds after a PC bound itself by its list (PcAccountState.bindByList). `won`: it is the one this write made. */
 export interface ListBound { readonly id: string; readonly account: string; readonly list: string | null; readonly won: boolean }
 
+/** A bind of a PC that the account's list removed under this relay identity, found in the file under its lock: nothing is written. */
+export class RemovedOnDiskError extends Error {}
+
 /** A write that would end, on the account service's word, a binding the file on disk holds pinned: refused, whoever holds an older document. */
 export class PinnedOnDiskError extends Error {}
 
@@ -601,11 +604,15 @@ export class PcAccountState {
    * and no device is its first (T67). Answers the binding the file holds once the write is done: another Ovis on this
    * folder that bound the PC meanwhile keeps its binding (reconciled), and `won` is false then.
    */
-  bindByList(account: string, list: string): ListBound {
+  bindByList(account: string, list: string, serverId: string): ListBound {
     if (this.doc.binding !== null) throw new Error("This PC is already in an account");
     if (!ACCOUNT.test(account) || !LIST.test(list)) throw new Error("A PC joins an account's list by the account's id and the list's id");
     const bind_id = randomBytes(16).toString("hex");
-    this.write({ ...this.doc, binding: { account, bind_id, list }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0, gen: this.doc.gen + 1 });
+    // a PC that account's list removed under this relay identity joins it again on no path: asked of the file under its
+    // lock, so a removal another Ovis on this folder wrote a moment ago counts
+    this.write({ ...this.doc, binding: { account, bind_id, list }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0, gen: this.doc.gen + 1 }, (doc) => {
+      if (doc.clears.some((clear) => clear.removed_as?.account === account && clear.removed_as.server_id === serverId)) throw new RemovedOnDiskError("This PC was removed from that account");
+    });
     const held = standingIn(this.doc);
     if (held === null) throw new Error("This PC's binding was not written");
     return { id: held.bind_id, account: held.account, list: held.list ?? null, won: held.bind_id === bind_id };
@@ -721,7 +728,8 @@ export class PcAccountState {
     return true;
   }
 
-  private write(next: PcDoc): void {
+  /** `check`: asked of what would be written, under the lock; a throw writes nothing. */
+  private write(next: PcDoc, check?: (doc: PcDoc) => void): void {
     if (this.problem !== null) throw new Error(this.strict!);
     // The provisional first-link write and its rollback both represent no committed binding.
     const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
@@ -730,6 +738,7 @@ export class PcAccountState {
     withFileLock(this.path, () => {
       // read, reconcile, write, as one turn: what another server of this folder wrote meanwhile is never written over
       const doc = reconciled(this.doc, next, docOnDisk(this.path), this.path);
+      check?.(doc);
       writePrivateState(this.path, onDisk(doc));
       this.doc = doc;
       this.seen = stamp(this.path);
