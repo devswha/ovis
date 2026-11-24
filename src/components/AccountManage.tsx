@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
 import { pagePcs } from "../lib/account/listPcs.ts";
+import { holdsList } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
 import { AccountService, type DirectoryPc } from "../lib/account/service.ts";
@@ -17,7 +18,7 @@ import { DEVICES_CHANGED_EVENT, inRelayShell } from "../lib/useRelay.ts";
 import { signInOfAccount } from "./AccountPcs.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { StatusDot } from "./StatusDot.tsx";
-import { pcRemovalFailure, usePcRemoval } from "./usePcRemoval.tsx";
+import { heldRemoval, pcRemovalFailure, usePcRemoval, type HeldRemoval } from "./usePcRemoval.tsx";
 
 /**
  * Whether `row` can be disconnected from every PC from here: another device of the account, and a
@@ -134,12 +135,15 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
   const t = useT();
   const service = useMemo(() => new AccountService({ store: indexedAccountStore }), []);
   const [pcs, setPcs] = useState<readonly DirectoryPc[] | "failed" | null>(null);
-  const [asked, setAsked] = useState<DirectoryPc | null>(null);
+  // the PC the question is asked for, with the row of this device's list it was pressed on (null: no list holds it)
+  const [asked, setAsked] = useState<(DirectoryPc & { readonly held: HeldRemoval | null }) | null>(null);
   const removal = usePcRemoval(service, async (serverId, how) => {
-    // this device's own pairing with the gone PC goes too, so no list here offers it again. Not for a PC that left by an
-    // entry of the account's list: a pairing made with the PC itself still opens it, as the question says, and only
-    // Forget takes that key from this device
-    if (how === "directory" && inRelayShell()) await (await loadRelayShell()).forgetSavedPc(serverId).catch(() => undefined);
+    // On an account with no list, this device's own pairing with the gone PC goes too, so no list here offers it
+    // again. A device that goes by its account's signed list forgets no pairing here, whichever way the PC left: a
+    // pairing made with the PC itself still opens it, as the question says, and only Forget takes that key away
+    const view = pageAccountList()?.view();
+    const byList = view !== undefined && view.account === account && holdsList(view);
+    if (how === "directory" && !byList && inRelayShell()) await (await loadRelayShell()).forgetSavedPc(serverId).catch(() => undefined);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
@@ -168,7 +172,7 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
                 <span className="visually-hidden">{off ? t("Offline") : t("Online")}</span>
                 <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}</span>}</span>
                 {/* a PC in use lists itself again on its next pull: only an offline one is offered, whatever its age */}
-                {off && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked(pc)}>{t("Remove")}</button>}
+                {off && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked({ ...pc, held: heldRemoval(account, pc.server_id) })}>{t("Remove")}</button>}
               </li>
             );
           })}
@@ -180,7 +184,7 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
           confirmLabel={t("Remove")} onClose={() => setAsked(null)}
           onConfirm={async () => {
             // a removal that wants a fresh sign-in first closes the question: its Sign in again, below the list, removes it
-            try { await removal.remove(await signInOfAccount(service, account), asked.server_id); } catch (error) {
+            try { await removal.remove(await signInOfAccount(service, account), asked.server_id, undefined, asked.held); } catch (error) {
               console.warn("Ovis: the PC was not removed from the account", error instanceof Error ? error.name : error);
               throw new Error(pcRemovalFailure(error, t, t("{name} could not be removed. Try again.", { name: asked.label })));
             }
