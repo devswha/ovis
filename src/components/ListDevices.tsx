@@ -136,7 +136,12 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
   });
   // the keys asked for that were handed on to a new key since, by the key they were handed to: asked again for that one
   const [heirs, setHeirs] = useState<Readonly<Record<string, string>>>({});
-  const now = (key: string): string => heirs[key] ?? key;
+  // a key may have been handed on more than once since the question was drawn: to the key that stands now
+  const now = (key: string): string => {
+    let at = key;
+    for (let steps = 0; heirs[at] !== undefined && steps < 64; steps += 1) at = heirs[at]!;
+    return at;
+  };
   // what the question was asked for: a sign-in or a list that took its place since signs nothing for it
   const [scope] = useState(() => scopeOf(view));
   const [chosen, setChosen] = useState<ReadonlySet<number>>(() => new Set(ticked ? arrivals.map((_, index) => index) : []));

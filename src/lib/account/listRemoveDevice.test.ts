@@ -576,9 +576,9 @@ describe("each write of this lane names its change (after the writer's C1)", () 
   it("Remove, Not me, Sign out every device, leaving and the tidy-up each keep their request for a change of their own", async () => {
     const { w, first, second } = await twoDevices();
     const other = (await second.keys()).key;
-    expect(await keptFor(w, first, () => removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `remove:${other}` }))).toBe(`remove:${other}`);
+    expect(await keptFor(w, first, () => removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `remove:${other}` }))).toStartWith(`remove:${other}:`);
     await first.list.cancel((await first.list.waiting())!);
-    expect(await keptFor(w, first, () => removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `not-me:${other}` }))).toBe(`not-me:${other}`);
+    expect(await keptFor(w, first, () => removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `not-me:${other}` }))).toStartWith(`not-me:${other}:`);
     await first.list.cancel((await first.list.waiting())!);
     const scope = scopeOf(first.list.view())!;
     expect(await keptFor(w, first, () => removeOtherDevices(first.list, scope, [other], noWait))).toBe("sign-out-all");

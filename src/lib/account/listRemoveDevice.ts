@@ -26,7 +26,8 @@ export type Arrival =
 
 /**
  * What came in through `key` and is still in, in the order it came in: whatever that key let in, and whatever came
- * in through those in turn, also through a member that is out already (whoever it let in may still be in). This
+ * in through those in turn, also through a member that is out already (whoever it let in may still be in). The device
+ * is followed through every key it held: what it let in under a key it later handed on to `key` counts. This
  * device (`self`) is never among them, and neither is what came in through it: the person removing a key trusts the
  * device they remove it from. Devices and PCs that were in the account before the list (`carried`) came in through
  * nobody, and so did a PC carried in (`carriedEndpoints`, carriedPcs) that a later `pc` entry only gave its keys.
@@ -37,8 +38,10 @@ export function cameInThrough(state: ListState, key: string, self: string | null
   // keys with no name, in or out: listView names only those in
   const nameless = Object.entries(state.signers).filter(([, row]) => row.as === null).map(([signer, row]) => ({ key: signer, seq: row.seq, by: row.by, out: row.ended !== null }));
   const found: Arrival[] = [];
-  const seen = new Set<string>([key]);
-  const from = [key];
+  // the keys this device held before it handed its place on, to `key` at the end of the chain (standsFor)
+  const before = Object.keys(state.signers).filter((other) => other !== key && state.signers[other]?.ended !== null && standsFor(state, other) === key);
+  const seen = new Set<string>([key, ...before]);
+  const from = [key, ...before];
   for (let via = from.shift(); via !== undefined; via = from.shift()) {
     // `live`: offered to the person; whether in or out, what it let in is followed
     const take = (arrival: Arrival, signs: string | null, live: boolean): void => {
@@ -189,12 +192,20 @@ async function placeParts(list: AccountList, scope: WriteScope | null, build: (w
       if (request === null) return { done: placeOf(writer.state) };
       ({ whole, asked } = request);
       return { request };
-    }, options);
+    // the writer holds every read, and the request kept for this change too, against what was shown (C2) before it sends
+    }, scope === null ? options : { ...options, expect: { account: scope.account, list: scope.list, key: scope.member } });
     if (!outcome.written) return { removed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs, placed };
     placed += asked;
     if (whole) return { removed: true };
   }
   return { removed: false, why: "busy", retryAfterMs: null, placed };
+}
+
+/** What a removal puts out, as 16 hex: the sorted keys it ends and the relay keys of the PCs it puts out. */
+async function removalDigest(removal: Removal): Promise<string> {
+  const named = [...removal.keys, ...removal.pcs.map((endpoint) => `pc:${endpoint}`)].sort().join("\n");
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(named)));
+  return Array.from(hash.slice(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**
@@ -206,8 +217,9 @@ export async function removeFromList(list: AccountList, removal: Removal, option
   // A device asked for that handed its place to a new key since is not out: its heir is. Nothing is signed, and the
   // person is asked again for the heir (the key was asked for, not the device that holds it now).
   let heirs: Record<string, string> = {};
-  // a person's change of its own: a request kept for another change is never sent, nor reported, as this one's
-  const operation = options.operation ?? `remove:${removal.keys[0] ?? removal.pcs[0] ?? ""}`;
+  // a person's change of its own, named by what it puts out: a request kept for another change (another choice of
+  // ticks included) is never sent, nor reported, as this one's
+  const operation = `${options.operation ?? `remove:${removal.keys[0] ?? removal.pcs[0] ?? ""}`}:${await removalDigest(removal)}`;
   const outcome = await placeParts(list, options.scope ?? scopeOf(list.view()), (writer) => removalRequest(writer, removal, { epoch: true }), { ...options, operation }, (writer) => {
     heirs = {};
     for (const key of removal.keys) {
