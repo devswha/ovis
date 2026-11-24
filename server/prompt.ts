@@ -39,6 +39,9 @@ import { parsePiAsk } from "./dialogs/pi-ask.ts";
 import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
+import { withRecord } from "./dialogs/record.ts";
+import { titleStatus } from "./agent-identity.ts";
+import { recordFor, recordRequest, withAgentRecord } from "./record-cards.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
@@ -410,6 +413,13 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
 }
 
 /** What the chat sent a pane that Claude Code may be holding, for the readers that ask whether it waits. */
+let approvalHeld: (paneId: string) => boolean = () => false;
+
+/** Whether the approval hub holds a request of a pane, for a dialog that is a card only then (ParsedPrompt.approvalHeldOnly). */
+export function readHeldApprovals(hub: ApprovalHub | null): void {
+  approvalHeld = hub === null ? () => false : (paneId) => hub.held(paneId).length > 0;
+}
+
 export function heldCandidate(paneId: string): string | null {
   const entry = heldCandidates.get(paneId);
   if (!entry) return null;
@@ -680,7 +690,7 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
   if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
   const agent = labelledAgent(pane.agent) ?? "";
-  const status = pane.agent_status;
+  const status = waitStatus(pane, agent);
   const turns = answerTurns.get(paneId) ?? 0;
   const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal, true);
   if (known.stale) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
@@ -701,6 +711,14 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   return { agent, status, prompt, pane, panes, snapshot, screen: fallback.screen, inputUnverified: known.inputUnverified };
 }
 
+/**
+ * The pane's status as its agent says it: Letta says it waits for the user's approval only in its own title
+ * (agent-identity.ts `titleStatus`), which herdr-core does not take for a status, as the session's rows do.
+ */
+function waitStatus(pane: HerdrPane, agent: string): HerdrPane["agent_status"] {
+  return titleStatus(agent, pane.terminal_title) === "blocked" ? "blocked" : pane.agent_status;
+}
+
 async function fallbackCard(paneId: string, agent: string, status: string | undefined, known: { prompt: InteractivePrompt | null; screen?: string; suppressFallback?: true }): Promise<{ prompt: InteractivePrompt | null; screen: string } | null> {
   // A custom form just answered can close before Herdr stops reporting blocked. Its hint may
   // outlive the widget, but that is no input to offer as fallback keys. Known next steps still
@@ -719,7 +737,7 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
     || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
-  return { prompt: parseFallbackPrompt(agent, screen), screen };
+  return { prompt: await withAgentRecord(paneId, agent, parseFallbackPrompt(agent, screen), screen), screen };
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
@@ -850,6 +868,9 @@ async function dshAsks(paneId: string, signal: AbortSignal): Promise<boolean> {
 }
 
 class OmpCallChanged extends KeyRefused {}
+
+/** The request a card read from its agent's record is no longer the one the record holds open (record-cards.ts). */
+class RecordChanged extends KeyRefused {}
 
 async function ompCallStillOpen(paneId: string, cwd: string, call: string, deadline: AbortSignal): Promise<boolean> {
   if (!cwd) return false;
@@ -1151,7 +1172,10 @@ async function readKnownPrompt(
       const again = piNativeAgain(drawn);
       return again ? publicPrompt(again) : null;
     }
-    return parseInteractivePrompt(agent, drawn, omoAsks[0] ?? null, omoTrusted, omoAsks, held, pane.agent_status === "working");
+    const parsed = parseInteractivePrompt(agent, drawn, omoAsks[0] ?? null, omoTrusted, omoAsks, held, pane.agent_status === "working");
+    // a dialog the screen cannot show whole is a card of its own only while the hub holds its request; else it is left
+    // to the fallback card, as an agent Ovis did not start
+    return heldOnly(parsed) && !approvalHeld(paneId) ? null : parsed;
   };
   let prompt = piNative ? publicPrompt(piNative) : parseDrawn(screen);
   if ((agent === "letta" || agent === "agy") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
@@ -1172,6 +1196,17 @@ async function readKnownPrompt(
   // that one key at the shell's fresh prompt, where an arrow or Enter runs nothing, and refuses the next
   if (agent === "hermes" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "hermes-approval" && !(await hermesOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
+  }
+  // its dangerous-command panel, with the command its state.db holds when the panel shows it whole (record-cards.ts)
+  const hermesApproval = agent === "hermes" && prompt !== null ? parsedByPublicPrompt.get(prompt) : undefined;
+  if (hermesApproval?.responder === "hermes-approval") {
+    const request = await recordRequest(paneId, agent);
+    const bound = (card: InteractivePrompt): InteractivePrompt => {
+      const parsed = parsedByPublicPrompt.get(card);
+      return parsed ? publicPrompt(withRecord(parsed, request, screen, recordFor(agent)!)) : card;
+    };
+    prompt = bound(prompt!);
+    rebind = bound;
   }
   // and every card pi's own dialogs and questionnaires draw, which answer by keys (pi-ask's form answers
   // through the extension and returned above; omo's cards on a pane herdr names pi keep their own checks)
@@ -1194,7 +1229,7 @@ async function readKnownPrompt(
   if (agent === "pi" && approvalDialog(prompt) === null && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc" && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
-    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
+    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: await withAgentRecord(paneId, agent, fallback, screen), screen };
   }
   const count = agent === "codex" && prompt === null ? queuedQuestionCount(screen) : 0;
   let settled: InteractivePrompt | undefined;
@@ -1356,7 +1391,7 @@ export interface PromptRequestOptions {
  */
 const approvalDialog = (prompt: InteractivePrompt | null): ApprovalDialog | null => {
   const parsed = prompt === null ? undefined : parsedByPublicPrompt.get(prompt);
-  return parsed?.approvalCommand !== undefined ? { command: parsed.approvalCommand } : null;
+  return parsed?.approvalCommand !== undefined ? { command: parsed.approvalCommand, ...(parsed.approvalKind === undefined ? {} : { kind: parsed.approvalKind }) } : null;
 };
 
 /**
@@ -1367,10 +1402,14 @@ const approvalDialog = (prompt: InteractivePrompt | null): ApprovalDialog | null
  * pi to herdr).
  */
 function withHeldPermission(paneId: string, prompt: InteractivePrompt | null, approvals: ApprovalHub | undefined): InteractivePrompt | null {
-  if (approvals === undefined) return prompt;
-  const held = approvals.shown(paneId, approvalDialog(prompt));
-  return held === null || prompt === null ? prompt : { ...prompt, id: `${prompt.id}.${held.id}`, body: heldBody(held) };
+  const held = approvals?.shown(paneId, approvalDialog(prompt)) ?? null;
+  if (held === null || prompt === null) return heldOnly(prompt) ? null : prompt;
+  return { ...prompt, id: `${prompt.id}.${held.id}`, body: heldBody(held) };
 }
+
+/** A dialog that is a card only while the hub holds a request for it (ParsedPrompt.approvalHeldOnly): never from the screen alone. */
+const heldOnly = (prompt: InteractivePrompt | null): boolean =>
+  prompt !== null && parsedByPublicPrompt.get(prompt)?.approvalHeldOnly === true;
 
 /** The held request an answer's card was built on (withHeldPermission), or null for a card built on the screen alone. */
 function heldRequestOf(prompt: InteractivePrompt, promptId: string, approvals: ApprovalHub | undefined): string | null {
@@ -1398,7 +1437,7 @@ async function withPlanFile(prompt: InteractivePrompt | null, transcript: string
  */
 export async function currentPrompt(paneId: string, options: { codexHome?: string; openCodeStateDir?: string; openCodeState?: OpenCodePromptState; signal?: AbortSignal }): Promise<{ prompt: InteractivePrompt; screen?: string } | null> {
   const read = await readPrompt(paneId, options.codexHome, options.openCodeStateDir, options.openCodeState ?? defaultOpenCodeState, options.signal);
-  if (read.stale || read.inputUnverified || !read.prompt) return null;
+  if (read.stale || read.inputUnverified || !read.prompt || heldOnly(read.prompt)) return null;
   return { prompt: read.prompt, ...(read.screen === undefined ? {} : { screen: read.screen }) };
 }
 
@@ -1414,7 +1453,7 @@ export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], optio
   if (agent === "pi") return undefined;
   const known = await readKnownPrompt(pane.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, options.openCodeState, undefined, false, false, options.ompLookups);
   if (known.stale) return undefined;
-  const shown = contentId(known.prompt ?? (await fallbackCard(pane.pane_id, agent, pane.agent_status, known))?.prompt ?? null) ?? null;
+  const shown = contentId(known.prompt ?? (await fallbackCard(pane.pane_id, agent, waitStatus(pane, agent), known))?.prompt ?? null) ?? null;
   const draft = agent === "opencode" ? (options.answers ?? defaultOpenCodeState).entries.get(pane.pane_id)?.draft : undefined;
   return shown !== null && draft ? `${shown}\0${JSON.stringify(draft)}` : shown;
 }
@@ -1562,6 +1601,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       // a plan card's id carries its plan file's revision: the file as it is now must match too. A command approval's
       // can carry the held hook request it showed: that request must still be held, and still the one on the screen
       const heldId = heldRequestOf(prompt, body.prompt_id, options.approvals);
+      if (heldId === null && heldOnly(prompt)) return promptChanged();
       if (heldId !== null ? !options.approvals!.holds(body.pane_id, approvalDialog(prompt)!, heldId)
         : (await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)))!.id !== body.prompt_id) return promptChanged();
       log.matched = true;
@@ -1604,6 +1644,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (readsLive && request.signal.aborted) throw new KeyRefused();
         if (!read || read.inputUnverified || (screenOnly === "editor" && (!screen || read.suppressFallback))
           || Date.now() > readUntil || !same(shown, screen ?? "", settled)) throw new KeyRefused();
+        // a card showing its record's command goes to that request only: after the screen's last read, the record must
+        // still hold it open, so another request that opened meanwhile with the same command takes none of its keys
+        if (parsedPrompt?.record !== undefined && (await recordRequest(body.pane_id, agent))?.id !== parsedPrompt.record.id) throw new RecordChanged();
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
@@ -2068,7 +2111,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
           if (responder.startsWith("fallback")) {
             if (!asks()) return false;
-            const card = parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen));
+            const drawn = parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen));
+            // a card with its record's command is that request's: the screen must still show it, with nothing else changed
+            const record = parsed.record === undefined ? undefined : recordFor(agent);
+            const card = drawn && record ? withRecord(drawn, parsed.record!, screen, record) : drawn;
             return card?.id === parsed.id && (!onCursor || card.selectedIndex === cursor);
           }
           if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;

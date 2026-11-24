@@ -113,9 +113,14 @@ function fileAt(site: PagesSite, served: string): string | null {
   return path.startsWith(site.dir) && existsSync(path) && !statSync(path).isDirectory() ? path : null;
 }
 
-/** Pages' 308 to `path`, each segment encoded, with the query asked for. */
+/**
+ * Pages' 308 to `path`, each segment encoded, with the query asked for, and never a protocol-relative address: like
+ * workers-sdk's stripLeadingDoubleSlashes, a run of leading slashes (encoded, backslashes, tabs and spaces too)
+ * becomes one, so `/%2Frender.html` leads to `/render`, not to the host `render`.
+ */
 function redirectTo(path: string, search: string): Response {
-  return new Response(null, { status: 308, headers: { location: `${path.split("/").map(encodeURIComponent).join("/")}${search}` } });
+  const location = `${path.split("/").map(encodeURIComponent).join("/")}${search}`.replace(/^(\/|%2F|%2f|%5C|%5c|%09|\s|\\)+(.*)/, "/$2");
+  return new Response(null, { status: 308, headers: { location } });
 }
 
 /** What Pages' html handling (its default, auto-trailing-slash) answers for the decoded path `served`. */

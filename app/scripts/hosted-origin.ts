@@ -2,7 +2,7 @@
  * What a build of the phone apps takes from its environment, for the app's pages and the native code alike.
  * The hosted shell's origin: OVIS_APP_URL, for a test build whose relay pairing links point at a shell served
  * elsewhere, else each part keeps its own https://app.ovis.sh. The first screen: OVIS_APP_HOME (appHome). Where the
- * Android app takes the shell from: OVIS_APP_SHELL (bundled-shell.ts appShell).
+ * apps take the shell from: OVIS_APP_SHELL (bundled-shell.ts appShell).
  * build-web.ts gives the origin to the app's pages (APP_ORIGIN in web/shell.js) and, through the files below, both to
  * the native code: BuildConfig.APP_ORIGIN, HOME_HOSTED and SHELL_BUNDLED on Android (android/app/build.gradle reads
  * hosted-origin.properties), OvisAppOrigin, OvisAppHome and OvisAppShell in the iOS app's Info.plist (ios/hosted-origin.xcconfig

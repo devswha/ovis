@@ -5,6 +5,7 @@ import { dirname, join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { appShell, carried, indexAssets, packShell, provenanceOf, releaseTag, SHELL_ASSETS, shellPoliciesOf, shellSource, unpackRelease } from "../app/scripts/bundled-shell.ts";
 import { writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
+import { FILES_CACHE as CLIENT_FILES_CACHE } from "../src/lib/shellMode.ts";
 import { RENDER_PATH, SHELL_META, shellHeaders, shellPolicies } from "./shell-build.ts";
 
 describe("where a build takes the shell from", () => {
@@ -208,8 +209,13 @@ describe("the Android build", () => {
     expect(gradle).toContain('getProperty("appShell", "bundled") != "hosted"');
     expect(gradle).toContain('buildConfigField "boolean", "SHELL_BUNDLED", "${shellBundled}"');
     expect(gradle).toContain(`main.assets.srcDirs += ['../../${SHELL_ASSETS}']`);
-    expect(gradle).toContain("task.name ==~ /(assemble|bundle|install|package|sign)Release(Bundle)?/");
-    expect(gradle).toContain('android.defaultConfig.applicationId == "sh.ovis.app"');
+    expect(gradle).toContain('(task.name ==~ /(assemble|bundle|install|package|sign)Release(Bundle)?/ && android.defaultConfig.applicationId == "sh.ovis.app")');
+    // every app bundle, of any build type, and no other task: an .aab is what Google Play takes
+    const bundles = /task\.name ==~ \/(.+?)\/ \|\|/.exec(gradle)?.[1];
+    expect(bundles).toBe("bundle([A-Z][a-z]*)?|(package|sign)[A-Z][a-z]*Bundle");
+    const appBundle = new RegExp(`^(?:${bundles})$`);
+    for (const task of ["bundle", "bundleDebug", "bundleRelease", "bundlePreview", "packageDebugBundle", "signDebugBundle", "packageReleaseBundle", "signReleaseBundle"]) expect(appBundle.test(task)).toBe(true);
+    for (const task of ["assembleDebug", "installDebug", "packageDebug", "bundleDebugResources", "bundleDebugClassesToRuntimeJar", "bundleReleaseClassesToCompileJar", "testDebugUnitTest"]) expect(appBundle.test(task)).toBe(false);
   });
 
   it("packages the store app only with a release's verified, whole shell, and only with readable policies", () => {
@@ -296,9 +302,10 @@ describe("the bundled shell's boot page", () => {
     expect(BOOT_PATH.startsWith("/s/")).toBe(false);
   });
 
-  it("keeps the client's own cache, the one no worker serves from", () => {
-    expect(readFileSync(join(import.meta.dir, "../src/lib/userFonts.ts"), "utf8")).toContain(`const CACHE = "${FILES_CACHE}";`);
-    expect(readFileSync(join(import.meta.dir, "../public/sw.js"), "utf8")).toContain(`const FILES = "${FILES_CACHE}";`);
+  it("keeps the client's own cache, the one no worker serves from, by the client's one name for it", () => {
+    // BundledShell.FILES_CACHE (which the boot page and the retiring worker keep) is the client's FILES_CACHE
+    expect(FILES_CACHE).toBe(CLIENT_FILES_CACHE);
+    expect(readFileSync(join(import.meta.dir, "../public/sw.js"), "utf8")).toContain(`const FILES = "${CLIENT_FILES_CACHE}";`);
   });
 });
 

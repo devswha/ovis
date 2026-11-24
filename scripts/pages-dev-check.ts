@@ -58,7 +58,8 @@ try {
   const index = /src="(\/assets\/index-[^"]+\.js)"/.exec(readFileSync(join(dist, "index.html"), "utf8"))?.[1];
   assert.ok(index, "the built index.html names its script");
   const paths = [
-    "/", "/index.html", "/build.json", "/sw.js", "/manifest.webmanifest", "/render", "/render.html", index, "/assets/index-gone0000.js",
+    "/", "/index.html", "/build.json", "/sw.js", "/manifest.webmanifest", "/render", "/render.html", "/%2Frender.html", "/%2Frender.html?x=1",
+    "/%2F%2Frender.html", "/%5Crender.html", index, "/assets/index-gone0000.js",
     "/.well-known/assetlinks.json", `/s/${ID}`, `/s/${ID}/`, `/s/${ID}/deep/path`, `/s/${ID}/sw.js`,
     `/s/${ID}/manifest.webmanifest`, `/s/${ID}/~render`,
   ];

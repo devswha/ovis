@@ -1,4 +1,5 @@
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
+import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
 import type { Access } from "../access.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
@@ -6,7 +7,7 @@ import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedPcs } from "./introductions.ts";
 import { ACCOUNT_HELD_MAX } from "./holds.ts";
 import { AccountAddError } from "../machines.ts";
-import { pressOnce } from "./one-press.ts";
+import { notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
 import { applyAccountRecords, applyEnrollment, applyLink, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
@@ -55,6 +56,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       ...(devices.addAtPcRequired() ? { pc_add_required: true } : {}),
       ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
       enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
+      // a yes or no only, never the account asked for: the account is named here once this PC is in it
+      waiting_for_add: waitingForAdd(devices),
     });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
@@ -69,6 +72,13 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // connection with drive access (the PC's own screen, after listing it), or through the relay only by a
       // member of this PC's own account
       const account = body.account;
+      // null forgets the one named, over a direct connection only and only on a PC in no account (`ovis join` that ended
+      // unbound puts back what it found): a PC bound to an account keeps the name its pass is asked under
+      if (account === null && peer.kind !== "relay") {
+        if (devices.account() !== null) return fail("in_account", "This PC is in an account: its name stays", 409);
+        context.services.relay.clearRelayAccount();
+        return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+      }
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
       if (peer.kind === "relay" && !(devices.isAccountApproverSession(peer.device.id, peer.key) && devices.account() === account)) return fail("account_required", "Name this PC's account from a device linked to it", 403);
       if (!context.services.relay.setRelayAccount(account)) return fail("invalid_account", "Name the account", 400);
@@ -88,6 +98,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const account = body.account;
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
       const pressed = await pressOnce(context.services, account);
+      notePressAsk(devices, pressed);
       return "refused" in pressed ? fail(pressed.refused.code, pressed.refused.message, pressed.refused.status) : reply(pressed);
     }
     case "/api/account/ssh-add": {
@@ -103,7 +114,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (target === context.services.relay.currentIdentity()?.server_id) return fail("self", "That is this PC.", 409);
       const machines = context.services.core.machines;
       if (!machines) return fail("not_found", "This PC adds no other PCs", 404);
-      let taken: { account: string };
+      // that PC waits up to ADDED_RELAY_ONLINE_MS for its relay after its press: more than the default budget of an API call
+      context.timeout(request, 120);
+      let taken: { account: string; relay: AccountAddRelay | null; unanswered?: true };
       try { taken = await machines.accountTake(jobId, target, account); }
       catch (error) {
         if (!(error instanceof AccountAddError)) throw error;
@@ -111,7 +124,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }
       // this PC left or changed its account while that PC took it: that PC is in the account named then, and says so
       if (devices.account() !== taken.account) return fail("account_changed", "This PC's account changed while the other PC was being added.", 409);
-      return reply({ account: taken.account, server_id: target });
+      return reply({ account: taken.account, server_id: target, relay: taken.relay, ...(taken.unanswered ? { unanswered: true as const } : {}) } satisfies AccountAddTaken);
     }
     case "/api/account/introduce": {
       setRequestRoute(pathname);
