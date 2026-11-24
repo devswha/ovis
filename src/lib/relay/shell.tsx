@@ -934,20 +934,24 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     keepConfirmedSignIn(attempt.signIn ? { server_id: attempt.offer.server_id, sign_in_id: attempt.signIn.sign_in_id ?? null } : null);
     if (controller.signal.aborted) { opened.close(); return; }
     // The PC let this device into its account's list by an entry, and named its place: the device follows the list
-    // from there. That session serves nothing else and no pairing stands behind it, so it is closed and the PC is
-    // opened anew as a PC of the list, with the key the list holds for this device.
+    // from there. That session serves nothing else and no pairing stands behind it, so it is closed at once, before
+    // anything is awaited, and the PC is opened anew as a PC of the list, with the key the list holds for this device.
     const place = opened.listPlace;
     if (place !== undefined) {
-      const joined = opened;
+      opened.close();
       opening = null;
       comparison = null;
       markRemovedPc(attempt.offer.server_id, null);
-      await account.takePlace(place);
-      joined.close();
+      let taken = true;
+      // the sign-in ended while the place was taken: the front page, which says so
+      await account.takePlace(place).catch((error: unknown) => {
+        taken = false;
+        console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error);
+      });
       if (controller.signal.aborted || last !== attempt) return;
       const { code: _spent, ...offer } = attempt.offer;
       if (entry.offer !== null) entry = { ...entry, offer: null };
-      const key = account.listKey;
+      const key = taken ? account.listKey : null;
       if (key !== null) { await connect({ offer, code: false, paired: true, listOpen: key }); return; }
       // the list is not read here yet: the front page, where the PC has its row and a tap opens it
       cancelAttempt();

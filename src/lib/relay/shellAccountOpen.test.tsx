@@ -11,6 +11,7 @@ import { RelayShell, type RelayShellProps } from "../../components/RelayShell.ts
 import { beginSignIn } from "../account/signin.ts";
 import { isNewAccountPc, type MyPc } from "../account/myPcs.ts";
 import type { AccountList, AccountListView } from "../account/accountList.ts";
+import { SignedOutError } from "../account/service.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
@@ -932,6 +933,45 @@ it("a join through a PC pinned to the list brings this device's card, waits for 
   expect(adopted).toEqual([{ list: LIST, seq: 3, hash: place.hash }]);
   expect(matched).toBe(true);
   expect(run.apps()).toBe(1);
+});
+
+it("a join through a PC pinned to the list closes its session as soon as it is handed its place, and goes to the front page where the sign-in ended while it took it", async () => {
+  const LIST = "5c".repeat(32);
+  const place = { id: LIST, seq: 3, hash: "ab".repeat(32) };
+  const closedAt: number[] = [];
+  let joined: { closes: number } | undefined;
+  const listed: NonNullable<Parameters<typeof accountPc>[0]["listed"]> = { holds: false, in: false, waits: true, adopted: () => {
+    closedAt.push(joined?.closes ?? -1);
+    throw new SignedOutError();
+  } };
+  class LetIn extends Admitted {
+    closes = 0;
+    override get listPlace() { return place; }
+    override close(): void { this.closes += 1; super.close(); }
+  }
+  const unhandled: unknown[] = [];
+  const note = (reason: unknown): void => { unhandled.push(reason); };
+  process.on("unhandledRejection", note);
+  try {
+    const run = await accountPc({ release: false, newUntil: inADay(), listed, admits: true, open: async (offer, options) => {
+      await options?.compare?.("123456", undefined, true);
+      const opened = new LetIn(offer);
+      joined = opened;
+      return opened;
+    } });
+    await newPcSheet(run);
+    run.current().onPair();
+    await run.settled(() => run.current().state.kind === "compare");
+    run.current().onMatch?.();
+    await run.settled(() => closedAt.length === 1 && run.current().state.kind !== "compare");
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    // closed before the place was taken, once, and nothing was left to reject unheard
+    expect([closedAt, joined?.closes, unhandled]).toEqual([[1], 1, []]);
+    expect(run.current().state.kind).not.toBe("failed");
+    expect(run.apps()).toBe(0);
+  } finally {
+    process.off("unhandledRejection", note);
+  }
 });
 
 it("a device whose own time in the list is over is told that, when the PC ends its session: nobody removed it, and nothing is forgotten", async () => {
