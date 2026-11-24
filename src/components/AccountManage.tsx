@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
@@ -154,21 +154,27 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
   const [adding, setAdding] = useState<{ readonly pc: DirectoryPc; readonly post: PostedPc } | null>(null);
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
   // (a page that has not read its copy of the list yet reads it first: until a read ends, every row is marked)
+  // Reads overlap (the list moves while the directory is read): only the newest one draws, so an older answer, or an
+  // older failure, never takes the place of a newer one
+  const reads = useRef(0);
   const read = useCallback(async () => {
+    const mine = ++reads.current;
     let shown: readonly DirectoryPc[];
     try {
       const listed = await service.listPcs();
       await readPageList(account);
       shown = pagePcs(account, listed);
-    } catch { setPcs("failed"); return; }
+    } catch { if (mine === reads.current) setPcs("failed"); return; }
+    if (mine !== reads.current) return;
     setPcs(shown);
     const list = pageAccountList();
     // only a device that may write the list adds a PC to it
     if (list === null || pageListReading(account) !== "in" || list.writer() === null || !shown.some((pc) => pc.not_in_list === true)) { setPosts(null); return; }
-    setPosts(await postedPcs(list).catch((error: unknown) => {
+    const posted = await postedPcs(list).catch((error: unknown) => {
       console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
       return null;
-    }));
+    });
+    if (mine === reads.current) setPosts(posted);
   }, [service, account]);
   useEffect(() => {
     void read();

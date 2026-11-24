@@ -388,3 +388,21 @@ describe("a Remove by a device that holds no key of the current epoch (M62)", ()
     expect(entriesSent(first).slice(before).map(kindsOf)).toEqual([["remove"]]);
   });
 });
+
+describe("a request that was cancelled while the write waited to send it again", () => {
+  it("is not sent again: what a person cancelled is not placed after that", async () => {
+    const { w, first, pc } = await world();
+    const before = placements(first).length;
+    // the account service asks for the request again; while this write pauses, the person cancels it on its card
+    first.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({ error: { code: "list_rebuilding", message: "x" } }, { status: 503, headers: { "retry-after": "1" } }) : null;
+    const outcome = await removeListPc(first.list, pc.endpoint, { wait: async () => {
+      const waits = await first.list.waiting();
+      if (waits !== null) expect(await first.list.cancel(waits)).toBe("gone");
+      first.wire.answer = null;
+    } });
+    expect(outcome).toMatchObject({ removed: false, why: "busy" });
+    expect(placements(first).length).toBe(before + 1);
+    expect((await first.list.sync()).pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+    void w;
+  });
+});
