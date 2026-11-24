@@ -108,7 +108,7 @@ it("pages prompts once, folds tool updates and replaces the visible history only
     row("from-agent", { method: "session/request_permission", id: "agent-1", params: { toolCall: { title: "Only on the card" } } });
     chunk("agent_message_chunk", "Done"); update({ sessionUpdate: "plan", entries: [{ content: "Check note", status: "completed", priority: "medium" }] });
     const last = await client.history.page({ prompts: 1 });
-    expect(last.turns).toMatchObject([{ role: "user", parts: [{ text: "Edit" }] }, { role: "assistant", parts: [{ kind: "thinking", text: "Check the note" }, { kind: "tool", summary: "Change note", state: "ok", edits: [{ path: "note.txt", before: "A", after: "B" }], output: "" }, { text: "Done" }, { kind: "tool", name: "plan" }] }]);
+    expect(last.turns).toMatchObject([{ role: "user", parts: [{ text: "Edit" }] }, { role: "assistant", parts: [{ kind: "thinking", text: "Check the note" }, { kind: "tool", summary: "Change note", state: "ok", edits: [{ path: "note.txt", before: "A", after: "B" }], output: "--- note.txt\nA\n+++ note.txt\nB" }, { text: "Done" }, { kind: "tool", name: "plan" }] }]);
     expect(client.history.plan).toMatchObject([{ label: "Check note", status: "completed" }]);
     if (!last.cursor) throw new Error("no older page");
     expect((await client.history.page({ before: last.cursor })).turns.map(t => t.parts)).toEqual([[{ kind: "text", text: "First" }], [{ kind: "text", text: "One" }]]);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { legacyEditText } from "../../shared/edit-output.ts";
 import type { ConversationPart, ConversationTurn, SkillActivity } from "../../shared/protocol.ts";
 import { inlineImageType } from "../codex-images.ts";
 import { skillDocument } from "../skill-activity.ts";
@@ -150,7 +151,7 @@ export function projectUpdates(events: Iterable<UpdateEvent | null>, options: Pr
       call.diffs.set(hash(JSON.stringify(edit)), edit);
     }
     if (call.diffs.size) call.part.edits = [...call.diffs.values()];
-    const output = outputText(content);
+    const output = [legacyEditText(call.part.edits), outputText(content)].filter(Boolean).join("\n");
     const images = [...new Set(updatePictures(fields).map((picture) => `${picture.mediaType}\0${options.imageRef(picture)}`))]
       .map((key) => ({ media_type: key.slice(0, key.indexOf("\0")), ref: key.slice(key.indexOf("\0") + 1) }));
     if (images.length > 0) call.part.images = images; else delete call.part.images;
