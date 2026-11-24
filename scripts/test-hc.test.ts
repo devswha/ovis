@@ -120,19 +120,19 @@ it("kills no recorded pid whose start time is not the one recorded with it", asy
 });
 
 it.skipIf(!proc)("signals a child's process group only while the child is not reaped, and never a pid that cannot be its own group", async () => {
-  // a child that leads a group of its own (detached) and leaves a member in it, which ends only once the test writes to
-  // the fifo it waits on: not on the child's stdin, which Bun closes as soon as it reaps the child
+  // a child that leads a group of its own (detached) and leaves a member in it that waits for the test's line on a fifo
+  // (not on the child's stdin, which Bun closes as soon as it reaps the child) and answers it on another. Both are
+  // opened read-write, so no open waits for a partner, and the member gives up by itself after 60 s
   const hold = join(root, "member-hold");
-  expect(Bun.spawnSync(["mkfifo", hold], { env: { PATH: "/usr/bin:/bin" } }).exitCode).toBe(0);
-  const child = Bun.spawn(["sh", "-c", '(read _ < "$0") >/dev/null 2>&1 & echo $!', hold], { env: { PATH: "/usr/bin:/bin" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", detached: true });
-  try {
-    const member = Number((await new Response(child.stdout).text()).trim());
-    await child.exited;
-    // the child is reaped: its pid, and so its group's, may belong to someone else by now
-    expect({ sent: signalChildGroup(child, "SIGTERM"), memberAlive: alive(member) }).toEqual({ sent: false, memberAlive: true });
-  } finally {
-    await Bun.spawn(["timeout", "20", "sh", "-c", 'echo go > "$0"', hold], { env: { PATH: "/usr/bin:/bin" } }).exited;
-  }
+  for (const fifo of [hold, `${hold}-ack`]) expect(Bun.spawnSync(["mkfifo", fifo], { env: { PATH: "/usr/bin:/bin" } }).exitCode).toBe(0);
+  const child = Bun.spawn(["bash", "-c", '(read -t 60 _ <> "$0" && echo answered 1<> "$0-ack") >/dev/null 2>&1 & echo $!', hold], { env: { PATH: "/usr/bin:/bin" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", detached: true });
+  const member = Number((await new Response(child.stdout).text()).trim());
+  await child.exited;
+  // the child is reaped: its pid, and so its group's, may belong to someone else by now
+  expect({ sent: signalChildGroup(child, "SIGTERM"), memberAlive: alive(member) }).toEqual({ sent: false, memberAlive: true });
+  // only a member no signal reached reads the line and answers it: a signal already sent ends it before its read returns
+  const asked = Bun.spawn(["timeout", "20", "sh", "-c", 'exec 3<> "$0-ack"; echo go > "$0"; read -r answer <&3; echo "$answer"', hold], { env: { PATH: "/usr/bin:/bin" }, stdout: "pipe" });
+  expect({ answer: await new Response(asked.stdout).text(), code: await asked.exited }).toEqual({ answer: "answered\n", code: 0 });
   // a reaped child whose number now leads another group: a detached sleep of the test's own stands in for that group
   const reused = Bun.spawn(["sleep", "30"], { env: { PATH: "/usr/bin:/bin" }, detached: true });
   try {
