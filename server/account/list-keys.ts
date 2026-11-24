@@ -9,13 +9,14 @@
  * has, with no word of it. The PC follows its list all the same and says so (`ListKeysError`); a reset relay identity
  * makes new keys.
  */
-import { readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { linkSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { verifySignature } from "../../shared/account-list-entry.ts";
 import { generateStoredEncryptionKey, ListSealError, LIST_STORED_KEY_TEXT_LENGTH, readStoredEncryptionKey } from "../../shared/account-list-seal.ts";
 import { SERVER_ID_PATTERN } from "../../shared/relay-offer.ts";
 import { fromBase64Url } from "../../shared/relay-pair-sas.ts";
-import { writePrivateState } from "../private-state.ts";
+import { preparePrivateState, syncDirectory } from "../private-state.ts";
 
 export const ACCOUNT_LIST_KEYS_FILE = "account-list-keys.json";
 
@@ -93,13 +94,53 @@ async function importKeys(file: KeysFile): Promise<PcListKeys> {
   }
 }
 
-async function makeKeys(path: string, serverId: string): Promise<PcListKeys> {
+/** How often one call looks again at the file after another server instance changed it under it. */
+const CREATE_TRIES = 4;
+
+/**
+ * Puts a new pair in the file only if no file is there (an exclusive create: a hard link of the finished, flushed
+ * temporary file). True when this call's file is the one there now. Another server instance on this state folder may
+ * be doing the same at the same moment: one of the two wins, and both then read what is on disk.
+ */
+async function createKeys(path: string, serverId: string): Promise<boolean> {
   const signing = await generateStoredEncryptionKey();
   const encryption = await generateStoredEncryptionKey();
   const file: KeysFile = { v: 1, server_id: serverId, signing: signing.secret, encryption: encryption.secret };
-  const keys = await importKeys(file);
-  writePrivateState(path, file);
-  return keys;
+  // a pair that does not import is never written
+  await importKeys(file);
+  const temporary = preparePrivateState(path, file);
+  try {
+    linkSync(temporary, path);
+    syncDirectory(dirname(path), process.platform);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return false;
+  } finally {
+    try { unlinkSync(temporary); } catch { /* the pair in it is nobody's */ }
+  }
+}
+
+/**
+ * Takes another identity's file out of the way, so that the new identity's pair can be created exclusively. The file
+ * is moved aside first, which only one of two instances can do, and looked at where nobody else writes: if it turns
+ * out to be this identity's (another instance made it a moment ago), it is put back and nothing is lost.
+ */
+function setAside(path: string, serverId: string): void {
+  const aside = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.old`;
+  try { renameSync(path, aside); } catch (error) {
+    // gone already: another instance took it
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  try {
+    let ours = false;
+    try { ours = parseFile(readFileSync(aside, "utf8")).server_id === serverId; } catch { /* not this identity's keys */ }
+    // put back only where nothing took its place meanwhile; otherwise the file there now is the one both read
+    if (ours) try { linkSync(aside, path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  } finally {
+    try { unlinkSync(aside); } catch { /* a stale copy of keys that no identity uses */ }
+  }
 }
 
 export class ListKeyStore {
@@ -111,8 +152,9 @@ export class ListKeyStore {
 
   /**
    * The keys of the relay identity `serverId`: read from the file, made when there is none, and made anew when the
-   * file holds another identity's (the old ones are gone with that write). Throws ListKeysError for a file that will
-   * not read. One caller at a time, so two never make two pairs.
+   * file holds another identity's (the old ones go). Throws ListKeysError for a file that will not read. One caller
+   * at a time in this process, and one winner per state folder among processes: the file is created exclusively, and
+   * every caller answers with the pair it then reads from disk.
    */
   keysFor(serverId: string): Promise<PcListKeys> {
     const next = this.turn.then(() => this.load(serverId), () => this.load(serverId));
@@ -122,12 +164,20 @@ export class ListKeyStore {
 
   private async load(serverId: string): Promise<PcListKeys> {
     if (this.held?.serverId === serverId) return this.held;
-    let text: string | null;
-    try { text = readFileSync(this.path, "utf8"); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new ListKeysError("the file cannot be read");
-      text = null;
+    // Whatever this call makes, the keys it answers with are the ones on disk: read back after every write, so two
+    // server instances on one state folder never hold two pairs for one PC
+    for (let tries = 0; tries < CREATE_TRIES; tries++) {
+      let text: string | null;
+      try { text = readFileSync(this.path, "utf8"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new ListKeysError("the file cannot be read");
+        text = null;
+      }
+      const file = text === null ? null : parseFile(text);
+      if (file !== null && file.server_id === serverId) return this.held = await importKeys(file);
+      // another identity's keys are no PC's any more: out of the way, then a pair for this one
+      if (file !== null) setAside(this.path, serverId);
+      await createKeys(this.path, serverId);
     }
-    const file = text === null ? null : parseFile(text);
-    return this.held = file !== null && file.server_id === serverId ? await importKeys(file) : await makeKeys(this.path, serverId);
+    throw new ListKeysError("it changed while this PC's keys were being made");
   }
 }

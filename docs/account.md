@@ -573,7 +573,8 @@ members signed. `last_read_at` is when its copy last held everything the service
 `last_verdict` what came of the service's last word (`caught_up`, `same` for a head it already
 holds, `none` when the service named no list, or why nothing was taken: `withheld`, `older`,
 `stuck`, `fork`, `not_my_list`, `needs_newer_client`, `refused` with the entry's refusal).
-`differences` counts what the list would have decided otherwise since this start. `keys` is `ready`,
+`differences` counts what the list would have decided otherwise since this start, credentials and
+devices alike (see `account.list.differs` below). `keys` is `ready`,
 or `unreadable` for a keys file that will not read. `posted_until` is until when the account
 service holds this PC's keys for a member to add it. No answer holds a key.
 
@@ -1420,13 +1421,26 @@ still do is said under [what the service still can](#what-the-account-service-st
   the head is not the one it holds, it reads the log (`POST /v2/pc/list/log`) with a proof of its
   relay key, as for its mailbox, and checks every entry: the chain, each signature, and who may sign.
   What does not hold is not taken.
+- A PC that holds a list also reads its log by its own clock, every five minutes, whatever the
+  mailbox says: a mailbox that names no list, or does not answer, hides no entry. A PC whose account
+  never had a list asks for no log.
+- The list id is the account service's word. One of which the PC has verified no entry gives way to
+  the id the service names next; one of which it has verified an entry stays, and another id is
+  reported (`not_my_list`).
 - The copy is saved in `account-list.json` in the state folder (readable by your user only). It holds
   the entries and what they add up to, and nothing secret. It belongs to one relay identity and one
-  joining of the account. A restart goes on from the saved copy.
+  joining of the account. A restart goes on from the saved copy, which the PC holds before the
+  service has answered anything. A read that was on its way when the PC left its account writes
+  nothing and posts nothing.
+- The copy keeps the latest hour the PC's clock showed. A decision that turned on the hour (a device
+  past its time) is saved before it is acted on, so a clock set back after a restart counts for no
+  less.
 - The PC has two keys of its own for the list, in `account-list-keys.json` (readable by your user
   only): one that signs and one that the names of the list are encrypted to. They are made for the
   PC's relay identity and go with it: **Reset relay identity** removes them, and the PC it becomes
-  makes new ones. They are never logged and never sent. A keys file that will not read is not
+  makes new ones. They are never logged and never sent. The file is created only where none is
+  there, and the PC uses the pair it then reads from disk: two Ovis servers on one state folder end
+  with one pair. A keys file that will not read is not
   replaced by itself; the PC says so in `GET /api/account/list` and reads no list until the file is
   restored or the relay identity is reset.
 - While the list does not hold the PC, the PC posts its two public keys and its
@@ -1435,7 +1449,10 @@ still do is said under [what the service still can](#what-the-account-service-st
 - A PC that is not pinned writes one line to its log, `account.list.differs`, where the list would
   decide otherwise than the snapshot (a device only one of them lets in, a device the list lets in
   only to watch or only until a time that has passed, a PC the list does not hold), with what each
-  decided and no key or name. Each difference is written once per start.
+  decided and no key or name. Each difference is written once per start. `of` says what differs. `credential`: a
+  key only one of the two holds, which may be one phone under two keys (the snapshot names a phone
+  by the key of its sign-in, the list by its member key, and the PC knows no link between the two).
+  `device`: a key both hold that the list would let in otherwise, or the PC's own place in the list.
 
 #### How a PC pins a list
 

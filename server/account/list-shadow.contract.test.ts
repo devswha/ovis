@@ -188,9 +188,9 @@ describe("where the list would decide otherwise, the PC says so once", () => {
       const { pc } = await differing();
       // the first pull's snapshot read met a list that does not hold this PC yet, the second one that does
       expect(said(log)).toEqual([
-        { event: "account.list.differs", snapshot: "admitted", list: "waiting" },
-        { event: "account.list.differs", snapshot: "admitted", list: "never_added" },
-        { event: "account.list.differs", snapshot: "none", list: "drive" },
+        { event: "account.list.differs", snapshot: "admitted", list: "waiting", of: "device" },
+        { event: "account.list.differs", snapshot: "admitted", list: "never_added", of: "credential" },
+        { event: "account.list.differs", snapshot: "none", list: "drive", of: "credential" },
       ]);
       await pc.pull();
       await pc.pull();
@@ -235,7 +235,7 @@ describe("where the list would decide otherwise, the PC says so once", () => {
       expect(said(log)).toEqual([]);
       expect(await pc.signsIn(idOf(pc.serverId, phone))).toBe(false);
       await pc.list.settled();
-      expect(said(log)).toEqual([{ event: "account.list.differs", snapshot: "none", list: "drive" }]);
+      expect(said(log)).toEqual([{ event: "account.list.differs", snapshot: "none", list: "drive", of: "credential" }]);
     } finally { log.mockRestore(); }
   });
 
@@ -248,11 +248,11 @@ describe("where the list would decide otherwise, the PC says so once", () => {
     const log = spyOn(console, "info").mockImplementation(() => {});
     try {
       await pc.pull();
-      expect(said(log).filter((event) => event.snapshot === "admitted")).toEqual([{ event: "account.list.differs", snapshot: "admitted", list: "watch" }]);
+      expect(said(log).filter((event) => event.snapshot === "admitted")).toEqual([{ event: "account.list.differs", snapshot: "admitted", list: "watch", of: "device" }]);
       const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 3601_000);
       try {
         await pc.signsIn(pc.device);
-        expect(said(log).filter((event) => event.snapshot === "admitted").at(-1)).toEqual({ event: "account.list.differs", snapshot: "admitted", list: "expired" });
+        expect(said(log).filter((event) => event.snapshot === "admitted").at(-1)).toEqual({ event: "account.list.differs", snapshot: "admitted", list: "expired", of: "device" });
       } finally { clock.mockRestore(); }
     } finally { log.mockRestore(); }
   });

@@ -43,8 +43,8 @@ import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
 import type { Readmission } from "./readmission.ts";
 
 export const ACCOUNT_LIST_FILE = "account-list.json";
-/** The most pages one read asks for: a log holds at most 20480 entries, 256 a page, and a read goes back once. */
-export const LIST_READ_PAGES_MAX = 200;
+/** A post of the PC's keys lasts ten minutes at the account service: an end named further off than this is no end it gave. */
+const POST_UNTIL_MAX_SECONDS = 24 * 60 * 60;
 /** The PC's post of its keys lasts ten minutes at the account service; it is made again when it is this old. */
 export const LIST_POST_RENEW_MS = 4 * 60_000;
 /** How often the PC looks at its clock for a read that is due and a device whose time has passed. */
@@ -269,6 +269,8 @@ export class ListFollow implements ListAuthority {
     const scope = this.sync();
     const copy = scope?.bindId == null ? null : this.copy;
     const view = copy?.state ? listView(copy.state) : null;
+    // a post is spent by the entry that adds the PC: one that is in, or out, has none
+    const posted = copy !== null && standing(copy) === "waiting" ? this.postedUntil : null;
     return {
       account: scope?.account ?? null,
       list: copy?.list ?? null,
@@ -283,7 +285,7 @@ export class ListFollow implements ListAuthority {
       last_verdict: this.lastVerdict,
       differences: this.differences.size,
       keys: this.keysState,
-      posted_until: this.postedUntil === null ? null : new Date(this.postedUntil * 1000).toISOString(),
+      posted_until: posted === null ? null : new Date(posted * 1000).toISOString(),
       error: this.problem ?? this.error,
     };
   }
@@ -334,10 +336,14 @@ export class ListFollow implements ListAuthority {
   tick(): void {
     if (this.stopped) return;
     const scope = this.bound();
-    if (scope === null || this.problem !== null) return;
+    if (scope === null) return;
+    // a file that could not be read is tried again: one that reads by now is taken
+    if (this.broken !== null && this.copy === null) { this.broken = null; this.takeFile(scope); void this.enqueue(async () => { await this.ready; await this.ensureCopy(scope); this.settle(); }); }
+    if (this.problem !== null) return;
     const now = this.seconds();
     if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); });
-    if (!this.isPinned && this.want === null) return;
+    // any PC that holds a list reads it by its own clock, one that only shadows too: a mailbox that names no list, or
+    // does not answer, hides no entry. A PC whose account never had a list holds no copy and asks nothing
     const copy = this.copy;
     if (copy === null) return;
     // a PC that was just named its list has a person waiting beside it for the entry that adds it
@@ -452,7 +458,11 @@ export class ListFollow implements ListAuthority {
     const id = PC_STATES.has(list) ? `${snapshot} ${list}` : `${key} ${snapshot} ${list}`;
     if (this.differences.has(id) || this.differences.size >= DIFFERENCES_MAX) return;
     this.differences.add(id);
-    logAccess({ event: "account.list.differs", snapshot, list });
+    // A key that only one of the two holds may be the same phone under its other key: the snapshot names a phone by
+    // the key of its sign-in, the list by its member key, and nothing here links the two. So that is a difference of
+    // credentials. A key both hold, decided otherwise, and the PC's own place in the list, are differences of devices
+    const of = (snapshot === "admitted" && list === "never_added") || snapshot === "none" ? "credential" : "device";
+    logAccess({ event: "account.list.differs", snapshot, list, of });
   }
 
   /** The copy a PC that is not pinned compares its snapshot with; null on a pinned PC, which decides by the list. */
@@ -614,7 +624,10 @@ export class ListFollow implements ListAuthority {
     // is: no hint is never the word that the list is gone
     if (named === null) {
       this.lastVerdict = "none";
-      if (this.copy !== null) this.keep(heardHead(this.copy, null, this.seconds()).copy, scope, false);
+      if (this.copy === null) return;
+      this.keep(heardHead(this.copy, null, this.seconds()).copy, scope, false);
+      // a PC that holds a list still reads it, at its own pace: no word is not the word that nothing was written
+      if (this.copy !== null && followStep(this.copy, this.seconds(), { event: "tick", asked_at: this.askedAt, busy: false }).do === "read") await this.read(scope);
       return;
     }
     const keys = await this.keysOf(scope);
@@ -622,6 +635,9 @@ export class ListFollow implements ListAuthority {
     let copy = this.copy;
     // a copy of other keys than the PC has now, on a PC that is not pinned, is nobody's
     if (copy !== null && !this.isPinned && (copy.me.key !== keys.key || copy.me.endpoint !== scope.endpoint)) copy = null;
+    // a list id the service named, of which the PC has verified no entry, is its word alone: the one it names now
+    // takes its place. A list a person named here is not the service's to replace
+    if (copy !== null && !this.isPinned && this.want === null && copy.state === null && copy.list !== named.id) copy = null;
     if (copy === null) {
       if (this.isPinned) return;
       // the list a person named here, and only for want of one the list the service names
@@ -657,9 +673,10 @@ export class ListFollow implements ListAuthority {
     if (copy === null) return;
     const before = copy;
     this.askedAt = this.seconds();
+    // the follower bounds a read by itself (FollowRead.left): what is left is asked at the next one
     let read: FollowRead | null = startRead(copy, "service");
     try {
-      for (let pages = 0; read !== null && pages < LIST_READ_PAGES_MAX && !this.stopped; pages++) {
+      while (read !== null && this.live(scope)) {
         const answer = await this.deps.call("/v2/pc/list/log", { list: read.list, ...(read.after === null ? {} : { after: read.after }) });
         const result = await takePage(copy, read, answer as unknown as ListPage, this.seconds());
         copy = result.copy;
@@ -680,9 +697,15 @@ export class ListFollow implements ListAuthority {
     if (this.postedAt !== null && now - this.postedAt >= 0 && now - this.postedAt < LIST_POST_RENEW_MS) return;
     try {
       const card = await signCard({ key: keys.key, enc: keys.enc, list: copy.list, endpoint: scope.endpoint, invite: null }, keys.privateKey);
+      // nothing is posted for an account the PC has left meanwhile, or once it stopped
+      const still = this.sync();
+      if (this.stopped || still === null || still.serverId !== scope.serverId || still.bindId !== scope.bindId) return;
       const answer = await this.deps.call("/v2/pc/list/keys", { list: copy.list, key: keys.key, enc: keys.enc, card });
       this.postedAt = now;
-      this.postedUntil = typeof answer.until === "number" && Number.isSafeInteger(answer.until) ? answer.until : null;
+      const { until } = answer;
+      const ends = typeof until === "number" && Number.isSafeInteger(until) && until >= 0 && until - this.seconds() <= POST_UNTIL_MAX_SECONDS;
+      this.postedUntil = ends ? until : null;
+      if (!ends) this.error = "The account service did not say until when it holds this PC's keys";
     } catch (error) {
       this.postedUntil = null;
       this.error = this.words(error);

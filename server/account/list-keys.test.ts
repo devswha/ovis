@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isListKeyEncoding, isListPoint, verifySignature } from "../../shared/account-list-entry.ts";
@@ -28,6 +28,27 @@ describe("the PC's list keys (account-list-keys.json)", () => {
     const file = JSON.parse(readFileSync(listKeysPath(dir), "utf8")) as Record<string, unknown>;
     expect(Object.keys(file).sort()).toEqual(["encryption", "server_id", "signing", "v"]);
     expect(file.server_id).toBe(PC_A);
+  });
+
+  test("two servers on one state folder that both find no file end with one pair: the one on disk", async () => {
+    const dir = stateDir();
+    const [a, b] = await Promise.all([new ListKeyStore(dir).keysFor(PC_A), new ListKeyStore(dir).keysFor(PC_A)]);
+    expect(a.key).toBe(b.key);
+    expect(a.enc).toBe(b.enc);
+    const reopened = await new ListKeyStore(dir).keysFor(PC_A);
+    expect([reopened.key, reopened.enc]).toEqual([a.key, a.enc]);
+    // and no temporary file of the loser stays
+    expect(readdirSync(dir).filter((name) => name !== ACCOUNT_LIST_KEYS_FILE)).toEqual([]);
+  });
+
+  test("two servers that both find another identity's file end with one pair for the new identity", async () => {
+    const dir = stateDir();
+    const old = await new ListKeyStore(dir).keysFor(PC_A);
+    const [a, b] = await Promise.all([new ListKeyStore(dir).keysFor(PC_B), new ListKeyStore(dir).keysFor(PC_B)]);
+    expect(a.key).toBe(b.key);
+    expect(a.key).not.toBe(old.key);
+    expect((await new ListKeyStore(dir).keysFor(PC_B)).key).toBe(a.key);
+    expect(readdirSync(dir).filter((name) => name !== ACCOUNT_LIST_KEYS_FILE)).toEqual([]);
   });
 
   test("the signing key signs the PC's card, and what it signs verifies under the public key it names", async () => {

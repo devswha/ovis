@@ -711,6 +711,14 @@ describe("the removals", () => {
     expect(seen((await play([...before, [desk, remove(desk)]])).state).pcs).toEqual({ e1: "added desk @1 removed@2" });
   });
 
+  test("a PC that was put out keeps its signer's row as a PC's, whatever is placed afterwards, and no PC that is in has its key", async () => {
+    const { said: told, state } = await play([[owner, pc(desk, 1)], [owner, remove(desk)], [owner, invite(pool)]]);
+    expect(told).toEqual(["counts", "counts", "counts"]);
+    expect([state.signers[desk.key]?.as, state.signers[desk.key]?.ended, signerPower(state, desk.key), holdsPc(state, E(1)), Object.values(state.pcs).filter((row) => row.key === desk.key && row.removed === null).length])
+      .toEqual(["pc", 2, null, false, 0]);
+    expect(readListState(JSON.parse(JSON.stringify(state)), 1)).toEqual(state);
+  });
+
   test("a PC is put out by any entry that ends its key, also one a member cannot read", async () => {
     const { said: told, state } = await play([[owner, pc(desk, 1)], [owner, later(2, { ends: desk })]]);
     expect([told, seen(state).pcs, seen(state).signers.desk]).toEqual([["counts", "cannot_read"], { e1: "added desk @1 removed@2" }, "full pc @1 by owner ended@2"]);
@@ -822,7 +830,11 @@ describe("the names an entry carries, and the epochs they are sealed under", () 
     expect(seen(state).signers).toEqual({ owner: OWNER, phone: "full no name @2 by owner", desk: "full no name @3 by owner", late: "full device @4 by owner", pool: "bound invite @5 by owner" });
     // The form stands before the epoch, and the epoch before what the list holds.
     expect(await last([[owner, opening(0)], [owner, plus(await device(phone), { role: "admin" })]])).toBe("no_effect entry_invalid");
-    expect(await last([[owner, opening(0)], [owner, invite(pool)], [owner, carriedPc(1)], [owner, carriedPc(1)]])).toBe("no_effect epoch_other");
+    // A relay key that is taken, named again under names of the epoch before: the epoch is asked first.
+    const taken1 = await pc(desk, 1);
+    const stale1 = await pc(tower, 1);
+    const reused = await play([[owner, taken1], [owner, opening(0)], [owner, stale1], [owner, bare(await pc(late, 1))]]);
+    expect([reused.said, seen(reused.state).pcs]).toEqual([["counts", "counts", "no_effect epoch_other", "no_effect endpoint_reused"], { e1: "added desk @1" }]);
   });
 
   test("a removal moves no epoch by itself, and an epoch is opened whether or not anybody was put out", async () => {
@@ -1062,6 +1074,25 @@ describe("how a member writes: an entry is signed only when it counts on the wri
     expect(await refusal(state, { kind: "remove", ends: tablet.key }, tablet)).toBe("signed");
   });
 
+  test("nobody opens an epoch at will: an epoch is written only where names can no longer be sealed under the current one", async () => {
+    const next1: ListKind = { kind: "epoch", epoch: 0, opens: OPENS(1), link: LINK(1) };
+    const why = async (state: ListState, at = T0 + 600) => await signListEntry(state, { ...next1, epoch: state.epoch, opens: OPENS(state.epoch + 1), link: LINK(state.epoch + 1) }, signer(owner), at)
+      .then(() => "signed", (error: unknown) => (error instanceof ListWriteError ? error.reason ?? (error.outcome === null ? "not written" : said(error.outcome)) : String(error)));
+    // Nobody is out: no epoch, also right after an add, and after an add that lost its place and is signed again.
+    expect(await why((await play([])).state)).toBe("epoch_not_needed");
+    expect(await why((await play([[owner, device(phone)], [owner, pc(desk, 1)], [owner, invite(pool, 2)], [pool, join(2)]])).state)).toBe("epoch_not_needed");
+    // After a removal, the join that took an invite's last use, or a time that is over: the next epoch is called for.
+    expect(await why((await play([[owner, device(phone)], [owner, remove(phone)]])).state)).toBe("signed");
+    expect(await why((await play([[owner, invite(pool, 1)], [pool, join(2)]])).state)).toBe("signed");
+    const timed = (await play([[owner, device(tablet, "bound", "drive", { until: String(T0 + 3600) })]])).state;
+    expect([await why(timed, T0 + 3599), await why(timed, T0 + 3600)]).toEqual(["epoch_not_needed", "signed"]);
+    // Once it is open, no second one: of two members that open it at once, one does, and the other finds nothing left to do.
+    const opened = (await play([[owner, device(phone)], [owner, remove(phone)], [owner, opening(0)]])).state;
+    expect(await why(opened)).toBe("epoch_not_needed");
+    // Members count an epoch that somebody placed all the same: this is what a writer does, not what an entry is.
+    expect((await play([[owner, opening(0)]])).said).toEqual(["counts"]);
+  });
+
   test("a writer that is stopped for a replay writes nothing, and a private key that is not the signer's signs nothing that leaves", async () => {
     const { links, state } = await play([[owner, later()]]);
     const stopped = (await takeEntry(state, (await next(at(links, 1), stranger, later())).held)).state;
@@ -1090,18 +1121,95 @@ describe("how a member writes: an entry is signed only when it counts on the wri
     await expect(signListEntries(state, [{ kind: "remove", endpoint: E(1) }, { kind: "remove", endpoint: E(1) }], signer(owner), T0 + 600)).rejects.toThrow(ListWriteError);
   });
 
+  test("over generated histories of honest writers, a member that is behind holds exactly the PCs it held that a member reading everything still holds", async () => {
+    let promoted = 0;
+    let removals = 0;
+    for (let seed = 61; seed <= 76; seed++) {
+      const random = seeded(seed);
+      const pick = <Item>(items: readonly Item[]): Item => at(items, Math.floor(random() * items.length));
+      const all = [owner, phone, tablet, desk, tower, pool, pool2, plain, late, stranger, other];
+      // A member that reads everything (level 2) writes; a member of level 1 takes the same entries.
+      const genesis2 = await signGenesis({ kind: "genesis", account: "TEST-ONLY-account", enc: owner.enc, opens: OPENS(0), sealed: SEAL }, signer(owner), T0, 2);
+      const held = (entry: { readonly body: Uint8Array; readonly signature: Uint8Array }): HeldEntry => ({ entry, body: readBody(entry.body), hash: entryHash(entry.body), list: genesis2.state.list });
+      let full = genesis2.state;
+      let behind = firstListState(held(genesis2.entry), 1);
+      const place = async (written: { readonly entry: { readonly body: Uint8Array; readonly signature: Uint8Array }; readonly state: ListState }) => {
+        full = written.state;
+        behind = (await takeEntry(behind, held(written.entry))).state;
+      };
+      // Whoever was in the account before: three PCs and a device, carried in.
+      for (const kind of [{ kind: "carried", endpoint: E(1), sealed: SEAL }, { kind: "carried", endpoint: E(2), sealed: SEAL }, { kind: "carried", endpoint: E(3), sealed: SEAL }, { kind: "carried", key: phone.key, role: "drive", sealed: SEAL }] as ListKind[]) {
+        await place(await signListEntry(full, kind, signer(owner), T0 + 30));
+      }
+      const fallsBehindAt = Math.floor(random() * 6);
+      for (let step = 0; step < 70; step++) {
+        const issued = T0 + 60 * (step + 1);
+        const signers = all.filter((key) => signerPower(full, key.key) !== null);
+        if (signers.length === 0) break;
+        if (step === fallsBehindAt) {
+          // One entry of a later level, by a signer of power full: the member of level 1 is behind from here.
+          const by = signers.find((key) => signerPower(full, key.key) === "full");
+          if (by === undefined) break;
+          const entry = await signEntry({ ...bodyOf(later(), by, { seq: full.footing.seq + 1, list: full.list, prev: full.footing.hash }), issued_at: issued }, by.pair.privateKey);
+          full = (await takeEntry(full, held(entry))).state;
+          behind = (await takeEntry(behind, held(entry))).state;
+          continue;
+        }
+        const by = pick(signers);
+        const about = pick(all);
+        const n = 1 + Math.floor(random() * 6);
+        const names: Sealed | null = sealEpoch(full, issued) === null ? null : { epoch: full.epoch, bytes: SEALED };
+        const power: SignerPower = random() < 0.3 ? "bound" : "full";
+        const kinds: (() => Promise<ListKind> | ListKind)[] = [
+          async () => ({ kind: "device", key: about.key, power, role: "drive", until: null, enc: about.enc, card: await card(about, null, { list: full.list }), sealed: names, rotates: false }),
+          async () => ({ kind: "pc", key: about.key, endpoint: E(n), enc: about.enc, card: await card(about, E(n), { list: full.list }), sealed: names }),
+          async () => ({ kind: "pc", key: about.key, endpoint: E(n), enc: about.enc, card: await card(about, E(n), { list: full.list }), sealed: names }),
+          () => ({ kind: "invite", key: about.key, exp: EXP, uses: 1 + Math.floor(random() * 2), auto: true, sealed: names }),
+          async () => ({ kind: "join", endpoint: E(n), pc: about.key, enc: about.enc, card: await card(about, E(n), { list: full.list, invite: by.key }), sealed: names }),
+          () => ({ kind: "remove", ends: about.key }),
+          () => ({ kind: "remove", endpoint: E(n) }),
+          () => ({ kind: "remove", endpoint: E(n) }),
+          () => ({ kind: "epoch", epoch: full.epoch, opens: OPENS(full.epoch + 1), link: LINK(full.epoch + 1) }),
+        ];
+        const kind = await pick(kinds)();
+        const written = await signListEntry(full, kind, signer(by), issued).catch((error: unknown) => {
+          if (error instanceof ListWriteError || error instanceof ListKindError) return null;
+          throw error;
+        });
+        if (written === null) continue;
+        const before = behind;
+        await place(written);
+        const where = `seed ${seed} step ${step} ${by.name} ${kind.kind}`;
+        if (kind.kind === "remove") removals++;
+        if (behind.behind !== null && kind.kind === "pc" && before.pcs[kind.endpoint] !== undefined && behind.pcs[kind.endpoint]?.how === "added") promoted++;
+        // Every PC the member that is behind has a row for is in for it exactly when it is in for the member that reads everything; it never holds one that the other put out.
+        for (const endpoint of Object.keys(behind.pcs)) expect({ where, endpoint: pcName(endpoint), held: holdsPc(behind, endpoint) }).toEqual({ where, endpoint: pcName(endpoint), held: holdsPc(full, endpoint) });
+        for (const endpoint of Object.keys(full.pcs)) if (holdsPc(behind, endpoint)) expect({ where, endpoint: pcName(endpoint), held: holdsPc(full, endpoint) }).toEqual({ where, endpoint: pcName(endpoint), held: true });
+        // And it holds no relay key that came in after it fell behind.
+        if (behind.behind !== null) for (const [endpoint, row] of Object.entries(full.pcs)) if (before.pcs[endpoint] === undefined && behind.pcs[endpoint] === undefined) expect({ where, endpoint: pcName(endpoint), since: row.seq >= behind.behind }).toEqual({ where, endpoint: pcName(endpoint), since: true });
+      }
+    }
+    // The histories gave carried PCs their keys while the member was behind, and put PCs out, often enough to mean something.
+    expect([promoted > 5, removals > 30]).toEqual([true, true]);
+  }, 120_000);
+
   test("over generated histories of honest writers, no key is ever a signer with no name", async () => {
-    for (let seed = 41; seed <= 46; seed++) {
+    let total = 0;
+    for (let seed = 41; seed <= 50; seed++) {
       const random = seeded(seed);
       const pick = <Item>(items: readonly Item[]): Item => at(items, Math.floor(random() * items.length));
       const all = [owner, phone, tablet, desk, tower, pool, pool2, plain, late, stranger, other];
       let state = (await signGenesis({ kind: "genesis", account: "TEST-ONLY-account", enc: owner.enc, opens: OPENS(0), sealed: SEAL }, signer(owner), T0)).state;
       let written = 0;
-      for (let step = 0; step < 60; step++) {
-        const by = pick(all.filter((key) => signerPower(state, key.key) !== null));
+      for (let step = 0; step < 150; step++) {
+        const signers = all.filter((key) => signerPower(state, key.key) !== null);
+        // Whoever acts first wins: a list may end with everybody out.
+        if (signers.length === 0) break;
+        const by = pick(signers);
         const about = pick(all);
         const n = 1 + Math.floor(random() * 6);
-        const names: Sealed | null = random() < 0.8 ? { epoch: random() < 0.9 ? state.epoch : state.epoch + 1, bytes: SEALED } : null;
+        // An honest writer seals where the writer's rule lets it, and writes no names where it does not.
+        const names: Sealed | null = sealEpoch(state, T0 + 60 * (step + 1)) === null ? null : { epoch: state.epoch, bytes: SEALED };
         const power: SignerPower = random() < 0.3 ? "bound" : "full";
         const kinds: (() => Promise<ListKind> | ListKind)[] = [
           async () => ({ kind: "device", key: about.key, power, role: power === "bound" && random() < 0.5 ? "watch" : "drive", until: power === "bound" && random() < 0.5 ? T0 + 86400 : null, enc: about.enc, card: await card(about), sealed: names, rotates: random() < 0.1 }),
@@ -1124,8 +1232,10 @@ describe("how a member writes: an entry is signed only when it counts on the wri
         state = result.state;
         expect({ seed, step, nameless: Object.values(state.signers).filter((row) => row.as === null).length, listed: listView(state).signers }).toEqual({ seed, step, nameless: 0, listed: [] });
       }
-      expect(written).toBeGreaterThan(10);
+      total += written;
     }
+    // Some lists end early, with everybody out; over all of them enough was written to mean something.
+    expect(total).toBeGreaterThan(100);
   }, 120_000);
 });
 
@@ -1197,6 +1307,134 @@ describe("a member that is behind", () => {
       signers: { owner: `${OWNER} ended@8`, phone: "full device @1 by owner ended@9", pool: "bound invite @2 by owner ended@7", late: "full no name @5 by owner" },
       devices: { owner: "drive", phone: "drive" }, pcs: { e1: "joined machine1 @3 with pool removed@6" }, invites: { pool: "1 of 5 auto" },
     });
+  });
+
+  test("a carried PC that is in gets its keys from a member that is behind too, so both put it out by the same entry", async () => {
+    const promoted: Step[] = [[owner, carriedPc(1)], [owner, later()], [owner, pc(desk, 1)]];
+    const behind = await play(promoted);
+    const reads = await play(promoted, 2);
+    // Nobody new came in: the PC was in. Its key has its name, and the member knows which PC the key is.
+    expect([behind.said, behind.state.behind, seen(behind.state).pcs, seen(behind.state).signers.desk, behind.state.pc_keys]).toEqual([["counts", "cannot_read", "counts"], 2, { e1: "added desk @3" }, "full pc @3 by owner", { [desk.key]: E(1) }]);
+    expect(seen(reads.state).pcs).toEqual(seen(behind.state).pcs);
+    for (const level of [1, 2]) {
+      // The end of the key puts the PC out, and its relay key alone does not, for both.
+      const byKey = await play([...promoted, [owner, remove(desk)]], level);
+      expect({ level, told: byKey.said.at(-1), pcs: seen(byKey.state).pcs, held: holdsPc(byKey.state, E(1)) }).toEqual({ level, told: "counts", pcs: { e1: "added desk @3 removed@4" }, held: false });
+      const byRelayKey = await play([...promoted, [owner, removePc(1)]], level);
+      expect({ level, told: byRelayKey.said.at(-1), held: holdsPc(byRelayKey.state, E(1)) }).toEqual({ level, told: "no_effect ends_needed", held: true });
+      // A carried PC that got no keys is still put out by its relay key.
+      const plainCarried = await play([[owner, carriedPc(1)], [owner, later()], [owner, removePc(1)]], level);
+      expect({ level, told: plainCarried.said.at(-1), held: holdsPc(plainCarried.state, E(1)) }).toEqual({ level, told: "counts", held: false });
+    }
+    // A PC that was not in before the member fell behind is still not let in, and neither is anybody else.
+    const fresh = await play([[owner, carriedPc(1)], [owner, later()], [owner, pc(desk, 2)], [owner, device(phone)]]);
+    expect([seen(fresh.state).pcs, seen(fresh.state).signers.desk, seen(fresh.state).signers.phone]).toEqual([{ e1: "carried @1" }, "full no name @3 by owner", "full no name @4 by owner"]);
+    // The saved state of the member that is behind reads again; one that claims a new PC behind is no state.
+    expect(readListState(JSON.parse(JSON.stringify(behind.state)), 1)).toEqual(behind.state);
+    const claims = JSON.parse(JSON.stringify(fresh.state)) as { signers: Record<string, { as: string | null }>; pcs: Record<string, unknown>; pc_keys: Record<string, string> };
+    (claims.signers[phone.key] ?? { as: null }).as = "device";
+    expect(readListState(claims, 1)).toBeNull();
+    // Nor is one that claims a PC that joined, or one that was carried in, at a place after the member fell behind.
+    const m1 = await machine(1);
+    const joins = await play([[owner, invite(pool)], [owner, later()], [pool, join(1)]]);
+    expect([joins.said.at(-1), seen(joins.state).pcs]).toEqual(["counts", {}]);
+    const joined = JSON.parse(JSON.stringify(joins.state)) as { pcs: Record<string, unknown>; pc_keys: Record<string, string>; invites: Record<string, { joins: number }> };
+    joined.pcs[E(1)] = { how: "joined", key: m1.key, enc: m1.enc, seq: 3, invite: pool.key, removed: null };
+    joined.pc_keys[m1.key] = E(1);
+    (joined.invites[pool.key] ?? { joins: 0 }).joins = 1;
+    expect(readListState(joined, 1)).toBeNull();
+    const carriedLate = JSON.parse(JSON.stringify(joins.state)) as { pcs: Record<string, unknown> };
+    carriedLate.pcs[E(4)] = { how: "carried", key: null, enc: null, seq: 3, invite: null, removed: null };
+    expect(readListState(carriedLate, 1)).toBeNull();
+    // The same rows before it fell behind are a state.
+    const before = await play([[owner, invite(pool)], [pool, join(1)], [owner, later()]]);
+    expect(readListState(JSON.parse(JSON.stringify(before.state)), 1)).toEqual(before.state);
+    // The one shape it takes behind is a PC a person added, at a relay key, whose key's row is a PC's and names that same relay key. Each neighbour is refused.
+    type Saved = { signers: Record<string, { as: string | null; seq: number }>; pcs: Record<string, { how: string; key: string | null; seq: number }>; pc_keys: Record<string, string>; invites: Record<string, unknown> };
+    const shape = () => JSON.parse(JSON.stringify(behind.state)) as Saved;
+    const refused: [string, (value: Saved) => void][] = [
+      ["the key's row has no name", (value) => { (value.signers[desk.key] ?? { as: "" }).as = null; }],
+      ["the key's row is a device's", (value) => { (value.signers[desk.key] ?? { as: "" }).as = "device"; }],
+      ["the key's row is a PC's and no PC has the key", (value) => { delete value.pcs[E(1)]; delete value.pc_keys[desk.key]; }],
+      ["the key names another relay key", (value) => { value.pc_keys[desk.key] = E(2); }],
+      ["the key names no relay key", (value) => { delete value.pc_keys[desk.key]; }],
+      ["the PC's row says it joined", (value) => { (value.pcs[E(1)] ?? { how: "" }).how = "joined"; }],
+      ["the PC's row says it was carried in there", (value) => { const row = value.pcs[E(1)]; if (row) { row.how = "carried"; row.key = null; (row as unknown as { enc: null }).enc = null; } }],
+      ["the PC's row stands at another place than its key's", (value) => { (value.pcs[E(1)] ?? { seq: 0 }).seq = 2; }],
+    ];
+    for (const [name, change] of refused) {
+      const value = shape();
+      change(value);
+      expect({ name, state: readListState(value, 1) }).toEqual({ name, state: null });
+    }
+    expect(readListState(shape(), 1)).toEqual(behind.state);
+    // An invite placed after the member fell behind has no name for it either.
+    const invited = await play([[owner, carriedPc(1)], [owner, later()], [owner, invite(pool)]]);
+    expect(seen(invited.state).signers.pool).toBe("bound no name @3 by owner");
+    const withInvite = JSON.parse(JSON.stringify(invited.state)) as Saved;
+    (withInvite.signers[pool.key] ?? { as: "" }).as = "invite";
+    withInvite.invites[pool.key] = { exp: EXP, uses: 5, joins: 0, auto: true };
+    expect(readListState(withInvite, 1)).toBeNull();
+  });
+
+  test("known limit: a member that is behind does not know the keys of PCs that joined after it fell behind", async () => {
+    // A pc that names such a key for a carried PC is written by nobody who signs only what counts. Where somebody writes it all the same:
+    const m2 = await machine(2);
+    const steps: Step[] = [[owner, carriedPc(1)], [owner, invite(pool)], [owner, later()], [pool, join(2)], [owner, pc(m2, 1)], [owner, removePc(1)]];
+    const reads = await play(steps, 2);
+    const behind = await play(steps);
+    // The member that reads everything knows the key and gives the carried PC none: its relay key puts it out.
+    expect([reads.said.slice(3), holdsPc(reads.state, E(1))]).toEqual([["counts", "no_effect key_reused", "counts"], false]);
+    // The member that is behind took the keys, so the relay key alone does not put the PC out for it: it holds it until it replays.
+    expect([behind.said.slice(3), holdsPc(behind.state, E(1))]).toEqual([["counts", "counts", "no_effect ends_needed"], true]);
+    // Once it reads everything it holds what the others hold.
+    expect(holdsPc((await replayList(behind.texts, 2, { saved: behind.state })).member?.state ?? behind.state, E(1))).toBe(false);
+  });
+
+  test("the keys of a carried PC are the one thing a member that is behind takes in: every check of a pc still decides it", async () => {
+    const start: Step[] = [[owner, carriedPc(1)], [owner, device(tablet, "bound")], [owner, later()]];
+    const told = async (step: Step, more: readonly Step[] = []) => {
+      const played = await play([...start, ...more, step]);
+      return [played.said.at(-1), seen(played.state).pcs.e1];
+    };
+    expect(await told([owner, pc(desk, 1)])).toEqual(["counts", "added desk @4"]);
+    // Who may sign, the form, the card, the epoch, the key: each as for a member that reads everything, and the PC stays as it was.
+    expect(await told([tablet, pc(desk, 1)])).toEqual(["passed_over signer_not_allowed", "carried @1"]);
+    expect(await told([stranger, pc(desk, 1)])).toEqual(["passed_over signer_unknown", "carried @1"]);
+    expect(await told([owner, plus(await pc(desk, 1), { note: "x" })])).toEqual(["no_effect entry_invalid", "carried @1"]);
+    expect(await told([owner, plus(await pc(desk, 1), { card: await card(desk, E(2)) })])).toEqual(["no_effect card_invalid", "carried @1"]);
+    expect(await told([owner, plus(await pc(desk, 1), { epoch: "1" })])).toEqual(["no_effect epoch_other", "carried @1"]);
+    expect(await told([owner, pc(tablet, 1)])).toEqual(["passed_over key_reused", "carried @1"]);
+    // A carried PC that is out gets no keys, and a relay key that was not in is not let in.
+    expect(await told([owner, pc(desk, 1)], [[owner, removePc(1)]])).toEqual(["no_effect endpoint_reused", "carried @1 removed@4"]);
+    const fresh = await play([...start, [owner, pc(desk, 2)]]);
+    expect([fresh.said.at(-1), seen(fresh.state).pcs, holdsPc(fresh.state, E(2))]).toEqual(["counts", { e1: "carried @1" }, false]);
+    // It never moves a PC to another relay key: a second pc at the same one changes nothing.
+    expect(await told([owner, pc(tower, 1)], [[owner, pc(desk, 1)]])).toEqual(["no_effect endpoint_reused", "added desk @4"]);
+  });
+
+  test("a state that a higher level wrote is stopped only until this level's replay reaches its footing: the member is then behind, and lets nobody new in", async () => {
+    // The footing of the higher level's state is an entry this level cannot read.
+    const steps: Step[] = [[owner, device(phone)], [owner, later()]];
+    const higher = await play(steps, 2);
+    const read = readListState(JSON.parse(JSON.stringify(higher.state)), 1);
+    if (read === null) throw new Error("the higher level's state does not read");
+    expect([read.needs_replay, admitsDevice(read, phone.key, T0), listView(read).stopped]).toEqual([higher.state.footing, null, true]);
+    // Told that state, this level's replay takes the footing entry as one it cannot read: the stop is done with, and the member is behind from there.
+    const replayed = await replayList(higher.texts, 1, { saved: read });
+    const state = replayed.member?.state;
+    if (state === undefined) throw new Error("no member");
+    expect([replayed.stopped, replayed.stuck, state.needs_replay, state.level, state.behind, state.needs, replayed.took.map((item) => said(item.outcome))]).toEqual([null, false, undefined, 1, 2, 2, ["counts", "counts", "cannot_read"]]);
+    // It answers again for whom it held, and behind it lets nobody new in: what a later entry adds is a signer with no name.
+    expect(admitsDevice(state, phone.key, T0)).toBe("drive");
+    const added = await takeEntry(state, (await next(at(higher.links, 2), owner, await device(late))).held);
+    expect([said(added.outcome), seen(added.state).signers.late, admitsDevice(added.state, late.key, T0)]).toEqual(["counts", "full no name @3 by owner", null]);
+    // An entry it cannot place stops it, and that stop is never replayed away: the entry is not taken.
+    const unplaced = await next(at(higher.links, 2), stranger, later());
+    const stopped = await replayList([...higher.texts, unplaced.text], 1, { saved: read });
+    expect([stopped.stopped, stopped.stuck, stopped.member?.state.needs_replay, stopped.member?.entries.length]).toEqual([{ seq: 3, code: "needs_replay" }, true, { seq: 3, hash: unplaced.held.hash }, 3]);
+    const again = await replayList([...higher.texts, unplaced.text], 1, { saved: stopped.member?.state ?? null });
+    expect([again.stuck, again.member?.state.needs_replay]).toEqual([true, { seq: 3, hash: unplaced.held.hash }]);
   });
 
   test("a carried device's card counts while the member is behind, and the member takes no encryption key from it", async () => {
@@ -1432,6 +1670,53 @@ describe("a saved state: plain data that can be stored and loaded", () => {
     ];
     for (const [name, change] of changes) expect({ name, state: await changed(change) }).toEqual({ name, state: null });
     expect(await changed(() => undefined)).toEqual(await saved());
+  });
+
+  test("an invite's uses cover the PCs that joined with it, and no two PCs stand at one place", async () => {
+    const m1 = await machine(1);
+    const { state } = await play([[owner, invite(pool, 2)], [pool, join(1)], [pool, join(2)]]);
+    const fresh = () => JSON.parse(JSON.stringify(state)) as Loose;
+    expect(readListState(fresh(), 1)).toEqual(state);
+    // Uses that are a number an invite may have, and fewer than the PCs that joined.
+    const fewer = fresh();
+    row(fewer, "invites", pool.key).uses = 1;
+    expect(readListState(fewer, 1)).toBeNull();
+    // Two joined PCs at one place: one entry would have taken two of the invite's uses.
+    const shared = fresh();
+    row(shared, "pcs", E(2)).seq = row(shared, "pcs", E(1)).seq;
+    expect(readListState(shared, 1)).toBeNull();
+    // A carried PC and a joined one at one place are no state either.
+    const mixed = (await play([[owner, carriedPc(3)], [owner, invite(pool, 2)], [pool, join(1)]])).state;
+    const both = JSON.parse(JSON.stringify(mixed)) as Loose;
+    expect(readListState(JSON.parse(JSON.stringify(mixed)), 1)).toEqual(mixed);
+    row(both, "pcs", E(1)).seq = 1;
+    expect(readListState(both, 1)).toBeNull();
+    // A PC's key whose point is not on the curve: in its spelling, and no key any entry could have let in.
+    const bytes = fromBase64Url(m1.key);
+    bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 1;
+    const off = toBase64Url(bytes);
+    const curve = fresh();
+    row(curve, "pcs", E(1)).key = off;
+    (curve.pc_keys as unknown as Record<string, string>)[off] = E(1);
+    delete (curve.pc_keys as unknown as Record<string, string>)[m1.key];
+    expect(readListState(curve, 1)).toBeNull();
+  });
+
+  test("the first device is entry 0's signer: it drives, has no until, was carried in by nobody and has its encryption key", async () => {
+    const { state } = await play([[owner, device(tablet, "bound", "watch", { until: String(T0 + 86400) })]]);
+    const changes: [string, (device: Record<string, unknown>) => void][] = [
+      ["it watches", (device) => { device.role = "watch"; }],
+      ["it has an until", (device) => { device.until = T0 + 9; }],
+      ["it was carried in", (device) => { device.carried = true; }],
+      ["it was carried in and has no encryption key", (device) => { device.carried = true; device.enc = null; }],
+    ];
+    for (const [name, change] of changes) {
+      const value = JSON.parse(JSON.stringify(state)) as Loose;
+      change(row(value, "devices", owner.key));
+      expect({ name, state: readListState(value, 1) }).toEqual({ name, state: null });
+    }
+    // Both roles and an until stay those of a later, bound device.
+    expect(readListState(JSON.parse(JSON.stringify(state)), 1)?.devices[tablet.key]).toEqual({ role: "watch", until: T0 + 86400, enc: tablet.enc, carried: false });
   });
 
   test("a PC joined while whoever placed its invite was a signer: a row that says it joined after that is no state", async () => {
@@ -1835,7 +2120,10 @@ describe("over generated histories", () => {
         for (const endpoint of out.endpoints) expect({ where, endpoint: pcName(endpoint), held: holdsPc(state, endpoint) }).toEqual({ where, endpoint: pcName(endpoint), held: false });
         for (const key of out.pcKeys) {
           const row = state.signers[key];
-          expect({ where, key: who(key), as: row?.as ?? null, pcs: Object.values(state.pcs).filter((item) => item.key === key && item.removed === null).length }).toEqual({ where, key: who(key), as: row?.as === "pc" ? "pc" : null, pcs: 0 });
+          // No PC that is in has that key again. Its signer's row keeps what it was: a PC's, where a person had added it, and then it signs no more; a key that joined has no name.
+          expect({ where, key: who(key), pcs: Object.values(state.pcs).filter((item) => item.key === key && item.removed === null).length, named: row !== undefined && row.as !== null && row.as !== "pc" })
+            .toEqual({ where, key: who(key), pcs: 0, named: false });
+          if (row?.as === "pc") expect({ where, key: who(key), power: signerPower(state, key) }).toEqual({ where, key: who(key), power: null });
         }
         for (const [key, row] of Object.entries(state.signers)) if (row.ended !== null) out.keys.add(key);
         for (const [endpoint, row] of Object.entries(state.pcs)) {
@@ -1945,17 +2233,21 @@ describe("the vectors of kinds/, card/ and names/", () => {
     readonly level: number;
     readonly keys: Readonly<Record<string, { readonly pkcs8: string; readonly spki: string }>>;
     readonly entries: readonly { readonly fields: Readonly<Record<string, string>>; readonly text: string; readonly hash: string }[];
-    readonly expect: { readonly outcomes: readonly string[]; readonly state: ListState } | { readonly stops: { readonly seq: number; readonly code: string } };
+    /** `stops` alone for a list no member follows; with `outcomes` and `state`, a member that stopped after the entries it took. */
+    readonly expect: { readonly outcomes: readonly string[]; readonly state: ListState } | { readonly stops: { readonly seq: number; readonly code: string }; readonly outcomes?: readonly string[]; readonly state?: ListState };
   }
   const kinds = load<KindsVector>("kinds");
 
   test("kinds/: there is a vector for each kind, each refusal's name and each way a member stops", () => {
-    const outcomes = new Set(kinds.flatMap((vector) => ("outcomes" in vector.expect ? vector.expect.outcomes : [`stops ${vector.expect.stops.code}`])));
+    const outcomes = new Set(kinds.flatMap((vector) => [...(vector.expect.outcomes ?? []), ...("stops" in vector.expect ? [`stops ${vector.expect.stops.code}`] : [])]));
+    // A member that stops after entries it took keeps them: one vector for an entry that does not hold, one for an entry it cannot place.
+    const kept = kinds.filter((vector) => "stops" in vector.expect && vector.expect.state !== undefined).map((vector) => ("stops" in vector.expect ? vector.expect.stops.code : ""));
+    expect(kept.sort()).toEqual(["needs_replay", "signature_invalid"]);
     for (const word of ["counts", "cannot_read", "no_effect entry_invalid", "no_effect invite_unknown", "no_effect invite_void", "no_effect invite_spent", "no_effect invite_not_auto",
       "no_effect invite_expired", "no_effect carried_late",
       "no_effect signer_not_allowed", "no_effect already_out", "no_effect ends_needed", "no_effect endpoint_reused", "no_effect key_reused", "no_effect card_invalid", "no_effect enc_set",
       "no_effect epoch_other",
-      "passed_over signer_unknown", "passed_over signer_not_allowed", "passed_over key_reused", "passed_over already_out", "passed_over invite_unknown", "passed_over invite_revoked", "stops entry_invalid"]) {
+      "passed_over signer_unknown", "passed_over signer_not_allowed", "passed_over key_reused", "passed_over already_out", "passed_over invite_unknown", "passed_over invite_revoked", "stops entry_invalid", "stops needs_replay", "stops signature_invalid"]) {
       expect({ word, there: outcomes.has(word) }).toEqual({ word, there: true });
     }
     const written = new Set(kinds.flatMap((vector) => vector.entries.map((entry) => entry.fields.kind)));
@@ -1973,16 +2265,36 @@ describe("the vectors of kinds/, card/ and names/", () => {
         expect(shown).toEqual({ ...entry.fields });
       }
       const replayed = await replayList(vector.entries.map((entry) => entry.text), vector.level, { saved: null });
-      if ("stops" in vector.expect) {
-        expect([replayed.stopped, replayed.member]).toEqual([vector.expect.stops as typeof replayed.stopped, null]);
+      const { outcomes: wanted, state: wantedState } = vector.expect;
+      expect(replayed.stopped).toEqual(("stops" in vector.expect ? vector.expect.stops : null) as typeof replayed.stopped);
+      if (wanted === undefined || wantedState === undefined) {
+        // No member follows this list.
+        expect([replayed.member, replayed.took]).toEqual([null, []]);
         return;
       }
-      expect(replayed.stopped).toBeNull();
-      expect(replayed.took.slice(1).map((item) => said(item.outcome))).toEqual([...vector.expect.outcomes]);
-      expect(replayed.member?.state).toEqual(vector.expect.state);
-      expect(readListState(JSON.parse(JSON.stringify(vector.expect.state)), vector.level)).toEqual(vector.expect.state);
+      expect(replayed.took.slice(1).map((item) => said(item.outcome))).toEqual([...wanted]);
+      expect(replayed.member?.state).toEqual(wantedState);
+      expect(replayed.member?.entries).toEqual(vector.entries.slice(0, wanted.length + 1).map((entry) => entry.text));
+      expect(readListState(JSON.parse(JSON.stringify(wantedState)), vector.level)).toEqual(wantedState);
     });
   }
+
+  test("kinds/: the same entries, taken by a member that is behind and by one that reads everything, put a carried PC that got its keys out alike", async () => {
+    const pair = ["behind-carried-pc-gets-its-keys", "behind-carried-pc-gets-its-keys-read"].map((name) => kinds.find((vector) => vector.name === name));
+    const [behind, reads] = pair;
+    if (behind === undefined || reads === undefined || "stops" in behind.expect || "stops" in reads.expect) throw new Error("the pair is missing");
+    expect([behind.level, reads.level, behind.entries.map((entry) => entry.text)]).toEqual([1, 2, reads.entries.map((entry) => entry.text)]);
+    // The pc counts for both; its relay key alone does not put it out for either; the end of its key puts it out for both.
+    expect([behind.expect.outcomes, reads.expect.outcomes]).toEqual([["counts", "cannot_read", "counts", "no_effect ends_needed", "counts"], ["counts", "no_effect entry_invalid", "counts", "no_effect ends_needed", "counts"]]);
+    expect([behind.expect.state.behind, reads.expect.state.behind, behind.expect.state.pcs]).toEqual([2, null, reads.expect.state.pcs]);
+    const endpoint = Object.keys(reads.expect.state.pcs)[0] ?? "";
+    expect([holdsPc(behind.expect.state, endpoint), holdsPc(reads.expect.state, endpoint), reads.expect.state.pcs[endpoint]?.removed]).toEqual([false, false, 5]);
+    // One entry earlier both hold it.
+    for (const vector of [behind, reads]) {
+      const earlier = await replayList(vector.entries.slice(0, 5).map((entry) => entry.text), vector.level, { saved: null });
+      expect(earlier.member === null ? null : holdsPc(earlier.member.state, endpoint)).toBe(true);
+    }
+  });
 
   interface CardVector { readonly name: string; readonly card: ListCard; readonly bytes?: string; readonly binding?: string; readonly signature: string; readonly expect: { readonly holds: boolean } }
   for (const vector of load<CardVector>("card")) {
@@ -1999,7 +2311,8 @@ describe("the vectors of kinds/, card/ and names/", () => {
       const names = readNames(fields);
       expect(names).toEqual(vector.expect.names as typeof names);
       // `written` says that these fields are the ones a writer writes for those names.
-      if (names !== null) expect(JSON.stringify(namesFields(names).map(({ name, value }) => ({ name, value: toBase64Url(value) }))) === JSON.stringify(vector.fields)).toBe(vector.expect.written);
+      // Fields that give no names are none a writer writes.
+      expect(names !== null && JSON.stringify(namesFields(names).map(({ name, value }) => ({ name, value: toBase64Url(value) }))) === JSON.stringify(vector.fields)).toBe(vector.expect.written);
     });
   }
 });

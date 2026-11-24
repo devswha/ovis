@@ -83,10 +83,14 @@ export class ListKindError extends Error {
   }
 }
 
-/** An entry that a writer would have signed and that would not count on the writer's own state: it is not signed. `outcome` is what would have become of it, or null where no entry was built. */
+/**
+ * An entry that a writer would have signed and that is not signed: it would not count on the writer's own state
+ * (`outcome` is what would have become of it), or it is one that no writer writes (`reason`: `epoch_not_needed`
+ * for an `epoch` that nothing calls for).
+ */
 export class ListWriteError extends Error {
   readonly code = "not_written";
-  constructor(readonly outcome: ListOutcome | null, message: string) {
+  constructor(readonly outcome: ListOutcome | null, message: string, readonly reason: "epoch_not_needed" | null = null) {
     super(message);
     this.name = "ListWriteError";
   }
@@ -683,7 +687,8 @@ export async function takeEntry(state: ListState, held: HeldEntry): Promise<{ re
   if (kind === null || kind.kind === "genesis") return noEffect("entry_invalid");
   // Names sealed under another epoch than the current one: a member that was put out could read them, or nobody can.
   if ("sealed" in kind && kind.sealed !== null && kind.sealed.epoch !== state.epoch) return noEffect("epoch_other");
-  // While it is behind a member lets nobody new in: the entry counts, and its state takes nothing in but a removal.
+  // While it is behind a member lets nobody new in: the entry counts, and its state takes nothing in but a removal, and the keys of a
+  // carried PC that is in.
   const letsIn = state.behind === null;
   // A key that was ever a PC's is never anything else: the signers have made it a signer, and it stays one with no name.
   const used = (key: string): boolean => rowOf(state.pc_keys, key) !== null;
@@ -702,7 +707,9 @@ export async function takeEntry(state: ListState, held: HeldEntry): Promise<{ re
       if (!endpointFree(state, kind.endpoint)) return noEffect("endpoint_reused");
       if (used(kind.key)) return noEffect("key_reused");
       if (!(await cardHolds({ key: kind.key, enc: kind.enc, list: state.list, endpoint: kind.endpoint, invite: null }, kind.card))) return noEffect("card_invalid");
-      if (!letsIn || came === null) return counts(next);
+      // A carried PC that is in gets its keys also from a member that is behind: nobody new comes in by that, and without it the member
+      // could not tell which PC a later removal of that key means, nor that the PC then goes with its key.
+      if ((!letsIn && rowOf(state.pcs, kind.endpoint) === null) || came === null) return counts(next);
       return counts({
         ...next,
         signers: { ...signers, [kind.key]: { ...came, as: "pc" } },
@@ -1075,9 +1082,16 @@ async function signedBy(body: EntryBody, signer: ListSigner, state: ListState): 
  * writer's footing counts for every member that takes it. So no member signs an entry that adds a key and has no
  * effect of its kind, which would leave a signer with no name. A member that is stopped for a replay writes
  * nothing. Entry 0 is signGenesis's, and a PC's own `join` is joinEntry's.
+ *
+ * Nobody opens an epoch at will: an `epoch` is written only where names can no longer be sealed under the
+ * current one (sealEpoch says null at `issued_at`: somebody who may hold its key is out, or over its time), which
+ * after a removal is the very next entry. Any other is refused (`epoch_not_needed`): the account service places
+ * none either. So after an entry that did not get its place, a writer signs it again on the new head and seals
+ * under the same epoch as before.
  */
 export async function signListEntry(state: ListState, kind: ListKind, signer: ListSigner, issued_at: number): Promise<WrittenEntry> {
   if (state.needs_replay !== undefined) throw new ListWriteError(null, "A member that is stopped for a replay writes nothing");
+  if (kind.kind === "epoch" && sealEpoch(state, issued_at) !== null) throw new ListWriteError(null, "Nothing calls for the next epoch: names are still sealed under this one", "epoch_not_needed");
   const body = kindBody({ issued_at, list: state.list, prev: state.footing.hash, seq: state.footing.seq + 1, signer: signer.key }, kind);
   return await signedBy(body, signer, (await counted(state, body)).state);
 }
@@ -1154,7 +1168,8 @@ export function readListState(value: unknown, level: number): ListState | null {
     if (row.seq === 0 && as !== "device") return null;
     if (as === "pc" && row.power !== "full") return null;
     if (as === "invite" && (row.power !== "bound" || row.by === null)) return null;
-    if (as !== null && !letIn(row.seq)) return null;
+    // Behind, the one name a key still gets is that of a carried PC's key: its row among the PCs is held to that below.
+    if (as !== null && as !== "pc" && !letIn(row.seq)) return null;
     signers[key] = { ...row, as };
   }
 
@@ -1167,23 +1182,29 @@ export function readListState(value: unknown, level: number): ListState | null {
     if (signers[key]?.power === "full" && (role !== "drive" || until !== null)) return null;
     // Only a device that was carried in may be without an encryption key.
     if (enc === null ? !carried : typeof enc !== "string" || !isListKey(enc)) return null;
+    // The first device is entry 0's signer: it was carried in by nobody, and entry 0 names its encryption key.
+    if (signers[key]?.seq === 0 && (carried || enc === null)) return null;
     devices[key] = { role, until, enc: typeof enc === "string" ? enc : null, carried };
   }
 
   const pcs: { [endpoint: string]: PcRow } = {};
   const joined = new Map<string, number>();
   const keyed = new Map<string, string>();
+  // One entry makes one PC's row: no two stand at one place.
+  const places = new Set<number>();
   for (const [endpoint, saved] of Object.entries(savedPcs)) {
     if (!ENDPOINT.test(endpoint) || !isRecord(saved)) return null;
     const { how, key, enc, seq, invite, removed } = saved;
-    if (!isCount(seq) || seq < 1 || seq > top || !letIn(seq)) return null;
+    // Behind, a member takes no PC in; a carried PC that was in still got its keys from a person's `pc`.
+    if (!isCount(seq) || seq < 1 || seq > top || (how !== "added" && !letIn(seq)) || places.has(seq)) return null;
+    places.add(seq);
     if (removed !== null && !(isCount(removed) && removed > seq && removed <= top)) return null;
     if (how === "carried") {
       if (key !== null || enc !== null || invite !== null) return null;
       pcs[endpoint] = { how, key, enc, seq, invite, removed };
       continue;
     }
-    if (typeof key !== "string" || !isListKeyEncoding(key) || typeof enc !== "string" || !isListKey(enc) || keyed.has(key)) return null;
+    if (typeof key !== "string" || !isListKey(key) || typeof enc !== "string" || !isListKey(enc) || keyed.has(key)) return null;
     if (how === "added") {
       const row = signers[key];
       // Its key is the signer that its entry made, and it is out exactly when that key is.
