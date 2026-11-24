@@ -9,15 +9,15 @@
  */
 import { existsSync, mkdtempSync, readFileSync, readSync, rmSync, writeSync } from "node:fs";
 import { constants, userInfo } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { isatty } from "node:tty";
 import { FFIType } from "bun:ffi";
 import { COMPILED, entryCommand, ROOT } from "../server/entries.ts";
 import { mergeEnvLayers } from "../server/legacy-env.ts";
 import { coreLaunchEnv, withoutAskpass } from "../server/herdr-core/core-env.ts";
 import { coreSocket } from "../server/herdr-core/core-socket.ts";
-import { type Held, LEAVE_ALL, undoHeld } from "../tui/host/guard.ts";
-import { readHold, SCREEN_HOLD } from "../tui/host/hold.ts";
+import { type Held, undoHeld } from "../tui/host/guard.ts";
+import { makeHold, readHold, SCREEN_HOLD } from "../tui/host/hold.ts";
 import { EXIT_FAILED, parseArgs, SCREEN_FOLDER, targetEnv } from "../tui/start.ts";
 import { openLibc } from "../tui/host/libc.ts";
 import { discardTyped, macExecEnv } from "./libc.ts";
@@ -223,7 +223,7 @@ export interface LaunchParts {
   /** a line typed at the terminal in cooked mode and sent with Enter; null at the end of the input, text before it or not */
   line(): string | null;
   run(command: readonly string[], options: { env: Record<string, string>; cwd: string }): Screen;
-  /** a hold file for one screen; null where none can be made */
+  /** a hold file for one screen, made and checked; null where none can be made (nothing is undone for that screen) */
   holdFile(): HoldFile | null;
   readonly terminal: TerminalSettings;
   /** listens for a signal; what it returns stops listening */
@@ -294,7 +294,8 @@ export async function launchTui(argv: readonly string[], parts: LaunchParts): Pr
  * the settings it read before the start and undoes the modes the screen said it held when it died (its hold file), no
  * others: a screen killed before it turned its modes on, or stopped from its shell after it had undone them, holds
  * none, and undoing them all the same would take the caller's own (the shell's keyboard protocol entry, its bracketed
- * paste). After any other end it writes nothing: the screen gave the terminal back itself.
+ * paste). So a screen that had no hold file to say it in has nothing undone. After any other end it writes nothing:
+ * the screen gave the terminal back itself.
  */
 async function runScreen(argv: string[], env: Record<string, string>, parts: LaunchParts): Promise<number> {
   const offs = [parts.on("SIGINT", () => undefined)];
@@ -318,9 +319,7 @@ async function runScreen(argv: string[], env: Record<string, string>, parts: Lau
     const end = await child.exited;
     if (end.signal === null) return end.code ?? EXIT_FAILED;
     if (saved !== null) parts.terminal.restore(saved);
-    // with no hold file the screen told nobody how far it got: every mode it can turn on is undone, as the likelier harm
-    // is a terminal left in them
-    const undo = hold === null ? LEAVE_ALL : undoHeld(hold.held());
+    const undo = undoHeld(hold?.held() ?? "none");
     if (undo !== "") parts.terminal.write(undo);
     return 128 + (constants.signals[end.signal] ?? 0);
   } finally {
@@ -375,12 +374,22 @@ function readSettings(env: Env, home: string): Env {
   return mergeEnvLayers(ENV_FILES.map((name) => join(dir, name)).filter((file) => existsSync(file)).map(readEnvFile));
 }
 
-/** A folder of this run's own in `temp`, with the hold file in it. */
-function systemHoldFile(temp: string): HoldFile | null {
-  let dir: string;
-  try { dir = mkdtempSync(join(temp, "ovis-tui-")); } catch { return null; }
-  const path = join(dir, "held");
-  return { path, held: () => readHold(path), remove: () => { rmSync(dir, { recursive: true, force: true }); } };
+/**
+ * A folder of this run's own with the hold file in it, in the first of `temps` that takes one. Only an absolute
+ * folder is tried: the screen runs in another folder than this process, where a relative path names another file. The
+ * file is made here and read back, so the path the screen is handed is one that works.
+ */
+function systemHoldFile(temps: readonly string[]): HoldFile | null {
+  for (const temp of temps) {
+    if (!isAbsolute(temp)) continue;
+    let dir: string;
+    try { dir = mkdtempSync(join(temp, "ovis-tui-")); } catch { continue; }
+    const path = join(dir, "held");
+    const remove = () => { rmSync(dir, { recursive: true, force: true }); };
+    if (makeHold(path)) return { path, held: () => readHold(path), remove };
+    remove();
+  }
+  return null;
 }
 
 /**
@@ -427,8 +436,9 @@ export function systemParts(caller: Env, home: string): LaunchParts {
       const child = Bun.spawn([...command], { env: options.env, cwd: options.cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
       return { exited: child.exited.then((code) => ({ code: child.signalCode === null ? code : null, signal: child.signalCode as NodeJS.Signals | null })), kill: (signal) => child.kill(signal) };
     },
-    // the shell's temp folder: os.tmpdir() would read this process's TMPDIR, which a `.env` of the working folder may have set
-    holdFile: () => systemHoldFile(caller["TMPDIR"] || "/tmp"),
+    // the shell's temp folder, else the system's: os.tmpdir() would read this process's TMPDIR, which a `.env` of the
+    // working folder may have set
+    holdFile: () => systemHoldFile([caller["TMPDIR"] ?? "", "/tmp"]),
     terminal: systemTerminal(),
     on: (signal, handler) => {
       process.on(signal, handler);

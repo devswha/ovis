@@ -343,6 +343,29 @@ describe("the launcher and the screen together", () => {
     expect(run.output()).not.toContain(ESC);
   }, TEST_MS);
 
+  it("leaves the caller's modes alone when the screen dies before it entered and the shell's TMPDIR is not there: the hold file is made elsewhere", async () => {
+    const env = scratch();
+    // the supervisor keeps a folder of its own in TMPDIR, so the launcher alone is given the one that is not there
+    const run = runSupervised({ entry: ["env", `TMPDIR=${join(env.TMPDIR, "no-such-folder")}`, process.execPath, LAUNCHER, "kill-first"], env, cols: 80, rows: 24 });
+    const end = await run.ended;
+    expect({ code: end.code, after: [end.after?.canonical, end.after?.echo] }).toEqual({ code: 128 + constants.signals.SIGKILL, after: [true, true] });
+    expect(run.output()).not.toContain(ESC);
+  }, TEST_MS);
+
+  it("gives the modes back when the screen dies holding them and the shell's TMPDIR is a relative folder: the screen runs in another folder than the launcher", async () => {
+    const env = scratch();
+    mkdirSync(join(env.TMPDIR, "relative"));
+    // the launcher runs where `relative` is there; the screen runs in its own folder, where that name is no folder
+    const run = runSupervised({ entry: ["sh", "-c", 'cd "$TMPDIR" && TMPDIR=relative exec "$@"', "launcher", process.execPath, LAUNCHER, "watch-kill"], env, cols: 80, rows: 24 });
+    await run.until(PROBE);
+    run.type(ANSWER);
+    await run.until("READY\r");
+    run.type("q");
+    const end = await run.ended;
+    expect({ code: end.code, after: [end.after?.canonical, end.after?.echo] }).toEqual({ code: 128 + constants.signals.SIGKILL, after: [true, true] });
+    expect(run.output().endsWith(`${ESC}[?2031l${LEAVE}`)).toBe(true);
+  }, TEST_MS);
+
   it.skipIf(process.platform === "win32")("comes back after an interactive shell stopped the whole job and `fg` continued it: the screen takes keys again", async () => {
     const env = { ...scratch(), PS1: "$ ", SHELL: "/bin/bash" };
     // the shell leads the pty's session with every stream on it, so its prompt shows and its job control works

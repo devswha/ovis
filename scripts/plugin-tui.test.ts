@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { ENTRIES } from "../server/entries.ts";
 import { type Held, LEAVE, LEAVE_ALL } from "../tui/host/guard.ts";
 import * as libc from "./libc.ts";
@@ -283,7 +283,7 @@ describe("signals and the terminal", () => {
     ["a screen killed before it turned its modes on, or after it undid them: the caller's own modes are left alone", "none", []],
     ["a screen killed while it held its modes", "modes", [LEAVE]],
     ["a screen killed while it also watched the colour scheme", "modes+watch", [LEAVE_ALL]],
-    ["a screen that could be told no hold file: every mode it can turn on", null, [LEAVE_ALL]],
+    ["a screen that could be given no hold file: nothing is proven held, so the caller's own modes are left alone", null, []],
   ] as const)("after a SIGKILL writes the saved settings back and undoes only what the screen held: %s", async (_, held, written) => {
     const run = realRun("kill -KILL $$", held);
     expect(await launchTui([], run.parts)).toBe(128 + 9);
@@ -302,14 +302,36 @@ describe("signals and the terminal", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("names its hold file to the screen, reads there what a screen that died held, and removes it with its folder", async () => {
-    // the real hold file, in this test's folder, and a screen that says what it holds as the host does, then dies
-    const system = systemParts({ TMPDIR: scratch }, scratch);
+  it.skipIf(process.platform === "win32").each([
+    ["the shell's temp folder", () => scratch],
+    // the screen runs in another folder than the launcher: a hold file named relative to this one would be another file there
+    ["a relative one, which is not used", () => relative(process.cwd(), scratch)],
+    ["one that is not there", () => join(scratch, "no-such-folder")],
+  ])("names its hold file to the screen, reads there what a screen that died held, and removes it with its folder: TMPDIR is %s", async (_, temp) => {
+    // the real hold file, and a screen in a folder of its own that says what it holds as the host does, then dies
+    const system = systemParts({ TMPDIR: temp() }, scratch);
     const screen = `import { openHold } from ${JSON.stringify(join(ROOT, "tui", "host", "hold.ts"))}; openHold(process.env.OVIS_TUI_HOLD)("modes+watch"); process.kill(process.pid, "SIGKILL");`;
-    const run = fake({ over: { screen: { command: [process.execPath, "-e", screen], cwd: scratch, file: null }, run: system.run, holdFile: system.holdFile } });
+    let hold = "";
+    const holdFile = () => {
+      const made = system.holdFile();
+      hold = made?.path ?? "";
+      return made;
+    };
+    const run = fake({ over: { screen: { command: [process.execPath, "-e", screen], cwd: scratch, file: null }, run: system.run, holdFile } });
     expect(await launchTui([], run.parts)).toBe(128 + 9);
     expect(run.written).toEqual([LEAVE_ALL]);
+    expect(isAbsolute(hold)).toBe(true);
+    expect(existsSync(dirname(hold))).toBe(false);
     expect(readdirSync(scratch).filter((name) => name.startsWith("ovis-tui-"))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("hands the screen a hold file that is there and says nothing is held yet", () => {
+    const hold = systemParts({ TMPDIR: scratch }, scratch).holdFile()!;
+    try {
+      expect([dirname(dirname(hold.path)), existsSync(hold.path), hold.held()]).toEqual([scratch, true, "none"]);
+    } finally {
+      hold.remove();
+    }
   });
 });
 
