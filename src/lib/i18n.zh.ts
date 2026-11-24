@@ -105,6 +105,7 @@ const BASE: Record<string, string> = {
   "The account service cannot change the list right now.": "账户服务目前无法更改列表。",
   "Too many devices were added just now. Try again in a few minutes.": "刚才添加的设备太多。请过几分钟再试。",
   "It could not be added to your account. Try again.": "未能添加到你的账户。请重试。",
+  "The account service cannot change the list right now. To remove a device, use Revoke on each PC.": "账户服务现在无法更改列表。要移除设备，请在每台电脑上撤销。",
   "Pair this PC?": "要配对此电脑吗？",
   "This PC could not be verified.": "无法验证此电脑。",
   "Check the number, then approve": "核对数字后再批准",

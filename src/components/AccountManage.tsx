@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
 import { AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -14,6 +15,7 @@ import { getTransport } from "../lib/transport.ts";
 import { DEVICES_CHANGED_EVENT, inRelayShell } from "../lib/useRelay.ts";
 import { signInOfAccount } from "./AccountPcs.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import { ListDevices, showsListDevices, useListView } from "./ListDevices.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 import { usePcRemoval } from "./usePcRemoval.tsx";
 
@@ -50,7 +52,15 @@ export function AccountManageLists({ account, watching, pcHere = true, onLeave }
   );
 }
 
+/** The account's devices: from its signed list where this device is in one (ListDevices.tsx), otherwise as the PC here pairs them. */
 function AccountDevices({ account, pcHere, onLeave }: { readonly account: string; readonly pcHere: boolean; readonly onLeave?: () => Promise<void> }) {
+  const list = pageAccountList();
+  const view = useListView(list);
+  if (list !== null && showsListDevices(view, account)) return <ListDevices list={list} view={view} {...(onLeave ? { onLeave } : {})} />;
+  return <PairedAccountDevices account={account} pcHere={pcHere} {...(onLeave ? { onLeave } : {})} />;
+}
+
+function PairedAccountDevices({ account, pcHere, onLeave }: { readonly account: string; readonly pcHere: boolean; readonly onLeave?: () => Promise<void> }) {
   const t = useT();
   // "failed": the PC did not answer, which says nothing of the account's devices
   const [devices, setDevices] = useState<PairedDevice[] | "failed" | null>(pcHere ? null : []);

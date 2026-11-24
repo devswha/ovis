@@ -103,6 +103,7 @@ const BASE: Record<string, string> = {
   "The account service cannot change the list right now.": "現在、アカウントサービスはリストを変更できません。",
   "Too many devices were added just now. Try again in a few minutes.": "デバイスの追加が短時間に多すぎます。数分後にもう一度お試しください。",
   "It could not be added to your account. Try again.": "アカウントに追加できませんでした。もう一度お試しください。",
+  "The account service cannot change the list right now. To remove a device, use Revoke on each PC.": "今はアカウントサービスが一覧を変更できません。デバイスを外すには、各PCで取り消してください。",
   "Pair this PC?": "このPCをペアリングしますか？",
   "This PC could not be verified.": "このPCを確認できませんでした。",
   "Check the number, then approve": "番号を確かめてから承認してください",

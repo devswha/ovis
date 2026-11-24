@@ -183,4 +183,6 @@ export const RELAY_KO: Record<string, string> = {
   "SSH PC": "SSH PC",
   "Open {host}": "{host} 열기",
   "More ways to open {name}": "{name} 다른 방법으로 열기",
+  "This device was removed from your account. To use it again, sign in and allow it from another device.": "이 기기는 계정에서 빠졌어요. 다시 쓰려면 로그인하고 다른 기기에서 허용하세요.",
+  "This device signed out, but your account still lists it. Remove it from another device.": "로그아웃했지만 계정 목록에는 이 기기가 아직 있어요. 다른 기기에서 빼세요.",
 };

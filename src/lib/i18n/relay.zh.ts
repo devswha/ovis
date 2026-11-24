@@ -183,4 +183,6 @@ export const RELAY_ZH: Record<string, string> = {
   "SSH PC": "SSH 电脑",
   "Open {host}": "打开 {host}",
   "More ways to open {name}": "用其他方式打开 {name}",
+  "This device was removed from your account. To use it again, sign in and allow it from another device.": "此设备已从你的账户中移除。要再次使用，请登录并在另一台设备上允许它。",
+  "This device signed out, but your account still lists it. Remove it from another device.": "已退出登录，但账户列表中仍有此设备。请从另一台设备上移除它。",
 };

@@ -1,0 +1,222 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { act, createElement, type ReactNode } from "react";
+import * as ReactDom from "react-dom";
+import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+
+import { listView, signListEntry } from "../../shared/account-list.ts";
+import type { DeviceNotice } from "../../shared/account-devices-api.ts";
+import { entryFromText, readBody } from "../../shared/account-list-entry.ts";
+import { askingPc, listWorld, postPcKeys, type WorldDevice } from "../lib/account/accountList.test-helpers.ts";
+import { allowDevice } from "../lib/account/listAllow.ts";
+import { SettingsProvider } from "../lib/settings.ts";
+
+// the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
+await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
+const { ListDevices, ListNotMeAction, listAnswersNotice, showsListDevices } = await import("./ListDevices.tsx");
+
+const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+const kinds = (texts: readonly string[]): string[] => texts.map((text) => readBody(entryFromText(text).body).kind);
+
+type World = ReturnType<typeof listWorld>;
+
+/** Lets the work a press started run until `done`, for ten seconds at most. */
+async function waitFor(done: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error("what the press started did not end");
+    await Bun.sleep(25);
+    // what settled meanwhile is drawn
+    await act(async () => {});
+  }
+}
+
+async function letIn(w: World, by: WorldDevice, label: string): Promise<WorldDevice> {
+  const device = await w.device({ label });
+  await device.list.sync();
+  const offer = await allowDevice(by.list, { key: (await device.keys()).key, label, os: "android" }, { wait: async () => {} });
+  if (!offer.allowed) throw new Error(offer.why);
+  await device.list.adopt(offer.offer);
+  return device;
+}
+
+describe("Manage account's devices from the account's signed list", () => {
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let renderer: ReactTestRenderer | undefined;
+  let warn: typeof console.warn;
+
+  beforeEach(() => {
+    warn = console.warn;
+    console.warn = () => {};
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    const events = new EventTarget();
+    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    class HTMLElement { isConnected = true; focus(): void {} }
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Test", maxTouchPoints: 0 } });
+    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      location: { href: "https://app.example/", search: "", origin: "https://app.example", pathname: "/", protocol: "https:" },
+      history: { state: null, replaceState() {} }, matchMedia, innerWidth: 1440, innerHeight: 900,
+      requestAnimationFrame: () => 1, cancelAnimationFrame() {},
+      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
+      setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+    } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
+      activeElement: new HTMLElement(), body: { nodeType: 1, children: [] },
+      querySelector: () => null, querySelectorAll: () => [],
+      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
+    } });
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    console.warn = warn;
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    descriptors.clear();
+  });
+
+  const mount = async (device: WorldDevice, onLeave?: () => Promise<void>): Promise<ReactTestInstance> => {
+    const view = await device.list.sync();
+    if (!showsListDevices(view, device.session.account)) throw new Error("the device does not show the list");
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, { children: createElement(ListDevices, { list: device.list, view, ...(onLeave ? { onLeave } : {}) }) }), {
+        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    if (!renderer) throw new Error("not mounted");
+    return renderer.root;
+  };
+  const rows = (root: ReactTestInstance) => root.find((node) => node.props["data-testid"] === "account-devices").findAll((node) => node.type === "li").map(textOf);
+  const dialog = (root: ReactTestInstance) => root.find((node) => node.props.role === "alertdialog");
+  const press = (root: ReactTestInstance, label: string) => dialog(root).find((node) => node.type === "button" && textOf(node) === label).props.onClick();
+  /** Presses the confirm's button and waits, a bounded while, until its deed is over: the dialog gone, or an error in it. */
+  const confirm = async (root: ReactTestInstance, label: string): Promise<void> => {
+    await act(async () => { press(root, label); });
+    await waitFor(() => {
+      const open = root.findAll((node) => node.props.role === "alertdialog");
+      return open.length === 0 || open[0]!.findAll((node) => node.props.role === "alert").length > 0;
+    });
+  };
+
+  it("lists each device by its name, this device as such, and offers Remove on the others", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    await letIn(w, first, "Dana's tablet");
+    const root = await mount(first, async () => {});
+    expect(rows(root)).toEqual(["Dana's phoneThis deviceDisconnect", "Dana's tabletRemove"]);
+  });
+
+  it("removes a device after one confirm, which names what came in through it, ticks nothing, and says it is done", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const second = await letIn(w, first, "Lost phone");
+    const third = await letIn(w, second, "Laptop");
+    const root = await mount(first);
+    expect(rows(root)).toEqual(["Dana's phoneThis device", "Lost phoneRemove", "LaptopRemove"]);
+    const buttons = root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-device");
+    await act(async () => { buttons[0]!.props.onClick(); });
+    expect(textOf(dialog(root))).toContain("Remove Lost phone from your account?");
+    const through = dialog(root).find((node) => node.props["data-testid"] === "came-in-through");
+    expect(textOf(through)).toContain("Came in through Lost phone:Laptop");
+    expect(through.findAll((node) => node.type === "input").map((node) => node.props.checked)).toEqual([false]);
+    await confirm(root, "Remove");
+    // the lost phone alone goes: the laptop was not ticked
+    expect(kinds(w.held().entries).slice(-2)).toEqual(["remove", "epoch"]);
+    expect(listView(w.held().state).devices.filter((row) => row.ended === null).map((row) => row.key)).toEqual([(await first.keys()).key, (await third.keys()).key]);
+    expect(textOf(root.find((node) => node.props["data-testid"] === "list-device-note"))).toBe("Lost phone was removed from your account.");
+  });
+
+  it("puts out what the person ticks with it, in the same request", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const second = await letIn(w, first, "Stolen phone");
+    await letIn(w, second, "Thief's laptop");
+    const pc = await askingPc();
+    const card = await postPcKeys(w.fake.fetch, w.origin, second.session.access_token, pc, w.held().id);
+    const keys = await second.keys();
+    const added = await signListEntry(w.held().state, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card, sealed: null }, { key: keys.key, privateKey: keys.signs }, Math.floor(w.clock.now / 1000));
+    await second.service.placeEntries(w.held().id, [added.text], []);
+    const root = await mount(first);
+    await act(async () => { root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-device")[0]!.props.onClick(); });
+    const boxes = () => dialog(root).find((node) => node.props["data-testid"] === "came-in-through").findAll((node) => node.type === "input");
+    expect(textOf(dialog(root).find((node) => node.props["data-testid"] === "came-in-through"))).toContain("Thief's laptopUnnamed PC");
+    await act(async () => { boxes()[0]!.props.onChange(); boxes()[1]!.props.onChange(); });
+    await confirm(root, "Remove");
+    expect(kinds(w.held().entries).slice(-4)).toEqual(["remove", "remove", "remove", "epoch"]);
+    const after = listView(w.held().state);
+    expect([after.devices.filter((row) => row.ended === null).length, after.pcs.filter((row) => row.removed === null).length]).toEqual([1, 0]);
+  });
+
+  it("keeps the confirm up with the list's own wording when the account service cannot change the list, and removes nobody", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    await letIn(w, first, "Dana's tablet");
+    const root = await mount(first);
+    w.fake.tamperList(w.held().id, { stopped: true });
+    await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
+    await confirm(root, "Remove");
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("The account service cannot change the list right now. To remove a device, use Revoke on each PC.");
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
+  });
+
+  it("offers no Remove to a device that may not remove anybody", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    await letIn(w, first, "Dana's tablet");
+    const view = await first.list.sync();
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, { children: createElement(ListDevices, { list: { ...first.list, writer: () => null }, view }) }));
+    });
+    expect(rows(renderer!.root)).toEqual(["Dana's phoneThis device", "Dana's tablet"]);
+  });
+
+  describe("Not me on a PC's notice of a device the list let in", () => {
+    const noticeOf = (key: string | null, account: string, label = "Dana's tablet"): DeviceNotice => ({
+      seq: 1, id: "n1", at: "2026-11-24T00:00:00.000Z", kind: "admit", how: "account", key, no: null, row: null, label, by: null, account, open: true,
+      method: null, two_step: "unknown",
+    });
+
+    it("is the list's to answer only for another device the list holds, and only where this device may remove it", async () => {
+      const w = listWorld();
+      const first = await w.device({ label: "Dana's phone" });
+      await first.list.sync();
+      const second = await letIn(w, first, "Dana's tablet");
+      const view = await first.list.sync();
+      expect(listAnswersNotice(first.list, view, noticeOf((await second.keys()).key, w.account))).toBe(true);
+      expect(listAnswersNotice(first.list, view, noticeOf((await first.keys()).key, w.account))).toBe(false);
+      expect(listAnswersNotice(first.list, view, noticeOf("not-a-member", w.account))).toBe(false);
+      expect(listAnswersNotice(first.list, view, noticeOf((await second.keys()).key, "acct_other"))).toBe(false);
+      expect(listAnswersNotice({ ...first.list, writer: () => null }, view, noticeOf((await second.keys()).key, w.account))).toBe(false);
+      expect(listAnswersNotice(null, null, noticeOf((await second.keys()).key, w.account))).toBe(false);
+    });
+
+    it("puts the device out of the list with one press, and says so", async () => {
+      const w = listWorld();
+      const first = await w.device({ label: "Dana's phone" });
+      await first.list.sync();
+      const second = await letIn(w, first, "Dana's tablet");
+      const key = (await second.keys()).key;
+      await act(async () => {
+        renderer = create(createElement(SettingsProvider, { children: createElement(ListNotMeAction, { list: first.list, notice: { ...noticeOf(key, w.account), key } }) }));
+      });
+      const root = renderer!.root;
+      await act(async () => { root.find((node) => node.type === "button" && textOf(node) === "Not me").props.onClick(); });
+      await waitFor(() => root.findAll((node) => node.props["data-testid"] === "list-not-me").length > 0);
+      expect(textOf(root.find((node) => node.props["data-testid"] === "list-not-me"))).toBe("Dana's tablet was removed from your account.");
+      expect(kinds(w.held().entries).slice(-2)).toEqual(["remove", "epoch"]);
+      expect(root.findAll((node) => node.type === "button")).toHaveLength(0);
+    });
+  });
+});

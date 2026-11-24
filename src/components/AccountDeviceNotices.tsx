@@ -15,7 +15,9 @@ import { useT } from "../lib/i18n.ts";
 import type { MachineSessionRegistry } from "../lib/machineSession.ts";
 import { itsMeAnswer } from "../lib/relay/joinHold.ts";
 import { useDeviceNotices, type NoticeSocket } from "../lib/useDeviceNotices.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { BlockOutcomes, NotMeButton } from "./BlockOutcomes.tsx";
+import { listAnswersNotice, ListNotMeAction, useListView } from "./ListDevices.tsx";
 import { DeviceNotices } from "./DevicePairedNotice.tsx";
 import { ItsMeButton } from "./JoinWait.tsx";
 
@@ -252,11 +254,17 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
   </>;
 }
 
-/** A notice's two answers, one out at a time per PC and notice (T51, T53). */
+/**
+ * A notice's two answers, one out at a time per PC and notice (T51, T53). For a device the account's signed list let
+ * in, Not me puts it out of the list (ListDevices.tsx) in place of the blocks.
+ */
 function AdmissionActions({ refusedItsMe, ...props }: Parameters<typeof BlockNoticeAction>[0] & { readonly refusedItsMe: Map<string, AccountSession> }) {
+  const list = pageAccountList();
+  const view = useListView(list);
+  const { notice } = props;
   return <>
-    <ItsMeAction notice={props.notice} pc={props.pc} socket={props.socket} own={props.own} inFlight={props.inFlight} refusedItsMe={refusedItsMe} changed={props.changed} />
-    <BlockNoticeAction {...props} />
+    <ItsMeAction notice={notice} pc={props.pc} socket={props.socket} own={props.own} inFlight={props.inFlight} refusedItsMe={refusedItsMe} changed={props.changed} />
+    {listAnswersNotice(list, view, notice) && notice.key !== null ? <ListNotMeAction list={list} notice={{ ...notice, key: notice.key }} /> : <BlockNoticeAction {...props} />}
   </>;
 }
 
