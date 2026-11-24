@@ -1317,7 +1317,9 @@ see the rows they always did.
 no name and PC that it let in, added, or whose invite it placed, and whatever those let in in turn,
 in the order they came in, also through a member that is out already (whoever it let in may still
 be in); only what is still in is named. This device and what came in through it are never among them, and
-neither is what was in the account before the list. Each is a box to tick, and none is ticked at
+neither is what was in the account before the list: a PC carried in came in through nobody, also
+after a later `pc` entry gave it its keys (its first admission counts, read from the `carried`
+entries after entry 0). Each is a box to tick, and none is ticked at
 first, with one line: **If {name} was stolen, tick what you did not add yourself.** A lost phone
 often let in the person's own PCs, while a stolen one may have let in the thief's devices. Where a
 PC is ticked, a line says **These PCs will need to be added again.**: a PC put out comes back only
@@ -1325,9 +1327,10 @@ as a new PC. The invites the device placed are not named: they are void once its
 
 **The request**, one for all of it, through the kinds' writer on the device's own state: a
 `remove` that ends each key (for a PC, what `pcRemoval` gives: its key or its relay key, and the
-invite it joined with while that invite is open), then a `remove` for whatever is over its time
-(an invite past its `exp`, a device past its `until`) in the room that is left, then one `epoch`,
-its key wrapped to everybody who is in after the whole of it. The removal asked for and its epoch
+invite it joined with while that invite is open), and where it opens the epoch, the writer adds
+the `remove` of whatever is over its time (an invite past its `exp`, a device past its `until`) in
+the room that is left, then one `epoch`, its key wrapped to everybody who is in after the whole of
+it (`signedWithEpoch`: no other code asks the kinds whose time is over). The removal asked for and its epoch
 always fit in the service's 16 entries; what is over its time and does not fit is tidied later. A
 device that holds no key of the current epoch places the removals alone, and a device that stays
 opens the epoch when it tidies. A removal longer than one request goes in parts, the epoch with the
@@ -1341,8 +1344,18 @@ head). `list_stopped` is told in the words above; a request that got no answer w
 not be read is "not known yet", never "not removed"; a refusal for the entry's time says the
 device's clock looks wrong; a copy that cannot be written to says so, with no retry offered; a
 request this device signed for another change (an Allow) that still waits at this head is "An
-earlier change is still waiting: try it again or cancel it first", with nothing signed; any
-other failure is "could not be removed. Try again.", with nothing shown as done.
+earlier change is still waiting: try it again or cancel it first", with nothing signed, and that
+change's card is put up; a device that handed its place to a new key while the question was open
+(a `device` entry that rotates) is not passed by as out: nothing is signed, and the dialog says
+"{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.",
+a second press removing the key it holds now; any other failure is "could not be removed. Try
+again.", with nothing shown as done. A removal that stops after a part that put the device out
+keeps its question up (also Not me's, whose notice goes with the device) with how much went.
+
+**Each change has a name of its own.** A request a device signed and has not seen placed is kept
+for its change: `remove:<key>`, `not-me:<key>`, `sign-out-all`, `leave`, `tidy`. It goes again only
+for that same change (the tidy-up resends its own quietly), and a person's act is never sent, nor
+reported done, on a request kept for another one.
 
 **A write belongs to what it began with.** A removal is begun for one account, one list and the
 member key this device is in it with, as the page showed them; after every read of the list it
@@ -1372,23 +1385,42 @@ PCs' notices of an admission are not shown; an account with no list keeps them, 
 **Sign out every device**, on an account whose list this device is in, first puts every other
 device out of the list, in one request with the epoch after it, and only then signs every browser
 and app out, as before. A device that is only signed out still holds its account key, and that key
-opens a PC that follows the list. The question names the devices that go, and those go and no
-others: the list is read again before the removal is signed, after a sign-in again in the app, and
-when the browser comes back from one, and a device the question did not name ends it with nobody
-signed out ("{names} came into your account since you asked. Nobody was signed out: ask again.").
-Where the list does not take the removal, nobody is signed out and the question says so; where
-only part of it went, it says how much. This device stays in the list with its key and its copy,
+opens a PC that follows the list. The question names the devices that go, and the press passes on
+those, and the list and the key it was drawn with, and no others: the list is read again before the
+removal is signed, after a sign-in again in the app, and when the browser comes back from one, and a
+device the question did not name ends it with nobody signed out ("{names} came into your account
+since you asked. Nobody was signed out: ask again."). Right before the sign-out is sent, this
+device's own read of the log must still show no other device in that the question did not name;
+one that came in meanwhile is asked about, with how many left first ("{done} of {total} other
+devices left your account, then {names} came in since you asked. Ask again to go on."), and nothing
+is sent. A list store that cannot be read stops it too. Where the list does not take the removal,
+nobody is signed out and the question says so; where only part of it went, it says how much.
+(Holding the sign-out itself to the head that was read needs the account service: a follow-up.) This device stays in the list with its key and its copy,
 signed out as before; signed out, the list opens no PC with that key, and signed in again on it,
 it is in the list at once, with no Allow.
 
-**Signing out and leaving.** A device that is in its account's list signs a `remove` of its own
-key first, while its sign-in still stands (any power may end its own key), and opens no epoch: the
-next epoch's key would be its own to know, so a device that stays opens it. Then it forgets its
-account key, its encryption key with it, the sign-in and its copy of the list. Signing in again
-makes a new key, which a member allows anew. A sign-out goes on where the list did not take the
-removal, and says so: "This device signed out, but your account still lists it. Remove it from
-another device." (or the words for `list_stopped`); the key is forgotten on this device all the
-same. A pairing this device made at a PC keeps its own copy of the key, as at every sign-out, so
+**Signing out and leaving.** Disconnect, Sign out and Sign out every device carry what their
+question showed (the account, and the list and this device's key in it): where the sign-in stored by
+then is another account's, or the list or the key is another (another tab), nothing is signed or
+ended ("Your sign-in changed while this was asked. Nothing was removed."). A device that is in its
+account's list signs a `remove` of its own key first, while its sign-in still stands (any power may
+end its own key), and opens no epoch: the next epoch's key would be its own to know, so a device
+that stays opens it. The removal counts only once the device's own read of the log shows it out,
+whatever the service answered; where no read is possible after it (the sign-in may end with it), the
+outcome is not known, the device finishes here and says so ("This device signed out." / "This device
+left the account." followed by "Whether your account still lists it is not known yet: check its
+devices from another device."). Then it forgets its account key, its encryption key with it, the
+sign-in and its copy of the list. Signing in again makes a new key, which a member allows anew. One
+account key serves every account the device signs in to: where another account's saved copy is
+pinned to it and does not show it out, the keys stay and only this sign-in and this account's copy
+go (the copies and the keys live in two databases, so that look is made right before the clear). The
+copy is forgotten only while it is pinned to the key that left, compared with the very copy dropped.
+A leave forgets its pairings by their row, so one another tab made with that PC meanwhile stays. A
+sign-out goes on where the list did not take the removal, and says so: "This device signed out, but
+your account still lists it. Remove it from another device." (or the words for `list_stopped`); the
+key is forgotten on this device all the same. A list store that does not answer is no word that the
+device keeps no list: the sign-out then forgets nothing it cannot see and says "This device signed
+out, but it could not read what it keeps of your account's list, so your account may still list it." A pairing this device made at a PC keeps its own copy of the key, as at every sign-out, so
 that PC may still open through it until the device is removed from another device. A leave stops
 there instead, with nothing done. A leave whose removal counted finishes on the device by itself
 when what comes after needs a sign-in the account service ended with the removal. A device that
@@ -1405,14 +1437,13 @@ account's directory each time a sign-in is read, so a removal it missed while it
 even where the directory no longer answers that sign-in.
 
 **Tidying by itself.** After each read that reached the account service, a device of power `full`
-that is in the list ends each device at or past its `until` and each invite that a PC joins with
-by itself, still has a use and is past its `exp` (the kinds layer's `lapsedRemovals`; a plain
-invite holds no key and lets nobody in, and is left alone), by its own clock as it is now and
-judged again on the state it signs on (a device more than ten minutes under its own floor ends
-nothing), then opens the next epoch where the kinds call for one; where nothing
-is over its time and nobody could seal under the current epoch (another member put itself out), it
-opens the epoch alone. It says nothing on screen, and tries each key once per page, whatever the
-service answers.
+that is in the list opens the next epoch where nobody could seal under the current one, and the
+writer puts out with it each device at or past its `until` and each invite that a PC joins with by
+itself, still has a use and is past its `exp` (the kinds layer's `lapsedRemovals`; a plain invite
+holds no key and lets nobody in, and is left alone), by its own clock as it is now and judged again
+on the state it signs on; where nothing is over its time (another member put itself out), it opens
+the epoch alone. A device more than ten minutes under its own floor does none of it. It says
+nothing on screen, and tries each place of the list once per page, whatever the service answers.
 
 ### PCs of a list account
 
