@@ -334,7 +334,13 @@ export class ListFollow {
     if (file === null || file.server_id !== scope.serverId || file.bind_id !== scope.bindId) return;
     const saved = await readSave(file.save);
     // a copy that does not read is read again from the service: it decides nothing
-    if (saved.read) this.copy = saved.copy;
+    if (!saved.read) return;
+    this.copy = saved.copy;
+    // another build wrote it: its entries were replayed, and the copy is written back as this build writes it
+    if (saved.rebuilt) {
+      console.info(`[account] ${ACCOUNT_LIST_FILE} was written by another build: its entries were read again`);
+      this.keep(saved.copy, scope, true);
+    }
   }
 }
 
