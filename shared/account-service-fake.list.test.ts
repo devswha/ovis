@@ -216,6 +216,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(head).toEqual({ seq: 0, hash: list });
       expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body).toEqual({ now: w.seconds(), list, head });
       expect((await w.call("GET", `/v2/lists/${list}/wraps?member=${w.owner.enc}`, undefined, w.token)).body.wraps).toEqual([{ epoch: 0, wrap: WRAP(1) }]);
+      expect(w.service.accountList(ACCOUNT)?.wraps).toEqual([{ epoch: 0, member: w.owner.enc, wrap: WRAP(1) }]);
       const again = await w.call("POST", "/v2/lists", { entry: first }, w.token);
       expect([refusal(again), again.body.error?.list, again.body.error?.head]).toEqual(["409 list_exists", list, head]);
       const other = await sign(await newKey(), { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
@@ -576,6 +577,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const newcomer = w.service.issueToken(ACCOUNT);
       const claimed = await w.claim(list, phone, newcomer);
       expect(claimed.body).toEqual({ now: w.seconds(), key: phone.key, until: Math.floor((T0 + LIST_CLAIM_MS) / 1000) });
+      expect(w.service.accountList(ACCOUNT)?.claims.map(({ key }) => key)).toEqual([phone.key]);
       expect((await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims).toEqual([{ key: phone.key, enc: phone.enc, card: expect.any(String), until: claimed.body.until! }]);
       // a claim lasts ten minutes
       w.tick(LIST_CLAIM_MS + 1000);
@@ -643,6 +645,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const unposted = await w.place(list, added.texts);
       expect([refusal(unposted), unposted.body.error?.index]).toEqual(["403 not_posted", 0]);
       const posted = await post(pc);
+      expect(w.service.accountList(ACCOUNT)?.posts.map(({ endpoint, key: posted }) => [endpoint, posted])).toEqual([[pc.endpoint, key.key]]);
       expect(posted.body).toEqual({ now: w.seconds(), endpoint: pc.endpoint, key: key.key, until: Math.floor((T0 + LIST_CLAIM_MS) / 1000) });
       expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts).toEqual([{ endpoint: pc.endpoint, server_id: pc.serverId, key: key.key, enc: key.enc, card: expect.any(String), until: posted.body.until! }]);
       w.tick(LIST_CLAIM_MS + 1000);
@@ -795,6 +798,19 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(pages.flat()).toEqual(all);
     });
 
+    test("listId: another id is reported as the account's list while the log is unchanged", async () => {
+      const { w, list, all } = await told();
+      const pc = machine();
+      await listPc(w, pc);
+      const wrong = OPENS(9);
+      w.service.tamperList(list, { listId: wrong });
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.list).toBe(wrong);
+      expect((await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT })).body.list).toBe(wrong);
+      expect(((await pull(w, pc)).list as { id: string }).id).toBe(wrong);
+      expect((await w.log(list)).body).toMatchObject({ list, entries: all });
+      expect(w.service.accountList(ACCOUNT)?.id).toBe(list);
+    });
+
     test("answerList: another account's list is answered under this one's id, and its entry 0 is not the pinned one", async () => {
       const { w, list } = await told();
       const elsewhere = w.service.issueToken("acct_2");
@@ -839,6 +855,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await w.place(list, added.texts, [{ epoch: 0, member: tablet.enc, wrap: WRAP(3) }])).status).toBe(200);
       expect(w.service.accountList(ACCOUNT)?.head).toEqual(added.head);
       expect((await w.call("GET", `/v2/lists/${list}/wraps?member=${tablet.enc}`, undefined, w.token)).body.wraps).toEqual([]);
+      expect(w.service.accountList(ACCOUNT)?.wraps.map(({ member }) => member)).not.toContain(tablet.enc);
     });
   });
 });

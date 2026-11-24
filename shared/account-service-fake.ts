@@ -198,6 +198,8 @@ export interface ListTamper {
   readonly pages?: readonly number[];
   /** This other list (another account's) is answered for this one, under this one's id: its entry 0 does not hash to the id the member pinned. */
   readonly answerList?: string;
+  /** This id is reported as the account's list (GET /v2/lists/mine, POST /v2/pc/list, the mailbox's with_list), the log unchanged: the id is a hint, pinned only from a member. */
+  readonly listId?: string;
   /** One byte of the body of the entry at this seq is flipped as served: it no longer holds (`signature_invalid`, or `entry_malformed`). */
   readonly flipEntry?: { readonly seq: number; readonly byte?: number };
   /** One byte of this member's wrap of this epoch is flipped as served: it does not open (`refused`), which is no evidence. */
@@ -206,6 +208,17 @@ export interface ListTamper {
   readonly headMoved?: boolean;
   /** A placed batch's entries are stored and its wraps dropped: the new member sees no names, and is let in all the same. */
   readonly dropWraps?: boolean;
+}
+
+/** What accountList shows: the list's id, every entry as its text, the head, the service's own state, every stored wrap, and the claims and posts that still lock. */
+export interface FakeListView {
+  readonly id: string;
+  readonly entries: readonly string[];
+  readonly head: ListPlace;
+  readonly state: ListState;
+  readonly wraps: readonly ListWrap[];
+  readonly claims: readonly { readonly key: string; readonly enc: string; readonly card: string; readonly until: number }[];
+  readonly posts: readonly { readonly endpoint: string; readonly server_id: string; readonly key: string; readonly enc: string; readonly card: string; readonly until: number }[];
 }
 
 /** A device's claim of its member key, by the sign-in (family) that took it at `at`. */
@@ -1234,10 +1247,16 @@ export class FakeAccountService {
     return json({ id: record.id });
   }
 
-  /** An account's signed list as the service holds it, for a test to look at; null for an account that has none. */
-  accountList(account: string): { readonly id: string; readonly entries: readonly string[]; readonly head: ListPlace; readonly state: ListState } | null {
+  /** An account's signed list as the service holds it, for a test to look at (no lie applies here); null for an account that has none. */
+  accountList(account: string): FakeListView | null {
     const list = this.listOfAccount(account);
-    return list === undefined ? null : { id: list.id, entries: [...list.texts], head: headOf(list), state: list.state };
+    if (list === undefined) return null;
+    return {
+      id: list.id, entries: [...list.texts], head: headOf(list), state: list.state,
+      wraps: [...list.wraps].flatMap(([member, epochs]) => [...epochs].map(([epoch, wrap]) => ({ epoch, member, wrap }))),
+      claims: this.liveClaims(list).map(({ key, enc, card, at }) => ({ key, enc, card, until: untilOf(at) })),
+      posts: this.livePosts(list).map(([endpoint, { server_id, key, enc, card, at }]) => ({ endpoint, server_id, key, enc, card, until: untilOf(at) })),
+    };
   }
 
   /** Adds one lie (ListTamper) to what the list routes tell of `list`; rules stack in the order added, a later field over an earlier, until untamperList. */
@@ -1378,7 +1397,7 @@ export class FakeAccountService {
     if (flip !== undefined && flipped !== undefined) texts[flip.seq] = flipEntryText(flipped, flip.byte);
     const last = texts.length - 1;
     const head = lie.head ?? { seq: last, hash: hashOfText(texts[last] ?? "") ?? base.hashes[last] ?? "0".repeat(64) };
-    return { id: base.id, texts, head, cuts: lie.pages ?? [] };
+    return { id: lie.listId ?? base.id, texts, head, cuts: lie.pages ?? [] };
   }
 
   /** The wraps the service tells `caller` that `member` has: the latest LIST_WRAPS_READ epochs, ascending. */

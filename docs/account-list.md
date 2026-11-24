@@ -339,8 +339,9 @@ every route in use.
   signer's own counter instead of the account's requests.
 - **Limits** are in `listLimits`, which a test may lower to reach `list_full`, `entry_budget` or a
   PC's calls a minute.
-- `accountList(account)` gives what the service holds: the list id, every entry's text, the head
-  and the service's own state of the list.
+- `accountList(account)` gives what the service holds, no lie applied: the list id, every entry's
+  text, the head, the service's own state of the list, every stored wrap, and the claims and posts
+  that still lock.
 
 ### Making the service lie
 
@@ -359,6 +360,7 @@ and to everyone when it is left out.
 | `fork` | these texts in place of the log from the first one's seq on | two readers each hold a valid history at the same seq, which only comparing heads parts |
 | `pages` | pages that end after these seqs | a reader joins the same log wherever the pages are cut |
 | `answerList` | another list under this list's id | its entry 0 is not the list the member pinned (`list_mismatch`) |
+| `listId` | that id as the account's list, the log unchanged | the id is a hint: a member pins it only from another member |
 | `flipEntry`, `flipWrap` | one byte flipped in that entry's body or that wrap | the entry no longer holds; the wrap does not open |
 | `headMoved` | `409 head_moved` for every placement | a writer stops after its own bound and says so |
 | `dropWraps` | a placed batch's entries without its wraps | a member with no wrap sees no names and is let in all the same |
