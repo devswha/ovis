@@ -14,6 +14,8 @@ import type { RelayDevice, ShellDeviceStore, SavedDevice } from "./device.ts";
 import { ADMISSION_WAIT_MS, LINK_RETRY_MAX_MS } from "./accountController.ts";
 import { readSeenPcs } from "../account/seenPcs.ts";
 import { keepTypedCode } from "./shellState.ts";
+import { askingPc } from "../account/accountList.test-helpers.ts";
+import { signCard } from "../../../shared/account-list.ts";
 import { ACCOUNT_STEPS_WAIT_MS, mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
@@ -109,6 +111,11 @@ describe("the admission before a first link", () => {
      * of the pairing: it says it read its entry at the first ask, as a PC the list holds already does.
      */
     readonly namedList?: boolean;
+    /**
+     * As namedList, but the PC never says that it read its entry: it answers with its card for the list at every ask,
+     * and the list holds the PC's key already (an earlier press placed it), so nothing is signed here either
+     */
+    readonly namedUnread?: boolean;
     /** the code was typed on this device and compared there (codeMatch), not scanned */
     readonly typedCode?: boolean;
     /** another tab signs in to another account the moment the PC admits the pairing */
@@ -180,12 +187,16 @@ describe("the admission before a first link", () => {
       devices: [{ key: key.public_spki, self: true, power: "full", role: "drive", until: null, carried: false, name: null }],
       pcs: namings.length === 0 ? [] : [{ endpoint, server_id: offer.server_id, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 2, by: key.public_spki, new_at: null }],
     });
-    const accountList: AccountList | undefined = !options.namedList ? undefined : {
+    // the PC's own keys for the list, and its card, where it answers the naming with them
+    const pcKeys = options.namedUnread ? await askingPc() : null;
+    const pcCard = pcKeys === null ? null : await signCard({ key: pcKeys.key, enc: pcKeys.enc, list: LIST, endpoint, invite: null }, pcKeys.signs);
+    const accountList: AccountList | undefined = !options.namedList && !options.namedUnread ? undefined : {
       sync: async () => listView(), follows: async () => true, view: listView, subscribe: () => () => {}, holdsPc: () => namings.length > 0, pcOfKey: () => null, due: () => null, shown: () => Math.floor(Date.now() / 1000),
       shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
       kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
       // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
-      writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki } }) as ListWriter,
+      writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki },
+        state: { footing: { seq: 2, hash: "ab".repeat(32) }, pcs: pcKeys === null ? {} : { [endpoint]: { key: pcKeys.key, removed: null } } } }) as unknown as ListWriter,
     };
     // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
     let ended: string | null | undefined;
@@ -224,9 +235,10 @@ describe("the admission before a first link", () => {
           case "/api/account/enroll": return Response.json({ results: [] });
           case "/api/account/introduction": return Response.json({ pcs: [] });
           case "/api/account/list/named": {
-            if (!options.namedList) return Response.json({ error: { code: "not_found" } }, { status: 404 });
+            if (!options.namedList && !options.namedUnread) return Response.json({ error: { code: "not_found" } }, { status: 404 });
             events.push("named");
             namings.push(JSON.parse(String(init?.body)));
+            if (pcKeys !== null) return Response.json({ state: "waiting", standing: "waiting", key: pcKeys.key, enc: pcKeys.enc, card: pcCard });
             return Response.json({ state: "added", account: "acct-test" });
           }
           default: throw new TypeError(`Unexpected PC request: ${path}`);
@@ -391,6 +403,19 @@ describe("the admission before a first link", () => {
       expect([readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how, readSeenPcs("acct-other").pcs]).toEqual(["added", {}]);
     });
   });
+
+  it("a scanned PC whose entry is in the list but that has not read it yet keeps the pairing, opens nothing over its session, and shows the front page", async () => {
+    const run = await pairing({ mark: true, listed: true, namedUnread: true });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "list" || run.current().state.kind === "empty");
+    // the pairing's session named the list, as many times as the PC counts, and nothing else went to the PC
+    expect(run.events.filter((event) => event === "pair" || event === "named" || event === "link" || event === "list key")).toEqual(["pair", "named", "named", "named", "named"]);
+    expect([run.sent, run.byListKey.includes(true), run.apps()]).toEqual([[], false, 0]);
+    // the pairing is not spent: its row stays, the device's own, with nothing said of an account at it
+    const kept = run.devices.get(run.serverId) as SavedDevice | undefined;
+    expect([kept?.device_id, kept?.account_enrollment, kept?.account]).toEqual([NEWER_ID, undefined, undefined]);
+    expect(run.drawn().some((state) => state.kind === "failed")).toBe(false);
+  }, 15_000);
 
   it("with the mark, ends the post itself when the person cancels while it waits, and pairs nothing", async () => {
     const run = await pairing({ mark: true, listed: true });
