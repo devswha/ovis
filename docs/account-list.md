@@ -1621,30 +1621,48 @@ How often the device asks while it gets no list:
 
 ### Meeting a PC
 
-While the app has a PC open that selected the account's list for the session (it is pinned to its
-list, [Two members meet](#two-members-meet)), the device and the PC say where they stand, and each
-hands the other what it lacks (`listGossip.ts`, over `POST /api/account/list/head` and
+From the moment the app owns an authenticated session with a PC that selected the account's list
+for it (it is pinned to its list, [Two members meet](#two-members-meet)), whatever screen shows
+(Ready, an update the PC needs, the PC's own pages), the device and the PC say where they stand,
+and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account/list/head` and
 `POST /api/account/list/page`):
 
-- at once, at every new carrier of the session (each is a new session at the PC), whenever the
-  device's own copy moves its head, and every five minutes while the session is up. So a removal
-  this device places reaches the open PC at once, and one the account service withholds from a PC
-  reaches it the next time any device of the account that holds it opens that PC;
+- at once, at every new carrier of the session (each is a new session at the PC, whose selected
+  features are known before anyone is told the carrier is up), whenever the device's own copy moves
+  its head, and every five minutes while the session is up. So a removal this device places
+  reaches the open PC at once, and one the account service withholds from a PC reaches it the next
+  time any device of the account that holds it opens that PC;
 - the device says its footing; what the PC answers of its own entries (`page`) is taken by the
   device's follower as a page from a peer (`takeFromPeer`: never a full read, saved under the
-  account's lock as a round saves); what the PC asks for (`asks`) is handed over, once an exchange,
-  following each earlier place the PC asks for next;
+  account's lock as a round saves, and installed only while the sign-in it was begun under is the
+  stored one); what the PC asks for (`asks`) is handed over, once an exchange, following every
+  place the PC asks for next: a later one where it took a page in part, an earlier one where it
+  looks for where two histories part, until it asks for a place it was handed already;
 - where the device needs the PC's entries after another place (the PC holds more, another entry at
   a place the device holds, or the device looks for where two histories part), it asks for them in
-  the head call (`asks`), and judges what comes back. Two histories that members signed raise the
-  alarm on both sides; one that holds only what its writer left behind raises it on the side that
-  is shown the other;
-- at most 24 of the two calls a minute of one PC (the PC takes 30, counted by the key it let the
-  device in by, so a new carrier is no new minute), a `429` waits its `retry-after`, and what a minute's calls did not finish (the device's read, or the PC's next
-  asked place) goes on at the next exchange of the same session from where it got to, while the
-  device stands where it stood;
+  the head call (`asks`), and judges what comes back. The PC answers that read only to a key its
+  list lets in. Two histories that members signed raise the alarm on both sides; one that holds
+  only what its writer left behind raises it on the side that is shown the other;
+- at most 24 of the two calls a minute of one PC and the key it let the device in by, and a
+  `429`'s wait, kept for that PC and key in the browser's storage, so every tab and every
+  reopening of the PC draws on the same budget (the PC counts 30 by that key, in memory); a long
+  wait is armed in pieces of five minutes at most. What a minute's calls did not finish (the
+  device's read, or the PC's next asked place) goes on as soon as the budget has room again, from
+  where it got to, while the device stands where it stood;
+- one answer is read up to 512 KiB and for 10 seconds, an error's body included; a longer or a
+  slower one ends the exchange;
 - a page whose save fails is acted on from memory all the same (a removal stands at once), is not
-  said to be taken, and the next round writes it first, over the text it was taken on.
+  said to be taken, and the next round writes it first. Where another tab saved meanwhile, what this
+  tab verified (the entries, an alarm) is taken into what that tab saved before anything is shown.
+
+**A PC the list puts out while it is open.** The device ends its own use of it at once (the PC's
+pages go, the session is no longer the app's), and over the session it still has makes one
+exchange of three seconds at most that hands that PC its removal, then closes the session. So the
+PC knows itself out even where the account service withholds it.
+
+**An alarm ends every write.** From the moment the device's copy holds an alarm nothing it signs is
+kept or sent: an Allow that was waiting for a claim, a change that was waiting for an answer, a
+request kept from before.
 
 Nothing is asked of a PC that follows no list (it did not select the list for the session), and
 nothing by a device that follows none: an account with no list sends no request and no frame it
