@@ -93,7 +93,7 @@ export class HarnessView {
     const after = await state();
     observe();
     if (uncertain) return refuse("taken_over", "ACP ownership changed during the read.");
-    return after.state === "waiting_human" || child && !child.client.connected ? stateOnly(after) : output;
+    return after.state === "waiting_human" || (child || args.what === "result") && after.state === "working" || child && !child.client.connected ? stateOnly(after) : output;
     } finally { off?.(); }
   }
 }

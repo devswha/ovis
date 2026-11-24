@@ -46,7 +46,7 @@ export class ChildTurns {
     if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this child.");
     if (child.client.pending().length) return refuse("waiting_human", "A person must answer the child's card.");
     const duplicate = key && row.turns.find(t => t.key === key);
-    if (duplicate) return accepted(duplicate.n, true);
+    if (duplicate) return duplicate.seq === null ? refuse("unavailable", "Delivery of the original prompt is unconfirmed.") : accepted(duplicate.n, true);
     if (this.now() - row.created >= HARNESS_LIMITS.child_minutes * 60_000) {
       await this.acp.markTimeLimit(child.id);
       return refuse("time_limit", "This child no longer takes new work.");
@@ -56,14 +56,19 @@ export class ChildTurns {
     const turn: ToolChild["turns"][number] = { key, n, seq: null, end: null };
     row.turns.push(turn);
     this.ledger.save();
-    this.ledger.audit(row, "send", n);
     try { await child.client.submit(String(args.task), expectedMode); }
     catch (error) {
+      if (error instanceof KeeperRequestError && [-32004,-32002,-32005].includes(error.code)) {
+        row.turns = row.turns.filter(t => t !== turn);
+        this.ledger.save();
+      }
+      if (error instanceof KeeperRequestError && error.code === -32005) return refuse("busy", "A turn or decision is already pending.");
       if (error instanceof KeeperRequestError && error.code === -32004) return refuse("not_granted", "Child permission mode changed.");
       return refuse(child.client.terminalReady ? "taken_over" : "unavailable", "Delivery could not be confirmed. Do not repeat without checking.");
     }
     turn.seq = child.client.turnSequence;
     this.ledger.save();
+    this.ledger.audit(row, "send", n);
     this.forget(child); this.watch(child);
     return accepted(n, false);
   }

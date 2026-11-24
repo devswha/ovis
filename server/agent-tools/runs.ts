@@ -103,6 +103,12 @@ export class RunStore {
     return chain;
   }
   previousStart(id: string, key: string): string | undefined { return this.entries.get(id)?.starts?.find(s => s.key === key)?.run; }
+  forgetFailedStart(id: string, failed: string): void {
+    const row = this.entries.get(id);
+    if (!row?.starts?.some(s => s.run === failed)) return;
+    this.entries.set(id, { ...row, starts: row.starts.filter(s => s.run !== failed) });
+    this.save();
+  }
   takeCall(id: string, now: number): boolean {
     const row = this.entries.get(id);
     if (!row) return false;
@@ -125,8 +131,8 @@ export class RunStore {
     rmSync(join(this.dir, "tokens", `${id}.token`), { force: true });
     rmSync(join(this.dir, "mcp", `${id}.json`), { force: true });
   }
-  forgetTerminal(self: string): void {
-    for (const { run } of this.entries.values()) if (run.self === self) this.revoke(run.id);
+  forgetTerminal(self: string, keep?: string): void {
+    for (const { run } of this.entries.values()) if (run.self === self && run.id !== keep) this.revoke(run.id);
   }
   rememberForeground(id: string, pid: number): void {
     const row = this.entries.get(id), reading = readProcessBirth(pid);

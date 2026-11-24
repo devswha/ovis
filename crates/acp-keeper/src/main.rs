@@ -35,6 +35,7 @@ pub struct Opts {
     pub session_meta: Option<Value>,
     pub mcp_servers: Vec<Value>,
     pub announce_subagents: bool,
+    pub ask_every_time: bool,
     pub load: Option<String>,
     pub headless: bool,
     pub command: String,
@@ -198,7 +199,7 @@ async fn shutdown_signal() {
 }
 
 const USAGE: &str =
-    "Usage: ovis-acp-keeper ROOT [--cwd DIR] [--name NAME] [--resume 'CMD {session}' | '[\"CMD\",\"{session}\"]'] [--session-meta JSON] [--mcp-servers ARRAY] [--announce-subagents] [--load SESSION] [--headless] -- AGENT [ARGS...]";
+    "Usage: ovis-acp-keeper ROOT [--cwd DIR] [--name NAME] [--resume 'CMD {session}' | '[\"CMD\",\"{session}\"]'] [--session-meta JSON] [--mcp-servers ARRAY] [--announce-subagents] [--ask-every-time] [--load SESSION] [--headless] -- AGENT [ARGS...]";
 
 fn default_resume(command: &str, args: &[String]) -> Option<String> {
     let base = |s: &str| Path::new(s).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
@@ -236,6 +237,7 @@ pub(crate) fn parse(args: Vec<String>) -> Result<Opts, String> {
         session_meta: None,
         mcp_servers: Vec::new(),
         announce_subagents: false,
+        ask_every_time: false,
         load: None,
         headless: false,
         command: command.clone(),
@@ -252,6 +254,7 @@ pub(crate) fn parse(args: Vec<String>) -> Result<Opts, String> {
             "--headless" => opts.headless = true,
             "--mcp-servers" => opts.mcp_servers = serde_json::from_str(&value()?).map_err(|e| format!("--mcp-servers needs a JSON array: {e}"))?,
             "--announce-subagents" => opts.announce_subagents = true,
+            "--ask-every-time" => opts.ask_every_time = true,
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
     }

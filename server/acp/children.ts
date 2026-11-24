@@ -40,6 +40,7 @@ export interface AcpStart {
   runId?: string;
   mcpServers?: readonly { name: string; command: string; args: readonly string[]; env: readonly { name: string; value: string }[] }[];
   announceSubagents?: boolean;
+  askEveryTime?: boolean;
 }
 
 export interface AcpChild {
@@ -190,6 +191,7 @@ export class AcpChildren {
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
       ...(start.mcpServers === undefined ? [] : ["--mcp-servers", JSON.stringify(start.mcpServers)]),
       ...(start.announceSubagents ? ["--announce-subagents"] : []),
+      ...(start.askEveryTime ? ["--ask-every-time"] : []),
       "--", ...start.argv,
     ];
     const displayName = start.name?.trim();
@@ -199,7 +201,7 @@ export class AcpChildren {
         argv, cwd: start.cwd,
         ...(start.parentPane === undefined ? { no_parent: true } : { parent: start.parentPane }),
         labels: { [LABEL]: id, ...(start.runId ? { "ovis.run": start.runId } : {}), ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
-        ...(start.env === undefined ? {} : { env: start.env }),
+        ...(start.askEveryTime ? { env: { ...start.env, OPENCODE_DB: join(root, "opencode.db") } } : start.env === undefined ? {} : { env: start.env }),
       }));
     } catch (error) {
       const live = await this.liveTerminals().catch((lookupError: unknown) => {

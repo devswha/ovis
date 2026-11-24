@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import * as herdr from "../herdr/client.ts";
 import * as prompts from "../prompt.ts";
+import * as conversation from "../conversation.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +35,20 @@ it("never consults a plain shell's prompt or contents for agent read", async () 
     expect(await call("read", { session: "shell", what: "state" })).toMatchObject({ error: { code: "unknown_session" } });
     expect(prompt).not.toHaveBeenCalled();
   } finally { snapshot.mockRestore(); prompt.mockRestore(); }
+});
+it("drops a terminal result when its agent returns to work during the read", async () => {
+  start();
+  const pane = { pane_id:"agent", terminal_id:"term", agent:"claude", tab_id:"tab", workspace_id:"ws", focused:false, revision:1, agent_status:"done" as const };
+  const snapshot = { protocol:22,version:"fixture",agents:[],workspaces:[],tabs:[],layouts:[],panes:[pane] };
+  const snap = spyOn(herdr,"sessionSnapshot").mockResolvedValue(snapshot);
+  const info = {agent:"claude",status:"done",prompt:null,pane,panes:[pane],snapshot};
+  const prompt = spyOn(prompts,"readPrompt").mockResolvedValueOnce(info).mockResolvedValueOnce({...info,status:"working"});
+  const history = spyOn(conversation,"paneConversation").mockResolvedValue({source:"claude-transcript",turns:[],metadata:{model:null,reasoning_effort:null},cursor:null,history_id:"fixture",version:"1"});
+  try {
+    const reply = await call("read",{session:"agent",what:"result"});
+    expect(reply).toMatchObject({kind:"state",state:{state:"working"}});
+    expect(reply).not.toHaveProperty("final_message");
+  } finally { history.mockRestore(); prompt.mockRestore(); snap.mockRestore(); }
 });
 
 it("at view level start, send, wait, result, ask and stop are refused", async () => {

@@ -5,9 +5,11 @@ import { HubConnections } from "./connections.ts";
 import { HARNESS_CONTRACT, HARNESS_LIMITS, TOOL_SCHEMAS, VIEW_VERBS, answer, harnessVerb, isRecord, isView, refuse, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { projectSafeCommand } from "../entries.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
-import { AcpStartFailed, type AcpChildren } from "../acp/children.ts";
+import { AcpStartFailed, AcpUnavailable, type AcpChildren } from "../acp/children.ts";
 import { KeeperRequestError } from "../acp/client.ts";
 import { resolveHarness, type HarnessCommand } from "./harnesses.ts";
+import { OPEN_REVIEW, permissionLaunch } from "./permission-launch.ts";
+import { runVersion, VERSION_TIMEOUT_MS } from "../agent-catalog-detect.ts";
 import { RunStore, type Run } from "./runs.ts";
 import { Ledger, type ToolChild } from "./ledger.ts";
 import { validArgs } from "./guards.ts";
@@ -54,27 +56,9 @@ export class AgentToolHub {
   get setting() { return this.options.setting(); }
   private verbs(principal: { depth: number; ceiling?: string }): readonly string[] {
     const policy = this.setting;
-    return policy.level === "off" ? [] : policy.level === "start" && principal.ceiling && principal.depth < policy.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS;
+    return policy.level === "off" ? [] : policy.level === "start" && (principal.ceiling || policy.harnesses.includes("opencode")) && principal.depth < policy.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS;
   }
-  async reconcileLaunches() {
-    const terminals = await this.options.acp.terminals();
-    const found = new Set<string>();
-    for (const terminal of terminals) {
-      const run = terminal.labels["ovis.run"];
-      if (!run || terminal.state !== "live" || terminal.address.includes("/")) continue;
-      const child = this.options.acp.forPane(terminal.address);
-      if (found.has(run) || !child || child.id !== terminal.labels["ovis.acp"]) throw new Error("Unreconciled agent keeper.");
-      found.add(run);
-      const saved = this.ledger.children.get(terminal.address);
-      if (saved?.id === child.id && saved.run === run) continue;
-      const intent = this.ledger.launches.get(run);
-      if (!intent || intent.parent !== terminal.parent || intent.harness !== child.harness) throw new Error("Unverified keeper ownership.");
-      const row: ToolChild = { ...intent, id: child.id, terminal: terminal.address, held: false, turns: [] };
-      this.ledger.children.set(row.terminal, row); this.ledger.save(); this.ledger.audit(row, "start", null);
-    }
-    for (const key of this.ledger.launches.keys()) this.ledger.finish(key);
-    return terminals;
-  }
+  reconcileLaunches() { return this.ledger.reconcile(this.options.acp); }
   settingsChanged(): void { if (this.setting.level === "off") this.runs.revokeAll(); }
   listen(): void {
     if (this.server) return;
@@ -128,13 +112,14 @@ export class AgentToolHub {
     const allowed = () => !!auth() && this.verbs(run).includes(verb);
     const session = String(args.session ?? "");
     if (verb === "start" || verb === "ask") {
-      if (!run.ceiling && run.depth < this.setting.depth) return refuse("not_granted", "The parent's permission ceiling is not verified.");
+      if (!run.ceiling && run.depth < this.setting.depth && (args.harness !== "opencode" || !this.setting.harnesses.includes("opencode"))) return refuse("not_granted", "This harness has no verified ask-for-everything launch.");
       if (!allowed()) return refuse("depth_exceeded", "This run is at its depth limit.");
       const started = await this.serial(run.id, async () => {
         if (!allowed()) return deny();
         return this.start(run, args, allowed);
       });
       if (verb === "start" || !("session" in started) || started.kind !== "session") return started;
+      if ("send_error" in started) return started;
       const ref = started.session;
       const remaining = Math.max(0, HARNESS_LIMITS.wait_seconds - (this.now() - began) / 1000);
       const turnId = started.sent?.turn_id;
@@ -166,8 +151,9 @@ export class AgentToolHub {
       if (!allowed()) return deny();
       if (this.options.acp.forPane(session) !== child) return refuse("unknown_session", "The child has ended.");
       if (verb === "send") {
-        const verified = (this.options.resolve ?? resolveHarness)(row.harness)?.ceiling;
-        if (!verified || verified.profile !== run.ceiling || verified.mode !== child.client.sessionMode) return deny();
+        const cmd = (this.options.resolve ?? resolveHarness)(row.harness);
+        const verified = cmd && permissionLaunch(row.harness, run.ceiling, row.run, cmd)?.ceiling;
+        if (!verified || verified.mode !== child.client.sessionMode) return deny();
         return this.turns.send(child, row, args, verified.mode);
       }
       if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
@@ -204,27 +190,40 @@ export class AgentToolHub {
     if (args.on !== undefined && args.on !== "local") return refuse("approval_required", "Starting on another machine needs a person's approval and is not supported yet.");
     if (!this.setting.harnesses.includes(kind)) return refuse("not_granted", "This harness was not enabled.");
     if (run.depth >= this.setting.depth) return refuse("depth_exceeded", "This run is at its depth limit.");
+    const expired = () => run.started_by !== null && this.now() - (this.ledger.children.get(run.self)?.created ?? run.created_ms) >= HARNESS_LIMITS.child_minutes * 60_000;
+    if (expired()) return refuse("time_limit", "This child no longer starts new work.");
     const own = [...this.ledger.children.values()].filter(r => r.starter === run.id && this.options.acp.forPane(r.terminal)?.id === r.id);
     const used = typeof args.key === "string" ? this.runs.previousStart(run.id, args.key) : undefined;
     if (used) {
       const row = own.find(r => r.run === used), child = row ? this.options.acp.forPane(row.terminal) : null;
-      if (row && child) return answer("session", { session: childRef(row, child), state: childState(child, row), sent: row.turns[0] ? { accepted: true, turn_id: `${row.id}.${row.turns[0].n}`, key: args.key, duplicate: true } : null });
+      if (row && child) {
+        const initial = row.turns[0];
+        const sent = initial?.key === args.key && initial?.seq != null ? { accepted: true, turn_id: `${row.id}.${initial.n}`, key: args.key, duplicate: true } : null;
+        return answer("session", { session: childRef(row, child), state: childState(child, row), sent, ...(args.task && !sent ? { send_error: refuse("unavailable","No confirmed initial prompt receipt.").error } : {}) });
+      }
       return refuse("unknown_session", "This key named a child that is no longer available.");
     }
     if (own.length + [...this.ledger.launches.values()].filter(i => i.starter === run.id).length >= HARNESS_LIMITS.children) return refuse("children_limit", "Four child slots are in use.");
-    const launch = (this.options.resolve ?? resolveHarness)(kind);
-    if (!launch) return refuse("start_failed", "This harness has no supported ACP adapter.");
-    if (!launch.ceiling || launch.ceiling.profile !== run.ceiling) return refuse("not_granted", "The child launch is not proven within the parent's permission ceiling.");
+    const command = (this.options.resolve ?? resolveHarness)(kind);
+    if (!command) return refuse("start_failed", "This harness has no supported ACP adapter.");
+    if (kind === "opencode" && !command.ceiling) {
+      const bin = command.argv[0];
+      const probe = bin && await runVersion(bin, ["--version"], VERSION_TIMEOUT_MS);
+      if (!probe || probe.exitCode !== 0 || !/^(?:opencode v?)?2\.2\.2$/.test(probe.stdout.trim())) return refuse("not_granted", "This OpenCode version has no verified all-ask launch.");
+    }
     const cwd = typeof args.cwd === "string" ? args.cwd : (await coreConnection().call("terminal.get", { terminal: run.self })).cwd;
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return refuse("bad_request", "The folder does not exist.");
     if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) return refuse("not_granted", "The grant changed.");
+    if (expired()) return refuse("time_limit", "This child no longer starts new work.");
     const key = this.runs.reserve(run.depth + 1, run.ceiling);
+    const launch = permissionLaunch(kind, run.ceiling, key.id, command);
+    if (!launch) { key.cancel(); return refuse("not_granted", "The child launch is not proven within the parent's permission ceiling."); }
     const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, created: this.now() };
     try {
       if (typeof args.key === "string") this.runs.rememberStart(run.id, args.key, key.id);
       this.ledger.begin(intent);
       const child = await this.options.acp.start({ harness: kind, argv: launch.argv, env: { ...launch.env, OVIS_AGENT_SOCKET: this.address, OVIS_AGENT_TOKEN_FILE: key.tokenFile },
-        cwd, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)] });
+        cwd, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)], askEveryTime: launch.ceiling.profile === OPEN_REVIEW });
       this.view.signInNeeded.delete(kind);
       if (child.client.sessionMode !== launch.ceiling.mode) {
         await this.options.acp.stop(child.id);
@@ -235,15 +234,18 @@ export class AgentToolHub {
       this.ledger.children.set(child.terminal, row); this.ledger.save(); this.ledger.audit(row, "start", null); this.turns.watch(child);
       this.ledger.finish(key.id);
       if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) { key.cancel(); return refuse("not_granted", "The grant changed while starting."); }
-      key.bind({ self: child.terminal, depth: run.depth + 1, root: run.root, harness: kind, started_by: run.id, ceiling: run.ceiling });
+      key.bind({ self: child.terminal, depth: run.depth + 1, root: run.root, harness: kind, started_by: run.id, ceiling: launch.ceiling.profile });
       const accepted = args.task ? await this.turns.send(child, row, args, launch.ceiling.mode) : null;
-      if (accepted?.kind === "refusal") return accepted;
+      if (accepted?.kind === "refusal") return answer("session", { session: childRef(row, child), state: childState(child, row), sent: null, send_error: accepted.error });
       const sent = accepted ? { accepted: true, turn_id: accepted.turn_id, key: accepted.key, duplicate: accepted.duplicate } : null;
       return answer("session", { session: childRef(row, child), state: childState(child, row), sent });
     } catch (error) {
       if (error instanceof AcpStartFailed && error.agentCode === -32000) this.view.signInNeeded.add(kind);
       const live = await this.options.acp.terminals().catch(() => null);
-      if (live && !live.some(t => t.state === "live" && t.labels["ovis.run"] === key.id)) this.ledger.finish(key.id);
+      if (live && !live.some(t => t.state === "live" && t.labels["ovis.run"] === key.id)) {
+        this.ledger.finish(key.id);
+        if (error instanceof AcpStartFailed || error instanceof AcpUnavailable) this.runs.forgetFailedStart(run.id, key.id);
+      }
       key.cancel(); return refuse("start_failed", "The harness did not open an ACP session.");
     }
   }

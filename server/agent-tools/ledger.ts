@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readFileSync, renameSync, statSync } from "
 import { join } from "node:path";
 import { isRecord } from "../../shared/harness-tool.ts";
 import { writePrivate } from "./runs.ts";
+import type { AcpChildren } from "../acp/children.ts";
 import type { AuditRecord } from "../../shared/harness-contract.generated.ts";
 
 export interface ToolChild {
@@ -41,6 +42,25 @@ export class Ledger {
     for (const row of rows) this.children.set(row.terminal, row);
   }
   save(): void { writePrivate(join(this.dir, "children.json"), JSON.stringify([...this.children.values()])); }
+  async reconcile(acp: AcpChildren) {
+    const terminals = await acp.terminals();
+    const found = new Set<string>();
+    for (const terminal of terminals) {
+      const run = terminal.labels["ovis.run"];
+      if (!run || terminal.state !== "live" || terminal.address.includes("/")) continue;
+      const child = acp.forPane(terminal.address);
+      if (found.has(run) || !child || child.id !== terminal.labels["ovis.acp"]) throw new Error("Unreconciled agent keeper.");
+      found.add(run);
+      const saved = this.children.get(terminal.address);
+      if (saved?.id === child.id && saved.run === run) continue;
+      const intent = this.launches.get(run);
+      if (!intent || intent.parent !== terminal.parent || intent.harness !== child.harness) throw new Error("Unverified keeper ownership.");
+      const row: ToolChild = { ...intent, id: child.id, terminal: terminal.address, held: false, turns: [] };
+      this.children.set(row.terminal, row); this.save(); this.audit(row, "start", null);
+    }
+    for (const key of this.launches.keys()) this.finish(key);
+    return terminals;
+  }
   begin(intent: Launch): void { this.launches.set(intent.run, intent); this.saveLaunches(); }
   finish(run: string): void { if (this.launches.delete(run)) this.saveLaunches(); }
   private saveLaunches(): void { writePrivate(join(this.dir, "launches.json"), JSON.stringify([...this.launches.values()])); }

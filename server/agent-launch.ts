@@ -149,7 +149,6 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
   try {
     const kind = agent.kind as string;
     const shell = isShellAgentKind(kind);
-    forgetLocalRun(paneId);
     // another machine of the core: its path would be this PC's, and its start is never seen there (no pids)
     if (shell && hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
     // an agent another machine of the core starts could not reach this PC's hub
@@ -197,6 +196,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
         }
       }
     }
+    forgetLocalRun(paneId, tool?.id);
     launchedAgents.launched(paneId, kind);
     return { agent_started: true };
   } catch (error) {

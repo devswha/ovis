@@ -320,6 +320,10 @@ export class KeeperClient {
   private note(method: string | null, params: Record<string, unknown>): boolean {
     const id = text(params["id"]);
     switch (method) {
+      case "_keeper/selections":
+        this.model = text(params.model);
+        this.sessionMode = text(params.mode);
+        return true;
       case "_keeper/hold_changed":
         this.holdGeneration = typeof params.generation === "number" ? params.generation : null;
         return true;

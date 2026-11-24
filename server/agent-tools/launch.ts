@@ -7,7 +7,7 @@ import { privateDir, writePrivate } from "./runs.ts";
 
 let hub: AgentToolHub | null = null;
 export function useAgentToolHub(current: AgentToolHub | null): void { hub = current; }
-export function forgetLocalRun(pane: string): void { if (hcMachine() === null) hub?.runs.forgetTerminal(pane); }
+export function forgetLocalRun(pane: string, keep?: string): void { if (hcMachine() === null) hub?.runs.forgetTerminal(pane, keep); }
 export function launchHarnessTool(pane: string, kind: string, options: { args?: string[]; platform: string; browsers: unknown }) {
   if (!hub || hcMachine() !== null || !capabilities().acpChildren || options.platform === "win32") return null;
   if (!isBrowserToolAgent(kind) || hub.setting.level === "off") return null;
@@ -35,6 +35,6 @@ export function launchHarnessTool(pane: string, kind: string, options: { args?: 
       const pid = terminal?.foreground?.pid;
       if (pid && pid !== terminal?.pid) runs.rememberForeground(r.id, pid);
     };
-    return { args: withBrowserToolArgs(options.args ?? [], mcpLaunchArgs(kind, tools, file)), cancel: r.cancel, socket: hub.address, tokenFile: r.tokenFile, confirmed };
+    return { id: r.id, args: withBrowserToolArgs(options.args ?? [], mcpLaunchArgs(kind, tools, file)), cancel: r.cancel, socket: hub.address, tokenFile: r.tokenFile, confirmed };
   } catch (error) { r.cancel(); throw error; }
 }

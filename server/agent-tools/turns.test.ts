@@ -10,13 +10,14 @@ import { AcpChildren, type AcpHc } from "../acp/children.ts";
 import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt } from "../acp/keeper.fake.ts";
 import { lineCall } from "../line-call.ts";
 import { AgentToolHub } from "./hub.ts";
+import { KeeperClient, KeeperRequestError } from "../acp/client.ts";
 
 describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keepers", () => {
   let dir: string, hub: AgentToolHub, acp: AcpChildren, token: string, connection: HcConnection, hc: AcpHc, now: number;
   const programs = new Map<string, ReturnType<typeof Bun.spawn>>();
   const open = () => {
     acp = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD, sessionMs: 1500 });
-    hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 1, harnesses: ["test", "mute"] }),
+    hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 2, harnesses: ["test", "mute"] }),
       resolve: kind => ({ argv: kind === "mute" ? ["/bin/sleep", "600"] : [FAKE_AGENT], ceiling: { profile: "fixture/ask-v1", mode: "ask" } }) });
     hub.listen();
   };
@@ -68,6 +69,56 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     expect(await call("stop", { session })).toMatchObject({ stopped: true });
     const verbs = readFileSync(join(dir, "tools/audit.jsonl"), "utf8").trim().split("\n").map(s => JSON.parse(s).verb);
     expect(verbs.sort()).toEqual(["send", "send", "start", "stop", "turn", "turn"]);
+  });
+  it("a tool child past its lifetime cannot start a grandchild", async () => {
+    const session = await start();
+    const [row] = JSON.parse(readFileSync(join(dir,"tools/children.json"),"utf8"));
+    token = readFileSync(join(dir,"tools/tokens",`${row.run}.token`),"utf8");
+    now += 3_600_000;
+    expect(await call("start", { harness:"test", cwd:dir })).toMatchObject({error:{code:"time_limit"}});
+    expect(acp.forPane(session)).toBeDefined();
+    expect(programs.size).toBe(1);
+  });
+  it("the keeper reserves a tool prompt before accepting another client's prompt", async () => {
+    const session = await start(), child = acp.forPane(session);
+    if (!child) throw new Error("missing child");
+    const submitted = await Promise.allSettled([child.client.submit("hold","ask"), child.client.submit("hold","ask")]);
+    expect(submitted.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+    expect(submitted.find(r=>r.status==="rejected")).toMatchObject({ reason: {code:-32005} });
+  });
+  it("returns the live child even when the initial prompt is rejected", async () => {
+    const reject = spyOn(KeeperClient.prototype,"submit").mockRejectedValueOnce(new KeeperRequestError(-32004,"mode changed"));
+    try {
+      const reply = await call("ask", { harness:"test", cwd:dir, task:"echo hello", key:"first" });
+      expect(reply).toMatchObject({kind:"session", sent:null, send_error:{code:"not_granted"}});
+      if (!isRecord(reply.session)) throw new Error("no address");
+      expect(await call("send", {session:reply.session.address,task:"echo hello",key:"first"})).toMatchObject({accepted:true,duplicate:false});
+    } finally { reject.mockRestore(); }
+  });
+  it("reuses a start key after a confirmed failed handshake with no child", async () => {
+    const args = { harness:"mute", cwd:dir, key:"retry" };
+    expect(await call("start",args)).toMatchObject({error:{code:"start_failed"}});
+    expect(await call("start",args)).toMatchObject({error:{code:"start_failed"}});
+    expect(programs.size).toBe(2);
+  });
+  it("does not acknowledge a key whose delivery was never confirmed", async () => {
+    const session = await start(), args={session,task:"echo hello",key:"uncertain"};
+    const submit=spyOn(KeeperClient.prototype,"submit").mockRejectedValueOnce(new Error("receipt lost"));
+    try {
+      expect(await call("send",args)).toMatchObject({error:{code:"unavailable"}});
+      expect(await call("send",args)).toMatchObject({error:{code:"unavailable"}});
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(dir,"tools/audit.jsonl"),"utf8")).not.toContain('"verb":"send"');
+    } finally { submit.mockRestore(); }
+  });
+  it("reports the model confirmed by the keeper after a human model switch", async () => {
+    const session = await start();
+    const child = acp.forPane(session);
+    if (!child) throw new Error("missing child");
+    await child.client.request("session/set_model", { sessionId: child.client.session, modelId: "m2" });
+    await call("send", { session, task: "echo again" });
+    await call("wait", { session });
+    expect(await call("result", { session })).toMatchObject({ model: "m2" });
   });
   it("refuses an unproven parent before launching and a changed mode before another agent prompt", async () => {
     const saved = token;

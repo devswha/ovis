@@ -420,6 +420,11 @@ impl Hub {
                 self.next += 1;
                 let ours = Value::String(format!("agent-{}", self.next));
                 msg.insert("id".into(), ours.clone());
+                if self.opts.ask_every_time && method == "session/request_permission" {
+                    if let Some(options) = msg.get_mut("params").and_then(|params| params.get_mut("options")).and_then(Value::as_array_mut) {
+                        options.retain(|o| matches!(o.get("kind").and_then(Value::as_str), Some("allow_once" | "reject_once")));
+                    }
+                }
                 let Some(seq) = self.archive.append("from-agent", &Value::Object(msg.clone()).to_string()) else {
                     return;
                 };
@@ -435,7 +440,11 @@ impl Hub {
             (Some(method), None) => {
                 self.archive.append("from-agent", &text);
                 if method == "session/update" {
-                    self.model.update(msg.get("params").unwrap_or(&Value::Null));
+                    let params = msg.get("params").unwrap_or(&Value::Null);
+                    self.model.update(params);
+                    if matches!(params.pointer("/update/sessionUpdate").and_then(Value::as_str), Some("config_option_update" | "current_mode_update")) {
+                        self.selections_note();
+                    }
                 }
             }
             (None, Some(id)) => {
@@ -518,6 +527,7 @@ impl Hub {
                     self.model.session = Some(id.to_string());
                 }
                 self.model.session_result(&result);
+                self.selections_note();
                 let session = self.model.session.clone().unwrap_or_default();
                 self.model.note(format!("세션 {session} 열림 · 폴더 {}", self.opts.cwd));
                 self.note_row(
@@ -551,6 +561,14 @@ impl Hub {
             self.model.config_options(options);
         }
         self.model.note(format!("{value}(으)로 바꿈"));
+        self.selections_note();
+    }
+
+    fn selections_note(&self) {
+        self.note_row(
+            "_keeper/selections",
+            json!({"mode":self.model.modes.as_ref().map(|s| &s.current),"model":self.model.models.as_ref().map(|s| &s.current)}),
+        );
     }
 
     fn on_client(&mut self, conn: u64, line: String) {
@@ -634,6 +652,11 @@ impl Hub {
                         return;
                     }
                     let expected = msg.remove("expectedMode");
+                    if !self.prompts.is_empty() || !self.model.pending.is_empty() {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32005,"message":"a turn or decision is already pending"}}));
+                        return;
+                    }
                     if self.model.modes.is_none()
                         || self.routes.values().any(|r| r.change.is_some())
                         || expected.as_ref().and_then(Value::as_str) != self.model.modes.as_ref().map(|m| m.current.as_str())

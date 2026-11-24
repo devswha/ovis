@@ -543,21 +543,6 @@ export function createServer(
   let agentTools: AgentToolHub | null = null;
   const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
-  if (acp && process.platform !== "win32" && hcMachine() === null) {
-    try {
-      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
-      const hub = agentTools;
-      void acpReady?.then(async restored => {
-        if (!restored) throw new Error("ACP restore incomplete.");
-        const terminals = await hub.reconcileLaunches();
-        if (agentTools !== hub) return;
-        hub.runs.reconcile(terminals, pane => acp.forPane(pane)?.id);
-        try { hub.listen(); useAgentToolHub(hub); }
-        catch { hub.close(); agentTools = null; }
-      }).catch(() => { hub.close(); if (agentTools === hub) agentTools = null; });
-      preferences.subscribe(() => agentTools?.settingsChanged());
-    } catch { console.warn("Agent tools unavailable for this state directory."); }
-  }
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {
     if (event.type !== "machine-message" || event.machine_id === LOCAL_MACHINE || event.message.type !== "pane-moved") return;
@@ -834,6 +819,23 @@ export function createServer(
   const releaseFilePool = holdFilePool();
   const releaseCommandHistory = holdCommandHistory();
   core.start();
+
+  // No deferred listener from a failed HTTP/LAN bind may replace a running server's hub.
+  if (acp && process.platform !== "win32" && hcMachine() === null) {
+    try {
+      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
+      const hub = agentTools;
+      void acpReady?.then(async restored => {
+        if (!restored) throw new Error("ACP restore incomplete.");
+        const terminals = await hub.reconcileLaunches();
+        if (agentTools !== hub) return;
+        hub.runs.reconcile(terminals, pane => acp.forPane(pane)?.id);
+        hub.listen();
+        useAgentToolHub(hub);
+      }).catch(() => { hub.close(); if (agentTools === hub) agentTools = null; });
+      preferences.subscribe(() => agentTools?.settingsChanged());
+    } catch { console.warn("Agent tools unavailable for this state directory."); }
+  }
 
   return {
     context: socketContext(server),

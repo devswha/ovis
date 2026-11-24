@@ -91,6 +91,16 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(messages.find(m => m.method === "session/new")?.params).toEqual({ cwd: dir, mcpServers: [server] });
     expect(runs()[0]).toMatchObject({ parent: "t42", labels: { "ovis.run": "run" } });
   });
+  it("isolates an all-ask child's permission database and offers no reusable approval", async () => {
+    setUp();
+    const child = await children.start({ harness:"fixture", argv:[FAKE_AGENT], cwd:dir, askEveryTime:true });
+    expect(runs()[0]).toMatchObject({env:{OPENCODE_DB:join(child.root,"opencode.db")}});
+    await child.client.submit("widen");
+    await until(child.client, "approval", () => child.client.pending().length === 1);
+    const [card] = child.client.pending();
+    if (!card) throw new Error("No card");
+    expect(card.options.map(o=>o.kind)).toEqual(["allow_once","reject_once"]);
+  });
 
   for (const lookup of ["available", "unavailable"]) {
     it(`reconciles a lost launch reply with terminal lookup ${lookup}`, async () => {
