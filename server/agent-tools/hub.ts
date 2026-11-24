@@ -5,6 +5,7 @@ import { HARNESS_CONTRACT, HARNESS_LIMITS, TOOL_SCHEMAS, VIEW_VERBS, answer, har
 import { projectSafeCommand } from "../entries.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
 import { AcpStartFailed, type AcpChildren } from "../acp/children.ts";
+import { KeeperRequestError } from "../acp/client.ts";
 import { resolveHarness, type HarnessCommand } from "./harnesses.ts";
 import { RunStore, type Run } from "./runs.ts";
 import { Ledger, type ToolChild } from "./ledger.ts";
@@ -177,8 +178,16 @@ export class AgentToolHub {
       if (this.options.acp.forPane(session) !== child) return refuse("unknown_session", "The child has ended.");
       if (verb === "send") return this.turns.send(child, row, args);
       if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
-      this.ledger.audit(row, "stop", null);
+      try {
+        const receipt = await child.client.request("_keeper/tool_stop", {});
+        if (!isRecord(receipt) || receipt.stopping !== true) return refuse("unavailable", "Keeper did not confirm stop.");
+      } catch (error) {
+        if (error instanceof KeeperRequestError && error.code === -32003) return refuse("waiting_human", "A person must answer the child's card.");
+        if (error instanceof KeeperRequestError && error.code === -32002) return refuse("taken_over", "A person holds this child.");
+        throw error;
+      }
       await this.options.acp.stop(row.id);
+      this.ledger.audit(row, "stop", null);
       this.turns.forget(child);
       this.ledger.children.delete(session); this.ledger.save(); this.runs.revoke(row.run);
       return answer("stopped", { session, stopped: true });

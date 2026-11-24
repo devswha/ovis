@@ -570,6 +570,20 @@ impl Hub {
                 };
                 self.reply(conn, &answer);
             }
+            (Some(method), Some(id)) if method == "_keeper/tool_stop" => {
+                let reply = if self.mode != Mode::Acp || self.hold.is_some() {
+                    json!({"error":{"code":-32002,"message":"held by a person"}})
+                } else if !self.model.pending.is_empty() || !self.answering.is_empty() {
+                    json!({"error":{"code":-32003,"message":"a person's decision is pending"}})
+                } else {
+                    self.quit = true;
+                    json!({"result":{"stopping":true}})
+                };
+                let mut message = reply;
+                message["id"] = id;
+                message["jsonrpc"] = json!("2.0");
+                self.reply(conn, &message);
+            }
             (Some(_), Some(id)) if self.mode != Mode::Acp => {
                 self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "terminal mode"}));
                 self.reply(
