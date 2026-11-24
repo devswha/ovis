@@ -45,3 +45,13 @@ it("refuses an unsigned release even when a locally vouched keeper exists", asyn
   writeFileSync(join(release, "ovis-acp-keeper.json"), JSON.stringify({ version }));
   await expect(releaseHelpers(root, "linux-x64", { version, at: new URL("file://" + release).href })).rejects.toThrow("ovis-server.json");
 });
+
+it("does not bless different keeper bytes copied after selection", async () => {
+  const base = mkdtempSync(join(root, "changed-"));
+  mkdirSync(join(base, "bin")); mkdirSync(join(base,"dist")); writeFileSync(join(base,"dist/index.html"), "client");
+  writeFileSync(join(base,"package.json"), JSON.stringify({version}));
+  const file = join(base, "bin/ovis-acp-keeper");
+  writeFileSync(file, "selected"); writeFileSync(file + ".json", JSON.stringify({version, sha256: new Bun.CryptoHasher("sha256").update("selected").digest("hex")}));
+  const helpers = installedHelpers(join(base,"bin"));
+  await expect(stageServerArtifact({ ...helpers, dir: join(base,"server"), dist: join(base,"dist"), nodePty:false, platform:"linux-x64", build: async (_, out) => { writeFileSync(out,"server"); writeFileSync(file,"changed"); } })).rejects.toThrow("SHA-256");
+});

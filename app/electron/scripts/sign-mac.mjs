@@ -5,7 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { run } from "./notarize-dmg.mjs";
 
 const BIN = "Contents/Resources/ovis/server/bin";
@@ -19,11 +19,13 @@ export async function signHostAndRecordHash(host, signing, exec = run) {
   const args = ["--sign", signing.identity, "--force", "--timestamp", "--options", "runtime"];
   if (signing.entitlements) args.push("--entitlements", signing.entitlements);
   if (signing.keychain) args.push("--keychain", signing.keychain);
+  const recordPath = host + ".json";
+  const record = existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, "utf8")) : null;
+  const digest = () => createHash("sha256").update(readFileSync(host)).digest("hex");
+  if ((record || basename(host) === "ovis-acp-keeper") && record?.sha256 !== digest()) throw new Error("Pre-signing SHA-256 mismatch: " + host);
   await exec("codesign", [...args, host]);
-  const recordPath = `${host}.json`;
-  if (!existsSync(recordPath)) return;
-  const record = JSON.parse(readFileSync(recordPath, "utf8"));
-  record.sha256 = createHash("sha256").update(readFileSync(host)).digest("hex");
+  if (!record) return;
+  record.sha256 = digest();
   writeFileSync(recordPath, `${JSON.stringify(record)}\n`);
 }
 

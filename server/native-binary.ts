@@ -30,14 +30,18 @@ function binaryDigest(installed: string): string {
  * so a rewrite of either within one tick of the file clock still counts; only the binary's hash is
  * cached, so attaches do not hash it again.
  */
-export function installedBinaryVouched(installed: string, packageJson: string | null = COMPILED ? null : join(dirname(installed), "..", "package.json")): boolean {
+export function installedBinaryDigest(installed: string, packageJson: string | null = COMPILED ? null : join(dirname(installed), "..", "package.json")): string | null {
   try {
     const record = JSON.parse(readFileSync(`${installed}.json`, "utf8")) as { sha256?: unknown; version?: unknown };
     const version = packageJson === null ? builtVersion : (JSON.parse(readFileSync(packageJson, "utf8")) as { version?: unknown }).version;
-    return typeof record.sha256 === "string" && record.version === version && binaryDigest(installed) === record.sha256;
+    return typeof record.sha256 === "string" && record.version === version && binaryDigest(installed) === record.sha256 ? record.sha256 : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function installedBinaryVouched(installed: string, packageJson?: string | null): boolean {
+  return installedBinaryDigest(installed, packageJson) !== null;
 }
 
 export type BinaryVerdict = { ok: true } | { ok: false; reason: string };

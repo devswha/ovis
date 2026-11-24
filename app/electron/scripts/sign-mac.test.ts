@@ -37,7 +37,7 @@ describe("signHostAndRecordHash", () => {
     mkdirSync(bin, { recursive: true });
     const keeper = join(bin, "ovis-acp-keeper");
     writeFileSync(keeper, "unsigned keeper");
-    writeFileSync(`${keeper}.json`, JSON.stringify({ version: "1.2.3", sha256: "before" }));
+    writeFileSync(`${keeper}.json`, JSON.stringify({ version: "1.2.3", sha256: createHash("sha256").update("unsigned keeper").digest("hex") }));
     const ignore = await signNativeBinaries({ app, identity: "HASH", ignore: (file) => file === "already ignored", optionsForFile: () => ({}) }, codesign);
     expect(readFileSync(keeper, "utf8")).toBe("unsigned keeper + signature");
     expect(JSON.parse(readFileSync(`${keeper}.json`, "utf8"))).toEqual({ version: "1.2.3", sha256: createHash("sha256").update("unsigned keeper + signature").digest("hex") });
@@ -63,4 +63,14 @@ describe("signHostAndRecordHash", () => {
     await signHostAndRecordHash(host, { identity: "HASH" }, codesign);
     expect(existsSync(`${host}.json`)).toBe(false);
   });
+});
+
+it("refuses to sign a changed keeper without refreshing its record", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-changed-")); dirs.push(dir);
+  const file = join(dir, "ovis-acp-keeper");
+  writeFileSync(file, "changed bytes");
+  writeFileSync(file + ".json", JSON.stringify({ sha256: "0".repeat(64) }));
+  await expect(signHostAndRecordHash(file, { identity: "HASH" }, codesign)).rejects.toThrow("SHA-256");
+  expect(readFileSync(file, "utf8")).toBe("changed bytes");
+  expect(JSON.parse(readFileSync(file + ".json", "utf8")).sha256).toBe("0".repeat(64));
 });
