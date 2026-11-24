@@ -1577,6 +1577,37 @@ How often the device asks while it gets no list:
   the service named another list or none and did not answer for the device's own log;
 - never while signed out.
 
+### Meeting a PC
+
+While the app has a PC open that selected the account's list for the session (it is pinned to its
+list, [Two members meet](#two-members-meet)), the device and the PC say where they stand, and each
+hands the other what it lacks (`listGossip.ts`, over `POST /api/account/list/head` and
+`POST /api/account/list/page`):
+
+- at once, at every new carrier of the session (each is a new session at the PC), whenever the
+  device's own copy moves its head, and every five minutes while the session is up. So a removal
+  this device places reaches the open PC at once, and one the account service withholds from a PC
+  reaches it the next time any device of the account that holds it opens that PC;
+- the device says its footing; what the PC answers of its own entries (`page`) is taken by the
+  device's follower as a page from a peer (`takeFromPeer`: never a full read, saved under the
+  account's lock as a round saves); what the PC asks for (`asks`) is handed over, once an exchange,
+  following each earlier place the PC asks for next;
+- where the device needs the PC's entries after another place (the PC holds more, another entry at
+  a place the device holds, or the device looks for where two histories part), it asks for them in
+  the head call (`asks`), and judges what comes back. Two histories that members signed raise the
+  alarm on both sides; one that holds only what its writer left behind raises it on the side that
+  is shown the other;
+- at most 24 of the two calls a minute for one session (the PC takes 30), a `429` waits its
+  `retry-after`, and what a minute's calls did not finish (the device's read, or the PC's next
+  asked place) goes on at the next exchange of the same session from where it got to, while the
+  device stands where it stood;
+- a page whose save fails is acted on from memory all the same (a removal stands at once), is not
+  said to be taken, and the next round writes it first, over the text it was taken on.
+
+Nothing is asked of a PC that follows no list (it did not select the list for the session), and
+nothing by a device that follows none: an account with no list sends no request and no frame it
+did not send before. Entries prove themselves, so neither side is trusted for who is in.
+
 ### What the device says is wrong
 
 Each of these is a state the app can show. None takes anybody out of the copy, and none lets
@@ -1584,7 +1615,7 @@ anybody in.
 
 | state | when |
 |---|---|
-| `fork` | the account service showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found |
+| `fork` | the account service, or a PC this device met, showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found, and signs nothing |
 | `stuck` | the account service shows another history under what the device holds, which no member signed |
 | `other_list` | the account service names another list for the account than the one the device follows |
 | `refused` | the log holds an entry that does not hold: a changed byte, a broken chain |
@@ -1594,6 +1625,18 @@ anybody in.
 
 A name that does not open for another reason (no wrap yet, a wrap that was spoiled on the way) is
 a device or a PC without a name, and no state: it is no evidence of anything.
+
+**The alarm on the screen.** A device whose copy holds `fork` says so in a part of its own at the
+top of Manage account's lists, and in one line on My PCs that points there: **Two different
+histories of your account's list were seen**. It names no device or PC as the cause. It says that
+the devices and PCs already in keep working and that this device lets nobody new in while it
+shows, and it gives the way back of [What a person does](#two-histories), one device or PC at a
+time: reset one (a device: disconnect it from the account, sign in again and be allowed from
+another device or PC; a PC: Revoke all, then add it again), look at what it shows and remove what
+is not the person's at that same device or PC, check it is gone there before the next, and stop
+where two of them still differ. A pinned PC says the same in its own words, in `reason` of
+`GET /api/account/list` and in the account's status, which `ovis status --json` shows as
+`list.reason`.
 
 ### What the app reads
 
@@ -1615,7 +1658,8 @@ once it goes by the list:
   on (the device's state, its keys, the epoch keys it holds), or none for a device that may not
   sign. A device of power `bound` has one only for the removal of its own key
   (`writer({ self: true })`), which the signers' rules let any signer write. `gossip()` and `pageAfter(place, limit)`: where the device stands, and its entries after a
-  place, for another member.
+  place, for another member. `compare(head)` and `takeFromPeer(page, read)`: how the device
+  stands against a PC's head, and a page that PC handed it ([Meeting a PC](#meeting-a-pc)).
 - `subscribe`, `sync` (one read now), `due` (when the next read is due), `forget` (a person's reset).
 
 ### Compared with the directory
