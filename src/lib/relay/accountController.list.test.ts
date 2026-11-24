@@ -42,6 +42,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
   const list: AccountList = {
     sync: async () => { calls.push("sync"); return OFF; },
     follows: async () => false,
+    shown: () => Math.floor(Date.now() / 1000),
     view: () => OFF,
     subscribe: (listener) => { heard.push(() => listener(OFF)); return () => {}; },
     holdsPc: () => false,
@@ -119,6 +120,25 @@ describe("the hosted shell and the account's signed list", () => {
     await account.refresh(false, true);
     await settle();
     expect(calls.slice(4)).toEqual(["sync", `shadow acct-two ${"a1".repeat(16)},${"b2".repeat(16)} opens:`]);
+  });
+
+  it("stops following the list once it is disposed: no later round reads it", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    let viewed = "acct-one";
+    list.view = () => inList(viewed);
+    const account = controller(list);
+    await account.refresh(true);
+    await settle();
+    const reads = (): number => calls.filter((call) => call === "sync").length;
+    expect(reads()).toBe(1);
+    account.dispose();
+    // what would begin a round: another sign-in, read by a refresh
+    viewed = "acct-two";
+    await signIn("acct-two");
+    await account.refresh(false, true);
+    await settle();
+    expect(reads()).toBe(1);
   });
 
   it("compares nothing for a sign-in that ended while it read this device's pairings", async () => {

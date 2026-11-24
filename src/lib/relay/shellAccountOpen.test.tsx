@@ -51,6 +51,8 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
     waits?: boolean; adopted?: (offer: { list: string; seq: number; hash: string }) => void;
     /** until when the list holds this device, in seconds; absent: for good */
     until?: () => number | null;
+    /** the time the device shows by, held against the latest it saved; its clock by default */
+    shown?: () => number;
   };
   newUntil?: string | null; label?: string;
   /**
@@ -122,6 +124,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
     shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer) => { listed.adopted?.(offer); return listView(); }, writer: () => null, placeAt: () => null,
     holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
     kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
+    shown: () => listed.shown?.() ?? Math.floor(Date.now() / 1000),
   };
   const mountAt = (entryUrl: string) => { loads++; return mountRelayShell({
     container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore, ...(label === undefined ? {} : { label }), ...(accountList === undefined ? {} : { accountList }),
@@ -887,6 +890,31 @@ it("a PC that begins to let devices in by the list under an open session is open
   expect(removedPcs()[run.serverId]).toBeUndefined();
 });
 
+it("a PC of the list that follows none yet, opened the way from before, is opened with the list key by itself once it pins: the one retry is each sign-in's own", async () => {
+  const came: string[] = [];
+  const fatal: ((error: Error) => void)[] = [];
+  const again = Promise.withResolvers<void>();
+  let pinned = false;
+  const run = await accountPc({ listed: { holds: true }, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    came.push(how);
+    if (!pinned && how === "list") throw new AccountListUnsupportedError();
+    if (pinned && how !== "list") throw new MuxProtocolError("account_list_required", "");
+    if (options?.onFatal) fatal.push(options.onFatal);
+    if (pinned) again.resolve();
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["list", "sign-in"], 1]);
+  // the PC pins, and ends the session that came with the key of the sign-in
+  pinned = true;
+  fatal[0]!(new MuxProtocolError("account_list_required", ""));
+  await again.promise;
+  await run.settled(() => run.apps() === 2);
+  expect([came, run.apps(), run.navigations]).toEqual([["list", "sign-in", "list"], 2, []]);
+});
+
 it("a launch asks to join no PC that this device's list of the account does not hold: its row waits for a tap", () => {
   const row = (id: string, more: Partial<MyPc> = {}): MyPc => ({ server_id: id, name: id, state: "needs-approval", last_seen_at: new Date().toISOString(), added_at: null, listed: true, paired: false, linked: false, join: { server_public_key: "k", relay: "wss://relay.ovis.sh" }, ...more });
   expect(accountLaunchPcs([row("outside", { notInList: true }), row("held", { byList: true }), row("plain")]).map((pc) => pc.server_id).sort()).toEqual(["held", "plain"]);
@@ -1015,4 +1043,21 @@ it("a device whose own time in the list is over is told that, when the PC ends i
   expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-time-over" });
   expect(removedPcs()[run.serverId]).toBeUndefined();
   expect(run.navigations).toEqual([]);
+});
+
+it("a device whose clock was set back after its time ran out is still told that its time is over, by the time it saw before", async () => {
+  const fatal: ((error: Error) => void)[] = [];
+  const now = Math.floor(Date.now() / 1000);
+  // the list holds this device for another hour by its clock as it reads now; the latest time it saved is two hours on
+  const listed = { holds: true, until: () => now + 3600, shown: () => now + 7200 };
+  const run = await accountPc({ listed, open: async (offer, options) => {
+    if (options?.onFatal) fatal.push(options.onFatal);
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  fatal[0]!(new MuxProtocolError("auth_revoked", ""));
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-time-over" });
+  expect(removedPcs()[run.serverId]).toBeUndefined();
 });

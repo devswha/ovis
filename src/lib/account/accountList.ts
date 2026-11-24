@@ -478,6 +478,12 @@ export interface AccountList {
    */
   cancel(request: WaitingRequest): Promise<void>;
   view(): AccountListView;
+  /**
+   * The time by which this device shows whose time is over and judges what a press admits, in seconds: its own clock,
+   * never less than the latest time it saved and the list's own time (ListWriter.shown); its own clock where it holds
+   * no list. A date set back after a time ran out shows nobody as in again. It signs nothing.
+   */
+  shown(): number;
   /** Hears each view that differs from the one before. */
   subscribe(listener: (view: AccountListView) => void): () => void;
   /** Whether the PC with this relay key (64 hex) is in the list as this device holds it. */
@@ -1149,6 +1155,11 @@ export function accountList(options: AccountListOptions): AccountList {
       const hash = text === undefined ? null : hashOf(text);
       return hash === null ? null : { seq, hash };
     },
+    shown() {
+      const copy = held?.copy ?? null;
+      const at = seconds();
+      return copy === null || copy.state === null ? at : listClock(copy.state, at, copy.seen_at);
+    },
     writer(options = {}) {
       const copy = held?.copy ?? null;
       const { status } = shown;
@@ -1165,7 +1176,7 @@ export function accountList(options: AccountListOptions): AccountList {
         // member sign a removal, or a time, that nothing undoes
         clock: listClock(copy.state, at, null),
         issued_at: at,
-        shown: listClock(copy.state, at, copy.seen_at),
+        shown: this.shown(),
         adrift: copy.seen_at !== null && at < copy.seen_at - ADRIFT_SECONDS,
       };
     },

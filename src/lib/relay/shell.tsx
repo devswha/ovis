@@ -33,7 +33,7 @@ import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
-import { refusalOf } from "./firstLink.ts";
+import { listRemovedLink, refusalOf } from "./firstLink.ts";
 import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
 import type { PcFinding, ProbeTarget } from "./pcStatus.ts";
 import { accountOpenablePcs, keepLaunchTried, lastFirst, launchTried, openablePcs } from "./pcPick.ts";
@@ -978,8 +978,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
     const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}),
-      // which key this session signed in with stays with it: a refusal at a later reconnect is read by that
-      ...(attempt.listOpen ? { listOpen: attempt.listOpen } : {}), ...(attempt.retriedListOpen ? { retriedListOpen: true } : {}) };
+      // which key this session signed in with stays with it: a refusal at a later reconnect is read by that. That the
+      // other key was tried once on the way here ends with this sign-in: a PC that pins later is asked once more
+      ...(attempt.listOpen ? { listOpen: attempt.listOpen } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -1106,6 +1107,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
       if (linkRefused(opened, attempt, error)) return;
+      // The account's signed list removed this PC, and it takes no link into that account until it is a new PC. This
+      // pairing was not made for the account alone (no mark), so it stands and nothing is forgotten; while its own
+      // screen is still up, that screen says why the account did not take the PC, in place of the app.
+      if (listRemovedLink(error) && app === null && last === attempt && transport === opened && (shown?.kind === "connecting" || shown?.kind === "ready")) {
+        frontSteps?.abort();
+        frontSteps = null;
+        transport = null;
+        show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id });
+        return;
+      }
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment: "failed" });
     }).finally(() => { enrolling.delete(opened); if (transport !== opened) opened.close(); });
