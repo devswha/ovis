@@ -970,12 +970,17 @@ that they are in one place when it is built:
   takes no entry dated more than ten minutes ahead of its clock, and the list's own time never
   goes back, so a device whose clock runs ahead uses the time the service's last answer carried.
 - **What the service answers a placement** besides taking it: `409 head_moved` (read, sign
-  again), `503 list_rebuilding` (the same request again, the same signatures), `503 list_stopped`
-  (told as "the list cannot be changed right now", never as a removal), `429 entry_budget` (wait
-  as long as it says).
+  again), `503 list_rebuilding` (the same request again, the same signatures), `429 entry_budget`
+  (wait as long as it says), and `503 list_stopped`, which is told in these words and never as a
+  removal: "The account service cannot change the list right now. To remove a device, use Revoke
+  on each PC."
 - **A device of power `full` that is in front does that tidying by itself** when it sees such an
   invite or device, at the list's own pace, without waiting for somebody's next act.
 - An invite past its `exp` is shown as expired, never as open.
+- **An invite that a PC joins with by itself is for one PC.** It is one key pair for two things,
+  the invite the account service keeps (`POST /v1/pc-invites`) and the list's `invite` entry, and
+  the service lets one PC join with it whatever the entry's `uses` say. So the device writes
+  `uses` 1 and offers no other number.
 
 ### Which list it follows
 
