@@ -8,8 +8,8 @@ import type { ConversationMetadata, ConversationPart, ConversationTurn, HerdrPan
 import { herdrRpc } from "./herdr/client.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import type { HermesMessage } from "./dialogs/hermes-record.ts";
-import { readSqliteSnapshot } from "./sqlite-snapshot.ts";
-import { fileTask } from "./file-pool.ts";
+import { readSqliteSnapshot, SnapshotUnavailable } from "./sqlite-snapshot.ts";
+import { FileBusyError, fileTask } from "./file-pool.ts";
 import { toolSummary } from "./transcript-records.ts";
 import { TOOL_OUTPUT_CHARS, trimOutput } from "./tool-output.ts";
 import { darwinTerminal } from "./darwin-process.ts";
@@ -519,13 +519,14 @@ export const HERMES_PENDING_BYTES = 64 * 1024 * 1024;
  */
 export function hermesPendingMessages(dbPath: string, sessionId: string): HermesMessage[] {
   return readSqliteSnapshot(dbPath, (db) => db.query<HermesMessage, [string, number]>(
-    "SELECT role, tool_calls, tool_call_id FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+    "SELECT role, tool_calls, tool_call_id FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id DESC LIMIT ?",
   ).all(sessionId, HERMES_PENDING_ROWS).reverse(), null, HERMES_PENDING_BYTES, undefined, "always");
 }
 
 /** `hermesPendingMessages` on a file thread: copying state.db must not hold the server's thread. */
 export async function hermesPendingMessagesOffThread(dbPath: string, sessionId: string): Promise<HermesMessage[]> {
-  return await fileTask<HermesMessage[]>({ op: "hermes-pending", path: dbPath, session: sessionId });
+  try { return await fileTask<HermesMessage[]>({ op: "hermes-pending", path: dbPath, session: sessionId }); }
+  catch (error) { throw error instanceof FileBusyError ? error : new SnapshotUnavailable(); }
 }
 
 /** Page contents name the cache version so WAL edits invalidate unchanged row counts. */
