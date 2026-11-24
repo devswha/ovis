@@ -1,3 +1,3 @@
 ### Fixed
-- Typing in Chat no longer stutters while other panes are busy: an event from another pane used to
-  draw every message of the open conversation again, which a phone could not keep up with.
+- An event from another pane no longer draws every message of the open conversation again, which
+  made typing in Chat stutter on a phone while other panes were busy.
