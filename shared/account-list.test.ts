@@ -9,7 +9,7 @@ import {
 import {
   CARD_SIGNATURE_CHARS, EPOCH_LINK_BYTES, INVITE_SECONDS_MAX, INVITE_USES_MAX, LIST_CARD_PREFIX, LIST_LEVEL, LIST_LEVEL_TABLE, LIST_READ_PREFIX, ListKindError, ReadProofError,
   SEALED_MIN_BYTES, admitsDevice, cardBytes, cardHolds, checkReadProof, firstListState, holdsPc, inviteRefusal, isListKey, isListLabel, kindBody, listView, namesFields, readKind,
-  readListState, readNames, readProofRefusal, replayList, rowsNamed, shownList, signCard, signReadProof, takeEntry, wrapKeys,
+  readListState, readNames, readProofRefusal, replayList, rowsNamed, sealEpoch, shownList, signCard, signReadProof, takeEntry, wrapKeys,
   type EntryPlace, type ListCard, type ListCopy, type ListKind, type ListOutcome, type ListRole, type ListState, type ReadProof, type Sealed,
 } from "./account-list.ts";
 import { judgeEntry, listHead, readSignersState, signerPower, signingPlace } from "./account-list-signers.ts";
@@ -263,6 +263,10 @@ describe("the names an entry seals", () => {
     const fields = (values: Record<string, string | Uint8Array>) => Object.entries(values).map(([name, value]) => ({ name, value: typeof value === "string" ? utf8ToBytes(value) : value }));
     expect(readNames(fields({ label: "Desk", os: "beos" }))).toEqual({ label: "Desk", os: null });
     expect(readNames(fields({ label: "Desk", os: "linux", room: "attic" }))).toEqual({ label: "Desk", os: "linux" });
+    // What pads a sealed text to a fixed size is a field named `pad`: it is no name, and a writer of names writes none.
+    expect(readNames(fields({ label: "Desk", os: "linux", pad: new Uint8Array(200) }))).toEqual({ label: "Desk", os: "linux" });
+    expect(readNames(fields({ pad: new Uint8Array(200) }))).toBeNull();
+    expect(namesFields({ label: "Desk", os: "linux" }).some((item) => item.name === "pad")).toBe(false);
     expect(readNames(fields({ os: "linux" }))).toBeNull();
     expect(readNames(fields({ label: " Desk" }))).toBeNull();
     expect(readNames(fields({ label: Uint8Array.from([0xff, 0xfe]) }))).toBeNull();
@@ -788,9 +792,51 @@ describe("the names an entry carries, and the epochs they are sealed under", () 
       [owner, device(phone)], [owner, pc(desk, 1)], [owner, invite(pool, 2)], [pool, join(2)], [owner, invite(plain, 1, false)], [owner, carried(late)], [owner, carriedPc(3)],
       [owner, device(tablet, "bound")], [tablet, remove(tablet)], [owner, invite(pool2, 1)], [owner, remove(pool2)],
     ]);
-    expect(wrapKeys(state)).toEqual([owner.enc, phone.enc, desk.enc, pool.key, m2.enc]);
+    expect(wrapKeys(state, T0)).toEqual([owner.enc, phone.enc, desk.enc, pool.key, m2.enc]);
     const after = await play([[owner, device(phone)], [owner, pc(desk, 1)], [owner, invite(pool, 1)], [pool, join(2)], [owner, carried(late)], [late, cardOf(late)], [owner, remove(phone)], [owner, remove(desk)], [owner, removePc(2)]]);
-    expect(wrapKeys(after.state)).toEqual([owner.enc, late.enc]);
+    expect(wrapKeys(after.state, T0)).toEqual([owner.enc, late.enc]);
+  });
+
+  test("an invite past its exp and a device past its until get no key, by the clock of whoever wraps; nobody is put out by that clock", async () => {
+    const { state } = await play([[owner, device(tablet, "bound", "drive", { until: String(T0 + 86400) })], [owner, invite(pool, 2, true, T0 + 900)], [owner, invite(pool2, 2, true, T0 + 7200)]]);
+    expect(wrapKeys(state, T0)).toEqual([owner.enc, tablet.enc, pool.key, pool2.key]);
+    expect(wrapKeys(state, T0 + 899)).toEqual([owner.enc, tablet.enc, pool.key, pool2.key]);
+    expect(wrapKeys(state, T0 + 900)).toEqual([owner.enc, tablet.enc, pool2.key]);
+    expect(wrapKeys(state, T0 + 86399)).toEqual([owner.enc, tablet.enc]);
+    expect(wrapKeys(state, T0 + 86400)).toEqual([owner.enc]);
+    // The clock chooses only whom a key is wrapped to: the invite still lets a PC in, and the device is still a signer.
+    expect([inviteRefusal(state, pool.key), signerPower(state, tablet.key), (await play([[owner, invite(pool, 2, true, 1)], [pool, join(1)]])).said.at(-1)]).toEqual([null, "bound", "counts"]);
+  });
+
+  test("the epoch a writer seals under: the current one, and only when it was opened after the last entry that put a key out", async () => {
+    const at0 = { epoch: 0, opens: OPENS(0) };
+    const sealing = async (steps: readonly Step[]) => sealEpoch((await play(steps)).state);
+    expect(await sealing([])).toEqual(at0);
+    expect(await sealing([[owner, device(phone)], [owner, pc(desk, 1)], [owner, invite(pool)], [pool, join(2)], [owner, carriedPc(3)]])).toEqual(at0);
+    // Whoever is put out holds the key of the epoch it was put out in: nothing more is sealed under it.
+    const before: Step[] = [[owner, device(phone)], [owner, pc(desk, 1)], [owner, invite(pool)], [pool, join(2)], [owner, carriedPc(3)], [owner, device(tablet, "bound")]];
+    for (const out of [[owner, remove(phone)], [owner, remove(desk)], [owner, remove(pool)], [pool, remove(pool)], [owner, removePc(2)], [owner, removePc(3)], [tablet, remove(tablet)]] as Step[]) {
+      expect(await sealing([...before, out])).toBeNull();
+      expect(await sealing([...before, out, [owner, device(late)]])).toBeNull();
+      expect(await sealing([...before, out, [owner, opening(0)]])).toEqual({ epoch: 1, opens: OPENS(1) });
+    }
+    // A device that hands its place to a new key puts the old key out; so does an entry a member cannot read.
+    expect(await sealing([[owner, carried(phone)], [phone, { ...(await device(late)), ends: phone }]])).toBeNull();
+    expect(await sealing([[owner, device(phone)], [owner, later(2, { ends: phone })]])).toBeNull();
+    // An epoch opened before the removal does not count, and one opened by the member that is then put out is used by nobody.
+    expect(await sealing([[owner, device(phone)], [owner, opening(0)], [owner, remove(phone)]])).toBeNull();
+    expect(await sealing([[owner, device(phone)], [phone, opening(0)], [owner, remove(phone)]])).toBeNull();
+    expect(await sealing([[owner, device(phone)], [phone, opening(0)], [owner, remove(phone)], [owner, opening(1)]])).toEqual({ epoch: 2, opens: OPENS(2) });
+    // What put nobody out changes nothing: a refused removal, a key that was no member's, a signer with no name.
+    expect(await sealing([[owner, device(phone)], [owner, remove(stranger)], [owner, removePc(9)]])).toEqual(at0);
+    expect(await sealing([[owner, plus(await device(phone), { role: "admin" })], [owner, remove(phone)]])).toEqual(at0);
+  });
+
+  test("a member that is stopped for a replay seals nothing", async () => {
+    const { links, state } = await play([[owner, later()]]);
+    const entry = await next(at(links, 1), stranger, later());
+    const stopped = (await takeEntry(state, entry.held)).state;
+    expect([sealEpoch(state), stopped.needs_replay?.seq, sealEpoch(stopped)]).toEqual([{ epoch: 0, opens: OPENS(0) }, 2, null]);
   });
 });
 

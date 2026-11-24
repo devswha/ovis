@@ -871,19 +871,43 @@ export function admitsDevice(state: ListState, key: string, now: number): ListRo
 }
 
 /**
- * The encryption keys that the key of an epoch is wrapped to, in the order they came in: that of every device
- * that is in and has named one, that of every PC that is in and has one, and the own key of every open invite
- * that a PC joins with by itself. The last lets such a PC, which joins with nobody else awake, open the names,
- * seal its own and wrap the key to itself. Whoever is out is not among them.
+ * The encryption keys that the key of an epoch is wrapped to at `now` (seconds since 1970, by the caller's own
+ * clock), in the order they came in: that of every device that is in, has named one and is not past its `until`;
+ * that of every PC that is in and has one; and the own key of every open invite that a PC joins with by itself
+ * and that is not past its `exp`. The last lets such a PC, which joins with nobody else awake, open the names,
+ * seal its own and wrap the key to itself. Whoever is out is not among them, and neither is an invite or a
+ * borrowed browser whose time is over: whoever still holds its key would otherwise read every later name. The
+ * clock chooses only whom a key is wrapped to; it is no verdict on any entry, and no member lets anybody in or
+ * puts anybody out by it.
  */
-export function wrapKeys(state: ListState): string[] {
+export function wrapKeys(state: ListState, now: number): string[] {
   const view = listView(state);
   const keys = [
-    ...view.devices.filter((row) => row.ended === null).map((row) => ({ seq: row.seq, key: row.enc })),
+    ...view.devices.filter((row) => row.ended === null && (row.until === null || now < row.until)).map((row) => ({ seq: row.seq, key: row.enc })),
     ...view.pcs.filter((row) => row.removed === null).map((row) => ({ seq: row.seq, key: row.enc })),
-    ...view.invites.filter((row) => row.refusal === null && row.auto).map((row) => ({ seq: row.seq, key: row.key })),
+    ...view.invites.filter((row) => row.refusal === null && row.auto && now < row.exp).map((row) => ({ seq: row.seq, key: row.key })),
   ];
   return [...new Set(keys.sort((a, b) => a.seq - b.seq).flatMap(({ key }) => (key === null ? [] : [key])))];
+}
+
+/**
+ * The epoch a writer seals an entry's names under, with the commitment to its key, or null when it must seal
+ * nothing and write its entry with no names. It is the current epoch, and only when the entry that opened it
+ * stands after the last entry that put out a key an epoch's key may have been wrapped to: the `ends` of a
+ * device's, a PC's or an invite's key (a revoked invite among them), and the `remove` of a PC by its relay key.
+ * Whoever was put out holds the key of every epoch opened before that, so names sealed under one of those are
+ * names it reads. Entry 0 is the one entry this is not asked for: it opens epoch 0 itself. No writer decides
+ * this for itself; a member that is stopped for a replay seals nothing.
+ */
+export function sealEpoch(state: ListState): { readonly epoch: number; readonly opens: string } | null {
+  if (state.needs_replay !== undefined) return null;
+  const current = state.epochs[state.epoch];
+  if (current === undefined) return null;
+  const out = [
+    ...Object.values(state.signers).map((row) => (row.as === null ? null : row.ended)),
+    ...Object.values(state.pcs).map((row) => row.removed),
+  ];
+  return out.some((seq) => seq !== null && seq >= current.seq) ? null : { epoch: state.epoch, opens: current.opens };
 }
 
 /** Whether the PC with this relay key is in the list: any row that is not out. A member that is stopped for a replay answers for nobody. */

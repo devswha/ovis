@@ -184,6 +184,11 @@ What the kinds add to the signers' rule:
   it names the current one, so of two members that open it at once one does. A removal opens none
   by itself: whoever puts a member out places an `epoch` entry after the `remove`, and a member
   that signs itself out leaves that to one that stays.
+- **A writer seals nothing under an epoch that somebody who is out can read.** It seals under the
+  current epoch only when the entry that opened it stands after the last entry that put a key out
+  (the `ends` of a device's, a PC's or an invite's key, the `remove` of a PC by its relay key);
+  otherwise it writes its entry with no names. This is the writer's rule (`sealEpoch`), which no
+  writer works out for itself; an entry that breaks it still counts.
 - **A member judges no time but one.** A device with `until` is let in only before that second by
   each PC's own clock; it stays a signer of its power after it, and so can still end itself.
 
@@ -224,7 +229,8 @@ What is sealed is fields in the form of a body's fields: `label`, and `os` when 
 `label` is a name: 1 to 48 UTF-16 units, no control character, no unpaired surrogate, and of white
 space only single spaces inside it. `os` is one of `ios`, `android`, `macos`, `windows`, `linux`,
 `chromeos`. A reader takes an OS word it does not know as none and passes by a field it does not
-know, so a later build may say more.
+know, so a later build may say more; a field named `pad`, which fills a sealed text up to a fixed
+size, is such a field and no name.
 
 An **epoch** is the time one such key is in use. Entry 0 opens epoch 0, and each `epoch` entry
 opens the next. What opens an epoch says two things of it in the clear: `epoch_opens`, a commitment
@@ -253,8 +259,11 @@ Nothing is ever deleted. A device or an invite is in while its key is a signer, 
 `removed` is empty. A PC lets a device in while the device is in and, when it has an `until`, before
 that second, as what its `role` says. The key of an epoch is wrapped to the encryption key of each
 device and PC that is in, and to the own key of each open invite with `auto` `1`, so that a PC
-which joins with nobody else awake can read the names and seal its own. A member that stopped for
-a replay answers for nobody until it has replayed.
+which joins with nobody else awake can read the names and seal its own. Whoever wraps leaves out a
+device past its `until` and an invite past its `exp`, by its own clock, so that an old line or a
+borrowed browser is given no later key; that clock chooses only whom a key is wrapped to, and lets
+nobody in and puts nobody out. A member that stopped for a replay answers for nobody until it has
+replayed.
 
 Every entry that holds comes to one of these, the same for every member of one level and for the
 account service:
