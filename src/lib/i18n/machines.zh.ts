@@ -163,6 +163,8 @@ export const MACHINES_ZH: Record<string, string> = {
   "That address now reaches another PC. Nothing was added.": "该地址现在连到另一台电脑。未添加任何内容。",
   "It is in your account, but its relay is not online yet, so your devices cannot open it. Run ovis status on that PC to see why.": "它已在你的账号中，但其中继尚未上线，你的设备还无法打开它。请在那台电脑上运行 ovis status 查看原因。",
   "That PC is in another account.": "那台电脑在另一个账号中。",
+  "This PC cannot add other PCs to your account's list. Run ovis add on that PC instead.": "这台电脑无法把其他电脑加入账户名单。请在那台电脑上运行 ovis add。",
+  "Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.": "请先更新那台电脑上的 Ovis，再重新添加：它现在的 Ovis 无法加入账户名单。",
   "Add it with the number on the server's Ovis page.": "请用服务器 Ovis 页面上显示的数字添加。",
   "Sign in again on this PC, then add it again.": "请在这台电脑上重新登录，然后再次添加。",
   "It was not added to your account. Try again.": "未能添加到你的账号。请重试。",

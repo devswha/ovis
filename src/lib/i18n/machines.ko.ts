@@ -163,6 +163,8 @@ export const MACHINES_KO: Record<string, string> = {
   "That address now reaches another PC. Nothing was added.": "그 주소가 이제 다른 PC로 연결됩니다. 아무것도 추가하지 않았습니다.",
   "It is in your account, but its relay is not online yet, so your devices cannot open it. Run ovis status on that PC to see why.": "계정에는 들어 있지만 릴레이가 아직 연결되지 않아 기기에서 열 수 없습니다. 그 PC에서 ovis status로 이유를 확인하세요.",
   "That PC is in another account.": "그 PC는 다른 계정에 있습니다.",
+  "This PC cannot add other PCs to your account's list. Run ovis add on that PC instead.": "이 PC는 다른 PC를 계정 명단에 추가할 수 없어요. 그 PC에서 ovis add를 실행하세요.",
+  "Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.": "그 PC의 Ovis를 업데이트한 뒤 다시 추가하세요. 지금 Ovis로는 계정 명단에 들어갈 수 없어요.",
   "Add it with the number on the server's Ovis page.": "서버의 Ovis 페이지에 표시된 번호로 추가하세요.",
   "Sign in again on this PC, then add it again.": "이 PC에서 다시 로그인한 뒤 다시 추가하세요.",
   "It was not added to your account. Try again.": "계정에 추가하지 못했습니다. 다시 시도하세요.",

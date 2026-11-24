@@ -163,6 +163,8 @@ export const MACHINES_JA: Record<string, string> = {
   "That address now reaches another PC. Nothing was added.": "そのアドレスは今は別の PC につながります。何も追加していません。",
   "It is in your account, but its relay is not online yet, so your devices cannot open it. Run ovis status on that PC to see why.": "アカウントには入っていますが、リレーがまだオンラインでないため、デバイスから開けません。その PC で ovis status を実行して理由を確認してください。",
   "That PC is in another account.": "その PC は別のアカウントにあります。",
+  "This PC cannot add other PCs to your account's list. Run ovis add on that PC instead.": "この PC は他の PC をアカウントの名簿に追加できません。その PC で ovis add を実行してください。",
+  "Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.": "その PC の Ovis を更新してから、もう一度追加してください。今の Ovis ではアカウントの名簿に入れません。",
   "Add it with the number on the server's Ovis page.": "サーバーの Ovis ページに表示された番号で追加してください。",
   "Sign in again on this PC, then add it again.": "この PC でもう一度サインインしてから、もう一度追加してください。",
   "It was not added to your account. Try again.": "アカウントに追加できませんでした。もう一度お試しください。",

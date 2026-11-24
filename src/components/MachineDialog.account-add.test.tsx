@@ -181,3 +181,23 @@ test("a connection made again after Sign in again that reaches another PC adds n
   // the first PC's take, and none for the other
   expect(shown.takes).toEqual([{ job_id: "job-1", server_id: shown.fields.server_id }]);
 });
+
+// An account that keeps a signed list: this PC signs that PC into the list itself (server/account/ssh-add-list.ts), so
+// what stops it there is said in words of its own (docs/account.md, "Adding a PC over SSH to an account that keeps a list")
+test("on a list account, a PC that cannot sign another into the list says so and what to do instead, never Added", async () => {
+  const shown = await dialog({ admit: [null], takes: [Response.json({ error: { code: "list_cannot_add", message: "This PC joined your account with an invite" } }, { status: 409 })] });
+  expect(shown.status()).toContain("This PC cannot add other PCs to your account's list. Run ovis add on that PC instead.");
+  expect(shown.status()).not.toContain("Added to your account.");
+});
+
+test("on a list account, an Ovis on that PC too old to be named the list: update it there, then add it again", async () => {
+  const shown = await dialog({ admit: [null], takes: [Response.json({ error: { code: "that_pc_old", message: "That PC's Ovis is too old" } }, { status: 409 })] });
+  expect(shown.status()).toContain("Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.");
+});
+
+test("on a list account, an entry that was not placed is not added, and one that may be in the list says to connect again", async () => {
+  const notPlaced = await dialog({ admit: [null], takes: [Response.json({ error: { code: "list_not_added", message: "not placed" } }, { status: 409 })] });
+  expect(notPlaced.status()).toContain("It was not added to your account. Try again.");
+  const unread = await dialog({ admit: [null], takes: [Response.json({ error: { code: "take_unanswered", message: "That PC is in your account's list, and has not read it yet." } }, { status: 409 })] });
+  expect(unread.status()).toContain("It may have been added. Connect again to check.");
+});

@@ -3,7 +3,9 @@
  * it once the setup job reached that PC's own Ovis: the window lists that PC and admits it with its own sign-in, then
  * asks this PC to hand that PC only the account (POST /api/account/ssh-add); that PC takes the admission itself and turns
  * its relay on. "added" only once that PC is bound and says its relay is online: a listing or an admission alone adds
- * nobody, and a PC nobody can open through its relay is not what was asked for.
+ * nobody, and a PC nobody can open through its relay is not what was asked for. On an account that keeps a signed list,
+ * this PC signs that PC into the list itself, over the same connection ("Adding a PC over SSH to an account that keeps a
+ * list"); the window's steps are the same, and only its words for what stops that are its own.
  */
 import { accountAddRelay, type AccountAddRelay, type AccountAddTarget } from "../../../shared/machines.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
@@ -26,11 +28,14 @@ import type { AccountSession } from "./store.ts";
  * - `other-account`: that PC is in another account; nothing was listed.
  * - `number`: the service refused the admission for want of two-step sign-in: that PC adds itself with its number.
  * - `sign-in-again`: the service refused this sign-in (not fresh, or not this device's own).
+ * - `list-cannot-add`: the account keeps a signed list, and this PC cannot sign another PC into it (it joined by an
+ *   invite, say): that PC adds itself with `ovis add` there.
+ * - `update-that-pc`: the account keeps a signed list, and that PC's Ovis is too old to be named it.
  * - `disconnected`: the SSH connection the take needs ended before it was sent (or the job is gone): connecting again goes on.
  * - `refused`: anything else, the attempt given up or the sign-in changed included.
  */
 export type SshAddOutcome = "added" | "already" | "added-unchecked" | "already-unchecked" | "added-unanswered" | "already-unanswered"
-  | "not-online" | "relay-off" | "maybe" | "other-account" | "number" | "sign-in-again" | "disconnected" | "refused";
+  | "not-online" | "relay-off" | "maybe" | "other-account" | "number" | "sign-in-again" | "list-cannot-add" | "update-that-pc" | "disconnected" | "refused";
 
 /**
  * What this PC said of the take: that PC's relay as it answered (null: not said; `unanswered`: the take's answer was lost and
@@ -78,6 +83,8 @@ async function taken(take: (jobId: string, serverId: string) => Promise<SshTake>
   }
   if ("refused" in said) {
     if (said.refused === "disconnected" || said.refused === "job_not_found") return "disconnected";
+    if (said.refused === "list_cannot_add") return "list-cannot-add";
+    if (said.refused === "that_pc_old") return "update-that-pc";
     return said.refused === "take_unanswered" ? "maybe" : "refused";
   }
   if (said.unanswered === true) return already ? "already-unanswered" : "added-unanswered";
