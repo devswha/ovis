@@ -225,6 +225,8 @@ export function createServer(
     pcUpdateTimings?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number };
     /** how long this PC, added to an account over SSH, waits for its relay to come online before it answers (30 s) */
     accountAddRelayMs?: number;
+    /** How long a join a member allowed waits for that member's entry in the account's list (list-follow.ts LIST_MEMBER_WAIT_MS). */
+    accountListMemberWaitMs?: number;
     tailnetPcs?: TailnetPcsOptions;
     sshCandidates?: SshCandidatesOptions;
     /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
@@ -443,6 +445,7 @@ export function createServer(
     leave: (serverId) => devices.clearAccountBinding("unlisted", LIST_REMOVED, serverId),
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
+    ...(options.accountListMemberWaitMs === undefined ? {} : { memberWaitMs: options.accountListMemberWaitMs }),
     // a folder closed because its other folder's pin could not be taken with its keys and copy opens by itself once they can
     retry: () => { if (pcAccount.retrySibling()) console.info("[account] this PC's list keys and its copy of the list could be read beside its pin: it follows its list again"); },
   });

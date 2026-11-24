@@ -154,7 +154,7 @@ export class RelaySession {
   private welcomed = false;
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
-    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; approvedOwn?: boolean; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
+    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; approvedOwn?: boolean; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; confirmed?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
   private closingReason: SessionError | undefined;
@@ -613,6 +613,7 @@ export class RelaySession {
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
+        sas.confirmed = asked.confirm;
         void asked.decision.then((decision) => {
           if (this.sas !== sas || this.state !== "pair-wait") return;
           if (!decision.approved) { this.close("auth_failed"); return; }
@@ -629,6 +630,8 @@ export class RelaySession {
       case FrameType.PAIR_CONFIRM: {
         if (this.state !== "pair-wait" || !this.sas || this.sas.phoneConfirmed) { this.close("protocol_error"); return; }
         this.sas.phoneConfirmed = true;
+        // whoever may approve the join is told: for a join into the list, its approver signs the entry only now
+        this.sas.confirmed?.();
         this.finishPairing();
         return;
       }

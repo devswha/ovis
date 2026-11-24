@@ -75,6 +75,16 @@ export const LIST_ALLOW_TRIES = 4;
 export const LIST_ALLOW_MS = 90_000;
 /** How long it waits before it sends the same Allow again to a service that is busy with the list. */
 export const LIST_ALLOW_RETRY_MS = 1_000;
+/**
+ * How long a join a member allowed waits for that member's entry to reach this PC's copy: the member signs only once
+ * the new device confirmed its digits, and then signs, places the entry and hands the page over. Under LIST_ALLOW_MS,
+ * which the session and its carrier leave the join.
+ */
+export const LIST_MEMBER_WAIT_MS = 30_000;
+/** While it waits for a member's entry, how often the PC asks the account service for it (a page a member hands over needs no asking). */
+const LIST_MEMBER_READ_MS = 3_000;
+/** And how often it looks at its copy. */
+const LIST_MEMBER_LOOK_MS = 100;
 /** The longest one try waits because the account service asked it to (its `retry-after`). */
 const LIST_ALLOW_RETRY_MAX_MS = 10_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
@@ -218,6 +228,8 @@ export interface ListFollowDeps {
   recheck?(): void;
   /** Whether a session is open on this PC: it then reads more often. */
   busy?(): boolean;
+  /** How long a join a member allowed waits for the member's entry (LIST_MEMBER_WAIT_MS): shorter in a test. */
+  readonly memberWaitMs?: number;
   /** Called at each look at the clock, before anything else: what this PC tries again by itself (a pin its other folder holds). */
   retry?(): void;
 }
@@ -257,7 +269,7 @@ export class ListFollow implements ListAuthority {
   /** The keys to the list's names this PC opened, by list and epoch. */
   private readonly epochKeys = new Map<string, EpochKey>();
   /** The device that is being let in through this PC right now: its row comes in with no join hold. */
-  private allowing: string | null = null;
+  private readonly allowing = new Set<string>();
   /** How far the account service's clock is ahead of this PC's, in seconds, by its last answer. */
   /** The clock (`seen_at`) of the copy as it was last saved. */
   private savedAt: number | null = null;
@@ -646,18 +658,51 @@ export class ListFollow implements ListAuthority {
    */
   allowDevice(device: AllowedDevice, sign: boolean): Promise<AllowOutcome> {
     const no = (refused: AllowRefusal, detail: string | null = null): AllowOutcome => ({ refused, detail });
-    return this.enqueue(async () => {
-      this.allowing = device.key;
+    const decided = async (work: Promise<AllowOutcome>): Promise<AllowOutcome> => {
+      this.allowing.add(device.key);
       try {
-        const outcome = await this.allow(device, sign, no);
+        const outcome = await work;
         // let in by a person's decision: its row waits no join hold, also one a read made a moment before the decision
         if ("allowed" in outcome) this.settle();
         return outcome;
-      } finally { this.allowing = null; }
-    });
+      } finally { this.allowing.delete(device.key); }
+    };
+    // A member's entry is waited for outside the queue: half a minute of waiting holds back no read, and no page
+    return sign ? this.enqueue(() => decided(this.allow(device, no))) : decided(this.awaitMember(device, no));
   }
 
-  private async allow(device: AllowedDevice, sign: boolean, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
+  /**
+   * A member allowed the device and signs its entry itself, once the new device confirmed its digits: the PC signs
+   * nothing, and waits for that entry to reach its copy (the member hands the page over, or the account service shows
+   * it), LIST_MEMBER_WAIT_MS at most. What this PC itself holds against the key is asked at each look.
+   */
+  private async awaitMember(device: AllowedDevice, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
+    const scope = this.bound();
+    if (scope === null || !this.isPinned) return no("not_pinned");
+    await this.ready;
+    const deadline = performance.now() + (this.deps.memberWaitMs ?? LIST_MEMBER_WAIT_MS);
+    let askedAt = Number.NEGATIVE_INFINITY;
+    let lastLook = false;
+    for (;;) {
+      if (!this.live(scope) || !this.isPinned || this.problem !== null) return no("unavailable");
+      if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
+      const copy = this.copy;
+      const place = copy === null || copy.state === null ? null : placeOf(copy, device);
+      if (place !== null) return { allowed: place };
+      const left = deadline - performance.now();
+      if (left <= 0) {
+        // the time is over: the account service is asked once more before the device is told it is not in the list
+        if (lastLook) return no("not_in_list");
+        lastLook = true;
+        await this.readNow();
+        continue;
+      }
+      if (performance.now() - askedAt >= LIST_MEMBER_READ_MS) { askedAt = performance.now(); void this.readNow(); }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(left, LIST_MEMBER_LOOK_MS)));
+    }
+  }
+
+  private async allow(device: AllowedDevice, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
     {
       const scope = this.bound();
       if (scope === null || !this.isPinned) return no("not_pinned");
@@ -670,7 +715,7 @@ export class ListFollow implements ListAuthority {
       // One signature per place: the request as it was signed, and the head it was signed on. It is sent again as it
       // is while this PC's own copy shows that head; another is signed only once the copy shows a new one
       let request: { readonly onHead: string; readonly entries: readonly string[]; readonly wraps: readonly { epoch: number; member: string; wrap: string }[] } | null = null;
-      let last: AllowRefusal = sign ? "head_lost" : "not_in_list";
+      let last: AllowRefusal = "head_lost";
       // how long the next try waits; nothing waits after the last one
       let wait = 0;
       for (let tries = 0; tries < LIST_ALLOW_TRIES; tries++) {
@@ -683,13 +728,6 @@ export class ListFollow implements ListAuthority {
         // in already: this PC's own entry that the log now shows, or one a member placed
         const place = placeOf(copy, device);
         if (place !== null) return { allowed: place };
-        if (!sign) {
-          // a member allowed it and signs the entry itself: the PC waits a few seconds for that entry to reach its copy
-          // (the member hands it over, or the account service shows it), and signs nothing
-          wait = LIST_ALLOW_RETRY_MS;
-          await this.read(scope);
-          continue;
-        }
         const cannot = keys.key !== copy.me.key ? "unavailable" : cannotAllow(copy);
         if (cannot !== null) return no(cannot);
         if (request === null || request.onHead !== state.footing.hash) {
@@ -731,11 +769,13 @@ export class ListFollow implements ListAuthority {
 
   /** The `device` entry of an Allow on the copy's footing, with the wrap of the names' key for the newcomer when this PC holds that key. */
   private async writeAllow(copy: FollowerCopy, state: ListState, device: AllowedDevice, keys: PcListKeys) {
-    // By this PC's own clock, never the account service's: the list's own time moves with what a member signs, so a
-    // service that says tomorrow must not make this PC sign tomorrow, which would end every borrowed device at once
-    // and could not be undone. Whether names may be sealed is judged on the clock held against its saved floor
+    // By this PC's own clock as it reads now, never the account service's: the list's own time moves with what a
+    // member signs, so a service that says tomorrow must not make this PC sign tomorrow, which would end every borrowed
+    // device at once and could not be undone. The hour this PC saved is for letting in and refusing only: it signs
+    // nothing and decides nothing that is signed, so an hour that was once pushed ahead keeps no names from being
+    // sealed (sealEpoch holds the clock against the list's own time itself)
     const now = this.seconds();
-    const seal = sealEpoch(state, Math.max(now, copy.seen_at ?? 0));
+    const seal = sealEpoch(state, now);
     const epochKey = seal === null ? null : await this.epochKey(copy, state, seal.epoch, keys);
     let sealed: Sealed | null = null;
     const wraps: { epoch: number; member: string; wrap: string }[] = [];
@@ -1248,7 +1288,7 @@ export class ListFollow implements ListAuthority {
       // what the list put out first, so that nothing the commit lets in stands beside a key that is out
       this.keepRemovals(copy);
       const rows = listCommit(copy, now);
-      this.deps.commit?.(this.alarmLost || this.mustRead ? { ...rows, devices: rows.devices.map((row) => ({ ...row, eligible: false })) } : rows, readmission, pinning ? () => true : (key) => key === this.allowing);
+      this.deps.commit?.(this.alarmLost || this.mustRead ? { ...rows, devices: rows.devices.map((row) => ({ ...row, eligible: false })) } : rows, readmission, pinning ? () => true : (key) => this.allowing.has(key));
       this.dirty = !alarmKept;
     } catch (error) {
       this.dirty = true;

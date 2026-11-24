@@ -1651,8 +1651,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.
 - **The PC signs and places the entry.** A `device` entry with full power and the role `drive`,
   written through the list's own writer, which signs nothing that would not count: a card that is
-  not that key's for this list is never signed over. It is signed by this PC's own clock, never an
-  hour the account service names. The device's name is sealed under the list's key, and that key
+  not that key's for this list is never signed over. It is signed by this PC's own clock as it
+  reads now, never an hour the account service names, and never the hour the PC saved: that one
+  lets in and refuses, and decides nothing that is signed. The device's name is sealed under the list's key, and that key
   is wrapped to the device, when the PC holds it; without it the device is let in all the same and
   reads no names yet. The PC sends the entry to the account service (`POST /v2/pc/list/entries`,
   with its proof), which places it only while a sign-in of the account has claimed that key: a PC
@@ -1679,8 +1680,14 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   new head. Four tries in all. Any other refusal ends it at once: a budget, a service that changes
   the list for nobody (`list_stopped`), a key this PC itself keeps out.
 - **A join a member device allows** is let in only when an entry of the list lets the device in:
-  the PC signs nothing on a member's approval. The member signs the entry, places it and may hand
-  it to the PC; the PC waits a few seconds for it to be in its copy, then answers as above.
+  the PC signs nothing on a member's approval. The member signs only after the new device
+  confirmed its digits, so a device that gives up before that is nobody's member: a waiting join
+  says `confirmed: true` in `GET /api/relay/pairings` (and the `remote-pairings` event is sent
+  again) once the new device's person said the digits match. The member then approves, signs the
+  entry, places it and may hand it to the PC. From the moment the approval and the confirm are
+  both in, the PC waits 30 seconds for the entry to be in its copy: it asks the account service
+  every 3 seconds, takes a page a device hands over at once, asks the service once more at the
+  end, and then answers as above. That wait holds back no read and no page.
 - **Which device may allow.** A device signed in to this PC with the key the list holds for it
   sees the joins into the list that wait here (`GET /api/relay/pairings`, each marked `list`, and
   the `remote-pairings` event) and decides one (`POST /api/relay/pairing`, with the digits the new
@@ -1690,7 +1697,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   a device the list removed a moment ago has none. Such a device sees and decides a first join
   too, and never a join that brought no card (that is this PC's own pairing, which only this PC
   and a member of its own devices decide) nor one asked under this PC's own add-me screen.
-- A join that brings no card is the PC's own pairing, as before, on any PC.
+- A join that brings no card is the PC's own pairing, as before. On a pinned PC its row has the
+  account's id for the key, so it opens the PC only once the list holds that key: a new device of
+  an account that keeps a list joins a pinned PC with its card.
 
 #### How an app signs in to a pinned PC
 

@@ -507,6 +507,12 @@ export interface RemotePairingRequest {
    * which its approver signs and places, never by the approval alone. Absent from an older server, or when false.
    */
   list?: true;
+  /**
+   * The new device's person said the digits match (its PAIR_CONFIRM reached the PC). For a join into the list the
+   * approver signs the device's entry only once this is true, so a device that gives up before it is nobody's
+   * member. Absent from an older server, or while it has not confirmed.
+   */
+  confirmed?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }
