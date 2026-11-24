@@ -3,7 +3,7 @@ import type { HoldState } from "../../../shared/account-devices-api.ts";
 import type { PendingPushStore } from "../push.ts";
 import type { AccountList } from "../account/accountList.ts";
 import type { AppPlatform } from "../appShell.ts";
-import type { AccountStore } from "../account/store.ts";
+import type { AccountKey, AccountStore } from "../account/store.ts";
 import type { EnrollmentState, ShellDeviceStore } from "./device.ts";
 import type { openRelayTransport } from "./transport.ts";
 import type { checkPc } from "./pcStatus.ts";
@@ -267,6 +267,14 @@ export interface Attempt {
   /** the sign-in the confirm before this pairing was drawn for: the pairing uses its account key and joins its account, and no other's */
   signIn?: AccountSession;
   readonly accountOpen?: SignInKey;
+  /**
+   * the sign-in to a PC the account's signed list holds, with the key that list holds for this device, the account key
+   * (docs/account.md, "How an app signs in to a pinned PC"): a PC that follows no list refuses it, and the ways from
+   * before are tried
+   */
+  readonly listOpen?: AccountKey;
+  /** this attempt came back from a refusal that told it to come by the list key, or by the key from before: it is not sent round again */
+  readonly retriedListOpen?: true;
   readonly retriedAccountOpen?: true;
   /** a PC new in the account that no device is in yet: a pairing it falls back to takes the number its screen shows */
   readonly freshPc?: true;

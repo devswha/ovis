@@ -13,7 +13,7 @@
 import { hexToBytes } from "@noble/hashes/utils.js";
 import type { ListNames, ListRole, ListState } from "../../../shared/account-list.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
-import { entryFromText, entryHash, isListHash, ListEntryError, type SignerPower } from "../../../shared/account-list-entry.ts";
+import { entryFromText, entryHash, isListHash, ListEntryError, readBody, type SignerPower } from "../../../shared/account-list-entry.ts";
 import {
   followStep, gossipHead, heardHead, memberClock, pcOfKey, pinList, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
   type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type ListHead, type ListPage as PeerPage, type SaveRefusal, type Standing,
@@ -110,6 +110,16 @@ export interface ListedPc {
   /** A person at it can allow a device. */
   readonly allows: boolean;
   readonly name: ListNames | null;
+  /** The place of the entry that brought it in. */
+  readonly seq: number;
+  /** The key that signed that entry: a device, a PC, or the invite the PC joined with by itself. */
+  readonly by: string | null;
+  /**
+   * When this device first held that entry, in seconds by its own clock, for a PC that came in after this device did
+   * and that it did not sign for itself: such a PC is new to this device from then on, however long ago it was added.
+   * Null for any other PC.
+   */
+  readonly new_at: number | null;
 }
 
 /**
@@ -197,6 +207,30 @@ function readOff(value: unknown): number | null {
 }
 
 /** The place a member handed this device, as it kept it; null for no such record. */
+/** When this device first held the entry of each PC that is new to it, by relay key: the entry's place and the time in seconds. */
+type SeenPcs = Readonly<Record<string, readonly [number, number]>>;
+
+function readSeen(value: unknown, list: string): SeenPcs {
+  if (!isRecord(value) || value.v !== RECORD_VERSION || value.list !== list || !isRecord(value.pcs)) return {};
+  const seen: Record<string, readonly [number, number]> = {};
+  for (const [endpoint, at] of Object.entries(value.pcs)) {
+    if (Array.isArray(at) && at.length === 2 && Number.isSafeInteger(at[0]) && Number.isSafeInteger(at[1])) seen[endpoint] = [at[0] as number, at[1] as number];
+  }
+  return seen;
+}
+
+/** The key that signed the entry at `seq`, or null for an entry that does not read. */
+function signerAt(entries: readonly string[], seq: number): string | null {
+  const text = entries[seq];
+  if (text === undefined) return null;
+  try {
+    return readBody(entryFromText(text).body).signer;
+  } catch (error) {
+    if (error instanceof ListEntryError) return null;
+    throw error;
+  }
+}
+
 function readOffer(value: unknown): ListOffer | null {
   if (!isRecord(value) || value.v !== RECORD_VERSION) return null;
   const { list, seq, hash } = value;
@@ -306,6 +340,11 @@ export interface AccountList {
    * view; only a sign-in that ended throws (SignedOutError).
    */
   sync(): Promise<AccountListView>;
+  /**
+   * Whether this device keeps a copy of a list of the account, read from its own store alone: it then goes by that
+   * list from the first thing it draws, before the account service said anything.
+   */
+  follows(account: string): Promise<boolean>;
   view(): AccountListView;
   /** Hears each view that differs from the one before. */
   subscribe(listener: (view: AccountListView) => void): () => void;
@@ -334,8 +373,12 @@ export interface AccountList {
    * that very entry, and until then it follows nothing. A device that follows a list already takes no offer.
    */
   adopt(offer: ListOffer): Promise<AccountListView>;
-  /** What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown another history. */
-  writer(): ListWriter | null;
+  /**
+   * What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown
+   * another history. `self`: for the removal of this device's own key, which a device of any power may sign (a
+   * borrowed browser that signs out): only the power is not asked, and the kinds refuse whatever else it would sign.
+   */
+  writer(options?: { readonly self?: boolean }): ListWriter | null;
   /** Whether this device's copy holds that entry at that place: its own entry is in its copy only once the log showed it. */
   holdsEntry(place: ListPlace): boolean;
   /** Where this device stands, to tell another member: the list id and the last entry a member signed in its copy; null while it follows none. */
@@ -511,9 +554,22 @@ export function accountList(options: AccountListOptions): AccountList {
         devices.push({ key: row.key, self: row.key === keys.key, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq) });
       }
       const pcs: ListedPc[] = [];
+      // a PC that came in after this device did, by another's signature, is new to it from when it first held the entry
+      const own = shownDevices(copy).find((row) => row.key === keys.key)?.seq ?? null;
+      const seen = readSeen(await store.get("seen", account), copy.list);
+      const news: Record<string, readonly [number, number]> = {};
       for (const row of shownPcs(copy)) {
-        pcs.push({ endpoint: row.endpoint, server_id: deriveServerId(hexToBytes(row.endpoint)), how: row.how, allows: row.allows, name: await nameAt(row.seq) });
+        const by = signerAt(copy.entries, row.seq);
+        let new_at: number | null = null;
+        if (own !== null && row.seq > own && by !== keys.key) {
+          const before = seen[row.endpoint];
+          new_at = before !== undefined && before[0] === row.seq ? before[1] : seconds();
+          news[row.endpoint] = [row.seq, new_at];
+        }
+        pcs.push({ endpoint: row.endpoint, server_id: deriveServerId(hexToBytes(row.endpoint)), how: row.how, allows: row.allows, name: await nameAt(row.seq), seq: row.seq, by, new_at });
       }
+      const picture = (pcs: SeenPcs): string => JSON.stringify(Object.entries(pcs).sort(([a], [b]) => a.localeCompare(b)));
+      if (picture(news) !== picture(seen)) await store.set("seen", account, Object.keys(news).length === 0 ? undefined : { v: RECORD_VERSION, list: copy.list, pcs: news });
       named = { saved: next.saved, complete: opened.keys.has(state.epoch), devices, pcs, keys: opened.keys };
     }
     return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs };
@@ -733,6 +789,9 @@ export function accountList(options: AccountListOptions): AccountList {
 
   return {
     sync,
+    async follows(account) {
+      return (await store.get("copy", account)) !== undefined;
+    },
     view: () => shown,
     subscribe(listener) {
       listeners.add(listener);
@@ -779,13 +838,13 @@ export function accountList(options: AccountListOptions): AccountList {
       });
       return sync();
     },
-    writer() {
+    writer(options = {}) {
       const copy = held?.copy ?? null;
       const { status } = shown;
       if (held === null || copy === null || copy.state === null || ctx === null || ctx.account !== held.account || shown.account !== held.account) return null;
       if (status.at !== "following" || status.standing !== "in" || status.trouble === "fork" || status.trouble === "stuck") return null;
       const own = copy.state.signers[ctx.keys.key];
-      if (own === undefined || own.ended !== null || own.power !== "full") return null;
+      if (own === undefined || own.ended !== null || (own.power !== "full" && options.self !== true)) return null;
       const at = seconds();
       // the account service's clock as it stands now, by its last answer and the time this device counted since
       const theirs = serviceClock === null ? null : serviceClock.service + Math.max(0, at - serviceClock.device);

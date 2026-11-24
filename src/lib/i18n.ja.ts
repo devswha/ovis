@@ -255,6 +255,7 @@ const BASE: Record<string, string> = {
   "Delete": "削除",
   "Close": "閉じる",
   "New PC added to your account: {name}": "アカウントに新しいPCが追加されました: {name}",
+  "Added from {device}.": "{device} から追加されました。",
   "If you did not add it, remove it.": "心当たりがなければ、削除してください。",
   "I didn't add this": "自分で追加していません",
   "The PC could not be removed. Try again.": "PCを削除できませんでした。もう一度お試しください。",

@@ -5,14 +5,15 @@ import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPai
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, ACCOUNT_LISTING_ERRORS, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, PairApprover, SessionError } from "../../shared/relay-mux.ts";
 import { PC_CODE_ACCOUNT_ONLY } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { KeyProofPairings } from "../account/key-proof.ts";
-import type { ListingVerdict } from "../account/mailbox.ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { SIGN_IN_WAIT_MS, type ListingVerdict } from "../account/mailbox.ts";
 import { PENDING_MS } from "../account/pending.ts";
 import { pullForRefusedSignIn } from "./refused-signin.ts";
 import { accountSignInRefusal } from "../account/account-signin.ts";
@@ -151,6 +152,9 @@ export class RelaySession {
   private accountCodes = false;
   private directing = false;
   private tailnet = false;
+  /** the client offered ACCOUNT_LIST_FEATURE and this PC was pinned to its list then; and whether the client required it */
+  private listOffered = false;
+  private listRequired = false;
   /** the phone offered ACCOUNT_LISTING_ERRORS: one that did not gets the older code that forgets no key over an outage */
   private listingErrors = false;
   /** this PC left its account and waits to be added again: a device that proves a key it knew is told so */
@@ -380,6 +384,11 @@ export class RelaySession {
         // out of the account that stopped listing it: the account sign-in is taken, so the key it names can be proved and told why
         if (this.authReceipts || (this.listingErrors && frame.payload.features.includes(ACCOUNT_OPENS_ALL_FEATURE) && this.options.services.devices.readdRequired())) selected.push(ACCOUNT_OPENS_ALL_FEATURE);
         this.accountCodes = this.authReceipts;
+        // a PC pinned to its account's signed list says so to a client that knows of lists: one that signs in with the
+        // key the list holds for it requires this, and a PC that follows no list refuses it below
+        this.listOffered = frame.payload.features.includes(ACCOUNT_LIST_FEATURE) && this.options.services.accountList?.pinned() === true;
+        this.listRequired = frame.payload.required_features.includes(ACCOUNT_LIST_FEATURE);
+        if (this.listOffered) selected.push(ACCOUNT_LIST_FEATURE);
         if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
@@ -394,6 +403,13 @@ export class RelaySession {
         const devices = this.options.services.devices;
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
         if (frame.type === FrameType.AUTH && !await this.pullForRefusedSignIn(frame.payload.device_id, frame.payload.signature)) return;
+        if (frame.type === FrameType.AUTH && this.options.services.accountList?.pinned()) {
+          // a PC pinned to its signed list judges a sign-in on a copy that is fresh, or as fresh as a few seconds get it: a
+          // removal that waits at the account service is read before any session opens, whichever row the device has here
+          this.mux.extendSetup(SIGN_IN_WAIT_MS + 10_000);
+          await this.options.services.accountList.beforeSession();
+          if (!this.mux.active) return;
+        }
         // a PC with screen proof admits a code's redeemer only once its screen approves the key it proved
         const keyProofPairings = this.options.services.keyProofPairings;
         if (frame.type === FrameType.PAIR && this.pcCodeAdd && this.options.services.devices.accountPolicyActive()) { this.close("unsupported_version"); return; }
@@ -413,6 +429,9 @@ export class RelaySession {
         if (frame.type === FrameType.AUTH && device === null && devices.opensAll()) {
           // Step 2 (S2-25): an account-joined row signs in with its registered key; its refusal is told only after the proof
           const joined = await devices.matchAccountRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId);
+          // on a PC that is not pinned the list is asked the same question beside it, and only says where it differs
+          if (joined === null || !("refused" in joined)) this.options.services.accountList?.shadowSignIn({ deviceId: frame.payload.device_id, nonce: this.nonce,
+            signature: frame.payload.signature, serverId: this.options.serverId, snapshot: joined === null ? "none" : "admitted" });
           if (joined !== null && "refused" in joined) {
             if (joined.refused.refused === "catching_up" && !await this.readComing(frame.payload.device_id)) return;
             if (!this.mux.active) return;
@@ -426,6 +445,13 @@ export class RelaySession {
         if (!device && this.listingErrors && frame.type === FrameType.AUTH && devices.readdRequired()
           && await devices.provedFormerAccountKey(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId })) {
           if (this.mux.active) this.refuseListing("readd");
+          return;
+        }
+        // a sign-in this PC knows no row for, from a client that knows of lists and did not come by its list key: the PC
+        // is pinned, so the way in is that key. The client reads its list and tries again; any other client hears what it
+        // always did. It says nothing of the device: only that this PC follows a list, which its WELCOME says too
+        if (!device && frame.type === FrameType.AUTH && this.listOffered && !this.listRequired && this.options.services.accountList?.pinned() === true) {
+          this.mux.fail("account_list_required", "This PC lets devices of its account in by the account's signed list. Sign in with the key the list holds for this device.");
           return;
         }
         if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
@@ -461,6 +487,8 @@ export class RelaySession {
         if (this.intent === "vouched") {
           const key = proofKey(frame.payload.server_key);
           if (!this.proofNegotiated || !key) { this.close("auth_failed"); return; }
+          // on a PC pinned to its signed list, another PC is of the account only when the list holds its relay key
+          if (this.options.services.devices.listFollowed() && this.options.services.accountList?.holdsPc(bytesToHex(key)) !== true) { this.close("auth_failed"); return; }
           const id = deriveServerId(key);
           this.proofChallenge = { id, ...serverChallenge(key, { server_id: id, role: "vouched-pc", connection_id: toBase64Url(this.sasBinding) }) };
         }
@@ -659,7 +687,8 @@ export class RelaySession {
   private async enterProved(device: DeviceMatch): Promise<void> {
     const { devices } = this.options.services;
     const binding = devices.serviceBinding();
-    if (binding !== null && devices.accountOnly(device.id)) {
+    // a PC pinned to its signed list asks the account service nothing about its listing: the list says who is in
+    if (binding !== null && devices.accountOnly(device.id) && !devices.listFollowed()) {
       const key = devices.sessionRow(device.id)?.key;
       const verdict = key ? await this.listingVerdict(binding) : "refused";
       if (!this.mux.active) return;

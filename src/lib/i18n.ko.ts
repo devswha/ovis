@@ -253,6 +253,7 @@ const BASE: Record<string, string> = {
   "Delete": "삭제",
   "Close": "닫기",
   "New PC added to your account: {name}": "새 PC가 계정에 추가됐어요: {name}",
+  "Added from {device}.": "{device}에서 추가했어요.",
   "If you did not add it, remove it.": "직접 추가하지 않았다면 제거하세요.",
   "I didn't add this": "내가 추가한 게 아니에요",
   "The PC could not be removed. Try again.": "PC를 제거하지 못했어요. 다시 시도하세요.",

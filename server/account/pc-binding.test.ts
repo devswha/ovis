@@ -261,3 +261,99 @@ describe("the PC's account binding (account-pc.json)", () => {
     expect(existsSync(join(split, ADMISSION_FILE))).toBe(false);
   });
 });
+
+describe("a binding pinned to the account's signed list", () => {
+  const LIST = "ab".repeat(32);
+  const OTHER_LIST = "cd".repeat(32);
+
+  test("the pin is with the binding, on disk, one-way, and raises gen", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    await linked(devices);
+    const pc = PcAccountState.open(dir);
+    const binding = pc.binding()!;
+    const gen = pc.gen();
+    expect(pc.pinToList("0".repeat(32), LIST)).toBe(false);
+    expect(pc.pinToList(binding.bind_id, "not a list")).toBe(false);
+    expect(pc.binding()?.list).toBeUndefined();
+    expect(pc.pinToList(binding.bind_id, LIST)).toBe(true);
+    expect(pc.gen()).toBe(gen + 1);
+    // the same list again changes nothing; another list is refused
+    expect(pc.pinToList(binding.bind_id, LIST)).toBe(true);
+    expect(pc.gen()).toBe(gen + 1);
+    expect(pc.pinToList(binding.bind_id, OTHER_LIST)).toBe(false);
+    expect(PcAccountState.open(dir).binding()).toMatchObject({ bind_id: binding.bind_id, account: ACCOUNT, list: LIST });
+    // naming the listing the binding stands on keeps the pin
+    PcAccountState.open(dir).pinListing(binding.bind_id, "1".repeat(32));
+    expect(PcAccountState.open(dir).binding()).toMatchObject({ list: LIST });
+  });
+
+  test("the pin ends only with the binding, and the next binding starts without one", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    await linked(devices);
+    const pc = PcAccountState.open(dir);
+    expect(pc.pinToList(pc.binding()!.bind_id, LIST)).toBe(true);
+    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    expect(PcAccountState.open(dir).binding()).toBeNull();
+    const again = store(dir);
+    await linked(again);
+    expect(PcAccountState.open(dir).binding()?.list).toBeUndefined();
+  });
+
+  test("a list's removal of the PC is kept for the account and the relay identity it had, and for no other", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    await linked(devices);
+    const pc = PcAccountState.open(dir);
+    expect(pc.removedByList(ACCOUNT, SERVER_ID)).toBe(false);
+    expect(devices.clearAccountBinding("unlisted", "list", SERVER_ID)).toBe(true);
+    const kept = PcAccountState.open(dir);
+    expect(kept.removedByList(ACCOUNT, SERVER_ID)).toBe(true);
+    expect(kept.removedByList("acct_2", SERVER_ID)).toBe(false);
+    expect(kept.removedByList(ACCOUNT, "f".repeat(32))).toBe(false);
+    // any other clear keeps no such word, whoever names a relay identity with it
+    const other = stateDir();
+    const more = store(other);
+    await linked(more);
+    expect(more.clearAccountBinding("unlisted", "account", SERVER_ID)).toBe(true);
+    expect(PcAccountState.open(other).removedByList(ACCOUNT, SERVER_ID)).toBe(false);
+  });
+
+  test("a file whose pin or removal is out of form is not trusted", async () => {
+    type Doc = { binding: { list?: unknown }; clears: unknown[] };
+    for (const damage of [
+      (doc: Doc) => { doc.binding.list = "AB".repeat(32); },
+      (doc: Doc) => { doc.binding.list = 7; },
+      (doc: Doc) => { doc.clears = [{ bind_id: "0".repeat(32), reason: "unlisted", by: "list", removed_as: { account: ACCOUNT, server_id: "nope" } }]; },
+    ]) {
+      const dir = stateDir();
+      await linked(store(dir));
+      const doc = JSON.parse(readFileSync(join(dir, ADMISSION_FILE), "utf8")) as Doc;
+      damage(doc);
+      writeFileSync(join(dir, ADMISSION_FILE), JSON.stringify(doc));
+      expect(PcAccountState.open(dir).strict).not.toBeNull();
+    }
+  });
+
+  test("the other folder of the same PC takes the pin of the binding they share, and two different pins fail closed", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    await linked(store(dir));
+    const pinned = PcAccountState.open(dir);
+    const binding = pinned.binding()!;
+    // the sibling holds the same binding, as after a merge, with no pin
+    writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
+    expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
+    const other = PcAccountState.open(sibling);
+    other.takeSibling(dir);
+    expect(other.strict).toBeNull();
+    expect(PcAccountState.open(sibling).binding()).toMatchObject({ bind_id: binding.bind_id, list: LIST });
+
+    const doc = JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: { list: string } };
+    doc.binding.list = OTHER_LIST;
+    writeFileSync(join(sibling, ADMISSION_FILE), JSON.stringify(doc));
+    const split = PcAccountState.open(dir);
+    split.takeSibling(sibling);
+    expect(split.strict).toContain("two lists");
+  });
+});

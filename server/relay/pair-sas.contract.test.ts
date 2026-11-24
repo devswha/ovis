@@ -998,6 +998,27 @@ test("a PC vouched for is refused by a PC with no drive account member to approv
   expect((await vouched(f, (key) => admit(key))).refused).toBe("auth_failed");
 });
 
+test("on a PC pinned to its account's signed list, a PC vouched for is taken only when the list holds its relay key", async () => {
+  const { f, member, admit } = await joinFixture(Date.now, true);
+  const { devices, accountList, relay } = f.app.context.services;
+  await signedIn(f, member);
+  const followed = spyOn(devices, "listFollowed").mockReturnValue(true);
+  const asked: string[] = [];
+  const inList = { holds: false };
+  const holds = spyOn(accountList!, "holdsPc").mockImplementation((endpoint) => { asked.push(endpoint); return inList.holds; });
+  try {
+    const identity = { keys: generateKeyPair() };
+    // a fresh admission of the account service is not enough any more: refused before any prompt
+    expect((await askToJoin(f, (key) => admit(key), PAIR_INTENT_VOUCHED, identity)).refused).toBe("auth_failed");
+    expect(asked).toEqual([bytesToHex(identity.keys.publicKey)]);
+    expect(relay.approvals.remoteList()).toEqual([]);
+    inList.holds = true;
+    const prompt = remotePrompt(f);
+    expect((await askToJoin(f, (key) => admit(key), PAIR_INTENT_VOUCHED, identity)).refused).toBeUndefined();
+    expect(await prompt).toMatchObject({ vouched: true, proven_server_id: deriveServerId(identity.keys.publicKey) });
+  } finally { followed.mockRestore(); holds.mockRestore(); }
+});
+
 test("a PC vouched for waits for a member as 'pair this PC', and an approval makes a watch row the approver added, no member", async () => {
   const { f, member, admit } = await joinFixture(Date.now, true);
   const link = await signedIn(f, member);
