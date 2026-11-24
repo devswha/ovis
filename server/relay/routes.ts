@@ -173,9 +173,12 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "decline")) {
           return fail("invalid_relay_pairing", "Send the pairing's id and a decision of approve or decline.", 400);
         }
+        const key = service.approvals.keyOf(body.id);
         if (!service.approvals.decide(body.id, body.decision === "approve", own)) {
           return fail("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
         }
+        // the person at this PC declined that device: what this PC signed for it and keeps goes too
+        if (own && body.decision === "decline" && key) context.services.accountList?.declinedHere(key);
         return reply({ ok: true });
       }
       case RELAY_CONTROLS.join: {
@@ -185,9 +188,12 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (body instanceof Response) return body;
         // a first join (no member could approve it) is allowed or declined by a tap, its digits compared on this screen
         if (typeof body.id === "string" && (body.decision === "approve" || body.decision === "decline")) {
+          const key = service.approvals.keyOf(body.id);
           const tapped = service.approvals.decideOwn(body.id, body.decision === "approve");
           if (tapped === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
           if (tapped === "typed_only") return fail("digits_required", "Type the six digits the new device shows.", 409);
+          // the person at this PC declined that device: what this PC signed for it and keeps goes too
+          if (body.decision === "decline" && key) context.services.accountList?.declinedHere(key);
           return reply({ ok: true });
         }
         if (typeof body.id !== "string" || typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) {

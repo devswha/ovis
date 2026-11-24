@@ -508,7 +508,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
   // this PC names the list it pins, by its id, by the number it compares with the phone that adds it, or by the line of an invite
   if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin" || pathname === "/api/account/list/add" || pathname.startsWith("/api/account/list/add/")
-    || pathname === "/api/account/list/join" || pathname.startsWith("/api/account/list/join/") || pathname === "/api/account/list/allow/cancel") && !ownWindow) {
+    || pathname === "/api/account/list/join" || pathname.startsWith("/api/account/list/join/")) && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Read this on this PC itself." } }, 403);
   }
