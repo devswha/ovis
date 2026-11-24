@@ -652,9 +652,9 @@ describe("a pin outlives this PC's own settings", () => {
 describe("two histories, and another account's list", () => {
   test("a second history a member signed raises the alarm: the PC adds nobody, and keeps whom it held", async () => {
     const pc = await pinnedPc();
-    const onFork = await listMember();
-    // the first device signs another continuation from entry 0, with a device this PC never saw
-    pc.service.tamperList(pc.account.id, { reader: pc.reader, fork: [await deviceEntry(pc.account, onFork, pc.first, { seq: 0, hash: pc.account.id })] });
+    // the first device signs another continuation from entry 0, with a device this PC never saw, which signs on it
+    const { texts, device: onFork } = await pc.account.forkFromStart();
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, fork: texts });
     await pc.pull();
     pc.list.tick();
     await pc.list.settled();
