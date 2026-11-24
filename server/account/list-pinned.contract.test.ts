@@ -1011,10 +1011,12 @@ describe("one press, for an account that keeps a signed list", () => {
     closes.push(() => fixture.close());
     const { services } = fixture.app.context;
     services.relay.setRelayAccount(ACCOUNT);
+    // the PC heard a moment ago that the account keeps no list; the account made one since, and the service refuses the take
+    const named = spyOn(services.accountMailbox, "listNamed").mockResolvedValue(null);
     const refused = spyOn(services.accountMailbox, "admission").mockRejectedValue(new AccountServiceRefusal(409, "list_add", "/v1/pc/admission"));
     try {
       expect(await pressOnce(services, ACCOUNT)).toMatchObject({ refused: { code: "list_add", status: 409 } });
-    } finally { refused.mockRestore(); }
+    } finally { refused.mockRestore(); named.mockRestore(); }
     expect(services.devices.account()).toBeNull();
   });
 });
