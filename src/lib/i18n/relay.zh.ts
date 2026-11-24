@@ -190,4 +190,5 @@ export const RELAY_ZH: Record<string, string> = {
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "确认之后 {names} 加入了你的账户。没有设备退出登录，请重新确认。",
   "This device cannot read your account's list. Update the app.": "此设备无法读取账户名单。请更新应用。",
   "This device cannot read your account's list.": "此设备无法读取账户名单。",
+  "Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.": "还不知道其他设备是否已离开你的账户，也没有设备退出登录。请稍后重试。",
 };

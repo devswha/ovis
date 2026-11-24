@@ -190,4 +190,5 @@ export const RELAY_JA: Record<string, string> = {
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "確認のあとに {names} がアカウントに入りました。誰もサインアウトしていません。もう一度確認してください。",
   "This device cannot read your account's list. Update the app.": "この端末ではアカウントの名簿を読めません。アプリを更新してください。",
   "This device cannot read your account's list.": "この端末ではアカウントの名簿を読めません。",
+  "Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.": "ほかのデバイスがアカウントから外れたかはまだ分からず、誰もサインアウトしていません。少ししてからもう一度お試しください。",
 };

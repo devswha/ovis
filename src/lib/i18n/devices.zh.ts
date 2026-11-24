@@ -329,6 +329,8 @@ export const DEVICES_ZH: Record<string, string> = {
   "{name} was removed from your account.": "已从账户中移除 {name}。",
   "{name} loses access to every PC of your account for good. To use it again, sign in on it and allow it from another device.": "{name} 将永远无法进入账户的任何电脑。要再次使用，请在该设备上登录，并在另一台设备上允许它。",
   "These PCs will need to be added again.": "这些电脑需要重新添加。",
+  "Whether {name} was removed is not known yet. Look at the list again in a moment.": "还不知道 {name} 是否已被移除。请稍后再查看列表。",
+  "Your sign-in changed while this was asked. Nothing was removed.": "确认期间登录已变更。没有移除任何内容。",
   "{done} of {total} were removed. Try again for the rest.": "{total} 项中已移除 {done} 项。其余的请重试。",
   "Came in through {name}:": "经由 {name} 加入的：",
   "If {name} was stolen, tick what you did not add yourself.": "如果 {name} 被盗，请勾选不是你自己添加的项。",

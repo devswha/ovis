@@ -5,7 +5,7 @@ import type { AccountListView, ListWriter } from "./accountList.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
-import { WRITE_RESENDS, WRITE_TRIES } from "./listWrite.ts";
+import { WRITE_RESENDS } from "./listWrite.ts";
 import {
   cameInThrough, overdueKeys, removalRequest, removeFromList, removeSelf, scopeOf, tidyList,
   type RemoveOutcome,
@@ -202,12 +202,14 @@ describe("a list that moves, or a service that is busy, under a removal", () => 
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "pc", "remove", "epoch"]);
   });
 
-  it("gives up after its tries where the head keeps moving, and says so", async () => {
+  it("sends the same signed request again while its copy shows the head unmoved, signs no second one, and gives up saying so", async () => {
     const { w, first, second } = await twoDevices();
     const before = w.held().entries.length;
     w.fake.tamperList(w.held().id, { headMoved: true });
     expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "busy", retryAfterMs: null, placed: 0 });
-    expect([placements(first).length, w.held().entries.length]).toEqual([WRITE_TRIES + 1, before]);
+    // one signature for the place: the same request, sent again, and no new one while the copy shows the same head
+    const sent = placements(first).slice(1);
+    expect([sent.length, new Set(sent.map((each) => JSON.stringify(each.body))).size, w.held().entries.length]).toEqual([WRITE_RESENDS, 1, before]);
   });
 
   it("sends the same request again while the service rebuilds the list, the same signatures", async () => {
@@ -244,10 +246,16 @@ describe("a list that moves, or a service that is busy, under a removal", () => 
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 
-  it("says that the account service was not reached, and signs nothing more", async () => {
-    const { first, second } = await twoDevices();
-    first.wire.answer = (request) => (request.method === "POST" ? Promise.reject(new TypeError("offline")) : null);
-    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toMatchObject({ removed: false, why: "unreached" });
+  it("says it does not know yet when the request got no answer and the log cannot be read, and signs nothing more", async () => {
+    const { w, first, second } = await twoDevices();
+    let away = false;
+    first.wire.answer = (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) away = true;
+      return away ? Promise.reject(new TypeError("offline")) : null;
+    };
+    const before = w.held().entries.length;
+    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toMatchObject({ removed: false, why: "unknown" });
+    expect(w.held().entries).toHaveLength(before);
   });
 });
 

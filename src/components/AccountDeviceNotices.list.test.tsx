@@ -29,7 +29,7 @@ function followingList(account: string): AccountList {
   return {
     sync: async () => view, view: () => view, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
     shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => view,
-    writer: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, follows: async () => true,
+    writer: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, follows: async () => true, placeAt: () => null,
   };
 }
 

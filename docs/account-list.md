@@ -1172,8 +1172,12 @@ last; where a later part is refused, the person is told how many went ("{done} o
 removed. Try again for the rest."). A member is out when this device's own copy shows its removal
 at its place, whatever the service answered; the request is read and signed again four times at
 most after `409 head_moved` or an epoch the service judged otherwise, and sent again three times at
-most while the list is rebuilding. `list_stopped` is told in the words above; any other failure is
-"could not be removed. Try again.", with nothing shown as done.
+most while the list is rebuilding (one signature per place: while the device's own copy shows the
+head the request was signed on, the same request goes again, and a new one is signed only on a new
+head). `list_stopped` is told in the words above; a request that got no answer while the log could
+not be read is "not known yet", never "not removed"; a refusal for the entry's time says the
+device's clock looks wrong; a copy that cannot be written to says so, with no retry offered; any
+other failure is "could not be removed. Try again.", with nothing shown as done.
 
 **A write belongs to what it began with.** A removal is begun for one account, one list and the
 member key this device is in it with, as the page showed them; after every read of the list it

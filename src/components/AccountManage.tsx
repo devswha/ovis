@@ -9,7 +9,6 @@ import { AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { fetchDevices } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
-import { pageAccountList } from "../lib/account/pageList.ts";
 import { loadRelayShell } from "../lib/relay.ts";
 import { indexedDeviceStore } from "../lib/relay/device.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";

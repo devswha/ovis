@@ -47,6 +47,12 @@ export function roleOf(t: Translate, device: ListedDevice): string | null {
 function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true }>, name: string, total: number): string {
   if (outcome.why === "stopped") return t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.");
   if (outcome.placed > 0) return t("{done} of {total} were removed. Try again for the rest.", { done: String(outcome.placed), total: String(total) });
+  // the request went out and no answer came, and the log could not be read: it may have been placed
+  if (outcome.why === "unknown") return t("Whether {name} was removed is not known yet. Look at the list again in a moment.", { name });
+  if (outcome.why === "clock") return t("This device's clock looks wrong. Check its date and time, then try again.");
+  // the copy this device holds cannot be written to (two histories, a stopped list, one it cannot read): a retry says the same
+  if (outcome.why === "blocked") return t("This device cannot change your account's list right now.");
+  if (outcome.why === "changed") return t("Your sign-in changed while this was asked. Nothing was removed.");
   return t("{name} could not be removed. Try again.|device", { name });
 }
 

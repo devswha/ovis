@@ -8,7 +8,7 @@
  * A key that is ended never comes back: nothing here signs it in again. The account service's answer to the
  * placement is trusted for nothing: a member is out once this device's own copy shows its removal at its place.
  */
-import { listClock, listView, pcRemoval, sealEpoch, signListEntry, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
+import { listView, pcRemoval, sealEpoch, signListEntry, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
 import { nextEpoch, wrapEpochKeyFor, wrapToText } from "../../../shared/account-list-seal.ts";
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
 import type { PlacedWrap } from "./listAnswers.ts";
@@ -118,10 +118,10 @@ export interface Signed extends Written {
 }
 
 /**
- * The clock a writer judges whose time is over by (the lead's X1): its own, never the account service's, held against
- * the list's own time. The writer dates entries by `issued_at`, which is never ahead of this device's own clock.
+ * The clock a writer judges whose time is over by (the lead's X1): this device's own, held against its saved floor
+ * and the list's own time (the writer's `clock`, memberClock), never the account service's.
  */
-export const judgeClock = (writer: ListWriter): number => listClock(writer.state, writer.issued_at, null);
+export const judgeClock = (writer: ListWriter): number => writer.clock;
 
 /**
  * The request that puts out what `removal` names and is still in, then opens the next epoch where the kinds call for

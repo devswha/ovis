@@ -329,6 +329,8 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} was removed from your account.": "계정에서 {name} 기기를 뺐어요.",
   "{name} loses access to every PC of your account for good. To use it again, sign in on it and allow it from another device.": "{name} 기기는 계정의 모든 PC에 다시는 들어갈 수 없어요. 다시 쓰려면 그 기기에서 로그인하고 다른 기기에서 허용하세요.",
   "These PCs will need to be added again.": "이 PC들은 다시 추가해야 해요.",
+  "Whether {name} was removed is not known yet. Look at the list again in a moment.": "{name} 기기가 빠졌는지 아직 알 수 없어요. 잠시 뒤 목록을 다시 보세요.",
+  "Your sign-in changed while this was asked. Nothing was removed.": "확인하는 사이에 로그인이 바뀌었어요. 아무것도 빼지 않았어요.",
   "{done} of {total} were removed. Try again for the rest.": "{total}개 중 {done}개만 뺐어요. 나머지는 다시 시도하세요.",
   "Came in through {name}:": "{name} 기기로 들어온 것:",
   "If {name} was stolen, tick what you did not add yourself.": "{name} 기기를 도난당했다면 직접 추가하지 않은 것을 고르세요.",

@@ -187,6 +187,22 @@ describe("Manage account's devices from the account's signed list", () => {
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 
+  it("says it does not know yet, rather than that nothing went, when the request got no answer and the log cannot be read", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    await letIn(w, first, "Dana's tablet");
+    const root = await mount(first);
+    let away = false;
+    first.wire.answer = (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) away = true;
+      return away ? Promise.reject(new TypeError("offline")) : null;
+    };
+    await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
+    await confirm(root, "Remove");
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Whether Dana's tablet was removed is not known yet. Look at the list again in a moment.");
+  });
+
   it("offers no Remove to a device that may not remove anybody", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });
