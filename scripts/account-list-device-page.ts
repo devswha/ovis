@@ -60,14 +60,23 @@ export async function storedKeys() {
   return { member: { key: member?.public_spki ?? null, ...await keyFacts(member?.private_key) }, enc: { key: enc?.key ?? null, ...await keyFacts(enc?.privateKey) } };
 }
 
-/** What the device keeps of the account's list, as text: what a value that held a key, or anything else JSON cannot hold, would not survive. */
+/** Whether a stored value is text, numbers, yes or no, nothing, and lists and records of those: no key, no bytes, nothing else IndexedDB can hold and JSON cannot. */
+function isPlain(value: unknown): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isPlain);
+  if (typeof value !== "object") return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return (proto === Object.prototype || proto === null) && Object.values(value).every(isPlain);
+}
+
+/** What the device keeps of the account's list, as text. The stored value itself is looked at first: turned into text, bytes and keys would pass for records. */
 export async function kept(account: string): Promise<Record<string, string | null>> {
   const records: Record<string, string | null> = {};
   for (const record of LIST_RECORDS) {
     const value = await indexedListStore.get(record, account);
-    const text = value === undefined ? null : JSON.stringify(value);
-    if (text !== null && JSON.stringify(JSON.parse(text)) !== text) throw new Error(`The ${record} record is not plain data`);
-    records[record] = text;
+    if (value !== undefined && !isPlain(value)) throw new Error(`The ${record} record is not plain data`);
+    records[record] = value === undefined ? null : JSON.stringify(value);
   }
   return records;
 }

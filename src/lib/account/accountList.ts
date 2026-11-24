@@ -25,7 +25,7 @@ import { namesAt, openEpochs, readWraps, wrapsRecord, type OpenedEpochs } from "
 import type { ListHint, ListWrap } from "./listAnswers.ts";
 import { indexedListStore, listLock, type ListLock, type ListStore } from "./listStore.ts";
 import { keepShadow, shadowOf, type ShadowRecord } from "./listShadow.ts";
-import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, PC_ADD_FRESH_MS, SignedOutError, type AccountService, type DirectoryPc } from "./service.ts";
+import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, PC_ADD_FRESH_MS, sameSignIn, SignedOutError, type AccountService, type DirectoryPc } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
 /**
@@ -228,6 +228,8 @@ interface Held {
   readonly trouble: ListTrouble | null;
   /** Where the device is while it holds no copy. */
   readonly without: Without;
+  /** The round that gave this did not get the device's own log read: it counts as one that did not reach the account service. */
+  readonly unread?: true;
 }
 
 /** The members of one saved copy with their names as far as they opened: they change only with the copy or with the wraps this device holds. */
@@ -309,7 +311,8 @@ export function accountList(options: AccountListOptions): AccountList {
     const fresh: Held = { account, copy: null, saved: null, trouble: null, without: held?.account === account ? held.without : { at: "off" } };
     if (saved === undefined) return fresh;
     if (typeof saved !== "string") return "form";
-    if (held !== null && held.account === account && held.saved === saved && held.copy !== null) return held;
+    // the copy this page holds, while it is the one saved and this device's key is the one it was pinned under
+    if (held !== null && held.account === account && held.saved === saved && held.copy !== null && held.copy.me.key === keys.key) return held;
     const read = await readSave(saved);
     if (!read.read) return read.why;
     // saved under another account key: this device has a new one since, and is another member
@@ -336,12 +339,13 @@ export function accountList(options: AccountListOptions): AccountList {
     return text;
   };
 
-  const mayStart = async (bound: AccountService, session: AccountSession, signal: AbortSignal): Promise<NoGenesis | null> => {
+  /** `signed`: this device signed an entry 0 that it has not seen placed, while its sign-in was new: it is sent again however old the sign-in is by then. */
+  const mayStart = async (bound: AccountService, session: AccountSession, signed: boolean, signal: AbortSignal): Promise<NoGenesis | null> => {
     const mode = (options.genesis ?? genesisSwitch)();
     if (mode === "never") return "switched_off";
     if (mode === "first-device") {
       const age = session.signed_in_at === undefined ? Number.NaN : now() - session.signed_in_at;
-      if (!(age >= 0 && age <= PC_ADD_FRESH_MS)) return "not_new";
+      if (!signed && !(age >= 0 && age <= PC_ADD_FRESH_MS)) return "not_new";
       const kept = await accountStore.get("signin_key");
       if (kept === undefined || kept.account !== session.account || kept.sign_in_id !== session.sign_in_id || kept.no !== 1) return "not_first_device";
       if (await (options.linkedPcs?.(session.account) ?? Promise.resolve(0)) > 0) return "has_pcs";
@@ -357,9 +361,9 @@ export function accountList(options: AccountListOptions): AccountList {
    * second one.
    */
   const start = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, serviceNow: number | null, signal: AbortSignal): Promise<"placed" | "exists" | NoGenesis> => {
-    const refused = await mayStart(bound, session, signal);
-    if (refused !== null) return refused;
     let pending = readPending(await store.get("genesis", session.account), keys);
+    const refused = await mayStart(bound, session, pending !== null, signal);
+    if (refused !== null) return refused;
     if (pending === null) {
       // The account service takes no entry dated ahead of its own clock by more than ten minutes, and the list's own
       // time never goes back: entry 0 is dated by this device's clock, and no later than the service's where it said it.
@@ -501,18 +505,21 @@ export function accountList(options: AccountListOptions): AccountList {
     // The account service names another list, which the device says, or none, which is no hint at all (the follower's
     // rule). Either way the device reads its own list at its own pace: a removal must still reach it.
     const other = heard.verdict === "not_my_list";
+    let unread = false;
     if (heard.verdict === "read") ({ copy, verdict } = await read(bound, copy, signal));
     else if (other || heard.verdict === "none") {
       try {
         ({ copy, verdict } = await read(bound, copy, signal));
       } catch (error) {
         if (!unreached(error)) throw error;
+        // what was said of another list stands, and the round counts as one that did not reach the account service
+        unread = true;
       }
     }
     const saved = await save(loaded, copy);
     // the genesis is in the saved copy now, and its wrap with the others: what was kept to send it again goes
     if (fresh) await store.set("genesis", account, undefined);
-    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" } };
+    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}) };
   };
 
   const round = async (): Promise<AccountListView> => {
@@ -554,8 +561,10 @@ export function accountList(options: AccountListOptions): AccountList {
       // an account the service keeps no list for, on a device that follows none: no key is made, and one record is
       // kept, the time of that answer
       if (saved === undefined && hint === "off") {
-        await store.set("asked", account, { v: RECORD_VERSION, off_at: at });
-        return off(at);
+        // the day runs from when the answer came, in whole seconds and never a part of one early
+        const answered = Math.ceil(now() / 1000);
+        await store.set("asked", account, { v: RECORD_VERSION, off_at: answered });
+        return off(answered);
       }
       if (saved === undefined && hint === undefined) {
         misses += 1;
@@ -574,15 +583,24 @@ export function accountList(options: AccountListOptions): AccountList {
       if (hint !== undefined && hint !== "off") {
         try {
           next = await follow(bound, session, keys, loaded, hint, serviceNow, signal);
+          if (next.unread === true) reached = false;
         } catch (error) {
           if (!unreached(error)) throw error;
           // what this device saved stands as it is
           reached = false;
         }
       }
+      const view = await viewOf(next, keys, reached ? { bound, signal } : null);
+      // another page stored another sign-in, or none, while this round ran: nothing of the account it began with is shown
+      const still = await service.session();
+      if (still === undefined || !sameSignIn(still, session)) {
+        held = null;
+        misses = 0;
+        return publish(OFF);
+      }
       misses = reached ? 0 : misses + 1;
       held = next;
-      return publish(await viewOf(next, keys, reached ? { bound, signal } : null));
+      return publish(view);
     });
   };
 
@@ -632,7 +650,8 @@ export function accountList(options: AccountListOptions): AccountList {
     },
     async shadow(account, directory, opens) {
       const compared = shown.account === account ? shadowOf(shown, directory, now(), opens) : null;
-      return compared === null ? null : keepShadow(store, account, compared);
+      // one at a time for an account, among this page's comparisons and the other pages': each reads the count and writes it back
+      return compared === null ? null : lock(account, () => keepShadow(store, account, compared));
     },
     async dropNames(account) {
       await lock(account, async () => {
@@ -642,6 +661,10 @@ export function accountList(options: AccountListOptions): AccountList {
       if (wrongKey === account) wrongKey = null;
       named = null;
       wrapsAsked = null;
+      // the names this page had open go too: who is in stays, and whoever listens is told
+      if (shown.account === account && [...shown.devices, ...shown.pcs].some((row) => row.name !== null)) {
+        publish({ ...shown, devices: shown.devices.map((row) => ({ ...row, name: null })), pcs: shown.pcs.map((row) => ({ ...row, name: null })) });
+      }
     },
     async forget(account) {
       await lock(account, () => store.drop(account));

@@ -66,7 +66,8 @@ export async function openEpochs(state: ListState, saved: SavedWraps, member: Me
       continue;
     }
     good.push(epoch);
-    if (keys.has(epoch)) continue;
+    // every wrap that opens is walked from, also one whose epoch an earlier walk reached: a walk ends after its
+    // bound of links, and this one goes on below where that one stopped
     const walk = await walkBack({ list: state.list, from: opened.value, openings });
     for (const key of walk.keys) if (!keys.has(key.epoch)) keys.set(key.epoch, key);
   }

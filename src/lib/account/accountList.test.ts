@@ -11,7 +11,7 @@ import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { fromBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { askingPc, postPcKeys, type AskingPc } from "./accountList.fixture.ts";
-import { accountList, NO_LIST_SECONDS, OFF_SECONDS, type AccountList, type AccountListView, type GenesisMode } from "./accountList.ts";
+import { accountList, NO_LIST_SECONDS, OFF_SECONDS, UNREACHED_SECONDS, type AccountList, type AccountListView, type GenesisMode } from "./accountList.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { readWraps } from "./listNames.ts";
 import { LIST_RECORDS, memoryListLock, memoryListStore, type ListStore } from "./listStore.ts";
@@ -202,6 +202,22 @@ describe("an account the service keeps no list for", () => {
     for (const record of ["copy", "wraps", "genesis", "shadow"] as const) expect(await phone.lists.get(record, ACCOUNT)).toBeUndefined();
     expect(await phone.lists.get("asked", ACCOUNT)).toEqual({ v: 1, off_at: Math.floor(now / 1000) });
     expect(fake.accountList(ACCOUNT)).toBeNull();
+  });
+
+  it("counts the day from when the answer came, not from when it was asked", async () => {
+    fake.listAccounts = "";
+    const phone = await device();
+    // the answer takes twenty seconds
+    phone.wire.answer = () => { now += 20_000; return null; };
+    await phone.list.sync();
+    phone.wire.answer = null;
+    expect(await phone.lists.get("asked", ACCOUNT)).toEqual({ v: 1, off_at: Math.ceil(now / 1000) });
+    expect(phone.list.due(true)).toBe((Math.ceil(now / 1000) + OFF_SECONDS) * 1000);
+    // a second before a day after the answer, another page asks nothing
+    now += OFF_SECONDS * 1000 - 1000;
+    const again = reloaded(phone);
+    await again.list.sync();
+    expect(again.sent).toEqual([]);
   });
 
   it("is asked once a day at most, however often the app starts and whichever page asks", async () => {
@@ -488,6 +504,23 @@ describe("two that start a list at once", () => {
     expect(again.sent.find((each) => each.path === "/v2/lists")!.body!.entry).toBe(kept.entry);
   });
 
+  it("sends the genesis it signed again when its next round comes, though the sign-in is no longer new by then", async () => {
+    const phone = await device();
+    phone.wire.dropRequestOf = "POST /v2/lists";
+    expect((await phone.list.sync()).reached).toBe(false);
+    const kept = await phone.lists.get("genesis", ACCOUNT) as { list: string; entry: string };
+    // the next round by the clock: the sign-in is ten minutes old by then, past the nine in which a device starts a list
+    now += 10 * MINUTE;
+    expect(phone.list.due(true)!).toBeLessThanOrEqual(now);
+    expect(following(await phone.list.sync()).standing).toBe("in");
+    expect([held().id, held().entries]).toEqual([kept.list, [kept.entry]]);
+    // and a device that signed none starts none that late
+    fake.listAccounts = "*";
+    const late = await device({ account: "acct_late" });
+    now += 10 * MINUTE;
+    expect((await late.list.sync()).status).toEqual({ at: "none", why: "not_new" });
+  });
+
   it("forgets the genesis it signed once the account has another list", async () => {
     const first = await device();
     const second = await device({ genesis: "always" });
@@ -705,6 +738,41 @@ describe("after a reload", () => {
   });
 });
 
+describe("a device whose account key was made anew under a page that stays open", () => {
+  it("drops the copy it holds, as a page loaded again does: no view under the key it no longer has", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await addPc(phone, "Desk");
+    expect((await phone.list.sync()).pcs.length).toBe(1);
+    const session = (await phone.store.get("session"))!;
+    await phone.store.clear((kept) => kept.account === session.account);
+    now += 30_000;
+    const view = await phone.list.sync();
+    expect(view).toMatchObject({ status: { at: "not_in", list: held().id, why: "not_mine" }, devices: [], pcs: [] });
+    expect(await phone.lists.get("copy", ACCOUNT)).toBeUndefined();
+  });
+});
+
+describe("a sign-in that changes under a round", () => {
+  it("publishes nothing of the account the round began with", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await addPc(phone, "Desk");
+    const told: AccountListView[] = [];
+    phone.list.subscribe((view) => told.push(view));
+    // another tab stores another account's sign-in while this round waits for the account service
+    // (as the round's last answer comes, the log's: nothing it asks after that would tell it)
+    const other = { ...(await phone.store.get("session"))!, account: "acct_other", sign_in_id: "another-sign-in", refresh_token: "another-refresh-token" };
+    phone.wire.answer = (request) => { if (new URL(request.url).pathname.endsWith("/log")) void phone.store.set("session", other); return null; };
+    now += 30_000;
+    const logs = asked(phone, `GET /v2/lists/${held().id}/log`);
+    const view = await phone.list.sync();
+    expect(asked(phone, `GET /v2/lists/${held().id}/log`)).toBe(logs + 1);
+    expect(view).toEqual({ account: null, status: { at: "off" }, reached: true, devices: [], pcs: [] });
+    expect(told.filter((each) => each.account === ACCOUNT)).toEqual([]);
+  });
+});
+
 describe("an account service that lies", () => {
   /** a device that follows a list with one PC in it */
   async function follower(): Promise<{ phone: Device; view: AccountListView; desk: AskingPc }> {
@@ -830,11 +898,13 @@ describe("an account service that lies", () => {
     // the service says the account has no list: that is no hint and no alarm, and the device starts no other
     phone.wire.answer = mineIs({ list: null, now: 1 });
     now += 30_000;
+    const logsBefore = asked(phone, `GET /v2/lists/${mine}/log`);
     const none = await phone.list.sync();
     expect(members(none)).toEqual(members(view));
     expect(following(none)).toMatchObject({ list: mine, standing: "in", trouble: null });
     expect(asked(phone, "POST /v2/lists")).toBe(1);
-    expect(asked(phone, `GET /v2/lists/${mine}/log`)).toBeGreaterThan(0);
+    // that very round read the list's log, hint or no hint
+    expect(asked(phone, `GET /v2/lists/${mine}/log`)).toBeGreaterThan(logsBefore);
     // the service names a list a stranger started for the account
     const stranger = await device({ account: "acct_stranger", genesis: "always" });
     fake.listAccounts = "*";
@@ -854,6 +924,22 @@ describe("an account service that lies", () => {
     phone.wire.answer = null;
     now += 30_000;
     expect(following(await phone.list.sync()).trouble).toBeNull();
+  });
+
+  it("counts a round as not reached where it names another list and the device's own log does not answer, and waits longer", async () => {
+    const { phone, view } = await follower();
+    const stranger = await device({ account: "acct_stranger", genesis: "always" });
+    fake.listAccounts = "*";
+    await stranger.list.sync();
+    const theirs = held("acct_stranger");
+    phone.wire.answer = (request) => {
+      const { pathname } = new URL(request.url);
+      return pathname === "/v2/lists/mine" ? Response.json({ list: theirs.id, head: theirs.head, now: 1 }) : pathname.endsWith("/log") ? new Response("away", { status: 503 }) : null;
+    };
+    now += 30_000;
+    const other = await phone.list.sync();
+    expect([other.reached, following(other).trouble, members(other)]).toEqual([false, "other_list", members(view)]);
+    expect(phone.list.due(true)).toBe((Math.floor(now / 1000) + UNREACHED_SECONDS[0]!) * 1000);
   });
 
   it("is caught answering with another list's log under this list's id: none of it is taken", async () => {
@@ -999,9 +1085,17 @@ describe("when a sign-in ends", () => {
     await addPc(phone, "Desk");
     const before = await phone.list.sync();
     const copy = await phone.lists.get("copy", ACCOUNT);
+    const told: AccountListView[] = [];
+    phone.list.subscribe((view) => told.push(view));
     await phone.list.dropNames(ACCOUNT);
     expect([await phone.lists.get("wraps", ACCOUNT), await phone.lists.get("genesis", ACCOUNT)]).toEqual([undefined, undefined]);
     expect(await phone.lists.get("copy", ACCOUNT)).toBe(copy);
+    // the page that had the names open holds them no more, and whoever listens is told: who is in is as before
+    const closed = { ...before, devices: before.devices.map((row) => ({ ...row, name: null })), pcs: before.pcs.map((row) => ({ ...row, name: null })) };
+    expect([phone.list.view(), told]).toEqual([closed, [closed]]);
+    // another account's view is not touched by it
+    await phone.list.dropNames("acct_other");
+    expect(told.length).toBe(1);
     // with the account service away nobody's name opens, and who is in is as before
     const away = reloaded(phone);
     away.wire.down = true;
@@ -1046,15 +1140,24 @@ describe("what a device keeps for an account", () => {
     await phone.list.sync();
     await addPc(phone, "Desk");
     await phone.list.sync();
+    await phone.list.shadow(ACCOUNT, [], new Set());
     const key = await epochKey(phone);
     const hex = Array.from(key.key, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    for (const record of ["copy", "wraps", "genesis", "shadow"] as const) {
-      const kept = await phone.lists.get(record, ACCOUNT);
-      const text = JSON.stringify(kept ?? null);
+    const plain = (kept: unknown): void => {
+      expect(kept).toBeDefined();
+      const text = JSON.stringify(kept);
       expect(text).not.toContain(hex);
       expect(text).not.toContain("Desk");
-      expect(JSON.parse(text)).toEqual(kept ?? null);
-    }
+      expect(text).not.toContain("Dana");
+      expect(JSON.parse(text)).toEqual(kept);
+    };
+    for (const record of ["copy", "wraps", "shadow"] as const) plain(await phone.lists.get(record, ACCOUNT));
+    // a genesis is kept only until the device sees it placed: one whose request never arrived is still there
+    fake.listAccounts = "*";
+    const waiting = await device({ account: "acct_waiting" });
+    waiting.wire.dropRequestOf = "POST /v2/lists";
+    await waiting.list.sync();
+    plain(await waiting.lists.get("genesis", "acct_waiting"));
   });
 
   it("records where the list and the directory differ, for the account in view only", async () => {
@@ -1067,5 +1170,12 @@ describe("what a device keeps for an account", () => {
     const record = await phone.list.shadow(ACCOUNT, [row(desk.server_id), row(stray.server_id)], new Set([stray.server_id]));
     expect(record).toMatchObject({ compared: 1, differed: 1, last: { both: 1, list_only: [], service_only: [{ server_id: stray.server_id, seen: false, opens: true }] } });
     expect(await phone.list.shadow("acct_other", [], new Set())).toBeNull();
+  });
+
+  it("counts every comparison, also two that are made at once", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await Promise.all([phone.list.shadow(ACCOUNT, [], new Set()), phone.list.shadow(ACCOUNT, [], new Set()), phone.list.shadow(ACCOUNT, [], new Set())]);
+    expect(await phone.lists.get("shadow", ACCOUNT)).toMatchObject({ compared: 3 });
   });
 });

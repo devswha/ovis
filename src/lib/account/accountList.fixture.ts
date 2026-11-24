@@ -45,8 +45,11 @@ const json = (body: unknown, bearer?: string): RequestInit =>
 export async function postPcKeys(fetch: Fetch, service: string, bearer: string, pc: AskingPc, list: string): Promise<string> {
   const listed = await fetch(`${service}/v1/pcs/${pc.server_id}`, { method: "PUT", ...json({ label: "PC", public_key: pc.endpoint, relay: "wss://relay.test" }, bearer) });
   if (!listed.ok) throw new Error(`The account did not list the PC: ${listed.status}`);
-  const challenge = await (await fetch(`${service}/v1/pc/challenge`, { method: "POST", ...json({ server_id: pc.server_id, public_key: pc.endpoint }) })).json() as { challenge_id: string; frame: string };
+  const asked = await fetch(`${service}/v1/pc/challenge`, { method: "POST", ...json({ server_id: pc.server_id, public_key: pc.endpoint }) });
+  if (!asked.ok) throw new Error(`The account service gave the PC no challenge: ${asked.status}`);
+  const challenge = await asked.json() as { challenge_id: string; frame: string };
   const proof = answerServerChallenge(challenge.frame, pc.secret, { server_id: pc.server_id, role: "account", connection_id: challenge.challenge_id });
+  if (proof === null) throw new Error("The PC could not answer the account service's challenge");
   const card = await signCard({ key: pc.key, enc: pc.enc, list, endpoint: pc.endpoint, invite: null }, pc.signs);
   const posted = await fetch(`${service}/v2/pc/list/keys`, { method: "POST", ...json({ server_id: pc.server_id, public_key: pc.endpoint, challenge_id: challenge.challenge_id, proof, list, key: pc.key, enc: pc.enc, card }) });
   if (!posted.ok) throw new Error(`The account service did not take the PC's keys: ${posted.status}`);

@@ -48,8 +48,8 @@ describe("the hosted shell and the account's signed list", () => {
   afterEach(() => browser.dispose());
 
   const settle = async (): Promise<void> => { for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
-  const controller = (accountList?: AccountList | null) => createAccountController({
-    container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore, accountService: SERVICE,
+  const controller = (accountList?: AccountList | null, store: ShellDeviceStore = empty) => createAccountController({
+    container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE,
     accountFetch: async (input) => {
       const { pathname } = new URL(new Request(input).url);
       asked.push(pathname);
@@ -85,6 +85,33 @@ describe("the hosted shell and the account's signed list", () => {
     await account.refresh(false, true);
     await settle();
     expect(calls.slice(4)).toEqual(["sync", `shadow acct-two ${"a1".repeat(16)},${"b2".repeat(16)} opens:`]);
+  });
+
+  it("compares nothing for a sign-in that ended while it read this device's pairings", async () => {
+    await signIn("acct-one");
+    const { list, calls, heard } = recordingList();
+    // the read of the pairings that a comparison waits for, held by the test
+    const reads: (() => void)[] = [];
+    let holding = false;
+    const account = controller(list, { ...empty, list: () => holding ? new Promise((resolve) => { reads.push(() => resolve([])); }) : Promise.resolve([]) });
+    await account.refresh(true);
+    await settle();
+    const unhandled: unknown[] = [];
+    const note = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", note);
+    try {
+      holding = true;
+      for (const tell of heard) tell();
+      await settle();
+      expect(reads.length).toBe(1);
+      holding = false;
+      account.signOut();
+      await settle();
+      calls.length = 0;
+      for (const release of reads) release();
+      await settle();
+    } finally { process.off("unhandledRejection", note); }
+    expect([unhandled, calls.filter((call) => call.startsWith("shadow"))]).toEqual([[], []]);
   });
 
   it("reads the list again after a sign-out, so that nothing of the ended sign-in stays in view, and forgets what opens its names", async () => {

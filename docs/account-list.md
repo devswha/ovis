@@ -933,8 +933,10 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
   Whoever can change the script the app's origin serves can use the keys, here as before.
 - **A sign-in that ends** (a sign-out, a sign-in the service ended) forgets the wraps and a genesis
   that was not seen placed, as it forgets the names of the account's PCs: nothing left on the
-  device opens a name. The copy stays, since the device is still a member with the key it has: a
-  later sign-in takes up where this one stood, and asks the account service for the wraps again.
+  device opens a name, and the names a page had open go from what it shows. The copy stays, since
+  the device is still a member with the key it has: a later sign-in takes up where this one stood,
+  and asks the account service for the wraps again. A read that ends after another sign-in was
+  stored, or none, shows nothing of the account it began with.
 - Leaving the account and deleting it forget everything kept for it.
 
 ### Starting the list
@@ -950,7 +952,8 @@ It does so by itself only when all of these hold, asked in this order at each re
 1. the account service says the account may have a list and has none (`GET /v2/lists/mine` answers
    `list: null`);
 2. the device has saved no copy for the account, not even one that does not read;
-3. the sign-in is new: made at most nine minutes ago, by the device's clock;
+3. the sign-in is new: made at most nine minutes ago, by the device's clock. A device that signed
+   an entry 0 while its sign-in was new, and has not seen it placed, is not asked this again;
 4. the key this sign-in registered with the account service is the first in the account's order:
    no device registered a key for the account before it;
 5. the device holds no pairing that is linked to the account;
@@ -965,7 +968,9 @@ not in the list), and `never` starts none; both are for testing.
 
 - **A genesis is kept before it is sent, and sent again as it is.** A lost answer or a closed page
   never makes a second one: the device finds the entry it kept, and once the account service names
-  a list it reads entry 0 and sees whether it is its own. Two tabs take turns, so one of them signs
+  a list it reads entry 0 and sees whether it is its own. It sends the entry again at its next
+  reads, also when the sign-in is more than nine minutes old by then; the proof below goes with it
+  once the account service asks for one. Two tabs take turns, so one of them signs
   it and the other finds it; in a browser without Web Locks both may sign one, and the account
   service takes one of the two.
 - **Entry 0 is dated by the device's clock, and no later than the account service's**, which the
@@ -978,8 +983,9 @@ not in the list), and `never` starts none; both are for testing.
   until a member lets it in.
 - **An old sign-in proves itself with its registered key** instead of signing in again, as for
   adding a PC ([In one press](account.md#adding-a-pc)): the purpose is `list-genesis`, with the
-  list id where a PC's id stands and no listing. By itself a device starts a list only from a new
-  sign-in, which needs no proof.
+  list id where a PC's id stands and no listing. By itself a device signs an entry 0 only from a
+  new sign-in, which needs no proof; it sends the proof only with an entry 0 that it signed then
+  and sends again later.
 
 ### What a device writes after entry 0
 
@@ -1059,7 +1065,9 @@ It reads:
   also how a ring of the account's doorbell reaches a page that was not in front;
 - every five minutes in front while the account may have a list and has none, or the device is
   in none;
-- never twice within five seconds, whatever answers;
+- by the clock and by the app coming to the front, never twice within five seconds, whatever
+  answers. A read that a part of the app asks for itself (a sign-in that was just read) begins at
+  once, and one asked for while another is under way begins when that one ends;
 - one read at a time for an account among the tabs of a browser, and a read's requests end after
   30 seconds.
 
@@ -1074,11 +1082,12 @@ out. Only `404` to `GET /v2/lists/mine` says that the service keeps no list for 
 
 How often the device asks while it gets no list:
 
-- after that `404`, once a day at most for the account (the time is kept on the device, so a new
-  page or a new start of the app asks nothing in between);
+- after that `404`, once a day at most for the account, counted from when the answer came (the
+  time is kept on the device, so a new page or a new start of the app asks nothing in between);
 - after a round that did not reach the service (no answer, or any other refusal), in 5 minutes,
   then 15, then an hour, then every 6 hours, until one round reaches it. That holds for a device
-  that follows a list too, for which a `404` is the service being away;
+  that follows a list too, for which a `404` is the service being away, and for a round in which
+  the service named another list or none and did not answer for the device's own log;
 - never while signed out.
 
 ### What the device says is wrong

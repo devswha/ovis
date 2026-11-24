@@ -214,8 +214,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   /** Holds this device's list against the directory last read, for the record (account/listShadow.ts): it changes nothing drawn. */
   const compareList = async (): Promise<void> => {
-    if (lists === null || shownFor === undefined || listedFor?.epoch !== generation || accountView?.kind !== "signed-in" || accountView.pcs === null) return;
-    const here = { account: shownFor.account, devices: await store.list(), now: Date.now() };
+    const comparable = (): boolean => shownFor !== undefined && listedFor?.epoch === generation && accountView?.kind === "signed-in" && accountView.pcs !== null;
+    if (lists === null || !comparable()) return;
+    const [epoch, account] = [generation, shownFor!.account];
+    const devices = await store.list().catch(() => null);
+    // the sign-in ended, or another took its place, while the pairings were read: its rows are not this comparison's
+    if (devices === null || epoch !== generation || !comparable() || shownFor!.account !== account || accountView?.kind !== "signed-in" || accountView.pcs === null) return;
+    const here = { account, devices, now: Date.now() };
     const opens = new Set(accountOpenablePcs(accountView.pcs, here).map((pc) => pc.server_id));
     await lists.shadow(here.account, directory, opens).catch((error: unknown) => console.warn("Ovis: the account's list was not compared", error instanceof Error ? error.name : error));
   };
