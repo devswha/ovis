@@ -818,6 +818,63 @@ describe("the fake account service's list routes (Part D)", () => {
     });
   });
 
+  describe("the account service review's reproducing cases (PR 73) the fake refuses too", () => {
+    test("R5: a batch whose second entry the service refuses stores nothing, not its wraps, and the first's claim stays; an entry that counts only after the one before it is placed with it", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      expect((await w.claim(list, phone, w.service.issueToken(ACCOUNT))).status).toBe(200);
+      const first = await sign(w.owner, { seq: head.seq + 1, list, prev: head.hash }, await deviceOf(phone, list), w.seconds());
+      const second = await sign(w.owner, { seq: first.head.seq + 1, list, prev: first.head.hash }, inviteOf(await newKey(), w.seconds() + 4000), w.seconds() + 3600);
+      const answer = await w.place(list, [first.text, second.text], [{ epoch: 0, member: phone.enc, wrap: WRAP(2) }]);
+      expect([refusal(answer), answer.body.error?.index, answer.body.error?.reason]).toEqual(["400 entry_refused", 1, "issued_at_ahead"]);
+      const held = w.service.accountList(ACCOUNT)!;
+      expect([held.entries.length, held.wraps.length, held.claims.length]).toEqual([1, 1, 1]);
+      const gone = await newKey();
+      await w.claim(list, gone);
+      const addGone = await chain(list, head, [[w.owner, await deviceOf(gone, list)]], w.seconds());
+      expect((await w.place(list, addGone.texts)).status).toBe(200);
+      const together = await chain(list, addGone.head, [[w.owner, removeOf(gone)], [w.owner, epochOf(0)], [w.owner, { ...(await deviceOf(phone, list)), sealed: sealed(1) } as ListKind]], w.seconds());
+      expect((await w.place(list, together.texts)).status).toBe(200);
+    });
+
+    test("R10: a PC listed in account X posts to account Y's list, and Y's member signs its pc: refused both ways; X reads nothing of Y", async () => {
+      const w = await world();
+      await w.start();
+      const yToken = w.service.issueToken("acct_2");
+      const yOwner = await newKey();
+      const yGenesis = await sign(yOwner, { seq: 0, list: "", prev: "" }, genesisOf(yOwner, "acct_2"), w.seconds());
+      const y = (await w.call("POST", "/v2/lists", { entry: yGenesis.text }, yToken)).body.list as string;
+      const x = w.service.accountList(ACCOUNT)!.id;
+      const pc = machine();
+      await listPc(w, pc);
+      const who = await newKey();
+      const postTo = async (list: string) => pcCall(w, pc, "/v2/pc/list/keys", { list, key: who.key, enc: who.enc, card: await cardOf(who, list, pc.endpoint) });
+      expect(refusal(await postTo(y))).toBe("404 not_found");
+      expect((await postTo(x)).status).toBe(200);
+      const inY = await chain(y, yGenesis.head, [[yOwner, await pcOf(who, y, pc.endpoint)]], w.seconds());
+      expect(refusal(await w.place(y, inY.texts, undefined, yToken))).toBe("403 not_posted");
+      expect(refusal(await w.log(y))).toBe("404 not_found");
+      expect(refusal(await w.call("GET", `/v2/lists/${y}/claims`, undefined, w.token))).toBe("404 not_found");
+    });
+
+    test("R12: a second genesis from a sign-in older than ten minutes answers 409 list_exists, not 403", async () => {
+      const w = await world();
+      await w.start();
+      const old = w.service.issueToken(ACCOUNT);
+      w.tick(30 * MINUTE);
+      const again = await sign(w.owner, { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: again.text }, old))).toBe("409 list_exists");
+    });
+
+    test("R13: an unlisted PC posting a card that does not hold sees the unknown route", async () => {
+      const w = await world();
+      const { list } = await w.start();
+      const who = await newKey();
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list/keys", { list, key: who.key, enc: who.enc, card: "A".repeat(86) }))).toBe("404 not_found");
+    });
+  });
+
   describe("tamper mode: each lie is served", () => {
     /** A list of four entries: genesis, two invites and a device, and the device's sign-in. */
     async function told() {
