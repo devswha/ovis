@@ -63,9 +63,9 @@ async function start(by: Key = owner, account = ACCOUNT): Promise<Log> {
   const place = placeOf(null, by);
   return signed(null, by, kindBody(place, { kind: "genesis", account, enc: by.enc, opens: "0a".repeat(32), sealed: null }));
 }
-/** The log with one more entry, signed by `by` on its last one. */
-async function add(log: Log, by: Key, maker: Maker): Promise<Log> {
-  const place = placeOf(log, by);
+/** The log with one more entry, signed by `by` on its last one; `issued_at` is the hour its signer writes into it, where a test says one. */
+async function add(log: Log, by: Key, maker: Maker, issued_at?: number): Promise<Log> {
+  const place = { ...placeOf(log, by), ...(issued_at === undefined ? {} : { issued_at }) };
   return signed(log, by, kindBody(place, await maker(place)));
 }
 /** The same with any body: an entry of no kind a build of level 1 reads. */
@@ -723,6 +723,11 @@ describe("what a PC decides from its copy", () => {
     expect(heardHead(later.copy, { list: OTHER.list, place: null }, NOW - 9).copy).toBe(later.copy);
     expect((await saved(later.copy)).seen_at).toBe(NOW + 100);
     expect(takePage(copy, startRead(copy, "service"), pageOf(log, 5), 1.5)).rejects.toThrow(RangeError);
+    // Nor for less than the list's own time: the hour a full signer wrote into an entry that counted. A stranger's hour moves nothing.
+    const strange = await reads(copy, serves(await add(log, mallory, epochOf(0), NOW + 900)));
+    expect([memberClock(strange.copy, NOW), opens(strange.copy, browser, NOW)]).toEqual([NOW, "drive"]);
+    const ahead = await reads(copy, serves(await add(log, owner, epochOf(0), NOW + 900)));
+    expect([memberClock(ahead.copy, NOW), opens(ahead.copy, browser, NOW), admittedDevices(ahead.copy, NOW).map((row) => who(row.key))]).toEqual([NOW + 900, "expired", ["owner", "phone"]]);
   });
 
   test("nothing it lets in depends on when it last read, on what the service last answered, or on the service at all", async () => {

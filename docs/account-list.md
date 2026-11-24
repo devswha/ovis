@@ -484,9 +484,9 @@ copy is. A service that is away or withholds takes out no device the PC holds.
   `until`, before that second by the PC's clock. It opens as its `role`. Otherwise the refusal is
   the first of: the PC itself is `waiting`, `stopped` or `out`; `never_added`; `removed`; `frozen`
   (the alarm); `expired`.
-- **The PC's clock never counts for less than it showed before.** Each page and each hint is taken
-  at the hour the clock shows, the copy keeps the latest (`seen_at`), and a clock that was set back
-  lets no device in past its `until`.
+- **The PC's clock never counts for less than it showed before**, nor for less than the list's own
+  time (`listClock`). Each page and each hint is taken at the hour the clock shows, the copy keeps
+  the latest (`seen_at`), and a clock that was set back lets no device in past its `until`.
 - **A PC is a member** when its signing key belongs to a relay key that is in.
 - **A device shows** the PCs that are in. The account service's directory only says how to reach
   them.
