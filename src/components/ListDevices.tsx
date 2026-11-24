@@ -20,7 +20,8 @@ export function useListView(list: AccountList | null): AccountListView | null {
   useEffect(() => {
     if (list === null) { setView(null); return; }
     setView(list.view());
-    return list.subscribe(setView);
+    // read again at each word that it changed: the list's own view is the one to draw
+    return list.subscribe(() => setView(list.view()));
   }, [list]);
   return view;
 }

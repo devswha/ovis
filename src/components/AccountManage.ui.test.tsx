@@ -153,7 +153,7 @@ describe("Manage account's devices and PCs", () => {
     const listed = (n: string, label: string) => ({ endpoint: n.repeat(64), server_id: n.repeat(32), how: "added" as const, allows: true, name: { label, os: null }, seq: 1, by: null, new_at: null });
     let view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [], pcs: [listed("c", "Laptop"), listed("a", "Desk")] };
     const heard: (() => void)[] = [];
-    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; } } as unknown as AccountList);
+    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; }, writer: () => null } as unknown as AccountList);
     inShell = true;
     try {
       // the directory routes Desk (heard from lately) and names Dead box alone; the list holds Laptop with no route
