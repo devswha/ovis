@@ -35,14 +35,16 @@ export interface RuntimeCapabilities {
    * socket; `core`, the core hc reports (the socket is this server's own adapter).
    */
   readonly spawner: "server" | "core";
+  /** whether an agent driven over ACP can run under its keeper in one of the runtime's terminals, labelled and under its parent (server/acp/children.ts) */
+  readonly acpChildren: boolean;
 }
 
 export const HERDR: RuntimeCapabilities = {
-  runtime: "herdr", attach: "pty-cli", agents: "detected", foreground: "job", seen: null, pins: false, machines: false, spawner: "server",
+  runtime: "herdr", attach: "pty-cli", agents: "detected", foreground: "job", seen: null, pins: false, machines: false, spawner: "server", acpChildren: false,
 };
 
 export const HERDR_CORE: RuntimeCapabilities = {
-  runtime: "herdr-core", attach: "hc", agents: "reported", foreground: "leader", seen: "label", pins: true, machines: true, spawner: "core",
+  runtime: "herdr-core", attach: "hc", agents: "reported", foreground: "leader", seen: "label", pins: true, machines: true, spawner: "core", acpChildren: true,
 };
 
 let served: RuntimeCapabilities | null = null;
