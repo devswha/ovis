@@ -918,6 +918,20 @@ describe("a device that is far behind", () => {
     expect(phone.list.due(true)).toBe((Math.floor(now / 1000) + UNREACHED_SECONDS[0]!) * 1000);
   });
 
+  it("goes by the copy it saved where the account service's answer does not read, on a page loaded again too", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await addPc(phone, "Desk");
+    const before = await phone.list.sync();
+    // the answer is cut off on the way: no JSON
+    const again = reloaded(phone);
+    again.wire.answer = () => new Response('{"list":"', { status: 200, headers: { "content-type": "application/json" } });
+    now += 30_000;
+    const view = await again.list.sync();
+    expect([view.reached, view.status.at, view.pcs]).toEqual([false, "following", before.pcs]);
+    expect(again.list.due(true)).toBe((Math.floor(now / 1000) + UNREACHED_SECONDS[0]!) * 1000);
+  });
+
   it("counts a request that timed out as a round that did not reach the account service, and throws nothing", async () => {
     const phone = await device();
     await phone.list.sync();

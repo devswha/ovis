@@ -223,9 +223,12 @@ function readPending(value: unknown, keys: DeviceListKeys): PendingGenesis | nul
 /** The account service's own refusal of a request, as against no answer or a refresh that failed. */
 const refusalOf = (error: unknown): AccountServiceError | null => (error instanceof AccountServiceError && !(error instanceof AccountRefreshError) ? error : null);
 
-/** The account service gave no answer this round can use: it is away, slow, refused, or sent something out of form. */
+/**
+ * The account service gave no answer this round can use: it is away, slow, refused, or sent something out of form,
+ * a body that is no JSON (cut off on the way) included. What the device saved stands then.
+ */
 function unreached(error: unknown): boolean {
-  return error instanceof AccountServiceError || error instanceof AccountServiceUnreachableError
+  return error instanceof AccountServiceError || error instanceof AccountServiceUnreachableError || error instanceof SyntaxError
     || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"));
 }
 
