@@ -79,7 +79,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, acp, 
         receipt(false, "input_failed");
       };
       const child = message.stop === true && (message.text === "\x1b" || message.text === "\x03") ? acp?.forPane(message.pane_id) : undefined;
-      if (child) {
+      if (child && !child.client.terminalReady) {
         const sessionId = child.client.session;
         const roles = connectionOf(client).roles;
         void serialize(message.pane_id, () => {

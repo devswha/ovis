@@ -9,6 +9,7 @@ import { KeeperClient } from "../acp/client.ts";
 import { keeperBuilt, keeperRoot, startKeeper, until } from "../acp/keeper.fake.ts";
 import { dirname, join } from "node:path";
 import { readFileSync, rmSync } from "node:fs";
+import { Socket } from "node:net";
 
 afterEach(() => mock.restore());
 
@@ -62,6 +63,27 @@ it.skipIf(!keeperBuilt)("Stop cancels the running ACP turn instead of typing int
     });
     expect(live.typed).toEqual([]);
   } finally { client.close(); await keeper.stop(); rmSync(dirname(root), { recursive: true, force: true }); }
+});
+
+it("sends Stop keys to the real TUI while its ACP child stays registered", async () => {
+  const root = keeperRoot();
+  const socket = new Socket();
+  const keeper = new KeeperClient(root, { connect: () => socket });
+  const child = { id: "child", terminal: "t1", harness: "codex", root, client: keeper };
+  const live = lane(true, "pty", { forPane: pane => pane === "t1" ? child : undefined });
+  try {
+    socket.emit("data", [
+      { seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s1" } }) },
+      { seq: 2, dir: "keeper", raw: JSON.stringify({ method: "_keeper/mode", params: { mode: "terminal", phase: "ready" } }) },
+      { through: 2, client: 1 },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    live.inputFrames.input(live.phone, { type: "input", pane_id: "t1", text: "\x03", stop: true, id: 1 });
+    live.inputFrames.input(live.phone, { type: "input", pane_id: "t1", text: "\x1b", stop: true, id: 2 });
+    live.answer();
+    await live.inputFrames.keys(live.phone, { type: "keys", pane_id: "t1", keys: ["right"] });
+    expect(live.typed).toEqual(["pty \x03", "text \x1b", "keys right"]);
+    expect(live.results()).toMatchObject([{ id: 1, ok: true }, { id: 2, ok: true }]);
+  } finally { keeper.close(); rmSync(dirname(root), { recursive: true, force: true }); }
 });
 
 it("counts what a person types into a pane, by any way, and not the terminal's own answers or the mouse", async () => {

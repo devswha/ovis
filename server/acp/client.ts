@@ -33,10 +33,12 @@ export class KeeperClient {
   turn: AcpTurn | null = null;
   agentGone = false;
   malformedRows = 0;
-  private inTerminal = false;
+  private mode: "acp" | "terminal" | "switching" = "acp";
+
+  get terminalReady(): boolean { return this.connected && this.mode === "terminal"; }
 
   get status(): "working" | "blocked" | "idle" | "done" | "unknown" {
-    if (!this.connected || this.agentGone || this.inTerminal || !this.session) return "unknown";
+    if (!this.connected || this.agentGone || this.mode !== "acp" || !this.session) return "unknown";
     return this.approvals.size ? "blocked" : this.turn?.running ? "working" : this.turn?.stopReason ? "done" : "idle";
   }
   /** the keeper ended and no connection could be made again */
@@ -279,7 +281,7 @@ export class KeeperClient {
         if (this.client !== null && params.client === this.client) this.requests.delivered(params.id);
         return false;
       case "_keeper/mode":
-        this.inTerminal = params.mode !== "acp" || params.phase !== "ready";
+        this.mode = params.phase !== "ready" ? "switching" : params.mode === "terminal" ? "terminal" : params.mode === "acp" ? "acp" : "switching";
         return true;
       case "_keeper/session":
         this.session = text(params["sessionId"]) || null;
