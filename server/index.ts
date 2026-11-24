@@ -408,8 +408,9 @@ export function createServer(
   // the account's signed list, read beside the snapshot and compared with it: it lets nobody in yet (list-follow.ts)
   const accountList = pcAccount === null ? null : new ListFollow({
     stateDir, keys: new ListKeyStore(stateDir), identity: () => ovisRelay.currentIdentity(),
-    binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null }; },
+    binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null, alarmed: binding.list_alarm === true }; },
     pin: (bindId, list) => pcAccount.pinToList(bindId, list),
+    alarm: (bindId) => pcAccount.alarmList(bindId),
     removedFrom: (account, serverId) => pcAccount.removedByList(account, serverId),
     call: (path, body) => accountMailbox.listRoute(path, body),
     rowKey: (id) => accountRows?.row(id)?.key ?? null,

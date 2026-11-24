@@ -25,7 +25,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { entryFromText, entryHash, isListHash, readBody } from "../../shared/account-list-entry.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import {
-  admitsSession, admittedDevices, followStep, heardHead, nextUntil, pinList, readSave, shownPcs, standing, startRead, takePage, writeSave, PC_BUSY_READ_SECONDS,
+  admitsSession, admittedDevices, followStep, heardHead, nextUntil, pinList, readSave, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
 import { listView, signCard, type ListRole } from "../../shared/account-list.ts";
@@ -125,8 +125,10 @@ export interface ListFollowDeps {
   readonly stateDir: string;
   readonly keys: ListKeyStore;
   identity(): RelayIdentity | undefined;
-  /** The PC's standing binding to its account, or null. `list`: the list that binding is pinned to, or null. */
-  binding(): { readonly account: string; readonly id: string; readonly list: string | null } | null;
+  /** The PC's standing binding to its account, or null. `list`: the list that binding is pinned to, or null. `alarmed`: that list raised an alarm under this binding. */
+  binding(): { readonly account: string; readonly id: string; readonly list: string | null; readonly alarmed?: boolean } | null;
+  /** Keeps with the binding `bindId`, on disk, that its list raised an alarm (PcAccountState.alarmList). False when it could not. */
+  alarm?(bindId: string): boolean;
   /** Pins the binding `bindId` to `list`, on disk, for good (PcAccountState.pinToList). False when it could not. */
   pin(bindId: string, list: string): boolean;
   /** Whether the list of `account` removed this PC while it had the relay identity `serverId` (PcAccountState.removedByList). */
@@ -193,6 +195,10 @@ export class ListFollow implements ListAuthority {
   private dirty = false;
   /** The clock (`seen_at`) of the copy as it was last saved. */
   private savedAt: number | null = null;
+  /** The copy in memory holds what the file does not: its last save failed. It is acted on all the same, and saved again at the next tick. */
+  private unsaved = false;
+  /** Fires at `untilAt`, whatever else the PC is doing. */
+  private untilTimer: ReturnType<typeof setTimeout> | undefined;
   /** The removals of the list that this PC has kept as its own since this start, by the entry that made each. */
   private readonly applied = new Set<string>();
   /** When a person last named a list here, in milliseconds: for a while after it the PC reads often, as someone waits beside it. */
@@ -223,6 +229,8 @@ export class ListFollow implements ListAuthority {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    if (this.untilTimer) clearTimeout(this.untilTimer);
+    this.untilTimer = undefined;
   }
 
   /** Everything asked of the list so far has been done. */
@@ -251,7 +259,38 @@ export class ListFollow implements ListAuthority {
 
   role(key: string): ListRole | null | undefined {
     if (!this.pinned()) return undefined;
-    return this.copy === null ? null : admitsSession(this.copy, key, this.seconds()).role;
+    const copy = this.clocked();
+    if (copy === null || this.alarmLost) return null;
+    const answer = admitsSession(copy, key, this.seconds());
+    // refused for its time: the hour that says so is on disk before the answer is used, so no clock set back undoes it
+    if (answer.why === "expired") this.saveFloor(copy.state?.devices[key]?.until ?? null);
+    return answer.role;
+  }
+
+  /**
+   * The binding keeps that its list raised an alarm, and the copy the PC holds now shows none: the copy was lost and
+   * read again, and one history tells nothing of whom the alarm held back. The PC then lets nobody of its list in,
+   * until a person unpins it at the PC.
+   */
+  private get alarmLost(): boolean {
+    const binding = this.deps.binding();
+    return binding !== null && binding.id === this.bindId && binding.list !== null && binding.alarmed === true && this.copy?.alarm == null;
+  }
+
+  /** The copy with the hour the PC's clock shows now (withClock), which it decides on: the hour never counts for less than it once showed. */
+  private clocked(): FollowerCopy | null {
+    if (this.copy === null) return null;
+    const now = withClock(this.copy, this.seconds());
+    if (now !== this.copy) { this.ids.delete(this.copy); this.copy = now; }
+    return now;
+  }
+
+  /** Saves the copy's hour when what is on disk does not yet show that `until` has passed. Never throws. */
+  private saveFloor(until: number | null): void {
+    const scope = this.bound();
+    if (scope === null || this.copy === null || this.copy.seen_at === null || until === null) return;
+    if (this.savedAt !== null && this.savedAt >= until && this.savedAt >= 0) return;
+    this.persist(scope);
   }
 
   removedFrom(account: string): boolean {
@@ -261,7 +300,7 @@ export class ListFollow implements ListAuthority {
 
   /** Whether the PC at the relay key `endpoint` is in the list this PC is pinned to. */
   holdsPc(endpoint: string): boolean {
-    if (!this.pinned() || this.copy === null) return false;
+    if (!this.pinned() || this.copy === null || this.alarmLost) return false;
     return shownPcs(this.copy).some((row) => row.endpoint === endpoint);
   }
 
@@ -280,7 +319,7 @@ export class ListFollow implements ListAuthority {
       head: copy?.state ? { seq: copy.state.footing.seq, hash: copy.state.footing.hash } : null,
       devices: view?.devices.filter((row) => row.ended === null).length ?? 0,
       pcs: view?.pcs.filter((row) => row.removed === null).length ?? 0,
-      alarm: copy?.alarm ? "fork" : null,
+      alarm: copy?.alarm || (copy !== null && this.alarmLost) ? "fork" : null,
       last_read_at: copy?.read_at == null ? null : new Date(copy.read_at * 1000).toISOString(),
       last_verdict: this.lastVerdict,
       differences: this.differences.size,
@@ -314,6 +353,7 @@ export class ListFollow implements ListAuthority {
       if (scope.list !== null) return scope.list === list ? { status: this.status() } : { refused: "pinned" as const };
       const keys = await this.keysOf(scope);
       if (keys === null) return { refused: "unavailable" as const };
+      const before = { want: this.want, copy: this.copy, wantedAt: this.wantedAt, postedAt: this.postedAt, postedUntil: this.postedUntil };
       if (this.copy === null || this.copy.list !== list) {
         const first = pinList(null, { account: scope.account, list, me: { key: keys.key, endpoint: scope.endpoint }, pin: { how: "added" } });
         if (!first.pinned) return { refused: "invalid_list" as const };
@@ -322,7 +362,11 @@ export class ListFollow implements ListAuthority {
       }
       this.want = list;
       this.wantedAt = this.deps.now();
-      if (!this.persist(scope)) return { refused: "unavailable" as const };
+      if (!this.persist(scope)) {
+        // a naming that was refused names nothing: what stood before it stands, in memory as on disk
+        ({ want: this.want, copy: this.copy, wantedAt: this.wantedAt, postedAt: this.postedAt, postedUntil: this.postedUntil } = before);
+        return { refused: "unavailable" as const };
+      }
       this.settle();
       if (!this.isPinned) {
         await this.read(scope);
@@ -341,6 +385,8 @@ export class ListFollow implements ListAuthority {
     if (this.broken !== null && this.copy === null) { this.broken = null; this.takeFile(scope); void this.enqueue(async () => { await this.ready; await this.ensureCopy(scope); this.settle(); }); }
     if (this.problem !== null) return;
     const now = this.seconds();
+    // a copy the disk did not take is offered to it again
+    if (this.unsaved) void this.enqueue(() => { const bound = this.bound(); if (bound !== null && this.unsaved && this.copy !== null) this.unsaved = !this.persist(bound); });
     if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); });
     // any PC that holds a list reads it by its own clock, one that only shadows too: a mailbox that names no list, or
     // does not answer, hides no entry. A PC whose account never had a list holds no copy and asks nothing
@@ -398,7 +444,7 @@ export class ListFollow implements ListAuthority {
    * A member's answer to `asks`, handed over directly: taken as the account service's pages are, since entries prove
    * themselves. So a removal the service withholds reaches this PC from any member that has it.
    */
-  takeFromPeer(page: ListPage): Promise<FollowVerdict | null> {
+  takeFromPeer(page: ListPage): Promise<FollowVerdict | "not_saved" | null> {
     return this.enqueue(async () => {
       const scope = this.bound();
       if (scope === null) return null;
@@ -408,8 +454,8 @@ export class ListFollow implements ListAuthority {
       if (copy === null || this.problem !== null || (!this.isPinned && this.want === null)) return null;
       const result = await takePage(copy, startRead(copy, "peer"), page, this.seconds());
       if (!this.live(scope)) return null;
-      this.keep(result.copy, scope, changed(copy, result.copy));
-      return result.verdict;
+      // acted on at once; said as taken only once it is on disk
+      return this.keep(result.copy, scope, changed(copy, result.copy)) ? result.verdict : "not_saved";
     });
   }
 
@@ -687,7 +733,8 @@ export class ListFollow implements ListAuthority {
       // a service that is away, or that serves this PC no list, is no word on the list: the copy stays as it is
       this.error = this.words(error);
     } finally {
-      if (this.live(scope) && this.copy === before) this.keep(copy, scope, changed(before, copy));
+      // the copy the read began on, whatever hour its clock was moved to meanwhile
+      if (this.live(scope) && this.copy !== null && !changed(before, this.copy)) this.keep(copy, scope, changed(before, copy));
     }
   }
 
@@ -713,17 +760,20 @@ export class ListFollow implements ListAuthority {
   }
 
   /** Takes a copy as this PC's own: on disk first when it changed, then in memory, then what follows from it. */
-  private keep(copy: FollowerCopy, scope: Bound, save: boolean): void {
-    const before = this.copy;
-    this.copy = copy;
-    if (save && !this.persist(scope)) {
-      // what is not on disk is not held: the next read takes it again
-      this.copy = before;
-      return;
+  private keep(copy: FollowerCopy, scope: Bound, save: boolean): boolean {
+    // the hour never goes back: a copy made from an older one keeps the latest hour this PC's clock showed
+    const seen = this.copy?.list === copy.list ? this.copy.seen_at : null;
+    this.copy = seen === null ? copy : withClock(copy, seen);
+    if (save) {
+      // What a member signed is acted on whether or not the disk takes it: a removal is enforced from memory, and the
+      // copy is offered to the disk again at the next tick. A restart before that reads the list again before a session
+      this.unsaved = !this.persist(scope);
+      this.settle();
+      return !this.unsaved;
     }
-    if (save) this.settle();
     // the latest hour the clock showed is kept too, so a clock set back over a restart lets no device in past its time
-    else if (copy.seen_at !== null && (this.savedAt === null || copy.seen_at - this.savedAt >= LIST_CLOCK_SAVE_SECONDS)) this.persist(scope);
+    if (copy.seen_at !== null && (this.savedAt === null || copy.seen_at - this.savedAt >= LIST_CLOCK_SAVE_SECONDS)) this.persist(scope);
+    return true;
   }
 
   private persist(scope: Bound): boolean {
@@ -758,19 +808,56 @@ export class ListFollow implements ListAuthority {
       pinning = true;
       try { this.deps.repinned?.(); } catch { /* the commit below ends what is left of them */ }
     }
-    if (standing(copy) === "out") { this.leave(scope); return; }
+    // an alarm is kept with the pin, on disk: a copy that is lost and read again must not lift it
+    if (copy.alarm !== null && this.deps.binding()?.alarmed !== true) {
+      try { if (this.deps.alarm?.(scope.bindId) === false) this.dirty = true; } catch { this.dirty = true; }
+    }
     const now = this.seconds();
+    // a device's time has passed: the hour that says so is on disk before anything is done by it
+    if (this.untilAt !== null && now >= this.untilAt) { this.clocked(); this.saveFloor(this.untilAt); }
+    if (standing(copy) === "out") {
+      // what the list put out before it put this PC out goes first: leaving keeps the pairings this PC made itself,
+      // and a device the list removed must not stay in by one of them
+      try { this.keepRemovals(copy); } catch (error) {
+        this.dirty = true;
+        this.error = `The list's removals could not be kept (${error instanceof Error ? error.message : String(error)})`;
+        return;
+      }
+      this.leave(scope);
+      return;
+    }
     try {
       // what the list put out first, so that nothing the commit lets in stands beside a key that is out
       this.keepRemovals(copy);
-      this.deps.commit?.(listCommit(copy, now), readmission, pinning);
+      const rows = listCommit(copy, now);
+      this.deps.commit?.(this.alarmLost ? { ...rows, devices: rows.devices.map((row) => ({ ...row, eligible: false })) } : rows, readmission, pinning);
       this.dirty = false;
     } catch (error) {
       this.dirty = true;
       this.error = `The list's devices could not be written (${error instanceof Error ? error.message : String(error)})`;
     }
     this.untilAt = nextUntil(copy, now);
+    this.armUntil(now);
     try { this.deps.recheck?.(); } catch { /* the rows say it again at their next use */ }
+  }
+
+  /**
+   * A timer for the next second at which a device the list lets in stops being let in. It runs by itself: a session
+   * open at that second closes then, not at the next tick and not behind a read of the account service.
+   */
+  private armUntil(now: number): void {
+    if (this.untilTimer) clearTimeout(this.untilTimer);
+    this.untilTimer = undefined;
+    if (this.untilAt === null || this.stopped) return;
+    // by the PC's own clock in milliseconds, to the start of that second; a timer cannot wait longer than 2^31-1 ms
+    const wait = Math.min(Math.max(0, this.untilAt * 1000 - this.deps.now()), 2 ** 31 - 1);
+    this.untilTimer = setTimeout(() => {
+      this.untilTimer = undefined;
+      if (this.stopped || !this.pinned()) return;
+      if (this.untilAt !== null && this.seconds() >= this.untilAt) this.settle();
+      else this.armUntil(this.seconds());
+    }, wait);
+    this.untilTimer.unref?.();
   }
 
   /** Every device the list put out is kept as removed by this PC itself, once a start; one that could not be kept is tried again. */

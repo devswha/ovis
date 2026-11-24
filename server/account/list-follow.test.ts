@@ -13,9 +13,11 @@ import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import { loadRelayIdentity } from "../relay/identity.ts";
+import { privateStateFs } from "../private-state.ts";
+import type { ListCommit } from "./account-device-state.ts";
 import { ACCOUNT_LIST_FILE, ListFollow, type ListFollowDeps } from "./list-follow.ts";
 import { ListKeyStore } from "./list-keys.ts";
-import { listMember, TestList } from "./list.test-helpers.ts";
+import { listMember, memberCard, TestList } from "./list.test-helpers.ts";
 import { AccountServiceRefusal } from "./mailbox.ts";
 
 const ACCOUNT = "acct_1";
@@ -30,7 +32,7 @@ afterEach(() => {
 });
 
 /** A PC's follower over a state folder of its own, an account's real list, and a clock the test moves (seconds). */
-async function following(options: { stateDir?: string; seconds?: number; account?: TestList; service?: FakeAccountService; pinned?: string | null } = {}) {
+async function following(options: { stateDir?: string; seconds?: number; account?: TestList; service?: FakeAccountService; pinned?: string | null; alarmed?: boolean; real?: boolean } = {}) {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "ovis-list-follow-"));
   if (options.stateDir === undefined) dirs.push(stateDir);
   const world = {
@@ -42,10 +44,17 @@ async function following(options: { stateDir?: string; seconds?: number; account
     until: null as number | null,
     /** the list the binding is pinned to, as account-pc.json keeps it */
     pinned: options.pinned ?? null as string | null,
+    /** whether the binding keeps that an alarm rose, as account-pc.json does */
+    alarmed: options.alarmed ?? false,
+    /** what the PC did by its list: the keys it kept as removed, the rows it committed, the times it left and looked at its sessions again */
+    removed: [] as string[], commits: [] as ListCommit[], left: 0, rechecks: 0,
+    /** whether the clock is the real one, from `seconds` on */
+    real: options.real === true ? Date.now() : null as number | null,
   };
-  const service = options.service ?? new FakeAccountService(() => world.seconds * 1000);
+  const seconds = () => world.real === null ? world.seconds : world.seconds + Math.floor((Date.now() - world.real) / 1000);
+  const service = options.service ?? new FakeAccountService(() => seconds() * 1000);
   service.listAccounts = "*";
-  const account = options.account ?? await TestList.start(service, ACCOUNT, undefined, () => world.seconds);
+  const account = options.account ?? await TestList.start(service, ACCOUNT, undefined, seconds);
   const identity = loadRelayIdentity(stateDir);
   const endpoint = bytesToHex(importPublicKey(identity.public_key));
   // the account lists this PC, so the service serves it the list's routes on its own proof
@@ -58,11 +67,16 @@ async function following(options: { stateDir?: string; seconds?: number; account
   };
   const deps: ListFollowDeps = {
     stateDir, keys: new ListKeyStore(stateDir), identity: () => identity,
-    binding: () => world.bound ? { account: ACCOUNT, id: BIND, list: world.pinned } : null,
+    binding: () => world.bound ? { account: ACCOUNT, id: BIND, list: world.pinned, alarmed: world.alarmed } : null,
     pin: (_bindId, id) => { world.pinned = id; return true; },
+    alarm: () => { world.alarmed = true; return true; },
     removedFrom: () => false,
     rowKey: () => null,
-    now: () => world.seconds * 1000,
+    now: () => world.real === null ? world.seconds * 1000 : world.seconds * 1000 + (Date.now() - world.real),
+    removed: (key) => { world.removed.push(key); },
+    commit: (rows) => { world.commits.push(rows); },
+    leave: () => { world.left++; world.bound = false; return true; },
+    recheck: () => { world.rechecks++; },
     call: async (path, body) => {
       world.calls.push(path);
       if (world.gate !== null) await world.gate;
@@ -81,7 +95,15 @@ async function following(options: { stateDir?: string; seconds?: number; account
   const reads = () => world.calls.filter((path) => path === "/v2/pc/list/log").length;
   /** A member adds this PC from the keys it posted: from then on the list answers for its devices. */
   const addPc = async () => { await pull(); await account.addPostedPc(endpoint); await pull(); };
-  return { list, world, service, account, stateDir, pull, reads, hint, deps, addPc };
+  /** The PC as one a person pinned to this list. */
+  const pin = async () => {
+    expect(await list.wantList(account.id)).toMatchObject({ status: { pinned: false } });
+    await addPc();
+    expect(list.status()).toMatchObject({ pinned: true, standing: "in" });
+  };
+  /** The key the list holds this PC by. */
+  const ownKey = async () => (await deps.keys.keysFor(identity.server_id)).key;
+  return { list, world, service, account, stateDir, pull, reads, hint, deps, addPc, pin, ownKey, endpoint };
 }
 
 describe("a PC that holds a list reads it at its own pace", () => {
@@ -298,5 +320,129 @@ describe("what the PC says of itself", () => {
     } finally { log.mockRestore(); }
     const differences = said.filter((line) => line.event === "account.list.differs").map(({ snapshot, list, of }) => ({ snapshot, list, of }));
     expect(differences).toEqual([{ snapshot: "admitted", list: "never_added", of: "credential" }, { snapshot: "none", list: "drive", of: "credential" }]);
+  });
+});
+
+describe("a pinned PC and what its list removes", () => {
+  test("a device the list removed before it removed the PC is put out in the same read, before the PC leaves", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.pin();
+    // both while the PC was away: the phone, then the PC itself
+    await pc.account.remove(phone.key);
+    await pc.account.remove(await pc.ownKey());
+    await pc.pull();
+    expect(pc.world.removed).toEqual([phone.key]);
+    expect(pc.world.left).toBe(1);
+  });
+
+  test("a removal whose save fails is enforced all the same, said as not saved, and saved once the disk takes it", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    const tablet = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.account.addDevice(tablet);
+    await pc.pin();
+    const before = pc.list.status().head;
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((_from, to) => {
+      if (String(to).endsWith(ACCOUNT_LIST_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+    });
+    try {
+      await pc.account.remove(phone.key);
+      await pc.pull();
+      // out at once, from memory
+      expect(pc.world.removed).toEqual([phone.key]);
+      expect(pc.list.role(phone.key)).toBeNull();
+      expect(pc.list.status().error).toContain("could not be written");
+      // a page a device hands over is not answered as taken while it is not on disk
+      const removal = await pc.account.remove(tablet.key);
+      const ask = pc.list.asks()!;
+      expect(await pc.list.takeFromPeer({ list: ask.list, after: ask.after, entries: [removal], head: pc.account.place })).toBe("not_saved");
+      expect(pc.world.removed).toEqual([phone.key, tablet.key]);
+      expect(pc.list.role(tablet.key)).toBeNull();
+    } finally { failing.mockRestore(); }
+    // the disk takes it again: the copy is saved at the next tick, and a restart holds both removals
+    pc.list.tick();
+    await pc.list.settled();
+    pc.list.stop();
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.list.start();
+    await again.list.settled();
+    expect(again.list.status().head).toEqual(pc.account.place);
+    expect(again.list.status().head).not.toEqual(before);
+    expect(again.world.calls).toEqual([]);
+  });
+});
+
+describe("a device the list lets in until a time", () => {
+  test("is put out when that time comes, by a timer of its own: no tick, no read", async () => {
+    const pc = await following({ seconds: Math.floor(Date.now() / 1000), real: true });
+    const guest = await listMember();
+    await pc.account.addDevice(guest, { role: "watch", power: "bound", until: Math.floor(Date.now() / 1000) + 2 });
+    await pc.pin();
+    expect(pc.list.role(guest.key)).toBe("watch");
+    const rechecks = pc.world.rechecks;
+    const deadline = Date.now() + 10_000;
+    while (pc.world.rechecks === rechecks) { if (Date.now() > deadline) throw new Error("The device's time passed and nothing looked at its session"); await Bun.sleep(25); }
+    expect(pc.list.role(guest.key)).toBeNull();
+    expect(pc.world.commits.at(-1)!.devices.find((row) => row.key === guest.key)).toMatchObject({ eligible: false });
+  });
+
+  test("stays out after a restart with the clock set back, also when the account service was away as its time passed", async () => {
+    const pc = await following({ seconds: 1_800_000_000 });
+    const guest = await listMember();
+    await pc.account.addDevice(guest, { role: "watch", power: "bound", until: 1_800_000_050 });
+    await pc.pin();
+    // the service is away from here on
+    pc.world.log = () => { throw new Error("away"); };
+    pc.world.seconds = 1_800_000_055;
+    expect(pc.list.role(guest.key)).toBeNull();
+    pc.list.stop();
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id, seconds: 1_800_000_010 });
+    again.world.log = () => { throw new Error("away"); };
+    again.list.start();
+    await again.list.settled();
+    expect(again.list.role(guest.key)).toBeNull();
+    expect(again.list.role(pc.account.first.key)).toBe("drive");
+  });
+});
+
+describe("what a pinned PC keeps beside its pin", () => {
+  test("an alarm outlives the loss of the copy: the PC then lets nobody of its list in until a person unpins it", async () => {
+    const pc = await following();
+    await pc.pin();
+    // the first device signs another continuation from entry 0, with a device this PC never saw: the alarm rises
+    const one = await listMember();
+    const fork = await pc.account.sign({ kind: "device", key: one.key, power: "full", role: "drive", until: null, enc: one.enc, card: await memberCard(one, pc.account.id), sealed: null, rotates: false },
+      pc.account.first, { seq: 0, hash: pc.account.id });
+    pc.service.tamperList(pc.account.id, { reader: { server_id: pc.deps.identity()!.server_id }, fork: [fork] });
+    await pc.pull();
+    pc.world.seconds += PC_READ_SECONDS;
+    pc.list.tick();
+    await pc.list.settled();
+    pc.service.untamperList(pc.account.id);
+    expect(pc.list.status().alarm).toBe("fork");
+    expect(pc.world.alarmed).toBe(true);
+    pc.list.stop();
+    rmSync(join(pc.stateDir, ACCOUNT_LIST_FILE));
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id, alarmed: true });
+    await again.pull();
+    expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", alarm: "fork" });
+    expect(again.list.role(pc.account.first.key)).toBeNull();
+  });
+
+  test("a list named while the disk refuses the write is not the wanted one afterwards, and pins nothing later", async () => {
+    const pc = await following();
+    await pc.pull();
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((_from, to) => {
+      if (String(to).endsWith(ACCOUNT_LIST_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+    });
+    try { expect(await pc.list.wantList(pc.account.id)).toEqual({ refused: "unavailable" }); } finally { failing.mockRestore(); }
+    expect(pc.list.status().want).toBeNull();
+    // a member adds the PC all the same: nobody at this PC named the list, so nothing is pinned
+    await pc.addPc();
+    expect(pc.list.status()).toMatchObject({ pinned: false, standing: "in", want: null });
+    expect(pc.world.pinned).toBeNull();
   });
 });

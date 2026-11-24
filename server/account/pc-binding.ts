@@ -55,6 +55,12 @@ export interface AccountBinding {
    * key; it ends only with the binding.
    */
   readonly list?: string;
+  /**
+   * The PC was shown two histories of that list that members signed. Kept with the pin, not with the copy of the list:
+   * a copy that is lost and read again shows one history only, and must not lift what the alarm held back. It ends
+   * only with the binding.
+   */
+  readonly list_alarm?: true;
 }
 
 interface ServiceStep2 {
@@ -99,6 +105,7 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (binding?.listing_id !== undefined && (binding.pending === true || typeof binding.listing_id !== "string" || !ID.test(binding.listing_id))) return "invalid listing";
   if (binding?.listing_due !== undefined && (binding.service === true || typeof binding.listing_due !== "string" || Number.isNaN(Date.parse(binding.listing_due)))) return "invalid listing wait";
   if (binding?.list !== undefined && (binding.pending === true || typeof binding.list !== "string" || !LIST.test(binding.list))) return "invalid list";
+  if (binding?.list_alarm !== undefined && (binding.list_alarm !== true || binding.list === undefined)) return "invalid list alarm";
   if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string"
     && (clear.admits === undefined || (Number.isSafeInteger(clear.admits) && clear.admits >= 0))
     && (clear.removed_as === undefined || (typeof clear.removed_as === "object" && clear.removed_as !== null && typeof clear.removed_as.account === "string" && ACCOUNT.test(clear.removed_as.account)
@@ -259,7 +266,10 @@ export class PcAccountState {
     if (mine !== null && theirs !== null && mine.account !== theirs.account) { this.problem = `${this.path} and ${path} bind this PC to two accounts`; return; }
     // one binding in both folders is pinned to a list in both once it is in either: the pin is one-way for the PC, not for a folder
     if (mine !== null && theirs !== null && mine.bind_id === theirs.bind_id && mine.list !== undefined && theirs.list !== undefined && mine.list !== theirs.list) { this.problem = `${this.path} and ${path} pin this PC to two lists`; return; }
-    const own = mine !== null && theirs !== null && mine.bind_id === theirs.bind_id && mine.list === undefined && theirs.list !== undefined ? { ...mine, list: theirs.list } : mine;
+    const shared = mine !== null && theirs !== null && mine.bind_id === theirs.bind_id;
+    const pinned = shared && mine.list === undefined && theirs.list !== undefined ? { ...mine, list: theirs.list } : mine;
+    // an alarm either folder kept is the binding's
+    const own = shared && pinned !== null && pinned.list !== undefined && theirs.list_alarm === true && pinned.list_alarm !== true ? { ...pinned, list_alarm: true as const } : pinned;
     this.siblingBinding = theirs;
     const doc = { ...this.doc, binding: own, clears, others_ever: this.doc.others_ever || parsed.others_ever };
     const sharedStep2 = (binding: AccountBinding | null) => {
@@ -405,6 +415,15 @@ export class PcAccountState {
     if (binding.list !== undefined) return binding.list === list;
     this.write({ ...this.doc, binding: { ...binding, list }, gen: this.doc.gen + 1 });
     return true;
+  }
+
+  /** Keeps with the binding `bindId` that its list raised an alarm. One-way, as the pin is. False when that binding is not pinned, or the write failed. */
+  alarmList(bindId: string): boolean {
+    const binding = this.doc.binding;
+    if (binding === null || binding.pending === true || binding.bind_id !== bindId || binding.list === undefined) return false;
+    if (binding.list_alarm === true) return true;
+    try { this.write({ ...this.doc, binding: { ...binding, list_alarm: true } }); } catch { return false; }
+    return this.doc.binding?.list_alarm === true;
   }
 
   /** Whether the account's signed list removed this PC from `account` while it had the relay identity `serverId` (AccountClear.removed_as). */
