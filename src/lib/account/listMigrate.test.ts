@@ -495,6 +495,25 @@ describe("one birth per account on a device, whatever happens to its answer (ast
     expect(await phone.device.lists.get("dropped", world.account)).toBeUndefined();
   });
 
+  test("a refusal of the caller, and a 400 that names nothing, keep the birth as it is and give nothing up (review M3)", async () => {
+    const answers: (() => Response)[] = [
+      () => Response.json({ error: { code: "frozen", message: "x" } }, { status: 403 }),
+      () => Response.json({ error: { code: "own_sign_in_required", message: "x" } }, { status: 403 }),
+      () => Response.json({ error: { code: "not_found", message: "x" } }, { status: 404 }),
+      () => new Response("<html>bad gateway</html>", { status: 400, headers: { "content-type": "text/html" } }),
+    ];
+    for (const answer of answers) {
+      const { phone, world, birthsSent } = await inUse();
+      phone.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname === "/v2/lists" ? answer() : null;
+      expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "sending" } });
+      expect(readBirth(await phone.device.lists.get("birth", world.account))).not.toBeNull();
+      expect(await phone.device.lists.get("dropped", world.account)).toBeUndefined();
+      phone.device.wire.answer = null;
+      expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in", list: world.held().id });
+      expect(new Set(birthsSent(phone.device).map((sent) => JSON.stringify(sent.body))).size).toBe(1);
+    }
+  });
+
   test("4: with the migrate switch withdrawn, a kept birth is kept as it is and not sent", async () => {
     const { phone, world, birthsSent } = await inUse();
     let dropped = false;

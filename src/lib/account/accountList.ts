@@ -1047,8 +1047,9 @@ export function accountList(options: AccountListOptions): AccountList {
         return "other";
       }
       const notCarried = said.status === 403 && said.code === "not_carried";
-      // a refusal of the caller (a frozen or borrowed sign-in, a route the service hides, ...) is no answer about the birth
-      if (!notCarried && said.status !== 400 && said.status !== 413) return sending;
+      // a refusal of the caller (a frozen or borrowed sign-in, a route the service hides, ...), or one that names
+      // nothing, is no answer about the birth
+      if (said.code === "http_error" || (!notCarried && said.status !== 400 && said.status !== 413)) return sending;
       const about = notCarried ? notCarriedAt(birth, said.index) : null;
       // its list id is not given up: no other birth can ever have it
       await retireBirth(account, birth, {
