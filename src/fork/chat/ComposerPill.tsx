@@ -10,8 +10,8 @@ import { modelLabel } from "../../lib/modelName.ts";
 import { useSettings } from "../../lib/settings.ts";
 import { modelMark } from "./modelMark.ts";
 
-/** Upstream's display-only ring: the optional picker supplies the enclosing button. */
-function ContextRing({ context }: { context: NonNullable<ConversationMetadata["context"]> }) {
+/** Upstream's display-only ring: the optional picker supplies the enclosing button. `focusable`: on desktop a keyboard reaches the ring and its focus shows the number; a phone keeps it inert */
+function ContextRing({ context, focusable }: { context: NonNullable<ConversationMetadata["context"]>; focusable: boolean }) {
   const t = useT();
   const left = contextLeftPercent(context);
   if (left === null || context.window === null) return null;
@@ -19,7 +19,7 @@ function ContextRing({ context }: { context: NonNullable<ConversationMetadata["c
   const detail = t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) });
   const radius = 6;
   const circumference = 2 * Math.PI * radius;
-  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} title={`${label} · ${detail}`}>
+  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} tabIndex={focusable ? 0 : undefined} data-tooltip={`${label} · ${detail}`} title={`${label} · ${detail}`}>
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <circle className="composer-context-track" cx="8" cy="8" r={radius} />
       <circle className="composer-context-used" cx="8" cy="8" r={radius}
@@ -69,7 +69,7 @@ export function useForkComposer({ metadata, agent, role, connected, sending, isW
     if (onCommand?.(`/ovis-model ${id}${level ? ` ${level}` : ""}`)) setPicked({ id, level });
     else onRefused(t("Not confirmed. Check the terminal before sending again."));
   };
-  const renderPill = (usage: ReactNode): ReactNode => {
+  const renderPill = (usage: ReactNode, focusable: boolean): ReactNode => {
     const body = <>
       {modelShown && <span className="composer-model-info" aria-label={t("Model and reasoning")}>
         <span className={`composer-model${model ? model.named ? "" : " is-id" : " is-none"}`} title={modelId ?? t("Model not available")}>{model?.text ?? t("Model —")}</span>
@@ -79,7 +79,7 @@ export function useForkComposer({ metadata, agent, role, connected, sending, isW
           {effort && <><span className="composer-reasoning-dot" aria-hidden="true">·</span><span className="composer-reasoning-short" aria-hidden="true">{effort}</span></>}
         </span>
       </span>}
-      {metadata?.context && <ContextRing context={metadata.context} />}
+      {metadata?.context && <ContextRing context={metadata.context} focusable={focusable} />}
       {usage}
     </>;
     return <>

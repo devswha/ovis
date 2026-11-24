@@ -10,7 +10,7 @@ describe("read aloud", () => {
     const order: string[] = [];
     let loads = 0;
     const engine: SpeechEngine = {
-      wav: async (text) => { order.push(`start ${text}`); await Bun.sleep(5); // fixed wait: holds one request open so the next must queue behind it
+      wav: async (text) => { order.push(`start ${text}`); await new Promise((resolve) => setTimeout(resolve, 0)); // yields so the next request queues behind this one
        order.push(`end ${text}`); return new TextEncoder().encode(text).buffer as ArrayBuffer; },
       dispose: async () => {},
     };

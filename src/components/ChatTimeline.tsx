@@ -92,6 +92,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
   const pinned = useMemo(() => [...new Set(focusKey === null ? selectionKeys : [...selectionKeys, focusKey])], [selectionKeys, focusKey]);
   const extraData = useMemo(() => ({ renderRow }), [renderRow]);
   const heardTop = useRef<number | null>(null);
+  const openAtEnd = useRef(following.current);
   const attachList = useCallback((instance: LegendListRef | null) => {
     listRef.current = instance;
     const node = instance?.getScrollableNode();
@@ -419,7 +420,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     estimatedItemSize={120}
     drawDistance={400}
     recycleItems={false}
-    initialScrollAtEnd
+    initialScrollAtEnd={openAtEnd.current}
     maintainVisibleContentPosition
     alwaysRender={{ keys: pinned }}
     ListHeaderComponent={<div className="chat-virtual-header">{header}</div>}

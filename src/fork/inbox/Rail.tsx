@@ -45,6 +45,11 @@ export function RailWorkspaces({ onExit }: { onExit(): void }) {
   return <RailPlace label={t("Workspace list")} icon={FolderTree} current={enter !== null} onClick={enter === null ? onExit : () => {}} />;
 }
 
+/** Where upstream's rail ends its first group with the inbox: Navigation → Rail puts the workspaces before it. */
+export function ForkRailWorkspaces({ onExit }: { onExit(): void }) {
+  return useNavigation() === "rail" ? <RailWorkspaces onExit={onExit} /> : null;
+}
+
 /**
  * The rail's inbox button (InboxRail.tsx wraps it), then the fork's places after it: Pull requests and Notes, each
  * while it is on. The inbox button's own press and focus still run. Beside the workspaces

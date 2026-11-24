@@ -29,6 +29,8 @@ export interface AccountSession {
   readonly expires_at: number;
   /** which sign-in this is, kept by every refresh: random for one made by this build (sessionOf), a digest of the saved refresh token for one saved before sign-ins had an id (service.ts, session) */
   readonly sign_in_id?: string;
+  /** when this sign-in was made, in ms by this device's clock (sessionOf), kept by every refresh; absent from one saved before it was kept */
+  readonly signed_in_at?: number;
 }
 
 /** A sign-in sent to the provider's pages: what its return must match (OAuth `state`) and prove (PKCE verifier). */
@@ -41,6 +43,13 @@ export interface PendingSignIn {
   readonly started_at: number;
   /** the marked pairing this sign-in was started for (relay/shell.tsx): it goes with the sign-in, whatever its end */
   readonly pairing?: PendingPairing;
+  /**
+   * the PC whose own page started this sign-in (its relay ID; relay/shell.tsx): a browser's sign-in comes back on the
+   * front page alone, which goes on to that page once this very sign-in succeeded
+   */
+  readonly pc?: string;
+  /** the account whose sign-out of every device asked for this sign-in again: its return signs them out, for that account only */
+  readonly sign_out_everywhere?: string;
 }
 
 /** A scanned offer waiting on a sign-in; `at`: when the code was scanned, which bounds how long it is tried. */

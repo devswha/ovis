@@ -528,8 +528,7 @@ async function followMerge(run: Run, account: string, repository: string, number
 }
 
 /** POST /api/fork/github/pull/action: comments, reviews or merges with the account that listed the pull request. */
-// fixed wait: the interval between reads of a merge GitHub is running, in a loop bounded by MERGE_FOLLOWED_MS
-export async function handleGithubAction(request: Request, readOnly: boolean, run: Run = runGithub, wait: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<Response> {
+export async function handleGithubAction(request: Request, readOnly: boolean, run: Run = runGithub, wait: (ms: number) => Promise<void> = Bun.sleep): Promise<Response> {
   if (readOnly) return jsonResponse({ error: { code: "read_only", message: "This device only watches" } }, 403);
   if (request.method !== "POST") return jsonResponse({ error: { code: "method_not_allowed", message: "Use POST" } }, 405);
   let asked: { repo?: unknown; number?: unknown; account?: unknown };

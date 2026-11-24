@@ -3,6 +3,7 @@ import { MachineCodeForAccountError } from "../machine-profile.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { RELAY_CONTROLS } from "../dispatch-routes.ts";
+import { accountLabel } from "../../shared/account-asker.ts";
 import { updateRequestAllowed } from "../update-api.ts";
 import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetRegistryUnavailableError } from "./service.ts";
 
@@ -16,7 +17,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   const fail = (code: string, message: string, status: number) => reply({ error: { code, message } }, status);
   if (pathname === "/api/relay" && request.method === "GET") {
     setRequestRoute("/api/relay");
-    return reply(service.status());
+    // this PC's ID and the account named for it go to its own window and CLI (`ovis status --json`, `ovis join`), not
+    // to every device that reads the relay's state
+    return reply(own ? { ...service.status(), server_id: service.serverId() ?? null, relay_account: service.savedRelayAccount() } : service.status());
   }
   const peer = context.peer;
   // one admission rule (docs/account.md): this PC itself, or a drive account member through the relay
@@ -38,11 +41,15 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (!remoteApprover) return fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
     const body = await readJsonObject(request);
     if (body instanceof Response) return body;
+    const pc = typeof body.proven_server_id === "string" && /^[0-9a-f]{32}$/.test(body.proven_server_id)
+      && typeof body.pc_label === "string" && body.pc_label && body.pc_label === accountLabel(body.pc_label)
+      ? { id: body.proven_server_id, label: body.pc_label } : undefined;
     if (typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "decline")
-      || (body.decision === "approve" && (typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)))) {
+      || (body.decision === "approve" && !(typeof body.digits === "string" && /^[0-9]{6}$/.test(body.digits) || body.digits === undefined && pc !== undefined))) {
       return fail("invalid_relay_pairing", "Send the pairing's id, a decision of approve or decline, and the digits the new device shows.", 400);
     }
-    const outcome = service.approvals.decideRemote(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", remoteApprover);
+    if (!context.services.devices.isAccountApproverSession(peer.device.id, peer.key)) return fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
+    const outcome = service.approvals.decideRemote(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", remoteApprover, pc);
     if (outcome.outcome !== "decided") {
       return outcome.outcome === "gone"
         ? fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404)
@@ -147,8 +154,15 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (!own) return fail("own_window_required", "Approve an account join in this PC's own window.", 403);
         const body = await readJsonObject(request);
         if (body instanceof Response) return body;
+        // a first join (no member could approve it) is allowed or declined by a tap, its digits compared on this screen
+        if (typeof body.id === "string" && (body.decision === "approve" || body.decision === "decline")) {
+          const tapped = service.approvals.decideOwn(body.id, body.decision === "approve");
+          if (tapped === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
+          if (tapped === "typed_only") return fail("digits_required", "Type the six digits the new device shows.", 409);
+          return reply({ ok: true });
+        }
         if (typeof body.id !== "string" || typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) {
-          return fail("invalid_relay_join", "Send the join's id and the six digits the new device shows.", 400);
+          return fail("invalid_relay_join", "Send the join's id and the six digits the new device shows, or a decision of approve or decline for a first join.", 400);
         }
         const outcome = service.approvals.decideTyped(body.id, body.digits);
         if (outcome === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);

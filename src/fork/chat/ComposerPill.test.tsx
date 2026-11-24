@@ -15,7 +15,7 @@ function Pill({ role = "drive", working = false }: { role?: string; working?: bo
     metadata: { model: "custom", reasoning_effort: "high", models: [{ id: "provider/custom", name: "Provider model", window: 100000, levels: ["low", "high"], current: true }] },
     onCommand: () => true, onRefused: () => {},
   });
-  return renderPill(<span className="composer-usage">Usage</span>);
+  return renderPill(<span className="composer-usage">Usage</span>, false);
 }
 
 function draw(enabled: boolean, props: { role?: string; working?: boolean } = {}) {
