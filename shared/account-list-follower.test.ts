@@ -1148,7 +1148,13 @@ describe("the save", () => {
     const again = await readSave(rewritten(text, (save) => { save["state"] = null; }));
     expect(again).toEqual({ read: true, copy: stopped, rebuilt: true });
     expect(again.read && [standing(again.copy), opens(again.copy, owner)]).toEqual(["stopped", "stopped"]);
-    // Another entry than the next one as the stopped entry, and none where the entries cannot be placed without it.
+    // A build that can place the entry a save names as stopped takes it and goes on: here an entry that every build places.
+    const next = await add(BASE, owner, deviceOf(tablet));
+    const before = await followed(BASE, PC(desk, 1), { how: "added" });
+    const on = await readSave(rewritten(writeSave(before), (save) => { save["stop"] = at(next.texts, 5); }));
+    expect(on).toMatchObject({ read: true, rebuilt: true, copy: { entries: next.texts, stop: null } });
+    expect(on.read && [standing(on.copy), opens(on.copy, tablet), footingOf(on.copy)]).toEqual(["in", "drive", headOf(next)]);
+    // Another entry than the next one as the stopped entry: the entries do not hold.
     expect(await readSave(rewritten(text, (save) => { save["stop"] = at(BASE.texts, 2); }))).toEqual({ read: false, why: "broken" });
     // The stopped entry among the entries: this build cannot place it there. From a later level's save that is a later build's; from this level's, not what was saved.
     const among = (level: number) => rewritten(text, (save) => { (save["entries"] as string[]).push(save["stop"] as string); save["stop"] = null; save["level"] = level; });
