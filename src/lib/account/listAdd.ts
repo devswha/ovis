@@ -160,6 +160,6 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
     const row = writer.state.pcs[post.endpoint];
     if (row !== undefined && row.removed === null && row.key === post.key) return { done: { seq: writer.state.footing.seq, hash: writer.state.footing.hash } };
     return writer.list !== post.list ? { refused: "changed" } : { go: true };
-  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed })), options);
+  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed })), { ...options, operation: `add-pc:${post.endpoint}` });
   return outcome.written ? { added: true } : { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
 }

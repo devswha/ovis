@@ -3,6 +3,7 @@
  * and by the Add of a PC the account names that its list does not hold yet (AddPcByNumber).
  */
 import type { AddPcOutcome, NumberRefusal } from "../lib/account/listAdd.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import { AccountServiceError } from "../lib/account/service.ts";
 import type { Translate } from "../lib/i18n.ts";
 
@@ -27,6 +28,11 @@ export function addRefusal(t: Translate, outcome: Extract<AddPcOutcome, { readon
     case "clock": return { text: t("This device's clock looks wrong. Check its date and time, then try again."), signInAgain: false };
     case "blocked": return { text: t("This device cannot change your account's list right now."), signInAgain: false };
     case "unknown": return { text: t("The account service did not answer. Try again to check."), signInAgain: false };
+    // a request signed for an earlier change still waits: that one's card is shown, to try it again or to cancel it
+    case "waiting":
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT));
+      return { text: t("An earlier change is still waiting: try it again or cancel it first."), signInAgain: false };
+    case "behind": return { text: t("Update Ovis on this device, then try again."), signInAgain: false };
     default: return { text: t("The PC could not be added. Try again."), signInAgain: false };
   }
 }
