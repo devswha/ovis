@@ -874,12 +874,14 @@ every route in use.
   sets it first.
 - **Devices** call by bearer: `POST /v2/lists` (entry 0), `GET /v2/lists/mine`, and under
   `/v2/lists/{list}/`: `GET log?after=&limit=`, `GET wraps?member=`, `POST entries`, `POST claims`,
-  `GET claims`, `GET posts`, `POST posts/{endpoint}/attempt`. A write takes an app's own sign-in that no block freezes. A genesis and
-  a claim also take a sign-in made in the last ten minutes, or an older one with a key proof: a
-  challenge of `POST /v1/pcs/challenge` (with `opensAll` on), signed by the key that sign-in
-  registered over `pcAddSigningBytes` (`shared/account-records.ts`) with the purpose `list-genesis`,
-  the list id in the place of the server_id and no listing, or `list-claim` with the claimed key as
-  the listing.
+  `GET claims`, `GET posts`, `POST posts/{endpoint}/attempt`. A write takes an app's own sign-in
+  that no block freezes. A genesis, a claim and a batch that places an `invite` also take a sign-in
+  made in the last ten minutes, or an older one with a key proof: a challenge of
+  `POST /v1/pcs/challenge` (with `opensAll` on), signed by the key that sign-in registered over
+  `pcAddSigningBytes` (`shared/account-records.ts`). The purpose is `list-genesis` with the list id
+  in the place of the server_id and no listing; `list-claim` with the list id and the claimed key
+  as the listing; or, sent as `key_proof` beside the batch, the invite's make proof
+  (`inviteMakeBytes`: `invite` or `invite-auto`, no server_id, the invite's key as the listing).
 - **PCs** prove their relay key in the body of each call (a challenge of `POST /v1/pc/challenge`
   answered with the role `account`, one per call): `POST /v2/pc/list`, `/v2/pc/list/log`,
   `/v2/pc/list/wraps`, `/v2/pc/list/entries`, `/v2/pc/list/keys` and `/v2/pc/list/attempt`. A
@@ -890,14 +892,23 @@ every route in use.
 - **What a placement checks**, in order, nothing stored on a refusal: every text in its form, and
   the first at the head (`409 head_moved` names the head; a batch already in the log text for text
   is `200` with `placed: 0`); then entry by entry, that it holds and counts for the library
-  (`entry_refused` with its `outcome` and `reason`), and what only the service judges: no names
-  until an epoch is open after the last removal (`epoch_stale`), no `carried` yet, an `invite` only
-  from a sign-in and not dated ahead of its clock, a `join` before its invite's `exp` and only from
-  the PC it names, the list's size; then the second lock (a `device` needs a live claim of its key,
-  a `pc` a live post of its keys by a PC the account lists, each used up by the entry, a `join` a
-  PC the account lists), the wraps, and the budget of additions. Two writers at one head: one is
-  placed. A batch whose every entry is a `remove` or an `epoch`, whose first entry is signed by a
-  signer of the list, spends that signer's own counter instead of the account's requests.
+  (`entry_refused` with its `outcome` and `reason`), and what only the service judges: no entry
+  dated more than ten minutes ahead of its clock (`issued_at_ahead`, the genesis too), no `carried`
+  yet, one `invite` a batch and only from a sign-in, a `join` before its invite's `exp` and only
+  from the PC it names, an `epoch` only when a key went out since the current one opened
+  (`epoch_not_needed`, `epoch_no_use`), no names until such an epoch is open (`epoch_stale`), the
+  list's size; then the second lock (a `device` needs a live claim of its key; a `pc` a live post of
+  its keys by a PC that an own sign-in listed or let in, a device code's listing does not do; a
+  `join` that very PC's redeem of that very invite and such a listing; each used up by the entry),
+  the wraps, the invite's sign-in, and the budget of additions (per ten minutes and per day). Two
+  writers at one head: one is placed. A removal (`remove` entries with at most one `epoch` last, at
+  the head, from a sign-in that may write, its first entry signed by a signer of the list) spends
+  that signer's own counter instead of the account's requests; a replay never does.
+- **A PC with no standing** (neither listed by the account nor a row in the list) gets `404` from
+  the placing route before its batch is read: it learns nothing of the list there.
+- **Listing a new PC** (`PUT /v1/pcs/{server_id}`) in an account that has a list takes an own
+  sign-in made in the last ten minutes, or its key proof with the purpose `list`, whatever Step 2
+  and `listProofRequired` say: that listing is what the `pc` lock counts.
 - **Limits** are in `listLimits`, which a test may lower to reach `list_full`, `entry_budget` or a
   PC's calls a minute.
 - `accountList(account)` gives what the service holds, no lie applied: the list id, every entry's
@@ -925,6 +936,8 @@ and to everyone when it is left out.
 | `flipEntry`, `flipWrap` | one byte flipped in that entry's body or that wrap | the entry no longer holds; the wrap does not open |
 | `headMoved` | `409 head_moved` for every placement | a writer stops after its own bound and says so |
 | `dropWraps` | a placed batch's entries without its wraps | a member with no wrap sees no names and is let in all the same |
+| `rebuilding` | `503 list_rebuilding` (retry-after 1) to placements, and to a PC's reads whose only right is its row in the list | the client sends the same request again |
+| `stopped` | `503 list_stopped` to the same calls | the client shows that the service cannot change the list |
 
 Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vectors/save) is one
 [save](#the-save): `name`, `about`, `keys`, the `save` text, `now` (the member's clock for

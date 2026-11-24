@@ -1120,6 +1120,14 @@ describe("the save", () => {
       const read = await readSave(rewritten(text, change));
       expect({ name, why: read.read ? "read" : read.why }).toEqual({ name, why: expected });
     }
+    // A footing named at an entry that no signer signed: the entries are all there and hold, and the history a member signed ends before it.
+    const junk = await grow(log, [[mallory, deviceOf(mallory)], [mallory, removeOf(owner)]]);
+    const loose = (await reads(copy, serves(junk))).copy;
+    expect([loose.entries.length, footingOf(loose).seq]).toEqual([9, 6]);
+    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 8), seq: 8 }; }))).toEqual({ read: false, why: "broken" });
+    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 8), seq: 8 }; save["level"] = 2; }))).toEqual({ read: false, why: "version" });
+    // A footing named before the true one costs nothing: the replay holds the whole history the entries give.
+    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 3), seq: 3 }; }))).toEqual({ read: true, copy: loose, rebuilt: false });
     // An alarm in its form is kept, whatever it names: nothing about it makes a save unreadable.
     const alarm = { at: NOW, by: mallory.key, code: "fork", devices: [mallory.key], pcs: [E(9)], seq: 30, source: "peer" };
     expect(await readSave(rewritten(text, (save) => { save["alarm"] = alarm; }))).toEqual({ read: true, copy: { ...copy, alarm } as FollowerCopy, rebuilt: false });
@@ -1140,7 +1148,13 @@ describe("the save", () => {
     const again = await readSave(rewritten(text, (save) => { save["state"] = null; }));
     expect(again).toEqual({ read: true, copy: stopped, rebuilt: true });
     expect(again.read && [standing(again.copy), opens(again.copy, owner)]).toEqual(["stopped", "stopped"]);
-    // Another entry than the next one as the stopped entry, and none where the entries cannot be placed without it.
+    // A build that can place the entry a save names as stopped takes it and goes on: here an entry that every build places.
+    const next = await add(BASE, owner, deviceOf(tablet));
+    const before = await followed(BASE, PC(desk, 1), { how: "added" });
+    const on = await readSave(rewritten(writeSave(before), (save) => { save["stop"] = at(next.texts, 5); }));
+    expect(on).toMatchObject({ read: true, rebuilt: true, copy: { entries: next.texts, stop: null } });
+    expect(on.read && [standing(on.copy), opens(on.copy, tablet), footingOf(on.copy)]).toEqual(["in", "drive", headOf(next)]);
+    // Another entry than the next one as the stopped entry: the entries do not hold.
     expect(await readSave(rewritten(text, (save) => { save["stop"] = at(BASE.texts, 2); }))).toEqual({ read: false, why: "broken" });
     // The stopped entry among the entries: this build cannot place it there. From a later level's save that is a later build's; from this level's, not what was saved.
     const among = (level: number) => rewritten(text, (save) => { (save["entries"] as string[]).push(save["stop"] as string); save["stop"] = null; save["level"] = level; });
