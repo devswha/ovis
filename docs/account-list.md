@@ -1358,6 +1358,14 @@ the list holds for it, the account key, and no longer by the key a sign-in regis
   and not sent waits as after any disconnect.
 - **A list key the PC refuses** (`auth_failed`) means the device is not in that PC's list: the
   join again, and no word of a removal.
+- **A device whose own time is over.** A device the list holds only until a time (`until`) is
+  refused by the PC from that second on, and its open session ends `auth_revoked`. Where the
+  device's own copy shows that its time is past, by its own clock, the app says **This device's
+  time in your account is over**, forgets nothing and asks for no join by itself: nobody removed
+  it.
+- **A PC the list removed** takes no link into that account (`409 list_removed`). The app says
+  **{name} was removed from your account**, that it comes back only as a new PC after **Reset
+  relay identity** on it, and offers no retry.
 
 ### Which list it follows
 
