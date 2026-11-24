@@ -289,8 +289,11 @@ it is behind it writes a removal (`remove`) and the `epoch` after one, and nothi
 `signListEntry`, `signListEntries` and `joinEntry` refuse every other entry (`not_written`, reason
 `behind`), a PC's own `join` among them. An app shows that it needs an update, a PC that Ovis on
 it does. It lets nobody in while it is behind already; it writes nobody in either. The epoch it
-opens after a removal is wrapped to the members it knows (`wrapKeys` of its own state), so one
-that came in after it fell behind gets its key from a member that reads everything.
+opens after a removal is wrapped to the members it knows (`wrapKeys` of its own state), and to no
+invite: it takes no `join` in, so it cannot tell whether an invite was spent since, and the account
+service refuses a whole request, the removal with it, for one wrap to a key that is out. So a
+member that came in after it fell behind, and a PC that joins with an open invite, get that
+epoch's key from a member that reads everything, and have no names until then.
 
 One thing a member that is behind cannot follow: which keys PCs that joined after it fell behind
 have. A `pc` that names such a key for a carried PC has no effect for a member that reads
@@ -372,7 +375,8 @@ Nothing is ever deleted. A device or an invite is in while its key is a signer, 
 `removed` is empty. A PC lets a device in while the device is in and, when it has an `until`, before
 that second, as what its `role` says. The key of an epoch is wrapped to the encryption key of each
 device and PC that is in, and to the own key of each open invite with `auto` `1`, so that a PC
-which joins with nobody else awake can read the names and seal its own. Whoever wraps leaves out a
+which joins with nobody else awake can read the names and seal its own (a member that is behind
+wraps to no invite, as said above). Whoever wraps leaves out a
 device past its `until` and an invite past its `exp`, by its own clock, so that an old line or a
 borrowed browser is given no later key; that clock chooses only whom a key is wrapped to, and lets
 nobody in and puts nobody out. A member that stopped for a replay answers for nobody until it has

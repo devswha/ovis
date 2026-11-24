@@ -871,6 +871,22 @@ describe("the names an entry carries, and the epochs they are sealed under", () 
     expect([state.full_at, wrapKeys(state, 0)]).toEqual([T0 + 180, [owner.enc, tablet.enc, pool.key, pool2.key]]);
   });
 
+  test("a member that is behind wraps to no invite: it cannot tell whether one was spent since, and a wrap to a key that is out refuses its whole request", async () => {
+    const m2 = await machine(2);
+    // The sequence: an invite for one PC is open when the member falls behind, and a PC joins with it afterwards.
+    const steps: Step[] = [[owner, device(phone)], [owner, invite(pool, 1)], [owner, invite(pool2, 1)], [owner, later()], [pool, join(2)]];
+    const behind = (await play(steps)).state;
+    const reads = (await play(steps, 2)).state;
+    // The member that is behind took nothing in: for it the invite still has its use.
+    expect([behind.behind, inviteRefusal(behind, pool.key), inviteRefusal(reads, pool.key)]).toEqual([4, null, "invite_spent"]);
+    expect(wrapKeys(reads, T0)).toEqual([owner.enc, phone.enc, pool2.key, m2.enc]);
+    expect(wrapKeys(behind, T0)).toEqual([owner.enc, phone.enc]);
+    // Every key it wraps to is one that a member reading everything wraps to, so the removal it sends with them is not refused for a wrap.
+    for (const key of wrapKeys(behind, T0)) expect(wrapKeys(reads, T0)).toContain(key);
+    // What that costs: an invite that is still open gets no key from it either. Before it fell behind it wrapped to both.
+    expect(wrapKeys(at((await play(steps)).states, 3), T0)).toEqual([owner.enc, phone.enc, pool.key, pool2.key]);
+  });
+
   test("the epoch a writer seals under: the current one, and only when it was opened after the last entry that put a key out", async () => {
     const at0 = { epoch: 0, opens: OPENS(0) };
     const sealing = async (steps: readonly Step[], now = T0) => sealEpoch((await play(steps)).state, now);
@@ -1252,6 +1268,7 @@ describe("how a member writes: an entry is signed only when it counts on the wri
     let removals = 0;
     let byBehind = 0;
     let refusedBehind = 0;
+    let spentUnseen = 0;
     for (let seed = 61; seed <= 84; seed++) {
       const random = seeded(seed);
       const pick = <Item>(items: readonly Item[]): Item => at(items, Math.floor(random() * items.length));
@@ -1267,8 +1284,9 @@ describe("how a member writes: an entry is signed only when it counts on the wri
         behind = (await takeEntry(behind, held(entry))).state;
         return said(outcome.outcome);
       };
-      // Whoever was in the account before: three PCs and a device, carried in.
-      for (const kind of [{ kind: "carried", endpoint: E(1), sealed: SEAL }, { kind: "carried", endpoint: E(2), sealed: SEAL }, { kind: "carried", endpoint: E(3), sealed: SEAL }, { kind: "carried", key: phone.key, role: "drive", sealed: SEAL }] as ListKind[]) {
+      // Whoever was in the account before: three PCs and a device, carried in. Then an invite for one PC, open when the member falls behind.
+      for (const kind of [{ kind: "carried", endpoint: E(1), sealed: SEAL }, { kind: "carried", endpoint: E(2), sealed: SEAL }, { kind: "carried", endpoint: E(3), sealed: SEAL }, { kind: "carried", key: phone.key, role: "drive", sealed: SEAL },
+        { kind: "invite", key: pool.key, exp: EXP, uses: 1, auto: true, sealed: SEAL }] as ListKind[]) {
         await place((await signListEntry(full, kind, signer(owner), T0 + 30)).entry);
       }
       const fallsBehindAt = Math.floor(random() * 6);
@@ -1320,6 +1338,9 @@ describe("how a member writes: an entry is signed only when it counts on the wri
           expect({ where, kind: kind.kind === "remove" || kind.kind === "epoch" }).toEqual({ where, kind: true });
         }
         if (kind.kind === "remove") removals++;
+        // Every key the member that is behind wraps an epoch's key to is one the member that reads everything wraps to.
+        for (const key of wrapKeys(behind, issued)) expect({ where, key: key.slice(-8), wrapped: wrapKeys(full, issued).includes(key) }).toEqual({ where, key: key.slice(-8), wrapped: true });
+        if (Object.keys(behind.invites).some((key) => inviteRefusal(behind, key) === null && inviteRefusal(full, key) === "invite_spent")) spentUnseen++;
         if (behind.behind !== null && kind.kind === "pc" && before.pcs[kind.endpoint] !== undefined && behind.pcs[kind.endpoint]?.how === "added") promoted++;
         // Every PC the member that is behind has a row for is in for it exactly when it is in for the member that reads everything; it never holds one that the other put out.
         for (const endpoint of Object.keys(behind.pcs)) expect({ where, endpoint: pcName(endpoint), held: holdsPc(behind, endpoint) }).toEqual({ where, endpoint: pcName(endpoint), held: holdsPc(full, endpoint) });
@@ -1328,8 +1349,8 @@ describe("how a member writes: an entry is signed only when it counts on the wri
         if (behind.behind !== null) for (const [endpoint, row] of Object.entries(full.pcs)) if (before.pcs[endpoint] === undefined && behind.pcs[endpoint] === undefined) expect({ where, endpoint: pcName(endpoint), since: row.seq >= behind.behind }).toEqual({ where, endpoint: pcName(endpoint), since: true });
       }
     }
-    // The histories gave carried PCs their keys while the member was behind, put PCs out, and had the member that is behind write and be refused, often enough to mean something.
-    expect([promoted > 5, removals > 30, byBehind > 20, refusedBehind > 50]).toEqual([true, true, true, true]);
+    // The histories gave carried PCs their keys while the member was behind, put PCs out, had the member that is behind write and be refused, and spent an invite it still took for open, often enough to mean something.
+    expect([promoted > 5, removals > 30, byBehind > 20, refusedBehind > 50, spentUnseen > 3]).toEqual([true, true, true, true, true]);
   }, 120_000);
 
   test("over generated histories of honest writers, no key is ever a signer with no name", async () => {

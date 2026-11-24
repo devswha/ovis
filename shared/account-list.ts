@@ -979,6 +979,12 @@ export function admitsDevice(state: ListState, key: string, now: number): ListRo
  * invite or a borrowed browser whose time is over: whoever still holds its key would otherwise read every later
  * name. The clock chooses only whom a key is wrapped to; it is no verdict on any entry, and no member lets
  * anybody in or puts anybody out by it. A member that is stopped for a replay wraps to nobody.
+ *
+ * A member that is behind wraps to no invite: it takes no `join` in, so it cannot tell whether an invite was
+ * spent since it fell behind, and the account service refuses a whole request, a removal with it, for one wrap to
+ * a key that is out. So every key it wraps to is one that a member reading everything wraps to. The cost: a PC
+ * that joins with an open invite finds no wrap of an epoch that such a member opened, and has no names until a
+ * member that is not behind wraps the key to it.
  */
 export function wrapKeys(state: ListState, now: number): string[] {
   const view = listView(state);
@@ -986,7 +992,7 @@ export function wrapKeys(state: ListState, now: number): string[] {
   const keys = [
     ...view.devices.filter((row) => row.ended === null && (row.until === null || clock < row.until)).map((row) => ({ seq: row.seq, key: row.enc })),
     ...view.pcs.filter((row) => row.removed === null).map((row) => ({ seq: row.seq, key: row.enc })),
-    ...view.invites.filter((row) => row.refusal === null && row.auto && clock <= row.exp).map((row) => ({ seq: row.seq, key: row.key })),
+    ...(state.behind === null ? view.invites.filter((row) => row.refusal === null && row.auto && clock <= row.exp).map((row) => ({ seq: row.seq, key: row.key })) : []),
   ];
   return [...new Set(keys.sort((a, b) => a.seq - b.seq).flatMap(({ key }) => (key === null ? [] : [key])))];
 }
