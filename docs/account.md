@@ -1592,11 +1592,16 @@ account service says ends it.
 A pin outlives the PC's own settings: started with Step 2 turned off here
 ([Turning Step 2 off](#turning-step-2-off)), a pinned PC still follows its list, and says so in its
 log. Where a PC has two state folders (the old and the new name of one), the other folder takes
-the pin only together with the list keys and the copy; when those cannot be brought, it starts
-closed rather than unpinned or pinned with keys the list does not know.
+the pin only together with the list keys and the copy, also a folder that had no account state of
+its own; when those cannot be brought, or the copy there does not read, it starts closed rather
+than unpinned or pinned with keys the list does not know. A removal of the PC by its list that
+either folder holds stands in both, whatever the other holds for the same binding.
 
 The pin is kept with the PC's place in its account (`account-pc.json`), not with its copy of the
-list. A pinned PC whose `account-list.json` is gone is still pinned: it reads its list again from
+list. While that file holds a pin, or that the list removed this PC, it is written as version 2:
+an Ovis from before the list reads version 1 alone, so a PC put back on such a release refuses the
+file and lets nobody of the account in, where it would otherwise drop the pin in silence and go by
+the account service's word again. A file with neither is version 1, as before. A pinned PC whose `account-list.json` is gone is still pinned: it reads its list again from
 the start, and lets no device of its account in until that read shows the PC in the list. What it
 had seen removed stays out, whatever the service shows then. An `account-list.json` that is there
 and will not read is not replaced by what the service shows: the PC lets no device of its account

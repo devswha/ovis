@@ -84,7 +84,12 @@ interface ServiceStep2 {
 }
 
 interface PcDoc {
-  v: 1;
+  /**
+   * 2 on disk while the file holds a pin or a list's removal of the PC, 1 otherwise (onDisk). An Ovis from before the
+   * list reads version 1 alone and takes any other for a file it cannot trust: it then lets nobody of the account in,
+   * where it would otherwise hold the binding with no pin and go by the account service's word again.
+   */
+  v: 1 | 2;
   next_admit: number;
   binding: AccountBinding | null;
   clears: AccountClear[];
@@ -108,7 +113,7 @@ const LIST = /^[0-9a-f]{64}$/;
 function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "it is not this PC's account state";
   const doc = value as Partial<PcDoc>;
-  if (doc.v !== 1) return "unknown version";
+  if (doc.v !== 1 && doc.v !== 2) return "unknown version";
   if (!Number.isSafeInteger(doc.next_admit) || doc.next_admit! < 1) return "invalid next_admit";
   // S2-03 wrote the counter alone: the binding is not migrated yet, and the upgrade takes it from the rows (T50)
   if (doc.binding === undefined && doc.clears === undefined && doc.first === undefined && doc.others_ever === undefined) {
@@ -135,6 +140,25 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (doc.gen === undefined) return { ...doc, gen: 0 } as PcDoc;
   if (!Number.isSafeInteger(doc.gen) || doc.gen < 0) return "invalid gen";
   return doc as PcDoc;
+}
+
+/** The file as it is written: its version says whether an Ovis that knows no list may read it (PcDoc.v). */
+function onDisk(doc: PcDoc): PcDoc {
+  return { ...doc, v: doc.binding?.list !== undefined || doc.clears.some((clear) => clear.removed_as !== undefined) ? 2 : 1 };
+}
+
+/**
+ * The clears of two folders of one PC, one per binding. Where both cleared the same binding, the one that says the
+ * account's list removed the PC stands, whichever folder holds it and whichever of them reads the other: a removal
+ * by the list is never lost to an owner's clear of the same binding. Otherwise the other folder's, as before.
+ */
+function mergeClears(mine: readonly AccountClear[], theirs: readonly AccountClear[]): AccountClear[] {
+  const merged = new Map<string, AccountClear>();
+  for (const clear of [...mine, ...theirs]) {
+    const held = merged.get(clear.bind_id);
+    if (held === undefined || held.removed_as === undefined || clear.removed_as !== undefined) merged.set(clear.bind_id, clear);
+  }
+  return [...merged.values()];
 }
 
 function serviceStep2(doc: PcDoc, binding: AccountBinding | null): ServiceStep2 | undefined {
@@ -277,7 +301,7 @@ export class PcAccountState {
       return;
     }
     if (typeof parsed === "string") { this.problem = `${path} cannot be trusted: ${parsed}`; return; }
-    const clears = [...new Map([...this.doc.clears, ...parsed.clears].map((clear) => [clear.bind_id, clear])).values()];
+    const clears = mergeClears(this.doc.clears, parsed.clears);
     const standing = (binding: AccountBinding | null) => binding !== null && binding.pending !== true && !clears.some((clear) => clear.bind_id === binding.bind_id) ? binding : null;
     const mine = standing(this.doc.binding);
     const theirs = standing(parsed.binding);
@@ -303,19 +327,24 @@ export class PcAccountState {
     if (activeStep2) doc.service_step2 = activeStep2;
     // Both folders keep the clears and the service opt-out for the binding they hold.
     const siblingStep2 = sharedStep2(theirs);
-    if (parsed.clears.length !== clears.length || (siblingStep2 && JSON.stringify(siblingStep2) !== JSON.stringify(parsed.service_step2))) {
+    // the other folder learns a clear it does not hold, and a list's removal where it holds the same binding's clear without it
+    const siblingLacks = parsed.clears.length !== clears.length
+      || clears.some((clear) => clear.removed_as !== undefined && !parsed.clears.some((held) => held.bind_id === clear.bind_id && held.removed_as !== undefined));
+    if (siblingLacks || (siblingStep2 && JSON.stringify(siblingStep2) !== JSON.stringify(parsed.service_step2))) {
       const siblingDoc: PcDoc = { ...parsed, clears, binding: standing(parsed.binding) ?? (parsed.binding?.pending === true && !clears.some((clear) => clear.bind_id === parsed.binding!.bind_id) ? parsed.binding : null) };
       if (siblingStep2) siblingDoc.service_step2 = siblingStep2;
-      try { writePrivateState(path, siblingDoc); } catch (error) {
+      try { writePrivateState(path, onDisk(siblingDoc)); } catch (error) {
         this.problem = `${path} cannot learn this PC's account denials (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
     }
-    // a folder in no account beside one that is: the PC is in that account (P12)
-    const taken = !this.fresh && own === null && theirs !== null ? theirs : own;
-    // a pin this folder did not hold comes with the keys and the copy, or not at all
-    if (taken !== null && taken.list !== undefined && this.doc.binding?.list === undefined) {
-      const problem = bringList?.({ bind_id: taken.bind_id, list: taken.list }) ?? null;
+    // The binding that stands in this folder after this: its own, or the other's where it holds none (P12; a folder
+    // with no file takes it at its migration). A pin that this folder's own standing binding does not hold already
+    // comes with the keys and the copy, or not at all: also into a folder with no file, and where the other folder's
+    // pin takes the place of one this folder held for a binding that was cleared
+    const effective = own ?? theirs;
+    if (effective !== null && effective.list !== undefined && !(mine !== null && mine.bind_id === effective.bind_id && mine.list === effective.list)) {
+      const problem = bringList?.({ bind_id: effective.bind_id, list: effective.list }) ?? null;
       if (problem !== null) { this.problem = problem; return; }
     }
     if (this.fresh) { this.doc = doc; return; }
@@ -521,7 +550,7 @@ export class PcAccountState {
     // The provisional first-link write and its rollback both represent no committed binding.
     const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
     const before = committedId(this.doc.binding);
-    writePrivateState(this.path, doc);
+    writePrivateState(this.path, onDisk(doc));
     this.doc = doc;
     if (before !== committedId(doc.binding)) for (const listener of this.bindingListeners) listener();
   }
