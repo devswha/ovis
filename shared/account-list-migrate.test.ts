@@ -7,8 +7,8 @@ import {
 } from "./account-list.ts";
 import { epochKeyCommitment, newEpochKey, nextEpoch, openSealed, sealFields, type EpochKey } from "./account-list-seal.ts";
 import {
-  LIST_VOUCH_PREFIX, MIGRATION_CARRIED_MAX, MIGRATION_REQUEST_ENTRIES, MIGRATION_RUN_SECONDS, MIGRATION_WITNESS_SECONDS, MigrationError, devicePlace, heirOf, heldVouches, migrationPlan,
-  migrationRequests, migrationVerdict, ownEvidence, rekeys, signMigrationGenesis, signMigrationRun, signRotation, signVouch, standsFor, vouchBytes,
+  LIST_VOUCH_PREFIX, MIGRATION_CARRIED_MAX, MIGRATION_REQUEST_ENTRIES, MIGRATION_WITNESS_SECONDS, MigrationError, devicePlace, heirOf, heldVouches, migrationPlan,
+  migrationRequests, migrationRest, migrationVerdict, ownEvidence, rekeys, signMigrationGenesis, signMigrationRun, signRotation, signVouch, standsFor, vouchBytes,
   type KnownDevice, type KnownPc, type MigratingDevice, type MigrationKnown, type MigrationPlan, type MigrationRefusal, type MigrationSeals, type MigrationStart, type MigrationVerdict,
   type PcWitness, type SignedVouch,
 } from "./account-list-migrate.ts";
@@ -101,11 +101,11 @@ async function migrated(first: Device, carried: Pick<MigrationPlan, "devices" | 
 }
 
 /** What a PC holds: every key let in since long ago unless a test says otherwise. */
-function witness(admits: readonly (Device | readonly [Device, number])[], rest: Partial<Pick<PcWitness, "removed" | "once" | "account" | "vouched">> = {}): PcWitness {
+function witness(admits: readonly (Device | readonly [Device, number])[], rest: Partial<Pick<PcWitness, "removed" | "account" | "vouched">> = {}): PcWitness {
   return {
     account: rest.account ?? ACCOUNT,
     admits: admits.map((one) => ("signIn" in one ? { key: one.signIn.key, since: LONG_AGO } : { key: one[0].signIn.key, since: one[1] })),
-    removed: rest.removed ?? [], once: rest.once ?? [], vouched: rest.vouched ?? [],
+    removed: rest.removed ?? [], vouched: rest.vouched ?? [],
   };
 }
 /** The same device after it signed in again: another sign-in key, the same account key. */
@@ -115,11 +115,13 @@ async function signedInAgain(one: Device): Promise<Device> {
 const refusal = (verdict: MigrationVerdict): MigrationRefusal | "pin" => (verdict.pin ? "pin" : verdict.why);
 
 const listed = (one: Device, eligible = true): KnownDevice => ({ key: one.signIn.key, eligible, names: one.names });
-const pcSays = (n: number, admits: readonly (Device | readonly [Device, number])[], rest: Partial<KnownPc> & { readonly removed?: readonly string[] } = {}): KnownPc => ({
+/** A PC's answer: by its own clock it is T0 unless a test says otherwise. */
+const pcSays = (n: number, admits: readonly (Device | readonly [Device, number])[], rest: Partial<KnownPc> & { readonly removed?: readonly string[]; readonly now?: number; readonly account?: string } = {}): KnownPc => ({
   endpoint: E(n), paired: rest.paired ?? false, since: rest.since === undefined ? LONG_AGO : rest.since, names: names(`PC ${n}`),
-  says: rest.says === undefined ? { admits: witness(admits).admits, removed: rest.removed ?? [] } : rest.says,
+  says: rest.says === undefined ? { account: rest.account ?? ACCOUNT, now: rest.now ?? T0, admits: witness(admits).admits, removed: rest.removed ?? [] } : rest.says,
 });
-const known = (devices: readonly KnownDevice[], pcs: readonly KnownPc[], removed: readonly string[] = []): MigrationKnown => ({ self: phone.signIn.key, devices, removed, pcs });
+const known = (devices: readonly KnownDevice[], pcs: readonly KnownPc[], removed: readonly string[] = []): MigrationKnown =>
+  ({ account: ACCOUNT, self: phone.signIn.key, member: phone.member.key, devices, removed, pcs });
 const started = (start: MigrationStart): MigrationPlan => {
   if (!start.start) throw new Error(`no start: ${start.why}`);
   return start.plan;
@@ -145,7 +147,7 @@ describe("whom the first device carries in", () => {
     const start = migrationPlan(known([listed(phone), listed(stranger)], [pcSays(1, [phone, [stranger, planted]])]), T0);
     expect(start).toEqual({ start: false, why: "too_new", until: planted + DAY });
     // The honest case is the same: a phone the person added this morning. Nobody presses anything; the device asks again.
-    expect(started(migrationPlan(known([listed(phone), listed(stranger)], [pcSays(1, [phone, [stranger, planted]])]), planted + DAY)).devices).toHaveLength(1);
+    expect(started(migrationPlan(known([listed(phone), listed(stranger)], [pcSays(1, [phone, [stranger, planted]], { now: planted + DAY })]), planted + DAY)).devices).toHaveLength(1);
   });
 
   test("what is left, said plainly: a key the PCs have let in for a day is carried in, whoever put it there", () => {
@@ -194,28 +196,48 @@ describe("whom the first device carries in", () => {
     expect(migrationPlan(known([listed(phone)], [pcSays(1, [[phone, T0 - 60]])]), T0)).toEqual({ start: false, why: "too_new", until: T0 - 60 + DAY });
   });
 
-  test("a PC is carried in by this device's own record of it, answered or not; any other is added later", () => {
-    const start = migrationPlan(known([listed(phone)], [
-      pcSays(1, [phone]), pcSays(2, [], { says: null }), pcSays(3, [], { says: null, since: null, paired: true }), pcSays(4, [phone], { since: T0 - 60 }), pcSays(5, [phone], { since: null }),
-      { ...pcSays(6, [phone]), endpoint: "not-a-relay-key" },
-    ]), T0);
-    expect([started(start).pcs.map((row) => row.endpoint), started(start).left.pcs]).toEqual([
-      [E(1), E(2), E(3)], [{ endpoint: E(4), why: "pc_too_new" }, { endpoint: E(5), why: "unknown_pc" }, { endpoint: "not-a-relay-key", why: "form" }],
-    ]);
+  test("a PC is carried in by this device's own record of it, answered or not; one it has known for less than a day holds the start back", () => {
+    const pcs = [pcSays(1, [phone]), pcSays(2, [], { says: null }), pcSays(3, [], { says: null, since: null, paired: true }), pcSays(5, [phone], { since: null }), { ...pcSays(6, [phone]), endpoint: "not-a-relay-key" }];
+    const start = migrationPlan(known([listed(phone)], pcs), T0);
+    expect([started(start).pcs.map((row) => row.endpoint), started(start).left.pcs]).toEqual([[E(1), E(2), E(3)], [{ endpoint: E(5), why: "unknown_pc" }, { endpoint: "not-a-relay-key", why: "form" }]]);
+    // A PC first reached an hour ago would be left outside every device that has handed over: the start waits for it instead.
+    expect(migrationPlan(known([listed(phone)], [...pcs, pcSays(4, [phone], { since: T0 - 3600 })]), T0)).toEqual({ start: false, why: "too_new", until: T0 - 3600 + DAY });
+  });
+
+  test("a PC's times are read by the PC's own clock, and an answer for another account is no answer", () => {
+    // The PC's clock is two days behind the device's: it has let the tablet in for an hour by its own.
+    const behind = T0 - 2 * DAY;
+    expect(migrationPlan(known([listed(phone), listed(tablet)], [pcSays(1, [phone, [tablet, behind - 3600]], { now: behind })]), T0)).toEqual({ start: false, why: "too_new", until: T0 - 3600 + DAY });
+    // And one that is ahead does not make a key older than the PC says it is.
+    const ahead = T0 + 2 * DAY;
+    expect(migrationPlan(known([listed(phone), listed(tablet)], [pcSays(1, [[phone, ahead - 2 * DAY], [tablet, ahead - 60]], { now: ahead })]), T0)).toEqual({ start: false, why: "too_new", until: T0 - 60 + DAY });
+    const none = { start: false, why: "no_witness", until: null } as const;
+    expect(migrationPlan(known([listed(phone)], [pcSays(1, [phone], { account: "TEST-ONLY-other" })]), T0)).toEqual(none);
+    expect(migrationPlan(known([listed(phone)], [pcSays(1, [phone], { now: Number.NaN })]), T0)).toEqual(none);
+  });
+
+  test("this device is itself wherever it is named: its account key in the service's list is not carried in", async () => {
+    const start = migrationPlan(known([listed(phone), { key: phone.member.key, eligible: true, names: null }, listed(tablet)], [pcSays(1, [phone, tablet, { ...phone, signIn: phone.member }])]), T0);
+    expect([started(start).devices.map((row) => row.key), started(start).left.devices]).toEqual([[tablet.signIn.key], []]);
+    const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealer().seals);
+    for (const own of [phone.member.key, phone.signIn.key]) {
+      await expect(signMigrationRun(genesis.state, { devices: [{ key: own, names: null }], pcs: [] }, phone, T0, sealer().seals)).rejects.toMatchObject({ code: "key_invalid" });
+    }
   });
 
   test("an account with more than a list carries in: the devices a PC saw in use last are kept, and the run takes several requests", async () => {
     const many = await Promise.all(Array.from({ length: MIGRATION_CARRIED_MAX + 3 }, (_, index) => device(`Device ${index}`)));
     // Device 0 was last used a year ago, Device 1 never as far as the PC knows, Device 2 a month ago; the others this week.
     const seen = (index: number): number | null => (index === 0 ? T0 - 365 * DAY : index === 1 ? null : index === 2 ? T0 - 31 * DAY : T0 - index);
-    const says = { admits: [...witness([phone]).admits, ...many.map((one, index) => ({ key: one.signIn.key, since: LONG_AGO, seen: seen(index) }))], removed: [] };
+    const says = { account: ACCOUNT, now: T0, admits: [...witness([phone]).admits, ...many.map((one, index) => ({ key: one.signIn.key, since: LONG_AGO, seen: seen(index) }))], removed: [] };
+    const keyOf = (index: number): string => many[index]?.signIn.key ?? "";
     const start = started(migrationPlan(known([listed(phone), ...many.map((one) => listed(one))], [{ ...pcSays(1, []), says }, pcSays(2, [phone])]), T0));
     expect([start.devices.length, start.devices[0]?.key, start.pcs, start.left.devices.map((row) => row.key), start.left.pcs.map((row) => row.why)]).toEqual([
-      MIGRATION_CARRIED_MAX, many[3]?.signIn.key, [], [many[0]?.signIn.key, many[1]?.signIn.key, many[2]?.signIn.key], ["over_limit", "over_limit"],
+      MIGRATION_CARRIED_MAX, keyOf(3), [], [keyOf(0), keyOf(1), keyOf(2)], ["over_limit", "over_limit"],
     ]);
     // Where all fit, nothing is reordered and nobody is asked when it was last seen.
     const few = started(migrationPlan(known([listed(phone), listed(many[0] ?? phone), listed(many[5] ?? phone)], [{ ...pcSays(1, []), says }]), T0));
-    expect(few.devices.map((row) => row.key)).toEqual([many[0]?.signIn.key, many[5]?.signIn.key]);
+    expect(few.devices.map((row) => row.key)).toEqual([keyOf(0), keyOf(5)]);
 
     const sealed = sealer();
     const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
@@ -270,20 +292,22 @@ describe("the entries of a list that carries an account in", () => {
     expect(labels).toEqual(["Phone", "Tablet", "PC 1", "Phone"]);
   });
 
-  test("a request of which only the beginning was placed is taken up from what the log shows", async () => {
+  test("the run is signed once: after a request that did not place, the very same entries are sent, from what the log shows", async () => {
     const sealed = sealer();
     const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
-    const whole = plan([tablet, laptop], [1]);
-    const first = await signMigrationRun(genesis.state, whole, phone, T0, sealed.seals);
-    // A lying service places entry 0 and the first carried entry, and no more.
-    const shown = [genesis.text, first.entries[0]?.text ?? ""];
-    const rest = await signMigrationRun(await replay(shown), whole, phone, T0 + 60, sealed.seals);
-    const texts = [...shown, ...rest.entries.map((entry) => entry.text)];
-    expect([rest.entries.length, await said(texts)]).toEqual([4, ["counts", "counts", "counts", "counts", "counts"]]);
-    const state = await replay(texts);
-    expect([state.carrying, listView(state).devices.filter((row) => row.carried).map((row) => row.key), holdsPc(state, E(1))]).toEqual([false, [tablet.signIn.key, laptop.signIn.key], true]);
-    // Asked again once all is placed, it writes nothing.
-    expect((await signMigrationRun(state, whole, phone, T0 + 120, sealed.seals)).entries).toEqual([]);
+    const run = await signMigrationRun(genesis.state, plan([tablet, laptop], [1]), phone, T0, sealed.seals);
+    const texts = run.entries.map((entry) => entry.text);
+    expect([migrationRest(texts, []), migrationRest(texts, texts.slice(0, 2)), migrationRest(texts, texts)]).toEqual([{ rest: texts }, { rest: texts.slice(2) }, { rest: [] }]);
+    // The log has gone on past the run: nothing is left.
+    const later = await signRotation(run.state, tablet, T0 + 60, null);
+    expect(migrationRest(texts, [...texts, later.text])).toEqual({ rest: [] });
+    // Another entry at a place of the run is none this device signed: it sends nothing, and signs nothing.
+    const other = await signMigrationRun(genesis.state, plan([laptop]), phone, T0, sealed.seals);
+    expect([migrationRest(texts, [other.entries[0]?.text ?? ""]), migrationRest(texts, [texts[0] ?? "", "not an entry"])]).toEqual([{ diverged: 1 }, { diverged: 2 }]);
+    // A second signing on what a lying service shows of the first would be a second history under a member's own signature.
+    const prefix = await replay([genesis.text, texts[0] ?? ""]);
+    await expect(signMigrationRun(prefix, plan([tablet, laptop], [1]), phone, T0 + 60, sealed.seals)).rejects.toMatchObject({ code: "not_fresh" });
+    await expect(signMigrationRun(run.state, plan([]), phone, T0 + 60, sealed.seals)).rejects.toMatchObject({ code: "not_fresh" });
   });
 
   test("a carried key that is no point of the curve is never signed: the whole run is refused before any entry of it", async () => {
@@ -295,39 +319,36 @@ describe("the entries of a list that carries an account in", () => {
     // Nothing was sealed or opened for it either.
     expect(sealed.wrapped).toEqual([]);
     // The plan never names one: what the account service lists with such a key is left out.
-    const start = migrationPlan(known([listed(phone), { key: offCurve, eligible: true, names: null }], [{ ...pcSays(1, [phone]), says: { admits: [...witness([phone]).admits, { key: offCurve, since: LONG_AGO }], removed: [] } }]), T0);
+    const start = migrationPlan(known([listed(phone), { key: offCurve, eligible: true, names: null }], [{ ...pcSays(1, [phone]), says: { account: ACCOUNT, now: T0, admits: [...witness([phone]).admits, { key: offCurve, since: LONG_AGO }], removed: [] } }]), T0);
     expect([started(start).devices, started(start).left.devices]).toEqual([[], [{ key: offCurve, why: "form" }]]);
   });
 
-  test("only the device that signed entry 0 writes the run, and only while one of its keys is in", async () => {
-    const made = await migrated(phone, plan([tablet]));
+  test("only the device that signed entry 0 writes the run", async () => {
+    const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealer().seals);
     const code = async (run: () => Promise<unknown>) => await run().then(() => null, (error: unknown) => (error instanceof MigrationError ? error.code : String(error)));
-    expect(await code(() => signMigrationRun(made.state, plan([laptop]), tablet, T0, sealer().seals))).toBe("not_first");
-    expect(await code(() => signMigrationRun({ ...made.state, needs_replay: { seq: 3, hash: "00".repeat(32) } }, plan([]), phone, T0, sealer().seals))).toBe("stopped");
-    // The tablet hands its place on and removes the first device.
-    const rotated = await signRotation(made.state, tablet, T0 + 60, null, T0 + 60);
-    const removed = await signListEntry(rotated.state, { kind: "remove", ends: phone.member.key }, tablet.member, T0 + 60);
-    expect(await code(() => signMigrationRun(removed.state, plan([]), phone, T0 + 120, sealer().seals))).toBe("not_in");
+    expect(await code(() => signMigrationRun(genesis.state, plan([laptop]), tablet, T0, sealer().seals))).toBe("not_first");
+    expect(await code(() => signMigrationRun({ ...genesis.state, needs_replay: { seq: 3, hash: "00".repeat(32) } }, plan([]), phone, T0, sealer().seals))).toBe("stopped");
   });
 });
 
 describe("a device that was signed in before the list", () => {
+  const keys = (one: Device) => ({ signIn: one.signIn.key, member: one.member.key });
+
   test("it learns from the list that it was carried in, and hands its place to its member key once the run is over", async () => {
     const sealed = sealer();
     const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
     const run = await signMigrationRun(genesis.state, plan([tablet, laptop]), phone, T0, sealed.seals);
     const open = await replay([genesis.text, run.entries[0]?.text ?? ""]);
-    const keys = (one: Device) => ({ signIn: one.signIn.key, member: one.member.key });
-    // While the first device is still carrying, the tablet writes nothing: its entry would end the run and leave the laptop outside.
-    expect([devicePlace(open, keys(tablet), T0 + 30), devicePlace(open, keys(phone), T0 + 30), devicePlace(open, keys(laptop), T0 + 30)]).toEqual([{ at: "carried", wait: true }, { at: "first" }, { at: "absent" }]);
-    await expect(signRotation(open, tablet, T0 + 30, null, T0 + 30)).rejects.toMatchObject({ code: "run_open" });
+    // While the first device is still carrying, the tablet writes nothing, and the laptop does not ask to be let in yet.
+    expect([devicePlace(open, keys(tablet)), devicePlace(open, keys(phone)), devicePlace(open, keys(laptop))]).toEqual([{ at: "carried", wait: true }, { at: "first" }, { at: "absent", wait: true }]);
+    await expect(signRotation(open, tablet, T0 + 30, null)).rejects.toMatchObject({ code: "run_open" });
 
     const closed = run.state;
-    expect([devicePlace(closed, keys(tablet), T0 + 30), devicePlace(closed, keys(phone), T0 + 30), devicePlace(closed, keys(stranger), T0 + 30)]).toEqual([{ at: "carried", wait: false }, { at: "member" }, { at: "absent" }]);
-    const rotated = await signRotation(closed, tablet, T0 + 30, null, T0 + 30);
+    expect([devicePlace(closed, keys(tablet)), devicePlace(closed, keys(phone)), devicePlace(closed, keys(stranger))]).toEqual([{ at: "carried", wait: false }, { at: "member" }, { at: "absent", wait: false }]);
+    const rotated = await signRotation(closed, tablet, T0 + 30, null);
     const state = await replay([genesis.text, ...run.entries.map((entry) => entry.text), rotated.text]);
     expect(state).toEqual(rotated.state);
-    expect([devicePlace(state, keys(tablet), T0 + 60), admitsDevice(state, tablet.signIn.key, T0 + 60), admitsDevice(state, tablet.member.key, T0 + 60)]).toEqual([{ at: "member" }, null, "drive"]);
+    expect([devicePlace(state, keys(tablet)), admitsDevice(state, tablet.signIn.key, T0 + 60), admitsDevice(state, tablet.member.key, T0 + 60)]).toEqual([{ at: "member" }, null, "drive"]);
     expect(listView(state).devices.find((row) => row.key === tablet.member.key)).toMatchObject({ by: tablet.signIn.key, carried: false, enc: tablet.enc, power: "full" });
     // A PC moves the row; it is the same device. The laptop, which has not run the new app, stays where it was.
     expect(rekeys(closed, state)).toEqual([{ from: tablet.signIn.key, to: tablet.member.key }]);
@@ -335,33 +356,27 @@ describe("a device that was signed in before the list", () => {
       .toEqual([tablet.member.key, null, phone.member.key, laptop.signIn.key, null]);
     // A PC that pins this list reads the same from it for the rows it kept by sign-in keys.
     expect(rekeys(genesis.state, state)).toEqual([{ from: phone.signIn.key, to: phone.member.key }]);
-    await expect(signRotation(state, tablet, T0 + 90, null, T0 + 90)).rejects.toMatchObject({ code: "not_in" });
+    await expect(signRotation(state, tablet, T0 + 90, null)).rejects.toMatchObject({ code: "not_in" });
   });
 
-  test("a run the first device gave up is ended by a carried device after ten minutes, and nobody is carried in after it", async () => {
+  test("a carried device never ends an open run, however old it looks: a service that shows it the beginning of a finished run gets no second history", async () => {
     const sealed = sealer();
     const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
     const run = await signMigrationRun(genesis.state, plan([tablet, laptop]), phone, T0, sealed.seals);
-    const shown = [genesis.text, run.entries[0]?.text ?? ""];
-    const open = await replay(shown);
-    await expect(signRotation(open, tablet, T0 + MIGRATION_RUN_SECONDS - 1, null, T0 + MIGRATION_RUN_SECONDS - 1)).rejects.toMatchObject({ code: "run_open" });
-    expect(devicePlace(open, { signIn: tablet.signIn.key, member: tablet.member.key }, T0 + MIGRATION_RUN_SECONDS)).toEqual({ at: "carried", wait: false });
-    const rotated = await signRotation(open, tablet, T0 + MIGRATION_RUN_SECONDS, null, T0 + MIGRATION_RUN_SECONDS);
-    expect(rotated.state.carrying).toBe(false);
-    // The first device comes back: it hands its own place on, and the laptop is left to ask as a new device does.
-    const rest = await signMigrationRun(rotated.state, plan([tablet, laptop]), phone, T0 + 900, sealed.seals);
-    const state = await replay([...shown, rotated.text, ...rest.entries.map((entry) => entry.text)]);
-    expect([rest.entries.length, devicePlace(state, { signIn: laptop.signIn.key, member: laptop.member.key }, T0 + 900), admitsDevice(state, phone.member.key, T0 + 900)]).toEqual([2, { at: "absent" }, "drive"]);
+    // An hour after the whole run was placed, the tablet is shown entry 0 and its own carried entry, and no more.
+    const shown = await replay([genesis.text, run.entries[0]?.text ?? ""]);
+    expect(devicePlace(shown, keys(tablet))).toEqual({ at: "carried", wait: true });
+    await expect(signRotation(shown, tablet, T0 + 3600, null)).rejects.toMatchObject({ code: "run_open" });
+    await expect(signRotation(shown, tablet, T0 + 30 * DAY, null)).rejects.toMatchObject({ code: "run_open" });
   });
 
   test("a device that was removed is out, whichever of its keys the removal named", async () => {
     const made = await migrated(phone, plan([tablet, laptop]));
-    const keys = (one: Device) => ({ signIn: one.signIn.key, member: one.member.key });
     const removed = await signListEntries(made.state, [{ kind: "remove", ends: laptop.signIn.key }], phone.member, T0 + 60);
-    expect(devicePlace(removed.state, keys(laptop), T0 + 60)).toEqual({ at: "out" });
-    const rotated = await signRotation(made.state, tablet, T0 + 60, null, T0 + 60);
+    expect(devicePlace(removed.state, keys(laptop))).toEqual({ at: "out" });
+    const rotated = await signRotation(made.state, tablet, T0 + 60, null);
     const out = await signListEntry(rotated.state, { kind: "remove", ends: tablet.member.key }, phone.member, T0 + 90);
-    expect([devicePlace(out.state, keys(tablet), T0 + 90), standsFor(out.state, tablet.signIn.key), rekeys(rotated.state, out.state)]).toEqual([{ at: "out" }, null, []]);
+    expect([devicePlace(out.state, keys(tablet)), standsFor(out.state, tablet.signIn.key), rekeys(rotated.state, out.state)]).toEqual([{ at: "out" }, null, []]);
   });
 });
 
@@ -399,9 +414,10 @@ describe("what a PC checks before it follows a list that carries its account in"
     const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
     // The kinds read only the spelling of a carried key, so a first device that signs with the kinds' writer alone can carry one in.
     const carried = await signListEntry(genesis.state, { kind: "carried", key: offCurve, role: "drive", sealed: null }, phone.signIn, T0);
-    const run = await signMigrationRun(carried.state, plan([tablet]), phone, T0, sealed.seals);
+    const next = await signListEntry(carried.state, { kind: "carried", key: tablet.signIn.key, role: "drive", sealed: null }, phone.signIn, T0);
+    const run = await signRotation(next.state, phone, T0, null);
     expect(listView(run.state).devices.some((row) => row.key === offCurve && row.carried)).toBe(true);
-    const holds: PcWitness = { account: ACCOUNT, admits: [...witness([phone, tablet]).admits, { key: offCurve, since: LONG_AGO }], removed: [], once: [], vouched: [] };
+    const holds: PcWitness = { account: ACCOUNT, admits: [...witness([phone, tablet]).admits, { key: offCurve, since: LONG_AGO }], removed: [], vouched: [] };
     expect(migrationVerdict(run.state, holds, T0)).toEqual({ pin: false, why: "carried_off_curve", keys: [offCurve], waits: false, until: null });
     // Before any question of who is let in, and also while the run is open.
     expect(refusal(migrationVerdict(run.state, { ...holds, removed: [tablet.signIn.key] }, T0))).toBe("carried_off_curve");
@@ -414,7 +430,7 @@ describe("what a PC checks before it follows a list that carries its account in"
     const made = await migrated(phone, plan([tablet, laptop]));
     expect(migrationVerdict(made.state, witness([phone, tablet], { removed: [laptop.signIn.key] }), T0)).toEqual({ pin: false, why: "carried_removed", keys: [laptop.signIn.key], waits: false, until: null });
     // Whatever else the PC holds of the key.
-    expect(refusal(migrationVerdict(made.state, witness([phone, tablet, laptop], { removed: [laptop.signIn.key], once: [laptop.signIn.key] }), T0))).toBe("carried_removed");
+    expect(refusal(migrationVerdict(made.state, witness([phone, tablet, laptop], { removed: [laptop.signIn.key] }), T0))).toBe("carried_removed");
     expect(refusal(migrationVerdict(made.state, witness([tablet, laptop], { removed: [phone.signIn.key] }), T0))).toBe("first_signer_removed");
   });
 
@@ -429,26 +445,28 @@ describe("what a PC checks before it follows a list that carries its account in"
     expect(refusal(migrationVerdict(run.state, witness([phone, tablet]), T0))).toBe("carried_unknown");
   });
 
-  test("a PC that was off for a month follows the list when it comes back, by what it held of each key", async () => {
+  test("a PC that was off for a month follows the list when it comes back, by the rows it holds then", async () => {
     const made = await migrated(phone, plan([tablet, laptop], [1]));
     // Meanwhile the tablet ran the new app and handed its place on; the laptop was signed out and removed in the list.
-    const rotated = await signRotation(made.state, tablet, T0 + DAY, null, T0 + DAY);
+    const rotated = await signRotation(made.state, tablet, T0 + DAY, null);
     const removed = await signListEntries(rotated.state, [{ kind: "remove", ends: laptop.signIn.key }], phone.member, T0 + 2 * DAY);
     const later = T0 + 30 * DAY;
-    // The PC's first whole read on its return: the tablet's sign-in is still listed, the laptop's is gone, with no removal.
-    const back = witness([phone, tablet], { once: [laptop.signIn.key] });
-    expect(refusal(migrationVerdict(removed.state, back, later))).toBe("pin");
-    // The rows it kept by sign-in keys move to the keys the same devices are in by now.
-    expect([phone, tablet, laptop].map((one) => standsFor(removed.state, one.signIn.key))).toEqual([phone.member.key, tablet.member.key, null]);
-    // A service that withholds the removal shows the laptop as still in: the PC had stopped letting it in, and does not follow.
-    expect(migrationVerdict(rotated.state, back, later)).toEqual({ pin: false, why: "carried_dropped", keys: [laptop.signIn.key], waits: false, until: null });
-    // A PC that keeps no record of what it dropped follows too: the laptop is out of the list and left nobody in.
+    // Its first whole read on its return: the phone's and the tablet's sign-ins are still listed, the laptop's is gone.
     expect(refusal(migrationVerdict(removed.state, witness([phone, tablet]), later))).toBe("pin");
-    // And one that dropped the first device's sign-in key, which has handed its place on since, follows.
-    expect(refusal(migrationVerdict(removed.state, witness([tablet], { once: [phone.signIn.key, laptop.signIn.key] }), later))).toBe("pin");
-    expect(refusal(migrationVerdict(made.state, witness([tablet, laptop], { once: [phone.signIn.key] }), later))).toBe("pin");
-    const unrotated = await signMigrationGenesis(ACCOUNT, phone, T0, sealer().seals);
-    expect(refusal(migrationVerdict(unrotated.state, witness([tablet], { once: [phone.signIn.key] }), later))).toBe("first_signer_dropped");
+    expect([phone, tablet, laptop].map((one) => standsFor(removed.state, one.signIn.key))).toEqual([phone.member.key, tablet.member.key, null]);
+    // A service that withholds the removal shows the laptop as still in: the PC does not let it in, and does not follow.
+    expect(migrationVerdict(rotated.state, witness([phone, tablet]), later)).toEqual({ pin: false, why: "carried_unknown", keys: [laptop.signIn.key], waits: false, until: null });
+  });
+
+  test("a key the PC let in once and dropped places nobody: whoever holds it now starts a list with it, and no PC follows", async () => {
+    // The tablet was signed out a month ago with no removal; its old sign-in key is still on it, or on a copy of it.
+    const forged = await migrated(tablet, plan([]));
+    const now = witness([phone, laptop]);
+    expect(migrationVerdict(forged.state, now, T0 + DAY)).toEqual({ pin: false, why: "first_signer_unknown", keys: [tablet.signIn.key], waits: false, until: null });
+    // Carrying the person's real keys does not help, and neither does leaving at once.
+    const carrying = await migrated(tablet, plan([phone, laptop]));
+    const left = await signListEntry(carrying.state, { kind: "remove", ends: tablet.member.key }, tablet.member, T0 + 60);
+    expect([refusal(migrationVerdict(carrying.state, now, T0 + DAY)), refusal(migrationVerdict(left.state, now, T0 + DAY))]).toEqual(["first_signer_unknown", "unvouched"]);
   });
 
   test("an old migration shown to a PC later gets nothing it would not get today", async () => {
@@ -468,7 +486,7 @@ describe("what a PC checks before it follows a list that carries its account in"
     expect([refusal(migrationVerdict(a.state, pc, T0)), refusal(migrationVerdict(b.state, pc, T0)), a.list === b.list]).toEqual(["pin", "pin", false]);
     expect([migrationVerdict(a.state, pc, T0), migrationVerdict(b.state, pc, T0)].map((verdict) => (verdict.pin ? verdict.admitted : []))).toEqual([[phone.signIn.key, tablet.signIn.key].sort(), [phone.signIn.key, tablet.signIn.key].sort()]);
     // The tablet, told that the account has the phone's list, finds itself carried in there and drops its own.
-    expect(devicePlace(a.state, { signIn: tablet.signIn.key, member: tablet.member.key }, T0 + 30)).toEqual({ at: "carried", wait: false });
+    expect(devicePlace(a.state, { signIn: tablet.signIn.key, member: tablet.member.key })).toEqual({ at: "carried", wait: false });
   });
 
   test("a list with no carried device: the PC still asks who started it", async () => {
@@ -481,7 +499,7 @@ describe("a PC that holds no record of a key: it took this release after its acc
   /** The account a month on: the tablet handed its place on and has signed in again since; the laptop still runs the app from before the list. */
   async function monthOn() {
     const made = await migrated(phone, plan([tablet, laptop], [1]));
-    const rotated = await signRotation(made.state, tablet, T0 + DAY, null, T0 + DAY);
+    const rotated = await signRotation(made.state, tablet, T0 + DAY, null);
     const tabletNow = await signedInAgain(tablet);
     const vouch = await signVouch(rotated.state, tabletNow);
     if (vouch === null) throw new Error("no vouch");
@@ -527,7 +545,7 @@ describe("a PC that holds no record of a key: it took this release after its acc
 
   test("a stranger's key is not placed by pointing at a device the PC knows: the vouch must be that device's own", async () => {
     const made = await migrated(phone, plan([tablet, stranger]));
-    const rotated = await signRotation(made.state, stranger, T0 + 60, null, T0 + 60);
+    const rotated = await signRotation(made.state, stranger, T0 + 60, null);
     // The stranger's member key signs that the tablet's sign-in key is its own. Nothing holds, so the PC is handed nothing.
     const claim = await signVouch(rotated.state, { signIn: { key: tablet.signIn.key, privateKey: stranger.member.privateKey }, member: stranger.member });
     const vouched = await heldVouches(ACCOUNT, rotated.state.list, claim === null ? [] : [claim]);
@@ -576,7 +594,7 @@ describe("a PC that holds no record of a key: it took this release after its acc
   test("a device that is gone, and that the PC cannot place, must have left nobody in whom the PC cannot place itself", async () => {
     const { made, later } = await monthOn();
     // The laptop took the new app, handed its place on, allowed a new phone and added a PC at its window; then it was removed.
-    const rotated = await signRotation(made.state, laptop, T0 + DAY, null, T0 + DAY);
+    const rotated = await signRotation(made.state, laptop, T0 + DAY, null);
     const added = await device("New phone");
     const allowed = await signListEntry(rotated.state, {
       kind: "device", key: added.member.key, power: "full", role: "drive", until: null, enc: added.enc, sealed: null, rotates: false,
@@ -591,8 +609,8 @@ describe("a PC that holds no record of a key: it took this release after its acc
     // Removed too, it is nobody's business any more.
     const both = await signListEntry(removed.state, { kind: "remove", ends: added.member.key }, phone.member, T0 + 4 * DAY);
     expect(refusal(migrationVerdict(both.state, witness([phone, tablet]), later))).toBe("pin");
-    // A PC that holds its own record of the laptop asks none of this.
-    expect(refusal(migrationVerdict(removed.state, witness([phone, tablet], { once: [laptop.signIn.key] }), later))).toBe("pin");
+    // A PC that lets the laptop's old sign-in key in to this day asks none of this.
+    expect(refusal(migrationVerdict(removed.state, witness([phone, tablet, laptop]), later))).toBe("pin");
 
     // The one case a person settles at the PC: what it left in is a PC, which signs for others and which no row of this PC can place.
     const desk = await device("Desk");
@@ -647,22 +665,11 @@ describe("what a mutation pass found unpinned", () => {
     const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealer().seals);
     const bad: ListSigner = { key: offCurve, privateKey: tablet.member.privateKey };
     for (const broken of [{ ...tablet, member: bad }, { ...tablet, enc: offCurve }, { ...tablet, signIn: bad }]) {
-      expect(await code(() => signRotation(made.state, broken, T0 + 60, null, T0 + 60))).toBe("key_invalid");
+      expect(await code(() => signRotation(made.state, broken, T0 + 60, null))).toBe("key_invalid");
     }
     for (const broken of [{ ...phone, member: bad }, { ...phone, enc: offCurve }]) expect(await code(() => signMigrationRun(genesis.state, plan([]), broken, T0, sealer().seals))).toBe("key_invalid");
     // A member key the list has held before is not handed a place.
-    expect(await code(() => signRotation(made.state, { ...tablet, member: phone.member }, T0 + 60, null, T0 + 60))).toBe("has_member");
-  });
-
-  test("taking the run up again leaves out a PC the list already carries", async () => {
-    const sealed = sealer();
-    const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
-    const whole = plan([tablet], [1, 2]);
-    const first = await signMigrationRun(genesis.state, whole, phone, T0, sealed.seals);
-    const shown = [genesis.text, ...first.entries.slice(0, 2).map((entry) => entry.text)];
-    const rest = await signMigrationRun(await replay(shown), whole, phone, T0 + 60, sealed.seals);
-    const state = await replay([...shown, ...rest.entries.map((entry) => entry.text)]);
-    expect([rest.entries.length, holdsPc(state, E(1)), holdsPc(state, E(2)), state.carrying]).toEqual([3, true, true, false]);
+    expect(await code(() => signRotation(made.state, { ...tablet, member: phone.member }, T0 + 60, null))).toBe("has_member");
   });
 
   test("a vouch names an account, a list and two keys, each in its form", async () => {
@@ -689,12 +696,12 @@ describe("what a mutation pass found unpinned", () => {
       kind: "device", key: added.member.key, power: "full", role: "drive", until: null, enc: added.enc, sealed: null, rotates: false,
       card: await signCard({ key: added.member.key, enc: added.enc, list: made.list, endpoint: null, invite: null }, added.member.privateKey),
     }, phone.member, T0 + 60);
-    expect(devicePlace(allowed.state, { signIn: added.signIn.key, member: added.member.key }, T0 + 60)).toEqual({ at: "member" });
+    expect(devicePlace(allowed.state, { signIn: added.signIn.key, member: added.member.key })).toEqual({ at: "member" });
   });
 
   test("a removal of the key a device handed its place to wins over the PC's own record of the key it came from, and its record of that key needs no vouch", async () => {
     const made = await migrated(phone, plan([tablet]));
-    const rotated = await signRotation(made.state, tablet, T0 + 60, null, T0 + 60);
+    const rotated = await signRotation(made.state, tablet, T0 + 60, null);
     expect(refusal(migrationVerdict(rotated.state, witness([phone, tablet], { removed: [tablet.member.key] }), T0 + DAY))).toBe("carried_removed");
     // A PC that holds the member key itself (the device was also paired there) and never held the sign-in key.
     const paired: PcWitness = { ...witness([phone]), admits: [...witness([phone]).admits, { key: tablet.member.key, since: LONG_AGO }] };
@@ -703,8 +710,8 @@ describe("what a mutation pass found unpinned", () => {
 
   test("of two sign-in keys that vouch, the PC waits for the first to be a day old; of two members, for the first of them", async () => {
     const made = await migrated(phone, plan([tablet, laptop]));
-    const one = await signRotation(made.state, tablet, T0 + 60, null, T0 + 60);
-    const two = await signRotation(one.state, laptop, T0 + 90, null, T0 + 90);
+    const one = await signRotation(made.state, tablet, T0 + 60, null);
+    const two = await signRotation(one.state, laptop, T0 + 90, null);
     const gone = await signListEntry(two.state, { kind: "remove", ends: phone.member.key }, tablet.member, T0 + 120);
     const [tabletA, tabletB, laptopNow] = [await signedInAgain(tablet), await signedInAgain(tablet), await signedInAgain(laptop)];
     const words = await Promise.all([tabletA, tabletB, laptopNow].map((who) => signVouch(gone.state, who)));
@@ -722,7 +729,7 @@ describe("what a mutation pass found unpinned", () => {
 
   test("two devices that a gone device let in, each vouched by a key that is too new: the PC looks again when the later is a day old", async () => {
     const made = await migrated(phone, plan([tablet, laptop]));
-    let state = (await signRotation(made.state, laptop, T0 + 60, null, T0 + 60)).state;
+    let state = (await signRotation(made.state, laptop, T0 + 60, null)).state;
     const [one, two] = [await device("One"), await device("Two")];
     for (const added of [one, two]) {
       state = (await signListEntry(state, {
@@ -738,9 +745,31 @@ describe("what a mutation pass found unpinned", () => {
       .toEqual({ pin: false, why: "gone_left_new", keys: [one.member.key, two.member.key].sort(), waits: true, until: later - 20 + DAY });
   });
 
+  test("a removal this PC holds is no obstacle once the list has put that device out too, and it left nobody in", async () => {
+    const made = await migrated(phone, plan([tablet, laptop]));
+    const held = witness([phone, tablet], { removed: [laptop.signIn.key] });
+    expect(refusal(migrationVerdict(made.state, held, T0))).toBe("carried_removed");
+    // The person says "Not me" on the notice, or removes the laptop on any device: the list and the PC agree, and the PC follows.
+    const out = await signListEntry(made.state, { kind: "remove", ends: laptop.signIn.key }, phone.member, T0 + 60);
+    expect(refusal(migrationVerdict(out.state, held, T0 + 60))).toBe("pin");
+    // Not while what it let in is still in.
+    const rotated = await signRotation(made.state, laptop, T0 + 60, null);
+    const added = await device("Added");
+    const allowed = await signListEntry(rotated.state, {
+      kind: "device", key: added.member.key, power: "full", role: "drive", until: null, enc: added.enc, sealed: null, rotates: false,
+      card: await signCard({ key: added.member.key, enc: added.enc, list: made.list, endpoint: null, invite: null }, added.member.privateKey),
+    }, laptop.member, T0 + 90);
+    const gone = await signListEntry(allowed.state, { kind: "remove", ends: laptop.member.key }, phone.member, T0 + 120);
+    expect(migrationVerdict(gone.state, held, T0 + 120)).toMatchObject({ why: "gone_left_signer", keys: [added.member.key] });
+    // The same for the device that started the list, which then needs one device to vouch.
+    const first = witness([tablet, laptop], { removed: [phone.signIn.key] });
+    const left = await signListEntry(made.state, { kind: "remove", ends: phone.member.key }, phone.member, T0 + 60);
+    expect([refusal(migrationVerdict(made.state, first, T0)), refusal(migrationVerdict(left.state, first, T0 + 60))]).toEqual(["first_signer_removed", "unvouched"]);
+  });
+
   test("an invite that a device placed before it went lets no PC in, and does not hold a PC back", async () => {
     const made = await migrated(phone, plan([tablet, laptop]));
-    const rotated = await signRotation(made.state, laptop, T0 + 60, null, T0 + 60);
+    const rotated = await signRotation(made.state, laptop, T0 + 60, null);
     const line = await signer();
     const invite = await signListEntry(rotated.state, { kind: "invite", key: line.key, exp: T0 + 900, uses: 1, auto: true, sealed: null }, laptop.member, T0 + 90);
     const gone = await signListEntry(invite.state, { kind: "remove", ends: laptop.member.key }, phone.member, T0 + 120);
@@ -762,7 +791,7 @@ describe("the vectors of migrate/", () => {
   test("there is a vector for a PC that follows, for each of its refusals, for a start and for each reason to start none", () => {
     const pcs = new Set(vectors.flatMap((vector) => (vector.pc === undefined ? [] : [refusal(vector.pc.expect)])));
     const refusals: (MigrationRefusal | "pin")[] = [
-      "pin", "other_account", "carried_off_curve", "first_signer_removed", "carried_removed", "first_signer_dropped", "carried_dropped", "first_signer_unknown", "carried_unknown", "gone_left_signer",
+      "pin", "other_account", "carried_off_curve", "first_signer_removed", "carried_removed", "first_signer_unknown", "carried_unknown", "gone_left_signer",
       "first_signer_new", "carried_new", "gone_left_new", "unvouched", "run_open",
     ];
     expect(refusals.filter((word) => !pcs.has(word))).toEqual([]);

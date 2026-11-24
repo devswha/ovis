@@ -17,7 +17,8 @@
  * entry that hands its place to its account key. Every carried device does the same when it next runs.
  *
  * No I/O, no storage, no clock and nothing random: sealing, which needs a random key, is the caller's
- * (MigrationSeals).
+ * (MigrationSeals). Every `now` here is the caller's own wall clock, in seconds since 1970, and never the
+ * list's own time (listClock): whoever signs a list dates its entries, so a day by the list's time is no day.
  */
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { canonicalBase64Url, isListHash, verifySignature, writeFieldsUnder } from "./account-list-entry.ts";
@@ -35,9 +36,6 @@ export const MIGRATION_CARRIED_MAX = 64;
 export const MIGRATION_REQUEST_ENTRIES = 16;
 /** A vouch's signature is over these bytes and the vouch's fields. */
 export const LIST_VOUCH_PREFIX = "ovis-list-vouch/1";
-/** How long a carried device leaves a run that is still open to the first device, before it ends the run itself: ten minutes, in seconds. */
-export const MIGRATION_RUN_SECONDS = 600;
-
 const ENDPOINT = /^[0-9a-f]{64}$/;
 const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
 const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
@@ -68,11 +66,14 @@ export interface KnownDevice {
 }
 
 /**
- * What a PC answers a device of its account over a session to its own relay key: the device keys it lets in to
- * drive on that account now, each with the second since which it has, and the keys it holds a removal against
- * (a signed removal or block it applied, or a person's Revoke at that PC).
+ * What a PC answers a device of its account over a session to its own relay key: the account it is in, its own
+ * clock (`now`, by which its times are read: a PC's clock and a device's need not agree), the device keys it lets
+ * in to drive on that account now, each with the second since which it has, and the keys it holds a removal
+ * against (a signed removal or block it applied, or a person's Revoke at that PC).
  */
 export interface PcAnswer {
+  readonly account: string;
+  readonly now: number;
   readonly admits: readonly WitnessedKey[];
   readonly removed: readonly string[];
 }
@@ -93,11 +94,14 @@ export interface KnownPc {
 
 /** What the first device knows as it moves its account onto a list. */
 export interface MigrationKnown {
+  readonly account: string;
   /** The key this device's own sign-in registered: it signs entry 0. */
   readonly self: string;
+  /** This device's member key (its account key): it is this device wherever it is named. */
+  readonly member: string;
   /** The account's devices as the account service lists them now, in its order. */
   readonly devices: readonly KnownDevice[];
-  /** The keys the account service lists as removed. */
+  /** The keys the account service lists as removed, and every key this device itself holds a block or a removal against, sent or not. */
   readonly removed: readonly string[];
   readonly pcs: readonly KnownPc[];
 }
@@ -106,11 +110,12 @@ export interface MigrationKnown {
  * Why a device starts no list now.
  *
  * - `self_unlisted`: the account service does not list this device's own key as one a PC lets in.
- * - `self_removed`: the service, or a PC this device knows, holds a removal against its own key.
- * - `no_witness`: no PC that this device knows by its own record has answered.
+ * - `self_removed`: the service, this device, or a PC this device knows holds a removal against its own key.
+ * - `no_witness`: no PC that this device knows by its own record has answered for this account.
  * - `self_unwitnessed`: no such PC lets this device's own key in.
  * - `too_new`: this device's key, or one it would carry in, has been let in for less than a day by every PC that
- *   lets it in; `until` is the second from which that is over.
+ *   lets it in, or this device has known a PC for less than a day; `until` is the second, by this device's clock,
+ *   from which that is over.
  */
 export type NoMigration = "self_unlisted" | "self_removed" | "no_witness" | "self_unwitnessed" | "too_new";
 
@@ -118,15 +123,14 @@ export type NoMigration = "self_unlisted" | "self_removed" | "no_witness" | "sel
  * Why a device or a PC is not carried in.
  *
  * - `form`: its key is no key of a list, or its relay key no relay key.
- * - `removed`: the account service lists the key as removed.
+ * - `removed`: the account service lists the key as removed, or this device holds a removal against it.
  * - `not_eligible`: the service lists the key as one no PC lets in now.
  * - `removed_at_pc`: a PC this device knows holds a removal against the key, whatever the service says.
  * - `unwitnessed`: no PC this device knows lets the key in.
  * - `unknown_pc`: this device has only the account service's word that the relay key is a PC of the person's.
- * - `pc_too_new`: this device has known the relay key for less than a day.
- * - `over_limit`: the list carries MIGRATION_CARRIED_MAX in, and these came after.
+ * - `over_limit`: the list carries MIGRATION_CARRIED_MAX in, and these were in use least lately.
  */
-export type LeftOut = "form" | "removed" | "not_eligible" | "removed_at_pc" | "unwitnessed" | "unknown_pc" | "pc_too_new" | "over_limit";
+export type LeftOut = "form" | "removed" | "not_eligible" | "removed_at_pc" | "unwitnessed" | "unknown_pc" | "over_limit";
 
 /** Whom the first device carries in, in the order of the entries, and whom it leaves out and why. */
 export interface MigrationPlan {
@@ -153,14 +157,16 @@ export function ownEvidence(pc: Pick<KnownPc, "paired" | "since">, now: number, 
 
 /**
  * Whom a device carries into the list it starts for an account that was in use, or why it starts none now.
- * `now` is the device's clock, in seconds since 1970.
+ * `now` is the device's wall clock, in seconds since 1970.
  *
- * A device key is carried in only when all hold: the account service lists it as one a PC lets in and not as
- * removed; a PC that this device knows by its own record (ownEvidence) says it has let that key in for at least
- * `age` seconds; and no such PC holds a removal against it. So a key that only the service names gets no place
+ * A device key is carried in only when all hold: the account service lists it as one a PC lets in, and neither
+ * the service nor this device holds a removal against it; a PC that this device knows by its own record
+ * (ownEvidence), and that answered for this account, says it has let that key in for at least `age` seconds by
+ * its own clock; and no such PC holds a removal against it. So a key that only the service names gets no place
  * (`unwitnessed`), and neither does one that a PC put out and the service lists again (`removed_at_pc`). A key
- * that such a PC has let in for less than `age` holds the start back (`too_new`): the device asks again later,
- * and nobody presses anything. The device's own key is held to the same.
+ * that such a PC has let in for less than `age` holds the start back (`too_new`), and so does a PC this device
+ * has known for less than `age`: the device asks again later, and nobody presses anything. The device's own key
+ * is held to the same.
  *
  * A PC is carried in when the device knows it by its own record, answered or not. Devices come first, in the
  * service's order, then PCs. Where an account has more than MIGRATION_CARRIED_MAX, the devices that a PC saw in
@@ -171,11 +177,11 @@ export function ownEvidence(pc: Pick<KnownPc, "paired" | "since">, now: number, 
 export function migrationPlan(known: MigrationKnown, now: number, age: number = MIGRATION_WITNESS_SECONDS): MigrationStart {
   const no = (why: NoMigration, until: number | null = null): MigrationStart => ({ start: false, why, until });
   const removed = new Set(known.removed);
-  const witnesses = known.pcs.filter((pc) => ENDPOINT.test(pc.endpoint) && pc.says !== null && ownEvidence(pc, now, age));
-  const removedAtPc = (key: string): boolean => witnesses.some((pc) => pc.says?.removed.includes(key) === true);
-  /** The second from which some witness has let the key in for `age`: null when none lets it in. */
+  const witnesses = known.pcs.flatMap((pc) => (ENDPOINT.test(pc.endpoint) && pc.says !== null && pc.says.account === known.account && isTime(pc.says.now) && ownEvidence(pc, now, age) ? [pc.says] : []));
+  const removedAtPc = (key: string): boolean => witnesses.some((says) => says.removed.includes(key));
+  /** The second, by this device's clock, from which some witness has let the key in for `age` by its own: null when none lets it in. */
   const witnessedFrom = (key: string): number | null => {
-    const times = witnesses.flatMap((pc) => (pc.says?.admits ?? []).filter((row) => row.key === key && isTime(row.since)).map((row) => row.since + age));
+    const times = witnesses.flatMap((says) => says.admits.filter((row) => row.key === key && isTime(row.since)).map((row) => now - (says.now - row.since) + age));
     return times.length === 0 ? null : Math.min(...times);
   };
 
@@ -189,18 +195,17 @@ export function migrationPlan(known: MigrationKnown, now: number, age: number = 
   const carried: { key: string; names: ListNames | null }[] = [];
   const leftDevices: { key: string; why: LeftOut }[] = [];
   let until = selfFrom;
-  const seen = new Set<string>([known.self]);
+  const named = new Set<string>([known.self, known.member]);
   for (const device of known.devices) {
     const { key } = device;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (named.has(key)) continue;
+    named.add(key);
     const from = witnessedFrom(key);
     const why: LeftOut | null = !isListKey(key) ? "form" : removed.has(key) ? "removed" : !device.eligible ? "not_eligible" : removedAtPc(key) ? "removed_at_pc" : from === null ? "unwitnessed" : null;
     if (why !== null) { leftDevices.push({ key, why }); continue; }
     until = Math.max(until, from ?? 0);
     carried.push({ key, names: device.names });
   }
-  if (until > now) return no("too_new", until);
 
   const pcs: { endpoint: string; names: ListNames | null }[] = [];
   const leftPcs: { endpoint: string; why: LeftOut }[] = [];
@@ -209,12 +214,15 @@ export function migrationPlan(known: MigrationKnown, now: number, age: number = 
     const { endpoint } = pc;
     if (places.has(endpoint)) continue;
     places.add(endpoint);
-    const why: LeftOut | null = !ENDPOINT.test(endpoint) ? "form" : ownEvidence(pc, now, age) ? null : isTime(pc.since) ? "pc_too_new" : "unknown_pc";
-    if (why !== null) leftPcs.push({ endpoint, why });
-    else pcs.push({ endpoint, names: pc.names });
+    if (!ENDPOINT.test(endpoint)) leftPcs.push({ endpoint, why: "form" });
+    else if (ownEvidence(pc, now, age)) pcs.push({ endpoint, names: pc.names });
+    else if (isTime(pc.since)) until = Math.max(until, pc.since + age);
+    else leftPcs.push({ endpoint, why: "unknown_pc" });
   }
+  if (until > now) return no("too_new", until);
+
   /** The last second any witness saw the key in use; a key no witness has seen in use comes last. */
-  const lastSeen = (key: string): number => Math.max(-1, ...witnesses.flatMap((pc) => (pc.says?.admits ?? []).filter((row) => row.key === key && isTime(row.seen)).map((row) => row.seen ?? -1)));
+  const lastSeen = (key: string): number => Math.max(-1, ...witnesses.flatMap((says) => says.admits.filter((row) => row.key === key && isTime(row.seen)).map((row) => row.seen ?? -1)));
   const kept = new Set(carried.length <= MIGRATION_CARRIED_MAX ? carried.map(({ key }) => key)
     : carried.map(({ key }, index) => ({ key, index, seen: lastSeen(key) })).sort((a, b) => b.seen - a.seen || a.index - b.index).slice(0, MIGRATION_CARRIED_MAX).map(({ key }) => key));
   const devices = carried.filter(({ key }) => kept.has(key));
@@ -233,7 +241,7 @@ export function migrationPlan(known: MigrationKnown, now: number, age: number = 
 }
 
 /** What is not written of a migration, and why. */
-export type MigrationRefusalCode = "stopped" | "key_invalid" | "too_many" | "not_first" | "not_in" | "run_open" | "has_member";
+export type MigrationRefusalCode = "stopped" | "key_invalid" | "too_many" | "not_first" | "not_fresh" | "not_in" | "run_open" | "has_member";
 
 export class MigrationError extends Error {
   constructor(readonly code: MigrationRefusalCode, message: string) {
@@ -289,33 +297,34 @@ export async function signMigrationGenesis(account: string, device: MigratingDev
 }
 
 /**
- * The entries after entry 0 that the first device still has to place, on the state it holds of its list: a
- * `carried` for each device and PC of the plan that the list does not hold yet, then the `device` entry by
- * which its sign-in key hands its place to its member key (which ends the run: nobody is carried in after it),
- * then the `epoch` entry, since names are no longer sealed under an epoch whose key a key that is out held.
+ * The whole run after entry 0, signed once, on the state entry 0 gives: a `carried` for each device and PC of
+ * the plan, then the `device` entry by which the first device's sign-in key hands its place to its member key
+ * (which ends the run: nobody is carried in after it), then the `epoch` entry, since names are no longer sealed
+ * under an epoch whose key a key that is out held. The carried entries and the hand-over are signed by the
+ * sign-in key, the `epoch` entry by the member key.
  *
- * It is the same call for the first try and for every later one: on a state that already holds part of the run
- * it signs the rest, on one where the run is over it carries nobody more, and on one where all is done it gives
- * no entry. So a request that did not place, or of which a lying service placed only the beginning, is taken up
- * again from what the log shows. The carried entries and the entry that ends the run are signed by the sign-in
- * key, the `epoch` entry by the member key.
+ * The device keeps what this gives with entry 0 before it sends anything, and sends those very entries until the
+ * log holds them (migrationRest): it never signs the run a second time. A run signed again on what a lying
+ * service shows of the first would be a second history with a member's signature under it.
  *
- * Refuses (MigrationError) `stopped` for a member that is stopped for a replay, `not_first` when entry 0 is not
- * this sign-in key's, and `not_in` when neither of the device's keys is a device of the list any more. And
- * `key_invalid`, before anything is signed or sealed, when a key the plan names is no key whose point is on the
- * curve, or a relay key is out of form: the kinds read only the spelling of a carried key, so it is checked here.
- * Nobody holds the private half of such a key, and a member that later saves it among its keys cannot read its
- * own copy back. And `too_many` for a plan of more than MIGRATION_CARRIED_MAX.
+ * The entries are sent in order, MIGRATION_REQUEST_ENTRIES at most a request (migrationRequests): the run may
+ * take several, and nobody follows the list, the first device included, before the log shows the run over.
  *
- * The entries are sent in the order given, MIGRATION_REQUEST_ENTRIES at most a request (migrationRequests): the
- * run may take several, and no PC follows the list before the run is over.
+ * Refuses (MigrationError), before anything is signed or sealed: `stopped` for a member that is stopped for a
+ * replay; `not_fresh` for a state that holds more than entry 0; `key_invalid` when a key the plan names is no
+ * key whose point is on the curve, is one of the device's own, or a relay key is out of form; `too_many` for a
+ * plan of more than MIGRATION_CARRIED_MAX; and `not_first` when entry 0 is not this sign-in key's. The kinds
+ * read only the spelling of a carried key, so the point is checked here: nobody holds the private half of a key
+ * off the curve, and a member that later saves it among its keys cannot read its own copy back.
  */
 export async function signMigrationRun(
   state: ListState, plan: Pick<MigrationPlan, "devices" | "pcs">, device: MigratingDevice, issued_at: number, seals: MigrationSeals,
 ): Promise<{ readonly entries: readonly WrittenEntry[]; readonly state: ListState }> {
   if (state.needs_replay !== undefined) throw new MigrationError("stopped", "A member that is stopped for a replay writes nothing");
-  if (plan.devices.some(({ key }) => !isListKey(key)) || plan.pcs.some(({ endpoint }) => !ENDPOINT.test(endpoint)) || !ownKeys(device)) {
-    throw new MigrationError("key_invalid", "A key of this run is no key whose point is on the curve, or a relay key is out of form");
+  if (state.footing.seq !== 0) throw new MigrationError("not_fresh", "The run is signed once, on entry 0: what was signed then is sent again");
+  const own = [device.signIn.key, device.member.key];
+  if (plan.devices.some(({ key }) => !isListKey(key) || own.includes(key)) || plan.pcs.some(({ endpoint }) => !ENDPOINT.test(endpoint)) || !ownKeys(device)) {
+    throw new MigrationError("key_invalid", "A key of this run is no key whose point is on the curve, is this device's own, or a relay key is out of form");
   }
   if (plan.devices.length + plan.pcs.length > MIGRATION_CARRIED_MAX) throw new MigrationError("too_many", `A list carries at most ${MIGRATION_CARRIED_MAX} in`);
   if (firstSigner(state) !== device.signIn.key) throw new MigrationError("not_first", "Entry 0 of this list is not signed by this device's sign-in key");
@@ -329,34 +338,23 @@ export async function signMigrationRun(
     const epoch = names === null ? null : sealEpoch(after, issued_at);
     return names === null || epoch === null ? null : await seals.names({ list: after.list, seq: after.footing.seq + 1 }, epoch, names);
   };
-  if (deviceIn(after, device.signIn.key)) {
-    if (after.carrying) {
-      for (const { key, names } of plan.devices) {
-        if (rowOf(after.signers, key) !== null || rowOf(after.pc_keys, key) !== null) continue;
-        write(await signListEntry(after, { kind: "carried", key, role: "drive", sealed: await sealedNames(names) }, device.signIn, issued_at));
-      }
-      for (const { endpoint, names } of plan.pcs) {
-        if (rowOf(after.pcs, endpoint) !== null) continue;
-        write(await signListEntry(after, { kind: "carried", endpoint, sealed: await sealedNames(names) }, device.signIn, issued_at));
-      }
-    }
-    write(await signRotation(after, device, issued_at, await sealedNames(device.names), issued_at));
-  } else if (!deviceIn(after, device.member.key)) {
-    throw new MigrationError("not_in", "Neither key of this device is a device of this list");
+  for (const { key, names } of plan.devices) {
+    write(await signListEntry(after, { kind: "carried", key, role: "drive", sealed: await sealedNames(names) }, device.signIn, issued_at));
   }
+  for (const { endpoint, names } of plan.pcs) {
+    write(await signListEntry(after, { kind: "carried", endpoint, sealed: await sealedNames(names) }, device.signIn, issued_at));
+  }
+  write(await signRotation(after, device, issued_at, await sealedNames(device.names)));
   // Its sign-in key held the key of the epoch, and is out: the next epoch is opened by the member key, which stays.
-  if (sealEpoch(after, issued_at) === null && deviceIn(after, device.member.key)) {
-    const next = await seals.next(after.list, after.epoch, wrapKeys(after, issued_at));
-    write(await signListEntry(after, { kind: "epoch", epoch: after.epoch, opens: next.opens, link: next.link }, device.member, issued_at));
-  }
+  const next = await seals.next(after.list, after.epoch, wrapKeys(after, issued_at));
+  write(await signListEntry(after, { kind: "epoch", epoch: after.epoch, opens: next.opens, link: next.link }, device.member, issued_at));
   return { entries, state: after };
 }
 
 /**
  * The entries of a run as the requests that place them, in order: MIGRATION_REQUEST_ENTRIES at most in each, and
  * the last two entries of a whole run (the hand-over and the `epoch` entry, whose wraps go with that request)
- * never apart. Each request is placed whole or not at all; after one that did not place, the device reads the
- * log and signs what is left again (signMigrationRun).
+ * never apart. Each request is placed whole or not at all.
  */
 export function migrationRequests<Entry>(entries: readonly Entry[]): Entry[][] {
   const requests: Entry[][] = [];
@@ -366,6 +364,19 @@ export function migrationRequests<Entry>(entries: readonly Entry[]): Entry[][] {
   for (let at = 0; at < body.length; at += MIGRATION_REQUEST_ENTRIES) requests.push(body.slice(at, at + MIGRATION_REQUEST_ENTRIES));
   if (tail > 0) requests.push(entries.slice(entries.length - tail));
   return requests;
+}
+
+/**
+ * What is left to send of a run the device signed and kept, by what the log shows. `run` is the run's entries as
+ * their texts and `log` the entries the account service shows after entry 0, both from place 1 on. Where the log
+ * holds the run's own entries so far, the entries after them are `rest`, to be sent as they are. `diverged` is
+ * the first place at which the log holds another entry than the run's: nobody but the first device signs while
+ * its run is open, so the service is showing there something no member of this list signed. The device then
+ * sends nothing and signs nothing.
+ */
+export function migrationRest(run: readonly string[], log: readonly string[]): { readonly rest: readonly string[] } | { readonly diverged: number } {
+  for (let at = 0; at < Math.min(run.length, log.length); at += 1) if (run[at] !== log[at]) return { diverged: at + 1 };
+  return { rest: run.slice(log.length) };
 }
 
 /**
@@ -443,23 +454,24 @@ export async function heldVouches(account: string, list: string, vouches: readon
  * was carried in) hands its place to its member key: signed by the sign-in key, it adds the member key with the
  * device's own card and encryption key and ends the sign-in key. From then on the device is in by a key that
  * outlives its sign-in. `sealed` is the device's names under sealEpoch's epoch, or null for a device that holds
- * no key to the names yet. `now` is the device's clock, in seconds.
+ * no key to the names yet.
  *
- * A device that was carried in writes nothing while the run is open, since any entry of its own would end the
- * run and leave the rest outside: refused `run_open`. The first device ends the run itself. Once the list's own
- * time lies MIGRATION_RUN_SECONDS behind `now` the run counts as given up, and the carried device ends it.
+ * A device that was carried in writes nothing while the run is open, however long that lasts: its entry would
+ * end the run and leave the rest outside, and a device cannot tell an open run from the beginning of a run that
+ * a lying service shows it. Only the first device ends its run (signMigrationRun); a birth that is never
+ * finished is the account service's to let somebody start again.
  *
  * Refuses `stopped`, `key_invalid` for a key of the device's own that is no key of a list, `not_in` for a
- * sign-in key that is no device of power `full` that is in, and `has_member` for a member key the list has held
- * before.
+ * sign-in key that is no device of power `full` that is in, `has_member` for a member key the list has held
+ * before, and `run_open`.
  */
-export async function signRotation(state: ListState, device: Pick<MigratingDevice, "signIn" | "member" | "enc">, issued_at: number, sealed: Sealed | null, now: number): Promise<WrittenEntry> {
+export async function signRotation(state: ListState, device: Pick<MigratingDevice, "signIn" | "member" | "enc">, issued_at: number, sealed: Sealed | null): Promise<WrittenEntry> {
   if (state.needs_replay !== undefined) throw new MigrationError("stopped", "A member that is stopped for a replay writes nothing");
   if (!ownKeys(device)) throw new MigrationError("key_invalid", "A key of this device is no key whose point is on the curve");
   const row = rowOf(state.signers, device.signIn.key);
   if (row === null || !deviceIn(state, device.signIn.key) || row.power !== "full") throw new MigrationError("not_in", "This sign-in key is no device of this list that may hand its place on");
   if (rowOf(state.signers, device.member.key) !== null) throw new MigrationError("has_member", "The list has held this member key before");
-  if (state.carrying && row.seq !== 0 && now - state.full_at < MIGRATION_RUN_SECONDS) throw new MigrationError("run_open", "The first device is still carrying the account in");
+  if (state.carrying && row.seq !== 0) throw new MigrationError("run_open", "The first device is still carrying the account in");
   const card = await signCard({ key: device.member.key, enc: device.enc, list: state.list, endpoint: null, invite: null }, device.member.privateKey);
   return await signListEntry(state, { kind: "device", key: device.member.key, power: "full", role: "drive", until: null, enc: device.enc, card, sealed, rotates: true }, device.signIn, issued_at);
 }
@@ -522,38 +534,34 @@ export function rekeys(before: ListState | null, after: ListState): Rekey[] {
 /**
  * Where a device stands in a list of its account that it did not start by an Allow.
  *
- * - `first`: entry 0 is its sign-in key's, which is still in: it has the run to finish (signMigrationRun).
+ * - `first`: entry 0 is its sign-in key's, which is still in: it sends the run it signed and kept (migrationRest).
  * - `carried`: its sign-in key was carried in and is still in: it hands its place to its member key
  *   (signRotation) once `wait` is false.
  * - `member`: its member key is in. Nothing is left to do.
  * - `out`: one of its keys was in and none is: it was removed.
- * - `absent`: the list never held a key of its own: it asks to be let in as a new device does.
+ * - `absent`: the list holds no key of its own. While `wait` is true the run is open and it may yet be carried
+ *   in; after that it asks to be let in as a new device does.
  */
 export type DevicePlace =
   | { readonly at: "first" }
   | { readonly at: "carried"; readonly wait: boolean }
   | { readonly at: "member" }
   | { readonly at: "out" }
-  | { readonly at: "absent" };
+  | { readonly at: "absent"; readonly wait: boolean };
 
 /**
  * How a device that was signed in before its account had a list learns what became of it: from the list alone,
- * whenever it next reads it. `now` is its clock, in seconds; `wait` is true while the first device is still
- * carrying the account in (signRotation would refuse `run_open`).
+ * whenever it next reads it. `wait` is true while the first device's run is open.
  */
-export function devicePlace(state: ListState, keys: { readonly signIn: string; readonly member: string }, now: number): DevicePlace {
+export function devicePlace(state: ListState, keys: { readonly signIn: string; readonly member: string }): DevicePlace {
   if (deviceIn(state, keys.member)) return { at: "member" };
   const row = rowOf(state.signers, keys.signIn);
-  if (row !== null && deviceIn(state, keys.signIn)) {
-    if (row.seq === 0) return { at: "first" };
-    return { at: "carried", wait: state.carrying && now - state.full_at < MIGRATION_RUN_SECONDS };
-  }
-  return row !== null || rowOf(state.signers, keys.member) !== null ? { at: "out" } : { at: "absent" };
+  if (row !== null && deviceIn(state, keys.signIn)) return row.seq === 0 ? { at: "first" } : { at: "carried", wait: state.carrying };
+  return row !== null || rowOf(state.signers, keys.member) !== null ? { at: "out" } : { at: "absent", wait: state.carrying };
 }
 
-
 /**
- * What a PC holds, by its own state, of the devices of its account from before the list.
+ * What a PC holds of the devices of its account from before the list.
  *
  * - `admits`: the device keys it lets in to drive on that account now, each with the second since which it has,
  *   read after a whole read of the account service's snapshot since the PC last started. A row that is held
@@ -561,16 +569,16 @@ export function devicePlace(state: ListState, keys: { readonly signIn: string; r
  *   second it began.
  * - `removed`: the keys it holds a removal against: a member's signed removal or block that it applied, or a
  *   person's Revoke at this PC.
- * - `once`: the keys it let in for at least the witness time and then dropped with no removal (the service
- *   stopped listing them, or they expired here). Empty for a PC that keeps no such record.
  * - `vouched`: the vouches it was handed that hold (heldVouches): a member key, and the sign-in key that says
  *   the member key is its own device's.
+ *
+ * A key the PC let in once and has dropped since is none of these: what the PC knew of it says nothing of who
+ * holds it now.
  */
 export interface PcWitness {
   readonly account: string;
   readonly admits: readonly WitnessedKey[];
   readonly removed: readonly string[];
-  readonly once: readonly string[];
   readonly vouched: readonly { readonly key: string; readonly device: string }[];
 }
 
@@ -583,11 +591,10 @@ export interface PcWitness {
  *   spelling of a carried key, so such an entry counts; no honest device signs one (signMigrationRun), nobody can
  *   hold its private half, and a member that saves it among its keys cannot read its own copy back.
  * - `first_signer_removed`, `carried_removed`: the PC holds a removal against the key that started the list, or
- *   against a key that was carried in, or against a key that one handed its place on to. Following the list
- *   would bring back what was put out here.
- * - `first_signer_dropped`, `carried_dropped`: the PC let that key in once and has dropped it since, and the
- *   list still holds it as in.
- * - `first_signer_unknown`, `carried_unknown`: the PC never let that key in, the device is still in the list,
+ *   against a key that was carried in, or against a key that one handed its place on to, and the list still holds
+ *   that device as in. Following the list would bring back what was put out here. Once the list has put the
+ *   device out too, the two agree, and it is asked only what it left (`gone_left_signer`).
+ * - `first_signer_unknown`, `carried_unknown`: the PC does not let that key in, the device is still in the list,
  *   and no sign-in key the PC lets in vouches for the key it is in by.
  * - `gone_left_signer`: a device the PC cannot place is out of the list by now, and a signer that came in by it
  *   is still in and is none the PC can place either: `keys` names those. The one case a person settles at the PC.
@@ -603,7 +610,6 @@ export interface PcWitness {
 export type MigrationRefusal =
   | "stopped" | "other_account" | "carried_off_curve"
   | "first_signer_removed" | "carried_removed"
-  | "first_signer_dropped" | "carried_dropped"
   | "first_signer_unknown" | "carried_unknown"
   | "gone_left_signer"
   | "first_signer_new" | "carried_new" | "gone_left_new"
@@ -616,21 +622,20 @@ export type MigrationVerdict =
   | { readonly pin: false; readonly why: MigrationRefusal; readonly keys: readonly string[]; readonly waits: boolean; readonly until: number | null };
 
 /** How a PC can place a key of the list's birth, or a device that came in by one. */
-type Placed = { readonly how: "removed" | "dropped" | "unknown" | "gone" | "old" } | { readonly how: "new"; readonly until: number };
+type Placed = { readonly how: "removed" | "unknown" | "gone" | "old" } | { readonly how: "new"; readonly until: number };
 
 /**
- * Whether a PC that was in its account before the account had a list follows the list it is shown, by its own
- * state alone: all or nothing. `state` is what the PC replayed from entry 0, with nothing pinned yet; `now` is
- * the PC's clock, in seconds.
+ * Whether a PC that was in its account before the account had a list follows the list it is shown: all or
+ * nothing. `state` is what the PC replayed from entry 0, with nothing pinned yet; `now` is the PC's wall clock,
+ * in seconds, and never the list's own time.
  *
  * It follows the list only when the run of `carried` entries is over and it can place the key that signed entry
  * 0 and EVERY device key that was carried in, those that are out by now among them. A carried key is a signer of
  * power `full`: one this PC cannot place could have added whom it liked, so a list that carries a single such
- * key in is a list this PC follows nothing of. The PC places a key in one of these ways, and holds no removal
- * against it or against a key it handed its place on to:
+ * key in is a list this PC follows nothing of. The PC places a key in one of these ways, and never a device
+ * that is in while it holds a removal against one of its keys:
  *
- * - by its own record: it has let the key in itself for at least `age` seconds, or it let it in once, dropped it
- *   with no removal, and the list no longer holds it as in;
+ * - by its own rows: it lets the key in itself now, and has for at least `age` seconds;
  * - by a vouch: the device is in the list by a key it handed its place on to, and a sign-in key that this PC has
  *   let in for `age` seconds says, with its own signature, that this member key is its device's. So a PC that
  *   was off, or took this release after its account moved, follows without a person;
@@ -639,9 +644,10 @@ type Placed = { readonly how: "removed" | "dropped" | "unknown" | "gone" | "old"
  *   this way, some device that is in must be vouched for: otherwise nothing ties the list to a device the PC
  *   knows.
  *
- * Each rests on a key this PC has let in for `age` seconds, as the first does. A PC that does not follow goes
- * on as before the list, and nothing here is one-way: it is asked again whenever the list, the PC's own rows or
- * the vouches change. Only the pin that follows a yes is.
+ * Each rests on a key this PC lets in today and has for `age` seconds. A key it let in once and dropped is
+ * placed in none of them: whoever holds such a key now could have started a list with it. A PC that does not
+ * follow goes on as before the list, and nothing here is one-way: it is asked again whenever the list, the PC's
+ * own rows or the vouches change. Only the pin that follows a yes is.
  */
 export function migrationVerdict(state: ListState, witness: PcWitness, now: number, age: number = MIGRATION_WITNESS_SECONDS): MigrationVerdict {
   const no = (why: MigrationRefusal, keys: readonly string[], waits = false, until: number | null = null): MigrationVerdict => ({ pin: false, why, keys: [...new Set(keys)].sort(), waits, until });
@@ -656,21 +662,16 @@ export function migrationVerdict(state: ListState, witness: PcWitness, now: numb
   // A key named twice counts from the later of its times.
   for (const row of witness.admits) if (isTime(row.since)) since.set(row.key, Math.max(row.since, since.get(row.key) ?? row.since));
   const removed = new Set(witness.removed);
-  const once = new Set(witness.once);
   const vouchers = new Map<string, string[]>();
   for (const { key, device } of witness.vouched) vouchers.set(key, [...(vouchers.get(key) ?? []), device]);
   const added = new Map<string, string[]>();
   for (const [key, row] of Object.entries(state.signers)) if (row.by !== null) added.set(row.by, [...(added.get(row.by) ?? []), key]);
-  const isIn = (key: string): boolean => rowOf(state.signers, key)?.ended === null;
   const OLD: Placed = { how: "old" };
 
-  /** By the PC's own record of the key alone; null where it has none. */
-  const record = (key: string): Placed | null => {
-    if (removed.has(key)) return { how: "removed" };
+  /** By the PC's own row of the key; null where it has none. */
+  const row = (key: string): Placed | null => {
     const from = since.get(key);
-    if (from !== undefined) return now - from >= age ? OLD : { how: "new", until: from + age };
-    if (once.has(key)) return isIn(key) ? { how: "dropped" } : OLD;
-    return null;
+    return from === undefined ? null : now - from >= age ? OLD : { how: "new", until: from + age };
   };
   /** The keys a device has been in by, from `key` on: itself and every key it handed its place on to. */
   const chain = (key: string): string[] => {
@@ -691,12 +692,13 @@ export function migrationVerdict(state: ListState, witness: PcWitness, now: numb
   };
   const placed = (key: string): Placed => {
     const keys = chain(key);
-    if (keys.some((one) => removed.has(one))) return { how: "removed" };
-    const own = record(key);
-    if (own !== null) return own;
     const last = keys.at(-1) ?? key;
+    // A removal held here stands against a device the list still holds as in. Where the list has put it out too, the two agree.
+    if (keys.some((one) => removed.has(one))) return deviceIn(state, last) ? { how: "removed" } : { how: "gone" };
+    const own = row(key);
+    if (own !== null) return own;
     if (!deviceIn(state, last)) return { how: "gone" };
-    return (last === key ? null : record(last)) ?? vouched(last);
+    return (last === key ? null : row(last)) ?? vouched(last);
   };
   /** What a device that is out, and that this PC cannot place, left in the list: every signer that came in by it and is in, unless the PC can place that one itself. */
   const dirty: string[] = [];
@@ -705,18 +707,18 @@ export function migrationVerdict(state: ListState, witness: PcWitness, now: numb
     const keys = chain(key);
     for (const by of keys) {
       for (const one of added.get(by) ?? []) {
-        const row = rowOf(state.signers, one);
-        if (row === null || keys.includes(one)) continue;
+        const signer = rowOf(state.signers, one);
+        if (signer === null || keys.includes(one)) continue;
         // An invite whose placer is out lets no PC in (`invite_void`), and a PC that joined by it is no signer.
-        if (row.as === "invite") continue;
-        if (row.as === "device") {
+        if (signer.as === "invite") continue;
+        if (signer.as === "device") {
           const how = placed(one);
           const stands = standsFor(state, one);
           if (how.how === "old") continue;
           if (stands === null) leftBy(one);
           else if (how.how === "new") young.push({ key: stands, until: how.until });
           else dirty.push(stands);
-        } else if (row.ended === null) {
+        } else if (signer.ended === null) {
           // A PC that a person added, or a key with no name: a signer of power that is in, which no row of this PC can place.
           dirty.push(one);
         } else {
@@ -729,11 +731,12 @@ export function migrationVerdict(state: ListState, witness: PcWitness, now: numb
   const firstPlaced = placed(first);
   const how = new Map(carried.map((key) => [key, placed(key)] as const));
   const of = (what: Placed["how"]): string[] => carried.filter((key) => how.get(key)?.how === what);
-  for (const what of ["removed", "dropped", "unknown"] as const) {
+  for (const what of ["removed", "unknown"] as const) {
     if (firstPlaced.how === what) return no(`first_signer_${what}`, [first]);
     if (of(what).length > 0) return no(`carried_${what}`, of(what));
   }
-  for (const key of [first, ...carried]) if ((key === first ? firstPlaced : how.get(key))?.how === "gone") leftBy(key);
+  if (firstPlaced.how === "gone") leftBy(first);
+  for (const key of of("gone")) leftBy(key);
   if (dirty.length > 0) return no("gone_left_signer", dirty);
   if (firstPlaced.how === "new") return no("first_signer_new", [first], true, firstPlaced.until);
   const untils = [...how.values()].flatMap((one) => (one.how === "new" ? [one.until] : []));
