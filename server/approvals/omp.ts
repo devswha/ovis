@@ -68,17 +68,18 @@ export default function ovisApprovals(pi) {
     if (ctx?.mode !== "tui" || !ctx.hasUI || typeof ui?.approve !== "function" || wrapped.has(ui)) return;
     wrapped.add(ui);
     const approve = ui.approve.bind(ui);
-    // answered when every approval asked before it is: the turn of the next one
+    // answered when every approval asked before it is, the hub's or not (each takes its place in omp's queue): the turn
+    // of the next one
     let asked = Promise.resolve();
     ui.approve = async (prompt, opts) => {
       const request = heldRequest(prompt, calls);
-      if (request === null) return approve(prompt, opts);
-      const closing = new AbortController();
-      const signal = opts?.signal ? AbortSignal.any([closing.signal, opts.signal]) : closing.signal;
       const before = asked;
       let answered;
       const mine = new Promise((resolve) => { answered = resolve; });
       asked = before.then(() => mine);
+      if (request === null) return approve(prompt, opts).finally(answered);
+      const closing = new AbortController();
+      const signal = opts?.signal ? AbortSignal.any([closing.signal, opts.signal]) : closing.signal;
       try {
         return await Promise.race([
           approve(prompt, { ...opts, signal }),

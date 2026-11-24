@@ -105,6 +105,17 @@ describe.skipIf(!posix)("omp's approval hook", () => {
     expect(request).toMatchObject({ command: "touch b", description: null });
     hub.settle("p1", request!.id, "allow");
     expect(await queued).toBe("once");
+    // a dialog the hub does not take holds its place in omp's queue too
+    const elided = omp.call("x".repeat(3000), bashPrompt(`${"x".repeat(2000)}[…1000ch elided…]`), "call-3");
+    const third = held();
+    const behind = omp.call("touch c", bashPrompt("touch c"), "call-4");
+    omp.dialogs.at(-2)!.choose("deny");
+    expect(await elided).toBe("deny");
+    await third;
+    const [last] = hub.held("p1");
+    expect(last).toMatchObject({ command: "touch c" });
+    hub.settle("p1", last!.id, "deny");
+    expect(await behind).toBe("deny");
   });
 
   it("takes any answer given in the terminal, and releases the held request at once", async () => {
