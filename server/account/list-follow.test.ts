@@ -8,6 +8,7 @@ import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { entryFromText, entryHash } from "../../shared/account-list-entry.ts";
 import { PC_READ_SECONDS } from "../../shared/account-list-follower.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
@@ -485,6 +486,41 @@ describe("what a pinned PC keeps beside its pin", () => {
     await again.pull();
     expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", alarm: "fork" });
     expect(again.list.role(pc.account.first.key)).toBeNull();
+  });
+
+  test("a removal the PC verified is kept though the same read then stops at an entry this Ovis is too old to place", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.pin();
+    expect(pc.list.role(phone.key)).toBe("drive");
+    // a member removes the phone; a member with a newer Ovis then writes an entry this build cannot read, and a key this
+    // build does not know writes one after it: there it stops
+    await pc.account.remove(phone.key);
+    const later = await pc.account.signLater();
+    const beyond = await pc.account.signLater(await listMember(), { seq: pc.account.place.seq + 1, hash: entryHash(entryFromText(later).body) });
+    pc.service.tamperList(pc.account.id, { inject: [later, beyond] });
+    await pc.pull();
+    expect(pc.list.status().last_verdict).toBe("needs_newer_client");
+    expect(pc.world.removed).toContain(phone.key);
+  });
+
+  test("work that waited in the queue when the follower stopped writes nothing", async () => {
+    const pc = await following();
+    await pc.pin();
+    const commits = pc.world.commits.length;
+    // a read is out, and a tick's turn waits behind it
+    let release = () => {};
+    pc.world.gate = new Promise<void>((resolve) => { release = resolve; });
+    const before = pc.reads();
+    pc.world.seconds += PC_READ_SECONDS;
+    pc.list.tick();
+    await pc.asked(before);
+    pc.list.start();
+    pc.list.stop();
+    release();
+    await pc.list.settled();
+    expect(pc.world.commits.length).toBe(commits);
   });
 
   test("an alarm the binding's file did not take is offered to it again, though the rows were written", async () => {

@@ -384,7 +384,9 @@ describe("the account service cannot take a pinned PC out of its account, or shu
     await pc.pull();
     expect(pc.list.status().pinned).toBe(true);
     expect(await pc.signsIn(pc.idOf(tablet))).toBe("drive");
-    expect(await pc.signsIn(pc.idOf(outside))).toBe("drive");
+    // the other opens through the account too (its id is the account's for its key), and the list does not hold it:
+    // the row a member's add made gives it nothing on a pinned PC
+    expect(await pc.signsIn(pc.idOf(outside))).toBeNull();
 
     pc.reach.away = true;
     pc.fixture.app.stop();
@@ -394,7 +396,6 @@ describe("the account service cannot take a pinned PC out of its account, or shu
     await again.app.context.services.accountList!.settled();
     const signsIn = async (device: ListMember) => await (await relayConnection(again, { serverId: pc.serverId })).auth(pc.idOf(device)).then((ok) => ok.role, () => null);
     expect(await signsIn(tablet)).toBe("drive");
-    // the one the list does not hold is this PC's older business with the account service, and waits for it as before
     expect(await signsIn(outside)).toBeNull();
     // an hour on, still
     pc.time.advance(STALE_READ_MS + 60_000);
@@ -564,6 +565,38 @@ describe("a removal the PC has seen is final", () => {
     // the service's clock, and a log shown again, give it no more time
     await pc.pull();
     expect(await pc.signsIn(pc.idOf(borrowed))).toBeNull();
+  });
+});
+
+describe("who may let a device in from afar, on a pinned PC", () => {
+  test("a member of this PC's own devices only while the list holds its key to drive with full power", async () => {
+    const pc = await pinnedPc();
+    const { devices } = pc.services;
+    // the account phone is a drive member in this PC's devices.json, and the list does not hold its key
+    expect(devices.isAccountApprover(pc.member.id)).toBe(false);
+    expect(devices.hasAccountApprover()).toBe(false);
+    const phone = await listMember(pc.member.keys);
+    // held to watch, or with bound power: in the list, and it adds nobody to it
+    await pc.account.addDevice(phone, { role: "drive", power: "bound" });
+    await pc.pull();
+    expect(devices.isAccountApprover(pc.member.id)).toBe(false);
+    await pc.account.remove(phone.key);
+    await pc.pull();
+    expect(devices.isAccountApprover(pc.member.id)).toBe(false);
+  });
+
+  test("and it is one once the list holds its key so", async () => {
+    const pc = await pinnedPc();
+    const phone = await listMember(pc.member.keys);
+    await pc.account.addDevice(phone);
+    await pc.pull();
+    expect(pc.services.devices.isAccountApprover(pc.member.id)).toBe(true);
+    expect(pc.services.devices.hasAccountApprover()).toBe(true);
+  });
+
+  test("on a PC that is not pinned a drive member is one, as before", async () => {
+    const pc = await listedPc();
+    expect(pc.services.devices.isAccountApprover(pc.member.id)).toBe(true);
   });
 });
 

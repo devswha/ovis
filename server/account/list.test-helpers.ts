@@ -2,7 +2,7 @@
  * A test account's signed list at the fake account service: members that sign real entries and place them through
  * the service's own routes, so a PC under test reads what a real account would hold.
  */
-import { entryFromText, entryHash, entryToText, signEntry } from "../../shared/account-list-entry.ts";
+import { entryFromText, entryHash, entryToText, signEntry, type EntryBody } from "../../shared/account-list-entry.ts";
 import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey } from "../../shared/account-list-seal.ts";
 import { kindBody, signCard, type ListKind, type ListRole } from "../../shared/account-list.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
@@ -58,6 +58,17 @@ export class TestList {
     const text = entryToText(await signEntry(body, signer.keys.privateKey));
     if (after === undefined) this.head = { seq: place.seq + 1, hash: entryHash(entryFromText(text).body) };
     return text;
+  }
+
+  /**
+   * An entry of a kind this build does not know, as a member with a newer Ovis writes one after the last entry: a
+   * reader of this build is behind from it on. Nothing is placed (the fake is of this build too, and places none): a
+   * test has the service show it (tamperList `inject`). `after`: the entry it follows, the last one by default.
+   */
+  async signLater(signer: ListMember = this.first, after: ListPlace = this.head): Promise<string> {
+    const place = after;
+    const body = { issued_at: this.clock(), list: this.id, prev: place.hash, seq: place.seq + 1, signer: signer.key, own: [], kind: "later_kind", v: 2 } as unknown as EntryBody;
+    return entryToText(await signEntry(body, signer.keys.privateKey));
   }
 
   /**
