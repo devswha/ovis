@@ -14,11 +14,12 @@
  *   or refused it for good: a refusal that is final lets the device plan again, never sooner than an hour later, and
  *   without the key or the PC a `403 not_carried` named (MoveRefusal).
  */
-import { linkBytes, type KnownPc, type LetIn, type MigrationSeals, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
+import { linkBytes, ownEvidence, type KnownPc, type LetIn, type MigrationSeals, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
 import { isListHash, isListKeyEncoding } from "../../../shared/account-list-entry.ts";
 import { namesFields, type ListNames } from "../../../shared/account-list.ts";
 import { epochKeyCommitment, LIST_WRAP_TEXT_LENGTH, newEpochKey, nextEpoch, sealFields, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
+import type { AccountList, AccountListView } from "./accountList.ts";
 import type { PlacedWrap } from "./listAnswers.ts";
 import { howOf, type SeenPcs } from "./seenPcs.ts";
 
@@ -37,6 +38,17 @@ export const MIGRATION_QA_SCALE_MAX = 86400;
 export function migrationScale(app: string | null, set: string | null): number {
   if (app !== QA_TWIN_APP || set === null || !/^[1-9][0-9]{0,5}$/.test(set)) return 1;
   return Math.min(MIGRATION_QA_SCALE_MAX, Number(set));
+}
+
+/** The application id the phone app says it is, once it said (nativeAppId), for migrationScale; null in a browser and until then. */
+let appId: string | null = null;
+export function setAppId(id: string | null): void { appId = id; }
+
+/** This page's factor (migrationScale): the QA twin's setting, read each time it is asked. */
+export function pageScale(): number {
+  let set: string | null = null;
+  try { set = globalThis.localStorage?.getItem(MIGRATION_QA_SCALE) ?? null; } catch { set = null; }
+  return migrationScale(appId, set);
 }
 
 /** The seconds from `from` to `to`, both by this device's clock, scaled; 0 for a clock that ran back. */
@@ -115,9 +127,9 @@ export function knownPcs(given: {
   return pcs;
 }
 
-/** The relay keys this device knows by its own record that have not answered in this run: the ones to ask. */
-export function unanswered(pcs: readonly KnownPc[]): string[] {
-  return pcs.filter((pc) => pc.says === null).map((pc) => pc.endpoint);
+/** The relay keys of the PCs this device knows by its own record (ownEvidence) that have not answered in this run: the ones a move asks. */
+export function pcsToAsk(given: { readonly account: string; readonly record: SeenPcs; readonly answers: PcAnswers; readonly now: number; readonly scale: number }): string[] {
+  return knownPcs({ ...given, letIn: null, names: () => null }).filter((pc) => pc.says === null && ownEvidence(pc)).map((pc) => pc.endpoint);
 }
 
 /** The sealing of a birth (MigrationSeals), with the epoch keys it made and the wraps of the epoch the birth opens, for the device's own encryption key. */
@@ -288,4 +300,57 @@ export function readHandOver(value: unknown): KeptHandOver | null {
   if (typeof list !== "string" || !isListHash(list) || typeof signIn !== "string" || typeof entry !== "string" || !isRecord(on) || !isSpan(on.seq) || typeof on.hash !== "string" || !isListHash(on.hash)) return null;
   if (!isRecord(link) || typeof link.member !== "string" || typeof link.device !== "string" || !(refused_at === null || isSpan(refused_at))) return null;
   return { list, signIn, on: { seq: on.seq, hash: on.hash }, entry, link: { member: link.member, device: link.device }, refused_at };
+}
+
+/** A request on a session with a PC, as the app's channel makes it. */
+export type PcFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * What the PC behind a session answers a device of its account (`GET /api/account/list/witness`): null for a PC that
+ * cannot answer (an Ovis from before this release, one in no account) or did not, which a move counts as silent.
+ */
+export async function askWitness(fetch: PcFetch): Promise<PcAnswer | null> {
+  try {
+    const answer = await fetch("/api/account/list/witness", { method: "GET", headers: { "x-herdr-machine": "1" } });
+    return answer.ok ? pcAnswerOf(await answer.json()) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether where the device stands waits on what its PCs answer: the start of a move, a carried device's join, or a refusal of one, which clears when its cause does. */
+export function waitsOnPcs(status: AccountListView["status"]): boolean {
+  return (status.at === "none" && status.why === "moving") || (status.at === "not_in" && (status.why === "carried" || status.refused !== undefined));
+}
+
+/**
+ * A session the app opened to a PC of the account, for the move (Part F, F5 and F6): while the device waits on its PCs
+ * this one is asked what it lets in, its answer kept for this run, and the list read again; and a device that follows
+ * its moved list names it, with its vouch, to a PC that follows no list (`pinned` false: the PC took no
+ * account-list-1). Nothing is said to any other PC, and nothing for an account that never moved.
+ */
+export async function onPcSession(given: {
+  readonly list: Pick<AccountList, "view" | "naming" | "sync">; readonly answers: PcAnswers; readonly account: string; readonly fetch: PcFetch;
+  readonly endpoint: string; readonly pinned: boolean; readonly session: string | null; readonly signIn: string | null;
+}): Promise<void> {
+  const { list, account, endpoint } = given;
+  const view = list.view();
+  if (view.account !== account || !ENDPOINT.test(endpoint)) return;
+  if (waitsOnPcs(view.status)) {
+    const said = await askWitness(given.fetch);
+    given.answers.set(account, endpoint, said);
+    if (said !== null) await list.sync().catch(() => undefined);
+    return;
+  }
+  if (given.pinned || given.session === null || list.naming === undefined) return;
+  const named = await list.naming({ session: given.session, endpoint, signIn: given.signIn });
+  if (named === null) return;
+  try {
+    await given.fetch("/api/account/list/name", {
+      method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
+      body: JSON.stringify({ naming: named.naming, ...(named.vouches.length === 0 ? {} : { vouches: named.vouches }) }),
+    });
+  } catch {
+    // a PC that follows no list, from before this release or away: it is named again at the next session
+  }
 }

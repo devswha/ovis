@@ -521,6 +521,9 @@ export class RelayTransport implements Transport {
   /** The PC's row this session signed in, or was admitted, as: the one its channel saved. Undefined while none is open. */
   get deviceId(): string | null | undefined { return this.channel?.device.device_id; }
 
+  /** The key this session signed in with (its row's public key, as a list spells a key). Undefined while none is open. */
+  get deviceKey(): string | undefined { return this.channel?.device.public_spki; }
+
   get route(): "relay" | "direct" | undefined { return this.channel ? this.channel.direct === undefined ? "relay" : "direct" : undefined; }
 
   get directVia(): "lan" | "tailscale" | undefined {

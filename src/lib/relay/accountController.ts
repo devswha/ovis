@@ -1,4 +1,4 @@
-import { ACCOUNT_FEATURE } from "../../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE } from "../../../shared/relay-mux.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
@@ -18,6 +18,9 @@ import type { SignInReturn } from "../account/signin.ts";
 import type { AccountKey, AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { setPageAccountList } from "../account/pageList.ts";
+import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
+import { askWitness, onPcSession, pageAnswers, pageScale, pcsToAsk, waitsOnPcs } from "../account/listMigrate.ts";
+import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import type { LeaveOutcome } from "../account/hostedSignIn.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -42,6 +45,10 @@ export const ADMISSION_WAIT_MS = 8_000;
 /** A row's links in all, the first included, and the longest wait between two after a 503. */
 const LINK_SENDS = 5;
 export const LINK_RETRY_MAX_MS = 15_000;
+/** A PC this device asks in the background for the move of its account onto its list is asked again after this long at the soonest. */
+const ASK_AGAIN_MS = 10 * 60_000;
+/** How long such an ask waits for the PC's session to open: a PC that is off is silent, which the move waits out. */
+const ASK_OPEN_MS = 20_000;
 /**
  * `consent`: whose account the pairing was confirmed for. `signal`: the pairing in front of the person was cancelled.
  * From then on the enrollment sends nothing more to the PC or the account service and writes nothing: every step
@@ -119,6 +126,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       service: account, accountStore,
       names: () => listNames(label, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0)),
       linkedPcs: async (id) => (await store.list()).filter((device) => device.account === id).length,
+      migration: { scale: pageScale },
     });
   const followed = lists === null ? null : followAccountList(lists);
   // the page's own list is the one a card that lets a device in signs with (account/pageList.ts)
@@ -279,7 +287,78 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const failed = (error: unknown): void => console.warn("Ovis: the account's PCs were not drawn again by its list", error instanceof Error ? error.name : error);
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList).catch(failed);
     else void compareList().catch(failed);
+    void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
   });
+  /**
+   * A session this page opened to a PC (shell.tsx), for the move of an account that was in use onto its list
+   * (account/listMigrate.ts onPcSession): asked while this device waits on its PCs, named its moved list when it
+   * follows one and the PC follows none. Nothing waits for it, and it fails quietly.
+   */
+  const sessionOpened = async (opened: RelayTransport, serverPublicKey: string): Promise<void> => {
+    if (lists === null) return;
+    const session = await account.session().catch(() => undefined);
+    if (session === undefined) return;
+    const kept = await accountStore.get("signin_key").catch(() => undefined);
+    const signIn = kept !== undefined && kept.account === session.account && kept.sign_in_id === session.sign_in_id ? kept.key.public_spki : null;
+    const endpoint = Array.from(importPublicKey(serverPublicKey), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    await onPcSession({
+      list: lists, answers: pageAnswers, account: session.account, fetch: (path, init) => opened.fetch(path, init), endpoint,
+      pinned: opened.server?.features?.includes(ACCOUNT_LIST_FEATURE) === true, session: opened.deviceKey ?? null, signIn,
+    });
+  };
+  /** When each PC was last asked in the background for the move, by relay key, in ms: once in ASK_AGAIN_MS at most. */
+  const askedPcs = new Map<string, number>();
+  let askingPcs = false;
+  /**
+   * While this device waits on its PCs for the move onto its list, the PCs it knows by its own record that have not
+   * answered in this run are asked over a session of their own, one at a time: by a pairing this device saved with
+   * that PC, or through the account with this sign-in's key where the directory names the PC. A PC that cannot be
+   * reached is silent, which the move waits out (three days at most).
+   */
+  const askPcs = async (): Promise<void> => {
+    if (lists === null || askingPcs || !view.active()) return;
+    const listed = lists.view();
+    const session = shownFor;
+    if (session === undefined || listed.account !== session.account || !waitsOnPcs(listed.status)) return;
+    askingPcs = true;
+    try {
+      const now = Date.now();
+      const record = readSeenPcs(session.account);
+      const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale() })
+        .filter((endpoint) => now - (askedPcs.get(endpoint) ?? -Infinity) >= ASK_AGAIN_MS);
+      if (due.length === 0) return;
+      const saved = await store.list();
+      const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      let heard = false;
+      for (const endpoint of due) {
+        askedPcs.set(endpoint, Date.now());
+        const paired = saved.find((device) => device.device_id !== null && hexOf(device.server_public_key) === endpoint);
+        const row = accountView?.kind === "signed-in" ? accountView.pcs?.find((pc) => pc.join !== undefined && hexOf(pc.join.server_public_key) === endpoint) : undefined;
+        const openKey = listedFor?.epoch === generation ? listedFor.openKey : null;
+        const way = paired !== undefined ? { offer: offerOf(paired), options: { store } }
+          : row?.join !== undefined && openKey !== null ? (() => {
+            const offer = { v: 1 as const, server_id: row.server_id, ...row.join, name: row.name };
+            return { offer, options: { store: withAccountDevice(store, accountDevice(offer, openKey.key)), accountOpensAll: true } };
+          })() : null;
+        if (way === null) continue;
+        let opened: RelayTransport | null = null;
+        try {
+          opened = await open(way.offer, { ...way.options, label, signal: AbortSignal.timeout(ASK_OPEN_MS) });
+          const said = await askWitness((path, init) => opened!.fetch(path, init));
+          pageAnswers.set(session.account, endpoint, said);
+          heard ||= said !== null;
+        } catch (error) {
+          console.info("Ovis: a PC of the account did not answer for the move onto its list", error instanceof Error ? error.name : error);
+        } finally {
+          opened?.close();
+        }
+        if (shownFor !== session) return;
+      }
+      if (heard) await lists.sync().catch(() => undefined);
+    } finally {
+      askingPcs = false;
+    }
+  };
   /** A sign-in to `account` ended on this device: as its PCs' names go (dropKnownPcs), so does what opens the names in its list. */
   const forgetNames = (account: string | undefined): void => {
     if (account === undefined) return;
@@ -1031,7 +1110,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const readList = async (): Promise<void> => {
     await lists?.sync().catch((error: unknown) => { if (!(error instanceof SignedOutError)) console.warn("Ovis: the account's list could not be read", error instanceof Error ? error.name : error); });
   };
-  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listTimeOver, readList,
+  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listTimeOver, readList, sessionOpened,
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }
