@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { InteractivePrompt, PanePromptResponse } from "../../shared/protocol.ts";
@@ -26,6 +26,11 @@ describe("acpCard", () => {
     expect(acpCard("claude", approval({ title: "Run tests" }, "{\"id\":\"agent-7\",\"x\":1}")).id).not.toBe(card.id);
   });
 
+  it("shows shell argument boundaries, including empty arguments", () => {
+    const card = acpCard("fake", approval({ rawInput: { command: ["echo", "my dir", "", "x"] } }));
+    expect(card.body).toBe("echo 'my dir' '' x");
+  });
+
   it("writes its own title where the agent gave none, and shows the input and the content it sent", () => {
     const card = acpCard("gemini", approval({
       rawInput: { path: "a.txt" },
@@ -36,11 +41,12 @@ describe("acpCard", () => {
     expect(card.body).toBe("{\n  \"path\": \"a.txt\"\n}\n\nWrite a.txt\n\na.txt\nhello");
   });
 
-  it("shows no body it cannot show whole and as it is, and still offers the agent's options", () => {
-    for (const command of ["rm -rf x\u202e", "x".repeat(12_001)]) {
+  it("only offers rejection when the body cannot be shown in full", () => {
+    for (const command of ["echo x\u202e", "x".repeat(12_001)]) {
       const card = acpCard("claude", approval({ title: "Run", rawInput: { command } }));
-      expect(card.body).toBeNull();
-      expect(card.options.map((option) => option.label)).toEqual(["Allow once", "Reject"]);
+      expect(card.own_text?.body?.key).toBe(card.body ?? "missing body");
+      expect(card.body).toContain("F4");
+      expect(card.options.map((option) => option.label)).toEqual(["Reject"]);
     }
   });
 });
@@ -71,6 +77,23 @@ describe.skipIf(!keeperBuilt)("the prompt routes for an ACP child", () => {
     const response = await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify(body) }), url, { acp });
     return { status: response!.status, body: await response!.json() as { error?: { code: string } } };
   };
+
+  it("sends the visible reject choice, not the option that used to be at its index", async () => {
+    const acpChild = await child();
+    const acp = { forPane: () => acpChild };
+    const { client } = acpChild;
+    const turn = client.request("session/prompt", { sessionId: client.session, prompt: [{ type: "text", text: "ask" }] });
+    await until(client, "the request", () => client.pending().length === 1);
+    const [asked] = client.pending();
+    if (!asked) throw new Error("missing request");
+    using pending = spyOn(client, "pending");
+    pending.mockReturnValue([{ ...asked, toolCall: { ...asked.toolCall, rawInput: "x".repeat(12_001) } }]);
+    const card = (await read(acp, "t7")).prompt;
+    expect(card?.options.map((option) => option.label)).toEqual(["Reject"]);
+    expect((await answer(acp, { pane_id: "t7", prompt_id: card?.id, option_index: 0 })).status).toBe(200);
+    await turn;
+    expect(client.turn?.text).toBe("answered reject");
+  });
 
   it("shows the oldest permission request as a card, and the chosen option reaches the agent once", async () => {
     const acpChild = await child();
