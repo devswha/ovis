@@ -3,6 +3,7 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList, type ListOffer } from "../account/accountList.ts";
+import { deviceCard, deviceListKeys } from "../account/listKeys.ts";
 import { listReading, pcsByList } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
@@ -565,6 +566,30 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.
    * A sign-in: the confirm named its account, and a pairing under any other sign-in, or none, is refused.
    */
+  /** This device's card for the list of `account` that it waits to be let into; null for a device that is in a list, or claimed none. */
+  const cardFor = async (account: string): Promise<{ readonly list: string; readonly enc: string; readonly card: string } | null> => {
+    const view = lists?.view();
+    if (view === undefined || view.account !== account || view.status.at !== "not_in" || view.status.why !== "not_mine" || view.status.claim !== "claimed") return null;
+    try {
+      const made = await deviceCard(await deviceListKeys(accountStore), view.status.list);
+      return { list: view.status.list, enc: made.enc, card: made.card };
+    } catch (error) {
+      console.warn("Ovis: this device's card for the account's list could not be made", error instanceof Error ? error.name : error);
+      return null;
+    }
+  };
+  /**
+   * The place in the account's list a PC handed this device when it let it in (RelayChannel.listPlace): the device
+   * follows the list from there, by its own read of the log, and its key for it is read with the account's PCs.
+   */
+  const takePlace = async (place: { readonly id: string; readonly seq: number; readonly hash: string }): Promise<void> => {
+    if (lists === null) return;
+    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }).catch((error: unknown) => {
+      if (error instanceof SignedOutError) throw error;
+      console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error);
+    });
+    await refresh(false, true);
+  };
   const prepare = async (offer: RelayOffer, signal: AbortSignal, consent?: PairingConsent) => {
     const session = accountService !== null && consent !== null ? await account.session() : undefined;
     if (consent != null && (session === undefined || !sameSignIn(consent, session))) throw new ConsentChangedError();
@@ -628,7 +653,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       catch (error) { console.warn("Ovis: the account service did not take the join; pairing this PC only", error instanceof Error ? error.name : error); }
     }
     signal.throwIfAborted();
-    return key ? { accountKey: key, intent } : {};
+    // A device that waits to be let into its account's signed list, its claim of its key standing: the join brings its
+    // card, for a PC that lets devices in by that list (docs/account.md, "A PC allows a device into the list"). Any
+    // other PC never sees it.
+    const listCard = intent === "account" && session !== undefined ? await cardFor(session.account) : null;
+    signal.throwIfAborted();
+    const prepared: { accountKey?: AccountKey; intent?: "pc" | "account"; listCard?: { readonly list: string; readonly enc: string; readonly card: string } } =
+      key ? { accountKey: key, intent, ...(listCard === null ? {} : { listCard }) } : {};
+    return prepared;
   };
   /**
    * `introducible`: the pairing was just made without a code, so a member of the account may have approved it and
@@ -944,7 +976,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const readList = async (): Promise<void> => {
     await lists?.sync().catch((error: unknown) => { if (!(error instanceof SignedOutError)) console.warn("Ovis: the account's list could not be read", error instanceof Error ? error.name : error); });
   };
-  return { get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, readList,
+  return { get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, readList, takePlace,
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }

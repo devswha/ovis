@@ -901,6 +901,27 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // nor to the account of another sign-in than the one the confirm named: only its id crosses the reload
     keepConfirmedSignIn(attempt.signIn ? { server_id: attempt.offer.server_id, sign_in_id: attempt.signIn.sign_in_id ?? null } : null);
     if (controller.signal.aborted) { opened.close(); return; }
+    // The PC let this device into its account's list by an entry, and named its place: the device follows the list
+    // from there. That session serves nothing else and no pairing stands behind it, so it is closed and the PC is
+    // opened anew as a PC of the list, with the key the list holds for this device.
+    const place = opened.listPlace;
+    if (place !== undefined) {
+      const joined = opened;
+      opening = null;
+      comparison = null;
+      markRemovedPc(attempt.offer.server_id, null);
+      await account.takePlace(place);
+      joined.close();
+      if (controller.signal.aborted || last !== attempt) return;
+      const { code: _spent, ...offer } = attempt.offer;
+      if (entry.offer !== null) entry = { ...entry, offer: null };
+      const key = account.listKey;
+      if (key !== null) { await connect({ offer, code: false, paired: true, listOpen: key }); return; }
+      // the list is not read here yet: the front page, where the PC has its row and a tap opens it
+      cancelAttempt();
+      void showFront();
+      return;
+    }
     // the row the PC admitted this session as, which its channel saved: only it may be replaced by an older record, or
     // forgotten. Not read from the store again, where another tab may have saved a newer pairing of this PC since
     attempt.row = opened.deviceId ?? null;

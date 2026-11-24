@@ -34,13 +34,15 @@ let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
 afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
-async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, seen = true, label, phoneSheet = false, listed, open }: {
+async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, seen = true, label, phoneSheet = false, listed, admits = false, open }: {
   release?: boolean; loseRegistrationReply?: boolean; seen?: boolean;
+  /** the account service takes this device's join of the PC (POST /v1/admissions), so the join asks for the account */
+  admits?: boolean;
   /**
    * this device follows its account's signed list and is in it (`in: false`: the account service keeps a list for the
    * account and this device follows none); `holds`: whether that list holds the PC. `read`: what a read of the list then finds.
    */
-  listed?: { holds: boolean; in?: boolean; read?: () => void };
+  listed?: { holds: boolean; in?: boolean; read?: () => void; /** not in the list, and its claim of its key for it stands: it waits to be let in */ waits?: boolean; adopted?: (offer: { list: string; seq: number; hash: string }) => void };
   newUntil?: string | null; label?: string;
   /**
    * The page as a phone's browser runs it: the join sheet holds a history entry (sheetHistory.ts), and a link this page
@@ -100,7 +102,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   }) as typeof window.addEventListener;
   const memberKey = (await accountStore.key()).public_spki;
   const listReads: number[] = [];
-  const listView = (): AccountListView => listed?.in === false ? { account: "acct_1", reached: true, status: { at: "off" }, devices: [], pcs: [] } : ({
+  const listView = (): AccountListView => listed?.in === false ? { account: "acct_1", reached: true, status: listed.waits === true ? { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" } : { at: "off" }, devices: [], pcs: [] } : ({
     account: "acct_1", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 1, read_at: 1, trouble: null },
     devices: [{ key: memberKey, self: true, power: "full", role: "drive", until: null, carried: false, name: null }],
     pcs: listed?.holds ? [{ endpoint: entry.public_key, server_id: serverId, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 1, by: memberKey, new_at: null }] : [],
@@ -108,7 +110,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
     sync: async () => { listReads.push(Date.now()); listed.read?.(); return listView(); }, follows: async () => true,
     view: listView, subscribe: () => () => {}, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
-    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), writer: () => null, placeAt: () => null,
+    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer) => { listed.adopted?.(offer); return listView(); }, writer: () => null, placeAt: () => null,
     holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
   };
   const mountAt = (entryUrl: string) => { loads++; return mountRelayShell({
@@ -120,6 +122,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
       requests.push(path);
       switch (path) {
         case "/v1/pcs": await directoryHeld; return Response.json({ pcs: [entry] });
+        case "/v1/admissions": if (admits && init?.method === "POST") return Response.json({ id: "adm-1" }); return service.fetch(input, init);
         case "/v1/devices/challenge": return release
           ? Response.json({ challenge_id: "12".repeat(16), challenge: "register-this-sign-in" })
           : new Response(null, { status: 404 });
@@ -863,4 +866,32 @@ it("a list key that the PC refuses after it was let in leads to the join, and no
   await run.settled(() => run.navigations.length > 0);
   expect(run.navigations[0]).toStartWith(`/s/${run.serverId}/#offer=`);
   expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a join through a PC pinned to the list brings this device's card, takes the place it is handed, and opens the PC anew with the list key", async () => {
+  const LIST = "5c".repeat(32);
+  const place = { id: LIST, seq: 3, hash: "ab".repeat(32) };
+  const opens: { how: string; intent: unknown; list: unknown }[] = [];
+  const adopted: unknown[] = [];
+  // this device signed in, claimed its key for the account's list and waits; the place it is handed lets it follow
+  const listed: NonNullable<Parameters<typeof accountPc>[0]["listed"]> = { holds: false, in: false, waits: true, adopted: (offer) => { adopted.push(offer); listed.in = true; listed.holds = true; } };
+  class LetIn extends Admitted {
+    override get listPlace() { return place; }
+  }
+  const run = await accountPc({ release: false, newUntil: inADay(), listed, admits: true, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    opens.push({ how, intent: options?.intent, list: options?.listCard?.list });
+    // the join: the PC took the card, compared the digits and let the device in by an entry
+    if (how !== "list") { await options?.compare?.("123456"); return new LetIn(offer); }
+    return new Admitted(offer);
+  } });
+  await newPcSheet(run);
+  run.current().onPair();
+  await run.settled(() => run.current().state.kind === "compare");
+  run.current().onMatch?.();
+  await run.settled(() => opens.length === 2);
+  await run.appOpened;
+  expect(opens).toEqual([{ how: "other", intent: "account", list: LIST }, { how: "list", intent: undefined, list: undefined }]);
+  expect(adopted).toEqual([{ list: LIST, seq: 3, hash: place.hash }]);
+  expect(run.apps()).toBe(1);
 });
