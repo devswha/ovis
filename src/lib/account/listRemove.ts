@@ -31,6 +31,6 @@ export async function removeListPc(list: AccountList, endpoint: string, options:
     // as many of them as one request takes beside the PC's own removal and the epoch: the rest waits for a later writer
     const tidied = lapsedRemovals(state, clock).filter((kind) => !(kind.kind === "remove" && "ends" in kind && ends.has(kind.ends))).slice(0, WRITE_ENTRIES_MAX - removal.length - 1);
     return { request: await signedWithEpoch(writer, current, [...tidied, ...removal]) };
-  }, options);
+  }, { ...options, operation: `remove-pc:${endpoint}` });
   return outcome.written ? { removed: true } : { removed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
 }

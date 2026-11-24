@@ -56,7 +56,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
     holdsEntry: () => false,
     gossip: () => null,
     pageAfter: () => null,
-    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {},
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
   };
   return { list, calls, heard };
 }

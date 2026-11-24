@@ -339,7 +339,7 @@ function readKept(value: unknown): KeptRequest | null {
   if (typeof list !== "string" || !isListHash(list) || typeof key !== "string" || on === null || last === null) return null;
   if (!Array.isArray(entries) || entries.length === 0 || !entries.every((text) => typeof text === "string") || !Array.isArray(wraps)) return null;
   if (!wraps.every((wrap) => isRecord(wrap) && typeof wrap.epoch === "number" && typeof wrap.member === "string" && typeof wrap.wrap === "string")) return null;
-  return { list, key, on, entries: entries as string[], wraps: wraps as KeptRequest["wraps"], place: last };
+  return { list, key, on, entries: entries as string[], wraps: wraps as KeptRequest["wraps"], place: last, for: typeof read.for === "string" ? read.for : null, at: typeof read.at === "number" && Number.isSafeInteger(read.at) ? read.at : 0 };
 }
 
 /** Whether a kept request was signed by `writer`'s key on the very head `writer` holds. */
@@ -420,6 +420,10 @@ export interface KeptRequest {
   readonly wraps: readonly { readonly epoch: number; readonly member: string; readonly wrap: string }[];
   /** The place of its last entry. */
   readonly place: { readonly seq: number; readonly hash: string };
+  /** What it was signed for (WriteOptions.operation); null where the writer named nothing. */
+  readonly for: string | null;
+  /** When it was kept, in seconds, by this device's clock. */
+  readonly at: number;
 }
 
 /** A place in a list as a member hands it to a device it let in: the list id and the member's own head. */
@@ -451,9 +455,13 @@ export interface AccountList {
    * Keeps `request` as the one signed on `writer`'s head, before it is sent, and answers the request that stands for
    * that head: this one, or the one another page kept first, which is then the one to send.
    */
-  keep(writer: ListWriter, request: Pick<KeptRequest, "entries" | "wraps" | "place">): Promise<KeptRequest>;
-  /** Lets `request` go: the account service proved that it placed nothing of it, so another may be signed on that head. */
+  keep(writer: ListWriter, request: Pick<KeptRequest, "entries" | "wraps" | "place" | "for">): Promise<KeptRequest>;
+  /** Lets `request` go: the account service proved that it placed nothing of it, or its time ran out, so another may be signed on that head. */
   unkeep(account: string, request: KeptRequest): Promise<void>;
+  /** The request kept for the head this device holds now, if one still waits: what it is for, and when it was kept (seconds, this device's clock). */
+  waiting(): Promise<{ readonly for: string | null; readonly at: number } | null>;
+  /** Lets the request that waits go, at the person's word (Cancel): another change may then be signed on that head. */
+  cancel(): Promise<void>;
   view(): AccountListView;
   /** Hears each view that differs from the one before. */
   subscribe(listener: (view: AccountListView) => void): () => void;
@@ -1083,7 +1091,7 @@ export function accountList(options: AccountListOptions): AccountList {
       return kept !== null && sameHead(kept, writer) ? kept : null;
     },
     async keep(writer, request) {
-      const mine: KeptRequest = { list: writer.list, key: writer.keys.key, on: { seq: writer.state.footing.seq, hash: writer.state.footing.hash }, entries: request.entries, wraps: request.wraps, place: request.place };
+      const mine: KeptRequest = { list: writer.list, key: writer.keys.key, on: { seq: writer.state.footing.seq, hash: writer.state.footing.hash }, entries: request.entries, wraps: request.wraps, place: request.place, for: request.for, at: writer.issued_at };
       const text = JSON.stringify({ v: RECORD_VERSION, ...mine });
       for (let tries = 0; tries < SAVE_TRIES; tries += 1) {
         const before = await store.get("sent", writer.account);
@@ -1099,6 +1107,16 @@ export function accountList(options: AccountListOptions): AccountList {
       const standing = readKept(before);
       if (typeof before !== "string" || standing === null || standing.place.hash !== request.place.hash || standing.on.hash !== request.on.hash) return;
       await store.swap("sent", account, before, JSON.stringify({ v: RECORD_VERSION, ...standing, let_go: true }));
+    },
+    async waiting() {
+      const writer = this.writer({ self: true });
+      const kept = writer === null ? null : await this.kept(writer);
+      return kept === null ? null : { for: kept.for, at: kept.at };
+    },
+    async cancel() {
+      const writer = this.writer({ self: true });
+      const kept = writer === null ? null : await this.kept(writer);
+      if (writer !== null && kept !== null) await this.unkeep(writer.account, kept);
     },
     async adopt(offer) {
       const session = await service.session();
