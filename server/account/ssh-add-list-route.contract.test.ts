@@ -93,6 +93,29 @@ function recorded(pc: Pc, answer: (request: unknown, said: unknown) => unknown =
   return { path: proxy.path, seen };
 }
 
+/**
+ * That PC's owner socket behind a stand-in that keeps the exact bytes of each request as they arrive, and answers with
+ * that PC's own answers: what an add with no list sends must be main's, byte for byte.
+ */
+function rawRecorded(pc: Pc): { path: string; lines: string[] } {
+  const lines: string[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "ovis-ssh-raw-"));
+  const path = join(dir, "r.sock");
+  const listener = Bun.listen<{ buffered: string }>({ unix: path, socket: {
+    open(socket) { socket.data = { buffered: "" }; },
+    async data(socket, chunk) {
+      socket.data.buffered += new TextDecoder().decode(chunk);
+      const newline = socket.data.buffered.indexOf("\n");
+      if (newline < 0) return;
+      const line = socket.data.buffered.slice(0, newline + 1);
+      lines.push(line);
+      socket.write(`${JSON.stringify(await askRecovery(pc.stateDir, JSON.parse(line)))}\n`);
+    },
+  } });
+  cleanups.push(() => { listener.stop(true); rmSync(dir, { recursive: true, force: true }); });
+  return { path, lines };
+}
+
 /** SSH stood in for: the job reaches that PC's own Ovis, whose registration names its owner socket, forwarded to `socket`. */
 function sshTo(socket: string): void {
   const herdr = "/home/fixture/.config/herdr/herdr.sock";
@@ -165,15 +188,17 @@ test.skipIf(process.platform === "win32")("on a list account the adding PC names
 test.skipIf(process.platform === "win32")("an account with no list is added exactly as before: the take names the account alone, and the other PC takes the admission", async () => {
   const a = await addingPc({ list: false });
   const b = await otherPc(a.pc.account);
-  const socket = recorded(b);
-  sshTo(socket.path);
+  const raw = rawRecorded(b);
+  sshTo(raw.path);
   const job = await connected(a.pc);
   await listAndAdmit(a.pc.account, job.account_add!);
   const added = await sshAdd(a.pc, job);
+  // the answer to the window is today's, field for field
   expect([added.status, added.body]).toEqual([200, { account: ACCOUNT, server_id: job.account_add!.server_id, relay: { phase: "online", blocked: null } }]);
   expect(b.devices.account()).toBe(ACCOUNT);
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: false });
-  expect(socket.seen).toEqual([{ act: "account_add_inspect" }, { act: "account_add_take", account: ACCOUNT, server_id: job.account_add!.server_id }]);
+  // the bytes on that PC's owner socket are the very lines main sends for this add
+  expect(raw.lines).toEqual(['{"act":"account_add_inspect"}\n', `{"act":"account_add_take","account":"${ACCOUNT}","server_id":"${job.account_add!.server_id}"}\n`]);
 });
 
 test.skipIf(process.platform === "win32")("an Ovis on the other PC from before this cannot be named a list: the add says to update it there, and nothing is signed", async () => {
