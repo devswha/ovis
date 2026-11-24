@@ -584,8 +584,11 @@ before the member acts on it:
 - **A pin is one-way.** A member that has saved a copy is pinned: no page, no hint and no second
   pin changes its list id. Only a person's reset at the member, which deletes its save, takes the
   pin off. A save that does not read is still a pin.
-- Entry 0 must be a `genesis` with the pinned list id and the member's own account. Anything else
-  is `not_my_list`, and nothing of it is kept.
+- Entry 0 must be a `genesis` with the pinned list id and the member's own account, signed by whom
+  the pin asks for. An entry 0 of another list, of another account or by another signer is
+  `not_my_list`. One that is no entry at all, or whose signature does not verify, is `refused` like
+  any entry that does not hold, and a `genesis` of a level the build cannot read is
+  `needs_newer_client`. In each case nothing of it is kept.
 - Before it is in, a member lets nobody in and shows no PC, though it holds entries.
 - A device that was allowed takes, at the place of the head it was handed, no other entry: a log
   with another entry there is not the list it was let into.
@@ -619,8 +622,8 @@ holds after a read does not depend on where the pages were cut.
 - A copy holds at most 20480 entries, and at most 16 past its footing: an honest log has none
   there, since each is an entry that no signer signed. Such entries let nobody in, are told to no
   other member, and give way to what a member signs.
-- A read ends by itself: each next request follows a page that showed something new, and a read
-  goes back to its footing once.
+- A read ends by itself, whatever its pages say: it makes at most 128 requests, and goes back to
+  its footing once. What is left is asked at the member's next read, from where this one came to.
 - A head the service names beside something else (a PC's mailbox answer) is only a hint to read.
   One that equals the member's own head counts as a full read; one behind its copy changes nothing,
   and neither does a service that names no list: that is no hint, never the word that the list is
@@ -684,8 +687,10 @@ copy is. A service that is away or withholds takes out no device the PC holds.
   the first of: the PC itself is `waiting`, `stopped` or `out`; `never_added`; `removed`; `frozen`
   (the alarm); `expired`.
 - **The PC's clock never counts for less than it showed before**, nor for less than the list's own
-  time (`listClock`). Each page and each hint is taken at the hour the clock shows, the copy keeps
-  the latest (`seen_at`), and a clock that was set back lets no device in past its `until`.
+  time (`listClock`). Each page and each hint is taken at the hour the clock shows, and the copy
+  keeps the latest (`seen_at`). With the account service away no page comes, so a PC also notes the
+  hour whenever it reads its clock to decide (`withClock`) and saves it now and then. A clock that
+  was set back then lets no device in past its `until`.
 - **A PC is a member** when its signing key belongs to a relay key that is in.
 - **A device shows** the PCs that are in. The account service's directory only says how to reach
   them.
@@ -719,7 +724,7 @@ name, no white space).
 | `state` | [the state](#the-state) those entries gave that build; `null` before entry 0 |
 | `stop` | the text of the entry it stopped at for a newer client, or `null` |
 | `read_at` | when it last held everything the account service showed, or `null` |
-| `seen_at` | the latest hour its own clock showed when it took a page or a hint, or `null` |
+| `seen_at` | the latest hour its own clock showed when it took a page or a hint or noted the hour, or `null` |
 | `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `by`, `at`, and the `devices` and `pcs` it held then |
 | `sum` | SHA-256 over `ovis-list-save/1` and the text of the same object without `sum`, as a hash |
 
@@ -727,8 +732,9 @@ It holds nothing secret.
 
 **The entries are what a save holds as true; its state is only what they gave the build that
 saved.** A member that starts replays its entries from entry 0, checks each as when it first took
-it, and holds the state the replay gives. Where that is not the saved state, the save is
-**rebuilt**: the member goes on with the replayed state and notes it once. That happens when a
+it, and holds the state the replay gives. Where that is not what was saved, the save is
+**rebuilt**: the member goes on with the replayed state, notes it once and saves again. `rebuilt`
+says exactly that the member now writes its save as another text than the one it read. That happens when a
 later build holds other things in a state or judges an entry by a later rule, and when the saved
 state was changed. So no update of the app or of a PC makes a member start over, and no state
 reads that the entries do not give. The replay never gives a shorter history than the saved one:
@@ -896,8 +902,8 @@ Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vector
 `opens`) and `expect`: either `reads` (`account`, `list`, `me`, `pin`, the copy's `head` and
 `footing`, whether it was `rebuilt`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it
 holds a `stop`, the `seq` and `by` of its `alarm`, `read_at`, `seen_at`, and `opens`: for each
-named key the role it opens a session as, or the refusal) or `refused` (the refusal). A save that reads is written back to the same text,
-unless it was rebuilt: then it is written as the build that read it writes it.
+named key the role it opens a session as, or the refusal) or `refused` (the refusal). A save that reads and was not rebuilt is written back
+to the same text; one that was rebuilt is written as the build that read it writes it.
 
 ### The vectors of seal/
 
