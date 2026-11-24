@@ -15,7 +15,7 @@ import { isListHash } from "../../../shared/account-list-entry.ts";
 import type { FollowRead, ListHead, ListPage, PeerAsk } from "../../../shared/account-list-follower.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList } from "./accountList.ts";
-import { AccountPcError, post, type PcFetch } from "./join.ts";
+import { AccountPcError, type PcFetch } from "./join.ts";
 
 /**
  * How many of the two calls (POST /api/account/list/head, /page) this device makes of one PC in a minute: under the 30
@@ -26,6 +26,12 @@ export const GOSSIP_CALLS_PER_MINUTE = 24;
 export const GOSSIP_SECONDS = 300;
 /** The most entries one call hands a PC (the PC takes no more). */
 const PAGE_MAX = 256;
+/** The most bytes of one answer of the PC that are read, an error's included: 256 entries of the longest are less. */
+export const ANSWER_BYTES_MAX = 512 * 1024;
+/** How long one call waits for the whole of its answer, in ms. */
+export const ANSWER_MS = 10_000;
+/** The longest a timer is set for at once, in ms: a longer wait is armed again in pieces. */
+const ARM_MAX_MS = GOSSIP_SECONDS * 1000;
 
 /**
  * How one exchange ended.
@@ -68,41 +74,120 @@ const askOf = (value: unknown, list: string): PeerAsk | null | undefined =>
 const headKey = (head: ListHead | null): string | null => head === null || head.place === null ? null : `${head.list}:${head.place.seq}:${head.place.hash}`;
 const result = (end: GossipEnd, carry: GossipCarry | null = null, retryAfterMs: number | null = null): GossipResult => ({ end, carry, retryAfterMs });
 
+/** An answer of the PC longer than ANSWER_BYTES_MAX: nothing of it is read past that. */
+class AnswerTooLongError extends Error {
+  constructor() {
+    super("The PC's answer was longer than any answer of the list's session routes");
+    this.name = "AnswerTooLongError";
+  }
+}
+
 /** A call refused or not answered: how the exchange ends. */
 function ended(error: unknown): GossipResult {
   if (error instanceof AccountPcError && error.status === 429) return result("limited", null, error.retryAfterMs ?? 60_000);
-  if (error instanceof AccountPcError || error instanceof TypeError || error instanceof SyntaxError || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"))) {
+  if (error instanceof AccountPcError || error instanceof AnswerTooLongError || error instanceof TypeError || error instanceof SyntaxError
+    || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"))) {
     return result("unreached");
   }
   throw error;
+}
+
+/** How long and how big one answer may be (ANSWER_MS, ANSWER_BYTES_MAX); tests make them smaller. */
+export interface AnswerLimits { readonly ms?: number; readonly bytes?: number }
+
+/** The body of an answer, read up to `bytes` and until `stop` ends it, whatever the transport does with the signal. */
+async function bodyOf(response: Response, bytes: number, stop: AbortSignal): Promise<string> {
+  const over = new Promise<never>((_, reject) => {
+    if (stop.aborted) reject(stop.reason);
+    stop.addEventListener("abort", () => { reject(stop.reason); }, { once: true });
+  });
+  over.catch(() => {});
+  const reader = response.body?.getReader();
+  if (reader === undefined) {
+    const text = await Promise.race([response.text(), over]);
+    if (new TextEncoder().encode(text).byteLength > bytes) throw new AnswerTooLongError();
+    return text;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), over]);
+      if (done) break;
+      size += value.byteLength;
+      if (size > bytes) throw new AnswerTooLongError();
+      chunks.push(value);
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => {});
+    throw error;
+  }
+  const whole = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) { whole.set(chunk, at); at += chunk.byteLength; }
+  return new TextDecoder().decode(whole);
+}
+
+/**
+ * One call of the two, as the account's other calls to a PC are made (join.ts `post`), with its answer held to a size
+ * and a time: an answer that is longer, or does not end in time, error bodies included, ends the call. Throws the
+ * PC's refusal as AccountPcError, with the wait its `retry-after` names.
+ */
+async function call(fetch: PcFetch, path: string, body: unknown, limits: AnswerLimits): Promise<unknown> {
+  const stop = new AbortController();
+  const timer = setTimeout(() => { stop.abort(new DOMException("The PC did not answer in time", "TimeoutError")); }, limits.ms ?? ANSWER_MS);
+  try {
+    const sent = fetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify(body), signal: stop.signal });
+    const over = new Promise<never>((_, reject) => { stop.signal.addEventListener("abort", () => { reject(stop.signal.reason); }, { once: true }); });
+    over.catch(() => {});
+    const response = await Promise.race([sent, over]);
+    const text = await bodyOf(response, limits.bytes ?? ANSWER_BYTES_MAX, stop.signal);
+    if (!response.ok) {
+      let code = "http_error";
+      try {
+        const said = JSON.parse(text) as { error?: { code?: unknown } };
+        if (typeof said.error?.code === "string" && /^[a-z_]{1,40}$/.test(said.error.code)) code = said.error.code;
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+      const seconds = Number(response.headers.get("retry-after") ?? Number.NaN);
+      throw new AccountPcError(response.status, code, Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null);
+    }
+    return JSON.parse(text) as unknown;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** How a hand-over ended: over (`done`), cut by the minute's calls with the place to go on from (`cut`), or the exchange's end. */
 type Handed = { readonly done: true } | { readonly cut: PeerAsk } | { readonly failed: GossipResult };
 
 /**
- * Hands the PC this device's entries after the place it asked for, and after each earlier place it asks for next (it
- * looks for where two histories part), while `spend` allows a call. Over when the PC stands at this device's last
- * signed entry, takes no more, or refused a page: it is handed nothing it refused again in the same exchange.
+ * Hands the PC this device's entries after the place it asked for, and after each place it asks for next, while
+ * `spend` allows a call: a later one where it took a page in part and wants the rest (`more`), an earlier one where it
+ * looks for where two histories part. Over when the PC stands at this device's last signed entry, asks for a place it
+ * was handed already in this hand-over, asks for nothing more, or refused a page. Cut by the budget, it says the
+ * place the PC asked for, and the next exchange goes on from there.
  */
-async function handOver(fetch: PcFetch, list: AccountList, first: PeerAsk, spend: () => boolean): Promise<Handed> {
+async function handOver(fetch: PcFetch, list: AccountList, first: PeerAsk, spend: () => boolean, limits: AnswerLimits): Promise<Handed> {
   const mine = list.gossip();
   if (mine === null || mine.place === null || first.list !== mine.list) return { done: true };
   const target = mine.place.seq;
+  const handed = new Set<number | null>();
   let after = first.after;
   for (;;) {
-    if (after !== null && after >= target) return { done: true };
+    if ((after !== null && after >= target) || handed.has(after)) return { done: true };
     const page = list.pageAfter(after, PAGE_MAX);
     // a copy replaced meanwhile, or nothing after that place: nothing is handed over this time
     if (page === null || page.list !== mine.list || page.entries.length === 0) return { done: true };
     if (!spend()) return { cut: { list: mine.list, after } };
+    handed.add(after);
     let said: unknown;
-    try { said = await (await post(fetch, "/api/account/list/page", page)).json(); } catch (error) { return { failed: ended(error) }; }
+    try { said = await call(fetch, "/api/account/list/page", page, limits); } catch (error) { return { failed: ended(error) }; }
     if (!isRecord(said)) return { failed: result("unreached") };
     const asks = askOf(said.asks, mine.list);
-    // the PC wants an earlier place first: that page goes next; a place no earlier than this one ends it
+    // the PC wants another place: that page goes next, in either direction, unless it was handed already
     if (asks !== null && asks !== undefined) {
-      if (after === null || (asks.after !== null && asks.after >= after)) return { done: true };
       after = asks.after;
       continue;
     }
@@ -121,7 +206,7 @@ async function handOver(fetch: PcFetch, list: AccountList, first: PeerAsk, spend
  * device holds, or it looks for where two histories part), it asks the PC for them (`asks`), as often as `spend`
  * allows a call. What the calls did not finish goes on at the next exchange (GossipCarry).
  */
-export async function gossipWithPc(fetch: PcFetch, list: AccountList, carried: GossipCarry | null, spend: () => boolean): Promise<GossipResult> {
+export async function gossipWithPc(fetch: PcFetch, list: AccountList, carried: GossipCarry | null, spend: () => boolean, limits: AnswerLimits = {}): Promise<GossipResult> {
   const start = list.gossip();
   const on = headKey(start);
   if (start === null || on === null) return result("none");
@@ -130,7 +215,7 @@ export async function gossipWithPc(fetch: PcFetch, list: AccountList, carried: G
   let handed = false;
   // a hand-over the last exchange's calls cut short goes on first, where the PC left off
   if (kept?.asks != null) {
-    const going = await handOver(fetch, list, kept.asks, spend);
+    const going = await handOver(fetch, list, kept.asks, spend, limits);
     if ("failed" in going) return going.failed;
     if ("cut" in going) return result("spent", { on, read, asks: going.cut });
     handed = true;
@@ -143,7 +228,7 @@ export async function gossipWithPc(fetch: PcFetch, list: AccountList, carried: G
     if (!spend()) return result("spent", read === null ? null : { on: here, read, asks: null });
     let said: unknown;
     try {
-      said = await (await post(fetch, "/api/account/list/head", { list: mine.list, place: mine.place, ...(read === null ? {} : { asks: { list: read.list, after: read.after } }) })).json();
+      said = await call(fetch, "/api/account/list/head", { list: mine.list, place: mine.place, ...(read === null ? {} : { asks: { list: read.list, after: read.after } }) }, limits);
     } catch (error) { return ended(error); }
     if (!isRecord(said) || typeof said.list !== "string") return result("unreached");
     if (said.list !== mine.list) return result("not_my_list");
@@ -166,7 +251,7 @@ export async function gossipWithPc(fetch: PcFetch, list: AccountList, carried: G
     // what the PC lacks, it asks for: this device hands it over, once an exchange
     if (asks !== null && !handed) {
       handed = true;
-      const going = await handOver(fetch, list, asks, spend);
+      const going = await handOver(fetch, list, asks, spend, limits);
       if ("failed" in going) return going.failed;
       const now = headKey(list.gossip()) ?? here;
       if ("cut" in going) return result(alarm ? "alarm" : "spent", { on: now, read: next, asks: going.cut });
@@ -176,6 +261,76 @@ export async function gossipWithPc(fetch: PcFetch, list: AccountList, carried: G
     if (next === null || (read !== null && !isRecord(said.page))) return result("done");
     read = next;
   }
+}
+
+/**
+ * The calls this device may still make of one PC, and the wait that PC asked for (a 429), for one key the PC let it in
+ * by: the PC counts its 30 a minute by that key, whatever sessions, tabs or reopenings the device signs in with, so
+ * they all draw on one budget.
+ */
+export interface GossipBudget {
+  /** One more call now, where the minute has room and no wait the PC asked for runs: true, and it is counted. */
+  spend(): boolean;
+  /** The PC asked this device to wait `ms` before it calls again. */
+  pause(ms: number): void;
+  /** How long, in ms, until a call may go: 0 for at once. */
+  wait(): number;
+}
+
+interface BudgetRecord { calls: number[]; until: number }
+
+/** What the page keeps of each budget while its own storage holds none (a page with no localStorage): one record a key. */
+const budgets = new Map<string, BudgetRecord>();
+const BUDGET_PREFIX = "ovis-list-gossip:";
+/** The longest wait a PC's `retry-after` is taken for, in ms. */
+const PAUSE_MAX_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The budget of the key `key` names (a PC and the key it let this device in by), shared with every tab of this browser
+ * through `storage` (localStorage by default) and with every reopening of the PC in this page. Times are the wall
+ * clock, the one clock the tabs share: a call or a wait that stands further ahead of it than it could have been made
+ * is dropped, so a clock set back holds nothing back for long.
+ */
+export function gossipBudget(key: string, options: { readonly perMinute?: number; readonly storage?: Pick<Storage, "getItem" | "setItem"> | null; readonly now?: () => number } = {}): GossipBudget {
+  const now = options.now ?? Date.now;
+  const perMinute = options.perMinute ?? GOSSIP_CALLS_PER_MINUTE;
+  const storage = options.storage !== undefined ? options.storage : (() => { try { return globalThis.localStorage ?? null; } catch { return null; } })();
+  const name = BUDGET_PREFIX + key;
+  const read = (at: number): BudgetRecord => {
+    let held: unknown = budgets.get(name);
+    if (storage !== null) {
+      try { held = JSON.parse(storage.getItem(name) ?? "null"); } catch { held = null; }
+    }
+    const record = typeof held === "object" && held !== null ? held as Partial<BudgetRecord> : {};
+    const calls = Array.isArray(record.calls) ? record.calls.filter((made): made is number => typeof made === "number" && made > at - 60_000 && made <= at + 60_000) : [];
+    const until = typeof record.until === "number" && record.until > at && record.until <= at + PAUSE_MAX_MS ? record.until : 0;
+    return { calls, until };
+  };
+  const write = (record: BudgetRecord): void => {
+    budgets.set(name, record);
+    if (storage === null) return;
+    try { storage.setItem(name, JSON.stringify(record)); } catch { /* the page's own record stands */ }
+  };
+  return {
+    spend() {
+      const at = now();
+      const record = read(at);
+      if (record.until > at || record.calls.length >= perMinute) return false;
+      write({ calls: [...record.calls, at], until: record.until });
+      return true;
+    },
+    pause(ms) {
+      const at = now();
+      const record = read(at);
+      write({ calls: record.calls, until: Math.max(record.until, at + Math.min(Math.max(0, ms), PAUSE_MAX_MS)) });
+    },
+    wait() {
+      const at = now();
+      const record = read(at);
+      const full = record.calls.length >= perMinute ? Math.min(...record.calls) + 60_000 - at : 0;
+      return Math.max(0, record.until - at, full);
+    },
+  };
 }
 
 /** A session with a PC as this module needs it: the relay transport the app opened. */
@@ -195,8 +350,15 @@ export interface KeepGossipOptions {
   readonly live?: () => boolean;
   /** A clock that only moves forward, in ms. */
   readonly mono?: () => number;
-  /** The calls of a minute: GOSSIP_CALLS_PER_MINUTE. */
+  /**
+   * What this session's calls draw on: the PC's and the admitted key's own (gossipBudget), shared with every tab and
+   * reopening that signs in to that PC with that key. One of its own by default.
+   */
+  readonly budget?: GossipBudget;
+  /** The calls of a minute of a budget of its own: GOSSIP_CALLS_PER_MINUTE. */
   readonly callsPerMinute?: number;
+  /** How long and how big one answer may be. */
+  readonly limits?: AnswerLimits;
   readonly setTimer?: (run: () => void, ms: number) => unknown;
   readonly clearTimer?: (timer: unknown) => void;
 }
@@ -217,24 +379,19 @@ export function keepListGossip(session: GossipSession, options: KeepGossipOption
   let again = false;
   let carry: GossipCarry | null = null;
   let otherList = false;
-  let pausedUntil = 0;
-  let calls: number[] = [];
   let up = session.route !== undefined;
   let watched: AccountList | null = null;
   let unwatch: (() => void) | null = null;
   let lastHead: string | null = null;
   let timer: unknown = null;
 
-  const spend = (): boolean => {
-    const at = mono();
-    calls = calls.filter((made) => at - made < 60_000);
-    if (calls.length >= (options.callsPerMinute ?? GOSSIP_CALLS_PER_MINUTE)) return false;
-    calls.push(at);
-    return true;
-  };
+  // a budget of its own counts by the session's clock that only moves forward
+  const budget = options.budget ?? gossipBudget(`own:${Math.random()}`, { perMinute: options.callsPerMinute ?? GOSSIP_CALLS_PER_MINUTE, storage: null, now: mono });
+  const spend = (): boolean => budget.spend();
+  // a long wait is armed in pieces: each turn looks at the budget again, and no timer is set past what a browser holds
   const arm = (ms: number): void => {
     if (timer !== null) clearTimer(timer);
-    timer = setTimer(() => { timer = null; turn(); }, Math.max(0, ms));
+    timer = setTimer(() => { timer = null; turn(); }, Math.min(Math.max(0, ms), ARM_MAX_MS));
   };
   // the page's list is read at every turn: one made after this session began is watched from then on
   const watch = (): AccountList | null => {
@@ -264,22 +421,24 @@ export function keepListGossip(session: GossipSession, options: KeepGossipOption
     const list = watch();
     if (session.followsList !== true || session.route === undefined || otherList || list === null || list.gossip() === null) { arm(GOSSIP_SECONDS * 1000); return; }
     if (running) { again = true; return; }
-    const wait = pausedUntil - mono();
+    const wait = budget.wait();
     if (wait > 0) { arm(wait); return; }
     running = true;
-    void gossipWithPc((input, init) => session.fetch(input, init), list, carry, spend).then((result) => {
+    let left = false;
+    void gossipWithPc((input, init) => session.fetch(input, init), list, carry, spend, options.limits).then((result) => {
       carry = result.carry;
       if (result.end === "not_my_list") otherList = true;
-      if (result.end === "limited") pausedUntil = mono() + (result.retryAfterMs ?? 60_000);
-      // calls of this minute used up with a read still to go: it goes on once the minute has room again
-      if (result.end === "spent") pausedUntil = mono() + 60_000 - (mono() - (calls[0] ?? mono()));
+      if (result.end === "limited") budget.pause(result.retryAfterMs ?? 60_000);
+      // what the calls of this minute did not finish goes on as soon as the budget has room, not at the next timer
+      left = result.end === "spent";
     }, (error: unknown) => {
       console.warn("Ovis: the account's list was not compared with this PC", error instanceof Error ? error.name : error);
     }).finally(() => {
       running = false;
       if (stopped) return;
       if (again) { again = false; turn(); return; }
-      arm(pausedUntil > mono() ? pausedUntil - mono() : GOSSIP_SECONDS * 1000);
+      const wait = budget.wait();
+      arm(left || wait > 0 ? wait : GOSSIP_SECONDS * 1000);
     });
   };
   // a carrier that comes up again is a new session at the PC: what was asked over the last one starts afresh. Its

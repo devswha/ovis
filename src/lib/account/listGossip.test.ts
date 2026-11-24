@@ -7,7 +7,7 @@ import {
 } from "../../../shared/account-list-follower.ts";
 import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice } from "./listAllow.ts";
-import { GOSSIP_CALLS_PER_MINUTE, GOSSIP_SECONDS, gossipWithPc, keepListGossip, type GossipSession } from "./listGossip.ts";
+import { GOSSIP_CALLS_PER_MINUTE, GOSSIP_SECONDS, gossipBudget, gossipWithPc, keepListGossip, type GossipSession } from "./listGossip.ts";
 import { removeListPc } from "./listRemove.ts";
 import { signedOn, writeToList } from "./listWrite.ts";
 import type { PcFetch } from "./join.ts";
@@ -66,7 +66,7 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
  * (server/account/list-follow.ts `peerHeads`, `takePeerPage`; the real one is held to this in
  * relay/listGossip.contract.test.ts). It holds `texts` as its history, whatever the account service shows anybody.
  */
-async function memoryPc(w: World, texts: readonly string[], options: { followsList?: boolean } = {}) {
+async function memoryPc(w: World, texts: readonly string[], options: { followsList?: boolean; takeAtMost?: number } = {}) {
   const list = hashOf(texts[0]!);
   // it follows the list as entry 0's signer would: whose copy it is does not change what it holds or answers
   const pinned = pinList(null, { account: w.account, list, me: { key: readBody(entryFromText(texts[0]!).body).signer, endpoint: null }, pin: { how: "genesis" } });
@@ -108,7 +108,9 @@ async function memoryPc(w: World, texts: readonly string[], options: { followsLi
       if (path === "/api/account/list/page") {
         const after = body.after as number | null;
         const read: FollowRead = kept !== null && kept.after === after ? kept : { ...startRead(copy, "peer"), after };
-        const took = await takePage(copy, read, body as unknown as ListPage, seconds(w));
+        // a PC that reads fewer entries of a page than it is handed asks for the rest next (`more`)
+        const page = options.takeAtMost === undefined ? body : { ...body, entries: (body.entries as string[]).slice(0, options.takeAtMost) };
+        const took = await takePage(copy, read, page as unknown as ListPage, seconds(w));
         copy = took.copy;
         kept = took.read;
         return json({ verdict: took.verdict, ...(took.read === null ? {} : { asks: { list: took.read.list, after: took.read.after } }), ...gossipHead(copy) });
@@ -245,6 +247,61 @@ describe("a device and the PC it has a session with say where the list stands", 
   });
 });
 
+describe("what one exchange hands over, and what it reads of the PC", () => {
+  it("goes on handing a PC that asks for the next place after a page it took in part, within the call budget", async () => {
+    const { w, first, second, desk } = await account();
+    const pc = await memoryPc(w, w.held().entries, { takeAtMost: 1 });
+    // three entries the PC does not hold: a laptop, then the tablet's removal, then the desk's
+    await addListPc(w, first, "Laptop");
+    await removeDevice(first, (await second.keys()).key);
+    await removeListPc(first.list, desk.endpoint, noWait);
+    const result = await gossipWithPc(pc.fetch, first.list, null, always);
+    expect(result.end).toBe("done");
+    // a page at a time, each asked for by the PC: it stands where the device does
+    expect(gossipHead(pc.copy())).toEqual(first.list.gossip()!);
+    expect(admitsSession(pc.copy(), (await second.keys()).key, seconds(w)).why).toBe("removed");
+  });
+
+  it("carries a hand-over the budget cut to the next exchange, from the place the PC asked for", async () => {
+    const { w, first, second, desk } = await account();
+    const pc = await memoryPc(w, w.held().entries, { takeAtMost: 1 });
+    await removeDevice(first, (await second.keys()).key);
+    await removeListPc(first.list, desk.endpoint, noWait);
+    let left = 2;
+    const cut = await gossipWithPc(pc.fetch, first.list, null, () => left-- > 0);
+    expect(cut.end).toBe("spent");
+    expect(cut.carry?.asks).not.toBeNull();
+    const rest = await gossipWithPc(pc.fetch, first.list, cut.carry, always);
+    expect(rest.end).toBe("done");
+    expect(gossipHead(pc.copy())).toEqual(first.list.gossip()!);
+    // what was handed in the second exchange began where the PC asked: no page went twice
+    const pages = pc.calls.filter((call) => call.path === "/api/account/list/page").map((call) => call.body.after);
+    expect(new Set(pages).size).toBe(pages.length);
+  });
+
+  it("reads at most 512 KiB of one answer, and gives an answer 10 s", async () => {
+    const { first } = await account();
+    let pulled = 0;
+    const flood: PcFetch = async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) { const chunk = new Uint8Array(64 * 1024).fill(0x20); pulled += chunk.byteLength; controller.enqueue(chunk); },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    expect((await gossipWithPc(flood, first.list, null, always)).end).toBe("unreached");
+    expect(pulled).toBeLessThanOrEqual(512 * 1024 + 128 * 1024);
+    // an error body is held to the same bound
+    pulled = 0;
+    const failing: PcFetch = async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) { const chunk = new Uint8Array(64 * 1024).fill(0x20); pulled += chunk.byteLength; controller.enqueue(chunk); },
+    }), { status: 500 });
+    expect((await gossipWithPc(failing, first.list, null, always)).end).toBe("unreached");
+    expect(pulled).toBeLessThanOrEqual(512 * 1024 + 128 * 1024);
+    // an answer that never ends ends the exchange at its deadline
+    const silent: PcFetch = async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("{")); } }));
+    const began = performance.now();
+    expect((await gossipWithPc(silent, first.list, null, always, { ms: 50 })).end).toBe("unreached");
+    expect(performance.now() - began).toBeLessThan(5_000);
+  });
+});
+
 describe("a session keeps the list compared", () => {
   it("asks nothing of a PC that follows no list, and nothing at all for an account with no list", async () => {
     const { w, first } = await account();
@@ -345,6 +402,54 @@ describe("a session keeps the list compared", () => {
       clock = 60_000;
       timers.shift()!.run();
       await until(() => pc.calls.length === 2);
+    } finally { stop(); }
+  });
+
+  it("shares the minute's calls and a 429's wait among the tabs and reopenings that sign in to one PC with one key", async () => {
+    const { w, first } = await account();
+    const pc = await memoryPc(w, w.held().entries);
+    const stored = new Map<string, string>();
+    const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
+    let clock = 1_000_000;
+    const timers: { run: () => void; at: number }[] = [];
+    const keep = (budgetKey: string) => keepListGossip(sessionOf(pc), {
+      list: () => first.list, mono: () => clock, budget: gossipBudget(budgetKey, { perMinute: 1, storage, now: () => clock }),
+      setTimer: (run: () => void, ms: number) => { const timer = { run, at: clock + ms }; timers.push(timer); return timer; },
+      clearTimer: (timer: unknown) => { timers.splice(timers.indexOf(timer as never), 1); },
+    });
+    const one = keep("desk:key-a");
+    await until(() => pc.calls.length === 1);
+    // another tab, or the same PC opened again, with the same key: the minute's one call is spent
+    const two = keep("desk:key-a");
+    expect(pc.calls.length).toBe(1);
+    // another key of another PC has a minute of its own
+    const other = keep("laptop:key-b");
+    await until(() => pc.calls.length === 2);
+    one(); two(); other();
+    // a 429 the PC sent one keeper holds the next one back as long as it said
+    clock += 120_000;
+    pc.limit = 600;
+    const three = keep("desk:key-a");
+    await until(() => pc.calls.length === 3);
+    await until(() => timers.length > 0);
+    three();
+    pc.limit = null;
+    clock += 61_000;
+    const four = keep("desk:key-a");
+    expect(pc.calls.length).toBe(3);
+    four();
+  });
+
+  it("arms a long wait in pieces, so no timer is set past what a browser can hold", async () => {
+    const { w, first } = await account();
+    const pc = await memoryPc(w, w.held().entries);
+    pc.limit = 30 * 24 * 3600;
+    let clock = 0;
+    const armed: number[] = [];
+    const stop = keepListGossip(sessionOf(pc), { list: () => first.list, mono: () => clock, setTimer: (_run: () => void, ms: number) => { armed.push(ms); return armed.length; }, clearTimer: () => {} });
+    try {
+      await until(() => armed.length > 0);
+      expect(Math.max(...armed)).toBeLessThanOrEqual(GOSSIP_SECONDS * 1000);
     } finally { stop(); }
   });
 
