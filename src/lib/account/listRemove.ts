@@ -19,7 +19,7 @@ export type PcRemovalOutcome =
  * no more, is out already: nothing is sent. A device that holds no key of the current epoch signs the removal alone,
  * and the next writer that has names to seal opens the epoch. Only a sign-in that ended throws.
  */
-export async function removeListPc(list: AccountList, endpoint: string, options: Pick<WriteOptions, "wait" | "expect" | "signal"> = {}): Promise<PcRemovalOutcome> {
+export async function removeListPc(list: AccountList, endpoint: string, options: Pick<WriteOptions, "wait" | "expect" | "signal" | "writer"> = {}): Promise<PcRemovalOutcome> {
   const outcome = await writeToList(list, async (writer) => {
     const { state } = writer;
     const removal = pcRemoval(state, endpoint);

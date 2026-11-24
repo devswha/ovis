@@ -193,6 +193,7 @@ export const RELAY_ZH: Record<string, string> = {
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "确认之后 {names} 加入了你的账户。没有设备退出登录，请重新确认。",
   "{done} of {total} other devices left your account, then {names} came in since you asked. Ask again to go on.": "{total} 台其他设备中有 {done} 台已离开你的账户，之后 {names} 加入了。要继续，请重新确认。",
   "This device cannot read your account's list. Update the app.": "此设备无法读取账户名单。请更新应用。",
+  "This device has not read your account's list yet. It keeps trying.": "此设备尚未读取账户名单，正在继续尝试。",
   "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "此设备无法读取账户名单。请在此设备上退出后重新登录，然后在另一台设备上允许它。",
   "{name} was removed from your account": "{name} 已从你的账户中移除",
   "It can come back only as a new PC. On {name}, open Settings → Devices and PCs and press Reset relay identity, then add it to your account again.": "它只能作为新 PC 重新加入。请在 {name} 上打开 设置 → 设备和电脑，点击“重置中继身份”，然后重新添加到你的账户。",

@@ -33,7 +33,7 @@ import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
-import { refusalOf } from "./firstLink.ts";
+import { listRemovedLink, refusalOf } from "./firstLink.ts";
 import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
 import type { PcFinding, ProbeTarget } from "./pcStatus.ts";
 import { accountOpenablePcs, keepLaunchTried, lastFirst, launchTried, openablePcs } from "./pcPick.ts";
@@ -352,7 +352,28 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    */
   const codeLapsed = (offer: RelayOffer): boolean => offer.code !== undefined && offer.admission === 1 && scanned?.offer === offer && Date.now() - scanned.at > SIGN_IN_MS;
   const askNewScan = (offer: RelayOffer): void => { show({ kind: "failed", failure: "scan-expired", name: offer.name ?? null, detail: null, server_id: offer.server_id }); };
-  const account = createAccountController(mount, { active: frontUp, changed: accountChanged, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
+  /**
+   * Reconnecting by itself is opening by itself. A session this device opened with its list key goes on only while
+   * its own copy of the list holds that PC and this device: once the copy says otherwise, the session is ended here
+   * and not opened again by itself, and the screen says what the list says. A PC the list put out need not end the
+   * session itself, and a PC that was taken over would not.
+   */
+  const listMoved = (): void => {
+    const open = transport, attempt = last;
+    if (open === null || attempt === null || attempt.listOpen === undefined) return;
+    const says = account.listSays(attempt.offer.server_id);
+    if (says === "holds" || says === "unknown") return;
+    transport = null;
+    app?.unmount();
+    app = null;
+    updates.cancel();
+    open.close();
+    // the list put the PC out: the words of a PC that was removed from the account, and nothing is forgotten
+    if (says === "pc-out") { show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id }); return; }
+    // the list holds this device no more (or its time is over): as when the PC refuses its key, which it would
+    void failed(new MuxProtocolError("auth_failed", "This device's copy of the account's list holds it no more"), attempt);
+  };
+  const account = createAccountController(mount, { active: frontUp, changed: accountChanged, listMoved, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
   accountRead = !account.enabled;
   // the PC page this shell opens acts on the account through these: Settings → Devices and PCs → Manage account
   keepShellAccount(account.enabled ? {
@@ -744,6 +765,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const listKey = account.listKey;
       const { accountOpen: _key, ...rest } = attempt;
       if (listKey !== null) { await connect({ ...rest, listOpen: listKey, retriedListOpen: true }); return; }
+      // A pairing of a device with no list to answer with (no account here, or an account that keeps none) is told by
+      // this what `auth_failed` tells it: the PC holds that pairing no more. It is read as that, and never leads to a
+      // join. (A sign-in through the account that is not let in asks to join, as before.)
+      if (attempt.accountOpen === undefined && !account.knowsList) { await failed(new MuxProtocolError("auth_failed", error.message), attempt); return; }
     }
     const refusal = attempt.accountOpen === undefined && attempt.listOpen === undefined ? null : openRefusalOf(error);
     // a PC answers a key it does not list with a bare auth_failed (server/relay/session.ts): after a press on a new PC's
@@ -949,8 +974,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
     const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}),
-      // which key this session signed in with stays with it: a refusal at a later reconnect is read by that
-      ...(attempt.listOpen ? { listOpen: attempt.listOpen } : {}), ...(attempt.retriedListOpen ? { retriedListOpen: true } : {}) };
+      // which key this session signed in with stays with it: a refusal at a later reconnect is read by that. That the
+      // other key was tried once on the way here ends with this sign-in: a PC that pins later is asked once more
+      ...(attempt.listOpen ? { listOpen: attempt.listOpen } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -1077,6 +1103,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
       if (linkRefused(opened, attempt, error)) return;
+      // The account's signed list removed this PC, and it takes no link into that account until it is a new PC. This
+      // pairing was not made for the account alone (no mark), so it stands and nothing is forgotten; while its own
+      // screen is still up, that screen says why the account did not take the PC, in place of the app.
+      if (listRemovedLink(error) && app === null && last === attempt && transport === opened && (shown?.kind === "connecting" || shown?.kind === "ready")) {
+        frontSteps?.abort();
+        frontSteps = null;
+        transport = null;
+        show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id });
+        return;
+      }
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment: "failed" });
     }).finally(() => { enrolling.delete(opened); if (transport !== opened) opened.close(); });

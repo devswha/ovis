@@ -27,10 +27,10 @@ afterEach(async () => {
 function followingList(account: string): AccountList {
   const view: AccountListView = { account, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 1, read_at: 1, trouble: null }, reached: true, devices: [], pcs: [] };
   return {
-    sync: async () => view, view: () => view, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
+    sync: async () => view, view: () => view, shown: () => Math.floor(Date.now() / 1000), subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
     shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => false, adopt: async () => view,
     writer: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, follows: async () => true, placeAt: () => null,
-    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone",
   };
 }
 

@@ -21,7 +21,10 @@ export const WAITING = "waiting";
 /** A device this PC let in that the account's signed list did not take: who it is (`key`, its account key), why, and what trying again does. */
 export interface Stalled {
   readonly key: string; readonly device: string; readonly pc: string; readonly why: AllowRefusal; readonly retryAfterMs?: number | null; readonly retry: () => Promise<void>;
-  /** A request signed for it still waits at this device's head: Cancel lets it go, so that another change can be made. */
+  /**
+   * A request signed for it still waits at this device's head: Cancel lets it go, so that another change can be made.
+   * It throws where nothing was let go (the log could not be read): the card then stays.
+   */
   readonly cancel?: () => Promise<void>;
 }
 
@@ -113,12 +116,20 @@ export function useWaitingChange(): { readonly stalled: Stalled | null; readonly
   return { close, stalled: waitingCard(shown, close) };
 }
 
+/** Cancel could not read the log: whether the request was placed is not known, so nothing was let go. */
+export class NotReadError extends Error {
+  constructor() {
+    super("The account's list could not be read, so nothing was cancelled");
+    this.name = "NotReadError";
+  }
+}
+
 /** The card for `request`, a request that waits: what its two buttons do, to that request alone. */
 export function waitingCard(request: WaitingRequest, done: () => void): Stalled {
   return {
     key: WAITING, device: "", pc: "", why: "waiting",
     retry: async () => { const list = pageAccountList(); if (list === null || await resendWaiting(list, request)) done(); },
-    cancel: async () => { await pageAccountList()?.cancel(request); },
+    cancel: async () => { if (await pageAccountList()?.cancel(request) === "unread") throw new NotReadError(); },
   };
 }
 

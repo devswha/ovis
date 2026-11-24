@@ -32,6 +32,15 @@ export function firstLinkRefusal(code: string, pcAccount: string | null): boolea
   return code === "link_required" || code === "unverified_device" || code === "list_removed" || (code === "account_mismatch" && pcAccount === null);
 }
 
+/**
+ * A link the PC refused because the account's signed list removed that PC (`409 list_removed`), whatever pairing sent
+ * it: the PC comes back into that account only as a new PC. A marked pairing's row ended with it (refusalOf); any
+ * other pairing stands, and is told the same words.
+ */
+export function listRemovedLink(error: unknown): boolean {
+  return error instanceof AccountPcError && error.code === "list_removed";
+}
+
 /** What the failure screen says for a refusal of a first link, before the pairing or at the link; null for any other failure. */
 export function refusalOf(error: unknown): RelayFailure | null {
   if (error instanceof AdmissionRefusedError) {
