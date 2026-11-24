@@ -13,7 +13,7 @@
  * Every record is read back as `unknown`: whoever owns it reads it strictly and reports what is not in its form.
  */
 
-export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked", "dropped", "offer", "times"] as const;
+export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked", "dropped", "offer", "times", "sent"] as const;
 export type ListRecord = (typeof LIST_RECORDS)[number];
 
 /** Each call is one transaction. */

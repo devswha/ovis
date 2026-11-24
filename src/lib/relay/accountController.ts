@@ -230,7 +230,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const opens = new Set(accountOpenablePcs(accountView.pcs, here).map((pc) => pc.server_id));
     await lists.shadow(here.account, directory, opens).catch((error: unknown) => console.warn("Ovis: the account's list was not compared", error instanceof Error ? error.name : error));
   };
-  lists?.subscribe(() => { void compareList(); });
+  const unfollow = lists?.subscribe(() => { void compareList(); });
   /** A sign-in to `account` ended on this device: as its PCs' names go (dropKnownPcs), so does what opens the names in its list. */
   const forgetNames = (account: string | undefined): void => {
     if (account === undefined) return;
@@ -272,7 +272,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (wanted && refreshTimer === undefined) refreshTimer = setInterval(() => { void refresh(); }, DIRECTORY_REFRESH_MS);
     else if (!wanted && refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
   };
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void refresh(); armRefresh(); });
+  const seen = (): void => { if (document.visibilityState === "visible") void refresh(); armRefresh(); };
+  document.addEventListener("visibilitychange", seen);
+  /** Ends what this controller armed for itself: its refresh timer, its listener for the page coming back, and its place among the list's listeners. */
+  const dispose = (): void => {
+    if (refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
+    document.removeEventListener("visibilitychange", seen);
+    unfollow?.();
+  };
   const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); };
   const signOut = (): void => {
     // the sign-in the person ended, read before anything waits: one made meanwhile stays (service.ts, forSignIn)
@@ -837,19 +844,25 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // A device that waits to be let into its account's list, just let in here by a member's approval: the member
       // leaves its place in the list with the introduction. It is read over this session, which signed in with the
       // account key, and taken while this enrollment still owns the pairing (a Forget ends the wait).
-      let placed = false;
+      // Handing the place to the list ends the search for it, and says nothing yet of the device being in: the list
+      // reads the log itself, and a device that follows a list already takes no place (accountList.ts adopt).
+      let took = false;
       const onList = lists === null || !introducible ? undefined : async (offer: ListOffer): Promise<void> => {
-        if (placed || lists.view().status.at !== "not_in") return;
+        if (took) return;
         assertPairing(await store.get(serverId));
-        placed = true;
-        await lists.adopt(offer).catch((error: unknown) => { placed = false; console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error); });
+        took = true;
+        await lists.adopt(offer).catch((error: unknown) => { took = false; console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error); });
       };
       for (;;) {
         const saved = await takeIntroduction({ fetch, key, label, store: enrollmentStore, relay: device.relay, ...(onList === undefined ? {} : { onList }) });
-        if (saved.length > 0 || placed || Date.now() >= deadline) break;
+        if (saved.length > 0 || took || Date.now() >= deadline) break;
         await wait(INTRODUCTION_POLL_MS, signal);
       }
       await record("complete");
+      // "In your account" is said only where this device's own copy of the list shows it in: one that still waits to
+      // be let into its account's list is paired with this PC, and says nothing of the account yet
+      const mine = lists?.view();
+      if (mine !== undefined && mine.account === session.account && mine.status.at === "not_in") return "local";
       return { state: "complete", ...(admitted === undefined ? {} : { admitted }) };
     } catch (error) {
       assertPairing(await store.get(serverId));
@@ -873,7 +886,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const offeredNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.providers);
   /** The providers the service named, an empty list included; the build's only when it gave no answer to read. */
   const listedNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.listed);
-  return { get state() { return accountView; }, get directory() { return directory; },
+  return { dispose, get state() { return accountView; }, get directory() { return directory; },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }
