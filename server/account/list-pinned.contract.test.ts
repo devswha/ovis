@@ -15,11 +15,13 @@ import { loadRelayIdentity } from "../relay/identity.ts";
 import { readSave, writeSave } from "../../shared/account-list-follower.ts";
 import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { handleRequest } from "../dispatch.ts";
-import { bounded, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
 import { ACCOUNT_DEVICES_FILE, STALE_READ_MS } from "./account-devices.ts";
 import { privateStateFs } from "../private-state.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
-import { ask } from "./pairing.test-helpers.ts";
+import { ask, phone, SERVER_ID } from "./pairing.test-helpers.ts";
+import { keyProofPc, provingDevice } from "./key-proof.test-helpers.ts";
+import { FrameType } from "../../shared/relay-mux.ts";
 import { ACCOUNT_LIST_FILE } from "./list-follow.ts";
 import { signCard } from "../../shared/account-list.ts";
 import { listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
@@ -840,6 +842,32 @@ describe("a PC the list removed", () => {
     expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(true);
     await off.app.context.services.relay.resetIdentity();
     expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(false);
+  });
+});
+
+describe("every way a row under the account's id for a key comes to a session, on a pinned PC", () => {
+  test("a pairing confirmed on this PC's screen that reuses such a row opens no session by it: the list holds no device under that key", async () => {
+    const made = await keyProofPc(true);
+    closes.push(() => { void made.close(); });
+    const { devices } = made.app.context.services;
+    const device = await phone();
+    // the row a comparison approved at this PC left for the key: its id is the account's for that key
+    const id = accountDeviceId(SERVER_ID, device.spki);
+    expect(devices.pairRelayApproved("Phone", device.spki, { path: "code", id })?.device.id).toBe(id);
+    const followed = spyOn(devices, "listFollowed").mockReturnValue(true);
+    const role = spyOn(devices, "listRoleOf").mockReturnValue(null);
+    try {
+      // the same key comes with a code and proves it; the person approves the key on the PC's screen
+      const proving = await provingDevice(made, devices.startPairing().code, undefined, device);
+      await proving.pending;
+      const answered = deferred<string>();
+      proving.link.onFrame = (frame) => { if (frame.type === FrameType.AUTH_OK) answered.resolve("let in"); };
+      void proving.link.serverError.then((code) => answered.resolve(String(code)));
+      made.screen.approve(made.screen.keyConfirm()!.id);
+      expect(await bounded(answered.promise)).toBe("auth_failed");
+      // the row is the one it was: no second row was made for the key
+      expect(devices.list(null).filter((row) => row.id === id)).toHaveLength(1);
+    } finally { followed.mockRestore(); role.mockRestore(); }
   });
 });
 

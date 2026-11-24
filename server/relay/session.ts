@@ -417,21 +417,11 @@ export class RelaySession {
         if (frame.type === FrameType.PAIR && this.pcCodeAdd && this.options.services.devices.accountPolicyActive()) { this.close("unsupported_version"); return; }
         if (frame.type === FrameType.PAIR && keyProofPairings !== undefined) { this.pairByProof(keyProofPairings, frame.payload); return; }
         this.keyProven = frame.type === FrameType.AUTH;
-        let device = frame.type === FrameType.AUTH
+        const device = frame.type === FrameType.AUTH
           ? await devices.matchRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId)
           : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key, undefined, this.admitNewDevice)?.device;
         // no auth_failed: the code held and was not spent, and the relay closes this client for the pass
         if (this.refused) return;
-        // On a pinned PC a session opened through the account (the id is the account's own for the key) is the list's
-        // to answer for, and nothing else's: a row of this PC's own devices under that id gives it no role, no time
-        // and no way in. It is let in as the list says, and ends when the list lets the key in no more (enter)
-        const governed = frame.type === FrameType.AUTH && device ? devices.listGoverned(device.id, this.options.serverId) : null;
-        if (device && governed !== null) {
-          const role = devices.listRoleOf(governed);
-          if (role === null) { this.close("auth_failed"); return; }
-          this.listKey = governed;
-          device = { ...device, role };
-        }
         if (frame.type === FrameType.AUTH && device && devices.catchingUp(device.id)) {
           // Step 2 (S2-27): a row not paired at this PC waits for the first whole read after a start (T41)
           if (!await this.readComing(device.id) || !this.mux.active) return;
@@ -674,15 +664,6 @@ export class RelaySession {
     // pairRelayApproved counted a refused key itself; one admitNewDevice turned away is not counted
     this.endPairing(true);
     if (this.refused) return;
-    // On a pinned PC the row a comparison makes has the account's id for the key, and the list alone answers for a
-    // session under that id: the pairing is recorded, and this session, whose key was sent and never signed with,
-    // opens nothing by it. The device gets in by a sign-in the list answers. Another PC of the account is the one
-    // exception: the list answered for its relay key in this very turn (vouchedInList), and it only watches
-    if (device && this.intent !== "vouched" && devices.listGoverned(device.id, this.options.serverId) !== null) {
-      if (this.listOffered) this.mux.fail("account_list_required", "This PC lets devices of its account in by the account's signed list. Sign in with the key the list holds for this device.");
-      else this.close("auth_failed");
-      return;
-    }
     this.enter(device);
   }
 
@@ -797,11 +778,35 @@ export class RelaySession {
     else this.close("auth_failed");
   }
 
-  /** A verified AUTH, PAIR or approved comparison becomes this session's one principal. */
+  /**
+   * A verified AUTH, PAIR or approved comparison becomes this session's one principal.
+   *
+   * The one place where the list answers for a row of this PC's own devices: on a PC pinned to its account's list, a
+   * row whose id is the account's own for its key (DeviceStore.listGoverned) opens a session only as the list says,
+   * whichever way the row came here: a sign-in, a pairing confirmed on this PC's screen that reuses the row, a
+   * comparison by digits, a code. The list is asked only of a key the session proved (`keyProven`): a key that was
+   * sent and never signed with opens nothing under that id, so the row a comparison just made is recorded and the
+   * device gets in by a sign-in. From then on the session is the list's (listKey): it ends when the list lets the key
+   * in no more. A row under an id of its own is not asked about here: that pairing is the PC's own business.
+   * The one exception is another PC of the account that was just compared (intent `vouched`): the list answered for
+   * its relay key in that same turn (vouchedInList), and it only watches.
+   */
   private enter(device: DeviceMatch | null | undefined): void {
     const devices = this.options.services.devices;
     if (!this.mux.active) return;
     if (!device) { this.close("auth_failed"); return; }
+    const governed = devices.listGoverned(device.id, this.options.serverId);
+    if (governed !== null && !(this.intent === "vouched" && !this.keyProven)) {
+      const role = this.keyProven ? devices.listRoleOf(governed) : null;
+      if (role === null) {
+        // a client that knows of lists and came without its key's proof is told to sign in with its list key
+        if (!this.keyProven && this.listOffered) this.mux.fail("account_list_required", "This PC lets devices of its account in by the account's signed list. Sign in with the key the list holds for this device.");
+        else this.close("auth_failed");
+        return;
+      }
+      this.listKey = governed;
+      device = { ...device, role };
+    }
     const unrevoke = devices.onRevoke(device.id, (waiting) => {
       if (this.state === "ready") devices.noteRelayRevoked();
       if (waiting) this.leave();
