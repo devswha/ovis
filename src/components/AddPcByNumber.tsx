@@ -85,7 +85,8 @@ export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.no
       const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(name), null), { expect: { account, list: shown.post.list }, member: shown.member, admit: async () => {} });
       if (!outcome.added) { setProblem(addRefusal(t, outcome).text); return; }
       // Add where a number was compared on both screens: kept in this device's own record of its PCs (seenPcs.ts)
-      void noteAct(account, shown.post.endpoint, "added").catch(() => undefined);
+      // written before the dialog goes: a tab closed right after keeps it
+      await noteAct(account, shown.post.endpoint, "added").catch(() => undefined);
       window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
       onAdded();
     } catch (error) {

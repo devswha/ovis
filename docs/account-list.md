@@ -1442,8 +1442,8 @@ its card for the list (`POST /v2/pc/list/keys`).
 
 1. The device reads the posts (`GET /v2/lists/{list}/posts`) and keeps only a post whose card is
    that key's own, for the list this device follows and for the very relay key the post stands
-   under. For any other post it shows nothing and starts nothing; the card then adds the PC the
-   way from before lists.
+   under. For any other post it shows nothing and starts nothing, and the card adds nothing for
+   it: on an account with a list it never falls back to the admission of the directory alone.
 2. **Add** on the card works out the number, from the card's binding (the kinds' `cardBinding`)
    with the exchange of `shared/relay-pair-sas.ts`: the device commits to a
    nonce of its own (`POST .../posts/{endpoint}/attempt`), waits for the PC's nonce, then reveals
@@ -1467,8 +1467,15 @@ One card, or one dialog, asks for three numbers at most: a number that was not t
 or got no answer counts. After the third it says **Too many tries for this PC. Start again on the
 PC in a few minutes.** and offers only **No** (or **Close**). On an account with a list, the card
 never falls back to the admission of the account's directory alone: a post that is gone, or a
-device that cannot write the list, is said as such. A listing whose window ended (`409
-listing_expired`) turns the card to "This request ran out", as on an account with no list.
+device that cannot write the list, is said as such. Whether the account has a list is the device's
+own knowledge, never the directory's: a copy it holds (also one this page has not read yet, which it
+then reads for the next press), or a list the account service names that this device is not in
+yet. A listing whose window ended (`409 listing_expired`) turns the card to "This request ran out",
+as on an account with no list. Once the account admitted the PC and the list did not take its
+entry, the card stays, whatever the directory lists, and says **{name} is not in your account's list
+yet. Try again.**: **Try again** goes again with the same card and member key (the request kept
+for it is sent again, or signed anew on a new head), and nothing is admitted a second time. The
+record of the Add is written before the card or the dialog goes.
 
 A number that is shown proves nothing by itself: only the two confirmations do, each for its own
 end. The PC's yes says that the adder is the device in the person's hand; the device's Add says
@@ -1486,8 +1493,12 @@ pairing that named the list spent. Its row goes then, by that very row inside th
 pairing another page saved meanwhile stays), and the PC is opened as any PC of the list, with the
 key the list holds for the device. An entry the copy holds and the PC has not read yet (`placed`)
 spends nothing: the pairing stays the device's own, nothing is opened over its session, and the
-PC opens from its row once it took the list. A refusal at a later ask is said as the PC's
-refusal. A PC with no such call (it follows no list, or is from before lists) gets the link, as
+PC opens from its row once it took the list. An entry whose placement is not known (no answer and
+no read of the log since) is handled the same way, after a read of the device's own copy: never as
+a refusal. A refusal at a later ask is said as the PC's refusal. A device that cannot write a list
+its account has (it waits to be let in, or its copy does not read; a page that has not read its
+list yet reads it first) sends no link from before either: the pairing stays its own and nothing
+is opened over it. A PC with no such call (it follows no list, or is from before lists) gets the link, as
 before; so does one whose pairing's session answers the first ask with `403 link_required` (a PC
 from before this call lets only the status and the link through that session).
 
