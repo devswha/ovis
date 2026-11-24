@@ -120,15 +120,18 @@ it("kills no recorded pid whose start time is not the one recorded with it", asy
 });
 
 it.skipIf(!proc)("signals a child's process group only while the child is not reaped, and never a pid that cannot be its own group", async () => {
-  // a child that leads a group of its own (detached) and leaves a member in it, which ends when the child's stdin closes
-  const child = Bun.spawn(["sh", "-c", "exec 3<&0; cat <&3 >/dev/null & echo $!"], { env: { PATH: "/usr/bin:/bin" }, stdin: "pipe", stdout: "pipe", stderr: "ignore", detached: true });
+  // a child that leads a group of its own (detached) and leaves a member in it, which ends only once the test writes to
+  // the fifo it waits on: not on the child's stdin, which Bun closes as soon as it reaps the child
+  const hold = join(root, "member-hold");
+  expect(Bun.spawnSync(["mkfifo", hold], { env: { PATH: "/usr/bin:/bin" } }).exitCode).toBe(0);
+  const child = Bun.spawn(["sh", "-c", '(read _ < "$0") >/dev/null 2>&1 & echo $!', hold], { env: { PATH: "/usr/bin:/bin" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", detached: true });
   try {
     const member = Number((await new Response(child.stdout).text()).trim());
     await child.exited;
     // the child is reaped: its pid, and so its group's, may belong to someone else by now
     expect({ sent: signalChildGroup(child, "SIGTERM"), memberAlive: alive(member) }).toEqual({ sent: false, memberAlive: true });
   } finally {
-    child.stdin.end();
+    await Bun.spawn(["timeout", "20", "sh", "-c", 'echo go > "$0"', hold], { env: { PATH: "/usr/bin:/bin" } }).exited;
   }
   // a reaped child whose number now leads another group: a detached sleep of the test's own stands in for that group
   const reused = Bun.spawn(["sleep", "30"], { env: { PATH: "/usr/bin:/bin" }, detached: true });
