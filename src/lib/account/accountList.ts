@@ -561,7 +561,7 @@ export function accountList(options: AccountListOptions): AccountList {
   /** When the account service last said that it keeps no list for the account in view, in seconds; null otherwise. */
   let offAt: number | null = null;
   /** The list this device last claimed its key for, and when, in seconds. */
-  let claimedAt: { readonly account: string; readonly list: string; readonly at: number } | null = null;
+  let claimedAt: { readonly account: string; readonly list: string; readonly key: string; readonly at: number } | null = null;
   /** The keys and the sign-in of the last round, for a writer. */
   let ctx: { readonly account: string; readonly keys: DeviceListKeys; readonly bound: AccountService } | null = null;
   let running: Promise<AccountListView> | null = null;
@@ -820,7 +820,8 @@ export function accountList(options: AccountListOptions): AccountList {
    */
   const claim = async (bound: AccountService, account: string, keys: DeviceListKeys, list: string, before: ListClaimState, signal: AbortSignal): Promise<ListClaimState> => {
     const at = seconds();
-    if (claimedAt !== null && claimedAt.account === account && claimedAt.list === list && at >= claimedAt.at && at - claimedAt.at < CLAIM_RENEW_SECONDS) return "claimed";
+    // a claim kept for the key it was made for: another page may have put a new key in the store all pages share
+    if (claimedAt !== null && claimedAt.account === account && claimedAt.list === list && claimedAt.key === keys.key && at >= claimedAt.at && at - claimedAt.at < CLAIM_RENEW_SECONDS) return "claimed";
     try {
       await bound.claimListKey(list, await deviceCard(keys, list), signal);
     } catch (error) {
@@ -832,7 +833,7 @@ export function accountList(options: AccountListOptions): AccountList {
       if (said.status === 403 && said.code === "own_sign_in_required") return "not_own_sign_in";
       return said.status === 403 && (said.code === "frozen" || said.code === "session_not_fresh") ? said.code : "refused";
     }
-    claimedAt = { account, list, at };
+    claimedAt = { account, list, key: keys.key, at };
     return "claimed";
   };
 
