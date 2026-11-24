@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseWorkflow, root } from "./shell-workflow-rules.ts";
+import { parseWorkflow, root, runScript } from "./shell-workflow-rules.ts";
 
 const workflow = (name: string) => parseWorkflow(join(root, ".github/workflows", name));
 const ATTESTS = { contents: "read", "id-token": "write", attestations: "write" };
@@ -48,4 +49,27 @@ test("no job that checks out the ref it was given takes a local action: a repair
   const jobs = Object.entries(workflow("pty-sidecar.yml").jobs).filter(([, job]) => job.steps?.some((step) => step.uses?.startsWith("actions/checkout@") && String(step.with?.["ref"] ?? "").includes("inputs.ref")));
   expect(jobs.map(([id]) => id)).toEqual(["build", "manifest"]);
   for (const [id, job] of jobs) expect([id, job.steps!.filter((step) => step.uses?.startsWith("./")).map((step) => step.uses)]).toEqual([id, []]);
+});
+
+test("beta rebuilds both binaries until the prerelease carries the current keeper", async () => {
+  const pick = workflow("beta.yml").jobs["pick"]?.steps?.find((step) => step.id === "host")?.run;
+  if (!pick) throw new Error("missing beta host decision");
+  const releases = `GITHUB_OUTPUT=$(mktemp)
+  trap 'rm -f "$GITHUB_OUTPUT"' EXIT
+  git() {
+    case "$2" in ref:crates/pty-sidecar) echo host;; ref:crates/acp-keeper) echo keeper;; ref:package.json) echo '{"version":"1"}';; *) return 1;; esac
+  }
+  gh() {
+    case "$3:$5" in
+      v1:ovis-pty-sidecar.json) echo '{"crate":"host"}';;
+      pty-sidecar-host:ovis-acp-keeper.json) [ "$KEEPER" != missing ] && printf '{"crate":"%s"}' "$KEEPER";;
+      *) return 1;;
+    esac
+  }
+  `;
+  for (const [keeper, expected] of [["missing", "build"], ["old", "build"], ["keeper", "ready"]] as const) {
+    const result = await runScript(releases + pick + '\ncat "$GITHUB_OUTPUT"', root, { SHA: "ref", TMPDIR: tmpdir(), KEEPER: keeper });
+    expect(result.code, result.output).toBe(0);
+    expect(result.output.split("\n")).toContain(`host=${expected}`);
+  }
 });
