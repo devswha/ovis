@@ -30,7 +30,7 @@ import { setPcNewness, type PcNewness } from "./newPcHere.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
-import { ADMISSION_WAIT_MS, AddedToListError, ConsentChangedError, createAccountController, PlacedInListError } from "./accountController.ts";
+import { ADMISSION_WAIT_MS, AddedToListError, ConsentChangedError, createAccountController, ListUnwritableError, PlacedInListError } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
 import { listRemovedLink, refusalOf } from "./firstLink.ts";
@@ -1123,9 +1123,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         void showFront();
         return;
       }
-      // The PC's entry is in the list and the PC has not read it yet: the pairing stays, and nothing is opened over its
-      // session, which lets only the account's first steps through. The front page, where the PC has its row
-      if (error instanceof PlacedInListError) {
+      // The PC's entry is in the list and the PC has not read it yet (or that is not known yet), or this device cannot
+      // write its account's list: the pairing stays, and nothing is opened over its session, which lets only the
+      // account's first steps through. The front page, where the PC has its row
+      if (error instanceof PlacedInListError || error instanceof ListUnwritableError) {
         markedPairings.delete(attempt.offer.server_id);
         if (last !== attempt) return;
         cancelAttempt();

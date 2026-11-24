@@ -20,6 +20,7 @@ import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
+import { LIST_MOVE_ZH } from "./i18n/list-move.zh.ts";
 import { MEMORY_ZH } from "./i18n/memory.zh.ts";
 
 /**
@@ -136,6 +137,7 @@ const BASE: Record<string, string> = {
   "The invite could not be made. Try again.": "无法创建邀请。请重试。",
   "The invite could not be revoked. Try again.": "无法撤销邀请。请重试。",
   "It is not known yet whether the invite was made. Press Make an invite to check.": "还不知道邀请是否已创建。按“创建邀请”来确认。",
+  "This device's clock is behind. Check its date and time, then make the invite again.": "此设备的时钟慢了。请检查日期和时间，然后重新创建邀请。",
   "Waiting for the PC…": "正在等待电脑响应…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "对这台 PC 的尝试次数过多。请几分钟后在 PC 上重新开始。",
   "That number ran out. Press Add for a new one.": "这个数字已过期。请点添加获取新的数字。",
@@ -293,27 +295,7 @@ const BASE: Record<string, string> = {
   "Close": "关闭",
   "New PC added to your account: {name}": "你的账号添加了新电脑：{name}",
   "Not in your account's list yet": "尚未在账户名单中的 PC",
-  "Your account now keeps its own list": "你的账户现在有了自己的名单",
-  "This device made your account's list.": "此设备创建了你的账户名单。",
-  "{device} made your account's list.": "{device} 创建了你的账户名单。",
-  "It brought these in. Press Not me on one you do not know.": "以下设备和电脑也一并加入了。如有不认识的，请按“不是我”。",
-  "A device of yours": "你的一台设备",
-  "Remove {pc} from your account?": "要将 {pc} 从你的账户中移除吗？",
-  "{pc} was removed from your account.": "已将 {pc} 从你的账户中移除。",
-  "{pc} could not be removed. Try again.": "无法移除 {pc}。请重试。",
-  "{pc} follows another list of your account, so this device did not join yours. Remove {pc} from your account, or reset it there; this device then joins by itself.": "{pc} 遵循你账户的另一份名单，因此此设备没有加入名单。请将 {pc} 从账户中移除，或在那台电脑上重置；之后此设备会自动加入。",
-  "A PC of yours removed the device that made your account's list, so this device did not join it.": "你的一台电脑移除过创建账户名单的设备，因此此设备没有加入名单。",
-  "Your PCs do not know the device that made your account's list, so this device did not join it.": "你的电脑不认识创建账户名单的设备，因此此设备没有加入名单。",
-  "This device did not join your account's list.": "此设备没有加入账户名单。",
-  "This device is not in your account's list": "此设备不在账户名单中",
-  "Allow this device from a device that is in the list.": "请在名单中的设备上允许此设备。",
-  "One of your PCs": "你的一台电脑",
-  "Your PCs do not know the list this device follows": "你的电脑不认识此设备所遵循的名单",
-  "{pc} follows another list of your account.": "{pc} 遵循你账户的另一份名单。",
-  "A PC of yours removed the device that made the list this device follows.": "你的一台电脑移除过创建此设备所遵循名单的设备。",
-  "Your PCs do not know the device that made the list this device follows.": "你的电脑不认识创建此设备所遵循名单的设备。",
-  "Reset this device's copy of the list, then allow this device from a device that is in the list.": "请重置此设备的名单，然后在名单中的设备上允许此设备。",
-  "Reset this device's list": "重置此设备的名单",
+  "{name} is not in your account's list yet. Try again.": "{name} 还不在账户名单中。请重试。",
   "Added from {device}.": "从 {device} 添加。",
   "If you did not add it, remove it.": "如果不是你添加的，请移除。",
   "I didn't add this": "不是我添加的",
@@ -839,6 +821,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_ZH,
   dashboard: DASHBOARD_ZH,
   "runtime-move": RUNTIME_MOVE_ZH,
+  "list-move": LIST_MOVE_ZH,
   memory: MEMORY_ZH,
 };
 

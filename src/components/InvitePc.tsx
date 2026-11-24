@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { AccountList } from "../lib/account/accountList.ts";
-import { INVITE_S, invitesOf, makeInvite, revokeInvite, type InviteOutcome, type MadeInvite, type PendingInvite, type ShownInvite } from "../lib/account/listInvite.ts";
+import { INVITE_S, invitesOf, makeInvite, revokeInvite, type InviteOutcome, type MadeInvite, pendingInvite, type ShownInvite } from "../lib/account/listInvite.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { Toggle } from "./SettingsControls.tsx";
@@ -24,6 +24,7 @@ function refusal(t: Translate, outcome: Extract<InviteOutcome, { readonly made: 
   }
   switch (outcome.why) {
     case "unknown": return t("It is not known yet whether the invite was made. Press Make an invite to check.");
+    case "clock_behind": return t("This device's clock is behind. Check its date and time, then make the invite again.");
     case "stopped": return t("The account service cannot change the list right now.");
     case "clock": return t("This device's clock looks wrong. Check its date and time, then try again.");
     case "blocked": case "no_list": return t("This device cannot change your account's list right now.");
@@ -41,9 +42,6 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
   const t = useT();
   const [, redraw] = useState(0);
   const [made, setMade] = useState<MadeInvite | null>(null);
-  // an invite whose entry went out and whose placement is not known yet: its line, the only copy of its key, is kept
-  // here (never shown) until Make an invite settles it
-  const [pending, setPending] = useState<PendingInvite | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<"line" | "command" | null>(null);
@@ -77,8 +75,8 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
     setProblem(null);
     setCopied(null);
     try {
-      const outcome = await makeInvite(list, { auto, expect: { account: writer.account, list: writer.list }, ...(pending === null ? {} : { pending }) });
-      setPending(outcome.made ? null : outcome.pending ?? null);
+      // an invite an earlier press left not known is settled first (listInvite.ts keeps its line for the page's life)
+      const outcome = await makeInvite(list, { auto, expect: { account: writer.account, list: writer.list } });
       if (outcome.made) setMade(outcome.invite);
       else setProblem(refusal(t, outcome));
     } catch (error) {
@@ -126,7 +124,8 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
           <button type="button" className="btn btn-ghost" onClick={() => copy("command", command, commandRef.current)}>{copied === "command" ? t("Copied") : t("Copy")}</button>
         </div>
       )}
-      {problem !== null && <p className="account-error" role="alert">{problem}</p>}
+      {problem !== null ? <p className="account-error" role="alert">{problem}</p>
+        : pendingInvite(list) !== null && <p className="account-error" role="alert">{t("It is not known yet whether the invite was made. Press Make an invite to check.")}</p>}
       <button type="button" className="btn" disabled={busy} data-action="make-invite" onClick={() => void make()}>{t("Make an invite")}</button>
       {rows.length > 0 && (
         <ul className="invite-pc-list" data-testid="invites">

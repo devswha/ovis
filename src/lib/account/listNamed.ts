@@ -22,11 +22,14 @@ import { addPostedPc, type AddPcOutcome, type PostedPc } from "./listAdd.ts";
  *   PC: it is in the list, and the pairing that named it is spent.
  * - `placed`: this device's own copy holds the entry it signed for the PC, and the PC has not said yet that it read
  *   it: it will, at its next read. The pairing is not spent until it did.
+ * - `unknown`: the entry went out and whether it was placed is not known yet (no answer, and no read of the log
+ *   since; or the account service kept asking for the request again, which stays kept and may still be placed). The
+ *   pairing is not spent, as for `placed`, and the next read of this device's own copy says.
  * - `refused`: nothing was signed, the list did not take the entry, or the PC refused at a later ask; `why` is the
  *   PC's code, or the list's (`not_in_list`: the PC said it read an entry this device's copy does not hold).
  */
 export type NamedOutcome =
-  | { readonly outcome: "none" | "added" | "placed" }
+  | { readonly outcome: "none" | "added" | "placed" | "unknown" }
   | { readonly outcome: "refused"; readonly why: string; readonly add?: Extract<AddPcOutcome, { readonly added: false }> };
 
 /** How often the PC is asked whether it read the entry: it counts the calls of one pairing. */
@@ -88,7 +91,15 @@ export async function nameListToPc(options: {
   const added = await addPostedPc(options.list, posted, options.names, {
     admit: options.admit, expect: { account: options.account, list: writer.list }, member, ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  if (!added.added) return { outcome: "refused", why: added.why === "admit" ? added.code ?? "admit" : added.why, add: added };
+  if (!added.added) {
+    if (added.why !== "unknown" && added.why !== "busy") return { outcome: "refused", why: added.why === "admit" ? added.code ?? "admit" : added.why, add: added };
+    // Not known whether the entry was placed: this device's own copy, read from the log, says. Where it holds the PC by
+    // this card's key the PC is asked as after a placement; otherwise it is not known yet, never refused
+    await options.list.sync({ read: true }).catch(() => undefined);
+    const now = options.list.writer();
+    const row = now?.account === options.account ? now.state.pcs[options.endpoint] : undefined;
+    if (row === undefined || row.removed !== null || row.key !== key) return { outcome: "unknown" };
+  }
   for (let asks = 1; asks < NAMED_ASKS; asks += 1) {
     const again = await ask(false);
     const refused = refusedBy(again);

@@ -4,8 +4,10 @@ import { ACCOUNT_OS_NAMES, accountLabel, placeName, type AccountAsker } from "..
 import { addPostedPc, NUMBER_TRIES, numberWith, postedPcs, type AddNumber, type AddPcOutcome, type NumberRefusal } from "../lib/account/listAdd.ts";
 import { holdsList } from "../lib/account/listWrite.ts";
 import { listNames } from "../lib/account/listGenesis.ts";
-import { addInvitedPc, invitedPcs, type InvitedPc } from "../lib/account/listInvited.ts";
-import { pageListReading } from "../lib/account/listPcs.ts";
+import { inviteLetsIn, invitedPcs, type InvitedPc } from "../lib/account/listInvited.ts";
+import { endInviteAtService, serviceInviteId } from "../lib/account/listInvite.ts";
+import { pageListReading, readPageList, unreadCopy } from "../lib/account/listPcs.ts";
+import type { AccountList, ListWriter } from "../lib/account/accountList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { noteAct } from "../lib/account/seenPcs.ts";
@@ -70,6 +72,26 @@ function askerLine(asker: AccountAsker | undefined, language: string): string | 
 /** What the card says when its number ran out: a new one at Add, while the card has tries left. */
 const numberEnded = (t: Translate, tries: number): Problem => ({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("That number ran out. Press Add for a new one."), signInAgain: false });
 
+/**
+ * Whether `account` has a list, by this device's own knowledge, never by the directory: a copy it holds, read or not
+ * read yet on this page (listPcs.ts unreadCopy), or a list the account service names that this device is not in yet.
+ */
+async function hasList(list: AccountList, account: string): Promise<boolean> {
+  const view = list.view();
+  if (view.account === account) return holdsList(view) || view.status.at === "not_in";
+  return unreadCopy(list, account);
+}
+
+/** What a card places, and goes on placing at Try again: the very post the number came from, by the member key it was worked out with. */
+type Placing = {
+  readonly post: AddNumber["post"]; readonly member: string;
+  /**
+   * The invite the PC joined with: ended in the same request, and at the account service after it. `optional` beside a
+   * compared number (an invite that is over refuses nothing then); the one-press Add of an invited PC needs it open.
+   */
+  readonly invite?: { readonly key: string; readonly optional: boolean };
+};
+
 /** No number came for a PC that asks to be added (listAdd.ts). */
 class NumberError extends Error {
   constructor(readonly why: NumberRefusal) {
@@ -106,6 +128,9 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   const [listing, setListing] = useState<Listing | null>(null);
   const [confirmed, setConfirmed] = useState<readonly DirectoryPc[]>([]);
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
+  // The cards whose admission passed and whose entry the list did not take: the account's directory no longer lists
+  // them as asking, and they stay until the device's own copy holds the PC or the person says No
+  const [kept, setKept] = useState<readonly DirectoryPc[]>([]);
   useEffect(() => {
     if (!enabled) { setListing(null); return; }
     let version = 0;
@@ -128,7 +153,7 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
       }
     };
     const visibleRead = (): void => { if (document.visibilityState === "visible") void read(); };
-    const signInChanged = (): void => { setListing(null); setConfirmed([]); void read(); };
+    const signInChanged = (): void => { setListing(null); setConfirmed([]); setKept([]); void read(); };
     void read();
     document.addEventListener("visibilitychange", visibleRead);
     window.addEventListener("focus", visibleRead);
@@ -146,13 +171,16 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   if (listing === null) return null;
   const { session } = listing;
   const told = new Set(confirmed.map((pc) => pc.server_id));
+  const asking = new Set(listing.pcs.map((pc) => pc.server_id));
+  const cards = [...listing.pcs, ...kept.filter((pc) => !asking.has(pc.server_id))];
   return (
     <>
-      {listing.pcs.filter((pc) => !told.has(pc.server_id) && !removed.has(pc.server_id)).map((pc) => (
+      {cards.filter((pc) => !told.has(pc.server_id) && !removed.has(pc.server_id)).map((pc) => (
         <UnconfirmedPcNotice key={`${session.account}:${pc.server_id}:${pc.listing_id ?? pc.added_at}`} pc={pc} session={session} service={service} now={now} retry={pendingFor(listing.pending, pc)} numberWaitMs={numberWaitMs}
           {...(onSignInAgain ? { onSignInAgain } : {})}
           onConfirmed={(row) => setConfirmed((prior) => [...prior.filter((each) => each.server_id !== row.server_id), row])}
-          onRemoved={() => setRemoved((prior) => new Set([...prior, pc.server_id]))} />
+          onKept={() => setKept((prior) => [...prior.filter((each) => each.server_id !== pc.server_id), pc])}
+          onRemoved={() => { setRemoved((prior) => new Set([...prior, pc.server_id])); setKept((prior) => prior.filter((each) => each.server_id !== pc.server_id)); }} />
       ))}
       {tellConfirmed && confirmed.map((pc) => <NewPcNotice key={`${session.account}:new:${pc.server_id}`} pc={pc} session={session} dismissalKey={newPcNoticeKey(session.account, pc)} />)}
     </>
@@ -167,7 +195,7 @@ export function invitedTitle(t: Translate, invited: Pick<InvitedPc, "by">, membe
   return name === undefined ? t("Add this PC to your account? (joined with an invite of your account)") : t("Add this PC to your account? (joined with the invite from {device})", { device: name });
 }
 
-function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, onSignInAgain, onConfirmed, onRemoved }: {
+function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, onSignInAgain, onConfirmed, onKept, onRemoved }: {
   readonly pc: DirectoryPc;
   readonly session: AccountSession;
   readonly service: AccountService;
@@ -177,6 +205,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   readonly numberWaitMs?: number | undefined;
   readonly onSignInAgain?: (provider: AccountProvider) => void;
   readonly onConfirmed: (row: DirectoryPc) => void;
+  /** the account admitted the PC and the list did not take its entry: the card stays, whatever the directory says */
+  readonly onKept: () => void;
   readonly onRemoved: () => void;
 }) {
   const t = useT();
@@ -197,6 +227,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   // On an account with a signed list, for a PC that posted its keys for it: the number both screens show, worked out
   // with the PC (listAdd.ts). The person confirms it at the PC first; the Add beside it then signs the PC into the list.
   const [number, setNumber] = useState<AddNumber | null>(null);
+  // the PC the account admitted and whose entry the list did not take yet: what Try again places
+  const [placing, setPlacing] = useState<Placing | null>(null);
   // The PC joined with an invite of this account, by this device's own check of the line's signature over the PC's
   // card (listInvited.ts): its Add needs no number. null: it did not, or that is not known.
   const [invited, setInvited] = useState<InvitedPc | null>(null);
@@ -268,12 +300,16 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   // the ten minutes are checked again at the press: a page left open never adds an old listing
   const add = (): Promise<void> => act(async () => {
     if (!youngAt(now())) { setYoung(false); return; }
-    // the account has a list and this device holds it: a PC that posted for the list is added by the number, and
-    // nothing else (no admission of the directory's alone, whatever became of the post or of this device's standing)
-    const view = pageAccountList()?.view();
-    const known = view != null && view.account === session.account && holdsList(view);
-    const list = known && pageListReading(session.account) === "in" ? pageAccountList() : null;
-    if (known && (list === null || list.writer() === null)) throw new AddRefused({ added: false, why: "blocked", retryAfterMs: null });
+    // The account has a list, by this device's own knowledge of it: a PC that posted for the list is added by the
+    // number, and nothing else (no admission of the directory's alone, whatever became of the post or of this
+    // device's standing). A page that has not read its list yet says so, and reads it for the next press
+    const page = pageAccountList();
+    const known = page !== null && await hasList(page, session.account);
+    const list = known && pageListReading(session.account) === "in" ? page : null;
+    if (known && (list === null || list.writer() === null)) {
+      if (page.view().account !== session.account) void readPageList(session.account);
+      throw new AddRefused({ added: false, why: "blocked", retryAfterMs: null });
+    }
     // A PC that joined with an invite of this account: the line's own signature says that it is this PC, so the one
     // press admits it, signs its entry and ends the invite. It is checked again at the press.
     // The press is for the card that was shown: the very keys, card and invite. A post that changed since (other keys
@@ -284,18 +320,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
       const posted = (await invitedPcs(list, await writer.service.listPosts(shownCard.list), now())).find((each) => each.server_id === pc.server_id) ?? null;
       const same = posted !== null && posted.endpoint === shownCard.endpoint && posted.key === shownCard.key && posted.enc === shownCard.enc && posted.card === shownCard.card && posted.invite === shownCard.invite && posted.list === shownCard.list;
       if (!same) { setInvited(posted); return; }
-      const outcome = await addInvitedPc(list, shownCard, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
-        expect: { account: session.account, list: shownCard.list }, member: writer.keys.key,
-        admit: async () => { await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
-      });
-      // the service's own window for the listing ended: nothing was admitted, and the request is started again on the PC
-      if (!outcome.added && outcome.why === "admit" && outcome.code === "listing_expired") { setToldExpired(true); setYoung(false); return; }
-      if (!outcome.added) throw new AddRefused(outcome);
-      // A member's invite, proved for this PC by the line's own key, and the person's press: kept as such in this
-      // device's record of its PCs, before the card goes (a tab closed right after keeps it)
-      await noteAct(session.account, shownCard.endpoint, "invited").catch(() => undefined);
-      window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
-      onRemoved();
+      await place({ post: shownCard, member: writer.keys.key, invite: { key: shownCard.invite, optional: false } });
       return;
     }
     const post = list === null ? undefined : (await postedPcs(list)).find((each) => each.server_id === pc.server_id);
@@ -341,25 +366,58 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     onConfirmed({ ...listed, new_until: admitted.new_until, admitted_at: at });
   }, (error) => error instanceof NumberError ? { text: numberRefusal(t, error.why), signInAgain: false } : error instanceof AddRefused ? addRefusal(t, error.outcome) : refusal(t, error));
   /** Add, beside the number: the account admits the PC, and this device signs it into the list with the card the number came from. */
-  const addByNumber = (shown: AddNumber): Promise<void> => act(async () => {
+  /**
+   * Signs the PC into the list with the card the number came from. Once the account admitted the PC and the list did
+   * not take its entry, the card stays (onKept) and says so, and Try again goes again with the same card and member key:
+   * the request kept for it is sent again, or signed anew on a new head. Nothing is admitted a second time.
+   */
+  const place = async (shown: Placing): Promise<void> => {
     const list = pageAccountList();
     if (list === null) return;
-    // the number lives so long: a press after it adds nothing, whatever the timer did not draw yet
-    if (now() >= shown.until) { setNumber(null); setProblem(numberEnded(t, tries)); return; }
+    let admitted = placing !== null;
+    const invite = shown.invite;
+    // the service's id of the invite this request ends, found before its end is placed
+    const serviceId = invite === undefined ? null : await serviceInviteId(list, invite.key);
     const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
       expect: { account: session.account, list: shown.post.list }, member: shown.member,
-      admit: async () => { await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
+      admit: async () => {
+        if (admitted) return;
+        await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined);
+        admitted = true;
+      },
+      ...(invite === undefined ? {} : { invite: { key: invite.key, open: (writer: ListWriter) => inviteLetsIn(writer, invite.key, writer.issued_at), ...(invite.optional ? { optional: true as const } : {}) } }),
     });
     // the service's own window for the listing ended: nothing was admitted, and the request is started again on the PC
     if (!outcome.added && outcome.why === "admit" && outcome.code === "listing_expired") { setNumber(null); setToldExpired(true); setYoung(false); return; }
+    if (!outcome.added && admitted) { setNumber(null); setPlacing(shown); onKept(); }
     if (!outcome.added) throw new AddRefused(outcome);
-    // The person pressed Add where a number was compared on both screens: kept in this device's own record of its PCs,
-    // by the relay key the number was worked out for. It only records: storage that is not there changes nothing.
-    void noteAct(session.account, shown.post.endpoint, "added").catch(() => undefined);
+    // The person pressed Add where a number was compared on both screens (`added`), or on the card of a PC whose line's
+    // own proof says it joined with a member's invite (`invited`): kept in this device's own record of its PCs, by the
+    // relay key, before the card goes (a tab closed right after keeps it). It only records.
+    await noteAct(session.account, shown.post.endpoint, invite !== undefined && !invite.optional ? "invited" : "added").catch(() => undefined);
+    // the invite this request ended in the list is ended at the account service too, whoever made it
+    if (invite !== undefined) void endInviteAtService(list, invite.key, serviceId);
     setNumber(null);
+    setPlacing(null);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
     onRemoved();
-  }, (error) => error instanceof AddRefused ? addRefusal(t, error.outcome) : refusal(t, error));
+  };
+  const placed = (error: Error): Problem => error instanceof AddRefused ? addRefusal(t, error.outcome) : refusal(t, error);
+  const addByNumber = (shown: AddNumber): Promise<void> => act(async () => {
+    // the number lives so long: a press after it adds nothing, whatever the timer did not draw yet
+    if (now() >= shown.until) { setNumber(null); setProblem(numberEnded(t, tries)); return; }
+    // A PC that joined with a member's invite, as the line's own proof for this very card says now: the invite is ended
+    // beside its entry, so the same line adds no second PC (it was compared by the number all the same)
+    const list = pageAccountList();
+    const writer = list?.writer() ?? null;
+    let joined: InvitedPc | undefined;
+    if (list !== null && writer !== null) {
+      try { joined = (await invitedPcs(list, await writer.service.listPosts(writer.list), now())).find((each) => each.endpoint === shown.post.endpoint && each.key === shown.post.key && each.enc === shown.post.enc && each.card === shown.post.card); }
+      catch { joined = undefined; }
+    }
+    await place({ post: shown.post, member: shown.member, ...(joined === undefined ? {} : { invite: { key: joined.invite, optional: true } }) });
+  }, placed);
+  const placeAgain = (shown: Placing): Promise<void> => act(() => place(shown), placed);
   const notTheSame = (): void => {
     numberEnd.current?.abort(new DOMException("The numbers were not the same", "AbortError"));
     setNumber(null);
@@ -390,6 +448,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
         {invited === null && <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young ? ` ${t("Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.")}` : ""}</span>}
         {asking && young && <span className="settings-hint">{t("Expires in {minutes} min", { minutes: Math.min(10, Math.max(1, Math.ceil((until - now()) / 60_000))) })}</span>}
         {ranOut && <span>{t("This request ran out. To add this PC, start again on the PC.")}</span>}
+        {placing !== null && <span>{t("{name} is not in your account's list yet. Try again.", { name: accountLabel(pc.label) })}</span>}
         {problem !== null && <span className="account-error" role="alert">{problem.text}</span>}
         {removal.prompt}
       </span>
@@ -397,7 +456,12 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
         {!ranOut && problem?.signInAgain === true && onSignInAgain !== undefined && (
           <button type="button" className="btn" disabled={busy} onClick={() => { keepPendingAdd(session.account, pc); onSignInAgain(session.provider); }}>{t("Sign in again")}</button>
         )}
-        {young && number !== null ? (
+        {placing !== null ? (
+          <>
+            <button type="button" className="btn" disabled={busy} onClick={() => void placeAgain(placing)}>{t("Try again")}</button>
+            <button type="button" className="btn" disabled={busy} onClick={remove}>{t("No|account pc")}</button>
+          </>
+        ) : young && number !== null ? (
           <>
             <button type="button" className="btn" disabled={busy} onClick={() => void addByNumber(number)}>{t("Add|account pc")}</button>
             <button type="button" className="btn" disabled={busy} onClick={notTheSame}>{t("Not the same")}</button>

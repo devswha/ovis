@@ -20,6 +20,7 @@ import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
 import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
+import { LIST_MOVE_JA } from "./i18n/list-move.ja.ts";
 import { MEMORY_JA } from "./i18n/memory.ja.ts";
 
 /**
@@ -134,6 +135,7 @@ const BASE: Record<string, string> = {
   "The invite could not be made. Try again.": "招待を作成できませんでした。もう一度お試しください。",
   "The invite could not be revoked. Try again.": "招待を取り消せませんでした。もう一度お試しください。",
   "It is not known yet whether the invite was made. Press Make an invite to check.": "招待が作成されたかどうかはまだわかりません。確かめるには「招待を作成」を押してください。",
+  "This device's clock is behind. Check its date and time, then make the invite again.": "このデバイスの時計が遅れています。日付と時刻を確認してから、招待をもう一度作成してください。",
   "Waiting for the PC…": "PC の応答を待っています…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "この PC への試行が多すぎます。数分後に PC でやり直してください。",
   "That number ran out. Press Add for a new one.": "数字の有効期限が切れました。「追加」を押して新しい数字を表示してください。",
@@ -291,27 +293,7 @@ const BASE: Record<string, string> = {
   "Close": "閉じる",
   "New PC added to your account: {name}": "アカウントに新しいPCが追加されました: {name}",
   "Not in your account's list yet": "まだアカウントの名簿にない PC",
-  "Your account now keeps its own list": "アカウントの名簿ができました",
-  "This device made your account's list.": "この端末がアカウントの名簿を作りました。",
-  "{device} made your account's list.": "{device} がアカウントの名簿を作りました。",
-  "It brought these in. Press Not me on one you do not know.": "次の端末と PC も一緒に入りました。知らないものがあれば「自分ではない」を押してください。",
-  "A device of yours": "あなたの端末",
-  "Remove {pc} from your account?": "{pc} をアカウントから外しますか？",
-  "{pc} was removed from your account.": "{pc} をアカウントから外しました。",
-  "{pc} could not be removed. Try again.": "{pc} を外せませんでした。もう一度お試しください。",
-  "{pc} follows another list of your account, so this device did not join yours. Remove {pc} from your account, or reset it there; this device then joins by itself.": "{pc} がアカウントの別の名簿に従っているため、この端末は名簿に入りませんでした。{pc} をアカウントから外すか、その PC でリセットすると、この端末は自動で入ります。",
-  "A PC of yours removed the device that made your account's list, so this device did not join it.": "あなたの PC の一台が、アカウントの名簿を作った端末を外していたため、この端末は名簿に入りませんでした。",
-  "Your PCs do not know the device that made your account's list, so this device did not join it.": "あなたの PC はアカウントの名簿を作った端末を知らないため、この端末は名簿に入りませんでした。",
-  "This device did not join your account's list.": "この端末はアカウントの名簿に入りませんでした。",
-  "This device is not in your account's list": "この端末はアカウントの名簿にありません",
-  "Allow this device from a device that is in the list.": "名簿にある端末から、この端末を許可してください。",
-  "One of your PCs": "あなたの PC の一台",
-  "Your PCs do not know the list this device follows": "あなたの PC はこの端末が従う名簿を知りません",
-  "{pc} follows another list of your account.": "{pc} はアカウントの別の名簿に従っています。",
-  "A PC of yours removed the device that made the list this device follows.": "あなたの PC の一台が、この端末が従う名簿を作った端末を外していました。",
-  "Your PCs do not know the device that made the list this device follows.": "あなたの PC は、この端末が従う名簿を作った端末を知りません。",
-  "Reset this device's copy of the list, then allow this device from a device that is in the list.": "この端末の名簿をリセットしてから、名簿にある端末からこの端末を許可してください。",
-  "Reset this device's list": "この端末の名簿をリセット",
+  "{name} is not in your account's list yet. Try again.": "{name} はまだアカウントの名簿にありません。もう一度お試しください。",
   "Added from {device}.": "{device} から追加されました。",
   "If you did not add it, remove it.": "心当たりがなければ、削除してください。",
   "I didn't add this": "自分で追加していません",
@@ -834,6 +816,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_JA,
   dashboard: DASHBOARD_JA,
   "runtime-move": RUNTIME_MOVE_JA,
+  "list-move": LIST_MOVE_JA,
   memory: MEMORY_JA,
 };
 
