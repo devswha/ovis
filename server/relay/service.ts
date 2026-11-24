@@ -1,5 +1,5 @@
 import { MACHINE_DIRECT_CARRIER_ENABLED, MachineCodeForAccountError } from "../machine-profile.ts";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { DeviceConnection } from "../../shared/access.ts";
@@ -63,6 +63,7 @@ export interface RelayServiceOptions {
   readonly clock?: RelayLinkOptions["clock"];
   readonly random?: RelayLinkOptions["random"];
   readonly serverVersion?: RelayLinkOptions["serverVersion"];
+  readonly minSupportedClient?: RelayLinkOptions["minSupportedClient"];
   /**
    * Regional relays to measure against `relay`. Ovis's own (shared/relay-regions.ts) when neither
    * `relay` nor OVIS_RELAY_URL names a relay; none otherwise, so a self-hosted relay stays the only one.
@@ -75,8 +76,8 @@ export interface RelayServiceOptions {
    */
   readonly pairCodeRelay?: string;
   /**
-   * Direct connections on this PC's networks while the relay is on (server/relay/direct.ts), unless
-   * turned off: the real entrypoint passes `{}`; without it (tests) nothing listens on the network.
+   * Direct connections on this PC's networks while the relay is on (server/relay/direct.ts), once
+   * turned on: the real entrypoint passes `{}`; without it (tests) nothing listens on the network.
    */
   readonly direct?: Pick<DirectCarrierOptions, "addresses" | "peerAllowed" | "preferredPort" | "refreshMs" | "advertise" | "tailnetIp" | "tailnetAddresses">;
   /** The account service a relay pass comes from (server/relay/pass.ts), or why none can be used; none is asked without it. */
@@ -174,7 +175,7 @@ export class RelayService {
   private directStarting: Promise<void> = Promise.resolve();
   /** signed-in sessions over the relay links and the direct carriers alike, against one set of limits */
   private readonly signedIn = new SignedInSessions();
-  /** whether direct connections are on, read once from `relay/direct.json`: on unless turned off */
+  /** whether direct connections are on, read once from `relay/direct.json`: off unless turned on */
   private directOn: boolean | undefined;
 
   constructor(private readonly options: RelayServiceOptions) {
@@ -377,11 +378,13 @@ export class RelayService {
 
   private directEnabled(): boolean {
     if (this.directOn === undefined) {
-      // on unless turned off; a choice that cannot be read is taken as off, so a damaged file never opens the network
+      // only a person's choice is ever written (setDirect), so no file is no choice: off, for a new install and for one
+      // that only had the old default (on). A choice that cannot be read is taken as off, so a damaged file never opens
+      // the network
       let text: string | undefined;
       try { text = readFileSync(this.directPath(), "utf8"); }
       catch (error) { if (!(isJsonObject(error) && error.code === "ENOENT")) text = ""; }
-      if (text === undefined) this.directOn = true;
+      if (text === undefined) this.directOn = false;
       else {
         let saved: unknown;
         try { saved = JSON.parse(text); } catch { saved = null; }
@@ -410,7 +413,8 @@ export class RelayService {
   private startDirect(services: RequestServices, identity: RelayIdentity): void {
     if (!this.options.direct || !this.directAvailable || this.directCarrier || !this.directEnabled()) return;
     this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn,
-      ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}) });
+      ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}),
+      ...(this.options.minSupportedClient ? { minSupportedClient: this.options.minSupportedClient } : {}) });
     this.directStarting = this.directCarrier.start();
   }
 
@@ -451,6 +455,7 @@ export class RelayService {
       const regional = new RelayLink({
         relay, identity, services, port: this.port, ...this.passOptions(relay, false),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
+        minSupportedClient: this.options.minSupportedClient,
         relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
         onState: (phase) => { if (this.regionalLink === regional) this.regionalPhase = phase; },
       });
@@ -459,6 +464,11 @@ export class RelayService {
       this.regionalPhase = "connecting";
       regional.start();
     });
+  }
+
+  /** Whether this PC's relay switch was ever set (start or stop saved it): an Ovis installed over SSH never set it. */
+  switchSet(): boolean {
+    return existsSync(join(this.options.stateDir, "relay", "state.json"));
   }
 
   /** Boot never enables a missing or damaged state file and never replaces a damaged identity. */
@@ -507,6 +517,7 @@ export class RelayService {
       const link = new RelayLink({
         relay: this.relay, identity: this.identity, services, port: this.port, ...this.passOptions(this.relay, true),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
+        minSupportedClient: this.options.minSupportedClient,
         relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
         onState: (phase, error, code) => { if (this.link === link) { this.phase = phase; this.error = error; this.errorCode = code ?? null; } },
       });
