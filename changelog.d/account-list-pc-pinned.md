@@ -6,3 +6,6 @@
   service is away. No screen pins a PC yet: a person at the PC names the list at
   `POST /api/account/list/pin`, and the PC pins it once that list holds an entry for the PC's own
   key. A PC that is not pinned works as before.
+- `ovis status --json` says of a pinned PC which list it follows, where it stands in it and, when
+  it lets no device of its account in, why and what to do (`list`); and of a PC that cannot read
+  its own account state, what it could not read (`problem`).

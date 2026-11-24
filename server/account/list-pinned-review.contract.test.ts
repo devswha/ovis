@@ -1,13 +1,9 @@
 /**
- * Independent adversarial review of PR #4607 (a PC pinned to its account's signed list). Each test is an attack on the
- * PR head; a test that FAILS on the head is a finding (the report names which).
- *
- * How to run: copy this file into a checkout of the PR head as server/account/zz-review-4607.contract.test.ts and run
- *   TMPDIR=<a short folder> bun test server/account/zz-review-4607.contract.test.ts
- * (the review ran it from ~/.cache/ovis-tmp/rv4607/tests/run.sh, which does exactly that).
- *
- * Modelled on server/account/list-pinned.contract.test.ts: the fake account service, an isolated state folder per
- * PC, port 0, and the PC's clocks moved by hand.
+ * What an independent review of the PC's enforcement step attacked (docs/account.md, "The account's signed list on a
+ * PC"): a pinned PC against a row a member's add made before the pin, a slow or silent account service, copies it
+ * cannot use, its other state folder, a listing the service replaces, and a PC bound by one press. Beside
+ * list-pinned.contract.test.ts, on the same footing: the fake account service, a state folder per PC, port 0, and the
+ * PC's clocks moved by hand.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -30,6 +26,11 @@ afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
 type Signer = { keys: CryptoKeyPair; publicKey: string; id: string };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Waits for `done`, ten seconds at most, by a clock no test moves (these tests set Date.now). */
+async function until(done: () => boolean, what: string): Promise<void> {
+  const deadline = performance.now() + 10_000;
+  while (!done()) { if (performance.now() > deadline) throw new Error(what); await Bun.sleep(5); }
+}
 
 function testTime() {
   let now = Date.now();
@@ -111,6 +112,8 @@ async function v1Add(pc: Awaited<ReturnType<typeof listedPc>>, device: ListMembe
   return await applyAccountRecords(pc.services.devices, [add], pc.serverId);
 }
 
+// The names say what each test shows now. R1 to R16 are the sections of the independent review of #4607 these tests
+// were written for; the first three groups failed on the head that was reviewed.
 describe("R1 (D): a key the list holds, that a member's v1 add brought in before the pin, under the very id the list's row has", () => {
   test("opens as the role the list gives it (watch), not as the old row's drive", async () => {
     const pc = await listedPc();
@@ -162,7 +165,7 @@ describe("R1 (D): a key the list holds, that a member's v1 add brought in before
   });
 });
 
-describe("R2 (C/G): a read that the account service answers slowly holds the PC's whole follower back", () => {
+describe("R2 (C/G): a read that the account service answers slowly holds back nothing the PC has verified", () => {
   test("a removal a member hands over is applied while a service read hangs", async () => {
     const pc = await pinnedPc();
     const held = pc.list.status().head!;
@@ -174,15 +177,14 @@ describe("R2 (C/G): a read that the account service answers slowly holds the PC'
     // and now answers the PC's log reads as slowly as it may (each one up to the PC's own 15 s timeout)
     pc.control.stallLogAfter = 0;
     pc.list.heard(ACCOUNT, { id: pc.account.id, head: { seq: held.seq + 3, hash: "ab".repeat(32) } });
-    await sleep(300);
-    expect(pc.control.stalled).toBe(1);
+    await until(() => pc.control.stalled === 1, "the PC's read did not go out");
     // a member hands the PC the removal directly (the path that exists for a service that withholds)
     const taken = pc.list.takeFromPeer({ list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place });
     const outcome = await Promise.race([taken.then((verdict) => ({ verdict })), sleep(3_000).then(() => "still waiting" as const)]);
     expect(outcome).not.toBe("still waiting");
   });
 
-  test("while it hangs, the removed device keeps its open session and signs in again", async () => {
+  test("while it hangs, a device a member's page removed loses its open session", async () => {
     const pc = await pinnedPc();
     const held = pc.list.status().head!;
     pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq });
@@ -191,13 +193,12 @@ describe("R2 (C/G): a read that the account service answers slowly holds the PC'
     expect(await link.auth(pc.idOf(pc.laptop))).toMatchObject({ role: "drive" });
     pc.control.stallLogAfter = 0;
     pc.list.heard(ACCOUNT, { id: pc.account.id, head: { seq: held.seq + 3, hash: "ab".repeat(32) } });
-    await sleep(300);
+    await until(() => pc.control.stalled === 1, "the PC's read did not go out");
     void pc.list.takeFromPeer({ list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place });
-    await sleep(2_000);
-    expect(pc.services.devices.sessionRow(pc.idOf(pc.laptop).id)).toBeNull();
+    await until(() => pc.services.devices.sessionRow(pc.idOf(pc.laptop).id) === null, "the removed device kept its session while the read hung");
   });
 
-  test("a removal on the first page of a read is not acted on while a later page hangs", async () => {
+  test("a removal on the first page of a read is acted on while a later page hangs", async () => {
     const pc = await pinnedPc();
     const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
     expect(await link.auth(pc.idOf(pc.laptop))).toMatchObject({ role: "drive" });
@@ -208,10 +209,9 @@ describe("R2 (C/G): a read that the account service answers slowly holds the PC'
     pc.service.tamperList(pc.account.id, { reader: pc.reader, pages: [before.seq + 1] });
     pc.control.stallLogAfter = 1;
     pc.list.heard(ACCOUNT, { id: pc.account.id, head: pc.account.place });
-    await sleep(1_000);
-    expect(pc.control.stalled).toBe(1);
-    // the PC has read and verified the removal of the laptop, and lets it on
-    expect(pc.services.devices.sessionRow(pc.idOf(pc.laptop).id)).toBeNull();
+    await until(() => pc.control.stalled === 1, "the second page was not asked for");
+    // the PC has read and verified the removal of the laptop: it is acted on while the next page hangs
+    await until(() => pc.services.devices.sessionRow(pc.idOf(pc.laptop).id) === null, "the removal on the first page waited for the second");
   });
 });
 
@@ -230,7 +230,7 @@ describe("R3 (C): an until is ended by the PC's own timer, also while the follow
     // the queue is then held by a read the service does not answer
     pc.control.stallLogAfter = 0;
     pc.list.heard(ACCOUNT, { id: pc.account.id, head: { seq: 99, hash: "ab".repeat(32) } });
-    await sleep(100);
+    await until(() => pc.control.stalled >= 1, "the PC's read did not go out");
     pc.time.advance(2_000);
     expect(await bounded(link.serverError.then(String), 3_500).catch(() => "still open")).toBe("auth_revoked");
   });
