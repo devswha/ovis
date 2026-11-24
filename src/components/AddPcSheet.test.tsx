@@ -491,6 +491,17 @@ describe("the Add-a-PC sheet", () => {
     }
   });
 
+  it("says of a join into the list that the PC did not see the device's entry in time, never that the account's list did not take it", () => {
+    const id = (s: string, vars?: Record<string, string | number>) => vars ? s.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? "")) : s;
+    for (const flow of [undefined, "new", "join"] as const) {
+      const said = relayFailureText(id, "list-not-in", "desk2", null, flow);
+      expect(said).toMatchObject({ title: "desk2 did not let this device in", retry: true });
+      expect(said.copy).toBe("It was approved, and desk2 did not see it in your account's list in time. Ask to join again, and approve it on a device of your account or on desk2 itself.");
+      expect(`${said.title} ${said.copy}`).not.toContain("did not take it");
+      expect(said.title).not.toContain("not added to your account");
+    }
+  });
+
   it("uses device terminology instead of hardcoding phone in relayFailureText and sets aria-busy on RelayPairingPrompt", async () => {
     const id = (s: string, vars?: Record<string, string | number>) => vars ? s.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? "")) : s;
     expect(relayFailureText(id, "pair-declined", "desk2").title).toBe("desk2 did not approve this device");

@@ -492,7 +492,11 @@ export async function approveForAccount(options: {
   /** the account the card was drawn under, its key on this device, and the page's copy of its list */
   account: string; key: Promise<AccountKey> | AccountKey; list: AccountList | null;
   paired: () => Promise<readonly RelayDevice[]>; directory: () => Promise<readonly string[]>; store?: AccountStore;
-  onStalled: (stalled: { label: string; why: AllowRefusal; retryAfterMs: number | null; retry: () => Promise<void> } | null) => void;
+  /**
+   * `pairedAtPc`: X let the device in by a pairing of its own, so it is in at X whatever the list says; false on a PC
+   * that lets devices in by the list alone, where it is in nowhere that the list does not hold it.
+   */
+  onStalled: (stalled: { label: string; why: AllowRefusal; retryAfterMs: number | null; pairedAtPc: boolean; retry: () => Promise<void> } | null) => void;
   wait?: (ms: number) => Promise<void>; now?: () => number;
 }): Promise<void> {
   const { request, pc } = options;
@@ -534,7 +538,7 @@ export async function approveForAccount(options: {
           // anything else failed after the list took the device (the introduction, the account's other PCs): the
           // card, which says that the list did not take it, goes, and the failure is the caller's to say
           if (!(error instanceof ListAllowError)) { options.onStalled(null); throw error; }
-          options.onStalled({ label: admission.label, why: error.why, retryAfterMs: error.retryAfterMs, retry: attempt });
+          options.onStalled({ label: admission.label, why: error.why, retryAfterMs: error.retryAfterMs, pairedAtPc: !pinned, retry: attempt });
         }
       };
       await attempt();

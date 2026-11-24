@@ -96,6 +96,7 @@ const BASE: Record<string, string> = {
   "The account service could not be reached. The PCs this device is paired with still work.": "계정 서비스에 연결할 수 없습니다. 이 기기와 연결된 PC는 그대로 쓸 수 있습니다.",
   "Add a new device?": "새 기기를 추가할까요?",
   "{device} was added to {pc} only": "{device} 기기는 {pc}에만 추가됐어요",
+  "{device} is not in your account": "{device} 기기는 계정에 없어요",
   "Update Ovis on that device and sign in there, then try again.": "그 기기에서 Ovis를 업데이트하고 로그인한 뒤 다시 시도하세요.",
   "That device was removed from your account. Sign in again on it first.": "그 기기는 계정에서 제거됐어요. 먼저 그 기기에서 다시 로그인하세요.",
   "The account service cannot change the list right now.": "지금은 계정 서비스가 목록을 바꿀 수 없어요.",

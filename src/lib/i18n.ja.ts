@@ -98,6 +98,7 @@ const BASE: Record<string, string> = {
   "The account service could not be reached. The PCs this device is paired with still work.": "アカウントサービスに接続できません。このデバイスとペアリング済みの PC はそのまま使えます。",
   "Add a new device?": "新しいデバイスを追加しますか？",
   "{device} was added to {pc} only": "{device} は {pc} にだけ追加されました",
+  "{device} is not in your account": "{device} はアカウントに入っていません",
   "Update Ovis on that device and sign in there, then try again.": "そのデバイスで Ovis を更新してログインし、もう一度お試しください。",
   "That device was removed from your account. Sign in again on it first.": "そのデバイスはアカウントから削除されています。先にそのデバイスでもう一度ログインしてください。",
   "The account service cannot change the list right now.": "現在、アカウントサービスはリストを変更できません。",

@@ -211,15 +211,17 @@ describe("an approval on a card, from the press to what is left to say", () => {
     await newcomer.service.postAdmission(X, "Tablet", key, "android");
     const request = { id: "r1", label: "Tablet", intent: "account" as const, choices: ["111111", "222222", "333333"] as [string, string, string], expires_at: "", key };
     const said: (string | null)[] = [];
+    /** for each card: whether X let the device in by a pairing of its own (one that does not follow the list) */
+    const ways: boolean[] = [];
     const retries: (() => Promise<void>)[] = [];
     const order: string[] = [];
     const approve = (pc: ReturnType<typeof pcX>, followsList: boolean, told: { list?: true; confirmed?: true } = {}, list: typeof member.list | null = member.list) => approveForAccount({
       request: { ...request, ...told }, digits: "222222", through: X, service: member.service, account: w.account, key: member.store.key(), list,
       pc: { fetch: async (path, init) => { order.push(path); return pc.fetch(path, init); }, followsList },
       decide: async (decision) => { order.push(decision); }, paired: async () => [], directory: async () => [X], wait: noWait, now: () => w.clock.now,
-      onStalled: (stalled) => { said.push(stalled === null ? null : stalled.why); if (stalled !== null) retries.push(stalled.retry); },
+      onStalled: (stalled) => { said.push(stalled === null ? null : stalled.why); if (stalled !== null) { retries.push(stalled.retry); ways.push(stalled.pairedAtPc); } },
     });
-    return { w, member, X, key, order, said, retries, approve };
+    return { w, member, X, key, order, said, ways, retries, approve };
   }
 
   /** A PC that lets devices in by the list, as an approval meets it: it takes the page, and keeps no row a member added. */
@@ -315,6 +317,17 @@ describe("an approval on a card, from the press to what is left to say", () => {
     await retries[0]!();
     expect(order).toEqual(["approve", "/api/account/list/head", "/api/account/list/page", "/api/account/introduce", "/api/account/records"]);
     expect([w.held().entries.length, said]).toEqual([2, ["stopped", null]]);
+  });
+
+  it("tells the card whether X let the device in by a pairing of its own: never on a PC that lets devices in by the list", async () => {
+    const stop = (request: Request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({ error: { code: "list_stopped", message: "x" } }, { status: 503 }) : null;
+    const pinned = await rang();
+    pinned.member.wire.answer = stop;
+    await pinned.approve(pinnedPc(pinned.w), true, { list: true, confirmed: true });
+    const other = await rang();
+    other.member.wire.answer = stop;
+    await other.approve(pcX(), false);
+    expect([pinned.said, pinned.ways, other.said, other.ways]).toEqual([["stopped"], [false], ["stopped"], [true]]);
   });
 
   it("on any other PC: the approval first, then the entry once the PC holds the device's row, and a card where the list did not take it", async () => {

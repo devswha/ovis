@@ -6,11 +6,12 @@ import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { keepStalled, ListAllowNotice } from "./AccountApprovals.tsx";
 
-function render(why: AllowRefusal, retryAfterMs: number | null = null): string {
+/** `pairedAtPc`: the PC let the device in by a pairing of its own (one that does not follow the list), as every case here but the last */
+function render(why: AllowRefusal, retryAfterMs: number | null = null, pairedAtPc = true): string {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   try {
-    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "tablet-key", device: "Dana's tablet", pc: "Desk", why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
+    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "tablet-key", device: "Dana's tablet", pc: "Desk", pairedAtPc, why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
   } finally {
     if (saved) Object.defineProperty(navigator, "languages", saved);
     else Reflect.deleteProperty(navigator, "languages");
@@ -56,13 +57,24 @@ describe("a device a PC let in that the account's list did not take", () => {
   });
 });
 
+describe("a device a PC that lets devices in by the list did not let in", () => {
+  it("says that the device is not in the account, never that it was added to that PC: such a PC made no pairing of its own", () => {
+    for (const why of ["not_claimed", "stopped", "removed", "refused"] as const) {
+      const html = render(why, null, false);
+      expect(html).toContain("Dana&#x27;s tablet is not in your account");
+      expect(html).not.toContain("only");
+    }
+    expect(render("unknown", null, false)).toContain("Not known yet: is Dana&#x27;s tablet in your account?");
+  });
+});
+
 describe("a change that still waits", () => {
   it("offers Cancel beside Try again where a signed request waits, and none where nothing waits", () => {
     const waits = (why: AllowRefusal, cancel: boolean): string => {
       const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
       Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
       try {
-        return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "k", device: "Dana's tablet", pc: "Desk", why, retry: async () => {}, ...(cancel ? { cancel: async () => {} } : {}) }, onClose: () => {} })));
+        return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "k", device: "Dana's tablet", pc: "Desk", pairedAtPc: true, why, retry: async () => {}, ...(cancel ? { cancel: async () => {} } : {}) }, onClose: () => {} })));
       } finally {
         if (saved) Object.defineProperty(navigator, "languages", saved);
         else Reflect.deleteProperty(navigator, "languages");
@@ -80,7 +92,7 @@ describe("a change that still waits", () => {
 });
 
 describe("the devices the list did not take, kept until each is closed or let in", () => {
-  const stalled = (key: string, why: AllowRefusal) => ({ key, device: key, pc: "Desk", why, retry: async () => {} });
+  const stalled = (key: string, why: AllowRefusal) => ({ key, device: key, pc: "Desk", pairedAtPc: true, why, retry: async () => {} });
 
   it("keeps one card for each device, the first refused first, and takes a device's card away when it is let in or closed", () => {
     let kept = keepStalled([], "tablet", stalled("tablet", "budget"));
