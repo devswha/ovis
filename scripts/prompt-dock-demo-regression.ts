@@ -649,7 +649,8 @@ try {
       }
 
       {
-        const { page, errors, close } = await open({ width: 390, height: 500, touch: true, prompt: FORM });
+        // longer than the ten lines a question's context shows, so its own box scrolls too
+        const { page, errors, close } = await open({ width: 390, height: 500, touch: true, prompt: { ...FORM, body: `${FORM.body}\n${FORM.body}` } });
         try {
           await page.locator(".prompt-card-custom .input").fill("sqlite");
           const before = await page.evaluate(() => {
@@ -670,6 +671,20 @@ try {
           assert.deepEqual(errors, []);
         } catch (error) { await preserveFailure(page, error); } finally { await close(); }
         console.log("PASS a prompt that replaces a scrolled one opens at its top");
+      }
+
+      {
+        const context = "The export button posts one job per click, and a user who double-clicks while the report is still rendering gets two jobs, two emails and two rows in the audit log; the counters below decide how a second click inside the window is refused. ".repeat(2).slice(0, 300);
+        const option = (label: string): { label: string; description: null } => ({ label: `${label}: ${"keep the counter for each user and report, refuse a second export inside the window with 429 and Retry-After, and note the refusal in the audit log. ".repeat(2)}`.slice(0, 200), description: null });
+        const LONG_QUESTION = { ...FORM, id: "demo-long-question", steps: undefined, body: context, options: [option("In memory"), option("Redis"), option("Postgres")], custom_option_index: null };
+        const { page, errors, close } = await open({ width: 402, height: 874, touch: true, prompt: LONG_QUESTION });
+        try {
+          const body = await page.locator(".prompt-card-body").evaluate((node) => ({ hidden: node.scrollHeight - node.clientHeight, height: node.clientHeight, whole: node.scrollHeight, line: parseFloat(getComputedStyle(node).lineHeight) }));
+          assert.equal((await layoutOf(page)).scrolls, true, "the long options run past the card: it scrolls");
+          assert.ok(body.hidden <= 1 && body.height > 4 * body.line, `the question's one-line context shows all of itself, not ${(body.height / body.line).toFixed(1)} of its ${(body.whole / body.line).toFixed(1)} lines`);
+          assert.deepEqual(errors, []);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+        console.log("PASS a question's one-line context is not squeezed by long options on a phone");
       }
 
       {
