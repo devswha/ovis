@@ -11,10 +11,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checked, download, unpack } from "./server-release-files.ts";
-import { KEEPER_MANIFEST } from "./release-assets.ts";
+import { installKeeper } from "./install-keeper.ts";
 export { download } from "./server-release-files.ts";
-import { ACP_KEEPER, PTY_HOST, runsHere } from "./pty-sidecar.ts";
-import { binaryName, checkKeeperManifest, checkManifest, DIST_ARCHIVE, MANIFEST, oldShapeRelease, ptyAssetFor, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
+import { PTY_HOST, runsHere } from "./pty-sidecar.ts";
+import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, oldShapeRelease, ptyAssetFor, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
 
 export const DEFAULT_RELEASES = "https://github.com/devswha/ovis/releases/download";
 const MANIFEST_LIMIT = 64 * 1024;
@@ -258,37 +258,25 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
     writeFileSync(join(stage, MANIFEST), manifestBytes);
     writeFileSync(join(stage, SIGNATURE), signature);
     const build = ptyAssetFor(platform);
-    for (const part of [PTY_HOST, ACP_KEEPER]) {
-      if (!build) {
-        native.push(`no ${part.label} on this platform`);
-        continue;
-      }
-      const target = join(stage, "bin", part.name);
+    if (build) {
+      const asset = manifest.pty[build];
+      const bin = join(stage, "bin");
+      const target = join(bin, PTY_HOST.name);
       try {
-        let asset = manifest.pty[build];
-        if (part === ACP_KEEPER) {
-          const document = await download(`${at}/${KEEPER_MANIFEST}`, MANIFEST_LIMIT, KEEPER_MANIFEST, options.fetchFile);
-          if (!document) { native.push(`no ${KEEPER_MANIFEST} in this release`); continue; }
-          const sig = await download(`${at}/${KEEPER_MANIFEST}.sig`, SIGNATURE_LIMIT, `${KEEPER_MANIFEST}.sig`, options.fetchFile);
-          if (!sig) { native.push(`no signature for ${KEEPER_MANIFEST}`); continue; }
-          const assets = checkKeeperManifest(Buffer.from(document), Buffer.from(sig).toString("utf8"), { publicKey, version, serverBytes: manifestBytes });
-          if (typeof assets === "string") { native.push(`no ACP keeper: ${assets}`); continue; }
-          asset = assets[build];
-        }
         const bytes = await checked(at, asset, options.fetchFile);
-        mkdirSync(join(stage, "bin"), { recursive: true });
+        mkdirSync(bin, { recursive: true });
         writeFileSync(target, bytes, { mode: 0o755 });
         chmodSync(target, 0o755);
-        const probe = part === PTY_HOST ? options.ptyRuns ?? runsHere : runsHere;
-        if (!probe(target, part)) throw new Error(`does not run as the ${part.label} on this PC`);
-        writeFileSync(`${target}.json`, `${JSON.stringify({ sha256: asset.sha256, version })}\n`);
-        native.push(`the ${part.label} checked against ${part === PTY_HOST ? MANIFEST : KEEPER_MANIFEST}`);
+        if (!(options.ptyRuns ?? runsHere)(target)) throw new Error("not a runnable Rust PTY host");
+        writeFileSync(target + ".json", JSON.stringify({ sha256: asset.sha256, version }) + "\n");
+        native.push("the Rust PTY host checked against " + MANIFEST);
       } catch (error) {
         rmSync(target, { force: true });
-        rmSync(`${target}.json`, { force: true });
-        native.push(`the ${part.label} was not taken (${error instanceof Error ? error.message : String(error)}); ${part === PTY_HOST ? "terminals are mirrored" : "ACP children are unavailable"}`);
+        rmSync(target + ".json", { force: true });
+        native.push("the Rust PTY host was not taken (" + (error instanceof Error ? error.message : String(error)) + "); terminals are mirrored");
       }
-    }
+      native.push(await installKeeper(bin, build, { at, version, publicKey, serverBytes: manifestBytes, fetchFile: options.fetchFile }));
+    } else native.push("no native helpers on this platform");
     await options.inWindow?.();
     // the release bin names now: a server started from it may still run, so it stays until the next install
     try { previous = WINDOWS ? null : realpathSync(join(home, "bin")).split(/[/\\]/).at(-1)!; } catch { previous = null; }

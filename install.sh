@@ -912,10 +912,28 @@ canonical_keeper() {
   printf '  }\n}\n'
 }
 
+# The keeper is optional: all its transfers share the same clock, including redirects and the identity probe.
+keeper_fetch() {
+  left=$((keeper_end - $(date +%s)))
+  [ "$left" -gt 0 ] && [ "$3" -le 33554432 ] || return 1
+  case "$1" in
+    file:///*)
+      # Decode the local file URL before checking its type; never open a pipe, device or symlink.
+      path=$(printf '%s\n' "${1#file://}" | LC_ALL=C awk '
+        function hex(c) { return index("0123456789abcdef", tolower(c))-1 }
+        { for (i=1;i<=length;i++) { c=substr($0,i,1); if (c=="%") {
+          a=hex(substr($0,i+1,1)); b=hex(substr($0,i+2,1)); n=16*a+b;
+          if (a<0 || b<0 || n<32) exit 1; printf "%c",n; i+=2
+        } else { if (c=="?" || c=="#") exit 1; printf "%s",c } } }') || return 1
+      [ -f "$path" ] && [ ! -L "$path" ] || return 1 ;;
+  esac
+  curl -gfsSL --path-as-is --proto '=https,file' --proto-redir '=https' --max-time "$left" --max-filesize "$3" -o "$2" "$1" </dev/null
+}
+
 checked_keeper_manifest() {
   doc="$verify_dir/ovis-acp-keeper-server.json"
-  fetch "$at/ovis-acp-keeper-server.json" "$doc" 65536 && [ "$(wc -c <"$doc")" -le 65536 ] &&
-    fetch "$at/ovis-acp-keeper-server.json.sig" "$doc.sig" 1024 &&
+  keeper_fetch "$at/ovis-acp-keeper-server.json" "$doc" 65536 && [ "$(wc -c <"$doc")" -le 65536 ] &&
+    keeper_fetch "$at/ovis-acp-keeper-server.json.sig" "$doc.sig" 1024 &&
     [ "$(wc -c <"$doc.sig")" -eq 89 ] && [ "$(wc -l <"$doc.sig")" -eq 1 ] && LC_ALL=C grep -Eqx '[A-Za-z0-9+/]{85}[AQgw]==' "$doc.sig" &&
     "$checker" "$RELEASE_PUBLIC_KEY" "$doc" "$doc.sig" &&
     canonical_keeper "$doc" >"$verify_dir/expected-keeper.json" && cmp -s "$doc" "$verify_dir/expected-keeper.json"
@@ -924,8 +942,8 @@ checked_keeper_manifest() {
 # Each optional native binary gets its own probe and record. Never remove its sibling on failure.
 binary_helper() {
   case "$1" in
-    pty) helper_name=ovis-pty-sidecar helper_label="Rust PTY host" helper_probe=rust_host_runs without="terminals are mirrored" ;;
-    acpKeeper) helper_name=ovis-acp-keeper helper_label="ACP keeper" helper_probe=keeper_runs without="ACP children are unavailable" ;;
+    pty) helper_name=ovis-pty-sidecar helper_label="Rust PTY host" helper_probe=rust_host_runs helper_fetch=fetch without="terminals are mirrored" ;;
+    acpKeeper) helper_name=ovis-acp-keeper helper_label="ACP keeper" helper_probe=keeper_runs helper_fetch=keeper_fetch without="ACP children are unavailable" ;;
     *) return 1 ;;
   esac
   case "$platform" in
@@ -949,7 +967,7 @@ binary_helper() {
     say "the signed $native_manifest names no $helper_label for $platform, so $without"
     return 0
   fi
-  if ! mkdir -p "$stage/bin" || ! fetch "$at/$entry_file" "$target" "$entry_size" || [ "$(wc -c <"$target" | tr -d ' ')" != "$entry_size" ] ||
+  if ! mkdir -p "$stage/bin" || ! "$helper_fetch" "$at/$entry_file" "$target" "$entry_size" || [ "$(wc -c <"$target" | tr -d ' ')" != "$entry_size" ] ||
     [ "$(sha256 "$target")" != "$entry_sha" ]; then
     rm -f "$target"
     say "the $helper_label did not download or does not match its SHA-256 and size in $native_manifest, so it is not run and $without"
@@ -1079,7 +1097,8 @@ install_binary() {
   [ -f "$stage/dist/index.html" ] || refuse "ovis-dist.tar.gz holds no index.html"
   rm -f "$stage/ovis-dist.tar.gz"
   binary_helper pty
-  binary_helper acpKeeper
+  keeper_end=$(($(date +%s) + 12))
+  bounded 12 binary_helper acpKeeper || say "ACP keeper unavailable within its install budget; continuing without it"
   rm -rf "$verify_dir"
   release_name="$version-${stage##*.stage-}"
   mv "$stage" "$OVIS_HOME/releases/$release_name" || refuse "could not move the checked release into place"

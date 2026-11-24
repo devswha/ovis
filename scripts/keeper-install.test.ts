@@ -31,7 +31,7 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
     ["shell", installer, installServer, false], ["plugin", null, installServer, false],
     ...(old ? [["previous shell", old.shell, old.install, true], ["previous plugin", null, old.install, true]] as const : []),
   ] as const) {
-    it.each(legacy ? ["good"] : ["good", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
+    it.each(legacy ? ["good"] : ["good", "linked asset", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
       `${via}: %s keeper never takes down the server or PTY host`, async (state) => {
         const root = mkdtempSync(join(scratch, "pc-"));
         const probe = keeper.replace("echo", `: > "${join(root, "ran")}"; echo`);
@@ -60,6 +60,7 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
         }
         const asset = join(dir, "ovis-acp-keeper-linux-x64");
         if (state === "missing") rmSync(asset);
+        if (state === "linked asset") { const other = join(root, "linked"); writeFileSync(other, probe); rmSync(asset); symlinkSync(other, asset); }
         if (state === "wrong hash" || state === "old manifest") writeFileSync(asset, probe.replace("ROOT", "FAKE"));
         const releases = pathToFileURL(root).href;
         const home = join(root, ".local/share/ovis");

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkKeeperManifest, checkManifest, DIST_ARCHIVE, MANIFEST, RELEASE_PUBLIC_KEY, type ReleaseAsset } from "./server-manifest.ts";
@@ -10,18 +10,33 @@ import { KEEPER_MANIFEST } from "./release-assets.ts";
  * null where there is no such file (HTTP 404). Redirects are followed by hand: one to anything but https is refused
  * before a request is made to it.
  */
-export async function download(url: string, limit: number, name: string, fetchFile: typeof fetch = fetch): Promise<Uint8Array | null> {
+export async function download(url: string, limit: number, name: string, fetchFile: typeof fetch = fetch, signal = AbortSignal.timeout(600_000)): Promise<Uint8Array | null> {
   const tooLarge = () => new Error(`${name} is larger than the ${limit} byte limit; nothing was changed`);
   if (url.startsWith("file://")) {
     const path = fileURLToPath(url);
     if (!existsSync(path)) return null;
-    if (statSync(path).size > limit) throw tooLarge();
-    return readFileSync(path);
+    signal.throwIfAborted();
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error(name + " is not a regular file");
+      if (stat.size > limit) throw tooLarge();
+      const bytes = Buffer.alloc(stat.size);
+      let offset = 0;
+      while (offset < bytes.length) {
+        signal.throwIfAborted();
+        const n = readSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (!n) break;
+        offset += n;
+      }
+      if (fstatSync(fd).size > limit) throw tooLarge();
+      return bytes.subarray(0, offset);
+    } finally { closeSync(fd); }
   }
   let response: Response;
   let at = url;
   for (let hops = 0; ; hops++) {
-    response = await fetchFile(at, { redirect: "manual", signal: AbortSignal.timeout(600_000) });
+    response = await fetchFile(at, { redirect: "manual", signal });
     if (response.status < 300 || response.status > 399) break;
     const next = new URL(response.headers.get("location") ?? "", at).href;
     if (!next.startsWith("https://")) throw new Error(`${url} redirected to ${next}, which is not https; nothing was changed`);
@@ -41,8 +56,8 @@ export async function download(url: string, limit: number, name: string, fetchFi
 }
 
 /** `asset` from the release at `at`, only when its size and SHA-256 are what the checked manifest names. */
-export async function checked(at: string, asset: ReleaseAsset, fetchFile?: typeof fetch): Promise<Uint8Array> {
-  const bytes = await download(`${at}/${asset.file}`, asset.size, asset.file, fetchFile);
+export async function checked(at: string, asset: ReleaseAsset, fetchFile?: typeof fetch, signal?: AbortSignal): Promise<Uint8Array> {
+  const bytes = await download(`${at}/${asset.file}`, asset.size, asset.file, fetchFile, signal);
   if (!bytes) throw new Error(`${at}/${asset.file} does not exist; nothing was changed`);
   if (bytes.length !== asset.size) throw new Error(`${asset.file} is ${bytes.length} bytes, not the ${asset.size} its signed manifest names; nothing was changed`);
   const digest = createHash("sha256").update(bytes).digest("hex");
