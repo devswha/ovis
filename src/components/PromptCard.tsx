@@ -156,7 +156,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   const stepsHeld = navigationBlocked || typedAnswer?.option_index !== undefined;
 
   return (
-    <section className={`prompt-card${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")} aria-describedby={context ? contextId : undefined}
+    <section className={`prompt-card${prompt.kind === "question" ? " is-question" : ""}${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")} aria-describedby={context ? contextId : undefined}
       onKeyDown={(event) => { down.current = null; keyed.current = event.key === "Enter" || event.key === " " ? event.target : null; }}
       onPointerDown={(event) => {
         keyed.current = null;

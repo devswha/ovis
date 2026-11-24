@@ -7,3 +7,5 @@
   otherwise the card says more options are listed in the terminal.
 - On a phone, a question's context is no longer squeezed to a line when its options are long: it
   keeps its own height, up to ten lines, and the card scrolls as a whole.
+- A question's card may take up to 80% of the screen (approvals and plans keep 60%), so a
+  question with long options scrolls less or not at all.

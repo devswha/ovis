@@ -106,7 +106,7 @@ const layoutOf = (page: Page): Promise<Layout> => page.evaluate(() => {
       return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className)} in ${named?.tagName.toLowerCase()}.${String(named?.className)}` : "nothing";
     })(),
     queue: queue === null ? null : box(queue),
-    cap: Math.max(app * 0.6, 240),
+    cap: Math.max(app * (card.classList.contains("is-question") ? 0.8 : 0.6), 240),
     scrolls: card.scrollHeight > card.clientHeight + 1,
     pageScrolls: document.documentElement.scrollHeight > window.innerHeight || document.documentElement.scrollWidth > window.innerWidth,
     placeholder: document.querySelector<HTMLTextAreaElement>(".composer-text")!.placeholder,
