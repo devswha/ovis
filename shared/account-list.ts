@@ -687,7 +687,8 @@ export async function takeEntry(state: ListState, held: HeldEntry): Promise<{ re
   if (kind === null || kind.kind === "genesis") return noEffect("entry_invalid");
   // Names sealed under another epoch than the current one: a member that was put out could read them, or nobody can.
   if ("sealed" in kind && kind.sealed !== null && kind.sealed.epoch !== state.epoch) return noEffect("epoch_other");
-  // While it is behind a member lets nobody new in: the entry counts, and its state takes nothing in but a removal.
+  // While it is behind a member lets nobody new in: the entry counts, and its state takes nothing in but a removal, and the keys of a
+  // carried PC that is in.
   const letsIn = state.behind === null;
   // A key that was ever a PC's is never anything else: the signers have made it a signer, and it stays one with no name.
   const used = (key: string): boolean => rowOf(state.pc_keys, key) !== null;
@@ -706,7 +707,9 @@ export async function takeEntry(state: ListState, held: HeldEntry): Promise<{ re
       if (!endpointFree(state, kind.endpoint)) return noEffect("endpoint_reused");
       if (used(kind.key)) return noEffect("key_reused");
       if (!(await cardHolds({ key: kind.key, enc: kind.enc, list: state.list, endpoint: kind.endpoint, invite: null }, kind.card))) return noEffect("card_invalid");
-      if (!letsIn || came === null) return counts(next);
+      // A carried PC that is in gets its keys also from a member that is behind: nobody new comes in by that, and without it the member
+      // could not tell which PC a later removal of that key means, nor that the PC then goes with its key.
+      if ((!letsIn && rowOf(state.pcs, kind.endpoint) === null) || came === null) return counts(next);
       return counts({
         ...next,
         signers: { ...signers, [kind.key]: { ...came, as: "pc" } },
@@ -1165,7 +1168,8 @@ export function readListState(value: unknown, level: number): ListState | null {
     if (row.seq === 0 && as !== "device") return null;
     if (as === "pc" && row.power !== "full") return null;
     if (as === "invite" && (row.power !== "bound" || row.by === null)) return null;
-    if (as !== null && !letIn(row.seq)) return null;
+    // Behind, the one name a key still gets is that of a carried PC's key: its row among the PCs is held to that below.
+    if (as !== null && as !== "pc" && !letIn(row.seq)) return null;
     signers[key] = { ...row, as };
   }
 
@@ -1178,23 +1182,29 @@ export function readListState(value: unknown, level: number): ListState | null {
     if (signers[key]?.power === "full" && (role !== "drive" || until !== null)) return null;
     // Only a device that was carried in may be without an encryption key.
     if (enc === null ? !carried : typeof enc !== "string" || !isListKey(enc)) return null;
+    // The first device is entry 0's signer: it was carried in by nobody, and entry 0 names its encryption key.
+    if (signers[key]?.seq === 0 && (carried || enc === null)) return null;
     devices[key] = { role, until, enc: typeof enc === "string" ? enc : null, carried };
   }
 
   const pcs: { [endpoint: string]: PcRow } = {};
   const joined = new Map<string, number>();
   const keyed = new Map<string, string>();
+  // One entry makes one PC's row: no two stand at one place.
+  const places = new Set<number>();
   for (const [endpoint, saved] of Object.entries(savedPcs)) {
     if (!ENDPOINT.test(endpoint) || !isRecord(saved)) return null;
     const { how, key, enc, seq, invite, removed } = saved;
-    if (!isCount(seq) || seq < 1 || seq > top || !letIn(seq)) return null;
+    // Behind, a member takes no PC in; a carried PC that was in still got its keys from a person's `pc`.
+    if (!isCount(seq) || seq < 1 || seq > top || (how !== "added" && !letIn(seq)) || places.has(seq)) return null;
+    places.add(seq);
     if (removed !== null && !(isCount(removed) && removed > seq && removed <= top)) return null;
     if (how === "carried") {
       if (key !== null || enc !== null || invite !== null) return null;
       pcs[endpoint] = { how, key, enc, seq, invite, removed };
       continue;
     }
-    if (typeof key !== "string" || !isListKeyEncoding(key) || typeof enc !== "string" || !isListKey(enc) || keyed.has(key)) return null;
+    if (typeof key !== "string" || !isListKey(key) || typeof enc !== "string" || !isListKey(enc) || keyed.has(key)) return null;
     if (how === "added") {
       const row = signers[key];
       // Its key is the signer that its entry made, and it is out exactly when that key is.

@@ -390,6 +390,9 @@ describe("the fake account service's list routes (Part D)", () => {
       const { list } = await w.start();
       const pc = machine();
       await listPc(w, pc);
+      w.service.listLimits.pcCallsPerMinute = 0;
+      expect(refusal(await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT }))).toBe("429 rate_limited");
+      w.tick(MINUTE);
       w.service.listLimits.pcCallsPerMinute = 2;
       // off the switch the call is refused before the proof: its challenge is still good, and nothing is counted
       w.service.listAccounts = "";
@@ -1210,12 +1213,14 @@ describe("the fake account service's list routes (Part D)", () => {
     test("inject: an entry of a key that is no member is served after the log, and a member passes it over", async () => {
       const { w, list, all, head } = await told();
       const stranger = await newKey();
-      const injected = await chain(list, head, [[stranger, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      const invited = await newKey();
+      const injected = await chain(list, head, [[stranger, inviteOf(invited, w.seconds() + 600)]], w.seconds());
       w.service.tamperList(list, { inject: injected.texts });
       const served = await w.log(list);
       expect([served.body.entries, served.body.head]).toEqual([[...all, ...injected.texts], injected.head]);
       const replayed = await replayList(served.body.entries!, 1, { saved: null });
-      expect(replayed.member?.state.signers[stranger.key]).toBeUndefined();
+      expect(replayed.stopped).toBeNull();
+      expect([replayed.member?.state.signers[stranger.key], replayed.member?.state.signers[invited.key], replayed.member?.state.invites[invited.key]]).toEqual([undefined, undefined, undefined]);
       expect(w.service.accountList(ACCOUNT)?.entries).toEqual(all);
     });
 
