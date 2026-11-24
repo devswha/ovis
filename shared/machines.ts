@@ -502,6 +502,11 @@ export interface RemotePairingRequest {
   vouched?: true;
   /** Derived by the receiving PC only after the joining server answered its channel-bound challenge. */
   proven_server_id?: string;
+  /**
+   * The join brought the new device's card for the account's signed list: the PC lets it in by an entry of the list,
+   * which its approver signs and places, never by the approval alone. Absent from an older server, or when false.
+   */
+  list?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

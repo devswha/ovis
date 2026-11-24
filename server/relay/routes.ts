@@ -24,10 +24,20 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   const peer = context.peer;
   // one admission rule (docs/account.md): this PC itself, or a drive account member through the relay
   const remoteApprover = peer.kind === "relay" && context.services.devices.isAccountApproverSession(peer.device.id, peer.key) ? peer.device : null;
+  // On a PC pinned to its account's list, a device that signed in with a key the list holds decides a join into the
+  // list when the list holds it to drive with full power: what may add a device to the list may approve its join. Read
+  // from this PC's copy of the list at each call, never from the row's age or the snapshot. False: a device of the list
+  // that may not (to watch, or with bound power); null: no device of the list
+  const listAllower = (): boolean | null => peer.kind === "relay" && peer.key !== "" ? context.services.accountList?.allowsJoins(peer.key) ?? null : null;
+  const cannotAllow = () => fail("list_cannot_allow", "This device is in your account's list, but only a device that can add devices to the list may let one in.", 403);
+  const accountRequired = () => fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
   if (pathname === "/api/relay/pairings" && request.method === "GET") {
     setRequestRoute("/api/relay/pairings");
-    if (peer.kind === "relay") return remoteApprover ? reply({ pairings: service.approvals.remoteList() }) : fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
-    return reply({ pairings: service.approvals.list() });
+    if (peer.kind !== "relay") return reply({ pairings: service.approvals.list() });
+    if (remoteApprover) return reply({ pairings: service.approvals.remoteList() });
+    const allows = listAllower();
+    // a device of the list sees the joins the list lets in, and no pairing of this PC's own
+    return allows === true ? reply({ pairings: service.approvals.listJoins() }) : allows === false ? cannotAllow() : accountRequired();
   }
   // an account join taken outside the pairing window, listed for this PC's own window alone and never with its digits
   if (pathname === "/api/relay/joins" && request.method === "GET") {
@@ -40,7 +50,10 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   if (request.method !== "POST") return fail("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
   if (pathname === RELAY_CONTROLS.pairing && peer.kind === "relay") {
     setRequestRoute("/api/relay/pairing");
-    if (!remoteApprover) return fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
+    if (!remoteApprover) {
+      const allows = listAllower();
+      if (allows !== true) return allows === false ? cannotAllow() : accountRequired();
+    }
     const body = await readJsonObject(request);
     if (body instanceof Response) return body;
     const pc = typeof body.proven_server_id === "string" && /^[0-9a-f]{32}$/.test(body.proven_server_id)
@@ -50,8 +63,17 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       || (body.decision === "approve" && !(typeof body.digits === "string" && /^[0-9]{6}$/.test(body.digits) || body.digits === undefined && pc !== undefined))) {
       return fail("invalid_relay_pairing", "Send the pairing's id, a decision of approve or decline, and the digits the new device shows.", 400);
     }
-    if (!context.services.devices.isAccountApproverSession(peer.device.id, peer.key)) return fail("account_required", "Approve pairings on this PC, or from a device linked to your account.", 403);
-    const outcome = service.approvals.decideRemote(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", remoteApprover, pc);
+    // asked again after the body was read: the right is the one held in the turn that decides
+    let outcome: ReturnType<typeof service.approvals.decideRemote>;
+    if (remoteApprover) {
+      if (!context.services.devices.isAccountApproverSession(peer.device.id, peer.key)) return accountRequired();
+      outcome = service.approvals.decideRemote(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", remoteApprover, pc);
+    } else {
+      const allows = listAllower();
+      if (allows !== true) return allows === false ? cannotAllow() : accountRequired();
+      // a device of the list decides a join into the list, and no pairing of this PC's own: any other is not there for it
+      outcome = service.approvals.decideForList(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", peer.device);
+    }
     if (outcome.outcome !== "decided") {
       return outcome.outcome === "gone"
         ? fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404)
