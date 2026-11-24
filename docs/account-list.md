@@ -609,11 +609,12 @@ holds after a read does not depend on where the pages were cut.
 | `caught_up` | it holds every entry up to the head | from the account service this is a full read |
 | `more` | it took what was shown and the head lies further | ask for the next part at once |
 | `asks_after` | another continuation above its footing | ask again from the footing, once in a read |
+| `spent` | the read made its 128 requests and there was more to ask | what it took is kept; go on at the next read, and ask a peer meanwhile |
 | `withheld` | the head lies past what was shown, and nothing new was shown | wait for the next read |
-| `older` | the head is an earlier place of its own history | nothing changes |
-| `refused` | an entry does not hold, or the page is out of form | what held before it is kept |
+| `older` | the head is an earlier place of its own history, and no entry was shown | nothing changes |
+| `refused` | an entry does not hold, or the page is out of form (also a head that lies before the entries it shows) | what held before it is kept |
 | `stuck` | another history at or under its footing, with no member's signature shown for it | nothing of it is taken |
-| `fork` | the same, signed by a member | the alarm is set |
+| `fork` | the same, signed by a member, and not [what its writer left behind](#two-histories) | the alarm is set |
 | `needs_newer_client` | it stopped at an entry its build cannot place | it answers for nobody until an update |
 | `not_my_list` | another list or account than it is pinned to | nothing changes |
 
@@ -624,7 +625,15 @@ holds after a read does not depend on where the pages were cut.
   other member, and give way to what a member signs.
 - A read ends by itself, whatever its pages say: it makes at most 128 requests, and goes back to
   its footing once. What is left is asked at the member's next read, from where this one came to.
-- A head the service names beside something else (a PC's mailbox answer) is only a hint to read.
+- A page costs one check for each entry it shows, at most 256. Only a history that a member did
+  sign, shown under the footing, makes a member check its own history again, and that ends the
+  read. Reads by the clock are spaced by the rules below; a member spaces by itself the reads that
+  somebody else can start: one on the doorbell, and a page a peer sends unasked.
+- With each page a member is told whom it lets in or shows now and did not before, and whom it did
+  before and does not now. When the member itself stops, is put out or no longer holds what its
+  pin asks for, that is everybody it held.
+- A head the service names beside something else (a PC's mailbox answer) is only a hint to read,
+  and only the service's: what another member says of where it stands is never a full read.
   One that equals the member's own head counts as a full read; one behind its copy changes nothing,
   and neither does a service that names no list: that is no hint, never the word that the list is
   gone.
@@ -637,9 +646,22 @@ raises no alarm; the member just takes nothing from that answer.
 A **fork** is proven. When an answer shows another history under the footing, the member looks for
 the place where the two part, asking from earlier places (twice as far back each time). At that
 place it replays its own history up to there with the shown entries after it. If a key that was a
-signer there signed on the other history, two histories are each backed by a member: that is the
-fork. An entry by a key that was no signer at that place, the account service's own included,
-proves nothing.
+signer there signed on the other history, two histories are each backed by a member. An entry by a
+key that was no signer at that place, the account service's own included, proves nothing, and
+neither does a signer's name on an entry it did not sign.
+
+**What a member left behind is no fork.** A member signs twice at one place honestly: its entries
+did not get their place, because another member's got it first or the answer was lost, and it
+signed them again on the new head. The account service holds every post it did not place and can
+show it later. So there is no alarm when, from the place where the two part, the entries a member
+signed on the other history are at most 16 (one post), all by one signer, the first of them at
+that very place, and that signer has an entry of its own in this member's history at or after that
+place: it went on over what this member holds, and nobody else signed on what it left behind. Such
+entries are `refused` like any entry that does not continue the member's history, and nothing
+changes. Where a page ends inside them, the member asks for what follows and judges both together,
+so the cut of a page never decides. Anything else is a fork: an entry there by any other member,
+more by that signer than one post holds, a signer that never signed again in this member's
+history, or entries that stand on one no signer signed.
 
 A member with the alarm:
 
@@ -647,21 +669,29 @@ A member with the alarm:
 - still takes what continues its own history, so a removal still reaches it;
 - lets in no device and shows no PC that it did not hold when the alarm rose;
 - keeps the alarm over a restart, with the place where the two histories part (`seq`) and the key
-  that signed the other one (`by`), so that it can say which device or PC that key is or was.
+  that signed the entry of the other one that it was shown (`by`).
 
-**Who can raise it.** Any key that was ever a signer, together with whoever can show a member the
-entry: a device or a PC of the account, a browser that was allowed for a day, an invite's key, and
-also one that was removed since, for a place before its removal. The account service alone cannot,
-since it holds no such key. Nobody gets in by it: it only stops a member from letting in anyone
-new.
+**What the alarm says.** That this member was shown two versions of the list. It accuses nobody:
+`by` is the key that signed what was shown, which may be an honest member's (an entry that a
+member that was shown it as placed still holds, while the rest of the account went on elsewhere).
+Whoever holds both versions chooses whom to show which, and that is first of all the account
+service, which keeps every signed post. A key that was ever a signer can sign a second version at
+will: a device or a PC of the account, a browser that was allowed for a day, an invite's key, and
+one that was removed since, for a place before its removal. Nobody gets in by an alarm: it only
+stops a member from letting in anyone new.
 
-**What a person does.** The alarm names a key. If that device or PC is still in the account and
-the person does not trust it, they remove it from a device they do trust. The alarm itself does not
-go away by anything the log or the service says: on each member that has it, a person resets the
-list there and pins again (a device is allowed again from a device or PC of the account; a PC is
-added again at the PC). A member that was reset reads the list from entry 0 and holds whatever
-history it is then shown and can check, so the person resets after the key was removed, not
-before.
+**What stays out of sight.** Two versions that each hold nothing but what one and the same member
+posted from the place they part raise no alarm on either side, for as long as nobody else signs on
+either. The first entry by any other member raises it on the member that is shown it. And a member
+that was shown as the list an entry that never got its place holds it for good: it takes nothing
+of the list from there on, and gets the alarm when it is shown the list.
+
+**What a person does.** The alarm does not go away by anything the log or the service says. On each
+member that has it, a person resets the list there and pins again: a device is allowed again from
+a device or PC of the account, and a PC is added again at the PC. A member that was reset reads the
+list from entry 0 and holds whatever history it is then shown and can check. If the devices and
+PCs the person then sees in the account are not the ones they expect, they remove what they do not
+know from a device they trust, before they reset the others.
 
 ### Two members meet
 
@@ -674,8 +704,9 @@ changes).
 The answer is a page of the other member's own entries up to its footing, and it is taken exactly
 as a page from the account service, except that it is no full read. So a removal the service
 withholds from a PC reaches it from any device that has it. Two members whose histories parted both
-ask, and each proves the fork from what the other shows: both get the alarm. Two members that met
-stand at the same entry, or both have the alarm.
+ask, and each judges what the other shows: where members signed on both, both get the alarm; where
+one of them holds only what its writer left behind, that one gets it. Two members that met stand at
+the same entry or one of them has the alarm, but for [what stays out of sight](#two-histories).
 
 ### What a PC decides
 
@@ -689,9 +720,11 @@ copy is. A service that is away or withholds takes out no device the PC holds.
 - **The PC's clock never counts for less than it showed before**, nor for less than the list's own
   time (`listClock`). Each page and each hint is taken at the hour the clock shows, and the copy
   keeps the latest (`seen_at`). With the account service away no page comes, so a PC also notes the
-  hour whenever it reads its clock to decide (`withClock`). A clock that was set back then lets no
-  device in past its `until`. Over a restart a PC holds the hour of its last save and no later one,
-  so it saves before it answers a refusal that turned on a device's `until`.
+  hour when it starts and whenever it reads its clock to decide (`withClock`), and decides on the
+  copy that gives. A clock that was set back then lets no device in past its `until`. Over a restart
+  a PC holds the hour of its last save and no later one, so it saves that copy before it acts on a
+  decision that turned on the clock. A decision never counts the clock for less than the copy
+  holds, so a PC that forgets to note the hour refuses more, never less.
 - **A PC is a member** when its signing key belongs to a relay key that is in.
 - **A device shows** the PCs that are in. The account service's directory only says how to reach
   them.
