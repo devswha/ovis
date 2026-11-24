@@ -333,6 +333,27 @@ export function gossipBudget(key: string, options: { readonly perMinute?: number
   };
 }
 
+/** How long a device that learnt that the PC it has open was put out of the list tries to hand that PC the removal, in ms. */
+export const REMOVAL_DELIVERY_MS = 3_000;
+
+/**
+ * One bounded exchange over a session the app no longer uses itself: the PC it had open was put out of the account's
+ * list, and this device hands that PC the removal over the session it still has, so the PC knows itself out even where
+ * the account service withholds it. Over within `ms` whatever the PC does; the caller then closes the session.
+ */
+export async function deliverOnce(session: GossipSession, list: AccountList | null, budget: GossipBudget, ms = REMOVAL_DELIVERY_MS): Promise<void> {
+  if (list === null || session.followsList !== true || session.route === undefined || list.gossip() === null) return;
+  const end = new AbortController();
+  const timer = setTimeout(() => { end.abort(new DOMException("The PC took too long to be handed its removal", "TimeoutError")); }, ms);
+  const over = new Promise<void>((resolve) => { end.signal.addEventListener("abort", () => { resolve(); }, { once: true }); });
+  const fetch: PcFetch = (input, init) => session.fetch(input, { ...init, signal: init?.signal == null ? end.signal : AbortSignal.any([init.signal, end.signal]) });
+  try {
+    await Promise.race([gossipWithPc(fetch, list, null, () => !end.signal.aborted && budget.spend(), { ms }).then(() => undefined, () => undefined), over]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** A session with a PC as this module needs it: the relay transport the app opened. */
 export interface GossipSession {
   /** The PC selected the account's list for this session: it is pinned to its list. */

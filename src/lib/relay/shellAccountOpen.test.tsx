@@ -55,6 +55,8 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
     shown?: () => number;
     /** the list put this device out */
     out?: boolean;
+    /** where this device's copy stands, and its entries for a PC (AccountList.gossip, pageAfter, placeAt); none by default */
+    peer?: { readonly list: string; readonly head: { readonly seq: number; readonly hash: string } };
   };
   newUntil?: string | null; label?: string;
   /**
@@ -127,8 +129,11 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
     sync: async () => { listReads.push(Date.now()); listed.read?.(); return listView(); }, follows: async () => true,
     view: listView, subscribe: (listener) => { listHeard.push(() => listener(listView())); return () => {}; }, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
-    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null, placeAt: () => null,
-    holdsEntry: () => false, gossip: () => null, pageAfter: () => null, compare: () => null, takeFromPeer: async () => null,
+    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null,
+    placeAt: (seq) => listed.peer !== undefined && seq === listed.peer.head.seq ? listed.peer.head : null,
+    holdsEntry: () => false, gossip: () => listed.peer === undefined ? null : { list: listed.peer.list, place: listed.peer.head },
+    pageAfter: (after) => listed.peer === undefined ? null : { list: listed.peer.list, after, entries: ["entry"], head: listed.peer.head },
+    compare: () => null, takeFromPeer: async () => null,
     kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
     shown: () => listed.shown?.() ?? Math.floor(Date.now() / 1000),
   };
@@ -191,6 +196,37 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
 
 class Admitted extends RelayTransport {
   override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+}
+
+/** Waits for `done`, polling to a deadline: what a session is asked wakes no screen. */
+async function polled(done: () => boolean, ms = 5_000): Promise<void> {
+  const end = performance.now() + ms;
+  while (!done()) {
+    if (performance.now() > end) throw new Error("timed out");
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+  }
+}
+
+const LIST = "5c".repeat(32);
+const LIST_HEAD = { seq: 4, hash: "4d".repeat(32) };
+/**
+ * A session with a PC pinned to the account's list that stands one entry behind this device: it says so to every head
+ * this device tells it, and takes what it is handed. What it is asked, and when it is closed, in order.
+ */
+class Pinned extends Admitted {
+  readonly asked: string[] = [];
+  constructor(offer: ConstructorParameters<typeof RelayTransport>[0], private readonly version = "1.0.0") { super(offer); }
+  override get server() { return { version: this.version, relayProtocol: RELAY_PROTOCOL, features: ["account-list-1"] }; }
+  override get followsList() { return true; }
+  override get route() { return "relay" as const; }
+  override async fetch(input: RequestInfo | URL): Promise<Response> {
+    const path = String(input);
+    this.asked.push(path);
+    if (path === "/api/account/list/head") return Response.json({ list: LIST, place: { seq: 3, hash: "3c".repeat(32) }, asks: { list: LIST, after: 3 } });
+    if (path === "/api/account/list/page") return Response.json({ verdict: "caught_up", list: LIST, place: LIST_HEAD });
+    return new Response(null, { status: 404 });
+  }
+  override close(): void { this.asked.push("close"); super.close(); }
 }
 const inADay = (): string => new Date(Date.now() + 23 * 60 * 60_000).toISOString();
 
@@ -942,6 +978,34 @@ it("a session opened with the list key ends when this device's own copy holds th
   expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-removed" });
   expect([came, closed]).toEqual([["list"], ["closed"]]);
   expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a session the shell owns tells the PC where the list stands whatever screen shows: a PC that must be updated first is told too", async () => {
+  let opened: Pinned | undefined;
+  const run = await accountPc({ listed: { holds: true, peer: { list: LIST, head: LIST_HEAD } }, open: async (offer) => { opened = new Pinned(offer, "0.1.0"); return opened; } });
+  await run.openPage();
+  await run.settled(() => run.current().state.kind === "outdated");
+  expect(run.apps()).toBe(0);
+  await polled(() => opened?.asked.includes("/api/account/list/page") === true);
+  expect(opened!.asked.filter((path) => path.startsWith("/api/account/list/"))).toEqual(["/api/account/list/head", "/api/account/list/page"]);
+});
+
+it("a device that learns the PC it has open was put out ends its use of it at once, and hands that PC the removal before it closes the session", async () => {
+  let opened: Pinned | undefined;
+  const listed: { holds: boolean; peer: { list: string; head: { seq: number; hash: string } } } = { holds: true, peer: { list: LIST, head: LIST_HEAD } };
+  const run = await accountPc({ listed, open: async (offer) => { opened = new Pinned(offer); return opened; } });
+  await run.openPage();
+  await run.appOpened;
+  await polled(() => opened?.asked.includes("/api/account/list/page") === true);
+  const before = opened!.asked.length;
+  // another member puts this PC out, and this device's copy reads it: one entry further
+  listed.holds = false;
+  listed.peer = { list: LIST, head: { seq: 5, hash: "5e".repeat(32) } };
+  run.listMoved();
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-removed" });
+  await polled(() => opened!.asked.includes("close"));
+  expect(opened!.asked.slice(before)).toEqual(["/api/account/list/head", "/api/account/list/page", "close"]);
 });
 
 it("a session opened with the list key ends when this device's own copy holds this device no more, and leads to the join: nothing says the PC removed it", async () => {

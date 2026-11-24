@@ -33,8 +33,7 @@ import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
-import { keepListGossip } from "../account/listGossip.ts";
-import { pageAccountList } from "../account/pageList.ts";
+import { deliverOnce, gossipBudget, keepListGossip } from "../account/listGossip.ts";
 import { listRemovedLink, refusalOf } from "./firstLink.ts";
 import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
 import type { PcFinding, ProbeTarget } from "./pcStatus.ts";
@@ -254,8 +253,22 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   document.addEventListener("click", pressedJoin, true);
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
-  /** Ends the exchanges of the account's list with the PC the app has open (listGossip.ts). */
+  /** Ends the exchanges of the account's list with the PC whose session the shell owns (listGossip.ts), and which session that is. */
   let stopGossip: (() => void) | null = null;
+  let gossipFor: RelayTransport | null = null;
+  /** What the list's calls to this PC by the key of this session draw on: shared with every tab and reopening of it. */
+  const budgetOf = (opened: RelayTransport, serverId: string) => gossipBudget(`${serverId}:${opened.deviceId ?? ""}`);
+  /**
+   * The PC and this device say where the account's list stands, from the moment the shell owns an authenticated session
+   * with that PC and for as long as it is the one it owns, whatever screen shows (the app, Ready, an update): only where
+   * the PC follows the list and this device does too, otherwise nothing is asked.
+   */
+  const gossipOver = (opened: RelayTransport, serverId: string): void => {
+    if (gossipFor === opened) return;
+    stopGossip?.();
+    gossipFor = opened;
+    stopGossip = keepListGossip(opened, { list: () => account.list, live: () => transport === opened, budget: budgetOf(opened, serverId) });
+  };
   let last: Attempt | null = null, opening: AbortController | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let shown: RelayShellState | null = null, sheetJoin: SheetJoin | null = null, codeOffer: RelayOffer | null = null;
@@ -372,9 +385,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     app?.unmount();
     app = null;
     updates.cancel();
+    // the list put the PC out: this device's own use of it ends here, and over the session it still has it hands that
+    // PC the removal once, for a few seconds at most, before it closes it (a PC the service withholds it from knows)
+    if (says === "pc-out") {
+      void deliverOnce(open, account.list, budgetOf(open, attempt.offer.server_id)).finally(() => { open.close(); });
+      show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id });
+      return;
+    }
     open.close();
-    // the list put the PC out: the words of a PC that was removed from the account, and nothing is forgotten
-    if (says === "pc-out") { show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id }); return; }
     // the list holds this device no more (or its time is over): as when the PC refuses its key, which it would
     void failed(new MuxProtocolError("auth_failed", "This device's copy of the account's list holds it no more"), attempt);
   };
@@ -1013,6 +1031,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
+    gossipOver(opened, saved.server_id);
     await updates.admit(opened, enrolled);
   };
 
@@ -1073,10 +1092,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     keepDeviceOnlyPc(null);
     keepConfirmedSignIn(null);
     setTransport(opened);
-    // the PC and this device say where the account's list stands, for as long as this PC is the one open: only where
-    // the PC follows the list and this device does too, otherwise nothing is asked
-    stopGossip?.();
-    stopGossip = keepListGossip(opened, { list: pageAccountList, live: () => transport === opened });
+    gossipOver(opened, attempt.offer.server_id);
     shell?.unmount(); shell = null;
     app = mount.renderApp(); account.armRefresh();
     registerPending(attempt.offer.server_id);
