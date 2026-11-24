@@ -611,6 +611,14 @@ describe("the menu over a catalog the server built", () => {
     expect(commandsForTrigger(rows, "codex", { ...slash, prefix: "$" }).map((row) => [row.name, commandGroup(row)])).toEqual([["deploy", "skill-user"]]);
   });
 
+  it("offers no other command for a hidden control typed whole, so Enter sends it as typed", () => {
+    const rows = codexRows();
+    expect(commandsForTrigger(rows, "codex", { ...slash, query: "plan", end: 5 })).toEqual([]);
+    expect(namesHiddenCommand(rows, "plan", "/")).toBeTrue();
+    expect(commandsForTrigger(rows, "codex", { ...slash, query: "pla", end: 4 }).some((row) => row.name === "plan")).toBeFalse();
+    expect(namesHiddenCommand(rows, "pla", "/")).toBeFalse();
+  });
+
   it("lists Claude's terminal screens apart and leaves out what Claude's own menu hides", () => {
     const home = mkdtempSync(join(tmpdir(), "compose-catalog-"));
     let rows: SlashCommand[];
