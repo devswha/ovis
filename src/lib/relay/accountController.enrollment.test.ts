@@ -17,7 +17,7 @@ import { refusalOf } from "./firstLink.ts";
 import { AccountService, AccountServiceUnreachableError } from "../account/service.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setCurrentLanguage, translate } from "../i18n.ts";
-import { AddedToListError, ConsentChangedError, createAccountController, PlacedInListError } from "./accountController.ts";
+import { AddedToListError, ConsentChangedError, createAccountController, ListUnwritableError, PlacedInListError } from "./accountController.ts";
 import { accountList as accountListOf } from "../account/accountList.ts";
 import { askingPc, postPcKeys } from "../account/accountList.test-helpers.ts";
 import { memoryListLock, memoryListStore } from "../account/listStore.ts";
@@ -647,6 +647,16 @@ describe("account enrollment ownership", () => {
         expect(ended).toBeInstanceOf(PlacedInListError);
         expect(run.service.accountList("account")!.state.pcs[run.pcKeys!.endpoint]).toMatchObject({ key: run.pcKeys!.key, removed: null });
         // the pairing stays this device's own, with nothing said of an account at its row, and no link went
+        const kept = await run.store.get(run.original.server_id) as SavedDevice | undefined;
+        expect([run.links(), kept?.device_id, kept?.account_enrollment]).toEqual([0, run.original.device_id, undefined]);
+      });
+
+      it("sends no link from a device that cannot write its account's list: the pairing stays its own, and nothing is opened over it", async () => {
+        const run = await fixture("unused", { list: "following", linking: true, planned: false });
+        await unlinked(run);
+        await run.controller.prepare(marked(run), new AbortController().signal, await consent(run));
+        const ended = await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: await consent(run) }).catch((error: unknown) => error);
+        expect(ended).toBeInstanceOf(ListUnwritableError);
         const kept = await run.store.get(run.original.server_id) as SavedDevice | undefined;
         expect([run.links(), kept?.device_id, kept?.account_enrollment]).toEqual([0, run.original.device_id, undefined]);
       });

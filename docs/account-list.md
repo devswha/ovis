@@ -1442,8 +1442,8 @@ its card for the list (`POST /v2/pc/list/keys`).
 
 1. The device reads the posts (`GET /v2/lists/{list}/posts`) and keeps only a post whose card is
    that key's own, for the list this device follows and for the very relay key the post stands
-   under. For any other post it shows nothing and starts nothing; the card then adds the PC the
-   way from before lists.
+   under. For any other post it shows nothing and starts nothing, and the card adds nothing for
+   it: on an account with a list it never falls back to the admission of the directory alone.
 2. **Add** on the card works out the number, from the card's binding (the kinds' `cardBinding`)
    with the exchange of `shared/relay-pair-sas.ts`: the device commits to a
    nonce of its own (`POST .../posts/{endpoint}/attempt`), waits for the PC's nonce, then reveals
@@ -1467,8 +1467,15 @@ One card, or one dialog, asks for three numbers at most: a number that was not t
 or got no answer counts. After the third it says **Too many tries for this PC. Start again on the
 PC in a few minutes.** and offers only **No** (or **Close**). On an account with a list, the card
 never falls back to the admission of the account's directory alone: a post that is gone, or a
-device that cannot write the list, is said as such. A listing whose window ended (`409
-listing_expired`) turns the card to "This request ran out", as on an account with no list.
+device that cannot write the list, is said as such. Whether the account has a list is the device's
+own knowledge, never the directory's: a copy it holds (also one this page has not read yet, which it
+then reads for the next press), or a list the account service names that this device is not in
+yet. A listing whose window ended (`409 listing_expired`) turns the card to "This request ran out",
+as on an account with no list. Once the account admitted the PC and the list did not take its
+entry, the card stays, whatever the directory lists, and says **{name} is not in your account's list
+yet. Try again.**: **Try again** goes again with the same card and member key (the request kept
+for it is sent again, or signed anew on a new head), and nothing is admitted a second time. The
+record of the Add is written before the card or the dialog goes.
 
 A number that is shown proves nothing by itself: only the two confirmations do, each for its own
 end. The PC's yes says that the adder is the device in the person's hand; the device's Add says
@@ -1486,8 +1493,12 @@ pairing that named the list spent. Its row goes then, by that very row inside th
 pairing another page saved meanwhile stays), and the PC is opened as any PC of the list, with the
 key the list holds for the device. An entry the copy holds and the PC has not read yet (`placed`)
 spends nothing: the pairing stays the device's own, nothing is opened over its session, and the
-PC opens from its row once it took the list. A refusal at a later ask is said as the PC's
-refusal. A PC with no such call (it follows no list, or is from before lists) gets the link, as
+PC opens from its row once it took the list. An entry whose placement is not known (no answer and
+no read of the log since) is handled the same way, after a read of the device's own copy: never as
+a refusal. A refusal at a later ask is said as the PC's refusal. A device that cannot write a list
+its account has (it waits to be let in, or its copy does not read; a page that has not read its
+list yet reads it first) sends no link from before either: the pairing stays its own and nothing
+is opened over it. A PC with no such call (it follows no list, or is from before lists) gets the link, as
 before; so does one whose pairing's session answers the first ask with `403 link_required` (a PC
 from before this call lets only the status and the link through that session).
 
@@ -1517,7 +1528,9 @@ this line in the next 15 minutes can add a PC to your account without asking you
    is what a PC redeems; the answer's `account` must be the device's own, or no line is shown.
 3. The device signs an `invite` entry for that key: `uses` 1, `exp` fourteen minutes from its own
    clock as it reads now (never the account service's, nor the list's time or a floor it saved),
-   under the service's fifteen.
+   under the service's fifteen. A device whose clock reads behind the list's own time by more than
+   that makes nothing and places nothing: **This device's clock is behind. Check its date and
+   time, then make the invite again.**
    For an invite a PC joins with by itself the current epoch's key is wrapped to the invite's key,
    so the PC that joins reads the list's names.
 4. Only when the device's own copy shows the entry is the line shown, with the minutes left and
@@ -1525,9 +1538,10 @@ this line in the next 15 minutes can add a PC to your account without asking you
    id>`). Where the service or the list refuses, nothing is shown, the service's invite is ended
    again, and the key pair is gone. Where the entry went out and whether it was placed is not
    known (no answer and no read of the log since, or a request the service kept asking for
-   again), nothing is ended and the line is not dropped: the page keeps it in memory, says **It is
-   not known yet whether the invite was made**, and the next **Make an invite** settles the kept
-   request against the log first. The line is shown if the list holds the entry; otherwise the
+   again), nothing is ended and the line is not dropped: the page keeps it in memory for its life
+   (also when the invites panel leaves the screen; never stored), says **It is not known yet
+   whether the invite was made**, and the next **Make an invite** settles the kept request
+   against the log first. The line is shown if the list holds the entry; otherwise the
    service's invite is ended and a new invite is made.
 
 A sign-in older than ten minutes proves its registered key for that very invite, to the service's
@@ -1536,10 +1550,16 @@ key where a listing id stands otherwise).
 
 The list's invites are listed under it: **Expires in N min** while open, then **Expired**,
 **Used**, **Revoked** or **Ended**, for an hour after their end. **Used** is an invite a PC joined
-with, or one whose removal the device's copy shows placed right after a `pc` entry (a person's
-Add of the PC that joined with it); **Revoked** only a removal on its own, before the invite's
-time was over; **Ended** any other end (its placer left, it went with a PC's removal). **Revoke**
-signs a `remove` of the invite's key and ends the service's invite; where the kinds call for the
+with, or one whose removal the device's copy shows in one request with a `pc` entry (right after
+it, by the same member at the same second: a person's Add of the PC that joined with it);
+**Revoked** a removal this device revoked, or one on its own before the invite's time was over;
+**Ended** any other end (its placer left, it went with a PC's removal). Whichever page ends an
+invite in the list (a Revoke, the Add of the PC that joined with it, also by the number) ends the
+account service's invite too: by the id this device kept when it made it (beside its pages, with
+the invite's public key and never the line), or, for an invite another device made, by the
+service's list of the account's invites where that names the key (`GET /v1/pc-invites` is
+documented without it today). **Revoke**
+signs a `remove` of the invite's key; where the kinds call for the
 next epoch after it (an invite a PC joins with by itself held the epoch's key), the same request
 opens it. A device whose clock reads more than ten minutes under the time it saved signs the
 removal alone. An invite past its `exp` is never shown as open, by the device's clock held
@@ -1563,8 +1583,11 @@ card and invite, signed by the member key at the press; a post that changed sinc
 for a press of its own. The invite is judged again on the state each signature is made on, so one
 that ran out, was revoked or lost its placer meanwhile signs nothing ("This request ran out"). The
 Add is done only once the device's own copy holds the PC by that card and the invite's end: where
-another Add placed the PC meanwhile, the invite's removal goes alone. The `invited` record is
-written before the card goes. The card is drawn again when the list, the posts or the account's
+another Add placed the PC meanwhile, the invite's removal goes alone. Where the account admitted
+the PC and the list did not take the entry, the card stays with **Try again**, as for the number.
+The `invited` record is written before the card goes. A PC added by the number whose post carries
+the line's proof for that very card gets its invite ended beside its entry (only while the
+invite is still open: the number decides there). The card is drawn again when the list, the posts or the account's
 PCs change, when the page comes back to the front, and at the invite's end, and it says nothing
 of a sign-in code. On an account with a list, a card never falls back to the directory's
 admission alone. Any other post is a PC that asks, and gets the number.

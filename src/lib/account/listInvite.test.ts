@@ -160,6 +160,44 @@ describe("a device that is in the list makes an invite", () => {
     expect(invite.exp).toBe(Math.floor(w.clock.now / 1000) + INVITE_S);
   });
 
+  it("makes nothing where this device's clock reads behind the list's own time by more than an invite lasts, and says its clock is behind", async () => {
+    const w = listWorld();
+    const given = { label: "Dana's Mac", skew: 0 };
+    const first = await w.device(given);
+    await first.list.sync();
+    // the device's clock is set back twenty minutes after the list's last entry
+    given.skew = -20 * MINUTE;
+    const entries = w.held().entries.length;
+    expect(await makeInvite(first.list, { auto: false, ...noWait })).toMatchObject({ made: false, why: "clock_behind" });
+    expect([routes(first).filter((route) => route === "POST /v1/pc-invites"), w.held().entries.length]).toEqual([[], entries]);
+  });
+
+  it("ends the account service's invite from a device that did not make it, where the service names the invite's key", async () => {
+    const { w, first } = await oneDevice();
+    const second = await w.device({ label: "Dana's Mac" });
+    await second.list.sync();
+    const allowed = await allowDevice(first.list, { key: (await second.keys()).key, label: "Dana's Mac", os: null }, noWait);
+    if (!allowed.allowed) throw new Error(allowed.why);
+    await second.list.adopt(allowed.offer);
+    const invite = made(await makeInvite(first.list, { auto: false, ...noWait }));
+    // the second device's page knows no id of the first's invite (its own storage holds none); the account service
+    // names each invite's key
+    second.wire.answer = async (request) => {
+      if (request.method !== "GET" || new URL(request.url).pathname !== "/v1/pc-invites") return null;
+      const body = await (await w.fake.fetch(request)).json() as { invites: Record<string, unknown>[] };
+      return Response.json({ invites: body.invites.map((row) => ({ ...row, invite_key: invite.key })) });
+    };
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const kept = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", { value: { getItem: (name: string) => kept.get(name) ?? null, setItem: (name: string, value: string) => { kept.set(name, value); }, removeItem: (name: string) => { kept.delete(name); } }, configurable: true });
+    try {
+      expect(await revokeInvite(second.list, invite.key, noWait)).toEqual({ revoked: true });
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "localStorage", saved); else Reflect.deleteProperty(globalThis, "localStorage");
+    }
+    expect(routes(second).filter((route) => route.startsWith("DELETE /v1/pc-invites/"))).toHaveLength(1);
+  });
+
   it("makes none on a device that may not write the list", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });

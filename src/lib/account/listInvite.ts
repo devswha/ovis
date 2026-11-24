@@ -48,7 +48,7 @@ export interface PendingInvite {
  */
 export type InviteOutcome =
   | { readonly made: true; readonly invite: MadeInvite }
-  | { readonly made: false; readonly why: WriteRefusal | "service"; readonly code?: string; readonly retryAfterMs: number | null; readonly pending?: PendingInvite };
+  | { readonly made: false; readonly why: WriteRefusal | "service" | "clock_behind"; readonly code?: string; readonly retryAfterMs: number | null; readonly pending?: PendingInvite };
 
 const operationOf = (auto: boolean): string => `invite:${auto ? "auto" : "plain"}`;
 
@@ -73,19 +73,79 @@ async function settle(list: AccountList, pending: PendingInvite, options: Pick<W
 }
 
 /** The account service's id of an invite this page made, by the invite's key: what ends the service's invite at a revoke. */
-const serviceIds = new Map<string, string>();
+/**
+ * What this device keeps of the invites it made, per account, beside its pages (no line, no private key): the account
+ * service's id of each by the invite's public key, so whichever page ends the invite in the list (a Revoke, the Add of
+ * the PC that joined with it) ends the service's invite too, after a reload as well; and the invites it revoked, so the
+ * screen says Revoked for them. An hour after an invite's end it is forgotten. Where the browser gives no storage, the
+ * page's own memory stands in for it.
+ */
+interface InviteRecord { readonly id?: string; readonly revoked?: true; readonly until: number }
+const KEEP_MS = 75 * 60_000;
+const memoryRecords = new Map<string, Record<string, InviteRecord>>();
+const storageHere = (): Storage | null => { try { return globalThis.localStorage ?? null; } catch { return null; } };
+const recordsKey = (account: string): string => `ovis:invite-ids:${account}`;
+function readRecords(account: string): Record<string, InviteRecord> {
+  const storage = storageHere();
+  if (storage === null) return { ...memoryRecords.get(account) };
+  try {
+    const kept: unknown = JSON.parse(storage.getItem(recordsKey(account)) ?? "{}");
+    if (typeof kept !== "object" || kept === null || Array.isArray(kept)) return {};
+    const now = Date.now();
+    return Object.fromEntries(Object.entries(kept as Record<string, unknown>).filter((entry): entry is [string, InviteRecord] => {
+      const row = entry[1] as Partial<InviteRecord> | null;
+      return typeof row === "object" && row !== null && typeof row.until === "number" && row.until > now && (row.id === undefined || /^[0-9a-f]{32}$/.test(row.id));
+    }));
+  } catch { return {}; }
+}
+function keepRecord(account: string, key: string, change: (row: InviteRecord | undefined) => InviteRecord | null): void {
+  const rows = readRecords(account);
+  const next = change(rows[key]);
+  if (next === null) delete rows[key]; else rows[key] = next;
+  const storage = storageHere();
+  if (storage === null) { memoryRecords.set(account, rows); return; }
+  try { storage.setItem(recordsKey(account), JSON.stringify(rows)); } catch { memoryRecords.set(account, rows); }
+}
+
+/**
+ * The account service's id of the invite with key `key`: the one this device kept when it made it, or where another
+ * device made it, the one the service's own list of the account's invites names with that key (asked before the
+ * invite is ended in the list, which the service may take for its end). Null where neither says.
+ */
+export async function serviceInviteId(list: AccountList, key: string): Promise<string | null> {
+  const writer = list.writer();
+  if (writer === null) return null;
+  const kept = readRecords(writer.account)[key]?.id;
+  if (kept !== undefined) return kept;
+  return (await writer.service.listInvites().catch(() => [])).find((each) => each.invite_key === key)?.id ?? null;
+}
+
+/** Invites whose entry went out and whose placement is not known yet, by account and list: their lines, kept in this page's memory for its life (never stored). */
+const pendingLines = new Map<string, PendingInvite>();
+const pendingKey = (account: string, list: string): string => `${account}:${list}`;
+
+/** The invite an earlier Make an invite on this page left not known, for `list`'s account and list: the next one settles it first. */
+export function pendingInvite(list: AccountList): PendingInvite | null {
+  const writer = list.writer();
+  return writer === null ? null : pendingLines.get(pendingKey(writer.account, writer.list)) ?? null;
+}
 
 const refusalOf = (error: unknown): AccountServiceError | null => (error instanceof AccountServiceError && !(error instanceof AccountRefreshError) ? error : null);
 const unanswered = (error: unknown): boolean => error instanceof AccountServiceUnreachableError || error instanceof AccountRefreshError
   || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"));
 
-/** Ends the account service's invite, where this page knows its id. What the service answers changes nothing here: the list's entry decides. */
-async function endAtService(list: AccountList, key: string): Promise<void> {
-  const id = serviceIds.get(key);
-  const service = list.writer()?.service;
-  if (id === undefined || service === undefined) return;
-  serviceIds.delete(key);
-  await service.endInvite(id).catch((error: unknown) => {
+/**
+ * Ends the account service's invite for the invite key `key`, whoever ends it in the list: by the id this device kept
+ * when it made it, or where another device made it, by the service's own list of the account's invites when that names
+ * the key. What the service answers changes nothing here: the list's entry decides.
+ */
+export async function endInviteAtService(list: AccountList, key: string, known?: string | null): Promise<void> {
+  const writer = list.writer();
+  if (writer === null) return;
+  const id = known ?? await serviceInviteId(list, key);
+  if (id === null) return;
+  keepRecord(writer.account, key, (row) => row === undefined ? null : { until: row.until, ...(row.revoked ? { revoked: true as const } : {}) });
+  await writer.service.endInvite(id).catch((error: unknown) => {
     if (error instanceof SignedOutError) return;
     console.info("Ovis: the account service's invite was not ended", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
   });
@@ -97,12 +157,19 @@ async function endAtService(list: AccountList, key: string): Promise<void> {
  * redeems, then the entry. Where either is refused nothing is shown: the service's invite is ended again, and the
  * key pair is gone with this call. Only a sign-in that ended throws.
  */
-export async function makeInvite(list: AccountList, options: { readonly auto: boolean; /** an invite an earlier call left not known: settled before anything else */ readonly pending?: PendingInvite } & Pick<WriteOptions, "wait" | "expect">): Promise<InviteOutcome> {
-  if (options.pending !== undefined) {
-    const settled = await settle(list, options.pending, options);
-    if (settled !== "not_placed") return settled;
+export async function makeInvite(list: AccountList, options: { readonly auto: boolean; /** an invite an earlier call left not known: settled before anything else (this page's own, pendingInvite, by default) */ readonly pending?: PendingInvite } & Pick<WriteOptions, "wait" | "expect">): Promise<InviteOutcome> {
+  const at = list.writer();
+  const slot = at === null ? null : pendingKey(at.account, at.list);
+  const earlier = options.pending ?? (slot === null ? undefined : pendingLines.get(slot));
+  if (earlier !== undefined) {
+    const settled = await settle(list, earlier, options);
+    if (settled !== "not_placed") {
+      if (slot !== null) { if (!settled.made && settled.pending !== undefined) pendingLines.set(slot, settled.pending); else pendingLines.delete(slot); }
+      return settled;
+    }
+    if (slot !== null) pendingLines.delete(slot);
     // another entry took its place: its line opens nothing, and the account service's invite goes too
-    await endAtService(list, options.pending.key);
+    await endInviteAtService(list, earlier.key);
   }
   // one key pair for the whole of it: a request signed again on a new head names the same invite
   const held: {
@@ -112,14 +179,17 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
     said: { readonly code: string; readonly retryAfterMs: number | null } | null;
   } = { invite: null, kept: null, said: null };
   type Invite = { readonly key: string; readonly line: string };
-  const prepare = async (writer: ListWriter): Promise<{ readonly refused: WriteRefusal | "service" } | { readonly done: ListPlace } | { readonly go: Invite }> => {
+  const prepare = async (writer: ListWriter): Promise<{ readonly refused: WriteRefusal | "service" | "clock_behind" } | { readonly done: ListPlace } | { readonly go: Invite }> => {
+    // An invite this device dates by its own clock would be over before it began where that clock reads behind the
+    // list's own time by more than an invite lasts: nothing is made or placed, and the person is told
+    if (held.invite === null && writer.issued_at + INVITE_S <= writer.state.full_at) return { refused: "clock_behind" };
     if (held.invite === null) {
       const session = await writer.service.session();
       if (session === undefined || session.account !== writer.account) return { refused: "changed" };
       const fresh = await newInvite(session.service, writer.account, writer.list);
       try {
         const kept = await writer.service.makeInvite(fresh.key, options.auto);
-        serviceIds.set(fresh.key, kept.id);
+        keepRecord(writer.account, fresh.key, () => ({ id: kept.id, until: Date.now() + KEEP_MS }));
         held.kept = fresh.key;
         // an invite for another account than this device's is no invite of this list: no line is shown for it
         if (kept.account !== writer.account) { held.said = { code: "invalid_answer", retryAfterMs: null }; return { refused: "service" }; }
@@ -145,8 +215,8 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
   const { pending: _settled, ...writing } = options;
   const named = { ...writing, operation: operationOf(options.auto) };
   const outcome = options.auto
-    ? await writeNamed<Invite, "service">(list, prepare, sign, named)
-    : await writeToList<"service">(list, async (writer) => { const ready = await prepare(writer); return "go" in ready ? { request: await sign(writer, ready.go) } : ready; }, named);
+    ? await writeNamed<Invite, "service" | "clock_behind">(list, prepare, sign, named)
+    : await writeToList<"service" | "clock_behind">(list, async (writer) => { const ready = await prepare(writer); return "go" in ready ? { request: await sign(writer, ready.go) } : ready; }, named);
   if (outcome.written && held.invite !== null) {
     const row = list.writer()?.state.invites[held.invite.key];
     if (row !== undefined) return { made: true, invite: { ...held.invite, exp: row.exp, auto: options.auto } };
@@ -155,11 +225,13 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
   // kept asking for again, or a copy that does not show it yet): the line is the only copy of the invite's key, so it
   // is kept, not shown, and the service's invite stands until the next call settles it
   if (held.invite !== null && (outcome.written || outcome.why === "unknown" || outcome.why === "busy")) {
-    return { made: false, why: "unknown", retryAfterMs: null, pending: { ...held.invite, auto: options.auto } };
+    const pending: PendingInvite = { ...held.invite, auto: options.auto };
+    if (slot !== null) pendingLines.set(slot, pending);
+    return { made: false, why: "unknown", retryAfterMs: null, pending };
   }
   if (outcome.written) return { made: false, why: "unknown", retryAfterMs: null };
   // nothing to show: the account service's invite, if one was made, redeems nothing more
-  if (held.kept !== null) await endAtService(list, held.kept);
+  if (held.kept !== null) await endInviteAtService(list, held.kept);
   if (outcome.why === "service" && held.said !== null) return { made: false, why: "service", code: held.said.code, retryAfterMs: held.said.retryAfterMs };
   return { made: false, why: outcome.why, ...(outcome.code === undefined ? {} : { code: outcome.code }), retryAfterMs: outcome.retryAfterMs };
 }
@@ -194,7 +266,7 @@ export function invitesOf(list: AccountList, nowMs: number): ShownInvite[] {
   const clock = Math.max(writer.shown, Math.floor(nowMs / 1000));
   return listView(writer.state).invites.map((row): ShownInvite => ({
     key: row.key, auto: row.auto, exp: row.exp, seq: row.seq, mine: row.by === writer.keys.key,
-    state: row.refusal === "invite_spent" ? "used" : row.refusal === "invite_revoked" ? endOf(list, writer.state, writer.state.signers[row.key]?.ended ?? null, row.exp)
+    state: row.refusal === "invite_spent" ? "used" : row.refusal === "invite_revoked" ? (readRecords(writer.account)[row.key]?.revoked ? "revoked" : endOf(list, writer.state, writer.state.signers[row.key]?.ended ?? null, row.exp))
       : row.refusal === "invite_expired" || (row.refusal === null && clock > row.exp) ? "expired" : row.refusal === null ? "open" : "ended",
   })).sort((a, b) => b.seq - a.seq);
 }
@@ -206,18 +278,20 @@ export function invitesOf(list: AccountList, nowMs: number): ShownInvite[] {
  */
 function endOf(list: AccountList, state: ListState, ended: number | null, exp: number): InviteState {
   if (ended === null) return "ended";
-  const kindAt = (text: string | undefined): { readonly kind: ListKind | null; readonly at: number } | null => {
+  const kindAt = (text: string | undefined): { readonly kind: ListKind | null; readonly at: number; readonly signer: string } | null => {
     if (text === undefined) return null;
     try {
       const body = readBody(entryFromText(text).body);
-      return { kind: readKind(body), at: body.issued_at };
+      return { kind: readKind(body), at: body.issued_at, signer: body.signer };
     } catch { return null; }
   };
   const around = list.pageAfter(ended >= 2 ? ended - 2 : null, ended >= 1 ? 3 : 2)?.entries ?? [];
   const at = ended >= 1 ? 1 : 0;
   const [before, removal, after] = [at === 1 ? kindAt(around[0]) : null, kindAt(around[at]), kindAt(around[at + 1])];
   if (removal === null) return "ended";
-  if (before?.kind?.kind === "pc") return "used";
+  // one request: the PC's entry right before, signed by the same member at the same second (a Revoke this device
+  // placed after an Add of another PC is known by this device's own record, above)
+  if (before?.kind?.kind === "pc" && before.signer === removal.signer && before.at === removal.at) return "used";
   if (removal.at > exp) return "expired";
   // a PC is removed by its relay key, or by its own key where it has one (pcRemoval)
   const pcEnds = (entry: typeof before): boolean => entry?.kind?.kind === "remove"
@@ -234,9 +308,14 @@ export type RevokeOutcome = { readonly revoked: true } | { readonly revoked: fal
  * revoked: nothing is signed. Only a sign-in that ended throws.
  */
 export async function revokeInvite(list: AccountList, key: string, options: Pick<WriteOptions, "wait" | "expect"> = {}): Promise<RevokeOutcome> {
+  let account: string | null = null;
+  // the service's id is found before the removal is placed: a service may stop listing an invite the list ended
+  const id = await serviceInviteId(list, key);
   const outcome = await writeToList(list, async (writer) => {
     const { state, clock } = writer;
     if (state.invites[key] === undefined || state.signers[key]?.ended !== null) return { done: placeOf(state) };
+    // this device revokes it: its screen says Revoked for it, whatever the list's entries around the removal
+    account = writer.account;
     const remove: ListKind = { kind: "remove", ends: key };
     const current = writer.epochs.get(state.epoch) ?? null;
     if (current === null) return { request: await signedOn(writer, [remove]) };
@@ -252,6 +331,7 @@ export async function revokeInvite(list: AccountList, key: string, options: Pick
     }
   }, { ...options, operation: `revoke:${key}` });
   if (!outcome.written) return { revoked: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
-  await endAtService(list, key);
+  if (account !== null) keepRecord(account, key, (row) => ({ ...row, revoked: true, until: Math.max(row?.until ?? 0, Date.now() + KEEP_MS) }));
+  await endInviteAtService(list, key, id);
   return { revoked: true };
 }

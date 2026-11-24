@@ -942,6 +942,17 @@ export class AccountService {
     return { id: made.id, account: made.account, expires_at: made.expires_at, auto };
   }
 
+  /**
+   * The account's invites the account service keeps (`GET /v1/pc-invites`): each one's id, and its public key where
+   * the service names it (the route is documented without it; an id whose key is not named is no one's to end by key).
+   */
+  async listInvites(signal?: AbortSignal): Promise<{ readonly id: string; readonly invite_key: string | null }[]> {
+    const said = await this.call("GET", "/v1/pc-invites", undefined, signal);
+    const rows = isRecord(said) && Array.isArray(said.invites) ? said.invites : [];
+    return rows.flatMap((row) => isRecord(row) && typeof row.id === "string" && /^[0-9a-f]{32}$/.test(row.id)
+      ? [{ id: row.id, invite_key: typeof row.invite_key === "string" ? row.invite_key : null }] : []);
+  }
+
   /** Ends an invite the account service keeps (`DELETE /v1/pc-invites/{id}`). One a PC used, or that is gone, is refused as the service says. */
   async endInvite(id: string, signal?: AbortSignal): Promise<void> {
     await this.call("DELETE", `/v1/pc-invites/${id}`, undefined, signal);

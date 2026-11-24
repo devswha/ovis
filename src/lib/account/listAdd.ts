@@ -204,9 +204,10 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
    * The invite the PC joined with, which the same request ends (listInvited.ts): the Add is done only once this
    * device's own copy holds the PC by this card AND the invite's key is ended. `open` says, on the state each signature
    * is to be made on, whether the invite still lets this PC in by one press; where it does not, nothing more of the PC
-   * is signed (`invite_ended`).
+   * is signed (`invite_ended`). `optional`: the PC is added on other evidence (a compared number), and the invite it
+   * joined with is ended beside it only while it is still open: an invite that is over refuses nothing then.
    */
-  readonly invite?: { readonly key: string; readonly open: (writer: ListWriter) => boolean };
+  readonly invite?: { readonly key: string; readonly open: (writer: ListWriter) => boolean; readonly optional?: true };
 }): Promise<AddPcOutcome> {
   const { member, admit, invite, ...rest } = options;
   // the member key goes into the write's own scope too, so every read and retry holds it (X3)
@@ -217,12 +218,14 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
     const row = writer.state.pcs[post.endpoint];
     return row !== undefined && row.removed === null && row.key === post.key;
   };
-  const inviteEnded = (writer: ListWriter): boolean => invite === undefined || (writer.state.signers[invite.key]?.ended ?? null) !== null;
+  // the invite is ended, or (where ending it is only beside a number) no longer open, so nothing is left to end
+  const inviteEnded = (writer: ListWriter): boolean => invite === undefined || (writer.state.signers[invite.key]?.ended ?? null) !== null
+    || (invite.optional === true && !invite.open(writer));
   options.signal?.throwIfAborted();
   // what the person pressed for, before anything goes: the account, the list and the member key it was shown for
   const before = list.writer();
   if (before === null || changed(before)) return { added: false, why: "changed", retryAfterMs: null };
-  if (invite !== undefined && !pcHeld(before) && !invite.open(before)) return { added: false, why: "invite_ended", retryAfterMs: null };
+  if (invite !== undefined && invite.optional !== true && !pcHeld(before) && !invite.open(before)) return { added: false, why: "invite_ended", retryAfterMs: null };
   const held = list.holdsPc(post.endpoint);
   if (!held) {
     try { await admit(); } catch (error) {
@@ -242,10 +245,10 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
       // the list holds that relay key by this card already (this press, sent before): what is left is the invite's end
       if (pcHeld(writer)) return inviteEnded(writer) ? { done: { seq: writer.state.footing.seq, hash: writer.state.footing.hash } } : { go: "ends" };
       // the invite is judged again on the very state this signature is made on
-      if (invite !== undefined && !invite.open(writer)) return { refused: "invite_ended" };
+      if (invite !== undefined && invite.optional !== true && !invite.open(writer)) return { refused: "invite_ended" };
       return { go: "pc" };
     }, (writer, go) => go === "ends" ? signedOn(writer, ends)
-      : signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed }), ends),
+      : signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed }), inviteEnded(writer) ? [] : ends),
     { ...writeOptions, operation: `add-pc:${post.endpoint}`, reserve: ends.length });
     if (!outcome.written) return { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
     if (invite === undefined) return { added: true };
