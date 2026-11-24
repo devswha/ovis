@@ -78,17 +78,21 @@ export class KeeperClient {
   }
 
   /** Resolves once the log is replayed (the keeper's watermark came); rejects once the client is closed or the keeper is gone. */
-  ready(): Promise<void> {
+  ready(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(new KeeperDisconnected());
     if (this.connected) return Promise.resolve();
     if (this.closed || this.keeperGone) return Promise.reject(new KeeperDisconnected());
     const { promise, resolve, reject } = Promise.withResolvers<void>();
+    const abort = () => { this.waiting.delete(check); reject(new KeeperDisconnected()); };
     const check = () => {
       if (this.connected) resolve();
       else if (this.closed || this.keeperGone) reject(new KeeperDisconnected());
       else return;
       this.waiting.delete(check);
+      signal?.removeEventListener("abort", abort);
     };
     this.waiting.add(check);
+    signal?.addEventListener("abort", abort, { once: true });
     return promise;
   }
 
@@ -104,10 +108,10 @@ export class KeeperClient {
   }
 
   /** A request to the agent through the keeper. Rejects on an error answer, and when the connection ends first. */
-  async request(method: string, params: unknown): Promise<unknown> {
-    await this.ready();
+  async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+    await this.ready(signal);
     if (!this.connected) throw new KeeperDisconnected();
-    return this.requests.request(method, params);
+    return this.requests.request(method, params, signal);
   }
 
   async submit(text: string, tool = false): Promise<void> {

@@ -1,6 +1,7 @@
 import { chmodSync, lstatSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, type Server } from "node:net";
+import { HubConnections } from "./connections.ts";
 import { HARNESS_CONTRACT, HARNESS_LIMITS, TOOL_SCHEMAS, VIEW_VERBS, answer, harnessVerb, isRecord, isView, refuse, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { projectSafeCommand } from "../entries.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
@@ -24,6 +25,7 @@ export class AgentToolHub {
   readonly address: string;
   readonly runs: RunStore;
   private server: Server | null = null;
+  private readonly connections = new HubConnections();
   private readonly ledger: Ledger;
   private readonly turns: ChildTurns;
   private readonly view: HarnessView;
@@ -84,38 +86,17 @@ export class AgentToolHub {
       if (!existing.isSocket() || existing.uid !== process.getuid?.()) throw new Error("Agent tool socket path is occupied.");
       rmSync(this.address);
     }
-    const server = createServer(s => this.receive(s));
+    const server = createServer(s => this.connections.receive(s, (body, signal) => this.call(body, signal)));
     server.on("error", () => console.warn("Agent tool socket unavailable."));
     const mask = process.umask(0o077);
     try { server.listen(this.address); chmodSync(this.address, 0o600); this.server = server; }
     finally { process.umask(mask); }
   }
-  close(): void { this.closed = true; this.off(); this.turns.close(); this.server?.close(); this.server = null; }
+  close(): void { this.closed = true; this.off(); this.connections.close(); this.turns.close(); this.server?.close(); this.server = null; }
   command(tokenFile: string) {
     const [command, ...args] = projectSafeCommand("agent-mcp");
     if (!command) throw new Error("Missing relay command.");
     return { name: "ovis-agent", command, args: [...args, "--socket", this.address, "--token-file", tokenFile], env: [] };
-  }
-  private receive(s: Socket): void {
-    let buffer = "", bytes = 0, handled = false;
-    s.setEncoding("utf8");
-    s.setTimeout(2000, () => s.destroy());
-    s.on("error", () => s.destroy());
-    s.on("data", (chunk: string) => {
-      if (handled) return;
-      bytes += Buffer.byteLength(chunk);
-      if (bytes > 65536) { s.destroy(); return; }
-      buffer += chunk;
-      const end = buffer.indexOf("\n");
-      if (end < 0) return;
-      handled = true; s.setTimeout(0);
-      let request: unknown;
-      try { request = JSON.parse(buffer.slice(0, end)); } catch { s.end(`${JSON.stringify(refuse("bad_request", "Invalid JSON."))}\n`); return; }
-      void this.call(request).catch(() => refuse("unavailable", "The requested session is unavailable.")).then(reply => {
-        const data = JSON.stringify(reply);
-        s.end(`${Buffer.byteLength(data) <= 262144 ? data : JSON.stringify(refuse("unavailable", "This response is too large."))}\n`);
-      });
-    });
   }
   private async serial<T>(id: string, action: () => Promise<T>): Promise<T> {
     const prior = this.tails.get(id) ?? Promise.resolve();
@@ -123,10 +104,10 @@ export class AgentToolHub {
     this.tails.set(id, next);
     try { return await next; } finally { if (this.tails.get(id) === next) this.tails.delete(id); }
   }
-  private async call(input: unknown): Promise<object> {
+  private async call(input: unknown, signal: AbortSignal): Promise<object> {
     if (!isRecord(input) || input.contract !== HARNESS_CONTRACT) return refuse("unknown_contract", "Unknown contract.");
     const { token, verb, args } = input;
-    const auth = () => !this.closed && this.setting.level !== "off" && typeof token === "string" ? this.runs.verify(token) : null;
+    const auth = () => !signal.aborted && !this.closed && this.setting.level !== "off" && typeof token === "string" ? this.runs.verify(token) : null;
     const deny = () => this.setting.level === "off" ? refuse("tools_off", "Agent tools are off.") : refuse("not_granted", "This run is not granted that operation.");
     const began = this.now();
     const run = auth();
@@ -159,7 +140,7 @@ export class AgentToolHub {
       const ref = started.session;
       const remaining = Math.max(0, HARNESS_LIMITS.wait_seconds - (this.now() - began) / 1000);
       const turnId = started.sent?.turn_id;
-      const waiting = await this.wait(run, ref.address, { ...args, turn: turnId, timeout_s: Math.min(Number(args.timeout_s ?? 30), remaining) });
+      const waiting = await this.wait(run, ref.address, { ...args, turn: turnId, timeout_s: Math.min(Number(args.timeout_s ?? 30), remaining) }, signal);
       if (!allowed()) return deny();
       if (!("state" in waiting)) return waiting;
       const child = this.options.acp.forPane(ref.address), row = this.ledger.children.get(ref.address);
@@ -175,12 +156,12 @@ export class AgentToolHub {
     if (row.starter !== run.id) return refuse("not_owner", "Not your child.");
     const child = this.options.acp.forPane(session);
     if (!child || child.id !== row.id) return refuse("unknown_session", "The child has ended.");
-    await child.client.ready();
+    await child.client.ready(signal);
     if (!allowed()) return deny();
     this.turns.watch(child);
     if (verb === "result") return this.turns.result(child, row, args.turn);
     if (verb === "wait") {
-      const result = await this.wait(run, session, args);
+      const result = await this.wait(run, session, args, signal);
       return allowed() ? result : deny();
     }
     return this.serial(run.id, async () => {
@@ -189,7 +170,7 @@ export class AgentToolHub {
       if (verb === "send") return this.turns.send(child, row, args);
       if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
       try {
-        const receipt = await child.client.request("_keeper/tool_stop", {});
+        const receipt = await child.client.request("_keeper/tool_stop", {}, signal);
         if (!isRecord(receipt) || receipt.stopping !== true) return refuse("unavailable", "Keeper did not confirm stop.");
       } catch (error) {
         if (error instanceof KeeperRequestError && error.code === -32003) return refuse("waiting_human", "A person must answer the child's card.");
@@ -203,7 +184,7 @@ export class AgentToolHub {
       return answer("stopped", { session, stopped: true });
     });
   }
-  private async wait(run: Run, session: string, args: Record<string, unknown>) {
+  private async wait(run: Run, session: string, args: Record<string, unknown>, signal: AbortSignal) {
     const row = this.ledger.children.get(session), child = this.options.acp.forPane(session);
     if (!row || !child || row.id !== child.id) return refuse("unknown_session", "The child has ended.");
     if (args.turn && args.turn !== `${row.id}.${row.turns.at(-1)?.n}`) {
@@ -213,7 +194,7 @@ export class AgentToolHub {
     const n = this.waits.get(run.id) ?? 0;
     if (n >= 8) return refuse("rate_limited", "Too many open waits.");
     this.waits.set(run.id, n + 1);
-    try { return await this.turns.wait(child, row, Number(args.timeout_s ?? 30) * 1000); }
+    try { return await this.turns.wait(child, row, Number(args.timeout_s ?? 30) * 1000, signal); }
     finally { this.waits.set(run.id, (this.waits.get(run.id) ?? 1) - 1); }
   }
   private async start(run: Run, args: Record<string, unknown>, allowed: () => boolean) {

@@ -23,12 +23,15 @@ export class KeeperRequests {
     } finally { clearTimeout(timer); this.receipts.delete(id); this.inFlight.delete(id); }
   }
 
-  request(method: string, params: unknown): Promise<unknown> {
+  request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) return Promise.reject(new KeeperDisconnected());
     const id = this.nextId++;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
     this.inFlight.set(id, { resolve, reject });
+    const abort = () => { this.inFlight.delete(id); reject(new KeeperDisconnected()); };
+    signal?.addEventListener("abort", abort, { once: true });
     this.write({ jsonrpc: "2.0", id, method, params });
-    return promise;
+    return promise.finally(() => signal?.removeEventListener("abort", abort));
   }
 
   delivered(key: unknown): void {

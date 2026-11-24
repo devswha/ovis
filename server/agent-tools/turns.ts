@@ -63,15 +63,16 @@ export class ChildTurns {
     this.forget(child); this.watch(child);
     return accepted(n, false);
   }
-  async wait(child: AcpChild, row: ToolChild, ms: number) {
+  async wait(child: AcpChild, row: ToolChild, ms: number, signal: AbortSignal) {
     const { promise, resolve } = Promise.withResolvers<void>();
     const check = () => { if (row.held || child.client.terminalReady || childState(child, row).state !== "working") resolve(); };
     const off = child.client.onChange(check);
     const timer = setTimeout(resolve, ms);
     const close = () => resolve();
-    this.closing.signal.addEventListener("abort", close, { once: true });
-    try { check(); await promise; }
-    finally { off(); clearTimeout(timer); this.closing.signal.removeEventListener("abort", close); }
+    const end = AbortSignal.any([signal, this.closing.signal]);
+    end.addEventListener("abort", close, { once: true });
+    try { if (end.aborted) close(); else check(); await promise; }
+    finally { off(); clearTimeout(timer); end.removeEventListener("abort", close); }
     return row.held || child.client.terminalReady ? refuse("taken_over", "A person holds this child.") : answer("state", { session: row.terminal, state: childState(child, row) });
   }
   result(child: AcpChild, row: ToolChild, id: unknown) {
