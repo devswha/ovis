@@ -319,9 +319,10 @@ every route in use.
   `/v2/lists/{list}/`: `GET log?after=&limit=`, `GET wraps?member=`, `POST entries`, `POST claims`,
   `GET claims`, `GET posts`. A write takes an app's own sign-in that no block freezes. A genesis and
   a claim also take a sign-in made in the last ten minutes, or an older one with a key proof: a
-  challenge of `POST /v1/pcs/challenge` (with `opensAll` on), signed over `keyProofBytes([purpose,
-  account, list id, slot, challenge_id, challenge])` by the key that sign-in registered, where the
-  purpose is `list-genesis` with an empty slot or `list-claim` with the claimed key.
+  challenge of `POST /v1/pcs/challenge` (with `opensAll` on), signed by the key that sign-in
+  registered over `pcAddSigningBytes` (`shared/account-records.ts`) with the purpose `list-genesis`,
+  the list id in the place of the server_id and no listing, or `list-claim` with the claimed key as
+  the listing.
 - **PCs** prove their relay key in the body of each call (a challenge of `POST /v1/pc/challenge`
   answered with the role `account`, one per call): `POST /v2/pc/list`, `/v2/pc/list/log`,
   `/v2/pc/list/wraps`, `/v2/pc/list/entries` and `/v2/pc/list/keys`. A mailbox pull with

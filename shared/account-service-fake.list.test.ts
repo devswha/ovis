@@ -4,7 +4,8 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { entryFromText, entryHash, entryToText, signEntry, type EntryBody } from "./account-list-entry.ts";
 import { kindBody, replayList, shownList, signCard, type ListKind, type Sealed } from "./account-list.ts";
 import type { ListPlace } from "./account-list-signers.ts";
-import { FakeAccountService, LIST_CLAIM_MS, keyProofBytes, type ListWrap } from "./account-service-fake.ts";
+import { pcAddSigningBytes, type PcAddPurpose } from "./account-records.ts";
+import { FakeAccountService, LIST_CLAIM_MS, type ListWrap } from "./account-service-fake.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 import { answerServerChallenge, deriveServerId } from "./relay-server-proof.ts";
 
@@ -140,10 +141,10 @@ async function pull(w: World, pc: Machine, withList = true): Promise<Record<stri
   return await response.json() as Record<string, unknown>;
 }
 
-/** A key proof by `signer` (the key `bearer`'s sign-in registered) over these values, on a challenge of POST /v1/pcs/challenge. */
-async function keyProof(w: World, bearer: string, signer: Key, values: (challengeId: string, challenge: string) => string[]) {
+/** A key proof by `signer` (the key `bearer`'s sign-in registered) for this purpose, list id and slot, on a challenge of POST /v1/pcs/challenge. */
+async function keyProof(w: World, bearer: string, signer: Key, purpose: PcAddPurpose, list: string, slot = "") {
   const challenge = await (await w.service.fetch(new Request(`${BASE}/v1/pcs/challenge`, { method: "POST", body: "{}", headers: { authorization: `Bearer ${bearer}` } }))).json() as { challenge_id: string; challenge: string };
-  const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, signer.pair.privateKey, keyProofBytes(values(challenge.challenge_id, challenge.challenge)))));
+  const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, signer.pair.privateKey, pcAddSigningBytes(purpose, ACCOUNT, list, slot, challenge.challenge_id, challenge.challenge))));
   return { challenge_id: challenge.challenge_id, signature };
 }
 
@@ -285,19 +286,18 @@ describe("the fake account service's list routes (Part D)", () => {
       const phone = await newKey();
       const stale = staleSignIn(w, phone);
       expect(refusal(await post(stale))).toBe("403 session_not_fresh");
-      const values = (purpose: string, over: string, slot = "") => (id: string, challenge: string) => [purpose, ACCOUNT, over, slot, id, challenge];
       // a proof for another purpose, another list or another slot, or by a key this sign-in did not register, proves nothing
-      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-claim", list)) }))).toBe("403 session_not_fresh");
-      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-genesis", OPENS(4))) }))).toBe("403 session_not_fresh");
-      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-genesis", list, "x")) }))).toBe("403 session_not_fresh");
-      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, await newKey(), values("list-genesis", list)) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, "list-claim", list) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, "list-genesis", OPENS(4)) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, "list-genesis", list, "x") }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, await newKey(), "list-genesis", list) }))).toBe("403 session_not_fresh");
       // a proof is spent by its first use, whatever came of it
-      const spent = await keyProof(w, stale, phone, values("list-genesis", list));
+      const spent = await keyProof(w, stale, phone, "list-genesis", list);
       const other = await sign(owner, { seq: 0, list: "", prev: "" }, genesisOf(owner), w.seconds() + 1);
       expect(refusal(await w.call("POST", "/v2/lists", { entry: other.text, key_proof: spent }, stale))).toBe("403 session_not_fresh");
       expect(refusal(await post(stale, { key_proof: spent }))).toBe("400 challenge_invalid");
       expect(refusal(await post(stale, { key_proof: { challenge_id: "0".repeat(32) } }))).toBe("400 invalid_request");
-      expect((await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-genesis", list)) })).status).toBe(201);
+      expect((await post(stale, { key_proof: await keyProof(w, stale, phone, "list-genesis", list) })).status).toBe(201);
     });
   });
 
@@ -605,7 +605,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const signedIn = await newKey();
       const stale = staleSignIn(w, signedIn);
       expect(refusal(await w.claim(list, phone, stale))).toBe("403 session_not_fresh");
-      const proof = await keyProof(w, stale, signedIn, (id, challenge) => ["list-claim", ACCOUNT, list, phone.key, id, challenge]);
+      const proof = await keyProof(w, stale, signedIn, "list-claim", list, phone.key);
       expect((await w.claim(list, phone, stale, { key_proof: proof })).status).toBe(200);
       expect(refusal(await w.claim(list, phone, stale, { key_proof: proof }))).toBe("400 challenge_invalid");
       const claimed = async () => (await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims?.map(({ key }) => key);

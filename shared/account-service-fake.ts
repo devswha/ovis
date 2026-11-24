@@ -13,7 +13,6 @@ import { ListEntryError, entryFromText, entryHash, entryHolds, entryToText, firs
 import { oneSpelling } from "./account-list-join.ts";
 import { CARD_SIGNATURE_CHARS, ListKindError, cardHolds, firstListState, holdsPc, isListKey, readKind, takeEntry, wrapKeys, type ListState } from "./account-list.ts";
 import { signerPower, type ListPlace } from "./account-list-signers.ts";
-import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.ts";
 import { isWssOrigin } from "./relay-offer.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
@@ -167,9 +166,6 @@ const LIST_BODY = { genesis: 32 * 1024, entries: 512 * 1024, small: 8 * 1024 } a
 /** A wrap as text: 151 base64url characters, the 113 bytes of Part C's wrap. */
 const WRAP_TEXT = 151;
 const WRAP_BYTES = 113;
-/** The purposes of the key proof (`ovis-pc-add/1`) that the list routes take, and the challenge's life (as POST /v1/pcs/challenge). */
-type ListKeyProofPurpose = "list-genesis" | "list-claim";
-export const PC_ADD_CHALLENGE_TTL_MS = 2 * 60_000;
 
 /**
  * Whom a tamper rule lies to: a device by the sign-in of its token (a refresh keeps it), a PC by its server_id.
@@ -337,8 +333,6 @@ export class FakeAccountService {
   private readonly lists = new Map<string, FakeList>();
   /** by account: its one list's id */
   private readonly accountLists = new Map<string, string>();
-  /** POST /v1/pcs/challenge's challenges, by id: for one sign-in (family), spent by their first use */
-  private readonly pcAddChallenges = new Map<string, { family: string; challenge: string; expires: number }>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -836,18 +830,6 @@ export class FakeAccountService {
     }
     if (path === "/v1/pcs/challenge" && request.method === "POST" && this.pcAddProofs && this.opensAll) {
       // a challenge for one key proof (pcAddSigningBytes), for an app's own sign-in only, spent by its first use
-      if (this.deviceFamilies.has(session.family)) return problem(403, "own_sign_in_required", "Sign in on this device first");
-      const text = await request.text();
-      const body: unknown = text.trim() === "" ? {} : JSON.parse(text);
-      if (typeof body !== "object" || body === null || Object.keys(body).length > 0) return problem(400, "invalid_request", "Send {}");
-      const id = randomHex(16);
-      const challenge = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
-      this.pcAddChallenges.set(id, { family: session.family, challenge, expires: this.now() + PC_ADD_CHALLENGE_TTL_MS });
-      return json({ challenge_id: id, challenge, expires_in: PC_ADD_CHALLENGE_TTL_MS / 1000 });
-    }
-    if (path === "/v1/pcs/challenge" && request.method === "POST" && this.opensAll) {
-      // a challenge for one key proof (keyProofBytes), for an app's own sign-in only, spent by its first use. The list
-      // routes take it for `list-genesis` and `list-claim`
       if (this.deviceFamilies.has(session.family)) return problem(403, "own_sign_in_required", "Sign in on this device first");
       const text = await request.text();
       const body: unknown = text.trim() === "" ? {} : JSON.parse(text);
@@ -1553,21 +1535,18 @@ export class FakeAccountService {
 
   /**
    * The second lock's age rule for a device (`mayAddPc`): an own sign-in made in the last ten minutes, or older with a
-   * proof by the key registered for that very sign-in over a challenge of POST /v1/pcs/challenge. A proof that is sent is
-   * judged, its challenge spent, whatever the sign-in's age. Null when it passes.
+   * proof (provedKey) by the key registered for that very sign-in, over the purpose, the list id in the place of the
+   * server_id and `slot` in the place of the listing. A proof that is sent is judged, its challenge spent, whatever the
+   * sign-in's age. Null when it passes.
    */
-  private async freshOrProved(session: Session, proof: unknown, purpose: ListKeyProofPurpose, list: string, slot: string): Promise<Response | null> {
+  private async freshOrProved(session: Session, proof: unknown, purpose: "list-genesis" | "list-claim", list: string, slot: string): Promise<Response | null> {
     const recent = this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) <= REAUTH_MS;
-    const stale = this.v2Problem(403, "session_not_fresh", "Sign in again on this device first");
-    const shaped = keyProofOf(proof);
-    if (shaped === null) return recent ? null : stale;
-    const held = this.pcAddChallenges.get(shaped.challenge_id);
-    if (held?.family === session.family) this.pcAddChallenges.delete(shaped.challenge_id);
-    if (held === undefined || held.family !== session.family || this.now() > held.expires) return this.v2Problem(400, "challenge_invalid", "Ask for a new challenge and sign it");
-    const key = this.signInKey(session.account, session.family);
-    const proved = key !== undefined && !key.frozen
-      && await verifyKeyProof(key.key, keyProofBytes([purpose, session.account, list, slot, shaped.challenge_id, held.challenge]), shaped.signature);
-    return proved || recent ? null : stale;
+    const proved = await this.provedKey(session, proof, purpose, list, slot);
+    if (proved instanceof Response) {
+      const { error } = await proved.json() as { error: { code: string; message: string } };
+      return this.v2Problem(proved.status, error.code, error.message);
+    }
+    return proved !== null || recent ? null : this.v2Problem(403, "session_not_fresh", "Sign in again on this device first");
   }
 
   /** POST /v2/lists/{list}/claims: a device claims its member key with the card its `device` entry will carry. */
@@ -1974,42 +1953,4 @@ function flipText(text: string, byte?: number): string {
   const at = byte ?? Math.floor(bytes.length / 2);
   bytes[at] = (bytes[at] ?? 0) ^ 0x01;
   return toBase64Url(bytes);
-}
-
-/** `key_proof` as the service reads it: `{ challenge_id, signature }`, 32 lowercase hex digits and 86 base64url characters; null otherwise. */
-function keyProofOf(value: unknown): { challenge_id: string; signature: string } | null {
-  if (!isRecord(value) || !hasOnly(value, ["challenge_id", "signature"])) return null;
-  const { challenge_id, signature } = value;
-  return typeof challenge_id === "string" && /^[0-9a-f]{32}$/.test(challenge_id) && typeof signature === "string" && /^[A-Za-z0-9_-]{86}$/.test(signature)
-    ? { challenge_id, signature } : null;
-}
-
-/**
- * What a key proof signs: `ovis-pc-add/1` and its values (purpose, account, server_id or list id, listing ID or slot,
- * challenge id, challenge), each as 4 bytes of length (big-endian) and the value, as shared/account-records.ts lays out
- * its own. For the list: `list-genesis` with the list id and "", `list-claim` with the list id and the claimed key.
- */
-export function keyProofBytes(values: readonly string[]): Uint8Array<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const parts = values.map((value) => encoder.encode(value));
-  const prefix = encoder.encode("ovis-pc-add/1");
-  const bytes = new Uint8Array(prefix.length + parts.reduce((sum, part) => sum + 4 + part.length, 0));
-  bytes.set(prefix);
-  const view = new DataView(bytes.buffer);
-  let offset = prefix.length;
-  for (const part of parts) {
-    view.setUint32(offset, part.length);
-    bytes.set(part, offset + 4);
-    offset += 4 + part.length;
-  }
-  return bytes;
-}
-
-async function verifyKeyProof(key: string, bytes: Uint8Array<ArrayBuffer>, signature: string): Promise<boolean> {
-  try {
-    const publicKey = await crypto.subtle.importKey("spki", new Uint8Array(fromBase64Url(key)), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-    return await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, new Uint8Array(fromBase64Url(signature)), bytes);
-  } catch {
-    return false;
-  }
 }
