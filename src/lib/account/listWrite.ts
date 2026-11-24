@@ -6,10 +6,10 @@
  * The account service's answer to the placement is trusted for nothing: the entries are placed once this device's own
  * copy shows the last of them at its place.
  */
-import { ListWriteError, listView, signListEntries, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
-import { nextEpoch, wrapEpochKeyFor, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
+import { lapsedRemovals, ListWriteError, namesFields, sealEpoch, signListEntries, wrapKeys, type ListKind, type ListNames, type ListState, type Sealed } from "../../../shared/account-list.ts";
+import { nextEpoch, sealFields, wrapEpochKey, wrapEpochKeyFor, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
-import type { AccountList, ListWriter } from "./accountList.ts";
+import type { AccountList, AccountListView, KeptRequest, ListWriter } from "./accountList.ts";
 import type { PlacedWrap } from "./listAnswers.ts";
 import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, SignedOutError } from "./service.ts";
 
@@ -31,8 +31,34 @@ import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableErro
  * - `unknown`: the request went out, no answer came, and the list could not be read since: whether the entries were
  *   placed is not known yet.
  * - `changed`: the account or the list is no longer the one the write was begun for (WriteOptions.expect): nothing was signed.
+ * - `behind`: a member of a later level wrote, and this build signs nobody in on what it holds until it is updated
+ *   (it still signs a removal, and the epoch after one).
+ * - `waiting`: a request this device signed for another change still waits at this head, younger than KEPT_SECONDS:
+ *   nothing is signed until that change is tried again or cancelled.
  */
-export type WriteRefusal = "no_list" | "blocked" | "clock" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "unknown" | "changed";
+export type WriteRefusal = "no_list" | "blocked" | "clock" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "unknown" | "changed" | "behind" | "waiting";
+
+/**
+ * How long a signed request that waits at a head holds another change back, in seconds: while it is younger, the
+ * other change is refused (`waiting`) and the person tries the first again or cancels it; after that it is let go.
+ */
+export const KEPT_SECONDS = 10 * 60;
+
+/** How long one placement waits for its answer: after it, the log says whether the entries were placed. */
+const PLACE_MS = 30_000;
+
+/**
+ * `work` with `ms` to answer. The time is this function's own, and holds also where the request does not end with its
+ * signal: after it, the call rejects as a request that got no answer.
+ */
+function within<T>(ms: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const stop = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    const over = new DOMException("The account service did not answer in time", "TimeoutError");
+    const timer = setTimeout(() => { reject(over); stop.abort(over); }, ms);
+    work(stop.signal).then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
 
 /** The most entries one request places (the account service takes no more). */
 export const WRITE_ENTRIES_MAX = 16;
@@ -66,19 +92,6 @@ export type WriteOutcome<Why extends string> =
 
 export const placeOf = (state: ListState): ListPlace => ({ seq: state.footing.seq, hash: state.footing.hash });
 
-/**
- * The keys whose time is over while they still hold the current epoch's key, by the clock the writer judges by: an
- * invite that a PC joins with by itself, past its `exp` with a use left, and a device that is in past its `until`.
- * While one of them is in, the kinds seal no name (sealEpoch).
- */
-export function overTime(state: ListState, clock: number): string[] {
-  const view = listView(state);
-  return [
-    ...view.invites.filter((row) => row.auto && state.signers[row.key]?.ended === null && row.joins < row.uses && clock > row.exp).map((row) => row.key),
-    ...view.devices.filter((row) => row.ended === null && row.until !== null && !(clock < row.until)).map((row) => row.key),
-  ];
-}
-
 /** A step of a request: a kind, or one made from the state the steps before it leave. */
 export type Step = ListKind | ((state: ListState) => ListKind | Promise<ListKind>);
 
@@ -108,10 +121,17 @@ export async function signedWithEpoch(writer: ListWriter, current: EpochKey, bef
 export interface WriteOptions {
   readonly wait?: (ms: number) => Promise<void>;
   /**
+   * What is being written (`allow:<key>`, `remove-pc:<endpoint>`): a request kept for the same operation is sent
+   * again when it is tried again, and one kept for another operation is never sent by this one (KEPT_SECONDS).
+   */
+  readonly operation?: string;
+  /** How long one placement waits for its answer; PLACE_MS by default. */
+  readonly placeMs?: number;
+  /**
    * The account and the list the write was begun for: what the person saw when they pressed. Held against the writer
    * after every read, so a sign-in that another tab changed, or another list, ends the write with nothing signed.
    */
-  readonly expect?: { readonly account: string; readonly list: string };
+  readonly expect?: { readonly account: string; /** absent: whichever list of that account the device follows at the first read */ readonly list?: string | undefined };
   /** The writer to sign on, read after each read of the list: for a device's removal of its own key, `list.writer({ self: true })`. The list's own by default. */
   readonly writer?: () => ListWriter | null;
   /**
@@ -130,6 +150,96 @@ const unanswered = (error: unknown): boolean => error instanceof AccountServiceU
   || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"));
 
 /**
+ * The request that brings a member in under a name (a device, a PC), signed on the writer's state. Where the kinds
+ * say names may be sealed, it is the one entry, its names under the current epoch and that epoch's key wrapped to
+ * `enc`, the newcomer's encryption key. Where they say no, the request first tidies up: a `remove` for every key
+ * whose time is over (the kinds' lapsedRemovals), one `epoch`, then the entry with its names under the epoch that
+ * request opens, and the new key wrapped to everybody who is in after the whole of it. A device that holds no key
+ * of the current epoch seals nothing and wraps nothing: the newcomer comes in all the same. A caller that may meet
+ * more keys over their time than one request holds goes through writeNamed.
+ */
+export async function signedNamed(writer: ListWriter, names: ListNames | null, enc: string, kind: (sealed: Sealed | null) => ListKind): Promise<Written> {
+  const { list, state, clock } = writer;
+  const seal = async (on: ListState, key: EpochKey, opens: string): Promise<Sealed | null> => names === null ? null
+    : { epoch: key.epoch, bytes: await sealFields({ place: { list, seq: on.footing.seq + 1 }, epoch: key, commitment: opens, fields: namesFields(names) }) };
+  const current = writer.epochs.get(state.epoch) ?? null;
+  if (current === null) return signedOn(writer, [kind(null)]);
+  const where = sealEpoch(state, clock);
+  if (where !== null) {
+    const wrap = await wrapEpochKey({ list, epoch: current, member: enc });
+    return signedOn(writer, [kind(await seal(state, current, where.opens))], wrap === null ? [] : [{ epoch: current.epoch, member: enc, wrap: wrapToText(wrap) }]);
+  }
+  const lapsed = lapsedRemovals(state, clock);
+  // A device whose clock reads far under the time it last saved cannot tell which of the two is wrong: it puts nobody
+  // out for a time that is over. Without that no epoch may be opened and no name sealed, so the member comes in with
+  // no name, and a later writer seals it.
+  if (writer.adrift && lapsed.length > 0) return signedOn(writer, [kind(null)]);
+  return signedWithEpoch(writer, current, lapsed, (next) => [async (after) => kind(await seal(after, next.epoch, next.commitment))]);
+}
+
+/** How many requests of removals alone go before a named entry's own: 64 keys over their time. */
+const TIDY_ROUNDS = 4;
+
+/**
+ * writeToList for a request that brings a member in under a name (signedNamed). No request is built that the
+ * account service must refuse for its size: that request holds the removal of every key over its time, the epoch
+ * and the entry, and nothing may be sealed while one of those keys is still in. So where they are more than fit,
+ * they go out first, a request of removals at a time, TIDY_ROUNDS at most, and the entry's request follows on the
+ * head they leave.
+ *
+ * `prepare` runs on the writer of each try, before anything is signed: a refusal or a `done` of its own ends the
+ * write, and `go` carries what `sign` needs.
+ */
+export async function writeNamed<With, Why extends string = never>(
+  list: AccountList,
+  prepare: (writer: ListWriter) => Promise<{ readonly refused: WriteRefusal | Why } | { readonly done: ListPlace } | { readonly go: With }>,
+  sign: (writer: ListWriter, go: With) => Promise<Written>,
+  options: WriteOptions = {},
+): Promise<WriteOutcome<Why>> {
+  for (let rounds = 0; rounds <= TIDY_ROUNDS; rounds += 1) {
+    let tidied = false;
+    const outcome = await writeToList<Why>(list, async (writer) => {
+      tidied = false;
+      const ready = await prepare(writer);
+      if (!("go" in ready)) return ready;
+      const lapsed = !writer.adrift && writer.epochs.has(writer.state.epoch) && sealEpoch(writer.state, writer.clock) === null ? lapsedRemovals(writer.state, writer.clock) : [];
+      if (lapsed.length > WRITE_ENTRIES_MAX - 2) {
+        tidied = true;
+        return { request: await signedOn(writer, lapsed.slice(0, WRITE_ENTRIES_MAX)) };
+      }
+      return { request: await sign(writer, ready.go) };
+    }, options);
+    if (!outcome.written || !tidied) return outcome;
+  }
+  return { written: false, why: "busy", retryAfterMs: null };
+}
+
+/** Raised on the page when a change was refused because an earlier one still waits (`waiting`): whoever draws that change's card shows it. */
+export const LIST_WRITE_WAITING_EVENT = "ovis:list-write-waiting";
+
+/**
+ * Sends the request that waits at this device's head again, as the change it was signed for. True once nothing waits
+ * any more: it was placed, the head moved, or the account service proved that it placed nothing.
+ */
+export async function resendWaiting(list: AccountList, options: Pick<WriteOptions, "wait" | "placeMs"> = {}): Promise<boolean> {
+  const waiting = await list.waiting();
+  if (waiting === null) return true;
+  // nothing new is signed here: a request kept for that very change is the only thing this sends
+  await writeToList<"nothing">(list, async () => ({ refused: "nothing" }), { ...options, ...(waiting.for === null ? {} : { operation: waiting.for }) });
+  return await list.waiting() === null;
+}
+
+/**
+ * Whether this device holds a copy of a list of its account: it then goes by it, whatever its standing in it. A
+ * device the list put out, one that waits, and one whose copy is stopped, alarmed or does not read each have a
+ * refusal of their own, and none of them takes the ways from before lists.
+ */
+export function holdsList(view: AccountListView): boolean {
+  const { status } = view;
+  return status.at === "damaged" || status.at === "newer_save" || status.at === "following";
+}
+
+/**
  * Places what `step` signs on the list this device follows. It reads the list first, and `step` signs on what the
  * device then holds. One signature per place: the request as signed goes again, WRITE_RESENDS times at most, while
  * the device's own copy shows the head it was signed on (the service is rebuilding the list or asks for the request
@@ -143,46 +253,94 @@ export async function writeToList<Why extends string = never>(list: AccountList,
   for (let tries = 0; tries < WRITE_TRIES; tries += 1) {
     const view = await list.sync();
     const writer = (options.writer ?? (() => list.writer()))();
-    if (options.expect !== undefined && (view.account !== options.expect.account || (writer !== null && (writer.account !== options.expect.account || writer.list !== options.expect.list)))) return refused("changed");
+    if (options.expect !== undefined && (view.account !== options.expect.account || (writer !== null && (writer.account !== options.expect.account || (options.expect.list !== undefined && writer.list !== options.expect.list))))) return refused("changed");
     if (writer === null) {
       // a device that holds a list goes by it also where it cannot write: only one with no list of its own has none
       const { status } = view;
-      const holds = status.at === "damaged" || status.at === "newer_save" || (status.at === "following" && status.standing !== "out" && status.standing !== "waiting");
+      const holds = holdsList(view);
       return refused(!holds ? "no_list" : status.at === "following" && status.standing === "in" && status.trouble === null && !view.reached ? "unreached" : "blocked");
     }
-    let request: Written;
-    try {
-      const next = await step(writer);
-      if ("done" in next) return { written: true, list: writer.list, place: next.done };
-      if ("refused" in next) return refused(next.refused);
-      ({ request } = next);
-    } catch (error) {
-      if (error instanceof SignedOutError) throw error;
-      // an entry this device would not count is not signed: a card that is not that key's, most of all
-      if (error instanceof ListWriteError) return refused("refused");
-      if (unanswered(error) || refusalOf(error) !== null) return refused("unreached");
-      throw error;
+    // One signature per place, across calls, pages and restarts: a request this device signed on this very head and
+    // has not seen placed is the one that goes, whatever is asked for now. Nothing else is signed on that head.
+    let kept: KeptRequest | null;
+    try { kept = await list.kept(writer); } catch (error) {
+      console.warn("Ovis: the request kept for this place of the account's list could not be read", error instanceof Error ? error.name : error);
+      return refused("blocked");
     }
+    if (kept !== null && kept.for !== (options.operation ?? null)) {
+      // Another change's request waits at this head. It is that change's to send again, never this one's: a stalled
+      // Allow must not be placed, later, by an unrelated Remove. The log says first whether it is over.
+      const read = await list.sync({ read: true });
+      const again = (options.writer ?? (() => list.writer()))();
+      if (again === null || again.list !== writer.list || again.state.footing.seq !== writer.state.footing.seq || again.state.footing.hash !== writer.state.footing.hash) continue;
+      // the head did not move, by a read that reached the log: while the kept request is young the person is told of it
+      if (!read.reached || writer.issued_at - kept.at < KEPT_SECONDS) return refused("waiting");
+      // older than that, it is an attempt its writer left behind, and no fork: it is let go, and this change is signed
+      await list.unkeep(writer.account, kept).catch(() => undefined);
+      kept = null;
+    }
+    const resent = kept !== null;
+    if (kept === null) {
+      let signed: Written;
+      try {
+        const next = await step(writer);
+        if ("done" in next) return { written: true, list: writer.list, place: next.done };
+        if ("refused" in next) return refused(next.refused);
+        signed = next.request;
+      } catch (error) {
+        if (error instanceof SignedOutError) throw error;
+        // an entry this device would not count is not signed: a card that is not that key's, most of all
+        if (error instanceof ListWriteError) return refused(error.reason === "behind" ? "behind" : "refused");
+        // no answer, a refusal, or an answer that does not read: nothing was sent that could have been placed
+        if (unanswered(error) || refusalOf(error) !== null || error instanceof SyntaxError) return refused("unreached");
+        throw error;
+      }
+      // kept before it is sent; where another page kept one for this head first, that one goes and this is never sent
+      try { kept = await list.keep(writer, { ...signed, for: options.operation ?? null }); } catch (error) {
+        console.warn("Ovis: the signed request could not be kept, and was not sent", error instanceof Error ? error.name : error);
+        return refused("blocked");
+      }
+    }
+    const request: Written = { entries: kept.entries, wraps: kept.wraps, place: kept.place };
+    const letGo = async (): Promise<void> => { await list.unkeep(writer.account, kept).catch(() => undefined); };
     // One signature per place: the request as signed goes again while this device's own copy shows the head it was
     // signed on, and another is signed only after the copy shows a new head.
     const signedOn = writer.state.footing;
+    const current = options.writer ?? (() => list.writer());
+    const movedNow = (): boolean => {
+      const now = current();
+      return now === null || now.list !== writer.list || now.state.footing.seq !== signedOn.seq || now.state.footing.hash !== signedOn.hash;
+    };
     let moved = false;
     let retryAfterMs: number | null = null;
     for (let sends = 0; sends < WRITE_RESENDS && !moved; sends += 1) {
+      // whether the answer proves that nothing was placed: only `409 head_moved` does, of those that lead on to a read
+      let unplaced = false;
       try {
-        await writer.service.placeEntries(writer.list, request.entries, request.wraps);
+        await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal));
         if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };
       } catch (error) {
         if (error instanceof SignedOutError) throw error;
         const said = refusalOf(error);
-        // no answer came: the request may have been placed all the same, and the log below says which
-        if (said === null && !unanswered(error)) throw error;
+        // No answer, one that does not read, or a gateway's: the request may have been placed all the same, and the
+        // log below says which
+        if (said === null && !unanswered(error) && !(error instanceof SyntaxError)) throw error;
         if (said !== null) {
           if ((said.status === 503 && said.code === "list_rebuilding") || (said.status === 409 && said.code === "try_again")) {
-            // the same request again, the same signatures, after the pause the account service asks for
+            // the same request again, the same signatures, after the pause the account service asks for; unless a read
+            // of this device's moved its head meanwhile, and then another is signed on that head
             ({ retryAfterMs } = said);
             if (sends + 1 < WRITE_RESENDS) await wait(Math.min(retryAfterMs ?? 1_000, RESEND_MAX_MS));
+            moved = movedNow();
             continue;
+          }
+          // From here on the account service's own refusal proves that it placed nothing: the request is let go, so
+          // another may be signed on this head. A request kept from before is not what was asked for now: its refusal
+          // ends nothing, and the try goes on to sign what was.
+          unplaced = said.status === 409 && said.code === "head_moved";
+          if (!unplaced && said.status < 500) {
+            await letGo();
+            if (resent) { moved = true; continue; }
           }
           if (said.status === 503 && said.code === "list_stopped") return refused("stopped");
           // the list's own budget of additions, as against a request too many: each by its code, with the wait it names
@@ -192,17 +350,21 @@ export async function writeToList<Why extends string = never>(list: AccountList,
           // device signs nothing by the service's clock, and no second entry on a head that did not move: it says so
           if (said.status === 400 && said.code === "entry_refused"
             && (said.reason === "epoch_not_needed" || said.reason === "epoch_stale" || said.reason === "epoch_no_use" || said.reason === "issued_at_ahead")) return refused("clock");
-          if (!(said.status === 409 && said.code === "head_moved")) return refused(said.status >= 500 ? "unreached" : "refused");
+          // any other refusal of the service's own says that it placed nothing; a 5xx may be a gateway's, after a commit
+          if (!unplaced && said.status < 500) return refused("refused");
         }
       }
-      // Placed, refused for a head that moved, or no answer at all: this device's own copy says which. The account
-      // service's answer is no word on what the list holds.
-      const after = await list.sync();
-      if (list.holdsEntry(request.place)) return { written: true, list: writer.list, place: request.place };
+      // Placed, refused for a head that moved, or no answer to rely on: this device's own copy says which, from the
+      // log itself, whatever head the account service names. Its answer is no word on what the list holds.
+      const after = await list.sync({ read: true });
+      if (list.holdsEntry(request.place)) {
+        // a request kept from before was placed: the head moved, and what is asked for now is signed on the new one
+        if (resent) { moved = true; continue; }
+        return { written: true, list: writer.list, place: request.place };
+      }
       // the log could not be read: whether the entries were placed is not known yet, and nothing else is signed
-      if (!after.reached) return refused("unknown");
-      const now = (options.writer ?? (() => list.writer()))();
-      moved = now === null || now.list !== writer.list || now.state.footing.seq !== signedOn.seq || now.state.footing.hash !== signedOn.hash;
+      if (!after.reached) return refused(unplaced ? "unreached" : "unknown");
+      moved = movedNow();
     }
     if (!moved) return refused("busy", retryAfterMs);
   }

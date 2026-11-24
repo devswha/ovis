@@ -152,7 +152,7 @@ describe("the front page's account part", () => {
     expect(newer).toContain("This device cannot read your account&#x27;s list. Update the app.");
     expect(rowsOf(newer).map(([, text]) => text)).toEqual(["desk Relay Not in your account&#x27;s list yet On", "old-box Relay Not in your account&#x27;s list yet On"]);
     const damaged = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "damaged" } }), scoped: false, onSignIn: none });
-    expect(damaged).toMatch(/data-list-unread="damaged"[^>]*>This device cannot read your account&#x27;s list\.</);
+    expect(damaged).toMatch(/data-list-unread="damaged"[^>]*>This device cannot read your account&#x27;s list\. Sign out and in again on this device, then allow it from another device\.</);
   });
 
   it("lists on My PCs this device's own PCs and then the account's it can open, each once, by way and state, whatever the address", () => {

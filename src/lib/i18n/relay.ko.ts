@@ -189,6 +189,10 @@ export const RELAY_KO: Record<string, string> = {
   "{done} of {total} other devices left your account; the others did not. Try again.": "다른 기기 {total}대 중 {done}대만 계정에서 빠졌어요. 다시 시도하세요.",
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "확인한 뒤에 {names} 기기가 계정에 들어왔어요. 아무도 로그아웃하지 않았으니 다시 확인하세요.",
   "This device cannot read your account's list. Update the app.": "이 기기에서 계정 명단을 읽을 수 없어요. 앱을 업데이트하세요.",
-  "This device cannot read your account's list.": "이 기기에서 계정 명단을 읽을 수 없어요.",
+  "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "이 기기에서 계정 명단을 읽을 수 없어요. 이 기기에서 로그아웃했다가 다시 로그인한 뒤, 다른 기기에서 허용하세요.",
+  "{name} was removed from your account": "{name} PC가 계정에서 제거됐어요",
+  "It can come back only as a new PC. On {name}, open Settings → Devices and PCs and press Reset relay identity, then add it to your account again.": "새 PC로만 다시 추가할 수 있어요. {name} PC에서 설정 → 기기와 PC를 열고 릴레이 신원 재설정을 누른 뒤 계정에 다시 추가하세요.",
+  "This device's time in your account is over": "이 기기의 계정 사용 시간이 끝났어요",
+  "It was added for a limited time. To go on, add it again from a device of your account.": "정해진 시간 동안만 추가된 기기예요. 계속 쓰려면 계정의 다른 기기에서 다시 추가하세요.",
   "Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.": "다른 기기가 계정에서 빠졌는지 아직 알 수 없고, 아무도 로그아웃하지 않았어요. 잠시 뒤 다시 시도하세요.",
 };

@@ -3,7 +3,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { LIST_LEVEL, kindBody, listView, namesFields, replayList, sealEpoch, signCard, signListEntry, type ListKind } from "../../../shared/account-list.ts";
 import { entryFromText, entryHash, entryToText, readBody, signEntry } from "../../../shared/account-list-entry.ts";
-import { LIST_SAVE_PREFIX } from "../../../shared/account-list-follower.ts";
+import { ATTEMPT_ENTRIES_MAX, LIST_SAVE_PREFIX } from "../../../shared/account-list-follower.ts";
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { pcAddSigningBytes } from "../../../shared/account-records.ts";
 import { FakeAccountService, WEB_REDIRECT, type ListTamper } from "../../../shared/account-service-fake.ts";
@@ -138,6 +138,21 @@ async function signed(by: DeviceListKeys | { key: string; signs: CryptoKey }, ki
   const place = { list: at.id, seq: at.head.seq + 1 };
   const body = kindBody({ issued_at: Math.floor(now / 1000), list: at.id, prev: at.head.hash, seq: place.seq, signer: by.key }, await kind(place));
   return entryToText(await signEntry(body, by.signs));
+}
+
+/**
+ * Another history from entry 1 that a member signed, which is no post the member left behind: `first`, then more entries by the same
+ * signer than one post holds. A single entry there by a member that went on is no fork (the follower refuses it and nothing changes).
+ */
+async function otherHistory(by: DeviceListKeys | { key: string; signs: CryptoKey }, first: () => ListKind, list = held()): Promise<string[]> {
+  const texts: string[] = [];
+  let head = { seq: 0, hash: list.id };
+  for (let index = 0; index <= ATTEMPT_ENTRIES_MAX; index += 1) {
+    const text = await signed(by, index === 0 ? first : () => ({ kind: "carried", endpoint: newPc().endpoint, sealed: null }), { ...list, head });
+    texts.push(text);
+    head = { seq: head.seq + 1, hash: entryHash(entryFromText(text).body) };
+  }
+  return texts;
 }
 
 async function post(from: Device, entries: readonly string[], wraps: readonly { epoch: number; member: string; wrap: string }[] = []): Promise<Response> {
@@ -282,6 +297,36 @@ describe("an account service that answers the list's questions as it does not fo
       expect(phone.sent.map((each) => `${each.method} ${each.path}`)).toEqual(["GET /v2/lists/mine"]);
       expect(await phone.store.get("enc_key")).toBeUndefined();
     }
+  });
+
+  it("signs nobody out where it refuses the challenge for the proof of a claim: a device that waits, with an old sign-in, asks by itself", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    const tablet = await device({ label: "Dana's tablet" });
+    // the tablet's sign-in is older than ten minutes: its claim goes with a proof by its registered key
+    now += 11 * MINUTE;
+    const before = (await tablet.store.get("session"))!;
+    tablet.wire.answer = answers(401, "unauthorized")((pathname) => pathname === "/v1/pcs/challenge");
+    const view = await tablet.list.sync();
+    expect(view.status).toMatchObject({ at: "not_in", why: "not_mine" });
+    expect(asked(tablet, "POST /v1/pcs/challenge")).toBe(1);
+    expect(await tablet.store.get("session")).toEqual(before);
+    expect(asked(tablet, "POST /v1/token")).toBe(0);
+  });
+
+  it("signs by its own clock and never by the floor it saved, and knows when the two are far apart, also where another page saved the floor", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    const own = Math.floor(now / 1000);
+    expect([phone.list.writer()!.clock, phone.list.writer()!.issued_at, phone.list.writer()!.adrift]).toEqual([own, own, false]);
+    // another page of this device saw a time an hour later (a date set ahead, since put right), and kept it beside the copy
+    await phone.lists.set("times", ACCOUNT, { v: 1, list: held().id, read_at: own + 3600, seen_at: own + 3600 });
+    await phone.list.sync();
+    // what is signed still goes by this device's clock as it is: the floor would put out a key whose time is not over
+    const writer = phone.list.writer()!;
+    expect([writer.clock, writer.issued_at]).toEqual([own, own]);
+    // and a clock more than ten minutes under the floor is known to be adrift: nobody is put out for a time that is over
+    expect(writer.adrift).toBe(true);
   });
 
   it("signs nobody out where it refuses the log or the wraps of a list the device follows: the copy stands", async () => {
@@ -736,31 +781,39 @@ describe("catching up", () => {
     expect(asked(phone, "GET /v2/lists/mine")).toBe(2);
   });
 
-  it("saves its copy when the list moved and once for each round that reached the account service, and never when it was not reached", async () => {
+  it("writes its copy only when the list moved, and keeps when it last read it in full, and the floor of its clock, in a small record beside it", async () => {
     const phone = await device();
     let writes = 0;
     const swap = phone.lists.swap.bind(phone.lists);
     phone.lists.swap = async (record, account, expected, value) => { const swapped = await swap(record, account, expected, value); if (record === "copy" && swapped) writes += 1; return swapped; };
-    const savedAt = async () => { const { read_at, seen_at } = JSON.parse(await phone.lists.get("copy", ACCOUNT) as string) as { read_at: number; seen_at: number }; return [read_at, seen_at]; };
     await phone.list.sync();
     expect(writes).toBe(1);
-    // each round that reached the service moves the time of the last full read and the floor of the clock: both are saved
+    const copy = await phone.lists.get("copy", ACCOUNT);
+    // rounds that reach the service move the time of the last full read and the floor of the clock: the long copy is not written for that
     for (let round = 0; round < 3; round += 1) { now += 30_000; await phone.list.sync(); }
-    expect([writes, await savedAt()]).toEqual([4, [Math.floor(now / 1000), Math.floor(now / 1000)]]);
-    // a round that did not reach it writes nothing
+    expect([writes, await phone.lists.get("copy", ACCOUNT)]).toEqual([1, copy]);
+    expect(await phone.lists.get("times", ACCOUNT)).toEqual({ v: 1, list: held().id, read_at: Math.floor(now / 1000), seen_at: Math.floor(now / 1000) });
+    // a round that did not reach it writes neither
+    const read = now;
     phone.wire.down = true;
     now += 30_000;
     await phone.list.sync();
-    expect(writes).toBe(4);
+    expect([writes, (await phone.lists.get("times", ACCOUNT) as { read_at: number }).read_at]).toEqual([1, Math.floor(read / 1000)]);
+    // a page loaded again, with the service away, knows when the list was last read in full
+    const again = reloaded(phone);
+    again.wire.down = true;
+    expect(following(await again.list.sync()).read_at).toBe(Math.floor(read / 1000));
+    // the list moved: the copy is written
     phone.wire.down = false;
     await addPc(phone, "Desk");
     now += 5 * MINUTE;
     await phone.list.sync();
-    expect(writes).toBe(5);
-    // after a reload with the service away, the view says when the list was last read in full
-    const again = reloaded(phone);
-    again.wire.down = true;
-    expect(following(await again.list.sync()).read_at).toBe(Math.floor(now / 1000));
+    expect(writes).toBe(2);
+    // a record that is another list's, or out of form, moves nothing
+    await phone.lists.set("times", ACCOUNT, { v: 1, list: "ef".repeat(32), read_at: 9_999_999_999, seen_at: 9_999_999_999 });
+    const other = reloaded(phone);
+    other.wire.down = true;
+    expect(following(await other.list.sync()).read_at).toBe(Math.floor(now / 1000));
   });
 
   it("tells who listens of each view that differs, and of none that does not", async () => {
@@ -952,7 +1005,7 @@ describe("two pages of a browser with no Web Locks", () => {
     await phone.list.sync();
     const keys = await phone.keys();
     const list = held();
-    const fork = await signed(keys, () => ({ kind: "carried", endpoint: newPc().endpoint, sealed: null }), { ...list, head: { seq: 0, hash: list.id } });
+    const fork = await otherHistory(keys, () => ({ kind: "carried", endpoint: newPc().endpoint, sealed: null }), list);
     // each page has a lock of its own, as where the browser has none
     const a = reloaded(phone);
     const b = reloaded(phone);
@@ -965,7 +1018,7 @@ describe("two pages of a browser with no Web Locks", () => {
     const later = b.list.sync();
     await waiting.promise;
     // page A is shown a fork that a member signed, and saves the alarm with its copy
-    tamper({ fork: [fork] });
+    tamper({ fork });
     expect(following(await a.list.sync()).trouble).toBe("fork");
     // the service shows page B the honest log, one entry on: B does not write the copy it loaded before A's save
     fake.untamperList(held().id);
@@ -1081,10 +1134,10 @@ describe("an account service that lies", () => {
     const keys = await phone.keys();
     const other = newPc();
     const list = held();
-    // the same member signed another entry 1 (a stolen key, or a device made to), and the service shows that one now
-    const fork = await signed(keys, () => ({ kind: "carried", endpoint: other.endpoint, sealed: null }), { ...list, head: { seq: 0, hash: list.id } });
+    // the same member signed another history from entry 1 (a stolen key, or a device made to), and the service shows that one now
+    const fork = await otherHistory(keys, () => ({ kind: "carried", endpoint: other.endpoint, sealed: null }), list);
     const onward = await addPc(phone, "Laptop");
-    tamper({ fork: [fork] });
+    tamper({ fork });
     now += 30_000;
     const shown = await phone.list.sync();
     expect(members(shown)).toEqual(members(view));
@@ -1112,8 +1165,8 @@ describe("an account service that lies", () => {
     const { phone } = await follower();
     const keys = await phone.keys();
     const list = held();
-    const fork = await signed(keys, () => ({ kind: "carried", endpoint: newPc().endpoint, sealed: null }), { ...list, head: { seq: 0, hash: list.id } });
-    tamper({ fork: [fork] });
+    const fork = await otherHistory(keys, () => ({ kind: "carried", endpoint: newPc().endpoint, sealed: null }), list);
+    tamper({ fork });
     now += 30_000;
     expect(following(await phone.list.sync()).trouble).toBe("fork");
     const again = reloaded(phone);

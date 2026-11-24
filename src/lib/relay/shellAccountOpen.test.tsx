@@ -18,6 +18,7 @@ import { accountOpenPeer, accountOpenRefusalFrame } from "./accountOpenPeer.fixt
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { AccountListUnsupportedError, AccountOpenUnsupportedError } from "../../../shared/relay-channel.ts";
+import { readSeenPcs } from "../account/seenPcs.ts";
 import { accountLaunchPcs, mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { markRemovedPc, removedPcs } from "./shellState.ts";
 import { openRelayTransport, RelayTransport } from "./transport.ts";
@@ -40,7 +41,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
    * this device follows its account's signed list and is in it (`in: false`: the account service keeps a list for the
    * account and this device follows none); `holds`: whether that list holds the PC. `read`: what a read of the list then finds.
    */
-  listed?: { holds: boolean; in?: boolean; read?: () => void };
+  listed?: { holds: boolean; in?: boolean; read?: () => void; /** until when the list holds this device, in seconds; absent: for good */ until?: () => number | null };
   newUntil?: string | null; label?: string;
   /**
    * The page as a phone's browser runs it: the join sheet holds a history entry (sheetHistory.ts), and a link this page
@@ -102,7 +103,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const listReads: number[] = [];
   const listView = (): AccountListView => listed?.in === false ? { account: "acct_1", reached: true, status: { at: "off" }, devices: [], pcs: [] } : ({
     account: "acct_1", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 1, read_at: 1, trouble: null },
-    devices: [{ key: memberKey, self: true, power: "full", role: "drive", until: null, carried: false, name: null }],
+    devices: [{ key: memberKey, self: true, power: listed?.until === undefined ? "full" : "bound", role: "drive", until: listed?.until?.() ?? null, carried: false, name: null }],
     pcs: listed?.holds ? [{ endpoint: entry.public_key, server_id: serverId, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 1, by: memberKey, new_at: null }] : [],
   });
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
@@ -110,6 +111,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
     view: listView, subscribe: () => () => {}, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
     shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), writer: () => null, placeAt: () => null,
     holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
   };
   const mountAt = (entryUrl: string) => { loads++; return mountRelayShell({
     container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore, ...(label === undefined ? {} : { label }), ...(accountList === undefined ? {} : { accountList }),
@@ -435,6 +437,28 @@ it("T34, P18: a normal sign-in opens a listed unpaired PC as its registered acco
     admissions: key ? [{ feature: true, row: accountDeviceId(run.serverId, key.key.public_spki), key: key.key.public_spki }] : [],
     apps: 1, navigations: [],
   });
+});
+
+it("writes a session the PC let this device into in the device's own record of its PCs, by the PC's relay key, and nothing for one it refused", async () => {
+  class Admitted extends RelayTransport {
+    override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+  }
+  let endpoint = "";
+  const before = Math.floor(Date.now() / 1000);
+  const run = await accountPc({ open: async (offer, _options, identity) => { endpoint = Buffer.from(identity.publicKey).toString("hex"); return new Admitted(offer); } });
+  await run.openPage();
+  await run.settled(() => Object.keys(readSeenPcs("acct_1").pcs).length > 0);
+  const kept = readSeenPcs("acct_1");
+  expect(Object.keys(kept.pcs)).toEqual([endpoint]);
+  // a PC the directory named and the account key opened: nothing this device did itself
+  expect(kept.pcs[endpoint]).toMatchObject({ how: "none" });
+  expect(kept.pcs[endpoint]!.since).toBeGreaterThanOrEqual(before);
+  expect(kept.pcs[endpoint]!.last).toBe(kept.pcs[endpoint]!.since!);
+  // a PC that refused the sign-in leaves no row
+  const refused = await accountPc({ open: async () => { throw new MuxProtocolError("auth_failed", ""); } });
+  await refused.openPage();
+  await refused.settled(() => refused.navigations.length > 0 || refused.current().state.kind === "failed");
+  expect(Object.keys(readSeenPcs("acct_1").pcs)).toEqual([endpoint]);
 });
 
 it("T34: a sign-in on the hosted page registers its key under this device's name, which the PC's notice and lists then show", async () => {
@@ -863,4 +887,22 @@ it("a list key that the PC refuses after it was let in leads to the join, and no
   await run.settled(() => run.navigations.length > 0);
   expect(run.navigations[0]).toStartWith(`/s/${run.serverId}/#offer=`);
   expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a device whose own time in the list is over is told that, when the PC ends its session: nobody removed it, and nothing is forgotten", async () => {
+  const fatal: ((error: Error) => void)[] = [];
+  let until = Math.floor(Date.now() / 1000) + 3600;
+  const run = await accountPc({ listed: { holds: true, until: () => until }, open: async (offer, options) => {
+    if (options?.onFatal) fatal.push(options.onFatal);
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  // the hour is over by this device's own copy of the list, and the PC closes the session at that second
+  until = Math.floor(Date.now() / 1000) - 1;
+  fatal[0]!(new MuxProtocolError("auth_revoked", ""));
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-time-over" });
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+  expect(run.navigations).toEqual([]);
 });

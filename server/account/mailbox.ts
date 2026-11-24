@@ -229,7 +229,7 @@ export interface AccountMailboxOptions {
    * for the list's head (`with_list`) and tells it what the answer named for `account`. Told, never awaited: a list
    * that is slow to read holds no pull back. Without it nothing is asked.
    */
-  readonly list?: { heard(account: string, named: NamedList | null): void };
+  readonly list?: { heard(account: string, named: NamedList | null, asked?: string | null): void; scopeToken?(): string | null };
 }
 
 export class AccountMailbox {
@@ -947,9 +947,11 @@ export class AccountMailbox {
       const admissions = new Map<string, number>();
       await retry();
       for (let page = 0; ; page++) {
+        // which PC the answer is for: the binding and relay identity it has as the page is asked for
+        const asked = this.options.list?.scopeToken?.();
         const { entries, waiting, listing, list } = await this.page(identity, account, ack);
         if (page === 0 && linked !== null) this.drainedListing = { binding: linked, account, listing };
-        if (page === 0 && list !== undefined) this.tellList(account, list);
+        if (page === 0 && list !== undefined) this.tellList(account, list, asked);
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
         if (page === MAX_PAGES) break;
@@ -1008,8 +1010,8 @@ export class AccountMailbox {
   }
 
   /** Never throws: what follows the list is no part of the pull. */
-  private tellList(account: string, named: NamedList | null): void {
-    try { this.options.list?.heard(account, named); }
+  private tellList(account: string, named: NamedList | null, asked?: string | null): void {
+    try { this.options.list?.heard(account, named, asked); }
     catch (error) { console.error(`[account] the list's head was not taken: ${error instanceof Error ? error.message : String(error)}`); }
   }
 

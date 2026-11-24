@@ -2,7 +2,7 @@ import { ACCOUNT_FEATURE } from "../../../shared/relay-mux.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
-import { accountList } from "../account/accountList.ts";
+import { accountList, type ListOffer } from "../account/accountList.ts";
 import { listReading, pcsByList } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
@@ -17,7 +17,7 @@ import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
 import type { AccountKey, AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
-import { AccountPcError, enrollOnPc, keepRemovals, listOffer, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import type { LeaveOutcome } from "../account/hostedSignIn.ts";
@@ -100,22 +100,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const followed = lists === null ? null : followAccountList(lists);
   // the page's own list is the one a card that lets a device in signs with (account/pageList.ts)
   if (mount.accountList === undefined && lists !== null) setPageAccountList(lists);
-  /**
-   * A device that waits to be let into its account's list, just let in at a PC by a member's approval: the member
-   * hands its place in the list over that PC, with its introduction (account/join.ts). The device asks the PC for it
-   * for a while, whatever becomes of its enrollment there, and takes the first one: the list is then followed only
-   * if the log shows this device let in up to that very place (accountList.ts, adopt).
-   */
-  const awaitListOffer = async (opened: RelayTransport, signal: AbortSignal): Promise<void> => {
-    if (lists === null || lists.view().status.at !== "not_in") return;
-    const deadline = Date.now() + INTRODUCTION_WAIT_MS;
-    while (!signal.aborted && lists.view().status.at === "not_in") {
-      const offer = await listOffer((path, init) => opened.fetch(path, init)).catch(() => null);
-      if (offer !== null) { await lists.adopt(offer); return; }
-      if (Date.now() >= deadline) return;
-      await wait(INTRODUCTION_POLL_MS, signal);
-    }
-  };
   const forgotten = new Map<string, number>();
   const running = new Map<Promise<unknown>, string>();
   // the cancels of the enrollments running now, by PC: a Forget or a leave also ends what each has out (a request to
@@ -275,7 +259,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     await lists.shadow(here.account, directory, opens).catch((error: unknown) => console.warn("Ovis: the account's list was not compared", error instanceof Error ? error.name : error));
   };
   // the list moved: the rows are drawn again from it and the directory last read, and the two are compared again
-  lists?.subscribe(() => {
+  const unfollow = lists?.subscribe(() => {
     const failed = (error: unknown): void => console.warn("Ovis: the account's PCs were not drawn again by its list", error instanceof Error ? error.name : error);
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList).catch(failed);
     else void compareList().catch(failed);
@@ -323,9 +307,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (wanted && refreshTimer === undefined) refreshTimer = setInterval(() => { void refresh(); }, DIRECTORY_REFRESH_MS);
     else if (!wanted && refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
   };
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void refresh(); armRefresh(); });
+  const seen = (): void => { if (document.visibilityState === "visible") void refresh(); armRefresh(); };
+  document.addEventListener("visibilitychange", seen);
   // a device of power `full` ends what is over its time as it reads (account/listLeave.ts)
-  if (lists !== null) tidyOnRead(lists);
+  const untidy = lists === null ? undefined : tidyOnRead(lists);
   /** The account whose list this device is putting itself out of now: its own removal is no news to it. */
   let leavingList: string | null = null;
   /**
@@ -345,7 +330,15 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     accountView = { kind: "signed-out", error: null, notice: t("This device was removed from your account. To use it again, sign in and allow it from another device.") };
     await changed();
   };
-  if (lists !== null) watchRemoval(lists, (gone) => { void removedHere(gone).catch((error: unknown) => console.warn("Ovis: a removed device did not forget its account", error instanceof Error ? error.name : error)); });
+  const unwatch = lists === null ? undefined : watchRemoval(lists, (gone) => { void removedHere(gone).catch((error: unknown) => console.warn("Ovis: a removed device did not forget its account", error instanceof Error ? error.name : error)); });
+  /** Ends what this controller armed for itself: its refresh timer, its listener for the page coming back, and its place among the list's listeners. */
+  const dispose = (): void => {
+    if (refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
+    document.removeEventListener("visibilitychange", seen);
+    unfollow?.();
+    untidy?.();
+    unwatch?.();
+  };
   /** What a sign-out or a leave says when the list did not take this device's own removal. */
   const leaveFailure = (outcome: Exclude<RemoveOutcome, { removed: true }>): string => outcome.why === "stopped"
     ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.")
@@ -762,7 +755,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     stops.set(serverId, mine);
     const signal = options.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]);
     const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled, signal });
-    if (introducible) void awaitListOffer(opened, signal).catch((error: unknown) => { if (!signal.aborted) console.warn("Ovis: no place in the account's list was handed over", error instanceof Error ? error.name : error); });
     void done.finally(() => { mine.delete(stop); if (mine.size === 0 && stops.get(serverId) === mine) stops.delete(serverId); }).catch(() => {});
     // a link the PC refused leaves the session to whoever says why (shell.tsx), rather than opening the app over it
     void done.then(settled, (error: unknown) => { if (refusalOf(error) === null) settled(); });
@@ -1009,11 +1001,32 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         }
       }
       const deadline = Date.now() + (introducible ? INTRODUCTION_WAIT_MS : 0);
+      // A device that waits to be let into its account's list, just let in here by a member's approval: the member
+      // leaves its place in the list with the introduction. It is read over this session, which signed in with the
+      // account key, and taken while this enrollment still owns the pairing (a Forget ends the wait).
+      // Handing the place to the list ends the search for it, and says nothing yet of the device being in: the list
+      // reads the log itself, and a device that follows a list already takes no place (accountList.ts adopt).
+      let took = false;
+      // A device that still waits to be let into its account's list asks at every open of a PC it is paired with, not
+      // only right after it was let in there: a member's Allow may go through later than this device first asked, and
+      // the PC carries the place until it is read.
+      const waits = lists !== null && lists.view().account === session.account && lists.view().status.at === "not_in";
+      const onList = lists === null || !(introducible || waits) ? undefined : async (offer: ListOffer): Promise<void> => {
+        if (took) return;
+        assertPairing(await store.get(serverId));
+        took = true;
+        await lists.adopt(offer).catch((error: unknown) => { took = false; console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error); });
+      };
       for (;;) {
-        if ((await takeIntroduction({ fetch, key, label, store: enrollmentStore, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
-        await wait(INTRODUCTION_POLL_MS);
+        const saved = await takeIntroduction({ fetch, key, label, store: enrollmentStore, relay: device.relay, ...(onList === undefined ? {} : { onList }) });
+        if (saved.length > 0 || took || Date.now() >= deadline) break;
+        await wait(INTRODUCTION_POLL_MS, signal);
       }
       await record("complete");
+      // "In your account" is said only where this device's own copy of the list shows it in: one that still waits to
+      // be let into its account's list is paired with this PC, and says nothing of the account yet
+      const mine = lists?.view();
+      if (mine !== undefined && mine.account === session.account && mine.status.at === "not_in") return "local";
       return { state: "complete", ...(admitted === undefined ? {} : { admitted }) };
     } catch (error) {
       assertPairing(await store.get(serverId));
@@ -1030,6 +1043,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * (shell.tsx): none without an account service, or when the store cannot be read.
    */
   const stored = async (): Promise<AccountSession | undefined> => accountService === null ? undefined : await account.session().catch(() => undefined);
+  /** The account of the sign-in stored now, read only: unlike `stored`, it names no sign-in and writes nothing. */
+  const storedAccount = async (): Promise<string | undefined> => accountService === null ? undefined : (await accountStore.get("session").catch(() => undefined))?.account;
   /** The providers the account service offers now (`GET /v1/providers`), read once; the build's list when it does not answer. */
   let answer: Promise<{ readonly providers: readonly AccountProvider[]; readonly listed: readonly AccountProvider[] }> | undefined;
   const answered = () => answer ??= accountService === null ? Promise.resolve({ providers, listed: providers })
@@ -1049,11 +1064,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   /** Whether the account's signed list, as this device holds it, holds the PC with this id. */
   const listHolds = (serverId: string): boolean => listKey() !== null && (lists?.view().pcs.some((pc) => pc.server_id === serverId) ?? false);
+  /** Whether the account's list holds this device only until a time that is past, by this device's own clock. */
+  const listTimeOver = (): boolean => {
+    const view = lists?.view();
+    return view !== undefined && view.status.at === "following" && view.devices.some((device) => device.self && device.until !== null && device.until <= Math.floor(Date.now() / 1000));
+  };
   /** Reads the list now, as when a PC said that it lets devices in by it (shell.tsx). */
   const readList = async (): Promise<void> => {
     await lists?.sync().catch((error: unknown) => { if (!(error instanceof SignedOutError)) console.warn("Ovis: the account's list could not be read", error instanceof Error ? error.name : error); });
   };
-  return { get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, readList,
+  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listTimeOver, readList,
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
-    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
+    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }

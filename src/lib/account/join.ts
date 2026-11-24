@@ -9,8 +9,10 @@ import type { RemotePairingRequest } from "../../../shared/protocol.ts";
 import type { RelayDevice, RelayDeviceStore } from "../relay/device.ts";
 import { keyIdOf } from "../relay/shellState.ts";
 import { isListHash } from "../../../shared/account-list-entry.ts";
+import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList, ListOffer } from "./accountList.ts";
 import { allowDevice, type AllowOutcome, type AllowRefusal } from "./listAllow.ts";
+import { holdsList } from "./listWrite.ts";
 import type { AccountService, Admission } from "./service.ts";
 import { vouchedPcName, type MemberPcEvidence } from "./vouched-pc.ts";
 import type { AccountKey, AccountStore } from "./store.ts";
@@ -137,27 +139,22 @@ function parseOffer(value: unknown): ListOffer | null {
 }
 
 /**
- * The place in the account's signed list that waits for this device on the PC, with its introduction, or null: none
- * waits, or the PC carries none. The PC only carries it: whoever takes it holds it against the log.
- */
-export async function listOffer(fetch: PcFetch): Promise<ListOffer | null> {
-  const response = await fetch("/api/account/introduction");
-  if (response.status === 404) return null;
-  if (!response.ok) throw await refusal(response);
-  return parseOffer((await response.json() as { list?: unknown }).list);
-}
-
-/**
  * After a remote approval on PC X: the account's other PCs as the approver checked them, saved so
  * this device signs in to each with the account key and the id the `add` gave it there. A PC this
  * device already has is left as it is. X passes the list on, so only PCs on X's own relay are kept:
  * a list that names another relay would route this device through one X chose. Returns the PCs saved.
  */
-export async function takeIntroduction(options: { fetch: PcFetch; key: AccountKey; label: string; store: RelayDeviceStore; relay: string }): Promise<RelayDevice[]> {
+export async function takeIntroduction(options: {
+  fetch: PcFetch; key: AccountKey; label: string; store: RelayDeviceStore; relay: string;
+  /** The place in the account's list that the member who let this device in left with the introduction, where it left one. */
+  onList?: (offer: ListOffer) => void | Promise<void>;
+}): Promise<RelayDevice[]> {
   const response = await options.fetch("/api/account/introduction");
   if (response.status === 404) return [];
   if (!response.ok) throw await refusal(response);
-  const body = await response.json() as { pcs?: unknown };
+  const body = await response.json() as { pcs?: unknown; list?: unknown };
+  const offer = options.onList === undefined ? null : parseOffer(body.list);
+  if (offer !== null) await options.onList?.(offer);
   const pcs = (Array.isArray(body.pcs) ? body.pcs.slice(0, INTRODUCTION_MAX) : []).map(parseIntroduced)
     .filter((pc): pc is IntroducedPc => pc !== null && pc.relay === options.relay);
   const saved: RelayDevice[] = [];
@@ -267,8 +264,12 @@ export async function admitToAccount(options: {
   joining: { key: string; label: string }; through: string; paired: readonly RelayDevice[]; directory: readonly string[]; now?: () => number;
   wait?: (ms: number) => Promise<void>;
   store?: AccountStore;
-  /** this device's place in the account's signed list after it let the device in there (listAllow.ts): the introduction carries it to the new device */
-  list?: ListOffer;
+  /**
+   * For an account whose signed list this device holds: lets the new device into the list (listAllow.ts) and answers
+   * its place there, which the introduction carries to it. It runs only once X holds the new device's row, so nobody
+   * who did not confirm at X is signed into the list; until then X is asked with nothing to introduce.
+   */
+  allow?: () => Promise<ListOffer | null>;
 }): Promise<AddRecord> {
   const now = options.now ?? Date.now;
   // fixed wait: the pause between tries of a poll bounded by ADMITTED_MS
@@ -279,12 +280,17 @@ export async function admitToAccount(options: {
     .map((device) => ({ server_id: device.server_id, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? device.server_id.slice(0, 8)).slice(0, 48) }));
   const deadline = now() + ADMITTED_MS;
   for (;;) {
-    try { await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs, ...(options.list === undefined ? {} : { list: { id: options.list.list, seq: options.list.seq, hash: options.list.hash } }) }); break; }
+    try { await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs: options.allow === undefined ? pcs : [] }); break; }
     catch (error) {
       // no row for that key on X yet: the new device has not confirmed its digits
       if (!(error instanceof AccountPcError) || error.code !== "introduction_unknown_key" || now() > deadline) throw error;
       await wait(ADMITTED_POLL_MS);
     }
+  }
+  if (options.allow !== undefined) {
+    // the new device confirmed at X: now the list, and the introduction with the place it was let in at
+    const offer = await options.allow();
+    await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs, ...(offer === null ? {} : { list: { id: offer.list, seq: offer.seq, hash: offer.hash } }) });
   }
   const add: AddRecord = await signAccountRecord({
     v: 1, kind: "add", account: options.account, key: options.joining.key, label: options.joining.label, role: "drive",
@@ -322,7 +328,7 @@ export class ListAllowError extends Error {
  * this device follows no list or is not in it with power `full`, and then nothing is signed and the approval goes
  * on as for an account with no list. Otherwise the place to hand the new device, or a ListAllowError.
  */
-export async function allowIntoList(list: AccountList | null, joining: { key: string; label: string; os: Admission["os"] }, options: { wait?: (ms: number) => Promise<void> } = {}): Promise<ListOffer | null> {
+export async function allowIntoList(list: AccountList | null, joining: { key: string; label: string; os: Admission["os"] }, options: { wait?: (ms: number) => Promise<void>; account?: string } = {}): Promise<ListOffer | null> {
   if (list === null) return null;
   const outcome: AllowOutcome = await allowDevice(list, joining, options);
   if (outcome.allowed) return outcome.offer;
@@ -338,27 +344,55 @@ export async function allowIntoList(list: AccountList | null, joining: { key: st
  * device stays let in at that PC alone. For any other account, and a device that is in no list, exactly
  * admitToAccount.
  */
-export async function admitWithList(list: AccountList | null, options: Parameters<typeof admitToAccount>[0] & { joining: { key: string; label: string; os: Admission["os"] } }): Promise<AddRecord> {
-  const offer = await allowIntoList(list, options.joining, options.wait === undefined ? {} : { wait: options.wait });
-  if (offer === null || list === null) return admitToAccount(options);
-  const add = await admitToAccount({ ...options, list: offer });
-  await handListToPc(options.fetch, list).catch((error: unknown) => { console.warn("Ovis: the PC was not handed the list's new entries", error instanceof Error ? error.name : error); });
+export async function admitWithList(list: AccountList | null, options: Omit<Parameters<typeof admitToAccount>[0], "allow"> & { joining: { key: string; label: string; os: Admission["os"] } }): Promise<AddRecord> {
+  // Whether this device goes by a list is read from what it holds itself: the view this page drew, or the copy in its
+  // own store. With neither it has no list to write to, and the approval goes as before lists, at once: it waits for
+  // no answer of the account service's about lists, and nothing that fails there holds it back.
+  const drawn = list?.view();
+  const follows = list !== null && ((drawn !== undefined && drawn.account === options.account && holdsList(drawn)) || await list.follows(options.account).catch(() => false));
+  if (list === null || !follows) return admitToAccount(options);
+  // The approval belongs to the account it was begun under. A page whose list is another account's by now (a sign-in
+  // changed in another tab) signs nothing: neither into that list, nor by the way of an account with no list.
+  const view = await list.sync();
+  if (view.account !== options.account) throw new ListAllowError("changed", null);
+  // What stops this device from writing is said before anything goes to the PC: the account service is away, or the
+  // device's own copy stands in its way (it was put out, it is stopped, alarmed, or does not read).
+  if (list.writer() === null) throw new ListAllowError(holdsList(view) && view.status.at === "following" && view.status.standing === "in" && view.status.trouble === null && !view.reached ? "unreached" : "blocked", null);
+  if (!view.reached) throw new ListAllowError("unreached", null);
+  let offer: ListOffer | null = null;
+  const add = await admitToAccount({ ...options, allow: async () => {
+    offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.wait === undefined ? {} : { wait: options.wait }) });
+    // an account that turns out to have no list for this device to write (it lost its copy meanwhile) admits nobody the old way from here
+    if (offer === null) throw new ListAllowError("blocked", null);
+    return offer;
+  } });
+  const placed = offer as ListOffer | null;
+  if (placed === null) return add;
+  await handListToPc(options.fetch, list, { seq: placed.seq, hash: placed.hash }).then((handed) => {
+    if (!handed) console.info("Ovis: the PC was not handed the list's new entries over this session; it reads them from the account service");
+  }, (error: unknown) => { console.warn("Ovis: the PC was not handed the list's new entries", error instanceof Error ? error.name : error); });
   return add;
 }
 
 /** The most entries one call hands a PC. */
 const PEER_PAGE_MAX = 256;
+/** The most calls one hand-over makes after the first: a PC that keeps asking for another place is left to its own read. */
+const PEER_ROUNDS = 8;
 
 /**
- * Hands the PC this device is connected to the entries it does not hold yet, so that it need not wait for its next
- * read of the account service: the two say where they stand, and where the PC stands at an earlier place of this
- * device's own history, the device hands it the entries after that place. Entries prove themselves, so the PC takes
- * nothing on this device's word. A PC that follows no list a person named, or is from before these calls, answers
- * 404, and nothing is handed. True when a page was handed and taken.
+ * Hands the PC this device is on the entries of the list that it does not hold yet, over the session, so that it
+ * need not wait for its next read of the account service (docs/account-list.md, "Letting a device in"). It says
+ * where it stands, sends the entries after the place the PC stands at, and where the PC asks for an earlier place,
+ * sends from there, PEER_ROUNDS times at most. Entries prove themselves: the PC checks each one.
+ *
+ * True only when the PC says that it stands at `reach` or past it (the place of the entry this hand-over is for):
+ * a page it took in part, or refused, is no hand-over. False for a PC that follows no list, another list, or that
+ * does not answer in this form.
  */
-export async function handListToPc(fetch: PcFetch, list: AccountList): Promise<boolean> {
+export async function handListToPc(fetch: PcFetch, list: AccountList, reach?: ListPlace): Promise<boolean> {
   const mine = list.gossip();
   if (mine === null || mine.place === null) return false;
+  const target = reach ?? mine.place;
   let theirs: { list?: unknown; place?: unknown };
   try {
     theirs = await (await post(fetch, "/api/account/list/head", mine)).json() as { list?: unknown; place?: unknown };
@@ -367,18 +401,46 @@ export async function handListToPc(fetch: PcFetch, list: AccountList): Promise<b
     throw error;
   }
   if (theirs.list !== mine.list) return false;
-  const place = theirs.place as { seq?: unknown } | null | undefined;
-  const after = place === null ? null : typeof place?.seq === "number" && Number.isSafeInteger(place.seq) && place.seq >= 0 ? place.seq : undefined;
-  if (after === undefined || (after !== null && after >= mine.place.seq)) return false;
-  const page = list.pageAfter(after, PEER_PAGE_MAX);
-  if (page === null || page.entries.length === 0) return false;
-  try {
-    await post(fetch, "/api/account/list/page", page);
-  } catch (error) {
-    if (error instanceof AccountPcError) return false;
-    throw error;
+  // A place the PC names counts only where it is a place of this device's own history: the same number with another
+  // entry at it is another history, and no proof that the PC holds the entry this hand-over is for.
+  const seqOf = (place: unknown): number | null | undefined => {
+    if (place === null) return null;
+    const { seq, hash } = (place ?? {}) as { seq?: unknown; hash?: unknown };
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0) return undefined;
+    return list.placeAt(seq)?.hash === hash ? seq : undefined;
+  };
+  let after = seqOf(theirs.place);
+  if (after === undefined) return false;
+  for (let rounds = 0; rounds < PEER_ROUNDS; rounds += 1) {
+    if (after !== null && after >= target.seq) return true;
+    const page = list.pageAfter(after, PEER_PAGE_MAX);
+    // the page is of the list this hand-over began for: a copy replaced meanwhile hands nothing over this session
+    if (page === null || page.entries.length === 0 || page.list !== mine.list) return false;
+    let said: { verdict?: unknown; list?: unknown; place?: unknown; asks?: unknown };
+    try {
+      said = await (await post(fetch, "/api/account/list/page", page)).json() as typeof said;
+    } catch (error) {
+      if (error instanceof AccountPcError) return false;
+      throw error;
+    }
+    // the PC wants an earlier place of the list first: that page goes next
+    const asks = said.asks as { list?: unknown; after?: unknown } | undefined;
+    const wanted = asks === undefined || asks === null ? undefined : asks.list === mine.list ? (asks.after === null ? null : typeof asks.after === "number" && Number.isSafeInteger(asks.after) && asks.after >= 0 ? asks.after : undefined) : undefined;
+    if (asks !== undefined && asks !== null) {
+      if (wanted === undefined || (wanted !== null && after !== null && wanted >= after)) return false;
+      after = wanted;
+      continue;
+    }
+    // a page the PC did not take is not handed, whatever place its answer names
+    if (said.verdict !== "caught_up" && said.verdict !== "more" && said.verdict !== "older") return false;
+    // where the PC stands now, as it says; a PC that does not say counts for what this page reached only when it took it whole
+    const stands = said.place === undefined ? null : seqOf(said.place);
+    if (stands === undefined) return false;
+    const next: number | undefined = stands === undefined || stands === null ? (said.verdict === "caught_up" || said.verdict === "more" ? (after ?? -1) + page.entries.length : undefined) : stands;
+    if (next === undefined || (after !== null && next <= after)) return false;
+    after = next;
   }
-  return true;
+  return after !== null && after >= target.seq;
 }
 
 type KnownDevices = Readonly<Record<string, AddRecord | RemoveRecord>>;

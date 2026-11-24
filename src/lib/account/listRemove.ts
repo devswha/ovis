@@ -6,9 +6,9 @@
  *
  * The key of a PC that is out never comes back: the PC joins the account again only as a new PC.
  */
-import { pcRemoval, type ListKind } from "../../../shared/account-list.ts";
+import { lapsedRemovals, pcRemoval } from "../../../shared/account-list.ts";
 import type { AccountList } from "./accountList.ts";
-import { WRITE_ENTRIES_MAX, overTime, placeOf, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
+import { WRITE_ENTRIES_MAX, placeOf, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
 
 export type PcRemovalOutcome =
   | { readonly removed: true }
@@ -29,8 +29,8 @@ export async function removeListPc(list: AccountList, endpoint: string, options:
     // with the epoch that this request opens anyway, the keys whose time is over go too: names are sealed again after it
     const ends = new Set(removal.flatMap((kind) => kind.kind === "remove" && "ends" in kind ? [kind.ends] : []));
     // as many of them as one request takes beside the PC's own removal and the epoch: the rest waits for a later writer
-    const tidied = overTime(state, clock).filter((key) => !ends.has(key)).slice(0, WRITE_ENTRIES_MAX - removal.length - 1).map((key): ListKind => ({ kind: "remove", ends: key }));
+    const tidied = lapsedRemovals(state, clock).filter((kind) => !(kind.kind === "remove" && "ends" in kind && ends.has(kind.ends))).slice(0, WRITE_ENTRIES_MAX - removal.length - 1);
     return { request: await signedWithEpoch(writer, current, [...tidied, ...removal]) };
-  }, options);
+  }, { ...options, operation: `remove-pc:${endpoint}` });
   return outcome.written ? { removed: true } : { removed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
 }
