@@ -10,13 +10,14 @@ const THROUGH = "a1".repeat(16);
 const noWait = async (): Promise<void> => {};
 
 /** PC X as an approval meets it: it records what it is sent, and answers the introduction, the records and the list's two calls. */
-function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknown) => Response } = {}) {
+function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknown) => Response; introduce?: (body: Record<string, unknown>) => Response } = {}) {
   const sent: { path: string; body: Record<string, unknown> }[] = [];
   const fetch: PcFetch = async (path, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     sent.push({ path, body });
     if (path === "/api/account/list/head") return answers.head?.(body) ?? Response.json({ error: { code: "not_found" } }, { status: 404 });
     if (path === "/api/account/list/page") return answers.page?.(body) ?? Response.json({ error: { code: "not_found" } }, { status: 404 });
+    if (path === "/api/account/introduce" && answers.introduce !== undefined) return answers.introduce(body);
     return new Response(null, { status: 204 });
   };
   return { sent, fetch, paths: () => sent.map((each) => each.path) };
@@ -65,10 +66,13 @@ describe("a member's approval, once the PC let the new device in", () => {
     await admit(member, joining, pc);
     const list = w.held();
     expect(list.entries).toHaveLength(2);
-    expect(pc.paths()).toEqual(["/api/account/introduce", "/api/account/records", "/api/account/list/head"]);
-    expect(pc.sent[0]!.body).toEqual({ key: joining.key, pcs: [], list: { id: list.id, seq: 1, hash: list.head.hash } });
+    // the PC is asked first whether the new device confirmed there (it holds its row), with nothing introduced yet;
+    // only then is the entry signed, and the introduction follows with the place
+    expect(pc.paths()).toEqual(["/api/account/introduce", "/api/account/introduce", "/api/account/records", "/api/account/list/head"]);
+    expect(pc.sent[0]!.body).toEqual({ key: joining.key, pcs: [] });
+    expect(pc.sent[1]!.body).toEqual({ key: joining.key, pcs: [], list: { id: list.id, seq: 1, hash: list.head.hash } });
     // the PC carries it to the new device over that device's own session
-    const offer = await listOffer(async () => Response.json({ pcs: [], list: pc.sent[0]!.body.list }));
+    const offer = await listOffer(async () => Response.json({ pcs: [], list: pc.sent[1]!.body.list }));
     expect(offer).toEqual({ list: list.id, seq: 1, hash: list.head.hash });
     const view = await newcomer.list.adopt(offer!);
     expect(view.status).toMatchObject({ at: "following", standing: "in" });
@@ -84,6 +88,47 @@ describe("a member's approval, once the PC let the new device in", () => {
     const refused = await admit(member, { key: (await stranger.store.key()).public_spki, label: "Stranger", os: null }, pc).catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(ListAllowError);
     expect((refused as ListAllowError).why).toBe("not_claimed");
+    // the PC was asked whether the device confirmed, and handed nothing: no PC is introduced, no add is signed
+    expect([pc.sent, w.held().entries.length]).toEqual([[{ path: "/api/account/introduce", body: { key: (await stranger.store.key()).public_spki, pcs: [] } }], 1]);
+  });
+
+  it("signs nobody into the list who did not confirm at the PC: the entry waits for the PC to hold the new device's row", async () => {
+    const w = listWorld();
+    const member = await w.device({ label: "Phone" });
+    await member.list.sync();
+    const newcomer = await w.device({ label: "Tablet" });
+    await newcomer.list.sync();
+    const joining = { key: (await newcomer.keys()).key, label: "Tablet", os: "android" as const };
+    // the new device cancelled before it confirmed its digits: the PC never holds a row for its key
+    const never = pcX({ introduce: () => Response.json({ error: { code: "introduction_unknown_key", message: "No account member added that device here" } }, { status: 404 }) });
+    let clock = 1_000;
+    const session = (await member.store.get("session"))!;
+    const refused = await admitWithList(member.list, {
+      fetch: never.fetch, service: member.service, key: await member.store.key(), account: session.account, joining, through: THROUGH, paired: [], directory: [],
+      now: () => clock, wait: async (ms) => { clock += ms; },
+    }).catch((error: unknown) => error);
+    expect((refused as { code?: string }).code).toBe("introduction_unknown_key");
+    expect(w.held().entries).toHaveLength(1);
+    expect(member.sent.map((each) => each.route).filter((route) => route.endsWith("/entries"))).toEqual([]);
+    // once it confirmed, the same approval lets it in
+    let asked = 0;
+    const later = pcX({ introduce: () => (asked++ === 0 ? Response.json({ error: { code: "introduction_unknown_key" } }, { status: 404 }) : new Response(null, { status: 204 })) });
+    await admit(member, joining, later);
+    expect(w.held().entries).toHaveLength(2);
+  });
+
+  it("signs nothing where the approval was begun under another account than the list on this page", async () => {
+    const w = listWorld();
+    const member = await w.device({ label: "Phone" });
+    await member.list.sync();
+    const newcomer = await w.device({ label: "Tablet" });
+    await newcomer.list.sync();
+    const pc = pcX();
+    const refused = await admitWithList(member.list, {
+      fetch: pc.fetch, service: member.service, key: await member.store.key(), account: "acct_other", joining: { key: (await newcomer.keys()).key, label: "Tablet", os: "android" }, through: THROUGH, paired: [], directory: [], wait: noWait,
+    }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ListAllowError);
+    expect((refused as ListAllowError).why).toBe("changed");
     expect([pc.sent, w.held().entries.length]).toEqual([[], 1]);
   });
 
@@ -127,6 +172,8 @@ describe("handing a PC the list's new entries over a session", () => {
     expect(there.paths()).toEqual(["/api/account/list/head"]);
     for (const head of [
       () => Response.json({ list: "ef".repeat(32), place: { seq: 0, hash: "ef".repeat(32) } }),
+      // the same list id and the place's number, with another entry at it: no proof that the PC holds this device's entry
+      () => Response.json({ list: list.id, place: { seq: list.head.seq, hash: "ef".repeat(32) } }),
       () => Response.json({ list: list.id, place: { seq: "0" } }),
       undefined,
     ]) {
@@ -153,6 +200,9 @@ describe("handing a PC the list's new entries over a session", () => {
     for (const page of [
       () => Response.json({ verdict: "refused", list: list.id, place: { seq: 0, hash: list.id } }),
       () => Response.json({ verdict: "refused" }),
+      // a page the PC refused is not handed, whatever place the answer names
+      () => Response.json({ verdict: "refused", list: list.id, place: list.head }),
+      () => Response.json({ verdict: "caught_up", list: list.id, place: { seq: list.head.seq, hash: "ef".repeat(32) } }),
       () => Response.json({ verdict: "asks_after", asks: { list: list.id, after: 0 } }),
       () => Response.json({ verdict: "asks_after", asks: { list: "ef".repeat(32), after: null } }),
       () => Response.json({ error: { code: "rate_limited" } }, { status: 429 }),

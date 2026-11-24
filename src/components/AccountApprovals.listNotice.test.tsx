@@ -4,13 +4,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { ListAllowNotice } from "./AccountApprovals.tsx";
+import { keepStalled, ListAllowNotice } from "./AccountApprovals.tsx";
 
 function render(why: AllowRefusal, retryAfterMs: number | null = null): string {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   try {
-    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { device: "Dana's tablet", pc: "Desk", why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
+    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "tablet-key", device: "Dana's tablet", pc: "Desk", why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
   } finally {
     if (saved) Object.defineProperty(navigator, "languages", saved);
     else Reflect.deleteProperty(navigator, "languages");
@@ -47,7 +47,27 @@ describe("a device a PC let in that the account's list did not take", () => {
   it("says that the clock looks wrong, that this device cannot change the list, and how long a budget lasts", () => {
     expect(render("clock")).toContain("This device&#x27;s clock looks wrong. Check its date and time, then try again.");
     expect(render("blocked")).toContain("This device cannot change your account&#x27;s list right now.");
+    // the sign-in changed since the approval: nothing is written to the other account's list
+    expect(render("changed")).toContain("The sign-in on this device changed since you approved it. Sign in to that account again, then try again.");
+    // a device that is behind signs nobody in until it is updated
+    expect(render("behind")).toContain("Update Ovis on this device, then try again.");
     expect(render("budget", 20 * 3600_000)).toContain("Too many devices were added. Try again tomorrow.");
     expect(render("budget", 5 * 60_000)).toContain("Too many devices were added just now. Try again in a few minutes.");
+  });
+});
+
+describe("the devices the list did not take, kept until each is closed or let in", () => {
+  const stalled = (key: string, why: AllowRefusal) => ({ key, device: key, pc: "Desk", why, retry: async () => {} });
+
+  it("keeps one card for each device, the first refused first, and takes a device's card away when it is let in or closed", () => {
+    let kept = keepStalled([], "tablet", stalled("tablet", "budget"));
+    kept = keepStalled(kept, "laptop", stalled("laptop", "unknown"));
+    expect(kept.map((each) => [each.key, each.why])).toEqual([["tablet", "budget"], ["laptop", "unknown"]]);
+    // a later answer for the same device takes its place, where it stood
+    kept = keepStalled(kept, "tablet", stalled("tablet", "stopped"));
+    expect(kept.map((each) => [each.key, each.why])).toEqual([["tablet", "stopped"], ["laptop", "unknown"]]);
+    kept = keepStalled(kept, "tablet", null);
+    expect(kept.map((each) => each.key)).toEqual(["laptop"]);
+    expect(keepStalled(kept, "phone", null)).toBe(kept);
   });
 });

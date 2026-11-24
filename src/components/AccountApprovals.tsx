@@ -4,7 +4,7 @@
  * introduction (lib/account/join.ts). For an account whose signed list this device is in, it signs the
  * device into the list before that; where the list does not take it, the card says so and offers to try again.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { accountLabel, type AccountAsker } from "../../shared/account-asker.ts";
@@ -30,14 +30,28 @@ import { VouchedPcApproval } from "./VouchedPcApproval.tsx";
 export const restsOnAdmission = (request: RemotePairingRequest | undefined): boolean => request?.intent === "account" || request?.vouched === true;
 
 export function AccountApprovals({ pairings }: { pairings: readonly RemotePairingRequest[] }) {
+  // The devices this PC let in that the account's list did not take, each kept until it is let in or closed. They are
+  // held here, above whichever card the next request draws, so a request for another PC (VouchedPcApproval) takes none
+  // of them away; each is shown once no request is on screen.
+  const [stalled, setStalled] = useState<readonly Stalled[]>([]);
+  const keep = useCallback((key: string, next: Stalled | null): void => setStalled((kept) => keepStalled(kept, key, next)), []);
   const request = pairings[0];
   const through = serverIdOfPath(window.location.pathname);
   if (request?.vouched && through) return <VouchedPcApproval key={JSON.stringify([through, request.id, request.key, request.proven_server_id])} request={request} through={through} />;
-  return <DeviceApprovals pairings={pairings} />;
+  const waiting = stalled[0];
+  if (request === undefined && waiting !== undefined) return createPortal(<ListAllowNotice key={waiting.key} stalled={waiting} onClose={() => keep(waiting.key, null)} />, document.body);
+  return <DeviceApprovals pairings={pairings} onStalled={keep} />;
 }
 
-/** A device this PC let in that the account's signed list did not take: who it is, why, and what trying again does. */
-interface Stalled { readonly device: string; readonly pc: string; readonly why: AllowRefusal; readonly retryAfterMs?: number | null; readonly retry: () => Promise<void> }
+/** A device this PC let in that the account's signed list did not take: who it is (`key`, its account key), why, and what trying again does. */
+interface Stalled { readonly key: string; readonly device: string; readonly pc: string; readonly why: AllowRefusal; readonly retryAfterMs?: number | null; readonly retry: () => Promise<void> }
+
+/** `kept` with what is said of the device `key` now: its card where it stood, a new one after the others, or none (`next` null: let in, or closed). */
+export function keepStalled(kept: readonly Stalled[], key: string, next: Stalled | null): readonly Stalled[] {
+  const at = kept.findIndex((each) => each.key === key);
+  if (next === null) return at < 0 ? kept : kept.filter((each) => each.key !== key);
+  return at < 0 ? [...kept, next] : kept.map((each) => (each.key === key ? next : each));
+}
 
 /** What the person is told, by why the list did not take the device. */
 function stalledReason(t: ReturnType<typeof useT>, why: AllowRefusal, retryAfterMs: number | null = null): string {
@@ -46,6 +60,8 @@ function stalledReason(t: ReturnType<typeof useT>, why: AllowRefusal, retryAfter
     case "unknown": return t("The account service did not answer. Try again to check.");
     case "clock": return t("This device's clock looks wrong. Check its date and time, then try again.");
     case "blocked": return t("This device cannot change your account's list right now.");
+    case "behind": return t("Update Ovis on this device, then try again.");
+    case "changed": return t("The sign-in on this device changed since you approved it. Sign in to that account again, then try again.");
     case "not_claimed": return t("Update Ovis on that device and sign in there, then try again.");
     case "removed": return t("That device was removed from your account. Sign in again on it first.");
     case "stopped": return t("The account service cannot change the list right now.");
@@ -84,7 +100,7 @@ export function ListAllowNotice({ stalled, onClose }: { stalled: Stalled; onClos
   );
 }
 
-function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest[] }) {
+function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePairingRequest[]; onStalled: (key: string, stalled: Stalled | null) => void }) {
   const t = useT();
   const request = pairings[0];
   const serverId = serverIdOfPath(window.location.pathname);
@@ -94,8 +110,6 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
   const [asker, setAsker] = useState<{ id: string; asker: AccountAsker; admission: Admission | null } | null>(null);
   // read again when the device asked anew with other details after the card was drawn
   const [reads, setReads] = useState(0);
-  // a device this PC let in that the account's list did not take: shown after its request is gone from this PC
-  const [stalled, setStalled] = useState<Stalled | null>(null);
   const checked = restsOnAdmission(request);
   const joiningId = checked ? request!.id : null;
   const joiningKey = request?.key;
@@ -137,7 +151,6 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
     return () => { live = false; };
   }, [serverId, asking]);
 
-  if (stalled !== null && request === undefined) return createPortal(<ListAllowNotice stalled={stalled} onClose={() => setStalled(null)} />, document.body);
   if (request === undefined || serverId === null) return null;
 
   const decide = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
@@ -167,10 +180,10 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
           const attempt = async (): Promise<void> => {
             try {
               await admitted();
-              setStalled(null);
+              onStalled(request.key, null);
             } catch (error) {
               if (!(error instanceof ListAllowError)) throw error;
-              setStalled({ device: admission.label, pc: where.pcName, why: error.why, retryAfterMs: error.retryAfterMs, retry: attempt });
+              onStalled(request.key, { key: request.key, device: admission.label, pc: where.pcName, why: error.why, retryAfterMs: error.retryAfterMs, retry: attempt });
             }
           };
           await attempt();
