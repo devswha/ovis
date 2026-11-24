@@ -1057,13 +1057,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return handleSessionResumeRequest(request, { readOnly, stores: { codexHome: options.codexHome, opencodeDb: options.opencodeDb, hermesHome: options.hermesHome }, holdOpen: (seconds) => ctx.timeout(request, seconds) });
   }
 
-  if (pathname === "/api/pane/turn/cancel" || pathname === "/api/pane/turn/release") {
+  if (acp && (pathname === "/api/pane/turn/cancel" || pathname === "/api/pane/turn/release")) {
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST.");
     const body = await readJsonObject(request);
     if (body instanceof Response) return body;
     if (typeof body.pane_id !== "string") return badRequest("missing_pane_id", "pane_id is required.");
-    const child = acp?.forPane(body.pane_id);
+    const child = acp.forPane(body.pane_id);
     if (!child?.client.connected || !child.client.session) return badRequest("unavailable", "No connected ACP child.");
     const cancel = pathname.endsWith("/cancel");
     if (!cancel && (body.child_id !== child.id || !Number.isSafeInteger(body.generation))) return badRequest("hold_changed", "The child and hold generation are required.");
