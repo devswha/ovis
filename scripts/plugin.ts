@@ -320,7 +320,7 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
  * null and nothing is sent, since the profile answers its TCP port with liveness only. `devices`: the groups the
  * answer lists to its owner (accountDevicesOf); `tokenRequired`: the app let the request in only with its token.
  */
-async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly tokenRequired: boolean; readonly relay: string | null } | null> {
+async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly tokenRequired: boolean; readonly strict: boolean; readonly relay: string | null } | null> {
   const door = serverDoor();
   if (machineProfile && door === null) return null;
   try {
@@ -337,6 +337,8 @@ async function appHealth(): Promise<{ readonly engineDown: string | null; readon
     return {
       engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null,
       devices: accountDevicesOf(body), tokenRequired: (body.auth as { reason?: unknown }).reason === "token_required",
+      // the PC cannot read its own account state and lets only itself in: this command is then no owner to it either
+      strict: (body.auth as { reason?: unknown }).reason === "strict",
       relay: typeof body.relay?.phase === "string" ? body.relay.phase : null,
     };
   } catch {
@@ -1355,11 +1357,11 @@ const deviceLine = (title: string, devices: readonly ShownDevice[]): string => {
 };
 
 /** What a PC pinned to its account's signed list says of it (GET /api/account/status `list`): the list, where the PC stands in it, and why it lets nobody in when it does not. */
-interface ListSummary { readonly pinned: string; readonly standing: string | null; readonly reason: string | null }
+interface ListSummary { readonly pinned_list: string; readonly standing: string | null; readonly reason: string | null }
 
 const listSummaryOf = (value: unknown): ListSummary | null => {
-  const { pinned, standing, reason } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
-  return typeof pinned === "string" && (standing === null || typeof standing === "string") && (reason === null || typeof reason === "string") ? { pinned, standing, reason } : null;
+  const { pinned_list, standing, reason } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  return typeof pinned_list === "string" && (standing === null || typeof standing === "string") && (reason === null || typeof reason === "string") ? { pinned_list, standing, reason } : null;
 };
 
 /**
@@ -1393,7 +1395,8 @@ async function accountOf() {
  */
 async function statusJson(): Promise<number> {
   const answer = await appHealth();
-  const told = answer?.devices == null ? null : await accountTold();
+  // a PC that cannot read its account state tells no owner anything, and says what it could not read to its own CLI
+  const told = answer !== null && (answer.devices != null || answer.strict) ? await accountTold() : null;
   const account = told !== null && "problem" in told ? null : told;
   let serverId: string | null = null;
   if (answer !== null) {

@@ -1564,7 +1564,7 @@ export class DeviceStore {
     const pc = this.pc ?? (existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath) : null);
     // also where another Ovis server on this folder pinned the binding after this one read it: asked of the file,
     // before a row is ended for a clear that will not be written
-    pc?.adoptPin();
+    pc?.refresh();
     if (reason === "unlisted" && by !== LIST_REMOVED && pc?.binding()?.list !== undefined) return false;
     if (reason !== "revoke_all") this.resumeRevokeAll();
     const binding = pc?.binding();
@@ -2354,6 +2354,16 @@ export class DeviceStore {
     if (!this.listFollowed()) return null;
     const key = this.devices.find((d) => d.id === id)?.relay_public_key;
     return key !== undefined && accountDeviceId(serverId, key) === id ? key : null;
+  }
+
+  /**
+   * The PC pinned its list: every session open under the account's id for a key (listGoverned) ends as one whose row
+   * changed under it (`auth_changed`), whoever wrote the row, so its next sign-in gets the list's answer.
+   */
+  closeListGovernedSessions(serverId: string): void {
+    for (const row of [...this.devices]) {
+      if (row.relay_public_key !== undefined && accountDeviceId(serverId, row.relay_public_key) === row.id) this.closeAccountSessions(row.id);
+    }
   }
 
   /** The role the list this PC is pinned to gives `key` now; null when it lets the key in as nothing, and on a PC that follows no list. */
