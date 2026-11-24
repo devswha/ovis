@@ -180,7 +180,8 @@ type Payloads = {
     readonly list_enc?: string; readonly list_card?: string;
     /** Set by the reader alone, in the place of `list_enc` and `list_card` that came out of their form. */
     readonly list_malformed?: true };
-  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string };
+  /** `list`: with ACCOUNT_LIST_ALLOW selected, the id of the list the PC follows: the device stops early when its card names another. */
+  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string; readonly list?: string };
   readonly 0x0d: { readonly nonce: string; readonly server_proof?: string };
   readonly 0x0e: { readonly confirmed: true };
   readonly 0x10: { readonly device_id: string; readonly method: Method; readonly target: string; readonly headers: HeaderList; readonly body: "none" | "stream" };
@@ -464,7 +465,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
         ...listCard(v) } };
     case FrameType.PAIR_CHALLENGE:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_challenge === undefined ? {} : { server_challenge: text(v.server_challenge, 512) }),
-        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }) } };
+        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }),
+        ...(v.list === undefined ? {} : { list: hex(v.list, 64) }) } };
     case FrameType.PAIR_REVEAL:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_proof === undefined ? {} : { server_proof: text(v.server_proof, 256) }) } };
     case FrameType.KEY_CHALLENGE:

@@ -510,6 +510,18 @@ export class ListFollow implements ListAuthority {
   canAllow(): boolean { return this.allowRefusal() === null; }
 
   /**
+   * The list a join's card is taken for (ACCOUNT_LIST_ALLOW), or null: this PC is pinned to it, is in it, its copy is
+   * usable and no alarm stands (with one, it lets nobody new in). A PC that cannot sign itself (it joined by an
+   * invite) takes cards too: a member device may allow the newcomer, sign its entry and hand it over, and the PC then
+   * only reads.
+   */
+  takesCardsFor(): string | null {
+    if (!this.pinned() || this.problem !== null || this.alarmLost) return null;
+    const copy = this.copy;
+    return copy !== null && copy.state !== null && copy.alarm === null && standing(copy) === "in" ? copy.list : null;
+  }
+
+  /**
    * Lets a device into the list, and so into every PC of the account. With `sign`, a person at this PC decided it (its
    * own window, `ovis approve`): the PC signs a `device` entry with its own key and places it at the account service.
    * Without, a member decided it elsewhere: the PC only reads, and lets the device in when an entry of the list does.

@@ -14,7 +14,7 @@ import { accountDeviceId } from "../../shared/account-records.ts";
 import type { KeyProofPairings } from "../account/key-proof.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { SIGN_IN_WAIT_MS, type ListingVerdict } from "../account/mailbox.ts";
-import { LIST_ALLOW_MS } from "../account/list-follow.ts";
+import { LIST_ALLOW_MS, type AllowRefusal } from "../account/list-follow.ts";
 import { PENDING_MS } from "../account/pending.ts";
 import { pullForRefusedSignIn } from "./refused-signin.ts";
 import { accountSignInRefusal } from "../account/account-signin.ts";
@@ -81,6 +81,17 @@ function linkRequired(): Response {
 function listSignInRequired(): Response {
   return jsonResponse({ error: { code: "sign_in_required", message: "This device was let into its account's list. It signs in with its list key now." } }, 403, { "cache-control": "no-store" });
 }
+
+/**
+ * Why the list did not take a join that brought its card, as SESSION_ERROR `auth_failed` says it in its message
+ * (docs/account.md, "A PC allows a device into the list"). `list_not_claimed`: no sign-in of the account claimed the
+ * key, so the device signs in again. `list_service_away`, `list_head_lost`: the entry could not be placed in time, and
+ * asking again may work. `list_not_in`: a member allowed the device and no entry for it reached this PC. Anything
+ * else is `list_refused`.
+ */
+const LIST_ALLOW_CAUSES: Partial<Record<AllowRefusal, string>> = {
+  not_claimed: "list_not_claimed", service_away: "list_service_away", head_lost: "list_head_lost", not_in_list: "list_not_in",
+};
 
 export interface RelaySessionOptions {
   readonly channel: SecureChannel;
@@ -164,6 +175,8 @@ export class RelaySession {
   private tailnet = false;
   /** ACCOUNT_LIST_ALLOW was selected: a join's PAIR_REQUEST may carry the device's card, and it is then let in by the list or not at all */
   private listAllow = false;
+  /** The list a card is taken for, as it stood at HELLO (ListFollow.takesCardsFor). */
+  private listFor: string | null = null;
   /** the card of the device that asks to join, from its PAIR_REQUEST */
   private listCard: { readonly enc: string; readonly card: string } | undefined;
   /** where the list let the device of this session in, told in its AUTH_OK */
@@ -408,7 +421,7 @@ export class RelaySession {
         // and only a PC that can sign for its list right now takes a new device's card with a join (docs/account.md, "A
         // PC allows a device into the list"): any other PC lets nobody into the list, and says so by not selecting this
         this.listAllow = !!this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT && frame.payload.features.includes(ACCOUNT_LIST_ALLOW)
-          && !this.options.signInOnly && this.options.services.accountList?.canAllow() === true;
+          && !this.options.signInOnly && (this.listFor = this.options.services.accountList?.takesCardsFor() ?? null) !== null;
         if (this.listAllow) selected.push(ACCOUNT_LIST_ALLOW);
         if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
@@ -559,7 +572,9 @@ export class RelaySession {
         this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
         // a first join waits on this PC's own screen: the phone is told which PC to press Allow on
         this.mux.sendSession({ type: FrameType.PAIR_CHALLENGE, flags: 0, stream_id: 0,
-          payload: { nonce: toBase64Url(this.sas.pcNonce), ...(this.proofChallenge ? { server_challenge: this.proofChallenge.frame } : {}), ...(firstJoin ? { approve_on: APPROVER_OF[this.options.services.options.platform ?? process.platform] ?? "pc" } : {}) } });
+          payload: { nonce: toBase64Url(this.sas.pcNonce), ...(this.proofChallenge ? { server_challenge: this.proofChallenge.frame } : {}), ...(firstJoin ? { approve_on: APPROVER_OF[this.options.services.options.platform ?? process.platform] ?? "pc" } : {}),
+            // the list this PC follows, where it takes the device's card for it
+            ...(this.listAllow && this.intent === "account" && this.listFor !== null ? { list: this.listFor } : {}) } });
         return;
       }
       case FrameType.PAIR_REVEAL: {
@@ -654,6 +669,19 @@ export class RelaySession {
     return role === null || row.key !== this.listKey ? null : { ...row, role };
   }
 
+  /** Ends a join the list did not take: SESSION_ERROR `auth_failed`, with the cause as its message. */
+  private failJoin(cause: string): void {
+    if (this.state === "closed") return;
+    this.closingReason = "auth_failed";
+    this.state = "closed";
+    this.leaveKeyProof();
+    this.endPairing(false);
+    this.unwatch?.();
+    this.unwatch = undefined;
+    this.leaving?.();
+    this.mux.fail("auth_failed", cause);
+  }
+
   /** The relay key a PC that is vouched for proved, kept for as long as its comparison lasts. */
   private vouchedEndpoint: string | null = null;
 
@@ -718,7 +746,9 @@ export class RelaySession {
     this.endPairing(true);
     if ("refused" in outcome) {
       console.warn(`[account] a device was not let into the list: ${outcome.refused}${outcome.detail === null ? "" : ` (${outcome.detail})`}`);
-      this.close("auth_failed");
+      // the refusal is `auth_failed`, as for any join that was not let in; its message says which of the causes a
+      // device can act on it was (LIST_ALLOW_CAUSES), so the phone can say "sign in again" or "try again" apart
+      this.failJoin(LIST_ALLOW_CAUSES[outcome.refused] ?? "list_refused");
       return;
     }
     const role = list!.role(sas.publicKey);
