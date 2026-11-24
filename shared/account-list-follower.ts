@@ -65,8 +65,9 @@ export interface FollowerSelf {
  * - `added`: a PC that a person's `pc` or an invite's `join` adds. The list must show its relay key with its
  *   own signing key.
  * - `migrated`: a PC that was in the account before it had a list. `admitted` is the device keys it let in on
- *   that account then, by its own state: entry 0's signer must be one of them, and of the devices that were
- *   carried in it lets in only those.
+ *   that account then, by its own state: entry 0's signer must be one of them, and so must every device that
+ *   was carried in, all or none. A carried key is a signer of power `full`, so one the PC never let in could
+ *   add whom it likes: a list that carries one in is not a list this PC follows.
  */
 export type ListPin =
   | { readonly how: "genesis" }
@@ -95,7 +96,8 @@ export interface ListAlarm {
  * What a member saves, whole. `list` is its pin: no function here gives a copy of another list. `entries` and
  * `state` are the kinds' own copy (ListCopy), both empty until entry 0 is read. `stop` is the text of the entry
  * a member that is behind stopped at, kept for the replay after an update. `read_at` is when it last held
- * everything the account service showed, in seconds, or null.
+ * everything the account service showed, in seconds, or null. `seen_at` is the latest hour its own clock showed
+ * when it took a page or a hint, or null: its clock never counts for less than that (memberClock).
  */
 export interface FollowerCopy {
   readonly account: string;
@@ -106,6 +108,7 @@ export interface FollowerCopy {
   readonly state: ListState | null;
   readonly stop: string | null;
   readonly read_at: number | null;
+  readonly seen_at: number | null;
   readonly alarm: ListAlarm | null;
 }
 
@@ -191,7 +194,14 @@ export interface ListHead {
 
 export type HeadsVerdict = "same" | "behind" | "ahead" | "differs" | "not_my_list";
 
-export type SessionRefusal = "waiting" | "stopped" | "out" | "never_added" | "removed" | "expired" | "not_held_before" | "frozen";
+export type SessionRefusal = "waiting" | "stopped" | "out" | "never_added" | "removed" | "expired" | "frozen";
+
+/** A device that a PC lets in now: its key, as what, and the second its `until` ends that, or null. */
+export interface AdmittedDevice {
+  readonly key: string;
+  readonly role: ListRole;
+  readonly until: number | null;
+}
 
 /** What happened, for followStep. `asked_at` is when the member's last read began, `since` when this session began to wait; both in seconds, null for never. */
 export type FollowEvent =
@@ -287,7 +297,7 @@ export function pinList(held: FollowerCopy | null, given: { readonly account: st
   const self: FollowerSelf = { key: me.key, endpoint: me.endpoint };
   const read = readPin(pin, self);
   if (read === null) return { pinned: false, why: "form" };
-  return { pinned: true, copy: { account, list, me: self, pin: read, entries: [], state: null, stop: null, read_at: null, alarm: null } };
+  return { pinned: true, copy: { account, list, me: self, pin: read, entries: [], state: null, stop: null, read_at: null, seen_at: null, alarm: null } };
 }
 
 /** Whether the list shows what the member's pin asks for (ListPin). */
@@ -300,7 +310,7 @@ function pinMet(copy: FollowerCopy): boolean {
     case "allowed": return row !== null && row.as === "device" && hashAt(copy, pin.seq) === pin.hash;
     case "carried": return row !== null && row.as === "device" && rowOf(state.devices, me.key)?.carried === true;
     case "added": return me.endpoint !== null && rowOf(state.pcs, me.endpoint)?.key === me.key;
-    case "migrated": return pin.admitted.includes(firstSigner(state) ?? "");
+    case "migrated": return pin.admitted.includes(firstSigner(state) ?? "") && Object.entries(state.devices).every(([key, device]) => !device.carried || pin.admitted.includes(key));
   }
 }
 
@@ -340,6 +350,19 @@ function changesBetween(before: ListState | null, after: ListState | null): List
       removed: now.pcs.filter((row) => row.removed !== null && wasPcs.get(row.endpoint) === true),
     },
   };
+}
+
+/**
+ * The hour a member judges by: its own clock, and never less than the latest hour that clock showed before
+ * (`seen_at`, saved with the copy). So a clock that was set back lets no device in past its `until`.
+ */
+export function memberClock(copy: FollowerCopy, now: number): number {
+  return Math.max(now, copy.seen_at ?? 0);
+}
+
+/** The copy with the hour its clock shows now, when that is later than any it showed before. */
+function seenAt(copy: FollowerCopy, now: number): FollowerCopy {
+  return copy.seen_at !== null && copy.seen_at >= now ? copy : { ...copy, seen_at: now };
 }
 
 /** The request that begins a read, from the account service or from a peer: the entries after the member's head, or from entry 0 for a member that holds none. */
@@ -424,9 +447,10 @@ async function otherHistory(list: string, mine: ListCopy, after: number, shown: 
  */
 export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListPage, now: number): Promise<PageResult> {
   if (read.list !== copy.list) throw new RangeError("The read is of another list than the copy");
+  if (!isCount(now)) throw new RangeError("The hour is seconds since 1970, a whole number");
   const { source } = read;
   const result = (verdict: FollowVerdict, next: FollowerCopy = copy, rest: Partial<Pick<PageResult, "code" | "at" | "read">> = {}): PageResult =>
-    ({ copy: next, verdict, code: null, at: null, changes: changesBetween(copy.state, next.state), read: null, ...rest });
+    ({ copy: seenAt(next, now), verdict, code: null, at: null, changes: changesBetween(copy.state, next.state), read: null, ...rest });
   const refused = (code: PageRefusal, at: number | null = null, next: FollowerCopy = copy) => result("refused", next, { code, at });
 
   if (!isRecord(page)) return refused("page_form");
@@ -547,18 +571,21 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
 
 /**
  * What a member does with the head the account service names beside something else (a PC's mailbox pull): a
- * hint that only says whether to read. `same`: the head is the member's own, which counts as a full read, so a
- * quiet list costs no request for the log. `read`: begin a read (startRead). `older`: an earlier place of the
+ * hint that only says whether to read. The copy it gives back differs from the one handed over only in its
+ * times. `same`: the head is the member's own, which counts as a full read, so a quiet list costs no request
+ * for the log. `read`: begin a read (startRead). `older`: an earlier place of the
  * member's own history; a late or lying service, and nothing changes. `not_my_list`: another list id than the
  * member follows; nothing changes, and the member does not take it for its list being gone.
  */
 export function heardHead(copy: FollowerCopy, hint: ListHead, now: number): { readonly copy: FollowerCopy; readonly verdict: "same" | "read" | "older" | "not_my_list" } {
-  if (!isRecord(hint) || hint.list !== copy.list) return { copy, verdict: "not_my_list" };
+  if (!isCount(now)) throw new RangeError("The hour is seconds since 1970, a whole number");
+  const held = seenAt(copy, now);
+  if (!isRecord(hint) || hint.list !== copy.list) return { copy: held, verdict: "not_my_list" };
   const { place } = hint;
   const { state } = copy;
-  if (state === null || !isPlace(place) || place.seq > copy.entries.length - 1 || hashAt(copy, place.seq) !== place.hash) return { copy, verdict: "read" };
-  if (place.seq < state.footing.seq || (copy.pin.how === "allowed" && copy.entries.length - 1 < copy.pin.seq)) return { copy, verdict: "older" };
-  return { copy: { ...copy, read_at: now }, verdict: "same" };
+  if (state === null || !isPlace(place) || place.seq > copy.entries.length - 1 || hashAt(copy, place.seq) !== place.hash) return { copy: held, verdict: "read" };
+  if (place.seq < state.footing.seq || (copy.pin.how === "allowed" && copy.entries.length - 1 < copy.pin.seq)) return { copy: held, verdict: "older" };
+  return { copy: { ...held, read_at: now }, verdict: "same" };
 }
 
 /** What a member tells another member of where it stands: its list id and its footing, the last entry a member signed in its copy. Never a loose entry: nobody passes on what no member signed. */
@@ -611,35 +638,43 @@ export function servePage(copy: FollowerCopy, ask: PeerAsk, limit: number): List
 const heldBack = (alarm: ListAlarm | null, part: "devices" | "pcs", name: string): boolean => alarm !== null && !alarm[part].includes(name);
 
 /**
- * Whether a PC lets the device with this key open a session at `now` (seconds, by the PC's own clock), and as
- * what. It reads the PC's copy and nothing else: no answer of the account service, no time of a last read. So
- * a service that is away or withholds never takes out a device the PC holds.
+ * Whether a PC lets the device with this key open a session at `now` (seconds, by the PC's own clock, which
+ * counts for no less than it showed before: memberClock), and as what. It reads the PC's copy and nothing
+ * else: no answer of the account service, no time of a last read. So a service that is away or withholds
+ * never takes out a device the PC holds.
  *
  * The refusals, the first that applies: the PC itself is `waiting`, `stopped` or `out` (standing); the list
  * never made the key a device (`never_added`); an entry ended it (`removed`); the PC has an alarm and did not
- * hold the device when it rose (`frozen`); the device was carried in and this PC, which was in the account
- * before the list, did not let it in then (`not_held_before`); its `until` has passed (`expired`).
+ * hold the device when it rose (`frozen`); its `until` has passed (`expired`).
  */
 export function admitsSession(copy: FollowerCopy, key: string, now: number): { readonly role: ListRole; readonly why: null } | { readonly role: null; readonly why: SessionRefusal } {
   const no = (why: SessionRefusal) => ({ role: null, why }) as const;
-  const { state, pin, alarm } = copy;
+  const { state, alarm } = copy;
   const stands = standing(copy);
   if (state === null || stands !== "in") return no(stands === "in" ? "waiting" : stands);
   const row = rowOf(state.signers, key);
-  const device = rowOf(state.devices, key);
-  if (row === null || row.as !== "device" || device === null) return no("never_added");
+  if (row === null || row.as !== "device" || rowOf(state.devices, key) === null) return no("never_added");
   if (row.ended !== null) return no("removed");
   if (heldBack(alarm, "devices", key)) return no("frozen");
-  if (pin.how === "migrated" && device.carried && !pin.admitted.includes(key)) return no("not_held_before");
-  const role = admitsDevice(state, key, now);
+  const role = admitsDevice(state, key, memberClock(copy, now));
   return role === null ? no("expired") : { role, why: null };
+}
+
+/** Every device a PC lets in at `now`, in the order they came in: what admitsSession says for each key the list made a device. */
+export function admittedDevices(copy: FollowerCopy, now: number): AdmittedDevice[] {
+  const { state } = copy;
+  if (state === null) return [];
+  return listView(state).devices.flatMap((row) => {
+    const { role } = admitsSession(copy, row.key, now);
+    return role === null ? [] : [{ key: row.key, role, until: row.until }];
+  });
 }
 
 /** The next second at which a device that is let in at `now` stops being so by its `until`, or null: when a PC looks at its open sessions again. */
 export function nextUntil(copy: FollowerCopy, now: number): number | null {
   const { state } = copy;
   if (state === null) return null;
-  const untils = Object.entries(state.devices).flatMap(([key, row]) => (row.until !== null && admitsSession(copy, key, now).role !== null ? [row.until] : []));
+  const untils = admittedDevices(copy, now).flatMap((row) => (row.until === null ? [] : [row.until]));
   return untils.length === 0 ? null : Math.min(...untils);
 }
 
@@ -654,6 +689,13 @@ export function pcOfKey(copy: FollowerCopy, key: string): string | null {
   const endpoint = rowOf(state.pc_keys, key);
   const row = endpoint === null ? null : rowOf(state.pcs, endpoint);
   return endpoint !== null && row !== null && row.key === key && row.removed === null && !heldBack(copy.alarm, "pcs", endpoint) ? endpoint : null;
+}
+
+/** The devices of the account as a member shows them: those that are in, in the order they came in, without those an alarm holds back. None while the member is not in itself. */
+export function shownDevices(copy: FollowerCopy): DeviceView[] {
+  const { state } = copy;
+  if (state === null || standing(copy) !== "in") return [];
+  return listView(state).devices.filter((row) => row.ended === null && !heldBack(copy.alarm, "devices", row.key));
 }
 
 /** The PCs of the account as a member shows them: those that are in, in the order they came in. None while the member is not in itself. A PC is known by its relay key; the account service's directory only says how to reach it. */
@@ -719,13 +761,13 @@ const saveSum = (body: string): string => bytesToHex(sha256(concatBytes(utf8ToBy
 
 /**
  * A copy as the one text a member saves: JSON in one form (each object's members in ascending order of name,
- * no white space) with the members `account`, `alarm`, `entries`, `list`, `me`, `pin`, `read_at`, `state`,
- * `stop`, `sum` and `v`. `sum` is SHA-256 over LIST_SAVE_PREFIX and the text of the same object without `sum`.
+ * no white space) with the members `account`, `alarm`, `entries`, `list`, `me`, `pin`, `read_at`, `seen_at`,
+ * `state`, `stop`, `sum` and `v`. `sum` is SHA-256 over LIST_SAVE_PREFIX and the text of the same object without `sum`.
  * It holds nothing secret: no private key and no key to the names.
  */
 export function writeSave(copy: FollowerCopy): string {
-  const { account, alarm, entries, list, me, pin, read_at, state, stop } = copy;
-  const body = { account, alarm, entries, list, me: { endpoint: me.endpoint, key: me.key }, pin, read_at, state, stop, v: FOLLOWER_SAVE_VERSION };
+  const { account, alarm, entries, list, me, pin, read_at, seen_at, state, stop } = copy;
+  const body = { account, alarm, entries, list, me: { endpoint: me.endpoint, key: me.key }, pin, read_at, seen_at, state, stop, v: FOLLOWER_SAVE_VERSION };
   return canonical({ ...body, sum: saveSum(canonical(body)) });
 }
 
@@ -772,9 +814,9 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
     return no("form");
   }
   if (!isRecord(value)) return no("form");
-  const { account, alarm: savedAlarm, entries, list, me, pin: savedPin, read_at, state: savedState, stop, sum, v, ...rest } = value;
+  const { account, alarm: savedAlarm, entries, list, me, pin: savedPin, read_at, seen_at, state: savedState, stop, sum, v, ...rest } = value;
   if (isCount(v) && v !== FOLLOWER_SAVE_VERSION) return no("version");
-  if (v !== FOLLOWER_SAVE_VERSION || Object.keys(rest).length > 0 || Object.keys(value).length !== 11) return no("form");
+  if (v !== FOLLOWER_SAVE_VERSION || Object.keys(rest).length > 0 || Object.keys(value).length !== 12) return no("form");
   let again: string;
   try {
     again = canonical(value);
@@ -783,18 +825,18 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
     return no("form");
   }
   if (again !== text || typeof sum !== "string") return no("form");
-  if (saveSum(canonical({ account, alarm: savedAlarm, entries, list, me, pin: savedPin, read_at, state: savedState, stop, v })) !== sum) return no("sum");
+  if (saveSum(canonical({ account, alarm: savedAlarm, entries, list, me, pin: savedPin, read_at, seen_at, state: savedState, stop, v })) !== sum) return no("sum");
 
   if (typeof account !== "string" || !ACCOUNT.test(account) || typeof list !== "string" || !isListHash(list) || !isSelf(me) || Object.keys(me).length !== 2) return no("form");
   const pin = readPin(savedPin, me);
   if (pin === null || canonical(pin) !== canonical(savedPin)) return no("form");
   if (!Array.isArray(entries) || entries.length > LIST_ENTRIES_MAX || !entries.every((entry) => typeof entry === "string")) return no("form");
-  if (!(stop === null || typeof stop === "string") || !(read_at === null || isCount(read_at)) || !(savedState === null || isRecord(savedState))) return no("form");
+  if (!(stop === null || typeof stop === "string") || !(read_at === null || isCount(read_at)) || !(seen_at === null || isCount(seen_at)) || !(savedState === null || isRecord(savedState))) return no("form");
   const texts = entries as readonly string[];
   const self: FollowerSelf = { key: me.key, endpoint: me.endpoint };
   if (savedState === null) {
     if (texts.length > 0 || stop !== null || savedAlarm !== null || read_at !== null) return no("broken");
-    return { read: true, copy: { account, list, me: self, pin, entries: [], state: null, stop: null, read_at: null, alarm: null } };
+    return { read: true, copy: { account, list, me: self, pin, entries: [], state: null, stop: null, read_at: null, seen_at, alarm: null } };
   }
   const told = readListState(savedState, LIST_LEVEL);
   if (told === null || told.list !== list || texts.length <= told.footing.seq) return no("broken");
@@ -820,5 +862,5 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
   if ((pin.how === "genesis" && body.signer !== self.key) || (pin.how === "migrated" && !pin.admitted.includes(body.signer))) return no("broken");
   const alarm = readAlarm(savedAlarm, member.state);
   if (alarm === undefined) return no("broken");
-  return { read: true, copy: { account, list, me: self, pin, entries: member.entries, state: member.state, stop: member.state.needs_replay === undefined ? null : stop, read_at, alarm } };
+  return { read: true, copy: { account, list, me: self, pin, entries: member.entries, state: member.state, stop: member.state.needs_replay === undefined ? null : stop, read_at, seen_at, alarm } };
 }

@@ -300,7 +300,7 @@ before the member acts on it:
 | `allowed` | a device | the member that allowed it, with that member's head (`seq`, `hash`) | the log reaches that very entry, and its key is a device |
 | `carried` | a device | an account in use before it had a list; a PC the device had paired with names the same id | its key was carried in |
 | `added` | a PC | what a person compared, scanned or sent at that PC, or a join line | its relay key is in the list with its own signing key |
-| `migrated` | a PC | an account in use before it had a list; `admitted` is the device keys the PC let in then | entry 0's signer is one of `admitted` |
+| `migrated` | a PC | an account in use before it had a list; `admitted` is the device keys the PC let in then | entry 0's signer and every device that was carried in are among `admitted` |
 
 - **A pin is one-way.** A member that has saved a copy is pinned: no page, no hint and no second
   pin changes its list id. Only a person's reset at the member, which deletes its save, takes the
@@ -310,8 +310,9 @@ before the member acts on it:
 - Before it is in, a member lets nobody in and shows no PC, though it holds entries.
 - A device that was allowed takes, at the place of the head it was handed, no other entry: a log
   with another entry there is not the list it was let into.
-- A PC that was `migrated` never widens: of the devices that were `carried` in, it lets in only
-  those among `admitted`. A list whose first signer it never let in is `not_my_list`.
+- A PC that was `migrated` never widens, all or nothing. A list whose first signer it never let in
+  is `not_my_list`. A list that carries in a device the PC never let in is one it follows none of:
+  a carried key is a `full` signer, so it could add whom it likes. Such a PC lets nobody in.
 
 ### A page
 
@@ -385,7 +386,10 @@ copy is. A service that is away or withholds takes out no device the PC holds.
 - **A device opens a session** when the PC is in, the device's key is in and, where it has an
   `until`, before that second by the PC's clock. It opens as its `role`. Otherwise the refusal is
   the first of: the PC itself is `waiting`, `stopped` or `out`; `never_added`; `removed`; `frozen`
-  (the alarm); `not_held_before` (a migrated PC and a carried device it did not let in); `expired`.
+  (the alarm); `expired`.
+- **The PC's clock never counts for less than it showed before.** Each page and each hint is taken
+  at the hour the clock shows, the copy keeps the latest (`seen_at`), and a clock that was set back
+  lets no device in past its `until`.
 - **A PC is a member** when its signing key belongs to a relay key that is in.
 - **A device shows** the PCs that are in. The account service's directory only says how to reach
   them.
@@ -417,6 +421,7 @@ name, no white space).
 | `state` | [the state](#the-state) those entries give; `null` before entry 0 |
 | `stop` | the text of the entry it stopped at for a newer client, or `null` |
 | `read_at` | when it last held everything the account service showed, or `null` |
+| `seen_at` | the latest hour its own clock showed when it took a page or a hint, or `null` |
 | `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `at`, and the `devices` and `pcs` it held then |
 | `sum` | SHA-256 over `ovis-list-save/1` and the text of the same object without `sum`, as a hash |
 
@@ -461,5 +466,5 @@ Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vector
 [save](#the-save): `name`, `about`, `keys`, the `save` text, `now` (the member's clock for
 `opens`) and `expect`: either `reads` (`account`, `list`, `me`, `pin`, the copy's `head` and
 `footing`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it holds a `stop`, the
-place of its `alarm`, `read_at`, and `opens`: for each named key the role it opens a session as,
+place of its `alarm`, `read_at`, `seen_at`, and `opens`: for each named key the role it opens a session as,
 or the refusal) or `refused` (the refusal). A save that reads is written back to the same text.
