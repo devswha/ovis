@@ -266,6 +266,42 @@ The four rules the schema serves (plan 11.1; Ovis and hc already keep them):
 3. Attaching never takes over. A send waits while a person types; `--takeover` stays a person's act.
 4. Capabilities say what is true. A flag that is on and then fails is a bug.
 
+### Capability flags
+
+A caller decides what to offer from the flags, never from the harness's name: no `if kind ===
+"claude"` in a caller, in Ovis's screens or in a skill. Ovis announces only what it can prove on
+this machine now; a flag it has not proven reports its safe value (`none`, `false`, the empty list),
+and a control whose result Ovis cannot draw is not offered. `harnessCapabilities` in
+`server/agent-tools/harnesses.ts` builds every harness's flags in that one place (read).
+
+What `agent_harnesses` reports today, and from what:
+
+| Flag | Reported today | From |
+|---|---|---|
+| `drive` | `["terminal", "acp"]` when Ovis resolves an ACP launch here, else `["terminal"]` | `resolveHarness`: gjc, OpenCode and agy on the PATH; Claude Code and Codex through an adapter version the runs checked (read, `server/agent-tools/harnesses.ts`) |
+| `level` | `structured` with ACP drive, else `terminal` | as `drive` |
+| `acp_protocol` | `1` with ACP drive, else `null` | the version the checked launches answered; not read again from each launch's `initialize` |
+| `approvals` | `keys` always; `hook` when the approval hub has an adapter for the harness (Claude Code, pi, OmO, omp); `acp` with ACP drive | `approvals.handles` (read, `server/approvals/hub.ts`) |
+| `transcript` | `acp` with ACP drive, else `none` | the file readers are not announced here yet |
+| `turn_end`, `turn_end_from` | `strong` from `acp` with ACP drive (the `session/prompt` response); else `weak` from `terminal` | as `drive` |
+| `tool_delivery`, `browser_tool` | `mcp` and `shell` for a browser-tool harness (Claude Code, Codex, Copilot) or with ACP drive; `browser_tool` for the first three | `BROWSER_TOOL_AGENTS` (read, `shared/browser-tools.ts`) |
+| `model_switch`, `resume`, `images`, `slash_commands`, `subagents`, `memory_tool` | the safe value (`none`, `false`) | not gathered per harness yet (H4) |
+
+What a caller can read from these without a flag of its own:
+
+- **A pending approval survives an Ovis restart** when it came through `acp`: the keeper holds the
+  request until a client answers it, and the restarted server takes the keeper up again and rebuilds
+  the unanswered requests from the keeper's log (read, `crates/acp-keeper/README.md`,
+  `server/acp/client.ts`). A `hook` request held when the server
+  stops gets no decision, and the agent's own terminal dialog stands (read, `server/approvals/hub.ts`):
+  it survives, but as keys, not as data.
+- **Answers come as data** only through `hook` or `acp`; `keys` alone means a person answers on a
+  card that Ovis types into the terminal.
+- **How far "done" can be trusted** is `turn_end`: `weak` means a caller reads the result before it
+  sends again (rule 2).
+- **Switching the model inside a session** is `model_switch: "session"`. No harness reports it yet,
+  so no caller offers it.
+
 **Fallback when ACP is missing.** `start` uses ACP only when the harness's `drive` includes `acp`.
 Otherwise the child is a real TUI in a herdr-core terminal and is driven as one:
 
