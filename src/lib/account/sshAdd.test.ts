@@ -62,6 +62,28 @@ describe("adding another PC to the account over SSH, from this PC's own window",
     expect(takes).toEqual([`job-1 ${target.server_id}`]);
   });
 
+  it("keeps the add as this device's own act once the account admitted the PC, whatever the hand-over then finds of the PC's relay", async () => {
+    const { service } = await window({ twoStep: true });
+    const target = pcFields();
+    const kept = new Map<string, string>();
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => { kept.set(key, value); }, removeItem: (key: string) => { kept.delete(key); } } });
+    try {
+      // the PC's relay is still connecting when it takes the account
+      const outcome = await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take: async () => ({ relay: { phase: "connecting", blocked: null, error: null } } as unknown as SshTake) });
+      expect(outcome).not.toBe("added");
+      const endpoint = Array.from(importPublicKey(target.public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const deadline = Date.now() + 2_000;
+      while (readSeenPcs(ACCOUNT).pcs[endpoint] === undefined) {
+        if (Date.now() > deadline) throw new Error(`the SSH add was not written to the record (${outcome})`);
+        await Bun.sleep(5);
+      }
+      expect(readSeenPcs(ACCOUNT).pcs[endpoint]).toEqual({ how: "ssh" });
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "localStorage", saved); else Reflect.deleteProperty(globalThis, "localStorage");
+    }
+  });
+
   it("Google without two-step on a used account: told to add it with the number on that PC, and nothing is handed over", async () => {
     const { service, take, takes } = await window({ twoStep: false });
     const target = pcFields();

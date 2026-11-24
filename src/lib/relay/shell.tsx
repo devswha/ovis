@@ -689,14 +689,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    */
   const noteAdmitted = async (attempt: Attempt): Promise<void> => {
     try {
-      // the sign-in this page shows, as it holds it: nothing is read from or written to the account's store for this
-      const session = account.signedInAs;
-      if (session === undefined) return;
+      // the account of the sign-in stored now, read and nothing more: a page that opened a saved PC before it read
+      // the account's PCs is signed in all the same
+      const signedIn = await account.storedAccount();
+      if (signedIn === undefined) return;
       const endpoint = Array.from(importPublicKey(attempt.offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       // what this device did itself here: a pairing it just made at the PC, by the PC's own code for the account, or
       // otherwise (the digits, a code for this device alone); nothing, where it opened a PC it held or was shown
       const made = !attempt.paired || attempt.fresh === true;
-      await noteSession(session.account, endpoint, !made ? "none" : attempt.code && attempt.accountEnrollment === true && !attempt.accountless ? "added" : "paired");
+      await noteSession(signedIn, endpoint, !made ? "none" : attempt.code && attempt.accountEnrollment === true && !attempt.accountless ? "added" : "paired");
     } catch (error) {
       console.warn("Ovis: this session was not written to the device's record of its PCs", error instanceof Error ? error.name : error);
     }
