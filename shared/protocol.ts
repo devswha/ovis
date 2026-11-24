@@ -66,6 +66,8 @@ export type PaneContext = { used: number; window: number | null };
 export type HerdrPane = PaneInfo & {
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
+  /** Stop on this pane cancels a keeper session rather than interrupting a TUI. */
+  acp_child?: true;
   own_tab?: true;
   agent_kind?: string;
   agent_message?: string;

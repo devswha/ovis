@@ -59,7 +59,7 @@ describe.skipIf(!bin || !keeperBuilt)("AcpChildren against a real hc", () => {
     try {
       const snapshot = await sessionSnapshot(adapter.socketPath);
       const childPane = snapshot.panes.find(candidate => candidate.pane_id === child.terminal);
-      expect(childPane).toMatchObject({ agent: "codex", agent_status: "idle", parent_pane_id: parent, label: "Codex" });
+      expect(childPane).toMatchObject({ agent: "codex", acp_child: true, agent_status: "idle", parent_pane_id: parent, label: "Codex" });
       expect(snapshot.tabs.find(tab => tab.tab_id === childPane?.tab_id)?.label).toBe("Codex");
       const { client } = child;
       const turn = client.request("session/prompt", { sessionId: client.session, prompt: [{ type: "text", text: "ask" }] });

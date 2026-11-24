@@ -389,6 +389,7 @@ function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown:
   const plan = planSummary(terminal.acp?.plan ?? null);
   return {
     ...(session ? { agent_session: session } : {}),
+    ...(terminal.acp ? { acp_child: true as const } : {}),
     ...(terminal.parent && terminal.parent !== terminal.address && shown.has(terminal.parent) ? { parent_pane_id: terminal.parent } : {}),
     ...(terminal.labels?.[SPACE_LABEL] === workspaceId && terminal.labels?.[TAB_LABEL] === tabId ? {} : { own_tab: true as const }),
     ...(terminal.acp ? (terminal.acp.status === "blocked" ? { agent_kind: "permission" } : {}) : reportedFacts(terminal.status)),
