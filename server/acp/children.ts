@@ -177,14 +177,14 @@ export class AcpChildren {
       });
       if (live !== null) {
         const address = live.get(id);
-        if (address !== undefined) await this.end(address, root);
+        if (address !== undefined) await this.endFailedStart(address, root);
         else rmSync(root, { recursive: true, force: true });
       }
       throw error;
     }
     const failed = async (reason: AcpStartFailed["reason"], message: string, client?: KeeperClient): Promise<never> => {
       client?.close();
-      await this.end(terminal, root);
+      await this.endFailedStart(terminal, root);
       throw new AcpStartFailed(reason, message);
     };
     if (!(await socketAppears(root, this.options.socketMs ?? SOCKET_MS))) return failed("no_socket", "the ACP keeper did not open its socket");
@@ -223,25 +223,28 @@ export class AcpChildren {
 
   /** Kills the keeper's terminal (the keeper ends its agent with it); ROOT goes once the terminal is gone. */
   private async end(terminal: string, root: string): Promise<void> {
+    await this.hc().call("terminal.kill", { terminal });
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  private async endFailedStart(terminal: string, root: string): Promise<void> {
     try {
-      await this.hc().call("terminal.kill", { terminal });
+      await this.end(terminal, root);
     } catch (error) {
       // a ROOT whose terminal may still run stays: restore() removes it once its keeper is gone
       console.warn(`acp: could not end ${terminal}: ${error instanceof Error ? error.message : String(error)}`);
-      return;
     }
-    rmSync(root, { recursive: true, force: true });
   }
 
   /** Stops a child: the running turn is cancelled, then its terminal is killed and it is forgotten. */
   async stop(id: string): Promise<void> {
     const child = this.children.get(id);
     if (child === undefined) return;
-    this.children.delete(id);
     const { client } = child;
     if (client.turn?.running && client.session !== null) client.notify("session/cancel", { sessionId: client.session });
-    client.close();
     await this.end(child.terminal, child.root);
+    client.close();
+    if (this.children.get(id) === child) this.children.delete(id);
   }
 
   /**

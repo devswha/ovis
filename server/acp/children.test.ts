@@ -15,6 +15,7 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
   let hc: AcpHc;
   let dir: string;
   let children: AcpChildren;
+  let killFailure: Error | undefined;
   /** what the fake core "runs": the keeper, started for real, ended when the core is asked to kill its terminal */
   const programs = new Map<string, Subprocess>();
   const cleanups: (() => Promise<void> | void)[] = [];
@@ -23,6 +24,7 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
   afterAll(() => serveRuntime(null));
 
   function setUp() {
+    killFailure = undefined;
     fake = new FakeHcCore();
     fake.onStart = (program) => {
       if (program.argv[0] === KEEPER_BUILD) programs.set(program.address, Bun.spawn([...program.argv], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }));
@@ -30,7 +32,10 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     connection = new HcConnection(() => fake.transport());
     hc = {
       call: (method, params) => {
-        if (method === "terminal.kill" && "terminal" in params && typeof params.terminal === "string") programs.get(params.terminal)?.kill("SIGTERM");
+        if (method === "terminal.kill" && "terminal" in params && typeof params.terminal === "string") {
+          if (killFailure !== undefined) return Promise.reject(killFailure);
+          programs.get(params.terminal)?.kill("SIGTERM");
+        }
         return connection.call(method, params);
       },
     };
@@ -127,6 +132,23 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(existsSync(child.root)).toBe(false);
     expect(children.forPane(child.terminal)).toBeUndefined();
     expect(await program.exited).toBe(0);
+  });
+
+  it("can retry stopping a child when the core refuses the first kill", async () => {
+    setUp();
+    const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir });
+    const failure = new Error("core offline");
+    killFailure = failure;
+    await expect(children.stop(child.id)).rejects.toBe(failure);
+    expect(fake.terminal(child.terminal).state).toBe("live");
+    expect(children.forPane(child.terminal)).toBe(child);
+    expect(existsSync(child.root)).toBe(true);
+
+    killFailure = undefined;
+    await children.stop(child.id);
+    expect(fake.terminal(child.terminal).state).not.toBe("live");
+    expect(children.forPane(child.terminal)).toBeUndefined();
+    expect(existsSync(child.root)).toBe(false);
   });
 
   it("refuses to start anywhere but this PC's herdr-core", async () => {
