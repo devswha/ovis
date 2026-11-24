@@ -197,14 +197,15 @@ jobs:
       - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-stop-forms.test.ts ./scripts/plugin-stop-identity.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts ./server/claude-command-history.test.ts
         if: needs.changes.outputs.draft != 'true'
       # This pull request's install.ps1 run on this runner as a user runs it, its plugin installed from the pull request's
-      # head (scripts/windows-install-e2e.ps1): with herdr stopped it must leave herdr and Ovis running, set to start at
-      # sign-in, also run from session 0 as over SSH; -NoService takes the sign-in start away; -Account of another shape is
-      # refused at once, and fails the install with the add's own words when the add cannot run
+      # head (scripts/windows-install-e2e.ps1): with herdr stopped (one an earlier step left is stopped first) it must
+      # leave herdr and Ovis running, set to start at sign-in; -NoService takes the sign-in start away; -Account of another
+      # shape is refused at once, and fails the install with the add's own words when the add cannot run; run from session
+      # 0 as over SSH (an S4U task, where the runner runs one), it must start herdr in the desktop session
       - name: The installer leaves Ovis running
         if: needs.changes.outputs.draft != 'true' && needs.changes.outputs.installer != ''
         env:
           HEAD_SHA: ${{ needs.changes.outputs.installer }}
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-install-e2e.ps1 -Ref $env:HEAD_SHA -HerdrStopped
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-install-e2e.ps1 -Ref $env:HEAD_SHA -StopHerdr
   macos-session:
     name: Native macOS session identity
     needs: changes

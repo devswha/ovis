@@ -1,13 +1,13 @@
-# It replaces an installed Ovis and leaves the one it installed. A herdr server it or the installer
-# had to start is stopped again; one that was already running is left alone.
-# -HerdrStopped: herdr must not be running before the install, so this commit's installer has to start it (CI's Native
-# Windows install, whose runner may have herdr installed).
+# It replaces an installed Ovis and leaves the one it installed (with herdr's sign-in start, where this commit's installer
+# sets one). A herdr server it or the installer had to start is stopped again; one that was already running is left
+# alone, unless -StopHerdr: then it is stopped first, so this commit's installer has to start it (CI's Native Windows
+# install, whose runner's earlier steps may leave one).
 param(
     [string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'),
     [string]$Ref = '',
     [switch]$Update,
     [switch]$Fresh,
-    [switch]$HerdrStopped
+    [switch]$StopHerdr
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -43,25 +43,46 @@ function Assert-SignInStart([string]$After) {
     Assert ($signIn -like '*\ovis\start-herdr.ps1"') "After $After herdr must start at sign-in with the installer's launcher, not: $signIn"
     Assert (-not (Get-ScheduledTask -TaskName 'Ovis herdr start*' -ErrorAction SilentlyContinue)) "After $After the task that started herdr must be gone"
 }
-# The installer as it runs over SSH, in session 0 outside this desktop: a process WMI creates (Win32_Process.Create) as this
-# account, with this run's environment, its output in a file. What it said, and whether it threw.
+# The installer as it runs over SSH, in session 0 outside this desktop: a task of this account's that runs whether it is
+# signed in or not (S4U: no password kept), its output in a file. What it said, whether it threw, and the session it ran
+# in; nothing where this PC runs no such task.
 function Invoke-InSession0([string]$Arguments) {
     $dir = Join-Path ([IO.Path]::GetTempPath()) ('ovis-e2e-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $dir | Out-Null
     $log = Join-Path $dir 'out.log'; $done = Join-Path $dir 'exit.txt'; $runner = Join-Path $dir 'run.ps1'
+    # with this run's PATH (Bun, herdr), which a task does not get, as a login's PATH would have them
     Set-Content -LiteralPath $runner -Encoding UTF8 -Value @"
 `$ProgressPreference = 'SilentlyContinue'
+`$env:PATH = '$($env:PATH -replace "'", "''")'
 "session `$([Diagnostics.Process]::GetCurrentProcess().SessionId)" | Out-File -LiteralPath '$log' -Encoding utf8
 try { & '$Installer' $Arguments *>&1 | Out-File -Append -LiteralPath '$log' -Encoding utf8 -Width 4096; `$code = 0 }
 catch { `$_ | Out-String -Width 4096 | Out-File -Append -LiteralPath '$log' -Encoding utf8; `$code = 1 }
 Set-Content -LiteralPath '$done' -Value `$code
 "@
-    $environment = [string[]]@(Get-ChildItem Env: | Where-Object { $_.Name -notmatch '[=\r\n\0]' -and "$($_.Value)" -notmatch '[\r\n\0]' } | ForEach-Object { "$($_.Name)=$($_.Value)" })
-    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; EnvironmentVariables = $environment }
-    $made = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -ExecutionPolicy Bypass -File `"$runner`""; CurrentDirectory = $HOME; ProcessStartupInformation = $startup }
-    Assert ($made.ReturnValue -eq 0) "WMI did not start the installer ($($made.ReturnValue))"
-    Wait-Until { Test-Path -LiteralPath $done } 300 'the installer run in session 0 to end' | Out-Null
-    $result = @{ Said = (Get-Content -Raw -LiteralPath $log); Threw = (Get-Content -Raw -LiteralPath $done).Trim() -ne '0' }
+    $task = 'Ovis e2e session 0 ' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+    try {
+        $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
+        $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -LogonType S4U -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -Priority 4
+        Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+        $null = Start-ScheduledTask -TaskName $task -ErrorAction Stop
+    } catch {
+        Write-Host "e2e: this PC runs no task without a sign-in ($($_.Exception.Message))"
+        Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    # its end: the file it writes last, or the task no longer running without it (PowerShell did not start there)
+    $ended = { (Test-Path -LiteralPath $done) -or ((Get-ScheduledTaskInfo -TaskName $task).LastTaskResult -notin 267009, 267011 -and (Get-ScheduledTask -TaskName $task).State -ne 'Running') }
+    try { Wait-Until $ended 300 'the installer run in session 0 to end' | Out-Null }
+    finally { Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue }
+    if (-not (Test-Path -LiteralPath $done)) {
+        Write-Host "e2e: the task that runs the installer in session 0 ended without running it"
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    $said = Get-Content -Raw -LiteralPath $log
+    $result = @{ Said = $said; Threw = (Get-Content -Raw -LiteralPath $done).Trim() -ne '0'; Session = [regex]::Match($said, 'session (\d+)').Groups[1].Value }
     Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
     $result
 }
@@ -96,7 +117,12 @@ function Assert-App([string]$Expected) {
     Write-Host "PASS Ovis $($updates.current_version) ($($health.web_ui.revision)) runs with herdr $($session.snapshot.version)"
 }
 
-if ($HerdrStopped) { Assert (-not (Test-ServerRunning)) '-HerdrStopped: herdr is running already' }
+if ($StopHerdr -and (Test-ServerRunning)) {
+    Write-Host 'e2e: stopping the herdr that runs, so the installer has to start it'
+    if (Find-Plugin) { herdr plugin action invoke "$pluginId.stop-windows" | Out-Null }
+    herdr server stop | Out-Null
+    Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
+}
 if ($Fresh) {
     Assert (-not (Test-Herdr)) '-Fresh: herdr is already installed'
     Assert (-not (Get-Command bun -ErrorAction SilentlyContinue)) '-Fresh: Bun is already installed'
@@ -126,17 +152,7 @@ try {
         Assert $startedServer 'The installer must leave herdr running where it was not'
         Assert-SignInStart 'the install line'
         Wait-Until { (Get-Json '/api/health').ok } 60 'the app to answer after the install line' | Out-Null
-        # over SSH (session 0) with this account signed in at the desktop, as here: herdr starts in the desktop session
-        Write-Host 'e2e: installing again from session 0, as over SSH, with herdr stopped'
-        herdr plugin action invoke "$pluginId.stop-windows" | Out-Null
-        herdr server stop | Out-Null
-        Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
-        $run = Invoke-InSession0 "-Ref '$Ref'"
-        Assert (-not $run.Threw -and $run.Said -match '^\W*session 0' -and $run.Said -match 'herdr was started in your desktop' -and $run.Said -notmatch 'Task Scheduler did not') "From session 0 the installer must start herdr in the desktop through its task: $($run.Said)"
         $server = Get-HerdrServer
-        Assert ((Test-ServerRunning) -and $server -and $server.SessionId -ne 0) "herdr started from session 0 must run in the desktop session, not $($server.SessionId)"
-        Assert-SignInStart 'the install line from session 0'
-        Wait-Until { (Get-Json '/api/health').ok } 60 'the app to answer after the install line from session 0' | Out-Null
         # -NoService takes the sign-in start away again, and leaves the herdr that runs as it is
         Write-Host 'e2e: installing again with -NoService'
         & $Installer -Ref $Ref -NoService
@@ -152,6 +168,23 @@ try {
         try { & $Installer -Ref $Ref -NoService -Account 'acct_e2e' *>&1 | ForEach-Object { $said.Add("$_") } }
         catch { $failed = $_.Exception.Message } finally { Remove-Item Env:\OVIS_ACCOUNT_SERVICE_URL }
         Assert ($failed -match 'was not added to your Ovis account' -and ($said -join "`n") -match 'The account service is off on this PC') "-Account must fail the install with the add's own words when the add cannot run: $failed $($said -join ' / ')"
+        # over SSH (session 0) with this account signed in at the desktop, as here: herdr starts in the desktop session
+        Write-Host 'e2e: installing again from session 0, as over SSH, with herdr stopped'
+        herdr plugin action invoke "$pluginId.stop-windows" | Out-Null
+        herdr server stop | Out-Null
+        Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
+        $run = Invoke-InSession0 "-Ref '$Ref'"
+        if ($null -eq $run -or $run.Session -ne '0') {
+            # what runs the installer here, not the installer, kept it out of session 0: said, and not counted
+            Write-Host "e2e: SKIP the run from session 0: $(if ($run) { "the task ran in session $($run.Session)" } else { 'no task could run it' })"
+        } else {
+            Assert (-not $run.Threw -and $run.Said -match 'herdr was started in your desktop' -and $run.Said -notmatch 'Task Scheduler did not') "From session 0 the installer must start herdr in the desktop through its task: $($run.Said)"
+            $server = Get-HerdrServer
+            Assert ((Test-ServerRunning) -and $server -and $server.SessionId -ne 0) "herdr started from session 0 must run in a desktop session, not $($server.SessionId)"
+            Assert-SignInStart 'the install line from session 0'
+            Wait-Until { (Get-Json '/api/health').ok } 60 'the app to answer after the install line from session 0' | Out-Null
+            Write-Host "e2e: from session 0 the installer started herdr in desktop session $($server.SessionId)"
+        }
     }
     if (-not (Test-ServerRunning)) {
         Write-Host 'e2e: starting herdr'
