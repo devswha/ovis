@@ -13,7 +13,11 @@ import { ACP_KEEPER_BUILD as KEEPER_BUILD } from "./keeper-bin.ts";
 export { KEEPER_BUILD };
 export const FAKE_AGENT = fileURLToPath(new URL("../../crates/acp-keeper/target/release/examples/fake_agent", import.meta.url));
 export const keeperBuilt = existsSync(KEEPER_BUILD) && existsSync(FAKE_AGENT);
-if (!keeperBuilt) console.warn(`[acp tests] skipped: ${KEEPER_BUILD} or ${FAKE_AGENT} is not built (cargo build --release --manifest-path crates/acp-keeper/Cargo.toml --bins --examples)`);
+if (!keeperBuilt) {
+  const reason = `${KEEPER_BUILD} or ${FAKE_AGENT} is not built (cargo build --release --manifest-path crates/acp-keeper/Cargo.toml --bins --examples)`;
+  if (process.env["OVIS_REQUIRE_ACP_KEEPER"] === "1") throw new Error(reason);
+  console.warn(`[acp tests] skipped: ${reason}`);
+}
 
 const WAIT_MS = 10_000;
 

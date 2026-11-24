@@ -23,6 +23,15 @@ test("release and repair runs attest every Rust PTY host and ACP keeper binary; 
 test("CI runs both crates' unit tests, and the release build runs the script that builds both binaries", () => {
   const runs = workflow("ci.yml").jobs["rust-pty-host"]!.steps!.map((step) => step.run ?? "");
   for (const crate of ["pty-sidecar", "acp-keeper"]) expect(runs).toContain(`cargo test --locked --manifest-path crates/${crate}/Cargo.toml`);
+  const jobs = workflow("ci.yml").jobs;
+  const keeper = jobs["rust-pty-host"]!.steps!;
+  const acp = keeper.findIndex((step) => step.run === "bun test server/acp server/approvals/acp.test.ts");
+  expect(keeper[acp]?.env?.["OVIS_REQUIRE_ACP_KEEPER"]).toBe("1");
+  expect(runs.slice(0, acp)).toContain("cargo build --release --locked --manifest-path crates/acp-keeper/Cargo.toml --examples --bins");
+  const live = jobs["herdr-core-live"]!.steps!;
+  const hc = live.findIndex((step) => step.run?.includes("./server/acp/children.live.test.ts"));
+  expect(hc).toBeGreaterThan(-1);
+  expect(live.slice(0, hc).map((step) => step.run)).toContain("cargo build --release --locked --manifest-path crates/acp-keeper/Cargo.toml --examples --bins");
   const build = workflow("pty-sidecar.yml").jobs["build"]!.steps!.map((step) => step.run ?? "");
   expect(build).toContain("bun scripts/pty-sidecar.ts build ${{ matrix.asset }} pty-sidecar");
 });
