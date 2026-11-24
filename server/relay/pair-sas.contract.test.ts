@@ -1107,7 +1107,10 @@ test("on a pinned PC, another PC of the account is let in to watch for as long a
     inList.holds = false;
     devices.recheckListedSessions();
     expect(await bounded(again.serverError)).toBe("auth_revoked");
-    expect(await (await relayConnection(f)).auth(pcDevice).then(() => "let in", () => "refused")).toBe("refused");
+    // refused by name, not left unanswered
+    const refused = await relayConnection(f);
+    void refused.auth(pcDevice).catch(() => undefined);
+    expect(await bounded(refused.serverError)).toBe("auth_failed");
   } finally { followed.mockRestore(); allows.mockRestore(); role.mockRestore(); holds.mockRestore(); }
 });
 

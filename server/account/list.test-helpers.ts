@@ -79,9 +79,9 @@ export class TestList {
    * list made, and is the last one from then on; with `after` it follows that place and the list's own head stays, so a
    * test can sign beside the log (an entry the service only shows, another history).
    */
-  async sign(kind: ListKind, signer: ListMember = this.first, after?: ListPlace): Promise<string> {
+  async sign(kind: ListKind, signer: ListMember = this.first, after?: ListPlace, issuedAt?: number): Promise<string> {
     const place = after ?? this.head;
-    const body = kindBody({ issued_at: this.clock(), list: this.id, prev: place.hash, seq: place.seq + 1, signer: signer.key }, kind);
+    const body = kindBody({ issued_at: issuedAt ?? this.clock(), list: this.id, prev: place.hash, seq: place.seq + 1, signer: signer.key }, kind);
     const text = entryToText(await signEntry(body, signer.keys.privateKey));
     if (after === undefined) this.head = { seq: place.seq + 1, hash: entryHash(entryFromText(text).body) };
     return text;
