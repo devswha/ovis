@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DIST_ARCHIVE, type ReleaseAsset } from "./server-manifest.ts";
+import { checkKeeperManifest, checkManifest, DIST_ARCHIVE, MANIFEST, RELEASE_PUBLIC_KEY, type ReleaseAsset } from "./server-manifest.ts";
+import { KEEPER_MANIFEST } from "./release-assets.ts";
 
 /**
  * The bytes at `url`, refused once they pass `limit` (a file larger than its manifest says is never read whole), or
@@ -71,4 +72,19 @@ export function unpack(archive: string, into: string): void {
     if (!entry.isFile() && !entry.isDirectory()) throw new Error(`${DIST_ARCHIVE} unpacked something other than files and folders; nothing was changed`);
   }
   if (!existsSync(join(into, "index.html"))) throw new Error(`${DIST_ARCHIVE} holds no index.html; nothing was changed`);
+}
+
+/** A packaging or repair job trusts neither the source manifests nor a previous install's records. */
+export async function signedHelpers(at: string, version: string, publicKey = RELEASE_PUBLIC_KEY) {
+  const required = async (name: string, limit: number) => {
+    const bytes = await download(at + "/" + name, limit, name);
+    if (!bytes) throw new Error("Missing signed release file: " + name);
+    return Buffer.from(bytes);
+  };
+  const serverBytes = await required(MANIFEST, 65536);
+  const server = checkManifest(serverBytes, (await required(MANIFEST + ".sig", 1024)).toString(), publicKey, { version });
+  if (typeof server === "string") throw new Error(server);
+  const keepers = checkKeeperManifest(await required(KEEPER_MANIFEST, 65536), (await required(KEEPER_MANIFEST + ".sig", 1024)).toString(), { version, publicKey, serverBytes });
+  if (typeof keepers === "string") throw new Error(keepers);
+  return { hosts: server.pty, keepers };
 }

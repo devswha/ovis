@@ -1,7 +1,7 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mergeFeeds } from "./feed.ts";
-import { installedHelpers } from "./native.ts";
+import { installedHelpers, releaseHelpers } from "./native.ts";
 import { stageServerArtifact } from "../../../scripts/server-artifact.ts";
 import { BUN, BUN_LICENSE, BUN_VERSION, download, HC, HC_VERSION, hostTarget, sha256, type Pinned } from "./runtimes.ts";
 import { writeStagingMarker } from "../src/stagingProfile.ts";
@@ -80,9 +80,11 @@ async function stageAll(): Promise<void> {
   if (bun !== BUN_VERSION) throw new Error(`The staged Bun says ${bun}, not ${BUN_VERSION}`);
 
   await sh(["bun", "run", "build"], repo);
-  // The source installer verifies the release's native helpers independently; carry only recorded builds.
-  await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
-  const helpers = windows ? {} : installedHelpers(join(repo, "bin"));
+  const tag = process.env["OVIS_RELEASE_TAG"]?.trim();
+  const version: string = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version;
+  if (tag && tag !== "v" + version) throw new Error("Release tag does not match package version");
+  if (!tag && !windows) await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
+  const helpers = windows ? {} : tag ? await releaseHelpers(cache, target, { version, at: "https://github.com/devswha/ovis/releases/download/" + tag }) : installedHelpers(join(repo, "bin"));
   if (!helpers.ptySidecar) console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
   await stageServerArtifact({
     platform: windows ? "windows-x64" : target,
