@@ -118,7 +118,8 @@ is in the Ovis account the invite is for`), and `ovis status --json` confirms it
 else means it did not join, and the last `Ovis:` line says why (a used or expired invite needs a new
 one). `OVIS_JOIN=<line>` gives the line where arguments cannot be given; `--join <line>` works too but
 puts it in the process list. Without `--account` the installer asks at a terminal whether the
-invite's account is the user's, and elsewhere refuses. Never guess the id.
+invite's account is the user's; where nobody can answer (no terminal, as from your tool) it refuses
+before installing anything and names the flag to add. Never guess the id.
 
 Running it again keeps what is there (`nothing to do` for a version already installed); two runs at once
 take turns through an install lock in `~/.local/share/ovis`: a waiter breaks the lock once the holder's pid no

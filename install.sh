@@ -47,7 +47,8 @@
 # here: the installer ends with `ovis join`, which takes the line in its environment, never on a command line. The line
 # is a key, so give it in a file (--join-file <path>) or in OVIS_JOIN: `--join <line>` works too, but shows in the process
 # list to every user of this PC while the install runs. `ovis join` asks at a terminal whether the invite's account is
-# yours; --account <id> answers that where nobody can type, and the installer then exits non-zero unless the PC joined:
+# yours; --account <id> answers that where nobody can type (without it there, nothing is installed), and the installer
+# then exits non-zero unless the PC joined:
 #
 #   curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ./ovis-invite.txt --account <id>
 #
@@ -695,6 +696,15 @@ join_takes() {
   fi
 }
 
+# Whether a person can answer `ovis join`'s question here: a terminal that shows the installer's words and can be read
+# from, in its foreground (a background job that read it would be stopped), and no install run for someone else
+# (OVIS_NO_OPEN, which the app's SSH installer sets).
+join_answerable() {
+  [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 1
+  (exec 3<>/dev/tty) 2>/dev/null || return 1
+  in_foreground
+}
+
 # `ovis join` as a person runs it again: from the file the invite came in, never with the line itself.
 join_command() {
   printf '%s join --invite-file ' "$(ovis_command)"
@@ -706,7 +716,8 @@ join_command() {
 # account on its own key's proof, with no sign-in here. The line goes to it in its environment (OVIS_INVITE), never on a
 # command line, and to nothing else. Whoever handed the invite over chose the account, so it is confirmed here first:
 # with --account (OVIS_ADD_ACCOUNT), and nothing is read, as a script or an agent runs it; or at a terminal, where `ovis
-# join` asks for yes, once what was typed before is discarded, as for the add. $join_result: none (no invite), old (a
+# join` asks for yes, once what was typed before is discarded, as for the add. Where nobody can answer, main refused the
+# join before the install; unconfirmed is left for a terminal whose typing cannot be discarded. $join_result: none (no invite), old (a
 # release without it), waits (Ovis does not run), unconfirmed (nobody can confirm the account), or the exit code of
 # `ovis join` (scripts/plugin-join.ts, JOIN_EXIT).
 join_pc() {
@@ -726,9 +737,7 @@ join_pc() {
     set -- join --account "$account"
   else
     join_result=unconfirmed
-    [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
-    (exec 3<>/dev/tty) 2>/dev/null || return 0
-    in_foreground || return 0
+    join_answerable || return 0
     trap ':' INT
     if ! discard_typed; then
       trap - INT
@@ -2128,6 +2137,11 @@ main() {
   platform="$os-$arch"
   terminal=0
   [ ! -t 1 ] || terminal=1
+  # a join with no account named is confirmed by the person at this terminal: where nobody can answer, it is refused now,
+  # not after the install
+  if [ -n "$join_given" ] && [ -z "$account" ] && ! join_answerable; then
+    fail "a join where nobody can answer needs the account the invite is for: add --account <id> (the id shown with the invite, or ovis status --json on a PC already in it; OVIS_ADD_ACCOUNT=<id> where arguments cannot be given). Nothing was installed. $USAGE"
+  fi
   if [ "$os" = linux ] && ldd --version 2>&1 | grep -qi musl; then
     fail "the terminal addon has no build for musl (Alpine); use a glibc distribution"
   fi

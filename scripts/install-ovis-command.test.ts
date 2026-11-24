@@ -41,7 +41,7 @@ const CONSTANTS = ["REPO", "BIN_DIR", "LAUNCHER_MARK", "OVIS_HOME", "HERDR_SERVI
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
 }).join("\n");
-const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_reads_answers", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted", "add_takes_account", "running_lines", "unit_gone_line", "mac_agent_line", "herdr_command", "ovis_cli", "at_least", "join_takes", "join_command", "join_pc", "join_lines"].map(fn).join("\n");
+const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_reads_answers", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted", "add_takes_account", "running_lines", "unit_gone_line", "mac_agent_line", "herdr_command", "ovis_cli", "at_least", "join_takes", "join_answerable", "join_command", "join_pc", "join_lines"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-command-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -1066,6 +1066,7 @@ const JOINED_LINE = "this PC is in the Ovis account the invite is for. Check: ";
 const NOT_AN_INVITE = "Ovis: that is not an Ovis invite: an invite is one line that starts with ovis-join:1:, made on a device signed in to your account. Nothing was installed. ";
 const UNCONFIRMED_LINE = "nobody here can confirm the account the invite is for, so this PC did not join it, and the invite was not used. Name that account: run this again with --account <id> (the id shown with the invite, or ovis status --json on a PC already in it), or run in a terminal on this PC: ";
 const JOIN_WAITS_LINE = "the app is not running, so this PC did not join your Ovis account. Once it runs, run on this PC: ";
+const NOBODY_TO_ANSWER = "Ovis: a join where nobody can answer needs the account the invite is for: add --account <id> (the id shown with the invite, or ovis status --json on a PC already in it; OVIS_ADD_ACCOUNT=<id> where arguments cannot be given). Nothing was installed. ";
 const NO_JOIN_LINE = "this Ovis release has no ovis join (it came in 0.5.10), so this PC did not join your Ovis account. Update Ovis in Settings → Updates, then run on this PC: ";
 /** the closing line for each way `ovis join` ends (scripts/plugin-join.ts, JOIN_EXIT): the ones a person meets most, word for word */
 const JOIN_FAILED: Record<number, string> = {
@@ -1162,14 +1163,21 @@ describe.skipIf(platform() === "win32")("install.sh --join", () => {
     expect(new Set([3, 4, 5, 6, 8, 9, 10, 12, 13, 14].map((code) => said.get(code))).size).toBe(10);
   });
 
-  it.concurrent("without --account and with no terminal, does not run ovis join, says how to name the account, and exits non-zero", async () => {
-    for (const extra of [{ OVIS_JOIN: JOIN_LINE }, { OVIS_JOIN: JOIN_LINE, OVIS_NO_OPEN: "1" }] as Record<string, string>[]) {
-      const pc = new Pc().flag("running");
-      const { out, exitCode } = await pc.unattended([], extra);
+  // nobody would be there to answer whether the invite's account is theirs: refused at once, not after the install
+  it.concurrent("without --account where nobody can answer, refuses before it installs anything, naming the flag to add", async () => {
+    const cases: { args: (pc: Pc) => string[]; extra?: Record<string, string> }[] = [
+      { args: () => [], extra: { OVIS_JOIN: JOIN_LINE } },
+      { args: () => [], extra: { OVIS_JOIN: JOIN_LINE, OVIS_NO_OPEN: "1" } },
+      { args: (pc) => ["--join-file", inviteFile(pc)] },
+      { args: () => ["--join", JOIN_LINE, "--no-service"] },
+    ];
+    for (const { args, extra } of cases) {
+      const pc = new Pc().flag("running").flag("herdr-starts");
+      const { out, exitCode } = await pc.unattended(args(pc), extra);
       expect(exitCode, out).toBe(1);
+      expect(out.trim()).toBe(`${NOBODY_TO_ANSWER}${USAGE}`);
+      expect(existsSync(pc.launcher)).toBe(false);
       expect(pc.joinCalls()).toEqual([]);
-      expect(out).toContain(`Ovis: ${UNCONFIRMED_LINE}${pc.launcher} join --invite-file <a file holding the invite>\n`);
-      expect(out).not.toContain(JOIN_PAYLOAD.slice(0, 24));
     }
   });
 
@@ -1283,6 +1291,15 @@ esac
       expect(out).toContain(`Ovis: ${JOINED_LINE}`);
       expect(out).not.toContain(JOIN_PAYLOAD.slice(0, 24));
       expect(pc.leaked()).toEqual([]);
+    });
+
+    it.skipIf(Bun.which("bash") === null).concurrent("without --account in the terminal's background, where a read would stop the install, refuses before it installs anything", async () => {
+      const pc = new Pc().flag("running");
+      const { out, exitCode } = await pc.atTerminal("", { OVIS_JOIN: JOIN_LINE }, undefined, true);
+      expect(exitCode, out).toBe(1);
+      expect(out).toContain(NOBODY_TO_ANSWER);
+      expect(existsSync(pc.launcher)).toBe(false);
+      expect(pc.joinCalls()).toEqual([]);
     });
 
     it.concurrent("where what was typed cannot be discarded, does not run it, and says how", async () => {

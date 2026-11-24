@@ -357,7 +357,7 @@ curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ./ovis-invite.txt -
 shows in the process list while the installer runs. A line that is not one (`ovis-join:1:` and
 base64url) is refused before anything is installed, and so is `--join` with `--add`. `--account` is
 the account the invite must be for; without it the installer runs `ovis join` at a terminal, which
-asks, and elsewhere joins nothing. It exits non-zero unless the PC joined, with one line for what
+asks, and where nobody can answer it refuses before installing anything, naming `--account <id>`. It exits non-zero unless the PC joined, with one line for what
 `ovis join` reported (a used or expired invite, a PC in another account, an account service that did
 not answer, …).
 
