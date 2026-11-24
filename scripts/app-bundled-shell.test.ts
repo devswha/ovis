@@ -2,7 +2,8 @@ import { describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
-import { appShell, carried, packShell, SHELL_ASSETS, shellPoliciesOf } from "../app/scripts/bundled-shell.ts";
+import { createHash } from "node:crypto";
+import { appShell, carried, indexAssets, packShell, provenanceOf, releaseTag, SHELL_ASSETS, shellPoliciesOf, shellSource, unpackRelease } from "../app/scripts/bundled-shell.ts";
 import { writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
 import { RENDER_PATH, SHELL_META, shellHeaders, shellPolicies } from "./shell-build.ts";
 
@@ -57,11 +58,11 @@ describe("packing a dist-shell into the app", () => {
   function distShell(): string {
     const from = mkdtempSync(join(tmpdir(), "app-shell-dist-"));
     const files: Record<string, string> = {
-      "index.html": `<!doctype html><html><head>\n    ${SHELL_META}\n</head></html>`,
+      "index.html": `<!doctype html><html><head>\n    ${SHELL_META}\n<script type="module" src="/assets/index-0123456789.js"></script></head></html>`,
       "render.html": "<!doctype html>",
       "manifest.webmanifest": "{}",
       "sw.js": "// worker",
-      "build.json": "{}",
+      "build.json": JSON.stringify({ revision: "abc123", dirty: false }),
       "_headers": shellHeaders(),
       "_redirects": "/s/* /index.html 200\n",
       "assets/index-0123456789.js": "export {};",
@@ -81,7 +82,10 @@ describe("packing a dist-shell into the app", () => {
     const from = distShell();
     const assets = mkdtempSync(join(tmpdir(), "app-shell-assets-"));
     try {
-      const packed = packShell(from, assets);
+      writeFileSync(join(assets, "stale-left-over"), "from an earlier run");
+      const packed = packShell(from, assets, { source: "checkout" }, { floor: 0 });
+      expect(existsSync(join(assets, "stale-left-over"))).toBe(false);
+      expect(JSON.parse(readFileSync(join(assets, "shell-provenance.json"), "utf8"))).toEqual({ source: "checkout", revision: "abc123", dirty: false });
       const shell = readdirSync(join(assets, "shell"), { recursive: true, encoding: "utf8" }).filter((file) => statSync(join(assets, "shell", file)).isFile()).map((file) => file.split(sep).join("/")).sort();
       expect(shell).toEqual(["assets/index-0123456789.js", "build.json", "icons/icon-192.png", "index.html", "manifest.webmanifest", "render.html", "sw.js"]);
       expect(packed.files).toBe(7);
@@ -101,17 +105,68 @@ describe("packing a dist-shell into the app", () => {
     const from = distShell();
     const assets = join(mkdtempSync(join(tmpdir(), "app-shell-assets-")), "bundled-shell");
     try {
-      expect(() => packShell(from, assets, 64)).toThrow(/over its 0 MB budget \(SHELL_BUDGET_BYTES; it was 31 MB on 2026-11-24\)\. Largest: /);
+      const checkout = { source: "checkout" } as const;
+      expect(() => packShell(from, assets, checkout, { budget: 64, floor: 0 })).toThrow(/over its 0 MB budget \(SHELL_BUDGET_BYTES; it was 31 MB on 2026-11-24\)\. Largest: /);
+      expect(() => packShell(from, assets, checkout, { floor: 1024 * 1024 })).toThrow(/under its 1 MB floor \(SHELL_FLOOR_BYTES/);
+      expect(() => packShell(from, assets, checkout)).toThrow(/under its 14 MB floor/);
       expect(existsSync(assets)).toBe(false);
+      rmSync(join(from, "assets/index-0123456789.js"));
+      expect(() => packShell(from, assets, checkout, { floor: 0 })).toThrow("is missing files its index.html starts with (assets/index-0123456789.js): a partial copy would open blank");
       writeFileSync(join(from, "index.html"), "<!doctype html><html><head></head></html>");
-      expect(() => packShell(from, assets)).toThrow(`is not the shell's: it lacks ${SHELL_META}`);
+      expect(() => packShell(from, assets, checkout, { floor: 0 })).toThrow(`is not the shell's: it lacks ${SHELL_META}`);
       rmSync(join(from, "_headers"));
-      expect(() => packShell(from, assets)).toThrow("is not a dist-shell: it holds no _headers");
+      expect(() => packShell(from, assets, checkout, { floor: 0 })).toThrow("is not a dist-shell: it holds no _headers");
       expect(existsSync(assets)).toBe(false);
     } finally {
       rmSync(from, { recursive: true, force: true });
       rmSync(dirname(assets), { recursive: true, force: true });
     }
+  });
+});
+
+describe("a release's shell", () => {
+  it("is named by its archive, its SHA-256 and its tag together, a folder, or neither for this checkout's", () => {
+    const sum = "a".repeat(64);
+    expect(shellSource({})).toEqual({ kind: "checkout" });
+    expect(shellSource({ OVIS_APP_SHELL_DIR: "/x" })).toEqual({ kind: "folder", dir: "/x" });
+    expect(shellSource({ OVIS_APP_SHELL_ARCHIVE: "/a.tar.gz", OVIS_APP_SHELL_SHA256: sum.toUpperCase(), OVIS_APP_SHELL_TAG: "v0.5.10" })).toEqual({ kind: "release", archive: "/a.tar.gz", sha256: sum, tag: "v0.5.10" });
+    expect(() => shellSource({ OVIS_APP_SHELL_ARCHIVE: "/a.tar.gz", OVIS_APP_SHELL_DIR: "/x", OVIS_APP_SHELL_SHA256: sum, OVIS_APP_SHELL_TAG: "v1.0.0" })).toThrow("name two shells");
+    expect(() => shellSource({ OVIS_APP_SHELL_ARCHIVE: "/a.tar.gz", OVIS_APP_SHELL_TAG: "v1.0.0" })).toThrow("together");
+    expect(() => shellSource({ OVIS_APP_SHELL_SHA256: sum })).toThrow("together");
+    expect(() => shellSource({ OVIS_APP_SHELL_ARCHIVE: "/a.tar.gz", OVIS_APP_SHELL_SHA256: sum })).toThrow("OVIS_APP_SHELL_TAG must be the release's tag");
+    expect(provenanceOf({ kind: "release", archive: "/a", sha256: sum, tag: "v1.2.3" })).toEqual({ source: "release", tag: "v1.2.3", sha256: sum });
+    expect(provenanceOf({ kind: "folder", dir: "/x" })).toEqual({ source: "folder" });
+    for (const tag of ["v0.5.10", "v0.6.0-beta.2"]) expect(releaseTag(tag)).toBe(tag);
+    for (const tag of [undefined, "0.5.10", "main", "v1", "v1.2.3 ; x"]) expect(() => releaseTag(tag)).toThrow();
+  });
+
+  it("is unpacked only when its SHA-256 is the release's, and only as plain files and folders", () => {
+    const dir = mkdtempSync(join(tmpdir(), "app-shell-release-"));
+    try {
+      const content = join(dir, "content");
+      mkdirSync(join(content, "assets"), { recursive: true });
+      writeFileSync(join(content, "index.html"), "shell");
+      writeFileSync(join(content, "assets", "a.js"), "1");
+      const archive = join(dir, "dist-shell.tar.gz");
+      expect(Bun.spawnSync(["tar", "-czf", archive, "-C", content, "."]).exitCode).toBe(0);
+      const sum = createHash("sha256").update(readFileSync(archive)).digest("hex");
+      expect(() => unpackRelease(archive, "0".repeat(64), join(dir, "wrong"))).toThrow(`not the release's ${"0".repeat(64)}`);
+      expect(existsSync(join(dir, "wrong"))).toBe(false);
+      expect(() => unpackRelease(archive, "short", join(dir, "short"))).toThrow("must be the archive's SHA-256");
+      unpackRelease(archive, sum, join(dir, "out"));
+      expect(readFileSync(join(dir, "out", "assets", "a.js"), "utf8")).toBe("1");
+      // a link in it could point the copy at any file of the machine that builds the app
+      expect(Bun.spawnSync(["ln", "-s", "/etc/hostname", join(content, "assets", "link.js")]).exitCode).toBe(0);
+      const linked = join(dir, "linked.tar.gz");
+      expect(Bun.spawnSync(["tar", "-czf", linked, "-C", content, "."]).exitCode).toBe(0);
+      expect(() => unpackRelease(linked, createHash("sha256").update(readFileSync(linked)).digest("hex"), join(dir, "linked"))).toThrow("holds something other than files and folders");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("names the files its page starts with, each once", () => {
+    expect(indexAssets('<script type="module" crossorigin src="/assets/index-a.js"></script><link rel="modulepreload" href="/assets/b.js"><link rel="stylesheet" href="/assets/c.css"><link rel="icon" href="/favicon.png"><script src="/assets/index-a.js"></script>')).toEqual(["assets/index-a.js", "assets/b.js", "assets/c.css"]);
   });
 });
 
@@ -157,6 +212,14 @@ describe("the Android build", () => {
     expect(gradle).toContain('android.defaultConfig.applicationId == "sh.ovis.app"');
   });
 
+  it("packages the store app only with a release's verified, whole shell, and only with readable policies", () => {
+    expect(gradle).toContain('new File(shellAssets, "shell-provenance.json")');
+    expect(gradle).toContain('provenance.source != "release"');
+    expect(gradle).toContain("provenance.sha256 ==~ /[0-9a-f]{64}/");
+    expect(gradle).toContain("lacks files its index.html starts with");
+    expect(gradle).toContain('render.startsWith("sandbox allow-scripts")');
+  });
+
   it("reads the folder packShell writes", () => {
     expect(javaString("DIR")).toBe("shell");
     expect(javaString("POLICY")).toBe("shell-policy.json");
@@ -164,7 +227,7 @@ describe("the Android build", () => {
 });
 
 describe("the bundled shell's boot page", () => {
-  async function boot(hash: string, { workers = [true, true], names = ["ovis-v4-sheep-abc", FILES_CACHE], hang = false, fail = false } = {}) {
+  async function boot(hash: string, { workers = [true, true], names = ["ovis-v4-sheep-abc", FILES_CACHE], hang = false, fail = false, failFirst = 0 } = {}) {
     const replaced: string[] = [];
     const posted: string[] = [];
     const deleted: string[] = [];
@@ -172,7 +235,7 @@ describe("the bundled shell's boot page", () => {
     const location = { hash, origin: "https://app.ovis.sh", replace: (to: string) => replaced.push(to) };
     const navigator = {
       serviceWorker: {
-        getRegistrations: () => hang ? new Promise(() => {}) : fail ? Promise.reject(new Error("no")) : Promise.resolve(workers.map((result, index) => ({ unregister: async () => { unregistered.push(index); return result; } }))),
+        getRegistrations: () => hang ? new Promise(() => {}) : fail || failFirst-- > 0 ? Promise.reject(new Error("no")) : Promise.resolve(workers.map((result, index) => ({ unregister: async () => { unregistered.push(index); return result; } }))),
       },
     };
     const caches = { keys: async () => names, delete: async (name: string) => { deleted.push(name); return true; } };
@@ -180,7 +243,7 @@ describe("the bundled shell's boot page", () => {
     // the three seconds pass at once for a clean-up that hangs, and never otherwise
     const timer = (done: () => void) => { if (hang) done(); };
     new Function("location", "navigator", "caches", "window", "OvisBoot", "setTimeout", BOOT_JS)(location, navigator, caches, { OvisBoot }, OvisBoot, timer);
-    for (let turn = 0; turn < 50 && replaced.length === 0; turn++) await Promise.resolve();
+    for (let turn = 0; turn < 200 && replaced.length === 0; turn++) await Promise.resolve();
     return { replaced, posted, deleted, unregistered };
   }
 
@@ -192,26 +255,39 @@ describe("the bundled shell's boot page", () => {
     expect(run.unregistered).toEqual([0, 1]);
     expect(run.deleted).toEqual(["ovis-v4-sheep-abc"]);
     expect(run.posted).toEqual(["cleaned"]);
-    expect(run.replaced).toEqual([`/s/${id}/#offer=x`]);
-    expect((await boot(`#${encoded("/#pcs")}`)).replaced).toEqual(["/#pcs"]);
-    expect((await boot("")).replaced).toEqual(["/"]);
+    expect(run.replaced).toEqual([`https://app.ovis.sh/s/${id}/#offer=x`]);
+    expect((await boot(`#${encoded("/#pcs")}`)).replaced).toEqual(["https://app.ovis.sh/#pcs"]);
+    expect((await boot("")).replaced).toEqual(["https://app.ovis.sh/"]);
   });
 
   it("goes on to its own origin alone", async () => {
     for (const target of ["https://evil.example/", "//evil.example/x", "/\\evil.example/", "javascript:alert(1)", "http://app.ovis.sh/"]) {
-      expect((await boot(`#${encoded(target)}`)).replaced).toEqual(["/"]);
+      expect((await boot(`#${encoded(target)}`)).replaced).toEqual(["https://app.ovis.sh/"]);
     }
-    expect((await boot("#%E0%A4%A")).replaced).toEqual(["/"]);
+    expect((await boot("#%E0%A4%A")).replaced).toEqual(["https://app.ovis.sh/"]);
+    // a path that starts with two slashes, written out or left by a dot segment, stays a path on this origin: going on to
+    // it as a path alone would be a protocol-relative address of another host
+    for (const target of ["https://app.ovis.sh//evil.example/x", "/.//evil.example/x", "/s/..//evil.example/x"]) {
+      const [went] = (await boot(`#${encoded(target)}`)).replaced;
+      expect(new URL(went ?? "").origin).toBe("https://app.ovis.sh");
+      expect(went).toBe("https://app.ovis.sh//evil.example/x");
+    }
   });
 
-  it("goes on without saying it cleaned when a worker stays, the clean-up fails or it takes too long", async () => {
-    const stayed = await boot("#%2F", { workers: [true, false] });
-    expect(stayed.posted).toEqual([]);
-    expect(stayed.deleted).toEqual([]);
-    expect(stayed.replaced).toEqual(["/"]);
-    for (const run of [await boot("#%2F", { fail: true }), await boot("#%2F", { hang: true })]) {
+  it("tries once more when the clean-up fails, and goes on as asked once that works", async () => {
+    const second = await boot(`#${encoded("/s/abc/")}`, { failFirst: 1 });
+    expect(second.posted).toEqual(["cleaned"]);
+    expect(second.replaced).toEqual(["https://app.ovis.sh/s/abc/"]);
+  });
+
+  it("never goes on to a PC's page after two failed clean-ups, only to one no worker controls, and says nothing", async () => {
+    for (const options of [{ workers: [true, false] }, { fail: true }, { hang: true }]) {
+      const run = await boot(`#${encoded("/s/abc/#pane=x")}`, options);
       expect(run.posted).toEqual([]);
-      expect(run.replaced).toEqual(["/"]);
+      expect(run.deleted).toEqual([]);
+      expect(run.replaced).toEqual(["https://app.ovis.sh/"]);
+      // home is in no worker's scope: it opens as asked
+      expect((await boot(`#${encoded("/#pcs")}`, options)).replaced).toEqual(["https://app.ovis.sh/#pcs"]);
     }
   });
 
