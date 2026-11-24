@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  INVITE_MAKE_PREFIX, INVITE_REDEEM_PREFIX, INVITE_SIGNATURE_CHARS, InviteRedeemError, LINE_CHALLENGE_PREFIX, inviteMakeBytes, inviteRedeemBytes, isAccountId, lineChallenge, signInviteRedeem, verifyInviteRedeem,
-  type InviteMake, type InviteRedeem,
+  INVITE_MAKE_PREFIX, INVITE_REDEEM_PREFIX, INVITE_SIGNATURE_CHARS, InviteRedeemError, LINE_CHALLENGE_PREFIX, LINE_PROOF_PREFIX, inviteMakeBytes, inviteRedeemBytes, isAccountId, lineChallenge, lineProofBytes,
+  signInviteRedeem, verifyInviteRedeem, verifyLineProof, type InviteMake, type InviteRedeem,
 } from "./account-list-invite.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
@@ -48,8 +48,18 @@ interface LineChallengeVector {
   readonly binding_hex: string;
   readonly challenge: string;
 }
-const files = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(join(DIR, file), "utf8")) as InviteVector | MakeVector | LineChallengeVector);
-const challenges = files.filter((vector): vector is LineChallengeVector => "challenge" in vector && "card" in vector);
+interface LineProofVector extends LineChallengeVector {
+  readonly keys: Readonly<Record<string, KeyPair>>;
+  readonly key: string;
+  readonly account: string;
+  readonly server_id: string;
+  readonly bytes_hex: string;
+  readonly signature: string;
+  readonly expect: { readonly verifies: boolean };
+}
+const files = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(join(DIR, file), "utf8")) as InviteVector | MakeVector | LineChallengeVector | LineProofVector);
+const proofs = files.filter((vector): vector is LineProofVector => "card" in vector && "account" in vector);
+const challenges = files.filter((vector): vector is LineChallengeVector => "challenge" in vector && "card" in vector && !("account" in vector));
 const vectors = files.filter((vector): vector is InviteVector => "redeem" in vector);
 const makes = files.filter((vector): vector is MakeVector => "make" in vector);
 const good = vectors.find((vector) => vector.name === "redeem");
@@ -313,14 +323,79 @@ describe("the challenge an invite's line signs for a PC's card", () => {
     expect(refused(() => lineChallenge(list, { ...card, endpoint: "AB".repeat(32) }))).toBe(true);
   });
 
-  test("is what a line signs, as the challenge of its redeem message, and what a device then checks", async () => {
-    const invite = await newInvite(SERVICE, "TEST-ONLY-account", list);
+});
+
+describe("the proof an invite's line signs for a PC's card", () => {
+  const [vector] = proofs;
+  if (!vector) throw new Error("invite/line-proof.json is missing");
+  const { account, server_id, list, card } = vector;
+  const named = { account, server_id, list, card };
+  /** The bytes as this test writes them, with no part of the file under test. */
+  const written = (values: readonly string[]): string => {
+    const parts: Buffer[] = [Buffer.from("ovis-list-line/1", "utf8")];
+    for (const value of values) { const length = Buffer.alloc(4); length.writeUInt32BE(Buffer.byteLength(value)); parts.push(length, Buffer.from(value, "utf8")); }
+    return Buffer.concat(parts).toString("hex");
+  };
+
+  test("is over the vector's bytes: a tag of its own, then the account, the PC's id, its relay key and the challenge of its card for the list", async () => {
+    expect(proofs.map((each) => each.name)).toEqual(["line-proof"]);
+    expect(Object.keys(vector.keys).every((name) => name.startsWith("TEST-ONLY-"))).toBe(true);
+    expect(LINE_PROOF_PREFIX).toBe("ovis-list-line/1");
+    expect(vector.challenge).toBe(lineChallenge(list, card));
+    expect(hex(lineProofBytes(named))).toBe(vector.bytes_hex);
+    expect(vector.bytes_hex).toBe(written([account, server_id, card.endpoint, vector.challenge]));
+    expect(await verifyLineProof(named, vector.signature, vector.key)).toBe(vector.expect.verifies);
+  });
+
+  test("is what a line signs for the card it is given, and holds for that account, PC, list and card alone", async () => {
+    const invite = await newInvite(SERVICE, account, list);
     const line = await readJoinLine(invite.line, READER);
-    const pc = { server_id: "0123456789abcdef0123456789abcdef", public_key: card.endpoint };
-    const proof = await line.signRedeem({ ...pc, challenge_id: lineChallenge(list, card) });
-    expect(await verifyInviteRedeem({ account: "TEST-ONLY-account", ...pc, challenge_id: lineChallenge(list, card) }, proof, invite.key)).toBe(true);
-    // a proof made for another card of that PC, or for another list, does not hold for this one
-    expect(await verifyInviteRedeem({ account: "TEST-ONLY-account", ...pc, challenge_id: lineChallenge(list, { ...card, enc: card.key }) }, proof, invite.key)).toBe(false);
-    expect(await verifyInviteRedeem({ account: "TEST-ONLY-account", ...pc, challenge_id: lineChallenge("2f".repeat(32), card) }, proof, invite.key)).toBe(false);
+    const proof = await line.signLineProof({ server_id, card });
+    expect(proof).toHaveLength(INVITE_SIGNATURE_CHARS);
+    expect(await verifyLineProof(named, proof, invite.key)).toBe(true);
+    const others = [
+      { ...named, card: { ...card, key: card.enc } }, { ...named, card: { ...card, enc: card.key } }, { ...named, card: { ...card, endpoint: "cd".repeat(32) } },
+      { ...named, list: "2f".repeat(32) }, { ...named, account: "TEST-ONLY-other" }, { ...named, server_id: "f".repeat(32) },
+    ];
+    for (const other of others) expect(await verifyLineProof(other, proof, invite.key)).toBe(false);
+    // another invite's key did not sign it
+    expect(await verifyLineProof(named, proof, vector.key)).toBe(false);
+  });
+
+  test("is no redeem signature, and no redeem signature is one: a challenge the account service chooses makes no proof for a card", async () => {
+    const invite = await newInvite(SERVICE, account, list);
+    const line = await readJoinLine(invite.line, READER);
+    // an account service that lies hands the PC, as the challenge to redeem with, the challenge of a card of its own
+    const theirs = { ...card, key: card.enc, enc: card.key };
+    const asked = lineChallenge(list, theirs);
+    const redeemed = await line.signRedeem({ server_id, public_key: card.endpoint, challenge_id: asked });
+    expect(await verifyInviteRedeem({ account, server_id, public_key: card.endpoint, challenge_id: asked }, redeemed, invite.key)).toBe(true);
+    expect(await verifyLineProof({ ...named, card: theirs }, redeemed, invite.key)).toBe(false);
+    expect(await verifyLineProof(named, await line.signRedeem({ server_id, public_key: card.endpoint, challenge_id: lineChallenge(list, card) }), invite.key)).toBe(false);
+    // and the proof redeems nothing
+    const proof = await line.signLineProof({ server_id, card });
+    expect(await verifyInviteRedeem({ account, server_id, public_key: card.endpoint, challenge_id: lineChallenge(list, card) }, proof, invite.key)).toBe(false);
+    // no other message the invite's key signs starts with the proof's tag, nor the proof with theirs
+    const tags = [LINE_PROOF_PREFIX, INVITE_REDEEM_PREFIX, "ovis-list-entry/1", "ovis-list-read/1", "ovis-join-secret-check/1"];
+    for (const one of tags) for (const other of tags) expect(one !== other && one.startsWith(other)).toBe(false);
+  });
+
+  test("refuses what is out of form, and a line that names no list signs none", async () => {
+    const refused = (work: () => unknown): boolean => { try { work(); return false; } catch (error) { return error instanceof InviteRedeemError; } };
+    expect(refused(() => lineProofBytes({ ...named, account: "" }))).toBe(true);
+    expect(refused(() => lineProofBytes({ ...named, server_id: server_id.toUpperCase() }))).toBe(true);
+    expect(refused(() => lineProofBytes({ ...named, list: "not a list" }))).toBe(true);
+    expect(refused(() => lineProofBytes({ ...named, card: { ...card, list: "2f".repeat(32), invite: null } }))).toBe(true);
+    expect(refused(() => lineProofBytes({ ...named, card: { ...card, key: "not a key" } }))).toBe(true);
+    expect(refused(() => lineProofBytes(null as never))).toBe(true);
+    // a check answers false for anything a request may hold, and never throws
+    for (const junk of [null, 7, "", "A".repeat(85), vector.signature.replace(/.$/, "=")]) expect(await verifyLineProof(named, junk, vector.key)).toBe(false);
+    for (const junk of [null, 7, "", "not a key"]) expect(await verifyLineProof(named, vector.signature, junk)).toBe(false);
+    expect(await verifyLineProof({ ...named, card: null } as never, vector.signature, vector.key)).toBe(false);
+    const bare = await readJoinLine((await newInvite(SERVICE, account, null)).line, READER);
+    const error = await bare.signLineProof({ server_id, card }).catch((caught: unknown) => caught);
+    expect((error as { code?: string }).code).toBe("not_signed");
+    const line = await readJoinLine((await newInvite(SERVICE, account, list)).line, READER);
+    expect(await line.signLineProof({ server_id, card: { ...card, list: "2f".repeat(32), invite: null } }).catch((caught: unknown) => (caught as { code?: string }).code)).toBe("redeem_malformed");
   });
 });

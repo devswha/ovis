@@ -15,8 +15,10 @@ import { canonicalBase64Url, isListHash, isListKeyEncoding, isListPoint, verifyS
 export const INVITE_REDEEM_PREFIX = "ovis-invite-redeem/1";
 /** What a device signs to add a PC starts with these bytes (shared/account-records.ts, PC_ADD_PREFIX): making an invite is one such act. */
 export const INVITE_MAKE_PREFIX = "ovis-pc-add/1";
-/** What the challenge an invite's line signs to name a list to a PC is made under (lineChallenge). */
+/** What the challenge of a PC's card for a list is made under (lineChallenge). */
 export const LINE_CHALLENGE_PREFIX = "ovis-list-join/1";
+/** What an invite's line signs to name a list to the PC of a card starts with these bytes (lineProofBytes): no redeem message does. */
+export const LINE_PROOF_PREFIX = "ovis-list-line/1";
 /** A redeem signature as text: the base64url of `r || s`, 64 bytes, in its one spelling. */
 export const INVITE_SIGNATURE_CHARS = 86;
 
@@ -158,12 +160,9 @@ export function inviteMakeBytes(make: InviteMake): Uint8Array<ArrayBuffer> {
  * first 32 hex digits of SHA-256 over LINE_CHALLENGE_PREFIX, the list's id (as its text) and the binding of the PC's
  * card for that list (shared/account-list.ts: cardBinding), a card that names no invite.
  *
- * It is signed as the `challenge_id` of a redeem message (inviteRedeemBytes), which also names the account, the PC's
- * id and its relay key. The account service issues no such challenge, so that signature redeems nothing there. The
- * PC checks it before it takes the list an invite's line names; a PC that joined by a line that waits for a person
- * posts it with its keys; and a device of the account checks it, with the card that was posted, before it offers to
- * add that PC: the account service's word on who used an invite is no evidence, and this signature is one that only
- * the holder of the line can make. All three build the challenge here, from the same bytes.
+ * The line signs it in a message of its own (lineProofBytes), never as the challenge of a redeem message: a redeem
+ * signature is over a challenge the account service chooses, so an account service that lies could choose the
+ * challenge of a card of its own, and that signature must count for no card.
  *
  * `card`: the PC's own keys and its relay key. A card given whole must be for `list` and name no invite. Refuses
  * `redeem_malformed` for anything else, and for a card that is no PC's.
@@ -179,4 +178,58 @@ export function lineChallenge(list: string, card: { readonly key: string; readon
   try { binding = cardBinding({ key, enc, list, endpoint, invite: null }); }
   catch { throw new InviteRedeemError("key and enc are the PC's own keys, each a key whose point is on the curve"); }
   return bytesToHex(sha256(concatBytes(utf8ToBytes(LINE_CHALLENGE_PREFIX), utf8ToBytes(list), binding))).slice(0, 32);
+}
+
+/** What an invite's line says of a PC: this account's PC `server_id`, with exactly this card, joins `list` with the invite. */
+export interface LineProof {
+  /** The account's id, as the join line names it. */
+  readonly account: string;
+  /** The PC's id: 32 of `0-9a-f`. */
+  readonly server_id: string;
+  /** The list the line names. */
+  readonly list: string;
+  /** The PC's own keys and its relay key (lineChallenge). */
+  readonly card: Parameters<typeof lineChallenge>[1];
+}
+
+/**
+ * The bytes the holder of an invite's line signs to say that the PC with this card joins `list` with it:
+ * `ovis-list-line/1`, then `account`, `server_id`, the card's relay key and lineChallenge of the list and the card,
+ * in that order, each as its length (4 bytes, big-endian) and its bytes. So the signature names the account, the
+ * PC, the list and the very keys the PC asks to be added with.
+ *
+ * The PC checks it before it takes the list an invite's line names; a PC that joined by a line that waits for a
+ * person posts it with its keys; and a device of the account checks it, with the card that was posted, before it
+ * offers to add that PC: the account service's word on who used an invite is no evidence, and this signature is one
+ * that only the holder of the line can make. It starts with a tag of its own, so nothing else the invite's key
+ * signs stands in for it: a redeem signature is over a challenge the account service chooses, and is no proof for
+ * any card. Refuses `redeem_malformed` for a value out of its form.
+ */
+export function lineProofBytes(proof: LineProof): Uint8Array<ArrayBuffer> {
+  if (!isRecord(proof)) throw new InviteRedeemError("A line's proof names an account, a PC, a list and the PC's card");
+  const { account, server_id, list, card } = proof;
+  if (typeof account !== "string" || !isAccountId(account)) throw new InviteRedeemError("account is an account's id: 1 to 64 of A-Z a-z 0-9 _ -");
+  if (typeof server_id !== "string" || !HEX_32.test(server_id)) throw new InviteRedeemError("server_id is 32 of 0-9a-f");
+  const challenge = lineChallenge(list, card);
+  return tagged(LINE_PROOF_PREFIX, [account, server_id, card.endpoint, challenge]);
+}
+
+/**
+ * Whether `signature` is the proof of the invite whose public key is `key` (a key as an entry spells one) for these
+ * values: that its line named `list` to the PC of this card. False, and never a throw, for anything a request may
+ * hold, as verifyInviteRedeem. Nothing here says whether the invite is open, or that the list holds it: the reader
+ * looks that up in its own copy of the list.
+ */
+export async function verifyLineProof(proof: LineProof, signature: unknown, key: unknown): Promise<boolean> {
+  if (typeof signature !== "string" || signature.length !== INVITE_SIGNATURE_CHARS || typeof key !== "string") return false;
+  const signed = canonicalBase64Url(signature);
+  if (signed === null) return false;
+  let bytes: Uint8Array;
+  try {
+    bytes = lineProofBytes(proof);
+  } catch (error) {
+    if (error instanceof InviteRedeemError) return false;
+    throw error;
+  }
+  return await verifySignature(bytes, signed, key);
 }
