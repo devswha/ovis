@@ -183,6 +183,21 @@ describe("the new-device notice of an account with a signed list", () => {
     expect(listView(w.held().state).devices.filter((row) => row.ended === null)).toHaveLength(2);
   });
 
+  it("tells nothing of a device that handed its place to a new key of its own: it is no new device", async () => {
+    const { w, phone, tablet, root } = await looked();
+    const heir = await w.device({ label: "Dana's tablet" });
+    await heir.list.sync();
+    const next = (await heir.keys()).key;
+    const claim = (await tablet.service.listClaims(w.held().id)).find((each) => each.key === next)!;
+    const old = await tablet.keys();
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true },
+      { key: old.key, privateKey: old.signs }, Math.floor(w.clock.now / 1000));
+    await tablet.service.placeEntries(w.held().id, [rotation.text], []);
+    await read(phone);
+    expect(listView(w.held().state).devices.find((row) => row.key === next)?.ended).toBeNull();
+    expect(notices(root)).toEqual([]);
+  });
+
   it("tells a device that may not remove anybody nothing", async () => {
     const { w, phone, tablet } = await looked();
     await letIn(w, tablet, "Laptop");

@@ -26,11 +26,16 @@ export interface ListNewcomer {
   readonly by: string | null;
 }
 
-/** The devices that are in and that another member let in since `seen`, in the order they came in. None on the first look (`seen` null). */
+/**
+ * The devices that are in and that another member let in since `seen`, in the order they came in. None on the first
+ * look (`seen` null). A device that handed its place to a new key of its own (the entry that let the key in ended the
+ * key that signed it) is the same device, and no news.
+ */
 export function listNewcomers(state: ListState, self: string, seen: NoticesSeen | null): ListNewcomer[] {
   if (seen === null || seen.list !== state.list || seen.member !== self) return [];
+  const handedOver = (seq: number, by: string | null): boolean => by !== null && state.signers[by]?.ended === seq;
   return listView(state).devices
-    .filter((row) => row.ended === null && !row.carried && row.key !== self && row.by !== self && row.seq > seen.floor && !seen.closed.includes(row.key))
+    .filter((row) => row.ended === null && !row.carried && row.key !== self && row.by !== self && row.seq > seen.floor && !seen.closed.includes(row.key) && !handedOver(row.seq, row.by))
     .map((row) => ({ key: row.key, seq: row.seq, by: row.by }));
 }
 
