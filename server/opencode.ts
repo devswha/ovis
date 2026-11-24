@@ -5,7 +5,8 @@
  * `OPENCODE_DB` naming another file, relative to the data dir (what `opencode debug paths` prints).
  * The service is started with the user's environment, so this server's environment finds it; the
  * pane's process environment would not. A session is a `session_v2` row and its conversation the
- * `session_message` rows of its id, ordered by `seq`, each a `type` and a JSON `data`. OpenCode 1.x
+ * `session_message` rows of its id, ordered by `seq`, each a `type` and a JSON `data`. OpenCode 2.4
+ * can store assistant content separately in `session_part`, ordered by `ordinal`. OpenCode 1.x
  * wrote `session`/`message`/`part` instead (2.0 copies them into `session_v2` when it migrates).
  *
  * herdr's OpenCode integration reports the session the TUI shows (`herdr:opencode`, kind `id`),
@@ -285,7 +286,7 @@ export function opencodeTurns(records: readonly (OpencodeRecord | null)[]): Conv
   return turns.filter((turn) => turn.parts.length > 0);
 }
 
-export interface RowMeta { id: string; seq: number; type: string; updated: number; size: number }
+export interface RowMeta { id: string; seq: number; type: string; updated: number; size: number; partsUpdated?: string | null }
 
 export function pageStart(rows: Iterable<RowMeta>, floor: number, widen: boolean, window = OPENCODE_WINDOW_BYTES, pagePrompts = MAX_PAGE_PROMPTS): number {
   let bytes = 0;
@@ -321,7 +322,8 @@ export type OpencodeAnswer =
  * `$onUpdate(Date.now)`), but two writes in one millisecond leave it where it was: the size tells
  * those apart too.
  */
-const newestRecords = new Map<string, Map<string, { updated: number; size: number; record: OpencodeRecord | null }>>();
+type CachedRecord = Pick<RowMeta, "updated" | "size" | "partsUpdated"> & { record: OpencodeRecord | null };
+const newestRecords = new Map<string, Map<string, CachedRecord>>();
 const answers = new Map<string, { signature: string; answer: Extract<OpencodeAnswer, { kind: "page" }> }>();
 
 function remember<T>(map: Map<string, T>, key: string, value: T, limit: number): void {
@@ -453,6 +455,23 @@ function parseData(data: string): Row {
   try { return record(JSON.parse(data)); } catch { return {}; }
 }
 
+function messageReader(db: Database, sessionId: string) {
+  const parts = storeHasTable(db, "session_part") ? db.query<{ data: string }, [string, string]>(
+    "SELECT data FROM session_part WHERE session_id = ? AND message_id = ? ORDER BY ordinal",
+  ) : null;
+  return {
+    split: parts !== null,
+    data(id: string, type: string, raw: string): Row {
+      const data = parseData(raw);
+      if (type !== "assistant" || parts === null) return data;
+      const blocks = parts.all(sessionId, id);
+      if (blocks.length === 0) return data;
+      const inline = Array.isArray(data.content) ? data.content : [];
+      return { ...data, content: [...blocks.map((block) => parseData(block.data)), ...inline] };
+    },
+  };
+}
+
 /**
  * Every cursor is the `seq` of a
  * page's first row, and a committed `/undo` deletes every row from its message on: a chat whose
@@ -496,12 +515,25 @@ const ROW_QUERIES: Record<OpencodeRowSize, { page: string; pageDescending: strin
   },
 };
 
+function* withPartStats(db: Database, sessionId: string, measure: OpencodeRowSize, rows: Iterable<RowMeta>): Iterable<RowMeta> {
+  const bytes = measure === OPENCODE_ROW_SIZE.octets ? OPENCODE_ROW_SIZE.octets : OPENCODE_ROW_SIZE.bytes;
+  const stats = db.query<{ size: number; updated: string | null }, [string, string]>(
+    `SELECT coalesce(sum(${bytes}), 0) AS size, cast(sum(time_updated) AS TEXT) AS updated
+      FROM session_part WHERE session_id = ? AND message_id = ?`,
+  );
+  for (const row of rows) {
+    if (row.type !== "assistant") { yield row; continue; }
+    const part = stats.get(sessionId, row.id)!;
+    yield { ...row, size: row.size + part.size, partsUpdated: part.updated };
+  }
+}
+
 export function opencodeConversation(path: string, sessionId: string, page: OpencodePage = {}, rowSize?: OpencodeRowSize): OpencodeAnswer {
   if (!SESSION_ID.test(sessionId)) return { kind: "unavailable", reason: "no_session_id" };
   const key = opencodeReadKey(path, sessionId);
   const cacheKey = `${key}\0${page.before ?? ""}\0${page.since ?? ""}\0${page.from ?? ""}\0${pagePrompts(page)}`;
   try {
-    const answer = withStore(path, (db): OpencodeAnswer => {
+    const answer = withStore(path, (db): OpencodeAnswer => db.transaction((): OpencodeAnswer => {
       if (storeFlavor(db) === "v1") {
         try { return conversation1(db, cacheKey, sessionId, page); }
         catch (error) {
@@ -511,12 +543,21 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
       }
       const view = sessionView(db, sessionId);
       if (view === null) return { kind: "unavailable", reason: "session_not_found" };
+      const message = messageReader(db, sessionId);
+      // Include updates to older parts even when the latest part's timestamp did not move.
+      const partStats = message.split ? db.query<{ count: number; updated: string | null }, [string]>(
+        "SELECT count(*) AS count, cast(sum(time_updated) AS TEXT) AS updated FROM session_part WHERE session_id = ?",
+      ).get(sessionId) : null;
+      const signature = partStats === null ? view.signature : `${view.signature}:${partStats.count}:${partStats.updated}`;
       const cached = answers.get(cacheKey);
-      if (cached?.signature === view.signature) return cached.answer;
+      if (cached?.signature === signature) return cached.answer;
 
       const end = view.end;
       const measure = rowSize ?? supportedRowSize(db);
-      const descending = (from: number, to: number) => db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].pageDescending).iterate(sessionId, from, to);
+      const descending = (from: number, to: number) => {
+        const rows = db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].pageDescending).iterate(sessionId, from, to);
+        return message.split ? withPartStats(db, sessionId, measure, rows) : rows;
+      };
       let start: number;
       let to = end;
       if (page.before !== undefined) {
@@ -534,14 +575,18 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
 
       const records: (OpencodeRecord | null)[] = [];
       if (page.before === undefined) {
-        const known = newestRecords.get(key) ?? new Map<string, { updated: number; size: number; record: OpencodeRecord | null }>();
-        const kept = new Map<string, { updated: number; size: number; record: OpencodeRecord | null }>();
+        const known = newestRecords.get(key) ?? new Map<string, CachedRecord>();
+        const kept = new Map<string, CachedRecord>();
         const data = db.query<{ data: string }, [string, string]>("SELECT data FROM session_message WHERE id = ? AND session_id = ?");
-        for (const row of db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].page).iterate(sessionId, start, to)) {
+        const rows = db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].page).iterate(sessionId, start, to);
+        for (const row of message.split ? withPartStats(db, sessionId, measure, rows) : rows) {
           let entry = known.get(row.id);
-          if (entry?.updated !== row.updated || entry.size !== row.size) {
+          if (entry?.updated !== row.updated || entry.size !== row.size || entry.partsUpdated !== row.partsUpdated) {
             const found = data.get(row.id, sessionId);
-            entry = { updated: row.updated, size: row.size, record: found === null ? null : opencodeRecord(row.id, row.type, parseData(found.data)) };
+            entry = {
+              updated: row.updated, size: row.size, partsUpdated: row.partsUpdated,
+              record: found === null ? null : opencodeRecord(row.id, row.type, message.data(row.id, row.type, found.data)),
+            };
           }
           kept.set(row.id, entry);
           records.push(entry.record);
@@ -550,7 +595,7 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
       } else {
         for (const row of db.query<{ id: string; type: string; data: string }, [string, number, number]>(
           "SELECT id, type, data FROM session_message WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq",
-        ).iterate(sessionId, start, to)) records.push(opencodeRecord(row.id, row.type, parseData(row.data)));
+        ).iterate(sessionId, start, to)) records.push(opencodeRecord(row.id, row.type, message.data(row.id, row.type, row.data)));
       }
       const result = {
         kind: "page" as const,
@@ -558,11 +603,11 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
         metadata: sessionMetadata(db, key, sessionId, to, measure),
         cursor: start > 0 ? `${view.historyId}:${start}` : null,
         history_id: view.historyId,
-        signature: view.signature,
+        signature,
       };
-      remember(answers, cacheKey, { signature: view.signature, answer: result }, 32);
+      remember(answers, cacheKey, { signature, answer: result }, 32);
       return result;
-    });
+    })());
     return answer ?? { kind: "unavailable", reason: "transcript_missing" };
   } catch (error) {
     if (unusable(error)) return { kind: "unavailable", reason: "transcript_missing" };
@@ -583,16 +628,16 @@ function sessionRow(db: Database, sessionId: string, id: string): { type: string
     const hidden = db.query<{ seq: number }, [string, string]>("SELECT seq FROM session_message WHERE session_id = ? AND id = ?").get(sessionId, boundary);
     if (hidden !== null && row.seq >= hidden.seq) return null;
   }
-  return { type: row.type, data: parseData(row.data) };
+  return { type: row.type, data: messageReader(db, sessionId).data(id, row.type, row.data) };
 }
 
 function readRow<T>(path: string, sessionId: string, id: string, read: (row: { type: string; data: Row }) => T | null): T | null {
   if (!SESSION_ID.test(sessionId) || !MESSAGE_ID.test(id)) return null;
   try {
-    return withStore(path, (db) => {
+    return withStore(path, (db) => db.transaction(() => {
       const row = storeFlavor(db) === "v1" ? sessionRow1(db, sessionId, id) : sessionRow(db, sessionId, id);
       return row === null ? null : read(row);
-    });
+    })());
   } catch (error) {
     if (unusable(error) || busy(error)) return null;
     throw error;
@@ -680,10 +725,13 @@ type StoreFlavor = "v2" | "v1" | "unknown";
 const MAX_V1_ROWS = 10_000;
 const MAX_V1_BYTES = 4 * OPENCODE_WINDOW_BYTES;
 
+function storeHasTable(db: Database, name: string): boolean {
+  return db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
+}
+
 function storeFlavor(db: Database): StoreFlavor {
-  const table = (name: string) => db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
-  if (table("session_v2")) return "v2";
-  if (table("session") && table("message") && table("part")) return "v1";
+  if (storeHasTable(db, "session_v2")) return "v2";
+  if (storeHasTable(db, "session") && storeHasTable(db, "message") && storeHasTable(db, "part")) return "v1";
   return "unknown";
 }
 

@@ -58,6 +58,24 @@ function store(session = "ses_test1") {
   return { path, db, session, add, prompt, answer, idle };
 }
 
+function storeV24() {
+  const s = store();
+  s.db.exec(`
+    UPDATE session_v2 SET version = '2.4.1';
+    CREATE TABLE session_part (
+      message_id text NOT NULL, session_id text NOT NULL, ordinal integer NOT NULL,
+      type text NOT NULL, call_id text, time_created integer NOT NULL, time_updated integer NOT NULL,
+      data text NOT NULL, PRIMARY KEY (message_id, ordinal)
+    );
+    CREATE INDEX session_part_session_message_idx ON session_part (session_id, message_id, ordinal);
+  `);
+  const part = (messageId: string, ordinal: number, data: Record<string, unknown>, updated = T0) => {
+    s.db.query("INSERT OR REPLACE INTO session_part (message_id, session_id, ordinal, type, call_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(messageId, s.session, ordinal, String(data.type), typeof data.id === "string" ? data.id : null, T0, updated, JSON.stringify(data));
+  };
+  return { ...s, part };
+}
+
 // OpenCode 1.x's own tables, as its service creates them (columns the reader never touches left out):
 // one `message` row per user prompt or assistant step, its blocks in `part` rows, ordered by time.
 const SCHEMA_V1 = `
@@ -539,6 +557,85 @@ describe("a page of an OpenCode session", () => {
     const text = join(root, "not-sqlite.db");
     writeFileSync(text, "not a database");
     expect(opencodeConversation(text, "ses_test1")).toEqual({ kind: "unavailable", reason: "transcript_missing" });
+  });
+});
+
+describe("OpenCode 2.4 split assistant content", () => {
+  it("reads old inline content and new ordered parts, including their tool output and images", () => {
+    const s = storeV24();
+    s.prompt("Check the log");
+    const step = s.answer("", { content: [] });
+    const output = "y".repeat(6000);
+    s.part(step, 2, { type: "text", text: "Checked" });
+    s.part(step, 1, tool("read", {
+      status: "completed",
+      input: { path: "a.log" },
+      content: [{ type: "text", text: output }, { type: "file", uri: `data:image/png;base64,${PNG.toString("base64")}` }],
+    }));
+    s.part(step, 0, { type: "reasoning", text: "Read the log first" });
+    s.idle();
+    s.prompt("Old turn in the same store");
+    s.answer("Inline");
+
+    const newest = page(opencodeConversation(s.path, s.session, { prompts: 1 }));
+    expect(newest.turns[1]?.parts).toEqual([{ kind: "text", text: "Inline", phase: "final_answer" }]);
+    const older = page(opencodeConversation(s.path, s.session, { before: newest.cursor! }));
+    expect(older.turns[1]?.parts).toEqual([
+      { kind: "thinking", text: "Read the log first" },
+      expect.objectContaining({ kind: "tool", name: "read", state: "ok", output_ref: `${step}:1` }),
+      { kind: "text", text: "Checked", phase: "final_answer" },
+    ]);
+    expect(opencodeToolOutput(s.path, s.session, `${step}:1`)).toBe(output);
+    expect(opencodeImage(s.path, s.session, `opencode:${step}:0`)?.bytes).toEqual(new Uint8Array(PNG));
+  });
+
+  it("keeps inline blocks after split blocks when a message has both", () => {
+    const s = storeV24();
+    s.prompt("Go");
+    const step = s.answer("Inline");
+    s.part(step, 0, { type: "text", text: "Split" });
+    expect(page(opencodeConversation(s.path, s.session)).turns[1]?.parts).toEqual([
+      { kind: "text", text: "Split" },
+      { kind: "text", text: "Inline", phase: "final_answer" },
+    ]);
+  });
+
+  it("refreshes the newest page when only a part changes", () => {
+    const s = storeV24();
+    s.prompt("Go");
+    const step = s.answer("", { content: [] });
+    s.part(step, 0, { type: "text", text: "First" });
+    s.part(step, 1, { type: "text", text: "Last" }, T0 + 2);
+    const first = page(opencodeConversation(s.path, s.session));
+    expect(first.turns[1]?.parts).toEqual([
+      { kind: "text", text: "First" },
+      { kind: "text", text: "Last", phase: "final_answer" },
+    ]);
+    expect(opencodeConversation(s.path, s.session)).toBe(first);
+
+    s.part(step, 0, { type: "text", text: "Ready" }, T0 + 1);
+    const second = page(opencodeConversation(s.path, s.session));
+    expect(second.history_id).toBe(first.history_id);
+    expect(second.signature).not.toBe(first.signature);
+    expect(second.turns[1]?.parts).toEqual([
+      { kind: "text", text: "Ready" },
+      { kind: "text", text: "Last", phase: "final_answer" },
+    ]);
+  });
+
+  it("counts part bytes when choosing which prompts to read", () => {
+    const s = storeV24();
+    s.prompt("Earlier prompt");
+    const earlier = s.answer("", { content: [] });
+    s.part(earlier, 0, { type: "text", text: "é".repeat(5_000_000) });
+    s.prompt("Newest prompt");
+    const latest = s.answer("", { content: [] });
+    s.part(latest, 0, { type: "text", text: "é".repeat(5_000_000) });
+    for (const rowSize of Object.values(OPENCODE_ROW_SIZE)) {
+      forgetOpencodeState();
+      const newest = page(opencodeConversation(s.path, s.session, {}, rowSize));
+      expect(newest.turns.filter((turn) => turn.role === "user").flatMap((turn) => turn.parts)).toEqual([{ kind: "text", text: "Newest prompt" }]);
+    }
   });
 });
 
