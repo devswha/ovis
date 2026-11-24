@@ -33,8 +33,16 @@ import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableErro
  * - `changed`: the account or the list is no longer the one the write was begun for (WriteOptions.expect): nothing was signed.
  * - `behind`: a member of a later level wrote, and this build signs nobody in on what it holds until it is updated
  *   (it still signs a removal, and the epoch after one).
+ * - `waiting`: a request this device signed for another change still waits at this head, younger than KEPT_SECONDS:
+ *   nothing is signed until that change is tried again or cancelled.
  */
-export type WriteRefusal = "no_list" | "blocked" | "clock" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "unknown" | "changed" | "behind";
+export type WriteRefusal = "no_list" | "blocked" | "clock" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "unknown" | "changed" | "behind" | "waiting";
+
+/**
+ * How long a signed request that waits at a head holds another change back, in seconds: while it is younger, the
+ * other change is refused (`waiting`) and the person tries the first again or cancels it; after that it is let go.
+ */
+export const KEPT_SECONDS = 10 * 60;
 
 /** How long one placement waits for its answer: after it, the log says whether the entries were placed. */
 const PLACE_MS = 30_000;
@@ -112,6 +120,11 @@ export async function signedWithEpoch(writer: ListWriter, current: EpochKey, bef
 
 export interface WriteOptions {
   readonly wait?: (ms: number) => Promise<void>;
+  /**
+   * What is being written (`allow:<key>`, `remove-pc:<endpoint>`): a request kept for the same operation is sent
+   * again when it is tried again, and one kept for another operation is never sent by this one (KEPT_SECONDS).
+   */
+  readonly operation?: string;
   /** How long one placement waits for its answer; PLACE_MS by default. */
   readonly placeMs?: number;
   /**
@@ -201,6 +214,21 @@ export async function writeNamed<With, Why extends string = never>(
   return { written: false, why: "busy", retryAfterMs: null };
 }
 
+/** Raised on the page when a change was refused because an earlier one still waits (`waiting`): whoever draws that change's card shows it. */
+export const LIST_WRITE_WAITING_EVENT = "ovis:list-write-waiting";
+
+/**
+ * Sends the request that waits at this device's head again, as the change it was signed for. True once nothing waits
+ * any more: it was placed, the head moved, or the account service proved that it placed nothing.
+ */
+export async function resendWaiting(list: AccountList, options: Pick<WriteOptions, "wait" | "placeMs"> = {}): Promise<boolean> {
+  const waiting = await list.waiting();
+  if (waiting === null) return true;
+  // nothing new is signed here: a request kept for that very change is the only thing this sends
+  await writeToList<"nothing">(list, async () => ({ refused: "nothing" }), { ...options, ...(waiting.for === null ? {} : { operation: waiting.for }) });
+  return await list.waiting() === null;
+}
+
 /**
  * Whether this device holds a copy of a list of its account: it then goes by it, whatever its standing in it. A
  * device the list put out, one that waits, and one whose copy is stopped, alarmed or does not read each have a
@@ -239,6 +267,18 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       console.warn("Ovis: the request kept for this place of the account's list could not be read", error instanceof Error ? error.name : error);
       return refused("blocked");
     }
+    if (kept !== null && kept.for !== (options.operation ?? null)) {
+      // Another change's request waits at this head. It is that change's to send again, never this one's: a stalled
+      // Allow must not be placed, later, by an unrelated Remove. The log says first whether it is over.
+      const read = await list.sync({ read: true });
+      const again = (options.writer ?? (() => list.writer()))();
+      if (again === null || again.list !== writer.list || again.state.footing.seq !== writer.state.footing.seq || again.state.footing.hash !== writer.state.footing.hash) continue;
+      // the head did not move, by a read that reached the log: while the kept request is young the person is told of it
+      if (!read.reached || writer.issued_at - kept.at < KEPT_SECONDS) return refused("waiting");
+      // older than that, it is an attempt its writer left behind, and no fork: it is let go, and this change is signed
+      await list.unkeep(writer.account, kept).catch(() => undefined);
+      kept = null;
+    }
     const resent = kept !== null;
     if (kept === null) {
       let signed: Written;
@@ -256,7 +296,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
         throw error;
       }
       // kept before it is sent; where another page kept one for this head first, that one goes and this is never sent
-      try { kept = await list.keep(writer, signed); } catch (error) {
+      try { kept = await list.keep(writer, { ...signed, for: options.operation ?? null }); } catch (error) {
         console.warn("Ovis: the signed request could not be kept, and was not sent", error instanceof Error ? error.name : error);
         return refused("blocked");
       }

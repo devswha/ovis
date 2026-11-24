@@ -56,6 +56,29 @@ describe("a device a PC let in that the account's list did not take", () => {
   });
 });
 
+describe("a change that still waits", () => {
+  it("offers Cancel beside Try again where a signed request waits, and none where nothing waits", () => {
+    const waits = (why: AllowRefusal, cancel: boolean): string => {
+      const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
+      Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+      try {
+        return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "k", device: "Dana's tablet", pc: "Desk", why, retry: async () => {}, ...(cancel ? { cancel: async () => {} } : {}) }, onClose: () => {} })));
+      } finally {
+        if (saved) Object.defineProperty(navigator, "languages", saved);
+        else Reflect.deleteProperty(navigator, "languages");
+      }
+    };
+    expect(waits("unknown", true)).toContain(">Cancel<");
+    expect(waits("not_claimed", false)).not.toContain(">Cancel<");
+    // another change was refused because this one waits: the card says so, whatever page made the first
+    const other = waits("waiting", true);
+    expect(other).toContain("An earlier change is still waiting");
+    expect(other).toContain("Try it again, or cancel it.");
+    expect(other).toContain(">Try again<");
+    expect(other).not.toContain("was added to Desk only");
+  });
+});
+
 describe("the devices the list did not take, kept until each is closed or let in", () => {
   const stalled = (key: string, why: AllowRefusal) => ({ key, device: key, pc: "Desk", why, retry: async () => {} });
 

@@ -68,7 +68,7 @@ export async function allowDevice(list: AccountList, newcomer: Newcomer, options
     const claim = (await writer.service.listClaims(writer.list, AbortSignal.timeout(options.claimsMs ?? CLAIMS_MS))).find((each) => each.key === newcomer.key);
     return claim === undefined ? { refused: "not_claimed" } : { go: claim };
   }, (writer, claim) => signedNamed(writer, names, claim.enc, (sealed): ListKind => ({ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed, rotates: false })),
-  { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.placeMs === undefined ? {} : { placeMs: options.placeMs }), ...(began === undefined ? {} : { expect: held }) });
+  { operation: `allow:${newcomer.key}`, ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.placeMs === undefined ? {} : { placeMs: options.placeMs }), ...(began === undefined ? {} : { expect: held }) });
   // a device that is in no list of the account it was asked for is not "an account with no list"
   if (!outcome.written && outcome.why === "no_list" && began !== undefined && list.view().account !== began) return { allowed: false, why: "changed", retryAfterMs: null };
   if (!outcome.written) return { allowed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
