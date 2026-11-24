@@ -567,7 +567,14 @@ export class ListFollow implements ListAuthority {
       if (!mine()) return;
       if (!saved.read) { this.broken = `${ACCOUNT_LIST_FILE} cannot be read (${saved.why})`; return; }
       // a copy of another list than the one the PC is pinned to is no copy of its list
-      if (scope.list === null || saved.copy.list === scope.list) this.copy = saved.copy;
+      if (scope.list !== null && saved.copy.list !== scope.list) return;
+      this.copy = saved.copy;
+      // another build wrote it: its entries were replayed, never dropped, and the copy is written back as this build
+      // writes it. An update costs a pinned PC nothing it held
+      if (saved.rebuilt && scope.bindId !== null && scope.account !== null) {
+        console.info(`[account] ${ACCOUNT_LIST_FILE} was written by another build: its entries were read again`);
+        this.persist(scope as Bound);
+      }
     }, () => { if (mine()) this.broken = `${ACCOUNT_LIST_FILE} cannot be read`; });
   }
 
