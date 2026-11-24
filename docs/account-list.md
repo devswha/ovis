@@ -1416,8 +1416,11 @@ Either way the entry is signed through the one write loop of
 ### Invites
 
 A device that may write the list makes an invite for one PC
-([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)). In the Mac app, **Add PC →
-Ovis relay → Invite a PC** makes one that a PC joins with by itself, for a PC an agent sets up.
+([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)), in the Mac app under **Add
+PC → Ovis relay → Invite a PC**. By default the PC that joins with the invite asks, and a device
+of the account presses **Add** for it. With **Let the PC join by itself** on, the PC joins with
+nobody asked, for a PC an agent sets up; the line under the switch then says so: **Anyone who gets
+this line in the next 15 minutes can add a PC to your account without asking you.**
 
 1. The device makes a key pair and writes the join line from it (`newInvite`). The line is the
    only copy of the private key: it is shown once, on the device that made it, and never stored.
@@ -1442,8 +1445,8 @@ key and ends the service's invite; for an invite a PC joins with by itself the s
 the next epoch, since the holder of the line held the epoch's key. An invite past its `exp` by the
 device's clock is never shown as open.
 
-Not built here: an invite that waits for **Add** on a device (`auto` false). The library makes
-one; no screen does, until the card that adds the PC that joined with it exists.
+Not built here: the card that adds a PC which joined with an invite that waits for **Add**
+(**Add {name}? (joined with your invite)**). Until it exists the screen is not shown.
 
 ### What a pinned PC asks of the app
 

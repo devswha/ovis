@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { AccountList } from "../lib/account/accountList.ts";
 import { INVITE_S, invitesOf, makeInvite, revokeInvite, type InviteOutcome, type MadeInvite, type ShownInvite } from "../lib/account/listInvite.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
+import { Toggle } from "./SettingsControls.tsx";
 
 import "./InvitePc.css";
 
@@ -42,6 +43,10 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<"line" | "command" | null>(null);
+  // Off by default: the PC that joins with the invite asks, and a device of the account presses Add for it. On: the
+  // PC joins by itself, so whoever holds the line adds a PC with nobody asked
+  const [auto, setAuto] = useState(false);
+  const autoId = useId();
   const lineRef = useRef<HTMLElement>(null);
   const commandRef = useRef<HTMLElement>(null);
   // the list moved (a PC joined, another device revoked): the rows are drawn again from it
@@ -68,7 +73,7 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
     setProblem(null);
     setCopied(null);
     try {
-      const outcome = await makeInvite(list, { auto: true, expect: { account: writer.account, list: writer.list } });
+      const outcome = await makeInvite(list, { auto, expect: { account: writer.account, list: writer.list } });
       if (outcome.made) setMade(outcome.invite);
       else setProblem(refusal(t, outcome));
     } catch (error) {
@@ -97,9 +102,16 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
     <section className="invite-pc" aria-label={t("Invite a PC")} data-testid="invite-pc">
       <h3 className="invite-pc-title">{t("Invite a PC")}</h3>
       <p className="relay-shell-detail">{t("An invite adds one PC to your account with no sign-in on that PC. It works once.")}</p>
+      <div className="invite-pc-auto">
+        <span id={autoId} className="invite-pc-auto-label">{t("Let the PC join by itself")}</span>
+        <Toggle checked={auto} label={t("Let the PC join by itself")} onChange={setAuto} disabled={busy} describedBy={`${autoId}-says`} />
+        <p id={`${autoId}-says`} className="account-fineprint invite-pc-auto-says">
+          {auto ? t("Anyone who gets this line in the next 15 minutes can add a PC to your account without asking you.") : t("After the PC joins with the invite, press Add for it on a device of your account.")}
+        </p>
+      </div>
       {line !== null && shown !== undefined && (
         <div className="invite-pc-made" data-invite={line.key}>
-          <p className="account-fineprint" role="status">{t("Anyone who has this invite can add a PC to your account. Give it only to your own agent.")}</p>
+          <p className="account-fineprint" role="status">{line.auto ? t("Anyone who gets this line in the next 15 minutes can add a PC to your account without asking you.") : t("After the PC joins with the invite, press Add for it on a device of your account.")}</p>
           <span className="invite-pc-label">{t("Invite")} · {stateWord(shown)}</span>
           <code ref={lineRef} className="invite-pc-text" translate="no" data-invite-line="">{line.line}</code>
           <button type="button" className="btn btn-ghost" onClick={() => copy("line", line.line, lineRef.current)}>{copied === "line" ? t("Copied") : t("Copy")}</button>
