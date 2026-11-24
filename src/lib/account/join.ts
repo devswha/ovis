@@ -9,6 +9,7 @@ import type { RemotePairingRequest } from "../../../shared/protocol.ts";
 import type { RelayDevice, RelayDeviceStore } from "../relay/device.ts";
 import { keyIdOf } from "../relay/shellState.ts";
 import { isListHash } from "../../../shared/account-list-entry.ts";
+import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList, ListOffer } from "./accountList.ts";
 import { allowDevice, type AllowOutcome, type AllowRefusal } from "./listAllow.ts";
 import type { AccountService, Admission } from "./service.ts";
@@ -137,27 +138,22 @@ function parseOffer(value: unknown): ListOffer | null {
 }
 
 /**
- * The place in the account's signed list that waits for this device on the PC, with its introduction, or null: none
- * waits, or the PC carries none. The PC only carries it: whoever takes it holds it against the log.
- */
-export async function listOffer(fetch: PcFetch): Promise<ListOffer | null> {
-  const response = await fetch("/api/account/introduction");
-  if (response.status === 404) return null;
-  if (!response.ok) throw await refusal(response);
-  return parseOffer((await response.json() as { list?: unknown }).list);
-}
-
-/**
  * After a remote approval on PC X: the account's other PCs as the approver checked them, saved so
  * this device signs in to each with the account key and the id the `add` gave it there. A PC this
  * device already has is left as it is. X passes the list on, so only PCs on X's own relay are kept:
  * a list that names another relay would route this device through one X chose. Returns the PCs saved.
  */
-export async function takeIntroduction(options: { fetch: PcFetch; key: AccountKey; label: string; store: RelayDeviceStore; relay: string }): Promise<RelayDevice[]> {
+export async function takeIntroduction(options: {
+  fetch: PcFetch; key: AccountKey; label: string; store: RelayDeviceStore; relay: string;
+  /** The place in the account's list that the member who let this device in left with the introduction, where it left one. */
+  onList?: (offer: ListOffer) => void | Promise<void>;
+}): Promise<RelayDevice[]> {
   const response = await options.fetch("/api/account/introduction");
   if (response.status === 404) return [];
   if (!response.ok) throw await refusal(response);
-  const body = await response.json() as { pcs?: unknown };
+  const body = await response.json() as { pcs?: unknown; list?: unknown };
+  const offer = options.onList === undefined ? null : parseOffer(body.list);
+  if (offer !== null) await options.onList?.(offer);
   const pcs = (Array.isArray(body.pcs) ? body.pcs.slice(0, INTRODUCTION_MAX) : []).map(parseIntroduced)
     .filter((pc): pc is IntroducedPc => pc !== null && pc.relay === options.relay);
   const saved: RelayDevice[] = [];
@@ -342,23 +338,33 @@ export async function admitWithList(list: AccountList | null, options: Parameter
   const offer = await allowIntoList(list, options.joining, options.wait === undefined ? {} : { wait: options.wait });
   if (offer === null || list === null) return admitToAccount(options);
   const add = await admitToAccount({ ...options, list: offer });
-  await handListToPc(options.fetch, list).catch((error: unknown) => { console.warn("Ovis: the PC was not handed the list's new entries", error instanceof Error ? error.name : error); });
+  await handListToPc(options.fetch, list, { seq: offer.seq, hash: offer.hash }).then((handed) => {
+    if (!handed) console.info("Ovis: the PC was not handed the list's new entries over this session; it reads them from the account service");
+  }, (error: unknown) => { console.warn("Ovis: the PC was not handed the list's new entries", error instanceof Error ? error.name : error); });
   return add;
 }
 
 /** The most entries one call hands a PC. */
 const PEER_PAGE_MAX = 256;
+/** The most calls one hand-over makes after the first: a PC that keeps asking for another place is left to its own read. */
+const PEER_ROUNDS = 8;
 
 /**
- * Hands the PC this device is connected to the entries it does not hold yet, so that it need not wait for its next
- * read of the account service: the two say where they stand, and where the PC stands at an earlier place of this
- * device's own history, the device hands it the entries after that place. Entries prove themselves, so the PC takes
- * nothing on this device's word. A PC that follows no list a person named, or is from before these calls, answers
- * 404, and nothing is handed. True when a page was handed and taken.
+ * Hands the PC this device is on the entries of the list that it does not hold yet, over the session, so that it
+ * need not wait for its next read of the account service (docs/account-list.md, "Letting a device in"). It says
+ * where it stands, sends the entries after the place the PC stands at, and where the PC asks for an earlier place,
+ * sends from there, PEER_ROUNDS times at most. Entries prove themselves: the PC checks each one.
+ *
+ * True only when the PC says that it stands at `reach` or past it (the place of the entry this hand-over is for):
+ * a page it took in part, or refused, is no hand-over. False for a PC that follows no list, another list, or that
+ * does not answer in this form.
  */
-export async function handListToPc(fetch: PcFetch, list: AccountList): Promise<boolean> {
+export async function handListToPc(fetch: PcFetch, list: AccountList, reach?: ListPlace): Promise<boolean> {
   const mine = list.gossip();
   if (mine === null || mine.place === null) return false;
+  const target = reach ?? mine.place;
+  const seqOf = (place: unknown): number | null | undefined => place === null ? null
+    : typeof (place as { seq?: unknown } | undefined)?.seq === "number" && Number.isSafeInteger((place as { seq: number }).seq) && (place as { seq: number }).seq >= 0 ? (place as { seq: number }).seq : undefined;
   let theirs: { list?: unknown; place?: unknown };
   try {
     theirs = await (await post(fetch, "/api/account/list/head", mine)).json() as { list?: unknown; place?: unknown };
@@ -367,18 +373,34 @@ export async function handListToPc(fetch: PcFetch, list: AccountList): Promise<b
     throw error;
   }
   if (theirs.list !== mine.list) return false;
-  const place = theirs.place as { seq?: unknown } | null | undefined;
-  const after = place === null ? null : typeof place?.seq === "number" && Number.isSafeInteger(place.seq) && place.seq >= 0 ? place.seq : undefined;
-  if (after === undefined || (after !== null && after >= mine.place.seq)) return false;
-  const page = list.pageAfter(after, PEER_PAGE_MAX);
-  if (page === null || page.entries.length === 0) return false;
-  try {
-    await post(fetch, "/api/account/list/page", page);
-  } catch (error) {
-    if (error instanceof AccountPcError) return false;
-    throw error;
+  let after = seqOf(theirs.place);
+  if (after === undefined) return false;
+  for (let rounds = 0; rounds < PEER_ROUNDS; rounds += 1) {
+    if (after !== null && after >= target.seq) return true;
+    const page = list.pageAfter(after, PEER_PAGE_MAX);
+    if (page === null || page.entries.length === 0) return false;
+    let said: { verdict?: unknown; list?: unknown; place?: unknown; asks?: unknown };
+    try {
+      said = await (await post(fetch, "/api/account/list/page", page)).json() as typeof said;
+    } catch (error) {
+      if (error instanceof AccountPcError) return false;
+      throw error;
+    }
+    // the PC wants an earlier place of the list first: that page goes next
+    const asks = said.asks as { list?: unknown; after?: unknown } | undefined;
+    const wanted = asks === undefined || asks === null ? undefined : asks.list === mine.list ? (asks.after === null ? null : typeof asks.after === "number" && Number.isSafeInteger(asks.after) && asks.after >= 0 ? asks.after : undefined) : undefined;
+    if (asks !== undefined && asks !== null) {
+      if (wanted === undefined || (wanted !== null && after !== null && wanted >= after)) return false;
+      after = wanted;
+      continue;
+    }
+    // where the PC stands now, as it says; a PC that does not say counts for what this page reached only when it took it whole
+    const stands = seqOf(said.place);
+    const next: number | undefined = stands === undefined || stands === null ? (said.verdict === "caught_up" || said.verdict === "more" ? (after ?? -1) + page.entries.length : undefined) : stands;
+    if (next === undefined || (after !== null && next <= after)) return false;
+    after = next;
   }
-  return true;
+  return after !== null && after >= target.seq;
 }
 
 type KnownDevices = Readonly<Record<string, AddRecord | RemoveRecord>>;
