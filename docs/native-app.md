@@ -1022,6 +1022,10 @@ The app and the client agree on one contract:
   - counts its own origin as the app's where the hosted one was compared (the direct carrier's
     plugin call, `directPageAllowed` in `src/lib/relay/directSocket.ts`; the plugin's own gate still
     decides).
+- The demo is the page its own build marks (`window.__ovisDemo`, set by `site/demo/transport.ts`,
+  read by `src/lib/demo.ts`), not one at a `capacitor:` address: on iOS the app's own copy is at one
+  too. Settings' Change PC calls only a marked page the demo, and the header's route mark leaves out
+  only the app's demo.
 - Only the relay and the direct carrier name the floor: both speak Ovis Mux, whose `WELCOME` carries
   it. A PC added by address, Tailscale or SSH loads its own client from the PC, so the two never
   differ and nothing is compared.
