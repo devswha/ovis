@@ -566,6 +566,21 @@ describe("the fake account service's list routes (Part D)", () => {
     });
   });
 
+  describe("wraps by the service's clock", () => {
+    test("an open auto invite's own key takes a wrap until its exp, by the service's clock, and none after", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const pool = await newKey();
+      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 60)]], w.seconds());
+      expect((await w.place(list, invited.texts, [{ epoch: 0, member: pool.key, wrap: WRAP(3) }])).status).toBe(200);
+      w.tick(61_000);
+      const later = await chain(list, invited.head, [[w.owner, epochOf(0)]], w.seconds());
+      const refused = await w.place(list, later.texts, [{ epoch: 1, member: pool.key, wrap: WRAP(4) }]);
+      expect([refusal(refused), refused.body.error?.index]).toEqual(["400 wrap_invalid", 0]);
+      expect((await w.place(list, later.texts, [{ epoch: 1, member: w.owner.enc, wrap: WRAP(4) }])).status).toBe(200);
+    });
+  });
+
   describe("the second lock", () => {
     test("a device entry is placed only on a live claim of its key, which the placement uses up", async () => {
       const w = await world();

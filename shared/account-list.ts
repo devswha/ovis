@@ -14,18 +14,20 @@
  * entry it catches up on, and all come to the same answer. No I/O, no storage and no clock: the one time a
  * member judges is a device's `until`, and admitsDevice is handed the hour.
  */
+import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { ACCOUNT_OSES, type AccountOs } from "./account-asker.ts";
 import {
-  ListEntryError, entryFromText, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readFieldsUnder, verifySignature, writeFieldsUnder,
-  type EntryBody, type HeldEntry, type ListField, type ListRefusalCode, type SignerPower,
+  ListEntryError, canonicalBase64Url, entryFromText, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readFieldsUnder, verifySignature, writeFieldsUnder,
+  type Entry, type EntryBody, type HeldEntry, type ListField, type ListRefusalCode, type SignerPower,
 } from "./account-list-entry.ts";
+import type { JoinLine } from "./account-list-join.ts";
 import { ACCOUNT_LABEL_MAX } from "./account-records.ts";
 import {
   firstSignersState, judgeEntry, readSignersState, replayEntries, shownEntries, signerPower,
   type PassedOverCode, type ShownAnswer, type ShownResult, type SignerRow, type SignersState,
 } from "./account-list-signers.ts";
-import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
+import { toBase64Url } from "./relay-pair-sas.ts";
 
 /** The level of this build: it reads every form of levels 1 to this. */
 export const LIST_LEVEL = 1;
@@ -278,13 +280,6 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 const NONE = new Uint8Array();
 
-/** The bytes a base64url text spells when it is their one spelling (no padding); null for anything else. */
-function oneSpelling(text: string): Uint8Array | null {
-  if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) return null;
-  const bytes = fromBase64Url(text);
-  return toBase64Url(bytes) === text ? bytes : null;
-}
-
 /** A key in its one spelling whose point is on the curve: what an encryption key and a PC's key must be to be of any use. */
 export function isListKey(text: string): boolean {
   return isListKeyEncoding(text) && isListPoint(text);
@@ -346,7 +341,7 @@ export function readKind(body: EntryBody): ListKind | null {
     return all.includes("sealed") && all.includes("epoch") && !Number.isNaN(epoch) && bytes("sealed").length >= SEALED_MIN_BYTES ? { epoch, bytes: bytes("sealed") } : undefined;
   };
   const key = (name: string): string | null => (isListKey(text(name)) ? text(name) : null);
-  const card = (): string | null => (text("card").length === CARD_SIGNATURE_CHARS && oneSpelling(text("card")) !== null ? text("card") : null);
+  const card = (): string | null => (text("card").length === CARD_SIGNATURE_CHARS && canonicalBase64Url(text("card")) !== null ? text("card") : null);
   const endpoint = (): string | null => (ENDPOINT.test(text("endpoint")) ? text("endpoint") : null);
   const role = (): ListRole | null => (text("role") === "drive" || text("role") === "watch" ? (text("role") as ListRole) : null);
   switch (kind) {
@@ -458,6 +453,16 @@ export function cardBytes(card: ListCard): Uint8Array {
 }
 
 /**
+ * What a comparison of numbers on two screens is bound to when a person adds a PC (shared/relay-pair-sas.ts:
+ * its `binding`): SHA-256 over the card's bytes, 32 bytes. Both ends work it out from the card each holds, so the
+ * numbers agree only where the cards do. A number that is digits of this hash alone proves nothing: whoever
+ * carries the card between the two can try keys until one fits.
+ */
+export function cardBinding(card: ListCard): Uint8Array {
+  return sha256(cardBytes(card));
+}
+
+/**
  * A card, made by the newcomer with the private half of `key` before anybody lets it in: its signature over
  * cardBytes, `r || s`, as 86 characters of base64url. The entry that lets the key in carries it in `card`.
  */
@@ -468,7 +473,7 @@ export async function signCard(card: ListCard, privateKey: CryptoKey): Promise<s
 
 /** Whether `signature` is the card's own: `key`'s signature over cardBytes. False for a card or a signature out of form. */
 export async function cardHolds(card: ListCard, signature: string): Promise<boolean> {
-  const signed = signature.length === CARD_SIGNATURE_CHARS ? oneSpelling(signature) : null;
+  const signed = signature.length === CARD_SIGNATURE_CHARS ? canonicalBase64Url(signature) : null;
   if (signed === null) return false;
   let bytes: Uint8Array;
   try {
@@ -871,19 +876,43 @@ export function admitsDevice(state: ListState, key: string, now: number): ListRo
 }
 
 /**
- * The encryption keys that the key of an epoch is wrapped to, in the order they came in: that of every device
- * that is in and has named one, that of every PC that is in and has one, and the own key of every open invite
- * that a PC joins with by itself. The last lets such a PC, which joins with nobody else awake, open the names,
- * seal its own and wrap the key to itself. Whoever is out is not among them.
+ * The encryption keys that the key of an epoch is wrapped to at `now` (seconds since 1970, by the caller's own
+ * clock), in the order they came in: that of every device that is in, has named one and is not past its `until`;
+ * that of every PC that is in and has one; and the own key of every open invite that a PC joins with by itself
+ * and that is not past its `exp`. The last lets such a PC, which joins with nobody else awake, open the names,
+ * seal its own and wrap the key to itself. Whoever is out is not among them, and neither is an invite or a
+ * borrowed browser whose time is over: whoever still holds its key would otherwise read every later name. The
+ * clock chooses only whom a key is wrapped to; it is no verdict on any entry, and no member lets anybody in or
+ * puts anybody out by it.
  */
-export function wrapKeys(state: ListState): string[] {
+export function wrapKeys(state: ListState, now: number): string[] {
   const view = listView(state);
   const keys = [
-    ...view.devices.filter((row) => row.ended === null).map((row) => ({ seq: row.seq, key: row.enc })),
+    ...view.devices.filter((row) => row.ended === null && (row.until === null || now < row.until)).map((row) => ({ seq: row.seq, key: row.enc })),
     ...view.pcs.filter((row) => row.removed === null).map((row) => ({ seq: row.seq, key: row.enc })),
-    ...view.invites.filter((row) => row.refusal === null && row.auto).map((row) => ({ seq: row.seq, key: row.key })),
+    ...view.invites.filter((row) => row.refusal === null && row.auto && now < row.exp).map((row) => ({ seq: row.seq, key: row.key })),
   ];
   return [...new Set(keys.sort((a, b) => a.seq - b.seq).flatMap(({ key }) => (key === null ? [] : [key])))];
+}
+
+/**
+ * The epoch a writer seals an entry's names under, with the commitment to its key, or null when it must seal
+ * nothing and write its entry with no names. It is the current epoch, and only when the entry that opened it
+ * stands after the last entry that put out a key an epoch's key may have been wrapped to: the `ends` of a
+ * device's, a PC's or an invite's key (a revoked invite among them), and the `remove` of a PC by its relay key.
+ * Whoever was put out holds the key of every epoch opened before that, so names sealed under one of those are
+ * names it reads. Entry 0 is the one entry this is not asked for: it opens epoch 0 itself. No writer decides
+ * this for itself; a member that is stopped for a replay seals nothing.
+ */
+export function sealEpoch(state: ListState): { readonly epoch: number; readonly opens: string } | null {
+  if (state.needs_replay !== undefined) return null;
+  const current = state.epochs[state.epoch];
+  if (current === undefined) return null;
+  const out = [
+    ...Object.values(state.signers).map((row) => (row.as === null ? null : row.ended)),
+    ...Object.values(state.pcs).map((row) => row.removed),
+  ];
+  return out.some((seq) => seq !== null && seq >= current.seq) ? null : { epoch: state.epoch, opens: current.opens };
 }
 
 /** Whether the PC with this relay key is in the list: any row that is not out. A member that is stopped for a replay answers for nobody. */
@@ -914,7 +943,7 @@ export function readListState(value: unknown, level: number): ListState | null {
     const { opens, link, seq } = saved;
     const before = epochs.at(-1);
     if (typeof opens !== "string" || !isListHash(opens) || !isCount(seq) || seq > top || (before === undefined ? seq !== 0 : seq <= before.seq)) return null;
-    if (before === undefined ? link !== null : typeof link !== "string" || oneSpelling(link)?.length !== EPOCH_LINK_BYTES) return null;
+    if (before === undefined ? link !== null : typeof link !== "string" || canonicalBase64Url(link)?.length !== EPOCH_LINK_BYTES) return null;
     epochs.push({ opens, link: typeof link === "string" ? link : null, seq });
   }
   if (epochs.length === 0 || epoch !== epochs.length - 1) return null;
@@ -1023,14 +1052,47 @@ function readProofBody(body: Uint8Array): ReadProof {
   return { key, list, after: after === "" ? null : Number(after), at: Number(at) };
 }
 
-/** The invite's proof for reading, made by the holder of the line with the invite's private key: one text, as an entry is. Refuses `proof_malformed` for what no reader would take. */
-export async function signReadProof(proof: ReadProof, privateKey: CryptoKey): Promise<string> {
+/**
+ * The invite's proof for reading, made by the holder of the line: one text, as an entry is. The key and the list
+ * are the line's, and it is the line that signs (readJoinLine): a caller names the place its page follows and
+ * the time. Refuses `proof_malformed` for what no reader would take, a line that names no list among it.
+ */
+export async function signReadProof(line: Pick<JoinLine, "key" | "list" | "signRead">, proof: Pick<ReadProof, "after" | "at">): Promise<string> {
+  const { key, list } = line;
+  if (list === null) throw new ReadProofError("proof_malformed", "This invite names no list to read");
   const body = asProof(() => writeFieldsUnder(LIST_READ_PREFIX, [
-    field("after", proof.after === null ? "" : String(proof.after)), field("at", String(proof.at)), field("key", proof.key), field("list", proof.list),
+    field("after", proof.after === null ? "" : String(proof.after)), field("at", String(proof.at)), field("key", key), field("list", list),
   ]));
   readProofBody(body);
-  const signature = new Uint8Array(await crypto.subtle.sign(SIGN, privateKey, new Uint8Array(body)));
-  return entryToText({ body, signature });
+  return entryToText({ body, signature: await line.signRead(body) });
+}
+
+/** A PC's own keys, as it joins: its signing key pair, its encryption key and its relay key. */
+export interface JoiningPc {
+  readonly key: string;
+  /** The private half of `key`: it signs the PC's card, here and nowhere else. */
+  readonly privateKey: CryptoKey;
+  readonly enc: string;
+  readonly endpoint: string;
+}
+
+/**
+ * The `join` of a PC that joins by itself with the invite of a line it was given: the entry, signed with the
+ * invite's key. The PC hands over its own keys and where the entry stands, and nothing that could have come from
+ * anybody else: the card is made here with the PC's own private key (for this list, this relay key and this
+ * invite), the body is built here, and the line signs only that. So a PC cannot be made to sign a `join` that
+ * somebody else composed, with a key of theirs in it. `sealed` is the PC's names under sealEpoch's epoch, or null.
+ * Refuses `entry_invalid` for a line that names no list and for values out of their form.
+ */
+export async function joinEntry(
+  line: Pick<JoinLine, "key" | "list" | "signJoin">, pc: JoiningPc, place: Pick<EntryPlace, "issued_at" | "prev" | "seq">, sealed: Sealed | null,
+): Promise<Entry> {
+  const { key: invite, list } = line;
+  if (list === null) throw new ListKindError("This invite names no list, so there is no list to join by an entry");
+  const { key, privateKey, enc, endpoint } = pc;
+  const card = await signCard({ key, enc, list, endpoint, invite }, privateKey);
+  const { issued_at, prev, seq } = place;
+  return await line.signJoin(kindBody({ issued_at, list, prev, seq, signer: invite }, { kind: "join", endpoint, pc: key, enc, card, sealed }));
 }
 
 /**

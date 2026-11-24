@@ -9,8 +9,7 @@ import {
   type AccountRecord, type BlockRecord, type DeviceLiftRecord, type PcAddPurpose, type SafetyRecord,
 } from "./account-records.ts";
 import { ACCOUNT_SNAPSHOT_V, SNAPSHOT_GONE, type AccountSnapshotPage, type SnapshotFreezeLine } from "./account-snapshot.ts";
-import { ListEntryError, entryFromText, entryHash, entryHolds, entryToText, firstState, isListHash, isListKeyEncoding, readBody, verifySignature, type Entry, type EntryBody, type HeldEntry } from "./account-list-entry.ts";
-import { oneSpelling } from "./account-list-join.ts";
+import { ListEntryError, canonicalBase64Url, entryFromText, entryHash, entryHolds, entryToText, firstState, isListHash, isListKeyEncoding, readBody, verifySignature, type Entry, type EntryBody, type HeldEntry } from "./account-list-entry.ts";
 import { CARD_SIGNATURE_CHARS, ListKindError, cardHolds, firstListState, holdsPc, isListKey, readKind, takeEntry, wrapKeys, type ListState } from "./account-list.ts";
 import { signerPower, type ListPlace } from "./account-list-signers.ts";
 import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.ts";
@@ -1535,7 +1534,7 @@ export class FakeAccountService {
     };
     const before = exists();
     if (before !== null) return before;
-    const wrapAt = wrapRefusal(wraps, state);
+    const wrapAt = wrapRefusal(wraps, state, Math.floor(this.now() / 1000));
     if (wrapAt !== null) return this.wrapInvalid(wrapAt);
     const fresh = await this.freshOrProved(session, body.key_proof, "list-genesis", first.hash, "");
     if (fresh !== null) return fresh;
@@ -1743,7 +1742,7 @@ export class FakeAccountService {
     }
     const lock = this.lockRefusal(list, claims, posts);
     if (lock !== null) return lock;
-    const wrapAt = wrapRefusal(wraps, state);
+    const wrapAt = wrapRefusal(wraps, state, nowS);
     if (wrapAt !== null) return this.wrapInvalid(wrapAt);
     if (list.last !== judged) return this.notAtHead(list, batch);
     if (caller.family !== undefined) {
@@ -1905,12 +1904,12 @@ function wrapsOf(value: unknown): ListWrap[] | null {
 
 /**
  * The index of the first wrap the service does not store, or null: not 151 characters of base64url in one spelling, or
- * not for the epoch current in the state after the batch and one of its wrapKeys. A wrap is not signed: the service
- * checks its length and spelling only.
+ * not for the epoch current in the state after the batch and one of its wrapKeys at `now` (seconds, the service's clock:
+ * no invite past its `exp`, no device past its `until`). A wrap is not signed: the service checks its length and spelling only.
  */
-function wrapRefusal(wraps: readonly ListWrap[], state: ListState): number | null {
-  const members = new Set(wrapKeys(state));
-  const index = wraps.findIndex((wrap) => wrap.wrap.length !== WRAP_TEXT || oneSpelling(wrap.wrap)?.length !== WRAP_BYTES || wrap.epoch !== state.epoch || !members.has(wrap.member));
+function wrapRefusal(wraps: readonly ListWrap[], state: ListState, now: number): number | null {
+  const members = new Set(wrapKeys(state, now));
+  const index = wraps.findIndex((wrap) => wrap.wrap.length !== WRAP_TEXT || canonicalBase64Url(wrap.wrap)?.length !== WRAP_BYTES || wrap.epoch !== state.epoch || !members.has(wrap.member));
   return index < 0 ? null : index;
 }
 
