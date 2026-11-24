@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -114,6 +114,15 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(runs()).toEqual([]);
   });
 
+  it("does not consult the core for a linked ACP state directory", async () => {
+    setUp();
+    const empty = join(dir, "..", "empty");
+    mkdirSync(empty);
+    symlinkSync(empty, dir, "dir");
+    await children.restore();
+    expect(fake.calls().filter((call) => call.method === "terminal.list")).toEqual([]);
+  });
+
   it("restores at the server's start: re-attaches its labelled live terminals, deletes only stale ROOTs", async () => {
     setUp();
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -131,8 +140,11 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     const dead = Bun.spawn(["true"]);
     await dead.exited;
     writeFileSync(join(made("bbbbbbbbbbbb"), "process.json"), JSON.stringify({ keeper: dead.pid }));
+    writeFileSync(join(dir, "bbbbbbbbbbbb", "child.json"), JSON.stringify({ harness: "fake" }));
+    const unmarked = made("eeeeeeeeeeee");
     // a ROOT with no terminal whose keeper still runs: not touched
     writeFileSync(join(made("cccccccccccc"), "process.json"), JSON.stringify({ keeper: process.pid }));
+    writeFileSync(join(dir, "cccccccccccc", "child.json"), JSON.stringify({ harness: "fake" }));
     // another server's child on the same core: not this server's ROOT, never touched
     const foreign = fake.spawn({ argv: ["sh"], labels: { "ovis.acp": "dddddddddddd" } }).address;
 
@@ -142,6 +154,7 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     await until(restored!.client, "the session from the replay", () => restored!.client.session !== null);
     expect(existsSync(join(dir, "bbbbbbbbbbbb"))).toBe(false);
     expect(existsSync(join(dir, "cccccccccccc"))).toBe(true);
+    expect(existsSync(unmarked)).toBe(true);
     expect(children.forPane(foreign)).toBeUndefined();
     expect(fake.terminal(foreign).state).toBe("live");
     expect(kills()).toEqual([]);

@@ -109,12 +109,18 @@ function sessionOpens(client: KeeperClient, ms: number): Promise<"open" | "exite
   return promise;
 }
 
-function harnessOf(root: string): string {
+function owned(path: string, kind: "directory" | "file"): boolean {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  return stat !== undefined && (process.getuid === undefined || stat.uid === process.getuid()) && (kind === "directory" ? stat.isDirectory() : stat.isFile());
+}
+
+function harnessOf(root: string): string | null {
   try {
+    if (!owned(root, "directory") || !owned(join(root, CHILD_FILE), "file")) return null;
     const harness = (JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8")) as { harness?: unknown }).harness;
-    return typeof harness === "string" && harness !== "" ? harness : "acp";
+    return typeof harness === "string" && harness !== "" ? harness : null;
   } catch {
-    return "acp";
+    return null;
   }
 }
 
@@ -135,9 +141,7 @@ export class AcpChildren {
   /** The folder the ROOTs live in, made private to this user; one that is there already must be this user's own. */
   private folder(): void {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const folder = lstatSync(this.dir);
-    const uid = process.getuid?.();
-    if (!folder.isDirectory() || (uid !== undefined && folder.uid !== uid)) throw new Error(`${this.dir} is not a folder of this account`);
+    if (!owned(this.dir, "directory")) throw new Error(`${this.dir} is not a folder of this account`);
     chmodSync(this.dir, 0o700);
   }
 
@@ -231,7 +235,7 @@ export class AcpChildren {
    * replays its keeper's log from the start), and removes the ROOTs no live terminal names whose keeper is gone.
    */
   async restore(): Promise<void> {
-    if (this.refusal() !== null || !existsSync(this.dir)) return;
+    if (this.refusal() !== null || !owned(this.dir, "directory")) return;
     const { terminals } = await this.hc().call("terminal.list", {});
     const live = new Map(terminals.flatMap((terminal) => {
       const id = terminal.labels[LABEL];
@@ -239,9 +243,12 @@ export class AcpChildren {
     }));
     for (const id of readdirSync(this.dir)) {
       const root = join(this.dir, id);
+      if (!/^[a-f0-9]{12}$/.test(id)) continue;
+      const harness = harnessOf(root);
+      if (harness === null) continue;
       const terminal = live.get(id);
       if (terminal !== undefined) {
-        if (!this.children.has(id)) this.add({ id, harness: harnessOf(root), root, terminal, client: new KeeperClient(root) });
+        if (!this.children.has(id)) this.add({ id, harness, root, terminal, client: new KeeperClient(root) });
       } else if (!keeperRunning(root)) {
         rmSync(root, { recursive: true, force: true });
       }
