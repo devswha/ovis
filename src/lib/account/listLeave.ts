@@ -6,7 +6,7 @@
  *
  * And the tidying a device of power `full` does by itself while it reads the list: what is over its time goes.
  */
-import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
+import type { AccountList, AccountListView } from "./accountList.ts";
 import { removeFromList, removeSelf, tidyList, type RemoveOutcome } from "./listRemoveDevice.ts";
 import { sameSignIn } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
@@ -22,9 +22,9 @@ export function inList(view: AccountListView, account: string): boolean {
  * sign-out is what it always was. The list is read at once whenever a sign-in is read, so a page that shows a
  * sign-out has read it.
  */
-export async function leaveList(list: AccountList, account: string, writer: () => ListWriter | null, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
+export async function leaveList(list: AccountList, account: string, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
   if (!inList(list.view(), account)) return null;
-  return removeSelf(list, writer, options);
+  return removeSelf(list, options);
 }
 
 /**

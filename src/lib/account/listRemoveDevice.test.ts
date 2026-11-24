@@ -5,8 +5,9 @@ import type { AccountListView, ListWriter } from "./accountList.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
+import { WRITE_RESENDS, WRITE_TRIES } from "./listWrite.ts";
 import {
-  cameInThrough, overdueKeys, REMOVE_RESENDS, REMOVE_TRIES, removalRequest, removeFromList, removeSelf, tidyList,
+  cameInThrough, overdueKeys, removalRequest, removeFromList, removeSelf, tidyList,
   type RemoveOutcome,
 } from "./listRemoveDevice.ts";
 import { memoryAccountStore } from "./store.ts";
@@ -206,7 +207,7 @@ describe("a list that moves, or a service that is busy, under a removal", () => 
     const before = w.held().entries.length;
     w.fake.tamperList(w.held().id, { headMoved: true });
     expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "busy", retryAfterMs: null });
-    expect([placements(first).length, w.held().entries.length]).toEqual([REMOVE_TRIES + 1, before]);
+    expect([placements(first).length, w.held().entries.length]).toEqual([WRITE_TRIES + 1, before]);
   });
 
   it("sends the same request again while the service rebuilds the list, the same signatures", async () => {
@@ -228,7 +229,7 @@ describe("a list that moves, or a service that is busy, under a removal", () => 
     const gone = (await second.keys()).key;
     w.fake.tamperList(w.held().id, { rebuilding: true });
     expect(await removeFromList(first.list, { keys: [gone], pcs: [] }, noWait)).toMatchObject({ removed: false, why: "busy" });
-    expect(placements(first).length - from).toBe(REMOVE_RESENDS);
+    expect(placements(first).length - from).toBe(WRITE_RESENDS);
     w.fake.untamperList(w.held().id);
     w.fake.tamperList(w.held().id, { stopped: true });
     expect(await removeFromList(first.list, { keys: [gone], pcs: [] }, noWait)).toEqual({ removed: false, why: "stopped", retryAfterMs: null });
@@ -254,7 +255,7 @@ describe("a device that puts itself out", () => {
   it("signs a remove of its own key and no epoch, and a device that stays opens the next one when it tidies", async () => {
     const { w, first, second } = await twoDevices();
     const own = (await second.keys()).key;
-    expect(await removeSelf(second.list, () => second.list.writer(), noWait)).toEqual(REMOVED);
+    expect(await removeSelf(second.list, noWait)).toEqual(REMOVED);
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
     expect(ends(w.held().entries[2]!)).toBe(own);
     // the first device sees nobody could seal under the current epoch, holds its key, and opens the next

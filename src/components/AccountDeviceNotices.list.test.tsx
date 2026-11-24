@@ -29,8 +29,8 @@ function followingList(account: string): AccountList {
   return {
     sync: async () => view, view: () => view, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
     shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => view,
-    writer: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
-  } as AccountList;
+    writer: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, follows: async () => true,
+  };
 }
 
 async function drawn(list: AccountList | null): Promise<number> {

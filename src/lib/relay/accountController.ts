@@ -304,8 +304,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void refresh(); armRefresh(); });
   // a device of power `full` ends what is over its time as it reads (account/listLeave.ts)
   if (lists !== null) tidyOnRead(lists);
-  /** What this device signs its own removal with: any power may end its own key. */
-  const ownWriter = () => lists?.writer() ?? null;
   /** The account whose list this device is putting itself out of now: its own removal is no news to it. */
   let leavingList: string | null = null;
   /**
@@ -337,7 +335,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const left = ending.then((session) => {
       if (session === undefined || lists === null) return null;
       leavingList = session.account;
-      return leaveList(lists, session.account, ownWriter);
+      return leaveList(lists, session.account);
     }).catch((error: unknown): RemoveOutcome => {
       console.warn("Ovis: this device did not put itself out of the account's list", error instanceof Error ? error.name : error);
       return { removed: false, why: "unreached", retryAfterMs: null };
@@ -375,7 +373,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       departing = session.account;
       // a device that is in its account's list puts itself out of it first; where the list does not take that, nothing is left
       leavingList = session.account;
-      const out = lists === null ? null : await leaveList(lists, session.account, ownWriter);
+      const out = lists === null ? null : await leaveList(lists, session.account);
       if (out !== null && !out.removed) { refused.why = out.why; throw new Error(`The list did not take this device's removal (${out.why})`); }
       return leaveAccount({ service: account, accountStore, relayStore: store, session });
     }).then(async ({ unconfirmed }): Promise<LeaveOutcome> => {

@@ -33,7 +33,7 @@ describe("a device that signs out or leaves", () => {
   it("puts itself out of the list, then forgets its account key and its copy: it comes back only as a new member", async () => {
     const { w, second } = await twoDevices();
     const before = await second.keys();
-    expect(await leaveList(second.list, w.account, () => second.list.writer(), noWait)).toEqual({ removed: true });
+    expect(await leaveList(second.list, w.account, noWait)).toEqual({ removed: true });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
     expect(readBody(entryFromText(w.held().entries[2]!).body).ends).toBe(before.key);
     await forgetMembership(second.store, second.list, second.session);
@@ -43,13 +43,34 @@ describe("a device that signs out or leaves", () => {
     expect(second.list.view().status).toEqual({ at: "off" });
   });
 
+  it("a borrowed browser, which may remove nobody else, puts itself out at sign-out", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const browser = await w.device({ label: "Library browser" });
+    await browser.list.sync();
+    // the first device lets it in for a day: power bound, role drive, until a day from now
+    await first.list.sync();
+    const writer = first.list.writer()!;
+    const own = await browser.keys();
+    const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === own.key)!;
+    const placed = await signListEntry(writer.state, { kind: "device", key: claim.key, power: "bound", role: "drive", until: writer.issued_at + 86_400, enc: claim.enc, card: claim.card, sealed: null, rotates: false },
+      { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+    await writer.service.placeEntries(writer.list, [placed.text], []);
+    await browser.list.adopt({ list: w.held().id, seq: 1, hash: w.held().head.hash });
+    expect(browser.list.writer()).toBeNull();
+    expect(await leaveList(browser.list, w.account, noWait)).toEqual({ removed: true });
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
+    expect(readBody(entryFromText(w.held().entries[2]!).body).ends).toBe(own.key);
+  });
+
   it("asks nothing of the list for an account that has none, and keeps its key", async () => {
     const w = listWorld();
     w.fake.listAccounts = "";
     const device = await w.device({ label: "Phone" });
     await device.list.sync();
     const key = (await device.keys()).key;
-    expect(await leaveList(device.list, w.account, () => device.list.writer(), noWait)).toBeNull();
+    expect(await leaveList(device.list, w.account, noWait)).toBeNull();
     expect(placements(device)).toHaveLength(0);
     expect((await device.keys()).key).toBe(key);
   });
@@ -58,14 +79,14 @@ describe("a device that signs out or leaves", () => {
     const { w, second } = await twoDevices();
     const page = { ...second.list, view: () => ({ account: null, status: { at: "off" as const }, reached: true, devices: [], pcs: [] }) };
     const sent = placements(second).length;
-    expect(await leaveList(page, w.account, () => second.list.writer(), noWait)).toBeNull();
+    expect(await leaveList(page, w.account, noWait)).toBeNull();
     expect(placements(second)).toHaveLength(sent);
   });
 
   it("says why when the list cannot take its removal, and is still in it", async () => {
     const { w, second } = await twoDevices();
     w.fake.tamperList(w.held().id, { stopped: true });
-    expect(await leaveList(second.list, w.account, () => second.list.writer(), noWait)).toEqual({ removed: false, why: "stopped", retryAfterMs: null });
+    expect(await leaveList(second.list, w.account, noWait)).toEqual({ removed: false, why: "stopped", retryAfterMs: null });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 });
