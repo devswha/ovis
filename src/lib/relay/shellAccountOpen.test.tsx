@@ -48,7 +48,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   listed?: {
     holds: boolean; in?: boolean; read?: () => void;
     /** not in the list, and its claim of its key for it stands: it waits to be let in */
-    waits?: boolean; adopted?: (offer: { list: string; seq: number; hash: string }) => void;
+    waits?: boolean; adopted?: (offer: { list: string; seq: number; hash: string }, account?: string) => void;
     /** until when the list holds this device, in seconds; absent: for good */
     until?: () => number | null;
     /** the time the device shows by, held against the latest it saved; its clock by default */
@@ -127,7 +127,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
     sync: async () => { listReads.push(Date.now()); listed.read?.(); return listView(); }, follows: async () => true,
     view: listView, subscribe: (listener) => { listHeard.push(() => listener(listView())); return () => {}; }, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
-    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer) => { listed.adopted?.(offer); return listView(); }, writer: () => null, placeAt: () => null,
+    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null, placeAt: () => null,
     holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
     kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
     shown: () => listed.shown?.() ?? Math.floor(Date.now() / 1000),
@@ -1028,6 +1028,34 @@ it("a join through a PC pinned to the list brings this device's card, waits for 
   expect(adopted).toEqual([{ list: LIST, seq: 3, hash: place.hash }]);
   expect(matched).toBe(true);
   expect(run.apps()).toBe(1);
+});
+
+it("a join through a PC pinned to the list keeps its place for the account its card was made for, and opens the PC with no key of another account signed in meanwhile", async () => {
+  const LIST = "5c".repeat(32);
+  const place = { id: LIST, seq: 3, hash: "ab".repeat(32) };
+  const opens: string[] = [];
+  const adopted: unknown[] = [];
+  const listed: NonNullable<Parameters<typeof accountPc>[0]["listed"]> = { holds: false, in: false, waits: true, adopted: (offer, account) => { adopted.push([offer, account]); } };
+  class LetIn extends Admitted {
+    override get listPlace() { return place; }
+  }
+  const run: Awaited<ReturnType<typeof accountPc>> = await accountPc({ release: false, newUntil: inADay(), listed, admits: true, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    opens.push(how);
+    if (how !== "other") return new Admitted(offer);
+    await options?.compare?.("123456", undefined, true);
+    // while the join waited, another tab signed out of this account and in to another one
+    const session = (await run.accountStore.get("session"))!;
+    await run.accountStore.set("session", { ...session, account: "acct_2", sign_in_id: "another-tab" });
+    return new LetIn(offer);
+  } });
+  await newPcSheet(run);
+  run.current().onPair();
+  await run.settled(() => run.current().state.kind === "compare");
+  run.current().onMatch?.();
+  await run.settled(() => adopted.length === 1 && run.current().state.kind !== "compare");
+  // kept for the account the card was made for, never the one signed in now; and the PC is not opened with that one's key
+  expect([adopted, opens, run.apps()]).toEqual([[[{ list: LIST, seq: 3, hash: place.hash }, "acct_1"]], ["other"], 0]);
 });
 
 it("a join through a PC pinned to the list closes its session as soon as it is handed its place, and goes to the front page where the sign-in ended while it took it", async () => {
