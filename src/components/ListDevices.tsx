@@ -9,7 +9,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { listView } from "../../shared/account-list.ts";
 import type { AccountList, AccountListView, ListedDevice } from "../lib/account/accountList.ts";
 import { inList, type Shown } from "../lib/account/listLeave.ts";
-import { cameInThrough, removeFromList, scopeOf, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
+import { cameInThrough, carriedPcs, removeFromList, scopeOf, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
@@ -56,6 +56,8 @@ function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true
   // the copy this device holds cannot be written to (two histories, a stopped list, one it cannot read): a retry says the same
   if (outcome.why === "blocked") return t("This device cannot change your account's list right now.");
   if (outcome.why === "changed") return t("Your sign-in changed while this was asked. Nothing was removed.");
+  // the question named a key the device has handed on: the person is asked again, for the key it holds now
+  if (outcome.why === "handed") return t("{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.", { name });
   return t("{name} could not be removed. Try again.|device", { name });
 }
 
@@ -129,20 +131,24 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
   // read when the question opens: what came in through the key, by the list this device holds now
   const [arrivals] = useState<readonly Arrival[]>(() => {
     const writer = list.writer();
-    return writer === null ? [] : cameInThrough(writer.state, removing, writer.keys.key);
+    return writer === null ? [] : cameInThrough(writer.state, removing, writer.keys.key, carriedPcs(list));
   });
+  // the keys asked for that were handed on to a new key since, by the key they were handed to: asked again for that one
+  const [heirs, setHeirs] = useState<Readonly<Record<string, string>>>({});
+  const now = (key: string): string => heirs[key] ?? key;
   // what the question was asked for: a sign-in or a list that took its place since signs nothing for it
   const [scope] = useState(() => scopeOf(view));
   const [chosen, setChosen] = useState<ReadonlySet<number>>(() => new Set(ticked ? arrivals.map((_, index) => index) : []));
   const picked = arrivals.filter((_, index) => chosen.has(index));
   const remove = async (): Promise<void> => {
     const outcome = await removeFromList(list, {
-      keys: [removing, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))],
+      keys: [removing, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))].map(now),
       pcs: picked.flatMap((arrival) => (arrival.kind === "pc" ? [arrival.endpoint] : [])),
     }, { scope }).catch((error: unknown): RemoveOutcome => {
       console.warn("Ovis: the device was not removed from the account's list", error instanceof Error ? error.name : error);
       return { removed: false, why: "unreached", retryAfterMs: null, placed: 0 };
     });
+    if (!outcome.removed && outcome.why === "handed") setHeirs((before) => ({ ...before, ...outcome.heirs }));
     if (!outcome.removed) throw new Error(failureOf(t, outcome, name, 1 + picked.length));
     onRemoved(name);
   };

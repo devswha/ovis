@@ -330,7 +330,6 @@ export const DEVICES_JA: Record<string, string> = {
   "{name} loses access to every PC of your account for good. To use it again, sign in on it and allow it from another device.": "{name} はアカウントのどのPCにも二度と入れなくなります。もう一度使うには、そのデバイスでサインインし、別のデバイスで許可してください。",
   "These PCs will need to be added again.": "これらのPCはもう一度追加する必要があります。",
   "Whether {name} was removed is not known yet. Look at the list again in a moment.": "{name} が外れたかどうかはまだ分かりません。少ししてから一覧をもう一度見てください。",
-  "Your sign-in changed while this was asked. Nothing was removed.": "確認している間にサインインが変わりました。何も外していません。",
   "{done} of {total} were removed. Try again for the rest.": "{total} 件のうち {done} 件を外しました。残りはもう一度お試しください。",
   "Came in through {name}:": "{name} 経由で入ったもの:",
   "If {name} was stolen, tick what you did not add yourself.": "{name} が盗まれた場合は、自分で追加していないものを選んでください。",
@@ -362,4 +361,5 @@ export const DEVICES_JA: Record<string, string> = {
   "A PC not in the list": "一覧にない PC",
   "user@host or address": "user@host またはアドレス",
   "Enter an SSH address, such as user@host.": "user@host のような SSH アドレスを入力してください。",
+  "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "確認のあとに {name} が新しいキーに移りました。何も削除していません。削除するにはもう一度「削除」を押してください。",
 };

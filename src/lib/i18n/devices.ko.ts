@@ -330,7 +330,6 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} loses access to every PC of your account for good. To use it again, sign in on it and allow it from another device.": "{name} 기기는 계정의 모든 PC에 다시는 들어갈 수 없어요. 다시 쓰려면 그 기기에서 로그인하고 다른 기기에서 허용하세요.",
   "These PCs will need to be added again.": "이 PC들은 다시 추가해야 해요.",
   "Whether {name} was removed is not known yet. Look at the list again in a moment.": "{name} 기기가 빠졌는지 아직 알 수 없어요. 잠시 뒤 목록을 다시 보세요.",
-  "Your sign-in changed while this was asked. Nothing was removed.": "확인하는 사이에 로그인이 바뀌었어요. 아무것도 빼지 않았어요.",
   "{done} of {total} were removed. Try again for the rest.": "{total}개 중 {done}개만 뺐어요. 나머지는 다시 시도하세요.",
   "Came in through {name}:": "{name} 기기로 들어온 것:",
   "If {name} was stolen, tick what you did not add yourself.": "{name} 기기를 도난당했다면 직접 추가하지 않은 것을 고르세요.",
@@ -362,4 +361,5 @@ export const DEVICES_KO: Record<string, string> = {
   "A PC not in the list": "목록에 없는 PC",
   "user@host or address": "user@host 또는 주소",
   "Enter an SSH address, such as user@host.": "user@host 같은 SSH 주소를 입력하세요.",
+  "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "확인한 뒤에 {name} 기기가 새 키로 바뀌었어요. 아무것도 제거하지 않았으니, 제거하려면 다시 제거를 누르세요.",
 };

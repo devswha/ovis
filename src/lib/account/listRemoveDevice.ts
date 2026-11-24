@@ -8,7 +8,9 @@
  * A key that is ended never comes back: nothing here signs it in again. The account service's answer to the
  * placement is trusted for nothing: a member is out once this device's own copy shows its removal at its place.
  */
-import { listView, pcRemoval, sealEpoch, signListEntry, type ListKind, type ListState } from "../../../shared/account-list.ts";
+import { listView, pcRemoval, readKind, sealEpoch, signListEntry, type ListKind, type ListState } from "../../../shared/account-list.ts";
+import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
+import { standsFor } from "../../../shared/account-list-migrate.ts";
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
 import { placeOf, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
 import { SignedOutError } from "./service.ts";
@@ -27,9 +29,9 @@ export type Arrival =
  * in through those in turn, also through a member that is out already (whoever it let in may still be in). This
  * device (`self`) is never among them, and neither is what came in through it: the person removing a key trusts the
  * device they remove it from. Devices and PCs that were in the account before the list (`carried`) came in through
- * nobody.
+ * nobody, and so did a PC carried in (`carriedEndpoints`, carriedPcs) that a later `pc` entry only gave its keys.
  */
-export function cameInThrough(state: ListState, key: string, self: string | null): Arrival[] {
+export function cameInThrough(state: ListState, key: string, self: string | null, carriedEndpoints: ReadonlySet<string> = new Set()): Arrival[] {
   const view = listView(state);
   const placer = (signer: string | null): string | null => (signer === null ? null : state.signers[signer]?.by ?? null);
   // keys with no name, in or out: listView names only those in
@@ -49,13 +51,38 @@ export function cameInThrough(state: ListState, key: string, self: string | null
     for (const row of view.devices) if (!row.carried && row.by === via) take({ kind: "device", key: row.key, seq: row.seq, via }, row.key, row.ended === null);
     for (const row of nameless) if (row.by === via) take({ kind: "signer", key: row.key, seq: row.seq, via }, row.key, !row.out);
     for (const row of view.pcs) {
-      if (row.how === "carried") continue;
+      // a PC's first admission says whom it came in through: one carried in came in through nobody
+      if (row.how === "carried" || carriedEndpoints.has(row.endpoint)) continue;
       // a PC a person added came in through the key that signed its `pc`; one that joined, through whoever placed its invite
       const by = row.how === "added" ? placer(row.key) : placer(row.invite);
       if (by === via) take({ kind: "pc", endpoint: row.endpoint, seq: row.seq, via }, row.how === "added" ? row.key : null, row.removed === null);
     }
   }
   return found.sort((a, b) => a.seq - b.seq);
+}
+
+/** How many entries carriedPcs reads at a time. */
+const CARRIED_PAGE = 256;
+
+/**
+ * The relay keys of the PCs carried into the list: the `carried` entries that follow entry 0 while nothing else has
+ * been signed (the kinds count a `carried` only then), from this device's own copy. The list's state forgets that a
+ * PC was carried once a `pc` entry gives it its keys; its first admission is read here.
+ */
+export function carriedPcs(list: AccountList): ReadonlySet<string> {
+  const found = new Set<string>();
+  for (let after: number | null = null; ;) {
+    const page = list.pageAfter(after, CARRIED_PAGE);
+    if (page === null || page.entries.length === 0) return found;
+    for (const text of page.entries) {
+      const body = readBody(entryFromText(text).body);
+      if (body.seq === 0) continue;
+      const kind = readKind(body);
+      if (kind?.kind !== "carried") return found;
+      if ("endpoint" in kind) found.add(kind.endpoint);
+    }
+    after = (after ?? -1) + page.entries.length;
+  }
 }
 
 /** Who a removal puts out: keys (a device, a key with no name) and PCs by their relay key. */
@@ -85,11 +112,16 @@ export function scopeOf(view: AccountListView): WriteScope | null {
  * Why nothing, or not everything, was put out: the write loop's reasons (listWrite.ts, WriteRefusal), or `changed`:
  * another sign-in, another list or another key stood in the write's place by its next read; `unread`: this device's
  * own store did not answer whether it keeps a copy of the account's list, which is no word that it keeps none (the
- * lead's X6). `placed`: how many of the members asked for went in parts that were placed before the refusal.
+ * lead's X6); `handed`: a device asked for handed its place to a new key since (`heirs`, by the key asked for), so
+ * the person is asked again for that key. `placed`: how many of the members asked for went in parts that were placed
+ * before the refusal.
  */
 export type RemoveOutcome =
   | { readonly removed: true }
-  | { readonly removed: false; readonly why: WriteRefusal | "changed" | "unconfirmed" | "unread"; readonly retryAfterMs: number | null; readonly placed: number; readonly unconfirmed?: readonly string[] };
+  | {
+    readonly removed: false; readonly why: WriteRefusal | "changed" | "unconfirmed" | "unread" | "handed"; readonly retryAfterMs: number | null; readonly placed: number;
+    readonly unconfirmed?: readonly string[]; readonly heirs?: Readonly<Record<string, string>>;
+  };
 
 /** The most entries one request carries (the account service's bound). */
 export const BATCH_ENTRIES_MAX = 16;
@@ -144,12 +176,12 @@ export async function removalRequest(writer: ListWriter, removal: Removal, optio
  * after part until `build` has nothing left to sign. Every read must still show `scope`, or nothing more is signed.
  * Only a sign-in that ended throws.
  */
-async function placeParts(list: AccountList, scope: WriteScope | null, build: (writer: ListWriter) => Promise<Signed | null>, options: WriteOptions, guard?: (writer: ListWriter) => "unconfirmed" | null): Promise<RemoveOutcome> {
+async function placeParts(list: AccountList, scope: WriteScope | null, build: (writer: ListWriter) => Promise<Signed | null>, options: WriteOptions, guard?: (writer: ListWriter) => "unconfirmed" | "handed" | null): Promise<RemoveOutcome> {
   let placed = 0;
   for (let parts = 0; parts < PARTS_MAX; parts += 1) {
     let whole = true;
     let asked = 0;
-    const outcome = await writeToList<"changed" | "unconfirmed">(list, async (writer) => {
+    const outcome = await writeToList<"changed" | "unconfirmed" | "handed">(list, async (writer) => {
       if (scope !== null && (writer.account !== scope.account || writer.list !== scope.list || writer.keys.key !== scope.member)) return { refused: "changed" };
       const refused = guard?.(writer) ?? null;
       if (refused !== null) return { refused };
@@ -170,8 +202,19 @@ async function placeParts(list: AccountList, scope: WriteScope | null, build: (w
  * with them where there is room. A key that is out already is passed by; with nothing left the outcome is `removed`.
  * `scope`: what the write was begun for (scopeOf the view the person acted on); null takes the first read's.
  */
-export function removeFromList(list: AccountList, removal: Removal, options: Pick<WriteOptions, "wait"> & { readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome> {
-  return placeParts(list, options.scope ?? scopeOf(list.view()), (writer) => removalRequest(writer, removal, { epoch: true }), options);
+export async function removeFromList(list: AccountList, removal: Removal, options: Pick<WriteOptions, "wait"> & { readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome> {
+  // A device asked for that handed its place to a new key since is not out: its heir is. Nothing is signed, and the
+  // person is asked again for the heir (the key was asked for, not the device that holds it now).
+  let heirs: Record<string, string> = {};
+  const outcome = await placeParts(list, options.scope ?? scopeOf(list.view()), (writer) => removalRequest(writer, removal, { epoch: true }), options, (writer) => {
+    heirs = {};
+    for (const key of removal.keys) {
+      const heir = standsFor(writer.state, key);
+      if (heir !== null && heir !== key) heirs[key] = heir;
+    }
+    return Object.keys(heirs).length > 0 ? "handed" : null;
+  });
+  return !outcome.removed && outcome.why === "handed" ? { ...outcome, heirs } : outcome;
 }
 
 /**

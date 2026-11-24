@@ -222,6 +222,31 @@ describe("Manage account's devices from the account's signed list", () => {
     expect(w.held().entries).toHaveLength(entries);
   });
 
+  it("asks again for the new key of a device that handed its place over while the question was open, and never says it was removed", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const tablet = await letIn(w, first, "Dana's tablet");
+    const root = await mount(first);
+    await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
+    // the tablet hands its place to a new key of its own before the person confirms
+    const heir = await w.device({ label: "Dana's tablet" });
+    await heir.list.sync();
+    const next = (await heir.keys()).key;
+    const claim = (await tablet.service.listClaims(w.held().id)).find((each) => each.key === next)!;
+    const old = await tablet.keys();
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true },
+      { key: old.key, privateKey: old.signs }, Math.floor(w.clock.now / 1000));
+    await tablet.service.placeEntries(w.held().id, [rotation.text], []);
+    const before = w.held().entries.length;
+    await confirm(root, "Remove");
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Dana's tablet moved to a new key since you asked. Nothing was removed: press Remove again to remove it.");
+    expect(w.held().entries).toHaveLength(before);
+    await confirm(root, "Remove");
+    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+    expect(listView(w.held().state).devices.find((row) => row.key === next)?.ended).not.toBeNull();
+  });
+
   it("offers no Remove to a device that may not remove anybody", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });

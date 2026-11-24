@@ -106,6 +106,7 @@ const BASE: Record<string, string> = {
   "An earlier change is still waiting": "이전 변경이 아직 처리되지 않았어요",
   "It was not confirmed by your account yet. Try it again, or cancel it.": "계정에서 아직 확인되지 않았어요. 다시 시도하거나 취소하세요.",
   "An earlier change is still waiting: try it again or cancel it first.": "이전 변경이 아직 처리되지 않았어요. 먼저 다시 시도하거나 취소하세요.",
+  "Your sign-in changed while this was asked. Nothing was removed.": "확인하는 사이에 로그인이 바뀌었어요. 아무것도 빼지 않았어요.",
   "The sign-in on this device changed since you approved it. Sign in to that account again, then try again.": "승인한 뒤 이 기기의 로그인이 바뀌었어요. 그 계정으로 다시 로그인한 뒤 다시 시도하세요.",
   "Too many devices were added. Try again tomorrow.": "기기를 너무 많이 추가했어요. 내일 다시 시도하세요.",
   "Not known yet: is {device} in your account?": "아직 알 수 없어요: {device} 기기가 계정에 추가됐나요?",

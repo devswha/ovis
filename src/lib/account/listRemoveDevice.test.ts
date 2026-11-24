@@ -7,7 +7,7 @@ import { allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { WRITE_RESENDS } from "./listWrite.ts";
 import {
-  cameInThrough, removalRequest, removeFromList, removeSelf, scopeOf, tidyList,
+  cameInThrough, carriedPcs, removalRequest, removeFromList, removeSelf, scopeOf, tidyList,
   type RemoveOutcome,
 } from "./listRemoveDevice.ts";
 import { memoryAccountStore } from "./store.ts";
@@ -499,3 +499,57 @@ describe("the clean-up ends what the kinds layer's lapsedRemovals names", () => 
     expect(w.held().entries).toHaveLength(before);
   });
 });
+
+describe("what the second Codex read of P13 found about Remove", () => {
+  /** `device` hands its place to a new key of its own (one that claimed its place first), with one entry that adds that key and ends its own. */
+  async function handOver(w: World, device: WorldDevice): Promise<string> {
+    const old = await device.keys();
+    const next = await w.device({ label: "Dana's tablet" });
+    await next.list.sync();
+    const key = (await next.keys()).key;
+    const list = w.held().id;
+    const claim = (await device.service.listClaims(list)).find((each) => each.key === key)!;
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true },
+      { key: old.key, privateKey: old.signs }, Math.floor(w.clock.now / 1000));
+    await device.service.placeEntries(list, [rotation.text], []);
+    return key;
+  }
+
+  it("M5: a device that handed its place to a new key while the question was open is not reported removed: the removal names its heir and signs nothing", async () => {
+    const { w, first, second } = await twoDevices();
+    const asked = (await second.keys()).key;
+    const heir = await handOver(w, second);
+    const before = w.held().entries.length;
+    expect(await removeFromList(first.list, { keys: [asked], pcs: [] }, noWait)).toMatchObject({ removed: false, why: "handed", heirs: { [asked]: heir } });
+    expect(w.held().entries).toHaveLength(before);
+    // asked again for the heir, it goes
+    expect(await removeFromList(first.list, { keys: [heir], pcs: [] }, noWait)).toEqual(REMOVED);
+    expect(listView(w.held().state).devices.find((row) => row.key === heir)?.ended).not.toBeNull();
+  });
+
+  it("M5: a PC that was carried into the list came in through nobody, whoever later supplied its keys", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const held = w.held();
+    const at = Math.floor(w.clock.now / 1000);
+    const phone = await first.keys();
+    const tablet = await deviceListKeys(memoryAccountStore());
+    const pc = await askingPc();
+    // the PC was in the account before its list: carried in right after entry 0; then the phone lets the tablet in,
+    // and the tablet supplies the carried PC's keys with a `pc` entry
+    const carried = await signListEntry(held.state, { kind: "carried", endpoint: pc.endpoint, sealed: null }, { key: phone.key, privateKey: phone.signs }, at);
+    const tabletCard = await signCard({ key: tablet.key, enc: tablet.enc.key, list: held.id, endpoint: null, invite: null }, tablet.signs);
+    const letIn = await signListEntry(carried.state, { kind: "device", key: tablet.key, power: "full", role: "drive", until: null, enc: tablet.enc.key, card: tabletCard, sealed: null, rotates: false }, { key: phone.key, privateKey: phone.signs }, at);
+    const pcCard = await signCard({ key: pc.key, enc: pc.enc, list: held.id, endpoint: pc.endpoint, invite: null }, pc.signs);
+    const supplied = await signListEntry(letIn.state, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card: pcCard, sealed: null }, { key: tablet.key, privateKey: tablet.signs }, at);
+    const state = supplied.state;
+    expect(listView(state).pcs.find((row) => row.endpoint === pc.endpoint)?.how).toBe("added");
+    // the copy this device would serve a peer, entry 0 on
+    const texts = [...held.entries, carried.text, letIn.text, supplied.text];
+    const copy = { ...first.list, pageAfter: (after: number | null, limit: number) => ({ list: held.id, after, entries: texts.slice(after === null ? 0 : after + 1).slice(0, limit), head: { seq: state.footing.seq, hash: state.footing.hash } }) };
+    expect(cameInThrough(state, tablet.key, phone.key)).toHaveLength(1);
+    expect(cameInThrough(state, tablet.key, phone.key, carriedPcs(copy))).toEqual([]);
+  });
+});
+
