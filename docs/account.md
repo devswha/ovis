@@ -1753,12 +1753,11 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   account's id for the key. The session it was compared on opens nothing by that row: it ends
   (`account_list_required` to a client that offered `account-list-1`, else `auth_failed`), and the
   device gets in by a sign-in once the list holds that key.
-- **Another PC of the account** that is vouched for is the one join whose session goes on: the
-  list answered for its relay key in the turn that wrote its row, and it only watches. Its row has
-  the account's id for the key it showed, and the list holds no device under that key, so a later
-  sign-in of that PC is refused, and it is not taken again while that row stands here. A pinned
-  PC therefore lets another PC of its account watch for one session only; its row does not record
-  which PC it is, which is what the list would have to answer for.
+- **Another PC of the account** that is vouched for is the list's to answer for by its relay
+  key. Its row records the relay key the join proved (`vouched_pc`), and on a pinned PC it is let
+  in, to watch, while the list holds that relay key as a PC that is in: at its comparison and at
+  every later sign-in. Its session ends when the list removes that PC, and it signs in no more. A
+  row of such a PC from before this was recorded names no PC and opens nothing on a pinned PC.
 - **It says so.** For a pinned PC, `GET /api/account/status` carries `list`: `pinned_list` (the
   list's id; `GET /api/account/list` has it under the same name, also when the PC holds no copy it
   can read), `standing` (where the PC stands in it) and `reason`, one sentence a person can act on when

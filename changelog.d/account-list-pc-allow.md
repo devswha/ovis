@@ -11,3 +11,5 @@
   drives, with full power) sees the joins that wait at that PC and allows one from its own app.
 - A device a member allowed on a PC that follows no list is told its place in the account's signed
   list through that PC's introduction.
+- On a PC pinned to its account's list, another PC of the account keeps watching for as long as
+  the list holds it, and is put out when the list removes it.
