@@ -7,7 +7,7 @@
  * And the tidying a device of power `full` does by itself while it reads the list: what is over its time goes.
  */
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
-import { removeSelf, tidyList, type RemoveOutcome } from "./listRemove.ts";
+import { removeSelf, tidyList, type RemoveOutcome } from "./listRemoveDevice.ts";
 import { sameSignIn } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
@@ -53,7 +53,7 @@ export function watchRemoval(list: AccountList, onOut: (account: string) => void
 }
 
 /**
- * Tidies the list after each read that reached the account service and finds this device in it (listRemove.ts,
+ * Tidies the list after each read that reached the account service and finds this device in it (listRemoveDevice.ts,
  * tidyList): quietly, one round at a time, each key tried once by this page.
  */
 export function tidyOnRead(list: AccountList): () => void {

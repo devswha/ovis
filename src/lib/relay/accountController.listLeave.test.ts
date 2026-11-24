@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { listWorld, type WorldDevice } from "../account/accountList.test-helpers.ts";
 import { allowDevice } from "../account/listAllow.ts";
-import { removeFromList } from "../account/listRemove.ts";
+import { removeFromList } from "../account/listRemoveDevice.ts";
 import { createAccountController } from "./accountController.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";

@@ -10,7 +10,7 @@ import { listView } from "../../shared/account-list.ts";
 import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import type { AccountList, AccountListView, ListedDevice } from "../lib/account/accountList.ts";
 import { inList } from "../lib/account/listLeave.ts";
-import { cameInThrough, removeFromList, type Arrival, type RemoveOutcome } from "../lib/account/listRemove.ts";
+import { cameInThrough, removeFromList, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { NotMeButton } from "./BlockOutcomes.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";

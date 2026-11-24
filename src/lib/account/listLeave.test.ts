@@ -5,7 +5,7 @@ import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice } from "./listAllow.ts";
 import { deviceListKeys } from "./listKeys.ts";
 import { forgetMembership, inList, leaveList, tidyOnRead, watchRemoval } from "./listLeave.ts";
-import { removeFromList } from "./listRemove.ts";
+import { removeFromList } from "./listRemoveDevice.ts";
 import { memoryAccountStore } from "./store.ts";
 
 type World = ReturnType<typeof listWorld>;

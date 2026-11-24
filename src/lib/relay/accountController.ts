@@ -6,7 +6,7 @@ import { accountList } from "../account/accountList.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
 import { forgetMembership, leaveList, tidyOnRead, watchRemoval } from "../account/listLeave.ts";
-import type { RemoveOutcome } from "../account/listRemove.ts";
+import type { RemoveOutcome } from "../account/listRemoveDevice.ts";
 import { listNames } from "../account/listGenesis.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { signInKey } from "../account/signInKey.ts";

@@ -8,7 +8,7 @@ import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import {
   cameInThrough, overdueKeys, REMOVE_RESENDS, REMOVE_TRIES, removalRequest, removeFromList, removeSelf, tidyList,
   type RemoveOutcome,
-} from "./listRemove.ts";
+} from "./listRemoveDevice.ts";
 import { memoryAccountStore } from "./store.ts";
 
 type World = ReturnType<typeof listWorld>;

@@ -1071,7 +1071,7 @@ and the introduction of [Introductions](account.md#introductions), and nothing o
 
 ### Putting a member out
 
-The code is [`src/lib/account/listRemove.ts`](../src/lib/account/listRemove.ts) and
+The code is [`src/lib/account/listRemoveDevice.ts`](../src/lib/account/listRemoveDevice.ts) and
 [`listLeave.ts`](../src/lib/account/listLeave.ts); the screen is Manage account's **Devices**
 ([`ListDevices.tsx`](../src/components/ListDevices.tsx)).
 
