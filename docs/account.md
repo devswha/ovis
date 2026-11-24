@@ -1463,7 +1463,9 @@ key only where a PC has let it in for a day, and the record has to have run for 
   pairing from a guest's. A key enters with both counts at nothing. A row that stops standing
   (the account no longer names it, a removal, a block, 60 days unused) leaves the record at once,
   and starts at nothing if it is let in again. A row that only waits, for the read after a start
-  or while the account service is away, stays in the record and counts no time meanwhile.
+  or while the account service is away, stays in the record and counts no time meanwhile (unless a
+  person at this PC let that row in for the wait, as `ovis recover` does: then it counts). Time in
+  which the rows could not be read counts for no key.
 - **Two counts, no clock readings compared.** `ran` is the time the PC itself ran with the key let
   in. `wall` is the time by the clock, which also counts while the PC is off. The record takes the
   time every four minutes and when the server stops. While the PC runs, `wall` grows by no more
