@@ -98,9 +98,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const [picker, setPicker] = useState<{ anchor: HTMLElement; tab: HerdrTab; point?: { x: number; y: number }; previousFocus: HTMLElement | null; touch: boolean; workspaces?: true; typing?: true } | null>(null);
   // whether the press on the row came while a pane's field held the typing (a phone's keyboard up): read before the press moves the focus
   const typingAtPress = useRef(false);
-  // the sample is the press's own: taken once by the menu that press opens, and never by a keyboard's activation (a click of detail 0)
-  const takeTyping = (detail: number | null): { typing?: true } => {
-    const typing = typingAtPress.current && detail !== 0;
+  // the sample is the press's own: taken once by the menu that press opens, and never by a keyboard's activation
+  const takeTyping = (fromPointer: boolean): { typing?: true } => {
+    const typing = typingAtPress.current && fromPointer;
     typingAtPress.current = false;
     return typing ? { typing: true } : {};
   };
@@ -293,7 +293,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (pressed.owner !== previousOwner.current || !anchor.isConnected || !currentTabs.current.some((entry) => entry.tab_id === pressed.tabId)) { longPress.current = null; return; }
     pressed.fired = true;
     pressed.until = Infinity;
-    setPicker({ anchor, tab, previousFocus: anchor, touch: active, ...takeTyping(null) });
+    setPicker({ anchor, tab, previousFocus: anchor, touch: active, ...takeTyping(true) });
   };
   const liftLongPress = (): void => {
     const pressed = longPress.current;
@@ -481,6 +481,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const buttons = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
     const index = buttons.indexOf(document.activeElement as HTMLElement);
     if (index < 0) return;
+    typingAtPress.current = false;
     if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
       event.preventDefault(); event.stopPropagation();
       const tabId = buttons[index]?.dataset["tabId"];
@@ -515,12 +516,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // focused, so the keyboard comes back on the pane now shown and the next letter goes there.
   const typingInPane = (): boolean => document.activeElement instanceof HTMLElement && document.activeElement.closest(".pane-frame") !== null
     && (document.activeElement.matches("input, textarea") || document.activeElement.isContentEditable);
-  const pickPane = (paneId: string, typing: boolean): void => {
-    if (!typing) { onSelectPane(paneId); return; }
-    flushSync(() => { if (paneId !== selectedPane.pane_id) onSelectPane(paneId); });
-    // a zoomed tab goes on showing herdr's zoomed pane (useSelection returns the pick to it): the typing stays on the pane in view
-    const layout = snapshot.layouts?.find((entry) => entry.tab_id === selectedPane.tab_id);
-    const shown = layout?.zoomed ? layout.focused_pane_id : paneId;
+  const pickPane = (pane: PaneInfo, typing: boolean): void => {
+    if (!typing) { onSelectPane(pane.pane_id); return; }
+    flushSync(() => onSelectPane(pane.pane_id));
+    // the picked pane's tab, zoomed, goes on showing herdr's zoomed pane (useSelection returns the pick to it): the typing goes to the pane in view
+    const layout = snapshot.layouts?.find((entry) => entry.tab_id === pane.tab_id);
+    const shown = layout?.zoomed ? layout.focused_pane_id : pane.pane_id;
     const frame = strip.current?.closest(".pane-slot, .pane-column")?.querySelector(`[data-layout-pane="${CSS.escape(shown)}"]`)
       ?? document.querySelector(`[data-layout-pane="${CSS.escape(shown)}"]`);
     const field = paneInput(frame);
@@ -531,11 +532,16 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const openPicker = (event: MouseEvent<HTMLElement>, tab: HerdrTab): void => {
     reorder.cancelDrag();
     const touch = event.type !== "contextmenu";
+    const pointerType = (event.nativeEvent as { pointerType?: string } | undefined)?.pointerType;
+    const fromPointer = touch
+      ? event.detail !== 0
+      : event.clientX !== 0 || event.clientY !== 0 || pointerType === "touch" || pointerType === "pen";
+    const typing = takeTyping(fromPointer);
     const tabButton = event.currentTarget.parentElement?.querySelector<HTMLElement>('[role="tab"]') ?? null;
     setPicker(touch && picker?.tab.tab_id === tab.tab_id ? null : { anchor: event.currentTarget, tab,
       point: !touch && (event.clientX !== 0 || event.clientY !== 0) ? { x: event.clientX, y: event.clientY } : undefined,
       previousFocus: touch ? tabButton : document.activeElement instanceof HTMLElement ? document.activeElement : null, touch,
-      ...(touch ? takeTyping(event.detail) : {}) });
+      ...typing });
   };
 
   // A one-pane-at-a-time canvas omits split and zoom, but must keep unzoom to free the other panes.
@@ -546,7 +552,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const paneList = own.length < 2 ? [] : own.map((pane): RowMenuItem => ({
       id: `pane:${pane.pane_id}`, label: displayPaneTitle(pane), icon: Terminal,
       glyph: pane.agent ? <AgentMark agent={pane.agent} size={16} /> : undefined,
-      current: pane.pane_id === selectedPane.pane_id, run: () => pickPane(pane.pane_id, typing),
+      current: pane.pane_id === selectedPane.pane_id, run: () => pickPane(pane, typing),
     }));
     // the pane's actions list the tab's panes too where the tab row counts as hidden (the header's tabs): once is enough
     const listed = [...tabItems, ...paneList];
@@ -679,7 +685,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                     // the open split tab, one pane in view: a tap lists its panes, the menu its ⋯ and a long press open
                     if (active && soloPanes && own.length > 1) {
                       const anchor = event.currentTarget;
-                      setPicker(picker?.tab.tab_id === tab.tab_id ? null : { anchor, tab, previousFocus: anchor, touch: true, ...takeTyping(event.detail) });
+                      const typing = takeTyping(event.detail !== 0);
+                      setPicker(picker?.tab.tab_id === tab.tab_id ? null : { anchor, tab, previousFocus: anchor, touch: true, ...typing });
                       return;
                     }
                     const pane = paneFor(tab);
