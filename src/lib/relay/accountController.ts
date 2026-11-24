@@ -343,6 +343,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   /** What a sign-out or a leave says when the list did not take this device's own removal. */
   const leaveFailure = (outcome: Exclude<RemoveOutcome, { removed: true }>): string => outcome.why === "stopped"
     ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.")
+    // the removal may have counted, and no read of this device's could show it (its sign-in may have ended with it)
+    : outcome.why === "unknown" ? t("This device signed out. Whether your account still lists it is not known yet: check its devices from another device.")
     : t("This device signed out, but your account still lists it. Remove it from another device.");
   const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); };
   const signOut = (): void => {
@@ -395,6 +397,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     let departingKey: string | undefined;
     /** Why the list did not take this device's own removal, where it did not. */
     const refused: { why: string | null } = { why: null };
+    /** No read could show whether the list took it (the sign-in may have ended with it): the leave finishes here, and says so. */
+    let unsure = false;
     return from.then(async (session) => {
       if (session === undefined) throw new SignedOutError();
       departing = session.account;
@@ -403,7 +407,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       const member = lists === null ? null : scopeOf(lists.view())?.member ?? null;
       departingKey = member ?? (await accountStore.key()).public_spki;
       const out = lists === null ? null : await leaveList(lists, session.account);
-      if (out !== null && !out.removed) { refused.why = out.why; throw new Error(`The list did not take this device's removal (${out.why})`); }
+      unsure = out !== null && !out.removed && out.why === "unknown";
+      if (out !== null && !out.removed && !unsure) { refused.why = out.why; throw new Error(`The list did not take this device's removal (${out.why})`); }
       // one account key serves every account of this device: where another account's list still holds it, it stays
       const keeps = (key: string): Promise<boolean> => lists === null ? Promise.resolve(false) : lists.pinnedElsewhere(session.account, key);
       if (out === null || lists === null) return leaveAccount({ service: account, accountStore, relayStore: store, session, keeps });
@@ -418,7 +423,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }).then(async ({ unconfirmed }): Promise<LeaveOutcome> => {
       // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
       const names = new Map((await store.list()).map((device) => [device.server_id, device.name ?? device.server_id.slice(0, 8)]));
-      const message = unconfirmed.length === 0 ? null
+      const message = unsure ? t("This device left the account. Whether your account still lists it is not known yet: check its devices from another device.")
+        : unconfirmed.length === 0 ? null
         : t("This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") });
       // the PCs kept for the account that left; another that signed in meanwhile keeps its own
       dropKnownPcs(departing);

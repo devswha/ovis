@@ -185,6 +185,8 @@ export const RELAY_ZH: Record<string, string> = {
   "More ways to open {name}": "用其他方式打开 {name}",
   "This device was removed from your account. To use it again, sign in and allow it from another device.": "此设备已从你的账户中移除。要再次使用，请登录并在另一台设备上允许它。",
   "This device signed out, but your account still lists it. Remove it from another device.": "已退出登录，但账户列表中仍有此设备。请从另一台设备上移除它。",
+  "This device left the account. Whether your account still lists it is not known yet: check its devices from another device.": "此设备已离开账户。尚不清楚你的账户是否仍列有它，请在另一台设备上查看设备列表。",
+  "This device signed out. Whether your account still lists it is not known yet: check its devices from another device.": "此设备已退出登录。尚不清楚你的账户是否仍列有它，请在另一台设备上查看设备列表。",
   "This device signed out, but it could not read what it keeps of your account's list, so your account may still list it.": "此设备已退出登录，但无法读取它保存的账户名单，所以你的账户可能仍列有此设备。",
   "No device was signed out: the other devices could not be removed from your account. Try again.": "未能从账户中移除其他设备，因此没有设备退出登录。请重试。",
   "{done} of {total} other devices left your account; the others did not. Try again.": "{total} 台其他设备中只有 {done} 台离开了你的账户。请重试。",

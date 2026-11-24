@@ -243,6 +243,42 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 
+  it("M1: a sign-out whose own removal no read could show finishes here, and says the account may still list this device", async () => {
+    const { w, second } = await twoDevices();
+    const shell = shellOf(second);
+    await shell.refresh(true);
+    const own = (await second.keys()).key;
+    let ended = false;
+    second.wire.answer = (request) => {
+      if (ended) return Response.json({ error: { code: "unauthorized", message: "Signed out" } }, { status: 401 });
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) ended = true;
+      return null;
+    };
+    shell.signOut();
+    await until(() => shell.state?.kind === "signed-out" && shell.state.error !== null);
+    expect(shell.state).toEqual({ kind: "signed-out", error: "This device signed out. Whether your account still lists it is not known yet: check its devices from another device." });
+    await until(async () => (await second.lists.get("copy", w.account)) === undefined);
+    expect((await second.keys()).key).not.toBe(own);
+  });
+
+  it("M1: a leave whose own removal no read could show finishes here, and says the account may still list this device", async () => {
+    const { w, second } = await twoDevices();
+    const shell = shellOf(second);
+    await shell.refresh(true);
+    const own = (await second.keys()).key;
+    let ended = false;
+    second.wire.answer = (request) => {
+      if (ended) return Response.json({ error: { code: "unauthorized", message: "Signed out" } }, { status: 401 });
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) ended = true;
+      return null;
+    };
+    directoryEnded = true;
+    expect(await shell.leave()).toEqual({ left: true, message: "This device left the account. Whether your account still lists it is not known yet: check its devices from another device." });
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
+    expect((await second.keys()).key).not.toBe(own);
+    expect(await second.lists.get("copy", w.account)).toBeUndefined();
+  });
+
   it("Codex 6: a leave whose own removal counted finishes on this device when the account service ended its sign-in with it", async () => {
     const { w, second } = await twoDevices();
     const shell = shellOf(second);

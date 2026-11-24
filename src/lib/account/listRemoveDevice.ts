@@ -11,6 +11,7 @@
 import { listView, pcRemoval, sealEpoch, signListEntry, type ListKind, type ListState } from "../../../shared/account-list.ts";
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
 import { placeOf, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
+import { SignedOutError } from "./service.ts";
 
 /**
  * A member that came in through another key: a device it let in, a key with no name it added, or a PC it added or
@@ -192,10 +193,24 @@ export async function removeOtherDevices(list: AccountList, scope: WriteScope, c
  * This device puts itself out (signing out, leaving the account): one `remove` of its own key, which a device of
  * any power may sign. It opens no epoch: a device that is on its way out leaves that to one that stays, since the
  * next epoch's key would be its own to know.
+ *
+ * The account service may end this device's sign-in with the removal (a linked device), so the write is over once
+ * the service took the request; it counts only once this device's own read of the log then shows this device out.
+ * A read that is not possible (that sign-in ended, the log did not answer) leaves it `unknown`; a read that shows
+ * this device still in is a refusal, whatever the service answered.
  */
-export function removeSelf(list: AccountList, scope: WriteScope, options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome> {
-  return placeParts(list, scope, (signs) => removalRequest(signs, { keys: [signs.keys.key], pcs: [] }, { epoch: false }),
+export async function removeSelf(list: AccountList, scope: WriteScope, options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome> {
+  const outcome = await placeParts(list, scope, (signs) => removalRequest(signs, { keys: [signs.keys.key], pcs: [] }, { epoch: false }),
     { ...options, writer: () => list.writer({ self: true }), trustPlaced: true });
+  if (!outcome.removed) return outcome;
+  const unsure: RemoveOutcome = { removed: false, why: "unknown", retryAfterMs: null, placed: 0 };
+  let read: AccountListView;
+  try { read = await list.sync({ read: true }); } catch (error) {
+    if (error instanceof SignedOutError) return unsure;
+    throw error;
+  }
+  if (read.account === scope.account && read.status.at === "following" && read.status.list === scope.list && read.status.standing === "out") return outcome;
+  return read.reached ? { removed: false, why: "refused", retryAfterMs: null, placed: 0 } : unsure;
 }
 
 /**

@@ -215,4 +215,24 @@ describe("what the second Codex read of P13 found about leaving", () => {
     expect(await removeOthers(unread, w.account, [], noWait)).toMatchObject({ removed: false, why: "unread" });
     expect(w.held().entries).toHaveLength(before);
   });
+
+  it("M1: a self-removal the account service says it took counts only once this device's own read shows it", async () => {
+    const { w, second } = await twoDevices();
+    // the service answers the placement as taken and appends nothing
+    second.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({}) : null;
+    expect(await leaveList(second.list, w.account, noWait)).toMatchObject({ removed: false, why: "refused" });
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
+  });
+
+  it("M1: where no read follows its own removal (the sign-in ended with it), whether it counted is not known", async () => {
+    const { w, second } = await twoDevices();
+    let ended = false;
+    second.wire.answer = (request) => {
+      if (ended) return Response.json({ error: { code: "unauthorized", message: "Signed out" } }, { status: 401 });
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) ended = true;
+      return null;
+    };
+    expect(await leaveList(second.list, w.account, noWait)).toMatchObject({ removed: false, why: "unknown" });
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
+  });
 });
