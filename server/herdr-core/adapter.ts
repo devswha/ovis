@@ -968,9 +968,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const paneId = paneIdOf(params, "target");
       const text = params["text"];
       if (typeof text !== "string") throw new AdapterError("invalid_params", "text is required");
-      if (!(await paneOf(paneId, "agent_not_found")).agent) throw new AdapterError("agent_not_found", `no agent in pane ${paneId}`);
       await inTurn(paneId, async () => {
-        const force = agyPlanReview((await terminal(paneId)).status);
+        const pane = await paneOf(paneId, "agent_not_found");
+        const current = await terminal(paneId, "agent_not_found");
+        if (current.labels?.["ovis.acp"] && !acpChildOf(current, options.acp)?.client.terminalReady) {
+          throw new AdapterError("acp_prompt_required", "This pane takes prompts through the ACP chat, not terminal input.");
+        }
+        if (!pane.agent) throw new AdapterError("agent_not_found", `no agent in pane ${paneId}`);
+        const force = agyPlanReview(current.status);
         await hc.call("terminal.send", { terminal: paneId, text, ...(force ? { force } : {}) }, 30_000);
       });
       return { type: "ok" };
