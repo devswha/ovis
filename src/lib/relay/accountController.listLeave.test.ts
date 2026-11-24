@@ -3,7 +3,9 @@ import { listView } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { listWorld, type WorldDevice } from "../account/accountList.test-helpers.ts";
 import { allowDevice } from "../account/listAllow.ts";
+import { accountList } from "../account/accountList.ts";
 import { removeFromList } from "../account/listRemoveDevice.ts";
+import { memoryListLock } from "../account/listStore.ts";
 import { createAccountController } from "./accountController.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -46,7 +48,9 @@ describe("the hosted shell and a device's place in its account's signed list", (
 
   /** What the shells under test asked of the account service, as `METHOD path`. */
   let asked: string[] = [];
-  beforeEach(() => { asked = []; });
+  /** The account service ended this device's sign-in: its directory answers 401 (a linked device the list put out). */
+  let directoryEnded = false;
+  beforeEach(() => { asked = []; directoryEnded = false; });
   /** The shell of `device`'s page: its account store and its list; the directory the shell reads is empty. */
   const shellOf = (device: WorldDevice) => createAccountController({
     container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore: device.store, accountService: device.session.service,
@@ -54,7 +58,7 @@ describe("the hosted shell and a device's place in its account's signed list", (
       const request = new Request(input, init);
       const { pathname } = new URL(request.url);
       asked.push(`${request.method} ${pathname}`);
-      if (pathname === "/v1/pcs") return Response.json({ pcs: [] });
+      if (pathname === "/v1/pcs") return directoryEnded ? Response.json({ error: { code: "unauthorized", message: "Signed out" } }, { status: 401 }) : Response.json({ pcs: [] });
       if (pathname === "/v1/signout/all") return new Response(null, { status: 204 });
       return Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
     },
@@ -164,5 +168,62 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
     expect(asked).not.toContain("POST /v1/signout/all");
     expect(await first.store.get("session")).toBeDefined();
+  });
+
+  it("Codex 6: a leave whose own removal counted finishes on this device when the account service ended its sign-in with it", async () => {
+    const { w, second } = await twoDevices();
+    const shell = shellOf(second);
+    await shell.refresh(true);
+    const own = (await second.keys()).key;
+    // the service signs a linked device out in the removal's own transaction: what comes after needs a sign-in it no longer has
+    second.wire.answer = (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) directoryEnded = true;
+      return null;
+    };
+    expect((await shell.leave()).left).toBe(true);
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
+    expect(await second.store.get("session")).toBeUndefined();
+    expect((await second.keys()).key).not.toBe(own);
+    expect(await second.lists.get("copy", w.account)).toBeUndefined();
+  });
+
+  it("Codex 6: a device another member removed while it was away reads its removal before its directory, which no longer answers it", async () => {
+    const { w, first, second } = await twoDevices();
+    const own = (await second.keys()).key;
+    expect(await removeFromList(first.list, { keys: [own], pcs: [] }, noWait)).toEqual({ removed: true });
+    // a new start of the app on the removed device: its directory read is refused, its list still reads
+    directoryEnded = true;
+    const page = accountList({ service: second.service, accountStore: second.store, listStore: second.lists, lock: memoryListLock(), now: () => w.clock.now });
+    const shell = createAccountController({
+      container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore: second.store, accountService: second.session.service,
+      accountFetch: async (input, init) => {
+        const { pathname } = new URL(new Request(input, init).url);
+        return pathname === "/v1/pcs" ? Response.json({ error: { code: "unauthorized", message: "Signed out" } }, { status: 401 }) : Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
+      },
+      renderApp: () => ({ render() {}, unmount() {} }),
+      accountList: page,
+    }, { active: () => true, changed: async () => {}, outdated: () => new Set() });
+    await shell.refresh(true);
+    await until(() => shell.state?.kind === "signed-out" && shell.state.notice !== undefined);
+    expect(shell.state).toEqual({ kind: "signed-out", error: null, notice: "This device was removed from your account. To use it again, sign in and allow it from another device." });
+    expect((await second.keys()).key).not.toBe(own);
+  });
+
+  it("Codex 7: sign out every device asks again, and signs nobody out, when a device came in that its question did not name", async () => {
+    const { w, first, second } = await twoDevices();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    const named = [(await second.keys()).key];
+    // a member lets another device in after the question was drawn
+    const third = await w.device({ label: "Kitchen tablet" });
+    await third.list.sync();
+    const offer = await allowDevice(second.list, { key: (await third.keys()).key, label: "Kitchen tablet", os: "android" }, noWait);
+    expect(offer.allowed).toBe(true);
+    asked = [];
+    const said = await shell.signOutEverywhere(undefined, named);
+    expect(said).toBe("Kitchen tablet came into your account since you asked. Nobody was signed out: ask again.");
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "device"]);
+    expect(asked).not.toContain("POST /v1/signout/all");
   });
 });

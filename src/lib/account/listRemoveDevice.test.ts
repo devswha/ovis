@@ -7,7 +7,7 @@ import { allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { WRITE_RESENDS, WRITE_TRIES } from "./listWrite.ts";
 import {
-  cameInThrough, overdueKeys, removalRequest, removeFromList, removeSelf, tidyList,
+  cameInThrough, overdueKeys, removalRequest, removeFromList, removeSelf, scopeOf, tidyList,
   type RemoveOutcome,
 } from "./listRemoveDevice.ts";
 import { memoryAccountStore } from "./store.ts";
@@ -119,7 +119,7 @@ describe("a device that is in the list puts another out", () => {
     await first.list.sync();
     const stranger = await w.device({ label: "Stranger" });
     await stranger.list.sync();
-    expect(await removeFromList(stranger.list, { keys: [(await first.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "no_list", retryAfterMs: null });
+    expect(await removeFromList(stranger.list, { keys: [(await first.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "no_list", retryAfterMs: null, placed: 0 });
     expect(placements(stranger)).toHaveLength(0);
   });
 });
@@ -206,7 +206,7 @@ describe("a list that moves, or a service that is busy, under a removal", () => 
     const { w, first, second } = await twoDevices();
     const before = w.held().entries.length;
     w.fake.tamperList(w.held().id, { headMoved: true });
-    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "busy", retryAfterMs: null });
+    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "busy", retryAfterMs: null, placed: 0 });
     expect([placements(first).length, w.held().entries.length]).toEqual([WRITE_TRIES + 1, before]);
   });
 
@@ -232,7 +232,7 @@ describe("a list that moves, or a service that is busy, under a removal", () => 
     expect(placements(first).length - from).toBe(WRITE_RESENDS);
     w.fake.untamperList(w.held().id);
     w.fake.tamperList(w.held().id, { stopped: true });
-    expect(await removeFromList(first.list, { keys: [gone], pcs: [] }, noWait)).toEqual({ removed: false, why: "stopped", retryAfterMs: null });
+    expect(await removeFromList(first.list, { keys: [gone], pcs: [] }, noWait)).toEqual({ removed: false, why: "stopped", retryAfterMs: null, placed: 0 });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 
@@ -240,7 +240,7 @@ describe("a list that moves, or a service that is busy, under a removal", () => 
     const { w, first, second } = await twoDevices();
     first.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
       ? Response.json({ list: w.held().id, head: { seq: 3, hash: "ab".repeat(32) }, placed: 2, now: 1 }) : null;
-    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "busy", retryAfterMs: null });
+    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "busy", retryAfterMs: null, placed: 0 });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 
@@ -255,7 +255,7 @@ describe("a device that puts itself out", () => {
   it("signs a remove of its own key and no epoch, and a device that stays opens the next one when it tidies", async () => {
     const { w, first, second } = await twoDevices();
     const own = (await second.keys()).key;
-    expect(await removeSelf(second.list, noWait)).toEqual(REMOVED);
+    expect(await removeSelf(second.list, scopeOf(second.list.view())!, noWait)).toEqual(REMOVED);
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
     expect(ends(w.held().entries[2]!)).toBe(own);
     // the first device sees nobody could seal under the current epoch, holds its key, and opens the next
@@ -320,5 +320,90 @@ describe("tidying up what is over its time", () => {
   it("is nothing a device that is not full does", async () => {
     const { first } = await twoDevices();
     expect(await tidyList({ ...first.list, writer: () => null }, new Set(), noWait)).toBeNull();
+  });
+});
+
+describe("what the Codex read of P13 found", () => {
+  /** `by` lets a borrowed browser in: power bound, role drive, until `seconds` after `by`'s own clock. */
+  async function letInBorrowed(w: World, by: WorldDevice, label: string, seconds: number): Promise<WorldDevice> {
+    const browser = await w.device({ label });
+    await browser.list.sync();
+    await by.list.sync();
+    const writer = by.list.writer()!;
+    const own = (await browser.keys()).key;
+    const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === own)!;
+    const placed = await signListEntry(writer.state, { kind: "device", key: claim.key, power: "bound", role: "drive", until: writer.issued_at + seconds, enc: claim.enc, card: claim.card, sealed: null, rotates: false },
+      { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+    await writer.service.placeEntries(writer.list, [placed.text], []);
+    return browser;
+  }
+
+  it("X1: a service clock that runs ahead makes no quiet clean-up put a borrowed browser out before its time", async () => {
+    const w = listWorld();
+    // this device's own clock runs two hours behind the account service's
+    const first = await w.device({ label: "Dana's phone", skew: -2 * 3600_000 });
+    await first.list.sync();
+    await letInBorrowed(w, first, "Library browser", 3600);
+    const before = w.held().entries.length;
+    await first.list.sync();
+    expect(await tidyList(first.list, new Set(), noWait)).toBeNull();
+    expect(w.held().entries).toHaveLength(before);
+  });
+
+  it("what came in through a key follows members that are out already, and offers only those still in", async () => {
+    const { w, first, second } = await twoDevices();
+    const third = await letIn(w, second, "Laptop");
+    const fourth = await letIn(w, third, "Desk browser");
+    // the laptop alone was removed; the desk browser it let in is still in
+    expect(await removeFromList(first.list, { keys: [(await third.keys()).key], pcs: [] }, noWait)).toEqual(REMOVED);
+    const keys = await Promise.all([first.keys(), second.keys(), fourth.keys()]).then((all) => all.map((each) => each.key));
+    expect(cameInThrough(w.held().state, keys[1]!, keys[0]!).map((arrival) => arrival.kind === "pc" ? arrival.endpoint : arrival.key)).toEqual([keys[2]!]);
+  });
+
+  it("X4: the removal asked for and its epoch go in the first request, whatever is over its time; the rest is tidied later", async () => {
+    const { w, first, second } = await twoDevices();
+    const keys = await first.keys();
+    const at = Math.floor(w.clock.now / 1000);
+    // fifteen invites that a PC joins with by itself, all past their time
+    let state = w.held().state;
+    const texts: string[] = [];
+    for (let index = 0; index < 15; index += 1) {
+      const invite = await deviceListKeys(memoryAccountStore());
+      const placed = await signListEntry(state, { kind: "invite", key: invite.key, exp: at + 60, uses: 1, auto: true, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+      texts.push(placed.text);
+      state = placed.state;
+    }
+    for (const text of texts) await first.service.placeEntries(w.held().id, [text], []);
+    w.clock.now += 5 * 60_000;
+    const from = placements(first).length;
+    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual(REMOVED);
+    const first_request = placements(first)[from]!.body!.entries as string[];
+    expect(first_request.length).toBeLessThanOrEqual(16);
+    expect([ends(first_request[0]!), kinds(first_request).at(-1)]).toEqual([(await second.keys()).key, "epoch"]);
+  });
+
+  it("a removal in parts says how much of it was done when a later part is refused", async () => {
+    const { w, first } = await twoDevices();
+    const keys = await first.keys();
+    const at = Math.floor(w.clock.now / 1000);
+    let state = w.held().state;
+    const texts: string[] = [];
+    const invites: string[] = [];
+    for (let index = 0; index < 17; index += 1) {
+      const invite = await deviceListKeys(memoryAccountStore());
+      const placed = await signListEntry(state, { kind: "invite", key: invite.key, exp: at + 3600, uses: 1, auto: false, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+      texts.push(placed.text);
+      invites.push(invite.key);
+      state = placed.state;
+    }
+    for (const text of texts) await first.service.placeEntries(w.held().id, [text], []);
+    let parts = 0;
+    first.wire.answer = (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries")) return null;
+      parts += 1;
+      return parts === 1 ? null : Response.json({ error: { code: "entry_budget", message: "later" }, now: 1 }, { status: 429, headers: { "retry-after": "60" } });
+    };
+    const outcome = await removeFromList(first.list, { keys: invites, pcs: [] }, noWait);
+    expect(outcome).toMatchObject({ removed: false, why: "budget", placed: 15 });
   });
 });

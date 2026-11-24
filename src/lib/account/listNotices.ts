@@ -11,6 +11,8 @@ import { listView, type ListState } from "../../../shared/account-list.ts";
 
 export interface NoticesSeen {
   readonly list: string;
+  /** The member key that looked: a device that signs in again with a new key looks for the first time. */
+  readonly member: string;
   /** The place in the list this device had looked up to: a device let in at or before it is no news. */
   readonly floor: number;
   /** The devices let in after `floor` whose notice the person closed. */
@@ -26,7 +28,7 @@ export interface ListNewcomer {
 
 /** The devices that are in and that another member let in since `seen`, in the order they came in. None on the first look (`seen` null). */
 export function listNewcomers(state: ListState, self: string, seen: NoticesSeen | null): ListNewcomer[] {
-  if (seen === null || seen.list !== state.list) return [];
+  if (seen === null || seen.list !== state.list || seen.member !== self) return [];
   return listView(state).devices
     .filter((row) => row.ended === null && !row.carried && row.key !== self && row.by !== self && row.seq > seen.floor && !seen.closed.includes(row.key))
     .map((row) => ({ key: row.key, seq: row.seq, by: row.by }));
@@ -35,7 +37,7 @@ export function listNewcomers(state: ListState, self: string, seen: NoticesSeen 
 /** What is seen once the person closed `key`'s notice: with every notice closed, the floor moves up to the last of them. */
 export function closeNotice(seen: NoticesSeen, shown: readonly ListNewcomer[], key: string): NoticesSeen {
   const closed = [...new Set([...seen.closed, key])];
-  if (shown.every((newcomer) => closed.includes(newcomer.key))) return { list: seen.list, floor: Math.max(seen.floor, ...shown.map((newcomer) => newcomer.seq)), closed: [] };
+  if (shown.every((newcomer) => closed.includes(newcomer.key))) return { list: seen.list, member: seen.member, floor: Math.max(seen.floor, ...shown.map((newcomer) => newcomer.seq)), closed: [] };
   return { ...seen, closed };
 }
 
@@ -49,15 +51,24 @@ function readAll(): Record<string, unknown> {
   } catch { return {}; }
 }
 
-/** What this page's storage holds as seen for `account`'s list `list`; null for nothing, or a record of another list. */
-export function readNoticesSeen(account: string, list: string): NoticesSeen | null {
+/** What this page's storage holds as seen for `account`'s list `list` by the member key `member`; null for nothing, or a record of another list or member. */
+export function readNoticesSeen(account: string, list: string, member: string): NoticesSeen | null {
   const value = readAll()[account];
-  if (!isRecord(value) || value.list !== list || typeof value.floor !== "number" || !Number.isSafeInteger(value.floor) || value.floor < 0
+  if (!isRecord(value) || value.list !== list || value.member !== member || typeof value.floor !== "number" || !Number.isSafeInteger(value.floor) || value.floor < 0
     || !Array.isArray(value.closed) || !value.closed.every((key): key is string => typeof key === "string")) return null;
-  return { list, floor: value.floor, closed: value.closed };
+  return { list, member, floor: value.floor, closed: value.closed };
 }
 
 export function writeNoticesSeen(account: string, seen: NoticesSeen): void {
   try { globalThis.localStorage?.setItem(STORAGE, JSON.stringify({ ...readAll(), [account]: seen })); }
   catch (error) { console.warn("Ovis: what the device notices showed was not kept", error instanceof Error ? error.name : error); }
+}
+
+/**
+ * Closes `key`'s notice against what the storage holds now, not what a page read when it drew: another tab's close
+ * made meanwhile stays. With no record of that list and member, nothing is written.
+ */
+export function closeStoredNotice(account: string, list: string, member: string, shown: readonly ListNewcomer[], key: string): void {
+  const now = readNoticesSeen(account, list, member);
+  if (now !== null) writeNoticesSeen(account, closeNotice(now, shown, key));
 }

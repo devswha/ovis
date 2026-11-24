@@ -9,7 +9,7 @@ import { Smartphone, X } from "lucide-react";
 
 import type { AccountList } from "../lib/account/accountList.ts";
 import { inList } from "../lib/account/listLeave.ts";
-import { closeNotice, listNewcomers, readNoticesSeen, writeNoticesSeen } from "../lib/account/listNotices.ts";
+import { closeStoredNotice, listNewcomers, readNoticesSeen, writeNoticesSeen } from "../lib/account/listNotices.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
 import { NotMeButton } from "./BlockOutcomes.tsx";
@@ -26,19 +26,19 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
   const writer = list?.writer() ?? null;
   const account = view?.account ?? null;
   const active = list !== null && view !== null && account !== null && writer !== null && inList(view, account) ? { list, view, account, writer } : null;
-  const seen = active === null ? null : readNoticesSeen(active.account, active.writer.list);
+  const seen = active === null ? null : readNoticesSeen(active.account, active.writer.list, active.writer.keys.key);
   const firstLook = active !== null && seen === null;
   const footing = active?.writer.state.footing.seq ?? null;
   useEffect(() => {
     if (!firstLook || active === null || footing === null) return;
-    writeNoticesSeen(active.account, { list: active.writer.list, floor: footing, closed: [] });
+    writeNoticesSeen(active.account, { list: active.writer.list, member: active.writer.keys.key, floor: footing, closed: [] });
     setKept((count) => count + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per first look at a list, by its place
-  }, [firstLook, account, active?.writer.list, footing]);
+  }, [firstLook, account, active?.writer.list, active?.writer.keys.key, footing]);
 
   const close = (key: string, shown: ReturnType<typeof listNewcomers>): void => {
-    if (active === null || seen === null) return;
-    writeNoticesSeen(active.account, closeNotice(seen, shown, key));
+    if (active === null) return;
+    closeStoredNotice(active.account, active.writer.list, active.writer.keys.key, shown, key);
     setKept((count) => count + 1);
   };
   const removedLines = removed.map((name, index) => (

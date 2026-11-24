@@ -7,7 +7,7 @@
  * And the tidying a device of power `full` does by itself while it reads the list: what is over its time goes.
  */
 import type { AccountList, AccountListView } from "./accountList.ts";
-import { removeFromList, removeSelf, tidyList, type RemoveOutcome } from "./listRemoveDevice.ts";
+import { removeOtherDevices, removeSelf, scopeOf, tidyList, type RemoveOutcome } from "./listRemoveDevice.ts";
 import { sameSignIn } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
@@ -17,36 +17,67 @@ export function inList(view: AccountListView, account: string): boolean {
 }
 
 /**
+ * The view of `account`'s list that a sign-out or a leave goes by. A page that has not read its list yet, but whose
+ * store keeps a copy of that account's list, reads it first (the lead's X6): such a device goes by its copy whether or
+ * not the account service answers, and never takes the path of a device in no list.
+ */
+async function viewFor(list: AccountList, account: string): Promise<AccountListView | null> {
+  const view = list.view();
+  if (view.account === account && view.status.at === "following") return view;
+  if (!await list.follows(account).catch(() => false)) return null;
+  const read = await list.sync().catch(() => list.view());
+  return read.account === account ? read : null;
+}
+
+/**
  * A device that signs out of `account`, or leaves it, puts itself out of the account's list while its sign-in still
- * stands. Null for a device that its list, as last read, does not show in it: nothing is asked of the list, and its
- * sign-out is what it always was. The list is read at once whenever a sign-in is read, so a page that shows a
- * sign-out has read it.
+ * stands, as the key it is in the list with, in that list alone (the lead's X3). Null for a device that keeps no copy
+ * of that account's list: nothing is asked of the list, and its sign-out is what it always was. A device the list
+ * already shows out is out (`removed`). One whose copy cannot be written to says so (`no_list`).
  */
 export async function leaveList(list: AccountList, account: string, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
-  if (!inList(list.view(), account)) return null;
-  return removeSelf(list, options);
+  const view = await viewFor(list, account);
+  if (view === null) return null;
+  if (view.status.at === "following" && view.status.standing === "out") return { removed: true };
+  const scope = scopeOf(view);
+  if (scope === null) return { removed: false, why: "no_list", retryAfterMs: null, placed: 0 };
+  return removeSelf(list, scope, options);
+}
+
+/** The keys of the devices other than this one that the page's list holds for `account`: what Sign out every device's question names. */
+export function otherDevices(view: AccountListView, account: string): string[] {
+  return inList(view, account) ? view.devices.filter((device) => !device.self).map((device) => device.key) : [];
 }
 
 /**
  * Sign out every device, on an account whose list this device is in: every other device the list holds leaves it
  * first, in one request with the epoch after it, since a device that is only signed out still holds a key that opens
- * the account's PCs. This device stays. Null for a device that is in no list of that account.
+ * the account's PCs. This device stays. `confirmed`: the devices the person's question named; a device it did not name
+ * ends the removal with nothing signed (`unconfirmed`). Null for a device that keeps no copy of that account's list.
  */
-export async function removeOthers(list: AccountList, account: string, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
-  const view = list.view();
-  if (!inList(view, account)) return null;
-  const keys = view.devices.filter((device) => !device.self).map((device) => device.key);
-  return keys.length === 0 ? { removed: true } : removeFromList(list, { keys, pcs: [] }, options);
+export async function removeOthers(list: AccountList, account: string, confirmed: readonly string[], options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
+  const view = await viewFor(list, account);
+  if (view === null) return null;
+  const scope = scopeOf(view);
+  if (scope === null) return { removed: false, why: "no_list", retryAfterMs: null, placed: 0 };
+  return removeOtherDevices(list, scope, confirmed, options);
 }
 
 /**
  * Forgets what made this device a member of `session`'s account: its account key (and its encryption key with it),
- * the sign-in, and its copy of the list. A sign-in made meanwhile stays, and so do the blocks the account service has
- * not confirmed (store.ts, clear).
+ * the sign-in, and its copy of the list. Only while the store still holds that sign-in, or none, and the key the
+ * device was a member with (`member`, where known), checked in the same transaction (the lead's X3): a sign-in and a
+ * key that took their place since, and the copy that goes with them, stay. A pairing this device made keeps its own
+ * copy of the key, as it does at every sign-out. Answers whether anything was forgotten.
  */
-export async function forgetMembership(accountStore: AccountStore, list: AccountList, session: AccountSession): Promise<void> {
-  await accountStore.clear((current) => !sameSignIn(current, session), { unsent: () => true });
-  await list.forget(session.account);
+export async function forgetMembership(accountStore: AccountStore, list: AccountList, session: AccountSession, member: string | null): Promise<boolean> {
+  let mine = false;
+  await accountStore.clear((current) => !sameSignIn(current, session), {
+    unsent: () => true,
+    only: (stored, key) => (mine = (stored === undefined || sameSignIn(stored, session)) && (member === null || key === undefined || key.public_spki === member)),
+  });
+  if (mine) await list.forget(session.account);
+  return mine;
 }
 
 /**

@@ -102,6 +102,7 @@ const BASE: Record<string, string> = {
   "Too many devices were added just now. Try again in a few minutes.": "방금 기기를 너무 많이 추가했어요. 몇 분 뒤에 다시 시도하세요.",
   "It could not be added to your account. Try again.": "계정에 추가하지 못했어요. 다시 시도하세요.",
   "The account service cannot change the list right now. To remove a device, use Revoke on each PC.": "지금은 계정 서비스가 목록을 바꿀 수 없어요. 기기를 빼려면 각 PC에서 폐기하세요.",
+  "Unnamed device": "이름 없는 기기",
   "Pair this PC?": "이 PC를 연결할까요?",
   "This PC could not be verified.": "이 PC를 확인할 수 없어요.",
   "Check the number, then approve": "숫자를 확인한 뒤 승인하세요",

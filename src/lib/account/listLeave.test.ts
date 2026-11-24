@@ -6,7 +6,9 @@ import { allowDevice } from "./listAllow.ts";
 import { deviceListKeys } from "./listKeys.ts";
 import { forgetMembership, inList, leaveList, tidyOnRead, watchRemoval } from "./listLeave.ts";
 import { removeFromList } from "./listRemoveDevice.ts";
-import { memoryAccountStore } from "./store.ts";
+import { accountList } from "./accountList.ts";
+import { memoryListLock } from "./listStore.ts";
+import { memoryAccountStore, newKey, type AccountSession } from "./store.ts";
 
 type World = ReturnType<typeof listWorld>;
 const noWait = { wait: async () => {} };
@@ -36,7 +38,7 @@ describe("a device that signs out or leaves", () => {
     expect(await leaveList(second.list, w.account, noWait)).toEqual({ removed: true });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
     expect(readBody(entryFromText(w.held().entries[2]!).body).ends).toBe(before.key);
-    await forgetMembership(second.store, second.list, second.session);
+    await forgetMembership(second.store, second.list, second.session, null);
     expect([await second.store.get("session"), await second.lists.get("copy", w.account), await second.store.get("enc_key")]).toEqual([undefined, undefined, undefined]);
     const after = await second.keys();
     expect([after.key === before.key, after.enc.key === before.enc.key]).toEqual([false, false]);
@@ -75,18 +77,10 @@ describe("a device that signs out or leaves", () => {
     expect((await device.keys()).key).toBe(key);
   });
 
-  it("asks nothing of a list it has not read on this page", async () => {
-    const { w, second } = await twoDevices();
-    const page = { ...second.list, view: () => ({ account: null, status: { at: "off" as const }, reached: true, devices: [], pcs: [] }) };
-    const sent = placements(second).length;
-    expect(await leaveList(page, w.account, noWait)).toBeNull();
-    expect(placements(second)).toHaveLength(sent);
-  });
-
   it("says why when the list cannot take its removal, and is still in it", async () => {
     const { w, second } = await twoDevices();
     w.fake.tamperList(w.held().id, { stopped: true });
-    expect(await leaveList(second.list, w.account, noWait)).toEqual({ removed: false, why: "stopped", retryAfterMs: null });
+    expect(await leaveList(second.list, w.account, noWait)).toEqual({ removed: false, why: "stopped", retryAfterMs: null, placed: 0 });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 });
@@ -129,5 +123,54 @@ describe("tidying while the list is read", () => {
     await settle(() => false);
     expect(placements(first)).toHaveLength(sent);
     stop();
+  });
+});
+
+describe("what the Codex read of P13 found about leaving", () => {
+  it("X3: a sign-out begun for one account signs nothing in another that another tab switched to", async () => {
+    const w = listWorld();
+    const device = await w.device({ label: "Dana's laptop" });
+    await device.list.sync();
+    const first = device.session;
+    // the same browser signs in to a second account, whose list it starts with the same account key
+    const other: AccountSession = { ...first, account: "acct_other", access_token: w.fake.issueToken("acct_other"), sign_in_id: "sign-in-other", signed_in_at: w.clock.now };
+    const key = await newKey();
+    await device.store.set("session", other);
+    await device.store.set("signin_key", { account: "acct_other", sign_in_id: "sign-in-other", key, no: w.fake.registerSessionKey(other.access_token, key.public_spki, "Dana's laptop") });
+    expect((await device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    const theirs = w.fake.accountList("acct_other")!.entries.length;
+    // back on the first account: the page shows it in that account's list
+    await device.store.set("session", first);
+    expect(inList(await device.list.sync(), w.account)).toBe(true);
+    // the sign-out for the first account; another tab stores the second account's sign-in as it begins
+    const tab = { ...device.list, sync: async () => { await device.store.set("session", other); return device.list.sync(); } };
+    const outcome = await leaveList(tab, w.account, noWait);
+    expect(outcome).toMatchObject({ removed: false, why: "changed" });
+    expect(w.fake.accountList("acct_other")!.entries).toHaveLength(theirs);
+    expect(kinds(w.held().entries)).toEqual(["genesis"]);
+  });
+
+  it("X3: a late clean-up for a sign-in that ended forgets nothing of the one that took its place", async () => {
+    const { w, second } = await twoDevices();
+    const departing = (await second.keys()).key;
+    // signed in again since, with a new key that a member allowed
+    await second.store.clear();
+    const again = { ...second.session, access_token: w.fake.issueToken(w.account), sign_in_id: "sign-in-again" };
+    await second.store.set("session", again);
+    const replacement = (await second.keys()).key;
+    await second.lists.set("copy", w.account, "a copy of the replacement");
+    await forgetMembership(second.store, second.list, second.session, departing);
+    expect(await second.store.get("session")).toEqual(again);
+    expect((await second.keys()).key).toBe(replacement);
+    expect(await second.lists.get("copy", w.account)).toBe("a copy of the replacement");
+  });
+
+  it("X6: a page that has not read its list yet goes by the copy it keeps, and puts itself out", async () => {
+    const { w, second } = await twoDevices();
+    // a new start of the app: this page's list has read nothing yet, and the copy is in the store
+    const page = accountList({ service: second.service, accountStore: second.store, listStore: second.lists, lock: memoryListLock(), now: () => w.clock.now });
+    expect(page.view().status).toEqual({ at: "off" });
+    expect(await leaveList(page, w.account, noWait)).toEqual({ removed: true });
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
   });
 });

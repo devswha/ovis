@@ -186,4 +186,6 @@ export const RELAY_ZH: Record<string, string> = {
   "This device was removed from your account. To use it again, sign in and allow it from another device.": "此设备已从你的账户中移除。要再次使用，请登录并在另一台设备上允许它。",
   "This device signed out, but your account still lists it. Remove it from another device.": "已退出登录，但账户列表中仍有此设备。请从另一台设备上移除它。",
   "No device was signed out: the other devices could not be removed from your account. Try again.": "未能从账户中移除其他设备，因此没有设备退出登录。请重试。",
+  "{done} of {total} other devices left your account; the others did not. Try again.": "{total} 台其他设备中只有 {done} 台离开了你的账户。请重试。",
+  "{names} came into your account since you asked. Nobody was signed out: ask again.": "确认之后 {names} 加入了你的账户。没有设备退出登录，请重新确认。",
 };

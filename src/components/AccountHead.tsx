@@ -10,6 +10,8 @@ import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { AccountManageLists } from "./AccountManage.tsx";
 import { SignOutEverywhereSays } from "./ListDevices.tsx";
+import { otherDevices } from "../lib/account/listLeave.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -115,7 +117,9 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   const signOutEverywhere = (from: HostedSignIn): void => {
     if (everywhere !== "asked") { setEverywhere("asked"); setEverywhereError(null); return; }
     setEverywhere("out");
-    void from.signOutEverywhere().then(setEverywhereError, () => setEverywhereError(t("Could not sign out every device. Try again."))).finally(() => setEverywhere(null));
+    // the other devices the question names now: on an account with a signed list, these and no others leave it first
+    const list = pageAccountList();
+    void from.signOutEverywhere(list === null ? undefined : otherDevices(list.view(), from.account)).then(setEverywhereError, () => setEverywhereError(t("Could not sign out every device. Try again."))).finally(() => setEverywhere(null));
   };
   return (
     <ManageAccountSheet onClose={onClose} account={signIn?.account}>

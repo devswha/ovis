@@ -9,7 +9,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { listView } from "../../shared/account-list.ts";
 import type { AccountList, AccountListView, ListedDevice } from "../lib/account/accountList.ts";
 import { inList } from "../lib/account/listLeave.ts";
-import { cameInThrough, removeFromList, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
+import { cameInThrough, removeFromList, scopeOf, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
@@ -44,8 +44,9 @@ export function roleOf(t: Translate, device: ListedDevice): string | null {
 }
 
 /** What the person is told when a removal did not go through: never that it did. */
-function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true }>, name: string): string {
+function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true }>, name: string, total: number): string {
   if (outcome.why === "stopped") return t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.");
+  if (outcome.placed > 0) return t("{done} of {total} were removed. Try again for the rest.", { done: String(outcome.placed), total: String(total) });
   return t("{name} could not be removed. Try again.|device", { name });
 }
 
@@ -119,17 +120,19 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
     const writer = list.writer();
     return writer === null ? [] : cameInThrough(writer.state, removing, writer.keys.key);
   });
+  // what the question was asked for: a sign-in or a list that took its place since signs nothing for it
+  const [scope] = useState(() => scopeOf(view));
   const [chosen, setChosen] = useState<ReadonlySet<number>>(() => new Set(ticked ? arrivals.map((_, index) => index) : []));
   const picked = arrivals.filter((_, index) => chosen.has(index));
   const remove = async (): Promise<void> => {
     const outcome = await removeFromList(list, {
       keys: [removing, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))],
       pcs: picked.flatMap((arrival) => (arrival.kind === "pc" ? [arrival.endpoint] : [])),
-    }).catch((error: unknown): RemoveOutcome => {
+    }, { scope }).catch((error: unknown): RemoveOutcome => {
       console.warn("Ovis: the device was not removed from the account's list", error instanceof Error ? error.name : error);
-      return { removed: false, why: "unreached", retryAfterMs: null };
+      return { removed: false, why: "unreached", retryAfterMs: null, placed: 0 };
     });
-    if (!outcome.removed) throw new Error(failureOf(t, outcome, name));
+    if (!outcome.removed) throw new Error(failureOf(t, outcome, name, 1 + picked.length));
     onRemoved(name);
   };
   return (
