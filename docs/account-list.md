@@ -1,7 +1,9 @@
 # The signed list: an entry
 
-No released part of Ovis reads or writes this format yet: the account as it works today signs its
-records one by one, with no chain ([Linking devices with an account](account.md#rules)).
+No part of Ovis decides by this format yet: the account as it works today signs its records one by
+one, with no chain ([Linking devices with an account](account.md#rules)). A device keeps a copy of
+its account's list where the account service keeps lists for that account, and only records where
+it would have said otherwise ([On a device](#on-a-device)).
 
 An owner's devices and machines share one signed list. Every member keeps a copy and checks every
 entry by itself; the account service stores entries and must never be able to write one that
@@ -739,6 +741,206 @@ or PC is then shown without its name:
 | `other_key` | a wrap or a link that opens, to a key that is not the one the list commits to. The name is hidden like any other, and the member also says so, because this is no lost or stale wrap. From a wrap it means the account service gave a wrong key: the service stores the wraps, and this is a sign of tampering. From a link it means the member that signed the entry which opened that epoch wrote a wrong link: the link is in the signed list, not the service's to change |
 | `bound` | the walk back opened as many links as one walk may |
 | `unavailable` | the runtime could not do it (no WebCrypto on a page on plain http): a fault of the place, not a verdict on the bytes |
+
+## On a device
+
+The hosted app, in a browser at app.ovis.sh and in the phone apps, keeps its own copy of its
+account's list, checks every entry of it itself, and starts the list for an account that has
+nobody in it yet. The code is [`src/lib/account/accountList.ts`](../src/lib/account/accountList.ts)
+and the `list*.ts` files beside it; it takes every entry through
+[`shared/account-list-follower.ts`](../shared/account-list-follower.ts) and decides nothing of its
+own about who is in.
+
+Two things bound what this does today:
+
+- **Only for an account the account service keeps lists for** (the service's switch). For any other
+  account the app asks one question when it reads a sign-in, `GET /v2/lists/mine`, is answered as
+  for an unknown route, and makes, keeps and sends nothing more: no key, no record, no request.
+- **Nothing decides by the copy.** My PCs, what opens by itself and the notices still go by the
+  account service's directory, as [Linking devices with an account](account.md) says. The device
+  only records where its list would have said otherwise
+  ([Compared with the directory](#compared-with-the-directory)).
+
+A PC's own page follows no list.
+
+### Its keys
+
+- **The member key is the account key** ([rule 2](account.md#rules)): the ECDSA P-256 key the device
+  already has, which WebCrypto made so that it cannot be exported. It signs the device's entries
+  and its card. A sign-in that ends and a token that is refreshed leave it as it is.
+- **The encryption key** is a second key, ECDH P-256, made on first need, also so that it cannot be
+  exported. Epoch keys are [wrapped](#a-wrap) to it. It is kept beside the account key and
+  forgotten with it: a device that has a new account key is a new member, and names a new
+  encryption key.
+- **The card** ([A card](#a-card)) is the device's signature, with its member key, over its two
+  public keys and the list id: what it hands whoever lets it in.
+
+Both private keys are stored as the key objects they are, in the IndexedDB database `ovis-account`.
+No code of the app can read their bytes, and neither can anything else that runs in the page.
+
+### What it keeps
+
+In an IndexedDB database of its own, `ovis-account-list`, by account:
+
+| record | holds |
+|---|---|
+| `copy` | the device's copy as the follower saves it: one text with every entry from entry 0, the state they give, and why the device follows this list id |
+| `wraps` | the wraps of the epoch keys, as text, that opened to the key the list commits to |
+| `genesis` | an entry 0 that this device signed and has not yet found in its copy, to send again as it is |
+| `shadow` | what the copy and the directory differed in |
+
+- **No key is in it.** An epoch key is never stored: each page opens the wraps again with the
+  device's encryption key and holds the keys in memory. So what is kept is text and numbers, and a
+  name is in it only sealed.
+- **It is a database of its own** because `ovis-account` has one version that pages of older builds
+  still open, and because a copy grows with the list while the records beside the account key are
+  read on every request.
+- **It is read strictly.** A `copy` that does not read (a changed byte, another form, parts that do
+  not agree) is reported as `damaged` and kept as it is: the device then follows nothing and puts
+  nothing in its place, since a device that lost its copy must not take the account service's word
+  for a new one. Only a person's reset forgets it. A `copy` that was saved under another account key
+  is dropped: with a new key the device is another member.
+- **What protects it is the app's origin**, as for the account key. A PC's own page is served at
+  the PC's address, another origin with a storage of its own. A page rendered from a PC's file
+  runs in a frame with no origin of the app's ([relay.md](relay.md), "Rendered HTML pages"), a web
+  page in the side panel has its own origin, and the service worker opens neither database.
+  Whoever can change the script the app's origin serves can use the keys, here as before.
+- **A sign-in that ends** (a sign-out, a sign-in the service ended) forgets the wraps and a genesis
+  that was not seen placed, as it forgets the names of the account's PCs: nothing left on the
+  device opens a name. The copy stays, since the device is still a member with the key it has: a
+  later sign-in takes up where this one stood, and asks the account service for the wraps again.
+- Leaving the account and deleting it forget everything kept for it.
+
+### Starting the list
+
+A device makes entry 0 itself: a `genesis` under its member key that names the account and its
+encryption key, opens epoch 0 by the commitment to a new key, and seals the device's own name under
+that key. It wraps the key to itself, sends the entry and that one wrap (`POST /v2/lists`), and
+forgets the key: the wrap is what is left of it.
+
+It does so by itself only when all of these hold, asked in this order at each read:
+
+1. the account service says the account may have a list and has none (`GET /v2/lists/mine` answers
+   `list: null`);
+2. the device has saved no copy for the account, not even one that does not read;
+3. the sign-in is new: made at most nine minutes ago, by the device's clock;
+4. the key this sign-in registered with the account service is the first in the account's order:
+   no device registered a key for the account before it;
+5. the device holds no pairing that is linked to the account;
+6. the sign-in is an app's own (`GET /v1/session`);
+7. the account's directory lists no PC, confirmed or not.
+
+So a list starts by itself for a new account whose first device is this one, and for no account
+that was in use: such an account has devices and PCs that entry 0 could not account for, and
+bringing them into a list is not built yet. Setting `localStorage["ovis-account-list-genesis"]` to
+`always` in the app's page starts a list whatever 3, 4, 5 and 7 say (who was in the account is then
+not in the list), and `never` starts none; both are for testing.
+
+- **A genesis is kept before it is sent, and sent again as it is.** A lost answer or a closed page
+  never makes a second one: the device finds the entry it kept, and once the account service names
+  a list it reads entry 0 and sees whether it is its own. Two tabs take turns, so one of them signs
+  it and the other finds it; in a browser without Web Locks both may sign one, and the account
+  service takes one of the two.
+- **One list per account.** Of two devices that start at once the account service takes one
+  (`409 list_exists` for the other). The other device reads entry 0 of the list the service then
+  names, sees that it is not signed with its own key, and follows none of it: it is in no list
+  until a member lets it in.
+- **An old sign-in proves itself with its registered key** instead of signing in again, as for
+  adding a PC ([In one press](account.md#adding-a-pc)): the purpose is `list-genesis`, with the
+  list id where a PC's id stands and no listing. By itself a device starts a list only from a new
+  sign-in, which needs no proof.
+
+### Which list it follows
+
+Never the one the account service names, on that word alone. A device follows a list only when
+
+- entry 0 with that id is a `genesis` of its own account, signed with its own member key (it
+  started the list, in this page or another), or
+- a member that let it in handed it the list id and its own head (not built yet).
+
+A device that follows a list keeps to it: a service that names another list for the account, or
+none, changes nothing the device holds, and the device says so (`other_list`). What the service
+names is then no hint at all, and the device goes on reading its own list by its id, so that an
+entry which puts somebody out still reaches it.
+
+A device that follows none asks for entry 0 of the list the service names, and for nothing else of
+it. It is `not_in` that list, for one of three reasons: the entry is that list's and is not its
+own (`not_mine`: it waits to be let in, and does not ask for the entry again while the service
+names that list); the service did not show the entry with that id (`unread`: it asks again in five
+minutes, and keeps a genesis it signed); or the entry is in a form this build cannot read
+(`needs_newer_client`).
+
+### Catching up
+
+A read asks which list and which head the account has (`GET /v2/lists/mine`). A head that is the
+copy's own ends the read. Otherwise the device asks for the entries after its own head
+(`GET /v2/lists/{list}/log`), takes each page as the follower says, asks on until the follower has
+no more to ask, and saves the copy. Then it opens the names: with the wraps it kept, and while the
+current epoch's key is not among them, with the wraps the account service holds for its encryption
+key (`GET /v2/lists/{list}/wraps`), asked for at most every five minutes for one copy.
+
+It reads:
+
+- at once when a sign-in is read, once that sign-in's key is registered;
+- every 30 seconds while the app is in front, and never by the clock while it is not;
+- when the app comes to the front, at once if its last read began 30 seconds ago or more. That is
+  also how a ring of the account's doorbell reaches a page that was not in front;
+- every five minutes in front while the account has no list or the device is in none;
+- never twice within five seconds, whatever answers;
+- one read at a time for an account among the tabs of a browser, and a read's requests end after
+  30 seconds.
+
+An account service that is away, slow, or off its switch again leaves the copy as it is: the
+device shows what it saved, and says that it did not reach the service.
+
+Each of these requests is sent once, and whatever it is answered is that request's answer and no
+more: a `401` neither refreshes the device's tokens nor ends its sign-in, as it does for the
+requests a person's own act makes. The app asks them by itself, on a clock, also of a service that
+has no such routes, and what that service says of a route it does not know must not sign anybody
+out. Only `404` to `GET /v2/lists/mine` says that the service keeps no list for the account; after
+any other refusal the device asks again in five minutes.
+
+### What the device says is wrong
+
+Each of these is a state the app can show. None takes anybody out of the copy, and none lets
+anybody in.
+
+| state | when |
+|---|---|
+| `fork` | the account service showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found |
+| `stuck` | the account service shows another history under what the device holds, which no member signed |
+| `other_list` | the account service names another list for the account, or none, or answers with entries of another list |
+| `refused` | the log holds an entry that does not hold: a changed byte, a broken chain |
+| `unsigned` | the log holds an entry that no member signed. The account service places none, so it wrote this one |
+| `wrong_key` | the account service handed the device a key to the names that is not the one the list commits to. The key is not kept |
+| `needs_newer_client` | the list holds an entry this build cannot place |
+
+A name that does not open for another reason (no wrap yet, a wrap that was spoiled on the way) is
+a device or a PC without a name, and no state: it is no evidence of anything.
+
+### What the app reads
+
+One object per page (`accountList`), which the rest of the app asks instead of the account service
+once it goes by the list:
+
+- `view()`: the account, where the device stands (`off`, `none` with why no list was started,
+  `not_in` with why, `damaged`, or `following` with the list id, the head, whether the device is in,
+  and what is wrong), whether the last read reached the account service, and the devices and PCs
+  that are in, in the order they came in. A device has its key, power, role and `until`; a PC its
+  relay key, the id that key gives, how it came in and whether a person at it can allow a device;
+  each with its name where it opens. Nobody is listed unless the device follows the list and is in
+  it.
+- `holdsPc(relay key)` and `pcOfKey(signing key)`: whether that PC is in the list.
+- `subscribe`, `sync` (one read now), `due` (when the next read is due), `forget` (a person's reset).
+
+### Compared with the directory
+
+After each read of the directory and each change of the list, the device holds the two against
+each other: the PCs both name, those only the directory lists (with whether the PC itself has
+pulled the account's mailbox, and whether the app would open it by itself today), and those only
+the list holds. It keeps how many comparisons it made, how many differed and the last one, on the
+device alone, and writes one line to the console when the difference changes, with counts and no
+name, id or key.
 
 ## The vectors
 
