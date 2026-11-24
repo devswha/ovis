@@ -34,7 +34,7 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
   async function keeper(args: string[] = [], root = keeperRoot()) {
     const started = await startKeeper(root, args);
     cleanups.push(() => rmSync(dirname(root), { recursive: true, force: true }), started.stop);
-    return { root, stop: started.stop };
+    return { root, ...started };
   }
 
   function attach(root: string, connect?: (path: string) => Socket) {
@@ -143,6 +143,20 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     await until(client, "the agent's end", () => client.agentGone);
     expect(client.turn?.running).toBe(false);
     expect(client.turn?.text).toBe("bye");
+  });
+
+  it("clears pending cards when a killed keeper leaves its socket behind", async () => {
+    const started = await keeper();
+    const client = attach(started.root);
+    await client.ready();
+    await until(client, "session", () => client.session !== null);
+    void prompt(client, "ask").catch(() => undefined);
+    await until(client, "the permission request", () => client.pending().length === 1);
+    const id = client.pending()[0]!.keeperId;
+    process.kill(started.pid, "SIGKILL");
+    await until(client, "the keeper's end", () => client.keeperGone, 2_000);
+    expect(client.pending()).toEqual([]);
+    expect(await client.answer(id, "reject")).toBe("gone");
   });
 
   it("drops a request the agent can no longer receive: after a keeper restart its answer is gone", async () => {

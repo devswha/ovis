@@ -6,7 +6,7 @@
  * last one it read. Its answer to a permission request is one of many a keeper may get: the keeper's `_keeper/resolved`
  * note names the client whose answer went to the agent.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import { processAlive } from "../process-start.ts";
@@ -146,14 +146,18 @@ export class KeeperClient {
     this.socket = socket;
     this.buffer = "";
     socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(`${JSON.stringify({ replay: this.lastSeq + 1 })}\n`));
+    let connected = false;
+    socket.on("connect", () => {
+      connected = true;
+      socket.write(`${JSON.stringify({ replay: this.lastSeq + 1 })}\n`);
+    });
     socket.on("data", (chunk: string) => this.receive(chunk));
     socket.on("error", () => socket.destroy());
     socket.on("close", () => {
       if (this.socket !== socket) return;
       this.socket = null;
       this.dropped();
-      if (!this.closed) this.reconnect();
+      if (!this.closed) this.reconnect(connected);
     });
   }
 
@@ -164,9 +168,10 @@ export class KeeperClient {
     this.inFlight.clear();
   }
 
-  private reconnect(): void {
-    if (!existsSync(join(this.root, "acp.sock")) && !keeperRunning(this.root)) {
+  private reconnect(wasConnected: boolean): void {
+    if (!wasConnected && !keeperRunning(this.root)) {
       this.keeperGone = true;
+      this.approvals.clear();
       this.answers.close();
       this.changed();
       return;
