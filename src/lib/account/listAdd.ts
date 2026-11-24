@@ -145,7 +145,11 @@ export type AddPcOutcome = { readonly added: true } | { readonly added: false; r
  * out from, the PC's name sealed and the epoch key wrapped to the PC's encryption key. The PC is added once this
  * device's own copy shows the entry. `admit`: the one-press admission, the caller's own (it may ask for a sign-in).
  */
-export async function addPostedPc(list: AccountList, post: PostedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect"> & { readonly admit: () => Promise<void> }): Promise<AddPcOutcome> {
+export async function addPostedPc(list: AccountList, post: PostedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect"> & {
+  readonly admit: () => Promise<void>;
+  /** what the same request places after the PC's entry (the removal of the invite it joined with) */
+  readonly then?: readonly ListKind[];
+}): Promise<AddPcOutcome> {
   const held = list.holdsPc(post.endpoint);
   if (!held) {
     try { await options.admit(); } catch (error) {
@@ -160,6 +164,7 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
     const row = writer.state.pcs[post.endpoint];
     if (row !== undefined && row.removed === null && row.key === post.key) return { done: { seq: writer.state.footing.seq, hash: writer.state.footing.hash } };
     return writer.list !== post.list ? { refused: "changed" } : { go: true };
-  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed })), { ...options, operation: `add-pc:${post.endpoint}` });
+  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed }), options.then),
+  { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.expect === undefined ? {} : { expect: options.expect }), operation: `add-pc:${post.endpoint}` });
   return outcome.written ? { added: true } : { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
 }

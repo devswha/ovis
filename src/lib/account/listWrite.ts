@@ -160,16 +160,19 @@ const unanswered = (error: unknown): boolean => error instanceof AccountServiceU
  * of the current epoch seals nothing and wraps nothing: the newcomer comes in all the same. A caller that may meet
  * more keys over their time than one request holds goes through writeNamed.
  */
-export async function signedNamed(writer: ListWriter, names: ListNames | null, enc: string, kind: (sealed: Sealed | null) => ListKind): Promise<Written> {
+export async function signedNamed(writer: ListWriter, names: ListNames | null, enc: string, kind: (sealed: Sealed | null) => ListKind, then: readonly ListKind[] = []): Promise<Written> {
   const { list, state, clock } = writer;
   const seal = async (on: ListState, key: EpochKey, opens: string): Promise<Sealed | null> => names === null ? null
     : { epoch: key.epoch, bytes: await sealFields({ place: { list, seq: on.footing.seq + 1 }, epoch: key, commitment: opens, fields: namesFields(names) }) };
   const current = writer.epochs.get(state.epoch) ?? null;
-  if (current === null) return signedOn(writer, [kind(null)]);
+  // `then`: what the same request places after the entry, where its names are sealed under the current epoch (an
+  // entry that ends a key no epoch was wrapped to). Where the request opens an epoch, or seals nothing, it is left for
+  // a later writer: the entry itself always goes.
+  if (current === null) return signedOn(writer, [kind(null), ...then]);
   const where = sealEpoch(state, clock);
   if (where !== null) {
     const wrap = await wrapEpochKey({ list, epoch: current, member: enc });
-    return signedOn(writer, [kind(await seal(state, current, where.opens))], wrap === null ? [] : [{ epoch: current.epoch, member: enc, wrap: wrapToText(wrap) }]);
+    return signedOn(writer, [kind(await seal(state, current, where.opens)), ...then], wrap === null ? [] : [{ epoch: current.epoch, member: enc, wrap: wrapToText(wrap) }]);
   }
   const lapsed = lapsedRemovals(state, clock);
   // A device whose clock reads far under the time it last saved cannot tell which of the two is wrong: it puts nobody
