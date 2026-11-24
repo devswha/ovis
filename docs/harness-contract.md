@@ -294,9 +294,10 @@ What a caller can read from these without a flag of its own:
 - **A pending approval survives an Ovis restart** when it came through `acp`: the keeper holds the
   request until a client answers it, and the restarted server takes the keeper up again and rebuilds
   the unanswered requests from the keeper's log (read, `crates/acp-keeper/README.md`,
-  `server/acp/client.ts`). A `hook` request held when the server stops gets no decision, and the
-  agent's own terminal dialog stands (read, `server/approvals/hub.ts`): it survives, but as keys,
-  not as data.
+  `server/acp/client.ts`). A `hook` request held when the server stops does not survive as data:
+  Claude Code's own terminal dialog stands (read, `server/approvals/hub.ts`), while the pi, OmO
+  and omp extensions take the hub's empty answer as a denial (read, `server/approvals/pi.ts`,
+  `server/approvals/omo.ts`, `server/approvals/omp.ts`).
 - **Answers come as data** through `hook` or `acp`. `approvals` lists the paths this contract
   announces, not every path: Codex's app server and a pending OpenCode v2 form are answered as data
   too (`server/approvals/codex.ts`, `server/opencode-service.ts`), while they report only `keys`.
