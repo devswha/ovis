@@ -362,7 +362,22 @@ A member with the alarm:
 - keeps its own history and never takes the other one;
 - still takes what continues its own history, so a removal still reaches it;
 - lets in no device and shows no PC that it did not hold when the alarm rose;
-- keeps the alarm over a restart. Only a person's reset at the member clears it.
+- keeps the alarm over a restart, with the place where the two histories part (`seq`) and the key
+  that signed the other one (`by`), so that it can say which device or PC that key is or was.
+
+**Who can raise it.** Any key that was ever a signer, together with whoever can show a member the
+entry: a device or a PC of the account, a browser that was allowed for a day, an invite's key, and
+also one that was removed since, for a place before its removal. The account service alone cannot,
+since it holds no such key. Nobody gets in by it: it only stops a member from letting in anyone
+new.
+
+**What a person does.** The alarm names a key. If that device or PC is still in the account and
+the person does not trust it, they remove it from a device they do trust. The alarm itself does not
+go away by anything the log or the service says: on each member that has it, a person resets the
+list there and pins again (a device is allowed again from a device or PC of the account; a PC is
+added again at the PC). A member that was reset reads the list from entry 0 and holds whatever
+history it is then shown and can check, so the person resets after the key was removed, not
+before.
 
 ### Two members meet
 
@@ -422,7 +437,7 @@ name, no white space).
 | `stop` | the text of the entry it stopped at for a newer client, or `null` |
 | `read_at` | when it last held everything the account service showed, or `null` |
 | `seen_at` | the latest hour its own clock showed when it took a page or a hint, or `null` |
-| `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `at`, and the `devices` and `pcs` it held then |
+| `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `by`, `at`, and the `devices` and `pcs` it held then |
 | `sum` | SHA-256 over `ovis-list-save/1` and the text of the same object without `sum`, as a hash |
 
 It holds nothing secret. A save reads whole or not at all:
@@ -466,5 +481,5 @@ Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vector
 [save](#the-save): `name`, `about`, `keys`, the `save` text, `now` (the member's clock for
 `opens`) and `expect`: either `reads` (`account`, `list`, `me`, `pin`, the copy's `head` and
 `footing`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it holds a `stop`, the
-place of its `alarm`, `read_at`, `seen_at`, and `opens`: for each named key the role it opens a session as,
+`seq` and `by` of its `alarm`, `read_at`, `seen_at`, and `opens`: for each named key the role it opens a session as,
 or the refusal) or `refused` (the refusal). A save that reads is written back to the same text.

@@ -80,13 +80,16 @@ export type ListSource = "service" | "peer";
 
 /**
  * Two histories from one place, each signed by a member: proven, never taken on a word. `seq` is the place
- * where they part. `devices` and `pcs` are whom the member held when it rose: from then on it lets in only
- * those of them that are still in. It is never cleared but by a person's reset at the member.
+ * where they part, and `by` the key that signed the other history from there: a key that the member's own
+ * history had made a signer before that place, whatever became of it since. `devices` and `pcs` are whom the
+ * member held when it rose: from then on it lets in only those of them that are still in. It is never cleared
+ * but by a person's reset at the member, which then pins again.
  */
 export interface ListAlarm {
   readonly code: "fork";
   readonly source: ListSource;
   readonly seq: number;
+  readonly by: string;
   readonly at: number;
   readonly devices: readonly string[];
   readonly pcs: readonly string[];
@@ -377,8 +380,9 @@ export function startRead(copy: FollowerCopy, source: ListSource): FollowRead {
  * shown entry is the member's own. `proven` says that a member signed the other history from there: the place
  * lies at or under the footing, the entry continues the member's own entry before it, and the member's own
  * history up to it, with the shown entries from it on, replayed as a list of its own, has its footing at or
- * past that place. So a key that was a signer where the two part signed on the other history. A loose entry
- * never moves a footing, so what the account service or a stranger signs proves nothing. `deeper` says that the
+ * past that place. So a key that was a signer where the two part signed on the other history: `by` is that
+ * key, the signer of the first entry from that place on that is not loose. A loose entry never moves a footing,
+ * so what the account service or a stranger signs proves nothing. `deeper` says that the
  * first shown entry follows an entry the member does not hold: the two part before the page, and a page from
  * an earlier place shows where.
  *
@@ -386,19 +390,19 @@ export function startRead(copy: FollowerCopy, source: ListSource): FollowRead {
  * that place on is by a key the member's history made a signer, where no row is ever deleted, and the first of
  * them is signed by its signer.
  */
-async function otherHistory(list: string, mine: ListCopy, after: number, shown: readonly string[]): Promise<{ readonly parts: number | null; readonly proven: boolean; readonly deeper: boolean }> {
+async function otherHistory(list: string, mine: ListCopy, after: number, shown: readonly string[]): Promise<{ readonly parts: number | null; readonly by: string | null; readonly deeper: boolean }> {
   let parts: number | null = null;
   for (const [index, text] of shown.entries()) {
     const seq = after + 1 + index;
     const hash = hashOf(text);
-    if (hash === null) return { parts: seq, proven: false, deeper: false };
+    if (hash === null) return { parts: seq, by: null, deeper: false };
     if (seq < mine.entries.length && hash === hashOf(mine.entries[seq])) continue;
     parts = seq;
     break;
   }
-  if (parts === null) return { parts, proven: false, deeper: false };
+  if (parts === null) return { parts, by: null, deeper: false };
   const rest = shown.slice(parts - after - 1);
-  const no = (deeper: boolean) => ({ parts, proven: false, deeper });
+  const no = (deeper: boolean) => ({ parts, by: null, deeper });
   try {
     const entries = rest.map((text) => entryFromText(text));
     const bodies = entries.map((entry) => readBody(entry.body));
@@ -412,7 +416,10 @@ async function otherHistory(list: string, mine: ListCopy, after: number, shown: 
     return no(false);
   }
   const replayed = await replayList([...mine.entries.slice(0, parts), ...rest], LIST_LEVEL, { saved: null, given: list });
-  return { parts, proven: replayed.member !== null && replayed.member.state.footing.seq >= parts, deeper: false };
+  if (replayed.member === null) return no(false);
+  // The footing lies at or past that place exactly when one of the entries from it on is not loose.
+  const signed = replayed.took.slice(parts).find(({ outcome }) => !(outcome.outcome === "passed_over" && outcome.loose));
+  return { parts, by: signed?.held.body.signer ?? null, deeper: false };
 }
 
 /**
@@ -541,8 +548,8 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
   const onward: FollowRead = { source, list: copy.list, after: Math.min(cursor, reached), back: read.back };
   if (took.stuck) {
     const other = await otherHistory(copy.list, took.member, after, shown);
-    if (other.proven && other.parts !== null) {
-      if (next.alarm === null) next = { ...next, alarm: { code: "fork", source, seq: other.parts, at: now, devices: inDevices(state).sort(), pcs: inPcs(state).sort() } };
+    if (other.by !== null && other.parts !== null) {
+      if (next.alarm === null) next = { ...next, alarm: { code: "fork", source, seq: other.parts, by: other.by, at: now, devices: inDevices(state).sort(), pcs: inPcs(state).sort() } };
       return result("fork", next, { at: other.parts });
     }
     // Every entry shown is the member's own and the head is not: the place where the two part lies further on.
@@ -773,15 +780,18 @@ export function writeSave(copy: FollowerCopy): string {
 
 function readAlarm(value: unknown, state: ListState | null): ListAlarm | null | undefined {
   if (value === null) return null;
-  if (!isRecord(value) || state === null || Object.keys(value).sort().join(" ") !== "at code devices pcs seq source") return undefined;
-  const { at, code, devices, pcs, seq, source } = value;
+  if (!isRecord(value) || state === null || Object.keys(value).sort().join(" ") !== "at by code devices pcs seq source") return undefined;
+  const { at, by, code, devices, pcs, seq, source } = value;
+  // The key that signed the other history was a signer of this one before the place where the two part.
+  const signer = typeof by === "string" ? rowOf(state.signers, by) : null;
+  if (typeof by !== "string" || signer === null || !isCount(seq) || signer.seq >= seq) return undefined;
   if (code !== "fork" || (source !== "service" && source !== "peer") || !isCount(at) || !isCount(seq) || seq < 1 || seq > state.footing.seq) return undefined;
   if (!Array.isArray(devices) || !Array.isArray(pcs)) return undefined;
   const sorted = (names: readonly unknown[]): names is readonly string[] => names.every((name, at) => typeof name === "string" && (at === 0 || (names[at - 1] as string) < name));
   if (!sorted(devices) || !sorted(pcs)) return undefined;
   // Whom it held then: devices and PCs that the list holds a row for.
   if (!devices.every((key) => rowOf(state.signers, key)?.as === "device") || !pcs.every((endpoint) => rowOf(state.pcs, endpoint) !== null)) return undefined;
-  return { code, source, seq, at, devices: [...devices], pcs: [...pcs] };
+  return { code, source, seq, by, at, devices: [...devices], pcs: [...pcs] };
 }
 
 /**

@@ -566,8 +566,9 @@ describe("two members and a service that shows them two things", () => {
       expect({ limit, said: met.said.slice(0, 2) }).toEqual({ limit, said: ["a differs fork", "b behind fork"] });
       expect({ limit, a: met.a.alarm, b: met.b.alarm }).toEqual({
         limit,
-        a: { code: "fork", source: "peer", seq: 5, at: NOW, devices: [owner.key, phone.key, tablet.key].sort(), pcs: [E(1), E(2)] },
-        b: { code: "fork", source: "peer", seq: 5, at: NOW, devices: [owner.key], pcs: [E(1), E(2)] },
+        // Each names the key that signed the history it does not hold.
+        a: { code: "fork", source: "peer", seq: 5, by: owner.key, at: NOW, devices: [owner.key, phone.key, tablet.key].sort(), pcs: [E(1), E(2)] },
+        b: { code: "fork", source: "peer", seq: 5, by: phone.key, at: NOW, devices: [owner.key], pcs: [E(1), E(2)] },
       });
       // Neither took anything of the other's history, and each keeps the alarm over a save.
       expect([met.a.entries, met.b.entries, (await saved(met.a)).alarm?.seq, (await saved(met.b)).alarm?.seq]).toEqual([one.texts, two.texts, 5, 5]);
@@ -600,7 +601,11 @@ describe("two members and a service that shows them two things", () => {
     // The phone, removed at entry 5, signs its own entry 5: it removes the owner.
     const other = await grow(BASE, [[phone, removeOf(owner)]]);
     const shown = await takePage(copy, { ...startRead(copy, "service"), after: 4 }, pageOf(other, 4), NOW);
-    expect([shown.verdict, shown.at, shown.copy.alarm?.source, shown.copy.entries, opens(shown.copy, owner), opens(shown.copy, phone)]).toEqual(["fork", 5, "service", real.texts, "drive", "removed"]);
+    expect([shown.verdict, shown.at, shown.copy.alarm?.source, shown.copy.alarm?.by, shown.copy.entries, opens(shown.copy, owner), opens(shown.copy, phone)]).toEqual(["fork", 5, "service", phone.key, real.texts, "drive", "removed"]);
+    // The other history may begin with entries that no signer signed: the key named is the first signer's, not theirs.
+    const padded = await grow(BASE, [[mallory, epochOf(0)], [phone, removeOf(owner)]]);
+    const led = await takePage(copy, { ...startRead(copy, "service"), after: 4 }, pageOf(padded, 4), NOW);
+    expect([led.verdict, led.at, led.copy.alarm?.by]).toEqual(["fork", 5, phone.key]);
   });
 
   test("the account service alone shows a member another history that a member signed: it looks under its footing for the place, and gets the alarm", async () => {
@@ -614,8 +619,8 @@ describe("two members and a service that shows them two things", () => {
           const copy = await followed(real, PC(desk, 1), { how: "added" });
           const read = await reads(copy, serves(other, limit));
           const where = { parts, length: other.texts.length, limit };
-          expect({ where, last: lastOf(read), at: read.last.at, alarm: read.copy.alarm?.seq, entries: read.copy.entries, opens: [opens(read.copy, browser), opens(read.copy, eve), opens(read.copy, tablet)] })
-            .toEqual({ where, last: "fork", at: parts, alarm: parts, entries: real.texts, opens: ["never_added", "never_added", "drive"] });
+          expect({ where, last: lastOf(read), at: read.last.at, alarm: read.copy.alarm?.seq, by: who(read.copy.alarm?.by ?? ""), entries: read.copy.entries, opens: [opens(read.copy, browser), opens(read.copy, eve), opens(read.copy, tablet)] })
+            .toEqual({ where, last: "fork", at: parts, alarm: parts, by: "owner", entries: real.texts, opens: ["never_added", "never_added", "drive"] });
           expect({ where, pages: read.pages <= 12 + Math.ceil(8 / limit) }).toEqual({ where, pages: true });
         }
       }
@@ -1057,8 +1062,10 @@ describe("the save", () => {
       ["a stranger's entry on top", "broken", (save) => { (save["entries"] as string[]).push("junk"); }],
       ["another list id", "broken", (save) => { save["list"] = OTHER.list; }],
       ["another account", "broken", (save) => { save["account"] = "TEST-ONLY-other"; }],
-      ["an alarm at a place past the footing", "broken", (save) => { save["alarm"] = { at: NOW, code: "fork", devices: [], pcs: [], seq: 9, source: "peer" }; }],
-      ["an alarm that names a device the list never held", "broken", (save) => { save["alarm"] = { at: NOW, code: "fork", devices: [mallory.key], pcs: [], seq: 3, source: "peer" }; }],
+      ["an alarm at a place past the footing", "broken", (save) => { save["alarm"] = { at: NOW, by: owner.key, code: "fork", devices: [], pcs: [], seq: 9, source: "peer" }; }],
+      ["an alarm that names a device the list never held", "broken", (save) => { save["alarm"] = { at: NOW, by: owner.key, code: "fork", devices: [mallory.key], pcs: [], seq: 3, source: "peer" }; }],
+      ["an alarm by a key the list never made a signer", "broken", (save) => { save["alarm"] = { at: NOW, by: mallory.key, code: "fork", devices: [], pcs: [], seq: 3, source: "peer" }; }],
+      ["an alarm by a key that came in after the place it names", "broken", (save) => { save["alarm"] = { at: NOW, by: tablet.key, code: "fork", devices: [], pcs: [], seq: 3, source: "peer" }; }],
       ["a stopped entry for a member that did not stop", "broken", (save) => { save["stop"] = at(log.texts, 1); }],
       ["a pin of a device for a PC", "form", (save) => { save["pin"] = { how: "genesis" }; }],
       ["a pin with a member too many", "form", (save) => { save["pin"] = { how: "added", seq: 1 }; }],
@@ -1070,8 +1077,10 @@ describe("the save", () => {
       const read = await readSave(rewritten(text, change));
       expect({ name, why: read.read ? "read" : read.why }).toEqual({ name, why: expected });
     }
-    // The same hand changing nothing: it reads. So each refusal above is of the change.
+    // The same hand changing nothing: it reads. So each refusal above is of the change. And an alarm in its form reads.
     expect(await readSave(rewritten(text, () => undefined))).toEqual({ read: true, copy });
+    const alarm = { at: NOW, by: owner.key, code: "fork", devices: [owner.key], pcs: [], seq: 3, source: "peer" };
+    expect(await readSave(rewritten(text, (save) => { save["alarm"] = alarm; }))).toMatchObject({ read: true, copy: { alarm } });
     // A genesis pin whose entry 0 another key signed, and a migrated PC whose first signer it never let in.
     const asOwner = writeSave(await followed(log, DEVICE(owner), { how: "genesis" }));
     expect(await readSave(rewritten(asOwner, (save) => { save["me"] = { endpoint: null, key: phone.key }; }))).toEqual({ read: false, why: "broken" });
@@ -1105,7 +1114,7 @@ describe("the vectors of save/", () => {
     readonly save: string;
     readonly now: number;
     readonly expect:
-      | { readonly reads: { readonly account: string; readonly list: string; readonly me: FollowerSelf; readonly pin: ListPin; readonly head: ListPlace | null; readonly footing: ListPlace | null; readonly standing: string; readonly stop: boolean; readonly alarm: number | null; readonly read_at: number | null; readonly seen_at: number | null; readonly opens: Readonly<Record<string, string>> } }
+      | { readonly reads: { readonly account: string; readonly list: string; readonly me: FollowerSelf; readonly pin: ListPin; readonly head: ListPlace | null; readonly footing: ListPlace | null; readonly standing: string; readonly stop: boolean; readonly alarm: { readonly seq: number; readonly by: string } | null; readonly read_at: number | null; readonly seen_at: number | null; readonly opens: Readonly<Record<string, string>> } }
       | { readonly refused: string };
   }
   const vectors = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(joinPath(DIR, file), "utf8")) as SaveVector);
@@ -1130,7 +1139,7 @@ describe("the vectors of save/", () => {
       const expected = vector.expect.reads;
       const last = copy.entries.at(-1);
       const head = last === undefined ? null : { seq: copy.entries.length - 1, hash: entryHash(entryFromText(last).body) };
-      expect<unknown>({ account: copy.account, list: copy.list, me: copy.me, pin: copy.pin, head, footing: copy.state?.footing ?? null, standing: standing(copy), stop: copy.stop !== null, alarm: copy.alarm?.seq ?? null, read_at: copy.read_at, seen_at: copy.seen_at })
+      expect<unknown>({ account: copy.account, list: copy.list, me: copy.me, pin: copy.pin, head, footing: copy.state?.footing ?? null, standing: standing(copy), stop: copy.stop !== null, alarm: copy.alarm === null ? null : { seq: copy.alarm.seq, by: copy.alarm.by }, read_at: copy.read_at, seen_at: copy.seen_at })
         .toEqual({ account: expected.account, list: expected.list, me: expected.me, pin: expected.pin, head: expected.head, footing: expected.footing, standing: expected.standing, stop: expected.stop, alarm: expected.alarm, read_at: expected.read_at, seen_at: expected.seen_at });
       for (const [name, word] of Object.entries(expected.opens)) {
         const said = admitsSession(copy, at(Object.entries(vector.keys).filter(([key]) => key === name), 0)[1].spki, vector.now);

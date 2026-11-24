@@ -3,24 +3,24 @@
   "about": "A member that is pinned and has read nothing: its pin alone.",
   "keys": {
     "TEST-ONLY-tablet": {
-      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgnk2pruBGcFpAgoSQBCutw8RekNCj3kkTjTKJzTb2gDuhRANCAATAwWvNFvhEOnYiUClRTFDTZG9_7Pja4ncPpQ4KQFExkmUlTQCi-EWh57ZxjTLMql_hXl7DJEBIwhMIdEv9c2Cw",
-      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwMFrzRb4RDp2IlApUUxQ02Rvf-z42uJ3D6UOCkBRMZJlJU0AovhFoee2cY0yzKpf4V5ewyRASMITCHRL_XNgsA"
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgtx_H-4FLaRdZEsa8OjwDfbszonhP_pcZafuReRE1AwihRANCAAQ4loSXfOAHyyKJNUpT-m6sA4zJbnlUqOKxu_zJVoOr6KIPh-LObJsCkdbpk-1RyFHV16xbhxGO2tnwe7HVGJGK",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOJaEl3zgB8siiTVKU_purAOMyW55VKjisbv8yVaDq-iiD4fizmybApHW6ZPtUchR1desW4cRjtrZ8Hux1RiRig"
     }
   },
-  "save": "{\"account\":\"TEST-ONLY-account\",\"alarm\":null,\"entries\":[],\"list\":\"14dab465abf61a8d3d904c3b0bfb95834218a226a83be4dcacb003d2c02b21e1\",\"me\":{\"endpoint\":null,\"key\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwMFrzRb4RDp2IlApUUxQ02Rvf-z42uJ3D6UOCkBRMZJlJU0AovhFoee2cY0yzKpf4V5ewyRASMITCHRL_XNgsA\"},\"pin\":{\"hash\":\"51ab2b8cc186982a24fb5f6bd3a8c7fe0ac611f069651953cd7f8e7a9c79259f\",\"how\":\"allowed\",\"seq\":5},\"read_at\":null,\"seen_at\":null,\"state\":null,\"stop\":null,\"sum\":\"206cc8727fc2971917cc2480358a8816cd585c3efc3188516e0abc817e51bfd0\",\"v\":1}",
+  "save": "{\"account\":\"TEST-ONLY-account\",\"alarm\":null,\"entries\":[],\"list\":\"5e5f2fbe498e8ba41b95569d2984b5416903b2eb06b774c2269fd3a416c5d012\",\"me\":{\"endpoint\":null,\"key\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOJaEl3zgB8siiTVKU_purAOMyW55VKjisbv8yVaDq-iiD4fizmybApHW6ZPtUchR1desW4cRjtrZ8Hux1RiRig\"},\"pin\":{\"hash\":\"5539def901e795c9acb42f2e8f6a19f631ee99d09e24966eb2cb2e47787436a6\",\"how\":\"allowed\",\"seq\":5},\"read_at\":null,\"seen_at\":null,\"state\":null,\"stop\":null,\"sum\":\"424148287d16efac2b00304f4506255eddbcf1f3e61ffed9c1bc50e7d241d861\",\"v\":1}",
   "now": 1767312000,
   "expect": {
     "reads": {
       "account": "TEST-ONLY-account",
-      "list": "14dab465abf61a8d3d904c3b0bfb95834218a226a83be4dcacb003d2c02b21e1",
+      "list": "5e5f2fbe498e8ba41b95569d2984b5416903b2eb06b774c2269fd3a416c5d012",
       "me": {
-        "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwMFrzRb4RDp2IlApUUxQ02Rvf-z42uJ3D6UOCkBRMZJlJU0AovhFoee2cY0yzKpf4V5ewyRASMITCHRL_XNgsA",
+        "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOJaEl3zgB8siiTVKU_purAOMyW55VKjisbv8yVaDq-iiD4fizmybApHW6ZPtUchR1desW4cRjtrZ8Hux1RiRig",
         "endpoint": null
       },
       "pin": {
         "how": "allowed",
         "seq": 5,
-        "hash": "51ab2b8cc186982a24fb5f6bd3a8c7fe0ac611f069651953cd7f8e7a9c79259f"
+        "hash": "5539def901e795c9acb42f2e8f6a19f631ee99d09e24966eb2cb2e47787436a6"
       },
       "head": null,
       "footing": null,
