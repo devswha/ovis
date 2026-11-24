@@ -1260,6 +1260,50 @@ nothing. A pairing made at such a PC is whole without the link: the app keeps it
 own, calls it neither a failed pairing nor a failed enrollment, and a member's Allow is what
 brings the device into the account there.
 
+### Adding a PC
+
+A device that is in the list adds a PC to it by a `pc` entry it signs with the PC's own card. Two
+ways, both by a person who is at the PC. The code is
+[`src/lib/account/listAdd.ts`](../src/lib/account/listAdd.ts) and
+[`listNamed.ts`](../src/lib/account/listNamed.ts).
+
+**With a number on both screens** (the card **Add this PC to your account?**). The PC asked to be
+added (`ovis add`, or **Add this PC** in its own window): it listed itself and posted its keys and
+its card for the list (`POST /v2/pc/list/keys`).
+
+1. The device reads the posts (`GET /v2/lists/{list}/posts`) and keeps only a post whose card is
+   that key's own, for the list this device follows and for the very relay key the post stands
+   under. For any other post it shows nothing and starts nothing; the card then adds the PC the
+   way from before lists.
+2. **Add** on the card works out the number, from the card's binding (the kinds' `cardBinding`)
+   with the exchange of `shared/relay-pair-sas.ts`: the device commits to a
+   nonce of its own (`POST .../posts/{endpoint}/attempt`), waits for the PC's nonce, then reveals
+   its own. It commits before it has seen the PC's nonce and reveals only after, so neither end
+   and nobody between them can steer the number. The account service only carries the messages.
+3. The card shows the six digits with **Check that the PC shows this number and confirm it there,
+   then Add**. The person confirms at the PC first; that is what lets the PC follow this list. A
+   number lives two minutes from the PC's answer.
+4. **Add** beside the number: the account admits the PC (`POST /v1/pcs/{id}/admit`; the service
+   places a `pc` entry only for a PC an own sign-in admitted), and the device signs the `pc` entry
+   with exactly the card the number came from, the name the PC gave itself sealed, and the epoch
+   key wrapped to the PC's encryption key. **Not the same** adds nothing.
+
+A number that is shown proves nothing by itself: only the two confirmations do, each for its own
+end. The PC's yes says that the adder is the device in the person's hand; the device's Add says
+that the card it holds is the card of the PC in front of the person.
+
+**By the PC's QR code.** A scan pairs the device with the PC over an end-to-end session, so the
+card is taken from that session and no number is compared. In place of the link, the device names
+its list to the PC (`POST /api/account/list/named` `{ account, list }`), checks the card the PC
+answers with (its own, for this list and the relay key this session is bound to), has the account
+admit the PC, signs the `pc` entry, and asks the PC again, four times at most, until it says it
+read the entry. The pairing that named the list is spent then: its row goes, and the PC is opened
+as any PC of the list, with the key the list holds for the device. A PC with no such call (it
+follows no list, or is from before lists) gets the link, as before.
+
+Either way the entry is signed through the one write loop of
+[Letting a device in](#letting-a-device-in), for the account and the list the card was shown for.
+
 ### What a pinned PC asks of the app
 
 A PC that follows a list a person named (a pinned PC) lets a device of the account in by the key
