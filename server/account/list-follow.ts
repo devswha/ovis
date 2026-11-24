@@ -114,7 +114,15 @@ export interface ListStatus {
   readonly posted_until: string | null;
   /** Why the copy or the service could not be used, in words that name no key. */
   readonly error: string | null;
+  /**
+   * On a pinned PC that lets none of its account's devices in, or nobody new: why, and what a person does about it,
+   * in one sentence for a screen. Null while the PC follows its list as usual, and on a PC that is not pinned.
+   */
+  readonly reason: string | null;
 }
+
+/** What `GET /api/account/status` says of the list on a pinned PC (`ovis status --json` reads it): the list id, where the PC stands in it, and ListStatus.reason. */
+export interface ListSummary { readonly pinned: string; readonly standing: Standing | null; readonly reason: string | null }
 
 export type WantRefusal = "invalid_list" | "not_in_account" | "pinned" | "removed" | "unavailable";
 
@@ -170,6 +178,8 @@ export interface ListFollowDeps {
   recheck?(): void;
   /** Whether a session is open on this PC: it then reads more often. */
   busy?(): boolean;
+  /** Called at each look at the clock, before anything else: what this PC tries again by itself (a pin its other folder holds). */
+  retry?(): void;
 }
 
 const PC_STATES: ReadonlySet<string> = new Set<SessionRefusal>(["waiting", "stopped", "out"]);
@@ -353,7 +363,28 @@ export class ListFollow implements ListAuthority {
       keys: this.keysState,
       posted_until: posted === null ? null : new Date(posted * 1000).toISOString(),
       error: this.problem ?? this.error,
+      reason: this.reason(copy),
     };
+  }
+
+  /** The list this PC is pinned to, where it stands in it and why it lets nobody in, for the account's status; null on a PC that is not pinned. */
+  summary(): ListSummary | null {
+    const scope = this.sync();
+    if (scope === null || scope.list === null || !this.isPinned) return null;
+    return { pinned: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy) };
+  }
+
+  /** ListStatus.reason: each case in which a pinned PC is closed to its account's devices, or to new ones, with what ends it. */
+  private reason(copy: FollowerCopy | null): string | null {
+    if (!this.isPinned) return null;
+    if (this.broken !== null) return `This PC cannot read its copy of your account's list (${ACCOUNT_LIST_FILE}), so it lets no device of your account in. Restore that file, or remove it, and start Ovis on this PC again: it then reads the list from its start.`;
+    if (copy !== null && this.alarmLost) return "This PC was shown two versions of your account's list, and its copy of the list was lost since, so it lets no device of your account in. Choose Revoke all on this PC, then add it to your account again.";
+    if (copy?.alarm != null) return "This PC was shown two versions of your account's list. It lets in the devices it held then and nobody new. Check your devices and PCs one at a time (docs/account-list.md, \"What a person does\"), then choose Revoke all on this PC and add it to your account again.";
+    if (copy === null) return "This PC holds no copy of your account's list yet, so it lets no device of your account in until it has read the list.";
+    const stands = standing(copy);
+    if (stands === "stopped") return "A device of your account wrote something into its list that this Ovis is too old to read, so this PC lets no device of your account in. Update Ovis on this PC.";
+    if (stands === "waiting") return "This PC is reading your account's list again from its start, and lets no device of your account in until that read shows this PC in the list.";
+    return null;
   }
 
   // What reaches the list from outside.
@@ -419,6 +450,7 @@ export class ListFollow implements ListAuthority {
   /** The clock: a read that is due, a device whose time has passed, rows that still wait for what the list says. */
   tick(): void {
     if (this.stopped) return;
+    try { this.deps.retry?.(); } catch { /* tried again at the next look */ }
     const scope = this.bound();
     if (scope === null) return;
     // a file that could not be read is tried again: one that reads by now is taken

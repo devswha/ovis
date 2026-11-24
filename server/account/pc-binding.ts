@@ -200,6 +200,7 @@ export class PcAccountState {
     state.fresh = false;
     state.upgradingFrom = false;
     state.siblingBinding = null;
+    state.siblingOwed = null;
     let text: string;
     try { text = readFileSync(state.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") state.problem = `Cannot read ${state.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
@@ -345,12 +346,32 @@ export class PcAccountState {
     const effective = own ?? theirs;
     if (effective !== null && effective.list !== undefined && !(mine !== null && mine.bind_id === effective.bind_id && mine.list === effective.list)) {
       const problem = bringList?.({ bind_id: effective.bind_id, list: effective.list }) ?? null;
-      if (problem !== null) { this.problem = problem; return; }
+      // closed for this reason alone, with nothing written: tried again by itself (retrySibling)
+      if (problem !== null) { this.problem = problem; this.siblingOwed = { dir: siblingDir, bringList }; return; }
     }
     if (this.fresh) { this.doc = doc; return; }
     if (own === null && theirs !== null) { doc.binding = theirs; doc.first = this.doc.first ?? parsed.first; }
     if (JSON.stringify(doc) !== JSON.stringify(this.doc)) this.write(doc);
   }
+
+  /**
+   * This folder is closed only because the other folder's pin could not be taken with its keys and its copy: the take
+   * is tried again, and the folder opens by itself, with no restart, once the three can be read together. True when
+   * it opened. A folder with no account state of its own takes the binding at a start (its migration), so it stays
+   * closed until then.
+   */
+  retrySibling(): boolean {
+    const owed = this.siblingOwed;
+    if (owed === null || this.problem === null || this.fresh) return false;
+    const before = this.problem;
+    this.problem = null;
+    this.siblingOwed = null;
+    try { this.takeSibling(owed.dir, owed.bringList); } catch (error) { this.problem = `${before} (${error instanceof Error ? error.message : String(error)})`; this.siblingOwed = owed; }
+    if (this.problem !== null) { this.siblingOwed ??= owed; return false; }
+    for (const listener of this.bindingListeners) listener();
+    return true;
+  }
+  private siblingOwed: { readonly dir: string; readonly bringList: Parameters<PcAccountState["takeSibling"]>[1] } | null = null;
 
   /**
    * The migration's check, before any row is touched: the rows' accounts. Rows of two accounts name no binding to

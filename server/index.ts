@@ -436,6 +436,8 @@ export function createServer(
     leave: (serverId) => devices.clearAccountBinding("unlisted", LIST_REMOVED, serverId),
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
+    // a folder closed because its other folder's pin could not be taken with its keys and copy opens by itself once they can
+    retry: () => { if (pcAccount.retrySibling()) console.info("[account] this PC's list keys and its copy of the list could be read beside its pin: it follows its list again"); },
   });
   devices.attachList(accountList);
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });

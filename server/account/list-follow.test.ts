@@ -479,12 +479,16 @@ describe("what a pinned PC keeps beside its pin", () => {
     await pc.list.settled();
     pc.service.untamperList(pc.account.id);
     expect(pc.list.status().alarm).toBe("fork");
+    // what a person is told: what happened, whom the PC still lets in, and what to do
+    expect(pc.list.status().reason).toContain("two versions of your account's list");
+    expect(pc.list.summary()).toEqual({ pinned: pc.account.id, standing: "in", reason: pc.list.status().reason });
     expect(pc.world.alarmed).toBe(true);
     pc.list.stop();
     rmSync(join(pc.stateDir, ACCOUNT_LIST_FILE));
     const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id, alarmed: true });
     await again.pull();
     expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", alarm: "fork" });
+    expect(again.list.status().reason).toContain("its copy of the list was lost");
     expect(again.list.role(pc.account.first.key)).toBeNull();
   });
 
@@ -503,6 +507,7 @@ describe("what a pinned PC keeps beside its pin", () => {
     await pc.pull();
     expect(pc.list.status().last_verdict).toBe("needs_newer_client");
     expect(pc.world.removed).toContain(phone.key);
+    expect(pc.list.status()).toMatchObject({ standing: "stopped", reason: expect.stringContaining("Update Ovis on this PC") });
   });
 
   test("work that waited in the queue when the follower stopped writes nothing", async () => {
@@ -521,6 +526,21 @@ describe("what a pinned PC keeps beside its pin", () => {
     release();
     await pc.list.settled();
     expect(pc.world.commits.length).toBe(commits);
+  });
+
+  test("says nothing is wrong while it follows its list, and why it lets nobody in while it reads the list again after its copy was lost", async () => {
+    const pc = await following();
+    expect(pc.list.summary()).toBeNull();
+    await pc.pin();
+    expect(pc.list.status().reason).toBeNull();
+    expect(pc.list.summary()).toEqual({ pinned: pc.account.id, standing: "in", reason: null });
+    pc.list.stop();
+    rmSync(join(pc.stateDir, ACCOUNT_LIST_FILE));
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.world.log = () => { throw new Error("away"); };
+    await again.pull();
+    expect(again.list.summary()).toMatchObject({ pinned: pc.account.id, standing: "waiting", reason: expect.stringContaining("reading your account's list again") });
+    expect(again.list.role(pc.account.first.key)).toBeNull();
   });
 
   test("an alarm the binding's file did not take is offered to it again, though the rows were written", async () => {

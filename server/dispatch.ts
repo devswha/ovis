@@ -379,7 +379,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("auth-refusal");
     // a script's Bearer guess is told to wait; a browser's cookie gets the usual 401 and its sign-in form
     if (presented === "held" && pathname !== "/ws" && request.headers.has("authorization")) return presentedTokenHeld(client);
-    return pathname === "/ws" ? new Response("unauthorized", { status: 401 }) : unauthorizedJson(access.level === "none" ? access.reason : "token_required");
+    // this PC's own window is told what it cannot read (the file, the folder), where any other caller hears the general words
+    return pathname === "/ws" ? new Response("unauthorized", { status: 401 })
+      : unauthorizedJson(access.level === "none" ? access.reason : "token_required", ownWindow ? devices.accountError : null);
   }
 
   if (options.profile === "machine" && machineRouteRestricted(pathname, request.method)) {
