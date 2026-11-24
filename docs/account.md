@@ -546,7 +546,12 @@ turned off (`off`) has no mailbox and answers `fresh: true`; one whose address i
 one-press admission (`POST /api/account/one-press`) in the last 30 seconds and the service had none
 yet, or did not answer, and the PC is in no account: something here waits for **Add** on a device of
 the account. It is a yes or no only, never the account asked for. It lives in memory, so a restart
-ends it until the next ask.
+ends it until the next ask. On a PC pinned to its account's signed list the answer also carries
+`list` ([What a pinned PC does](#what-a-pinned-pc-does), "It says so").
+
+A PC that cannot read its own account state answers this call, as every other, 403 `strict`. To
+this PC's own window and CLI the refusal also carries `reason`: what it could not read (the file,
+the folder). `ovis status --json` shows it as `problem`.
 A device that waits to link reads one body, whatever the PC holds: `account` `null`, `members` 0,
 `unlinked` its own id alone, every other list empty, `enrolling` and `blocked_all` false. No
 mailbox is read for it, and `fresh` is ignored.
@@ -563,7 +568,7 @@ account after `ovis logout` is so a sign-in on the PC itself.
 alone (403 `owner_only` otherwise); 404 with Step 2 off.
 
 ```json
-{ "account": "acct_1", "list": "<list id>", "pinned": false, "want": null, "standing": "in", "head": { "seq": 12, "hash": "<64 hex>" }, "devices": 3, "pcs": 2, "alarm": null, "last_read_at": "2026-11-24T01:02:03.000Z", "last_verdict": "caught_up", "differences": 0, "keys": "ready", "posted_until": null, "error": null }
+{ "account": "acct_1", "list": "<list id>", "pinned": false, "want": null, "standing": "in", "head": { "seq": 12, "hash": "<64 hex>" }, "devices": 3, "pcs": 2, "alarm": null, "last_read_at": "2026-11-24T01:02:03.000Z", "last_verdict": "caught_up", "differences": 0, "keys": "ready", "posted_until": null, "error": null, "reason": null }
 ```
 
 `list` is `null` while the PC reads none. `pinned` says whether the PC lets its account's devices in
@@ -1485,17 +1490,30 @@ account service says ends it.
 
 A pin outlives the PC's own settings: started with Step 2 turned off here
 ([Turning Step 2 off](#turning-step-2-off)), a pinned PC still follows its list, and says so in its
-log. Where a PC has two state folders (the old and the new name of one), the other folder takes
+log. So does the word that the list removed this PC: with Step 2 turned off, nothing links the PC
+back into that account under the relay identity it had. Where a PC has two state folders (the old
+and the new name of one), the other folder takes
 the pin only together with the list keys and the copy, also a folder that had no account state of
 its own; when those cannot be brought, or the copy there does not read, it starts closed rather
-than unpinned or pinned with keys the list does not know. A removal of the PC by its list that
+than unpinned or pinned with keys the list does not know: it lets only this PC itself in, writes
+nothing, says which file it could not bring (to this PC's own window, and in `ovis status --json`
+as `problem`), and opens by itself, with no restart, once the keys and the copy can be read beside
+the pin (it looks every five seconds). A folder with no account state of its own opens at the next
+start. A folder of another PC (another relay identity) changes nothing here. A copy made for
+other keys than this folder holds is dropped, and the list is read again with the PC's own. A removal of the PC by its list that
 either folder holds stands in both, whatever the other holds for the same binding.
 
 The pin is kept with the PC's place in its account (`account-pc.json`), not with its copy of the
 list. While that file holds a pin, or that the list removed this PC, it is written as version 2:
 an Ovis from before the list reads version 1 alone, so a PC put back on such a release refuses the
 file and lets nobody of the account in, where it would otherwise drop the pin in silence and go by
-the account service's word again. A file with neither is version 1, as before. A pinned PC whose `account-list.json` is gone is still pinned: it reads its list again from
+the account service's word again. A file with neither is version 1, as before.
+
+Two Ovis servers can run on one state folder. Every write of `account-pc.json` is a read and a
+write in one turn, under a lock file beside it (`account-pc.json.lock`; a write waits half a second
+for it, and takes over one that is ten seconds old): a server that read the file before another
+pinned the binding takes the pin over, with its alarm, at its next write, never writes the file
+without it, and clears nothing on the account service's word. A pinned PC whose `account-list.json` is gone is still pinned: it reads its list again from
 the start, and lets no device of its account in until that read shows the PC in the list. What it
 had seen removed stays out, whatever the service shows then. An `account-list.json` that is there
 and will not read is not replaced by what the service shows: the PC lets no device of its account
@@ -1516,11 +1534,18 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   the devices it already let in: no hold, no notice and no closed session for a key it held. Today
   a pin makes every list device a new row, which is right only for a PC whose account devices all
   came by the list.
-- **A key the list holds, which this PC also holds by a pairing of its own,** opens under the key's
-  account id too (`accountDeviceId(server_id, key)`), which is the only id an app that opens the PC
-  through its account knows. There the list's role decides, whatever role the pairing has; under
-  the pairing's own id the device signs in as it did. That session ends when the list lets the key
-  in no more, and when the pairing is revoked.
+- **A session opened through the account is the list's to answer for, and nothing else's.** Its id
+  is `accountDeviceId(server_id, key)`, the only id an app that opens the PC through its account
+  knows. Such a session is let in when this PC's copy of the list holds that key as a device that
+  is in; as the role the list gives it; until the list's `until`; and not while an alarm holds the
+  key back or the copy cannot be read. A row of this PC's own devices under that same id gives it
+  nothing more and nothing else, whoever wrote it and whenever: a member's `add` from before the
+  pin, a join a member or this PC allowed by digits. After the pin such a row counts only while the
+  list holds its key.
+- **A pairing made at the PC is the PC's own business.** A pairing by code has an id of its own,
+  and under that id the device signs in as it did, with the role the PC gave it: the list's `watch`
+  and `until` do not reach it; removing the key from the list does. The same key also opens under
+  its account id, as the list says.
 - **A device the list put out is out for good.** Its sessions close, and the PC keeps the removal
   as it keeps a member's signed `remove`: every row of that key goes, a pairing this PC made itself
   included, and nothing brings that key back, a pairing at this PC included: a list's removal is
@@ -1548,6 +1573,21 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   PC still puts out what the entry removed, says so (`error` in `GET /api/account/list`), and
   offers the copy to the disk again every few seconds. A page a device handed over is answered as
   not saved until then.
+- **A removal is acted on as soon as its page is checked.** Each page of a read reaches the copy
+  the PC decides on, and closes the sessions it ends, before the next request goes out: a service
+  that answers the next page slowly holds back nothing it already showed. A page a member hands
+  over waits for no request at all, only for a page that is being checked (milliseconds). What
+  the list removed is kept as removed also when the same read then stops at an entry this Ovis is
+  too old to place.
+- **What the PC acted on and could not save does not come back by a restart.** Before a pinned PC
+  acts on a change of its list (a removal, a device's time that passed), it writes a mark beside
+  the copy (`account-list-owed.json`, with the hour its clock showed) and removes it once the copy
+  that holds the change is on disk. A PC that starts and finds the mark stopped in between: the
+  copy on disk is older than what it acted on, so it lets no device of its list in until it has
+  read the list again (the account service's log to its end, or a member's page), and a time that
+  had passed stays passed. An ordinary restart, with the copy saved, lets the list's devices in
+  with the service away as before. Left open: a disk that takes no write at all, the mark
+  included, and a stop before it does.
 - **A PC the list removed leaves its account**, as one its account stopped listing did before: its
   account devices go, and the pairings it made itself stay. What the list removed before it removed
   the PC is put out first, in the same read: a removed device keeps no pairing of this PC's own. It keeps that it was removed
@@ -1557,8 +1597,19 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
 - **Another PC of the account** ([Adding a PC of your account](#adding-a-pc-of-your-account)) is
   taken as one only when the list holds its relay key, asked when its comparison begins and again
   in the turn that writes its row.
-- Devices paired with this PC itself keep their pairing and their role: that is this PC's own
-  doing. Joining by comparing digits works as before, each join decided by a person.
+- **Who may let a device in from afar.** A member of this PC's own devices approves a join only
+  while the list holds its key to drive with full power, read from the copy at that moment: what
+  may add a device to the list may approve a join. A row the list does not hold approves nobody.
+- Devices paired with this PC itself by a code keep their pairing and their role: that is this PC's
+  own doing. A join by comparing digits is still decided by a person, and makes a row under the
+  account's id for the key: it opens the PC once the list holds that key.
+- **It says so.** For a pinned PC, `GET /api/account/status` carries `list`: `pinned` (the list's
+  id), `standing` (where the PC stands in it) and `reason`, one sentence a person can act on when
+  the PC lets no device of its account in, or nobody new: its copy cannot be read; an alarm (with
+  what to do); a lost copy with an alarm; stopped at an entry this Ovis is too old to read ("Update
+  Ovis on this PC"); reading the list again after its copy was lost; started with a change it had
+  acted on and not saved. `GET /api/account/list` carries the same `reason`, and `ovis status
+  --json` both (`list`). Null while the PC follows its list as usual.
 
 #### How an app signs in to a pinned PC
 
