@@ -1352,6 +1352,13 @@ export class MachineManager {
     return { account, relay: accountAddRelay(answer.relay) };
   }
 
+  /** The relay key, 64 hex, of the PC an account add's job reached, as its inspect read it over that job's connection; null for a job that reached none. */
+  accountAddEndpoint(jobId: string): string | null {
+    const job = this.jobs.get(jobId);
+    const target = job?.accountAdd?.reached === undefined ? undefined : job.public.account_add;
+    return target === undefined ? null : bytesToHex(importPublicKey(target.public_key));
+  }
+
   /** Closes the forward of an account add that ends here, before its take was answered for good (an add by the list that this PC gave up). */
   async accountAddEnd(jobId: string): Promise<void> {
     await this.jobs.get(jobId)?.accountAdd?.reached?.channel.close();

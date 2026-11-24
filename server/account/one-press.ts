@@ -138,6 +138,7 @@ export async function takeForAccount(services: PressServices, account: string, s
 /** What a take that named a list says when this PC does not join by it, by the join's refusal: its code, words and status. */
 const LIST_TAKE_REFUSALS: Readonly<Record<JoinRefusal, readonly [string, string, number]>> = {
   other_account: ["other_account", "This PC is in another account", 409],
+  other_keys: ["other_keys", "Your account's list holds this PC by an entry with other keys than the ones it posted, so this PC follows no list by this add.", 409],
   other_adder: ["other_adder", "Your account's list holds this PC by an entry another key signed than the PC that adds it over SSH, so this PC follows no list by this add.", 409],
   pinned: ["pinned", "This PC already follows another list. Revoke all on this PC to leave its account first.", 409],
   removed: ["list_removed", LIST_REMOVED_FROM, 409],

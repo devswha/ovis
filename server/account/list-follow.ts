@@ -230,9 +230,12 @@ interface Newcomer {
   write(copy: FollowerCopy, state: ListState, keys: PcListKeys): Promise<{ entries: string[]; wraps: { epoch: number; member: string; wrap: string }[] }>;
 }
 
-/** `other_account`: this PC is in another account. `other_adder`: the list holds this PC, by an entry of another key than the one the person confirmed. */
+/**
+ * `other_account`: this PC is in another account. `other_adder`: the list holds this PC, by an entry of another key than
+ * the one the person confirmed. `other_keys`: that entry names another encryption key than this PC's own.
+ */
 /** `ended`: what the join was for ended before the binding was written (an add's time, or the person's No). */
-export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "line_unproven" | "invite_unknown" | "ended";
+export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "other_keys" | "line_unproven" | "invite_unknown" | "ended";
 
 /**
  * Why a PC writes no `join` of its own. The invite's refusal as the list holds it (inviteRefusal); `invite_plain`: a
@@ -762,6 +765,12 @@ export class ListFollow implements ListAuthority {
     return scope !== null && this.deps.removedFrom(account, scope.serverId);
   }
 
+  /** Whether the PC at the relay key `endpoint` is in the list this PC is pinned to, once its copy was read again from the account service. */
+  async holdsPcRead(endpoint: string): Promise<boolean> {
+    await this.readNow();
+    return this.holdsPc(endpoint);
+  }
+
   /** Whether the PC at the relay key `endpoint` is in the list this PC is pinned to. */
   holdsPc(endpoint: string): boolean {
     if (!this.pinned() || this.copy === null || this.alarmLost) return false;
@@ -982,6 +991,7 @@ export class ListFollow implements ListAuthority {
             return { waiting: standing(looked.copy) };
           }
           if (addedBy(looked.copy) !== by) return { refused: "other_adder" };
+          if (!holdsOwnKeys(looked.copy, looked.keys)) return { refused: "other_keys" };
         }
         const named = await this.wanted(list);
         if ("refused" in named) return { refused: named.refused };
@@ -1000,6 +1010,8 @@ export class ListFollow implements ListAuthority {
         return { waiting: stands };
       }
       if (by !== null && addedBy(copy) !== by) return { refused: "other_adder" };
+      // the entry a key the act named signed carries exactly the keys this PC posted for it, at its own relay key
+      if (by !== null && !holdsOwnKeys(copy, keys)) return { refused: "other_keys" };
       // the line named this list: the list must hold the line's invite, or the line was for no list at all
       if (invite !== undefined && (copy.state === null || !Object.hasOwn(copy.state.invites, invite))) return { refused: "invite_unknown" };
       // still in no account, and the same PC: whatever happened while the list was read
@@ -2237,6 +2249,13 @@ function pcPlaceOf(copy: FollowerCopy, pc: Pick<AddedPc, "key" | "endpoint">): {
   const text = signer === undefined ? undefined : copy.entries[signer.seq];
   if (row === undefined || row.removed !== null || row.key !== pc.key || signer === undefined || signer.as !== "pc" || signer.ended !== null || text === undefined) return null;
   return { id: copy.list, seq: signer.seq, hash: entryHash(entryFromText(text).body) };
+}
+
+/** Whether the list holds the PC this copy is of with exactly its own keys: its signing key and its encryption key, at its own relay key. */
+function holdsOwnKeys(copy: FollowerCopy, keys: Pick<PcListKeys, "key" | "enc">): boolean {
+  const { state, me } = copy;
+  const row = state === null || me.endpoint === null || !Object.hasOwn(state.pcs, me.endpoint) ? undefined : state.pcs[me.endpoint];
+  return row !== undefined && row.removed === null && row.key === keys.key && row.enc === keys.enc;
 }
 
 /** The key that signed the entry which put the PC this copy is of into the list: the member that added it, or the invite it joined with; null when it is not in. */

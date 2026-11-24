@@ -38,6 +38,7 @@ const JOIN_REFUSALS: Readonly<Record<string, string>> = {
   removed: LIST_REMOVED_FROM,
   unavailable: "This PC's relay identity, its list or its keys cannot be read or written.",
   other_adder: "The list holds this PC already, by another entry than this invite's.",
+  other_keys: "The list holds this PC by an entry with other keys than its own.",
   line_unproven: "The invite's line did not sign for this PC and this list.",
   not_read: "The account's list could not be read from the account service.",
   invite_unknown: "The account's list holds no such invite.",
@@ -353,7 +354,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       try {
         if (list === null || !list.pinned()) taken = await machines.accountTake(jobId, target, account);
         else {
-          const byList = await addOverSshByList({ list, take: (named) => machines.accountTake(jobId, target, account, named), end: () => machines.accountAddEnd(jobId) });
+          const endpoint = machines.accountAddEndpoint(jobId);
+          if (endpoint === null) return fail("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.", 404);
+          const byList = await addOverSshByList({ endpoint, list, take: (named) => machines.accountTake(jobId, target, account, named), end: () => machines.accountAddEnd(jobId) });
           if ("refused" in byList) return fail(byList.refused.code, byList.refused.message, byList.refused.status);
           taken = byList;
         }

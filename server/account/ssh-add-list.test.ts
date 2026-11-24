@@ -1,39 +1,61 @@
 /**
  * The adding PC's steps of an add over SSH by the account's signed list (ssh-add-list.ts), with the take and the list
- * stood in for: what goes to the other PC, and when the forward is closed.
+ * stood in for: what goes to the other PC, what is signed, when it says added, and when the forward is closed.
  */
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
+import { signCard } from "../../shared/account-list.ts";
+import { exportAccountKey } from "../../shared/account-records.ts";
 import type { AccountAddNamed } from "../account-add-channel.ts";
 import type { AccountAddCard } from "../machines.ts";
 import type { AddedPc, AllowOutcome, AllowRefusal } from "./list-follow.ts";
 import { addOverSshByList, type SshListDeps, type SshListTaken } from "./ssh-add-list.ts";
 
 const LIST = "a".repeat(64);
+const OTHER_LIST = "e".repeat(64);
 const ADDER = "adder-key";
-const CARD: AccountAddCard = { key: "pc-key", enc: "pc-enc", card: "pc-card", endpoint: "b".repeat(64), label: "Other PC" };
+/** That PC's relay key, as this PC's inspect read it over the SSH session. */
+const ENDPOINT = "b".repeat(64);
 const ADDED: SshListTaken = { account: "acct_1", relay: { phase: "online", blocked: null } };
 
-/** A list this PC follows as a full signer, and a take that answers from `answers` in turn; what each was asked is kept. */
-function fixture(options: { refusal?: AllowRefusal | null; answers: (SshListTaken | { waiting: AccountAddCard })[]; added?: AllowOutcome }) {
+/** That PC's real keys and its card for `list` at `endpoint`, signed by its own key. */
+async function cardOf(list = LIST, endpoint = ENDPOINT): Promise<AccountAddCard> {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  const enc = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const key = await exportAccountKey(pair.publicKey);
+  const encKey = await exportAccountKey(enc.publicKey);
+  return { key, enc: encKey, card: await signCard({ key, enc: encKey, list, endpoint, invite: null }, pair.privateKey), endpoint, label: "Other PC" };
+}
+
+let CARD: AccountAddCard;
+beforeAll(async () => { CARD = await cardOf(); });
+
+/**
+ * A list this PC follows as a full signer, and a take that answers from `answers` in turn; what each was asked is kept.
+ * `holds`: whether this PC's own copy, read again, holds the PC at that relay key.
+ */
+function fixture(options: { refusal?: AllowRefusal | null; answers: (SshListTaken | { waiting: AccountAddCard })[]; added?: AllowOutcome; holds?: boolean }) {
   const takes: AccountAddNamed[] = [];
   const signed: AddedPc[] = [];
+  const looked: string[] = [];
   let ended = 0;
   const deps: SshListDeps = {
+    endpoint: ENDPOINT,
     list: {
       allowRefusal: () => options.refusal ?? null,
       status: () => ({ pinned_list: LIST }) as ReturnType<SshListDeps["list"]["status"]>,
       own: async () => ({ serverId: "0".repeat(32), endpoint: "c".repeat(64), keys: { key: ADDER } }) as Awaited<ReturnType<SshListDeps["list"]["own"]>>,
       addPc: async (pc) => { signed.push(pc); return options.added ?? { allowed: { id: LIST, seq: 3, hash: "d".repeat(64) } }; },
+      holdsPcRead: async (endpoint) => { looked.push(endpoint); return options.holds ?? true; },
     },
     take: async (named) => { takes.push(named); const next = options.answers.shift(); if (next === undefined) throw new Error("no more answers"); return next; },
     end: async () => { ended++; },
     wait: async () => {},
   };
-  return { deps, takes, signed, ended: () => ended };
+  return { deps, takes, signed, looked, ended: () => ended };
 }
 
 test("a PC that cannot sign names no list to the other PC: no take goes, nothing is signed", async () => {
-  for (const refusal of ["not_signer", "alarm", "behind", "stopped", "unavailable"] as const) {
+  for (const refusal of ["not_pinned", "not_signer", "alarm", "behind", "stopped", "unavailable"] as const) {
     const made = fixture({ refusal, answers: [] });
     expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_cannot_add", status: 409 } });
     expect(made.takes).toEqual([]);
@@ -49,11 +71,33 @@ test("the take names this PC's list and its own key; the card that comes back is
   expect(made.ended()).toBe(0);
 });
 
-test("the other PC in the list already: nothing is signed, and its answer is the add's", async () => {
+test("a card that is not that key's own for this list and the relay key the inspect read is not signed, and the forward closes", async () => {
+  const otherList = await cardOf(OTHER_LIST);
+  const otherEndpoint = await cardOf(LIST, "f".repeat(64));
+  for (const card of [otherList, otherEndpoint, { ...CARD, enc: otherList.enc }]) {
+    // whatever relay key the answer names, the one the inspect read is the one it is held to
+    const made = fixture({ answers: [{ waiting: { ...card, endpoint: ENDPOINT } }] });
+    expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_not_added" } });
+    expect(made.signed).toEqual([]);
+    expect(made.takes).toHaveLength(1);
+    expect(made.ended()).toBe(1);
+  }
+});
+
+test("the other PC in the list already: nothing is signed, and it is added only once this PC's own copy holds it", async () => {
   const made = fixture({ answers: [ADDED] });
   expect(await addOverSshByList(made.deps)).toEqual(ADDED);
   expect(made.signed).toEqual([]);
+  expect(made.looked).toEqual([ENDPOINT]);
   expect(made.takes).toHaveLength(1);
+});
+
+test("the other PC says it joined, and this PC's own copy, read again, does not hold it: never said added", async () => {
+  for (const answers of [[ADDED], [{ waiting: CARD }, ADDED]]) {
+    const made = fixture({ answers, holds: false });
+    expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "take_unanswered" } });
+    expect(made.looked).toEqual([ENDPOINT]);
+  }
 });
 
 test("an entry this PC could not place ends the add there: the forward is closed and no second take goes", async () => {
@@ -65,9 +109,9 @@ test("an entry this PC could not place ends the add there: the forward is closed
   }
 });
 
-test("a PC that has not read its entry after the last take: in the list, not following it yet, and said so; the forward is closed", async () => {
+test("a PC that has not taken its entry after the last take: in the list, not following it yet, and said so as a step to finish; the forward is closed", async () => {
   const made = fixture({ answers: [{ waiting: CARD }, { waiting: CARD }, { waiting: CARD }, { waiting: CARD }, { waiting: CARD }, { waiting: CARD }] });
-  expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "take_unanswered" } });
+  expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_unbound" } });
   expect(made.signed).toHaveLength(1);
   expect(made.takes).toHaveLength(6);
   expect(made.ended()).toBe(1);

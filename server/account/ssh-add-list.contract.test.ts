@@ -8,8 +8,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { startBunRelay, type BunRelay } from "../../relay/bun.ts";
-import { cardHolds } from "../../shared/account-list.ts";
+import { cardHolds, signCard } from "../../shared/account-list.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { ListKeyStore } from "./list-keys.ts";
 import { listMember, TestList } from "./list.test-helpers.ts";
 import { pairingPc, setUpFor, type Pc } from "./pairing.test-helpers.ts";
 import { askRecovery } from "./recovery.ts";
@@ -209,4 +210,20 @@ test.skipIf(process.platform === "win32")("ovis add --account, as an agent runs 
   });
   expect([code, out.join("")]).toEqual([0, `This PC is already in an Ovis account (${ACCOUNT}).\n`]);
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, pinned_list: list.id });
+});
+
+test.skipIf(process.platform === "win32")("the entry it joins by must carry exactly the keys it posted: one by the adder for its key with another encryption key is not taken", async () => {
+  const b = await addedPc();
+  const list = await TestList.start(b.account, ACCOUNT);
+  await listAndAdmit(b);
+  expect(await takeByList(b, list.id, list.first.key)).toMatchObject({ state: "waiting" });
+  // whoever holds this PC's signing key (not the PC) signs its card for an encryption key that is not its own
+  const own = await new ListKeyStore(b.stateDir).keysFor(serverIdOf(b));
+  const other = await listMember();
+  const card = await signCard({ key: own.key, enc: other.enc, list: list.id, endpoint: endpointOf(b), invite: null }, own.privateKey);
+  await list.placeTexts([await list.sign({ kind: "pc", key: own.key, endpoint: endpointOf(b), enc: other.enc, card, sealed: null })]);
+  expect(await takeByList(b, list.id, list.first.key)).toMatchObject({ code: "other_keys" });
+  expect(b.devices.account()).toBeNull();
+  expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: false });
+  expect(relayPhase(b)).toBe("off");
 });
