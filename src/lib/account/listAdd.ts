@@ -12,7 +12,7 @@ import { cardBinding, cardHolds, type ListCard, type ListKind, type ListNames } 
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import type { AccountList } from "./accountList.ts";
+import type { AccountList, ListWriter } from "./accountList.ts";
 import type { ListPost } from "./listAnswers.ts";
 import { signedNamed, writeNamed, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
 import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, SignedOutError } from "./service.ts";
@@ -144,11 +144,20 @@ export type AddPcOutcome = { readonly added: true } | { readonly added: false; r
  * for a PC an own sign-in admitted), and this device signs the `pc` entry with exactly the card the number was worked
  * out from, the PC's name sealed and the epoch key wrapped to the PC's encryption key. The PC is added once this
  * device's own copy shows the entry. `admit`: the one-press admission, the caller's own (it may ask for a sign-in).
+ * `member`: the member key the comparison (or the scan) began with; a device that holds another key now signs nothing
+ * (`changed`), and neither does one whose account or list is not `expect`'s, before the admission too. `signal`: the
+ * person's Cancel, checked before the admission, before signing and before sending.
  */
-export async function addPostedPc(list: AccountList, post: PostedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect"> & { readonly admit: () => Promise<void> }): Promise<AddPcOutcome> {
+export async function addPostedPc(list: AccountList, post: PostedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect" | "signal"> & { readonly admit: () => Promise<void>; readonly member?: string }): Promise<AddPcOutcome> {
+  const { member, admit, ...writeOptions } = options;
+  const changed = (writer: ListWriter | null): boolean => writer === null || writer.list !== post.list
+    || (options.expect !== undefined && writer.account !== options.expect.account) || (member !== undefined && writer.keys.key !== member);
+  options.signal?.throwIfAborted();
+  // what the person pressed for, before anything goes: the account, the list and the member key it was shown for
+  if (changed(list.writer())) return { added: false, why: "changed", retryAfterMs: null };
   const held = list.holdsPc(post.endpoint);
   if (!held) {
-    try { await options.admit(); } catch (error) {
+    try { await admit(); } catch (error) {
       if (error instanceof SignedOutError) throw error;
       const said = refusalOf(error);
       if (said === null && !unanswered(error)) throw error;
@@ -156,10 +165,12 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
     }
   }
   const outcome = await writeNamed<true>(list, async (writer) => {
+    // every try signs on a writer of the very account, list and member key the press was for (X3)
+    if (changed(writer)) return { refused: "changed" };
     // the list holds that relay key already (this press, sent before): nothing more to sign
     const row = writer.state.pcs[post.endpoint];
     if (row !== undefined && row.removed === null && row.key === post.key) return { done: { seq: writer.state.footing.seq, hash: writer.state.footing.hash } };
-    return writer.list !== post.list ? { refused: "changed" } : { go: true };
-  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed })), { ...options, operation: `add-pc:${post.endpoint}` });
+    return { go: true };
+  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed })), { ...writeOptions, operation: `add-pc:${post.endpoint}` });
   return outcome.written ? { added: true } : { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
 }

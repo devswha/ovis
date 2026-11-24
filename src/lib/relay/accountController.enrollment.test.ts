@@ -17,7 +17,7 @@ import { refusalOf } from "./firstLink.ts";
 import { AccountService, AccountServiceUnreachableError } from "../account/service.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setCurrentLanguage, translate } from "../i18n.ts";
-import { AddedToListError, ConsentChangedError, createAccountController } from "./accountController.ts";
+import { AddedToListError, ConsentChangedError, createAccountController, PlacedInListError } from "./accountController.ts";
 import { accountList as accountListOf } from "../account/accountList.ts";
 import { askingPc, postPcKeys } from "../account/accountList.test-helpers.ts";
 import { memoryListLock, memoryListStore } from "../account/listStore.ts";
@@ -25,7 +25,7 @@ import { ACCOUNT_SENDS, NETWORK_RETRY_MS, RETRY_AFTER_MAX_MS } from "./networkRe
 import { offerOf } from "./shellState.ts";
 import { keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import { enrollmentOf, type RelayDevice, type ShellDeviceStore } from "./device.ts";
+import { enrollmentOf, type RelayDevice, type SavedDevice, type ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport } from "./transport.ts";
 import { forgetSavedPc } from "./updateFlow.ts";
@@ -54,7 +54,9 @@ describe("account enrollment ownership", () => {
      * PC that can follow one does: its card for the list over the session, then that it read the entry. `"none"`: the PC
      * has no such call.
      */
-    readonly named?: "follows" | "none";
+    readonly named?: "follows" | "unread" | "none";
+    /** another tab saves a newer pairing of this PC just before this tab deletes the pairing it holds */
+    readonly replaceAtRemove?: true;
     /** the PC lets its account's devices in by the account's signed list alone: it refuses a link */
     readonly pinned?: true;
     /** whether the PC is in the account, where that is not what `linking` says */
@@ -86,8 +88,13 @@ describe("account enrollment ownership", () => {
     const key = await accountStore.key();
     const original: RelayDevice = { ...offer, device_id: "12".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone", account: "account" };
     const devices = new Map([[offer.server_id, original]]);
+    // another tab's newer pairing of this PC, saved just before this tab's delete runs
+    const newer: RelayDevice = { ...original, device_id: "56".repeat(8) };
+    const replaced = (id: string): void => { if (options.replaceAtRemove && devices.get(id)?.device_id === original.device_id) devices.set(id, newer); };
     const store: ShellDeviceStore = {
-      get: async (id) => devices.get(id), list: async () => [...devices.values()], remove: async (id) => { devices.delete(id); }, removeRow: async (id, row) => { if (devices.get(id)?.device_id !== row) return false; devices.delete(id); return true; },
+      get: async (id) => devices.get(id), list: async () => [...devices.values()],
+      remove: async (id) => { replaced(id); devices.delete(id); },
+      removeRow: async (id, row) => { replaced(id); if (devices.get(id)?.device_id !== row) return false; devices.delete(id); return true; },
       update: async (id, change, source) => { source?.assert(devices.get(source.serverId)); const next = change(devices.get(id)); devices.set(id, next); return next; },
     };
     const records: AddRecord[] = [];
@@ -164,10 +171,11 @@ describe("account enrollment ownership", () => {
     let namings = 0;
     const named = async (): Promise<Response> => {
       namings++;
-      if (options.named !== "follows" || pcKeys === null) return Response.json({ error: { code: "not_found" } }, { status: 404 });
+      if (options.named === "none" || pcKeys === null) return Response.json({ error: { code: "not_found" } }, { status: 404 });
       const held = service.accountList("account")!;
       const row = held.state.pcs[pcKeys.endpoint];
-      if (row !== undefined && row.removed === null && row.key === pcKeys.key) return Response.json({ state: "added", account: "account" });
+      // `unread`: the PC has not read its entry yet, at any ask
+      if (options.named === "follows" && row !== undefined && row.removed === null && row.key === pcKeys.key) return Response.json({ state: "added", account: "account" });
       // as the PC does: it posts its keys and its card to the account service too
       const card = await postPcKeys(service.fetch, "https://account.invalid", token, pcKeys, held.id);
       return Response.json({ state: "waiting", standing: "waiting", key: pcKeys.key, enc: pcKeys.enc, card });
@@ -601,6 +609,28 @@ describe("account enrollment ownership", () => {
         const held = run.service.accountList("account")!;
         expect(held.state.pcs[run.pcKeys!.endpoint]).toMatchObject({ key: run.pcKeys!.key, removed: null });
         expect(run.realList!.view().pcs.map((pc) => pc.server_id)).toEqual([run.original.server_id]);
+      });
+
+      it("deletes the pairing by its own row, inside the delete: a newer pairing another tab saved meanwhile stays, with its key", async () => {
+        const run = await fixture("unused", { linking: true, planned: false, named: "follows", replaceAtRemove: true });
+        await unlinked(run);
+        await run.controller.prepare(marked(run), new AbortController().signal, await consent(run));
+        const ended = await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: await consent(run) }).catch((error: unknown) => error);
+        // the PC is in the list all the same; the pairing this tab held is gone, and the one saved since is this tab's no more to delete
+        expect(ended).not.toBeInstanceOf(AddedToListError);
+        expect((await run.store.get(run.original.server_id))?.device_id).toBe("56".repeat(8));
+      });
+
+      it("keeps the pairing where the entry is placed and the PC has not said it read it: nothing is spent, and nothing is opened over its session", async () => {
+        const run = await fixture("unused", { linking: true, planned: false, named: "unread" });
+        await unlinked(run);
+        await run.controller.prepare(marked(run), new AbortController().signal, await consent(run));
+        const ended = await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: await consent(run) }).catch((error: unknown) => error);
+        expect(ended).toBeInstanceOf(PlacedInListError);
+        expect(run.service.accountList("account")!.state.pcs[run.pcKeys!.endpoint]).toMatchObject({ key: run.pcKeys!.key, removed: null });
+        // the pairing stays this device's own, with nothing said of an account at its row, and no link went
+        const kept = await run.store.get(run.original.server_id) as SavedDevice | undefined;
+        expect([run.links(), kept?.device_id, kept?.account_enrollment]).toEqual([0, run.original.device_id, undefined]);
       });
 
       it("sends the link as before to a PC that has no such call", async () => {

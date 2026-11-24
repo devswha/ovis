@@ -12,6 +12,8 @@ import { nativeTransport, setTransport } from "../transport.ts";
 import type { AccountList, AccountListView, ListWriter } from "../account/accountList.ts";
 import type { RelayDevice, ShellDeviceStore, SavedDevice } from "./device.ts";
 import { ADMISSION_WAIT_MS, LINK_RETRY_MAX_MS } from "./accountController.ts";
+import { readSeenPcs } from "../account/seenPcs.ts";
+import { keepTypedCode } from "./shellState.ts";
 import { ACCOUNT_STEPS_WAIT_MS, mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
@@ -107,6 +109,10 @@ describe("the admission before a first link", () => {
      * of the pairing: it says it read its entry at the first ask, as a PC the list holds already does.
      */
     readonly namedList?: boolean;
+    /** the code was typed on this device and compared there (codeMatch), not scanned */
+    readonly typedCode?: boolean;
+    /** another tab signs in to another account the moment the PC admits the pairing */
+    readonly switchAtPair?: boolean;
   }
 
   async function pairing(options: Options = {}) {
@@ -179,7 +185,7 @@ describe("the admission before a first link", () => {
       shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
       kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
       // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
-      writer: () => ({ account: "acct-test", list: LIST }) as ListWriter,
+      writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki } }) as ListWriter,
     };
     // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
     let ended: string | null | undefined;
@@ -238,6 +244,7 @@ describe("the admission before a first link", () => {
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
     const listedPc = { server_id: offer.server_id, label: "Desk", added_at: "2026-11-01T00:00:00Z", last_seen_at: null };
     if (options.typedConfirmed) sessionStorage.setItem("ovis-confirmed-pc", offer.server_id);
+    if (options.typedCode) keepTypedCode(offer);
     // the tab's memory of the reloads it made for a newer PC (skew.ts reloadOnce)
     if (options.pcVersion !== undefined) (window as unknown as { sessionStorage: Storage }).sessionStorage = sessionStorage;
     await mountRelayShell({
@@ -290,7 +297,7 @@ describe("the admission before a first link", () => {
         // as a transport does, an attempt that ended opens nothing
         transportOptions.signal?.throwIfAborted();
         byListKey.push(transportOptions.accountListKey === true);
-        if (opening.code !== undefined) { events.push("pair"); devices.set(offer.server_id, { ...older, device_id: NEWER_ID }); }
+        if (opening.code !== undefined) { events.push("pair"); devices.set(offer.server_id, { ...older, device_id: NEWER_ID }); if (options.switchAtPair) await accountStore.set("session", sessionOf("acct-other")); }
         // a session by the key the list holds for this device rests on no pairing: the PC knows the key from its list
         else if (transportOptions.accountListKey === true) events.push("list key");
         else if (ended !== undefined && devices.get(offer.server_id)?.device_id === ended) throw new MuxProtocolError("auth_failed", "the PC ended this row");
@@ -355,6 +362,34 @@ describe("the admission before a first link", () => {
     // the app opens once, on the list's session: the pairing's screen stayed until then, and no screen said it failed
     expect(run.apps()).toBe(1);
     expect(run.drawn().some((state) => state.kind === "failed")).toBe(false);
+  });
+
+  // The device's own record of its PCs (account/seenPcs.ts): a QR code of that PC scanned for the account is `added`; a
+  // code typed here is a pairing at the PC (`paired`), never more; and the act goes to the account it was confirmed for
+  describe("what the pairing writes in the device's record of its PCs", () => {
+    const endpointOf = (offer: { readonly server_public_key: string }): string => Buffer.from(Uint8Array.from(atob(offer.server_public_key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))).toString("hex");
+    it("a QR code of that PC, scanned for the account: added", async () => {
+      const run = await pairing({ mark: true, listed: true });
+      run.admissionGate.resolve();
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("added");
+    });
+
+    it("a code typed on this device and compared here: paired, never added", async () => {
+      const run = await pairing({ mark: true, listed: true, typedConfirmed: true, typedCode: true });
+      run.admissionGate.resolve();
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("paired");
+    });
+
+    it("goes to the account the pairing was confirmed for, though another tab signed in as someone else since", async () => {
+      const run = await pairing({ mark: true, listed: true, switchAtPair: true });
+      run.admissionGate.resolve();
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect([readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how, readSeenPcs("acct-other").pcs]).toEqual(["added", {}]);
+    });
   });
 
   it("with the mark, ends the post itself when the person cancels while it waits, and pairs nothing", async () => {

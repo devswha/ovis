@@ -18,9 +18,12 @@ import { addPostedPc, type AddPcOutcome, type PostedPc } from "./listAdd.ts";
  * What became of naming the list to the PC.
  *
  * - `none`: the PC has no such call (it follows no list, or is from before lists): send the link as before.
- * - `added`: the PC read the entry this device signed: it is in the list, and the pairing that named it is spent.
- * - `placed`: the entry is in the list, and the PC has not said yet that it read it: it will, at its next read.
- * - `refused`: nothing was signed, or the list did not take the entry; `why` is the PC's code, or the list's.
+ * - `added`: the PC said it read its entry, and this device's own copy of the list, read again after that, holds the
+ *   PC: it is in the list, and the pairing that named it is spent.
+ * - `placed`: this device's own copy holds the entry it signed for the PC, and the PC has not said yet that it read
+ *   it: it will, at its next read. The pairing is not spent until it did.
+ * - `refused`: nothing was signed, the list did not take the entry, or the PC refused at a later ask; `why` is the
+ *   PC's code, or the list's (`not_in_list`: the PC said it read an entry this device's copy does not hold).
  */
 export type NamedOutcome =
   | { readonly outcome: "none" | "added" | "placed" }
@@ -42,35 +45,56 @@ export async function nameListToPc(options: {
   readonly endpoint: string;
   readonly names: ListNames | null;
   readonly admit: () => Promise<void>;
+  /** The person's Cancel: checked before the admission, before signing and before sending (listWrite.ts WriteOptions.signal). */
   readonly signal?: AbortSignal; readonly wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }): Promise<NamedOutcome> {
   const wait = options.wait ?? pause;
   const writer = options.list.writer();
   if (writer === null || writer.account !== options.account) return { outcome: "none" };
-  const ask = async (): Promise<Record<string, unknown> | "none" | { readonly refused: string }> => {
+  // the member key the naming began with: an entry is signed by it or by none (X3)
+  const member = writer.keys.key;
+  const ask = async (first: boolean): Promise<Record<string, unknown> | "none" | { readonly refused: string }> => {
+    options.signal?.throwIfAborted();
     try {
       return await (await post(options.fetch, "/api/account/list/named", { account: options.account, list: writer.list })).json() as Record<string, unknown>;
     } catch (error) {
       if (!(error instanceof AccountPcError)) throw error;
-      // no such call, or a PC that follows no list a person named
-      return error.status === 404 ? "none" : { refused: error.code };
+      // No such call, or a PC that follows no list a person named. A PC from before this call has no route for it, and
+      // its pairing's session lets only the status and the link through: it answers `403 link_required` before any
+      // route is looked up. At the first ask that is "no such call", and the link goes as before (a PC that has the
+      // call and refuses the row's link the same way refuses that link too). Later, every answer is the PC's own word.
+      return first && (error.status === 404 || (error.status === 403 && error.code === "link_required")) ? "none" : { refused: error.code };
     }
   };
-  const first = await ask();
+  const refusedBy = (answer: Record<string, unknown> | "none" | { readonly refused: string }): string | null =>
+    answer === "none" ? "not_found" : "refused" in answer && typeof answer.refused === "string" ? answer.refused : null;
+  // The PC says it read its entry: this device's own copy, read from the log again, must hold the PC at that very relay
+  // key, for the account the naming began with. The PC's word alone spends no pairing.
+  const taken = async (): Promise<NamedOutcome> => {
+    const view = await options.list.sync({ read: true }).catch(() => options.list.view());
+    return view.account === options.account && options.list.holdsPc(options.endpoint) ? { outcome: "added" } : { outcome: "refused", why: "not_in_list" };
+  };
+  const first = await ask(true);
   if (first === "none") return { outcome: "none" };
-  if ("refused" in first && typeof first.refused === "string") return { outcome: "refused", why: first.refused };
-  const said = first as Record<string, unknown>;
-  if (said.state === "added") return { outcome: "added" };
-  const { key, enc, card } = said;
-  if (said.state !== "waiting" || typeof key !== "string" || !isListKeyEncoding(key) || typeof enc !== "string" || !isListKeyEncoding(enc) || typeof card !== "string") return { outcome: "refused", why: "invalid_answer" };
+  const said = refusedBy(first);
+  if (said !== null) return { outcome: "refused", why: said };
+  const answer = first as Record<string, unknown>;
+  if (answer.state === "added") return taken();
+  const { key, enc, card } = answer;
+  if (answer.state !== "waiting" || typeof key !== "string" || !isListKeyEncoding(key) || typeof enc !== "string" || !isListKeyEncoding(enc) || typeof card !== "string") return { outcome: "refused", why: "invalid_answer" };
   const posted: PostedPc = { list: writer.list, endpoint: options.endpoint, server_id: deriveServerId(hexToBytes(options.endpoint)), key, enc, card };
   // the card is that key's own, for this device's list and the relay key this very session is bound to: nothing else is signed
   if (!await cardHolds({ key, enc, list: writer.list, endpoint: options.endpoint, invite: null }, card)) return { outcome: "refused", why: "card_invalid" };
-  const added = await addPostedPc(options.list, posted, options.names, { admit: options.admit, expect: { account: options.account, list: writer.list } });
+  const added = await addPostedPc(options.list, posted, options.names, {
+    admit: options.admit, expect: { account: options.account, list: writer.list }, member, ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
   if (!added.added) return { outcome: "refused", why: added.why === "admit" ? added.code ?? "admit" : added.why, add: added };
   for (let asks = 1; asks < NAMED_ASKS; asks += 1) {
-    const again = await ask();
-    if (again !== "none" && !("refused" in again && typeof again.refused === "string") && (again as Record<string, unknown>).state === "added") return { outcome: "added" };
+    const again = await ask(false);
+    const refused = refusedBy(again);
+    // the entry is in the list, and the PC turned it away: said as the PC's refusal, never as placed
+    if (refused !== null) return { outcome: "refused", why: refused };
+    if ((again as Record<string, unknown>).state === "added") return taken();
     if (asks + 1 < NAMED_ASKS) await wait(NAMED_POLL_MS, options.signal);
   }
   return { outcome: "placed" };

@@ -14,14 +14,22 @@ async function scanned(w: World = listWorld()) {
   const pc = await askingPc();
   const asked: Record<string, unknown>[] = [];
   /** what the PC answers: its card for the list it is named, and `added` once the list holds its own key at its relay key */
-  const answers = { status: 200 as number, code: "", card: null as string | null, key: pc.key, reads: true };
+  const answers = {
+    status: 200 as number, code: "", card: null as string | null, key: pc.key, reads: true,
+    /** the PC says at once that it read an entry, whatever the list holds */
+    addedAtOnce: false,
+    /** what the PC answers once the list holds its entry, in place of `added` */
+    later: null as { readonly status: number; readonly code: string } | null,
+  };
   const fetch: PcFetch = async (path, init) => {
     if (path !== "/api/account/list/named") return new Response(null, { status: 404 });
     const body = JSON.parse(String(init?.body)) as { account: string; list: string };
     asked.push(body);
     if (answers.status !== 200) return Response.json({ error: { code: answers.code } }, { status: answers.status });
+    if (answers.addedAtOnce) return Response.json({ state: "added", account: body.account });
     const held = w.held();
     const row = held.state.pcs[pc.endpoint];
+    if (row !== undefined && row.removed === null && row.key === pc.key && answers.later !== null) return Response.json({ error: { code: answers.later.code } }, { status: answers.later.status });
     if (answers.reads && row !== undefined && row.removed === null && row.key === pc.key) return Response.json({ state: "added", account: body.account });
     const card = answers.card ?? await signCard({ key: pc.key, enc: pc.enc, list: body.list, endpoint: pc.endpoint, invite: null }, pc.signs);
     // as the PC does: it posts the same card to the account service (the second lock), listed by the scan's admission
@@ -66,6 +74,37 @@ describe("naming the account's list to a PC whose QR code this device scanned", 
     expect([admitted, w.held().entries.length]).toEqual([[], 1]);
   });
 
+  it("takes an older PC's 403 link_required at the first ask for no such call: its pairing's session lets only the status and the link through, and the link goes as before", async () => {
+    const { w, admitted, answers, name } = await scanned();
+    answers.status = 403;
+    answers.code = "link_required";
+    expect(await name()).toEqual({ outcome: "none" });
+    expect([admitted, w.held().entries.length]).toEqual([[], 1]);
+  });
+
+  it("does not take the PC's word that it read an entry this device's own copy does not hold: nothing is spent and nothing signed", async () => {
+    const { w, phone, admitted, answers, name } = await scanned();
+    answers.addedAtOnce = true;
+    expect(await name()).toEqual({ outcome: "refused", why: "not_in_list" });
+    expect([admitted, w.held().entries.length, phone.list.holdsPc((await askingPc()).endpoint)]).toEqual([[], 1, false]);
+  });
+
+  it("says the PC's refusal at a later ask as a refusal, never as placed", async () => {
+    const { w, answers, name } = await scanned();
+    answers.later = { status: 409, code: "other_adder" };
+    expect(await name()).toEqual({ outcome: "refused", why: "other_adder" });
+    // the entry is in the list: the PC turned it away
+    expect(w.held().entries.length).toBe(2);
+  });
+
+  it("signs nothing once the person cancelled: Cancel is checked after the admission, before anything is signed", async () => {
+    const { w, admitted, name, pc } = await scanned();
+    const cancel = new AbortController();
+    const ended = await name({ signal: cancel.signal, admit: async () => { admitted.push(pc.server_id); cancel.abort(new DOMException("Cancelled", "AbortError")); } }).catch((error: unknown) => error);
+    expect(ended).toBeInstanceOf(DOMException);
+    expect([admitted, w.held().entries.length]).toEqual([[pc.server_id], 1]);
+  });
+
   it("signs nothing for a card that is not the PC's own for this list and this session's relay key", async () => {
     const { w, pc, admitted, answers, name } = await scanned();
     const other = await askingPc();
@@ -83,7 +122,7 @@ describe("naming the account's list to a PC whose QR code this device scanned", 
 
   it("says what the PC refused, and signs nothing", async () => {
     const { w, answers, name } = await scanned();
-    for (const [status, code] of [[409, "account_mismatch"], [409, "list_removed"], [409, "pairing_ended"], [403, "link_required"], [503, "account_unavailable"]] as const) {
+    for (const [status, code] of [[409, "account_mismatch"], [409, "list_removed"], [409, "pairing_ended"], [503, "account_unavailable"]] as const) {
       answers.status = status;
       answers.code = code;
       expect(await name()).toEqual({ outcome: "refused", why: code });
