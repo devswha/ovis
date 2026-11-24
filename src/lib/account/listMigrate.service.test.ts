@@ -30,8 +30,8 @@ describe("what the account service says to a device of an account that was in us
     world.fake.removeDevice(world.account, laptopKey);
     const rows = await phone.service.devices();
     const phoneKey = (await phone.store.get("signin_key"))!.key.public_spki;
-    expect(rows.find((row) => row.key === phoneKey)).toEqual({ key: phoneKey, eligible: true, removed: false });
-    expect(rows.find((row) => row.key === laptopKey)).toEqual({ key: laptopKey, eligible: false, removed: true });
+    expect(rows.find((row) => row.key === phoneKey)).toEqual({ key: phoneKey, eligible: true, removed: false, label: "Phone" });
+    expect(rows.find((row) => row.key === laptopKey)).toEqual({ key: laptopKey, eligible: false, removed: true, label: "Laptop" });
   });
 
   test("the account service's lie that a removed key is eligible again reaches GET /v1/devices too", async () => {
@@ -42,7 +42,20 @@ describe("what the account service says to a device of an account that was in us
     world.fake.removeDevice(world.account, laptopKey);
     world.fake.tamperAccount(world.account, { eligibleAgain: [laptopKey] });
     const rows = await phone.service.devices();
-    expect(rows.find((row) => row.key === laptopKey)).toEqual({ key: laptopKey, eligible: true, removed: false });
+    expect(rows.find((row) => row.key === laptopKey)).toEqual({ key: laptopKey, eligible: true, removed: false, label: "Laptop" });
+  });
+
+  test("a key registered with no name has no `label` in GET /v1/devices, and one out of its form is read as none", async () => {
+    const world = listWorld();
+    const phone = await world.device();
+    const bare = await phone.service.devices();
+    expect(bare.every((row) => "label" in row)).toBe(true);
+    const raw = await world.fake.fetch(`${world.origin}/v1/devices`, { headers: { authorization: `Bearer ${phone.session.access_token}` } });
+    const body = await raw.json() as { devices: { label?: unknown }[] };
+    expect(body.devices.every((row) => typeof row.label === "string")).toBe(true);
+    world.fake.registerDevice(world.account, (await (await import("./store.ts")).newKey()).public_spki, "");
+    const rows = await phone.service.devices();
+    expect(rows.filter((row) => row.label === undefined)).toHaveLength(1);
   });
 
   test("a refusal of a list's request names the place it is about, and a `list_exists` the list it names", async () => {

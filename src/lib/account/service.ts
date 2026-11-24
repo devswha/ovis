@@ -811,14 +811,15 @@ export class AccountService {
 
   /**
    * The keys the account's sign-ins registered (`GET /v1/devices`), each with whether the service says a PC lets it in
-   * now (`eligible`) and whether it was removed. The service's word, which the first device of a move holds against
-   * what its PCs say they let in (shared/account-list-migrate.ts migrationPlan).
+   * now (`eligible`), whether it was removed, and the name the app sent when it registered the key (`label`, only
+   * where it sent one). The service's word, which the first device of a move holds against what its PCs say they let
+   * in (shared/account-list-migrate.ts migrationPlan); the name only names a carried device in the list.
    */
-  async devices(signal?: AbortSignal): Promise<{ readonly key: string; readonly eligible: boolean; readonly removed: boolean }[]> {
+  async devices(signal?: AbortSignal): Promise<{ readonly key: string; readonly eligible: boolean; readonly removed: boolean; readonly label?: string }[]> {
     const body = await this.call("GET", "/v1/devices", undefined, signal);
     if (!isRecord(body) || !Array.isArray(body.devices)) throw new AccountServiceError(502, "invalid_answer", "The account service sent no devices");
     return (body.devices as readonly unknown[]).flatMap((row) => isRecord(row) && typeof row.key === "string" && typeof row.eligible === "boolean" && typeof row.removed === "boolean"
-      ? [{ key: row.key, eligible: row.eligible && !row.removed, removed: row.removed }] : []);
+      ? [{ key: row.key, eligible: row.eligible && !row.removed, removed: row.removed, ...(typeof row.label === "string" && row.label.length >= 1 && row.label.length <= 48 ? { label: row.label } : {}) }] : []);
   }
 
   /**

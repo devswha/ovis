@@ -114,6 +114,8 @@ describe("the first device moves the account onto its list", () => {
     expect(readBirth(await phone.device.lists.get("birth" as never, world.account))).toBeNull();
     const notice = readNotice(await phone.device.lists.get("notice" as never, world.account));
     expect(notice).toMatchObject({ list: held.id, first: phone.signIn, devices: [laptop.signIn], pcs: [pc.endpoint], seen: false });
+    // the carried laptop is named by the name its sign-in registered (GET /v1/devices `label`), sealed in its entry
+    expect((await phone.device.list.notice!(world.account))?.devices).toEqual([{ key: laptop.signIn, name: { label: "Laptop", os: null } }]);
     // the try ended in a start
     expect(phone.kept()?.tried).toBeUndefined();
   });

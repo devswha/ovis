@@ -2014,7 +2014,8 @@ move is never named to any PC.
   plans from `GET /v1/devices`, the directory's PCs that are listed as let in (a PC outside it is
   left out, as the service would refuse it), its record, this run's answers, and the keys it holds
   a block or a removal against itself (a Not me's blocks not yet confirmed, the removals it signed). It notes its first
-  try (`tried`) and waits while the plan says so. It signs the birth once, keeps it in its own
+  try (`tried`) and waits while the plan says so. Each carried device's entry seals the name its
+  sign-in registered (`GET /v1/devices`' `label`, where it sent one). It signs the birth once, keeps it in its own
   store and sends it (`POST /v2/lists` with `entries`, the wraps of epoch 1 to itself, and the link
   of its account key to its sign-in key) as it is until a 201 or its own list back in a `409
   list_exists`, or until the account service names that list. A refusal that is final drops the

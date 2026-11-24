@@ -1052,7 +1052,8 @@ export function accountList(options: AccountListOptions): AccountList {
     const skip = new Set(refusal?.keys ?? []);
     const known: MigrationKnown = {
       account, self: signIn.key, member: keys.key,
-      devices: devices.filter((device) => !device.removed && !skip.has(device.key)).map((device) => ({ key: device.key, eligible: device.eligible, names: null })),
+      // each carried device is named by the name its sign-in registered with the account service, where it sent one
+      devices: devices.filter((device) => !device.removed && !skip.has(device.key)).map((device) => ({ key: device.key, eligible: device.eligible, names: device.label === undefined ? null : listNames(device.label, null) })),
       removed: [...devices.filter((device) => device.removed).map((device) => device.key), ...await options.migration?.removed?.(account) ?? []],
       pcs,
     };

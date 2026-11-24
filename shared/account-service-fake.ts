@@ -900,6 +900,8 @@ export class FakeAccountService {
       return json({ methods_version: registry.methods_version, devices: [...registry.devices].sort(([, a], [, b]) => a.no - b.no).map(([key, device]) => ({
         no: device.no, key, registered_at: this.iso(), signed_in: true, removed: device.removed && !again.has(key), provider: "github", two_step_set: true,
         eligible: again.has(key) || (device.eligible && !device.removed),
+        // the name the app sent when its sign-in registered the key, only where it sent one
+        ...(device.label === "" ? {} : { label: device.label }),
       })) });
     }
     if (path === "/v1/pcs" && request.method === "GET") {
