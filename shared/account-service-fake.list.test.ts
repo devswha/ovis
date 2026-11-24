@@ -504,11 +504,11 @@ describe("the fake account service's list routes (Part D)", () => {
       const pcKey = await newKey();
       const named = await chain(list, invited.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool)]], w.seconds());
       const joined = await chain(list, invited.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool, null)]], w.seconds());
-      // past exp by the service's clock alone: an open invite over its time stops all sealing (sealEpoch), which is judged
-      // first, so a join with names is epoch_stale; without names it reaches the service's own invite_expired
+      // past exp by the service's clock alone: the service's own refusal, before the names' epoch (an open invite over its
+      // time stops all sealing), so a join with names answers invite_expired too
       w.tick(401_000);
       const stale = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: named.texts });
-      expect([refusal(stale), stale.body.error?.reason]).toEqual(["400 entry_refused", "epoch_stale"]);
+      expect([refusal(stale), stale.body.error?.index]).toEqual(["409 invite_expired", 0]);
       const late = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts });
       expect([refusal(late), late.body.error?.index]).toEqual(["409 invite_expired", 0]);
       // once an entry of a full signer dated after exp is in, every member refuses the join itself
