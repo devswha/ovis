@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { signListEntry } from "../../../shared/account-list.ts";
 import { readAccountRecord } from "../../../shared/account-records.ts";
 import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { admitWithList, allowOnPinnedPc, approveForAccount, handListToPc, ListAllowError, NotConfirmedError, takeIntroduction, type PcFetch } from "./join.ts";
@@ -12,7 +13,7 @@ const THROUGH = "a1".repeat(16);
 const noWait = async (): Promise<void> => {};
 
 /** PC X as an approval meets it: it records what it is sent, and answers the introduction, the records and the list's two calls. */
-function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknown) => Response; introduce?: (body: Record<string, unknown>) => Response } = {}) {
+function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknown) => Response | Promise<Response>; introduce?: (body: Record<string, unknown>) => Response | Promise<Response> } = {}) {
   const sent: { path: string; body: Record<string, unknown> }[] = [];
   const fetch: PcFetch = async (path, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -222,13 +223,46 @@ describe("an approval on a card, from the press to what is left to say", () => {
   }
 
   /** A PC that lets devices in by the list, as an approval meets it: it takes the page, and keeps no row a member added. */
-  const pinnedPc = (w: Awaited<ReturnType<typeof rang>>["w"]) => {
+  const pinnedPc = (w: Awaited<ReturnType<typeof rang>>["w"], during: { page?: () => Promise<void>; introduce?: () => Promise<void> } = {}) => {
     const list = w.held();
     return pcX({
-      head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }), page: () => Response.json({ verdict: "caught_up", list: list.id, place: w.held().head }),
-      introduce: () => Response.json({ error: { code: "introduction_unknown_key" } }, { status: 404 }),
+      head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }),
+      page: async () => { await during.page?.(); return Response.json({ verdict: "caught_up", list: list.id, place: w.held().head }); },
+      introduce: async () => { await during.introduce?.(); return Response.json({ error: { code: "introduction_unknown_key" } }, { status: 404 }); },
     });
   };
+
+  /** A member of the list puts `key` out, and `member` reads it into its own copy: what an approval may meet while it waits on the PC. */
+  const putOut = async (member: WorldDevice, key: string): Promise<void> => {
+    await member.list.sync();
+    const writer = member.list.writer()!;
+    const removal = await signListEntry(writer.state, { kind: "remove", ends: key }, { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+    await writer.service.placeEntries(writer.list, [removal.text], []);
+    await member.list.sync();
+  };
+
+  it("on such a PC, sends nothing more for a device its own copy shows put out while the entry was handed over: no introduction, no add", async () => {
+    const { w, member, key, order, said, approve } = await rang();
+    await approve(pinnedPc(w, { page: () => putOut(member, key) }), true, { list: true, confirmed: true });
+    expect(order).toEqual(["approve", "/api/account/list/head", "/api/account/list/page"]);
+    expect([w.held().entries.length, said]).toEqual([3, [null, "removed"]]);
+  });
+
+  it("on such a PC, signs no add for a device its own copy shows put out while the PC was introduced to it", async () => {
+    const { w, member, key, order, said, approve } = await rang();
+    await approve(pinnedPc(w, { introduce: () => putOut(member, key) }), true, { list: true, confirmed: true });
+    expect(order).toEqual(["approve", "/api/account/list/head", "/api/account/list/page", "/api/account/introduce"]);
+    expect([w.held().entries.length, said]).toEqual([3, [null, "removed"]]);
+  });
+
+  it("on any other PC, signs no add for a device its own copy shows put out while the PC was introduced to it", async () => {
+    const { w, member, key, order, said, approve } = await rang();
+    let introductions = 0;
+    const pc = pcX({ introduce: async () => { introductions += 1; if (introductions === 2) await putOut(member, key); return new Response(null, { status: 204 }); } });
+    await approve(pc, false);
+    expect(order).toEqual(["approve", "/api/account/introduce", "/api/account/introduce"]);
+    expect([w.held().entries.length, said]).toEqual([3, ["removed"]]);
+  });
 
   it("on a PC that lets devices in by the list: nothing is approved and nothing signed until the new device's person said that the numbers match", async () => {
     const { w, order, said, approve } = await rang();

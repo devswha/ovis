@@ -10,7 +10,7 @@ import type { RelayDevice, RelayDeviceStore } from "../relay/device.ts";
 import { keyIdOf } from "../relay/shellState.ts";
 import { isListHash } from "../../../shared/account-list-entry.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
-import type { AccountList, AccountListView, ListOffer } from "./accountList.ts";
+import type { AccountList, AccountListView, ListOffer, ListWriter } from "./accountList.ts";
 import { allowDevice, type AllowOutcome, type AllowRefusal } from "./listAllow.ts";
 import { holdsList } from "./listWrite.ts";
 import type { AccountService, Admission } from "./service.ts";
@@ -283,6 +283,12 @@ export async function admitToAccount(options: {
    * does not hold the `add` for the account's other PCs back.
    */
   inList?: boolean;
+  /**
+   * For a device the list let in: throws unless this device's own copy, as it holds it now, still has the new device
+   * in. Asked before the introduction that names the account's PCs and again before the `add` is signed, so nothing is
+   * sent for a device another member put out while this approval waited on X.
+   */
+  holds?: () => void;
 }): Promise<AddRecord> {
   const now = options.now ?? Date.now;
   // fixed wait: the pause between tries of a poll bounded by ADMITTED_MS
@@ -293,6 +299,7 @@ export async function admitToAccount(options: {
     .map((device) => ({ server_id: device.server_id, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? device.server_id.slice(0, 8)).slice(0, 48) }));
   const deadline = now() + ADMITTED_MS;
   for (;;) {
+    if (options.allow === undefined) options.holds?.();
     try { await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs: options.allow === undefined ? pcs : [] }); break; }
     catch (error) {
       if (!(error instanceof AccountPcError)) throw error;
@@ -307,8 +314,10 @@ export async function admitToAccount(options: {
   if (options.allow !== undefined) {
     // the new device confirmed at X: now the list, and the introduction with the place it was let in at
     const offer = await options.allow();
+    options.holds?.();
     await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs, ...(offer === null ? {} : { list: { id: offer.list, seq: offer.seq, hash: offer.hash } }) });
   }
+  options.holds?.();
   const add: AddRecord = await signAccountRecord({
     v: 1, kind: "add", account: options.account, key: options.joining.key, label: options.joining.label, role: "drive",
     issued_at: new Date(now()).toISOString(), id: newRecordId(), signer: options.key.public_spki,
@@ -373,14 +382,14 @@ export async function admitWithList(list: AccountList | null, options: Omit<Para
   const view = await list.sync();
   if (view.account !== options.account) throw new ListAllowError("changed", null);
   // what stops this device from writing is said before anything goes to the PC
-  mayWrite(list, view);
+  const began = beganOn(list, view);
   let offer: ListOffer | null = null;
   const add = await admitToAccount({ ...options, allow: async () => {
     offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.wait === undefined ? {} : { wait: options.wait }) });
     // an account that turns out to have no list for this device to write (it lost its copy meanwhile) admits nobody the old way from here
     if (offer === null) throw new ListAllowError("blocked", null);
     return offer;
-  } });
+  }, holds: () => { holdsStill(list, began, options.joining.key, options.key.public_spki); } });
   const placed = offer as ListOffer | null;
   if (placed === null) return add;
   await handListToPc(options.fetch, list, { seq: placed.seq, hash: placed.hash }).then((handed) => {
@@ -393,9 +402,34 @@ export async function admitWithList(list: AccountList | null, options: Omit<Para
  * What stops this device from writing its list, said before anything is signed or sent: the account service is away,
  * or the device's own copy stands in its way (it was put out, it is stopped, alarmed, or does not read).
  */
-function mayWrite(list: AccountList, view: AccountListView): void {
-  if (list.writer() === null) throw new ListAllowError(holdsList(view) && view.status.at === "following" && view.status.standing === "in" && view.status.trouble === null && !view.reached ? "unreached" : "blocked", null);
+function mayWrite(list: AccountList, view: AccountListView): ListWriter {
+  const writer = list.writer();
+  if (writer === null) throw new ListAllowError(holdsList(view) && view.status.at === "following" && view.status.standing === "in" && view.status.trouble === null && !view.reached ? "unreached" : "blocked", null);
   if (!view.reached) throw new ListAllowError("unreached", null);
+  return writer;
+}
+
+/** What an approval into the list is bound to from its first read on: the account, the list and the member key that signs for it. */
+interface Began { readonly account: string; readonly list: string; readonly signer: string }
+
+/** mayWrite, and what the approval is bound to from here on. */
+function beganOn(list: AccountList, view: AccountListView): Began {
+  const writer = mayWrite(list, view);
+  return { account: writer.account, list: writer.list, signer: writer.keys.key };
+}
+
+/**
+ * Throws unless this device's own copy, as it holds it now, still has `key` in: in the list and under the member key
+ * the approval began with, which is also the key the `add` would be signed by (`signer`). Asked before anything more
+ * is sent for the new device after the list let it in, so a device another member put out meanwhile gets nothing.
+ */
+function holdsStill(list: AccountList, began: Began, key: string, signer: string): void {
+  const view = list.view();
+  const writer = list.writer();
+  if (view.account !== began.account || view.status.at !== "following" || view.status.list !== began.list || signer !== began.signer
+    || (writer !== null && (writer.list !== began.list || writer.keys.key !== began.signer))) throw new ListAllowError("changed", null);
+  if (writer === null) throw new ListAllowError("blocked", null);
+  if (!view.devices.some((device) => device.key === key)) throw new ListAllowError("removed", null);
 }
 
 /** A member pressed Approve for a join into the list before the new device's person said that the numbers match: nothing was approved or signed. */
@@ -465,6 +499,8 @@ export async function approveForAccount(options: {
   const pinned = request.intent === "account" && (request.list === true || pc.followsList);
   const joiningOf = (admission: Admission) => ({ key: request.key, label: admission.label, os: admission.os });
   const more = { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.now === undefined ? {} : { now: options.now }) };
+  /** On such a PC: the account, list and member key the approval began with, from the check before it on */
+  let began: Began | null = null;
   await approveJoin({
     request, digits: options.digits, through: options.through, service: options.service, decide: options.decide,
     ...(options.shown === undefined ? {} : { shown: options.shown }), ...(options.now === undefined ? {} : { now: options.now }),
@@ -472,7 +508,7 @@ export async function approveForAccount(options: {
       if (request.confirmed !== true) throw new NotConfirmedError();
       const view = options.list === null ? null : await options.list.sync();
       if (options.list === null || view === null || view.account !== options.account || !holdsList(view)) throw new ListAllowError("changed", null);
-      mayWrite(options.list, view);
+      began = beganOn(options.list, view);
     } } : {}),
     admit: async (admission) => {
       const base = async () => ({
@@ -485,7 +521,11 @@ export async function approveForAccount(options: {
             await allowOnPinnedPc(options.list, { fetch: pc.fetch, account: options.account, joining: joiningOf(admission), ...(options.wait === undefined ? {} : { wait: options.wait }) });
             // the list holds the device: the card that said otherwise goes, whatever the rest answers
             options.onStalled(null);
-            await admitToAccount({ ...await base(), inList: true });
+            const rest = await base();
+            const { list } = options;
+            const bound = began;
+            if (list === null || bound === null) throw new ListAllowError("changed", null);
+            await admitToAccount({ ...rest, inList: true, holds: () => { holdsStill(list, bound, rest.joining.key, rest.key.public_spki); } });
             return;
           }
           await admitWithList(options.list, await base());
