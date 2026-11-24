@@ -16,6 +16,7 @@ import { handleRequest } from "../dispatch.ts";
 import { bounded, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
+import { ask } from "./pairing.test-helpers.ts";
 import { ACCOUNT_LIST_FILE } from "./list-follow.ts";
 import { signCard } from "../../shared/account-list.ts";
 import { listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
@@ -580,6 +581,8 @@ describe("a key the list holds, which this PC also holds by a pairing of its own
     // the answer names the device as the app named it
     const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
     expect(await link.auth(pc.idOf(phone))).toMatchObject({ device_id: pc.idOf(phone).id, role: "watch" });
+    // and the session opens streams under that id: what the app stamps on each is the id the answer named
+    expect((await ask(link, "/api/health")).status).toBe(200);
     // a key that is not the row's proves nothing under that id
     const stranger = await listMember();
     expect(await pc.signsIn({ keys: stranger.keys, publicKey: stranger.key, id: pc.idOf(phone).id })).toBeNull();

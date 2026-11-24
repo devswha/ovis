@@ -46,6 +46,8 @@ async function following(options: { stateDir?: string; seconds?: number; account
     pinned: options.pinned ?? null as string | null,
     /** whether the binding keeps that an alarm rose, as account-pc.json does */
     alarmed: options.alarmed ?? false,
+    /** the binding's file does not take the alarm */
+    alarmFails: false,
     /** what the PC did by its list: the keys it kept as removed, the rows it committed, the times it left and looked at its sessions again */
     removed: [] as string[], commits: [] as ListCommit[], left: 0, rechecks: 0,
     /** whether the clock is the real one, from `seconds` on */
@@ -69,7 +71,7 @@ async function following(options: { stateDir?: string; seconds?: number; account
     stateDir, keys: new ListKeyStore(stateDir), identity: () => identity,
     binding: () => world.bound ? { account: ACCOUNT, id: world.bind, list: world.pinned, alarmed: world.alarmed } : null,
     pin: (_bindId, id) => { world.pinned = id; return true; },
-    alarm: () => { world.alarmed = true; return true; },
+    alarm: () => { if (world.alarmFails) return false; world.alarmed = true; return true; },
     removedFrom: () => false,
     rowKey: () => null,
     now: () => world.real === null ? world.seconds * 1000 : world.seconds * 1000 + (Date.now() - world.real),
@@ -395,6 +397,28 @@ describe("a device the list lets in until a time", () => {
     expect(pc.world.commits.at(-1)!.devices.find((row) => row.key === guest.key)).toMatchObject({ eligible: false });
   });
 
+  test("whose time passed while Ovis was stopped stays out after a second restart with the clock set back", async () => {
+    const pc = await following({ seconds: 1_800_000_000 });
+    const guest = await listMember();
+    await pc.account.addDevice(guest, { role: "watch", power: "bound", until: 1_800_000_050 });
+    await pc.pin();
+    pc.list.stop();
+    const eligible = (of: Awaited<ReturnType<typeof following>>) => of.world.commits.at(-1)!.devices.find((row) => row.key === guest.key)?.eligible;
+    // Ovis starts after the device's time, with the service away, and stops again before anything else is saved
+    const late = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id, seconds: 1_800_000_100 });
+    late.world.log = () => { throw new Error("away"); };
+    late.list.start();
+    await late.list.settled();
+    expect(eligible(late)).toBe(false);
+    late.list.stop();
+    // the clock is set back to before that time
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id, seconds: 1_800_000_010 });
+    again.world.log = () => { throw new Error("away"); };
+    again.list.start();
+    await again.list.settled();
+    expect(eligible(again)).toBe(false);
+  });
+
   test("stays out after a restart with the clock set back, also when the account service was away as its time passed", async () => {
     const pc = await following({ seconds: 1_800_000_000 });
     const guest = await listMember();
@@ -415,6 +439,20 @@ describe("a device the list lets in until a time", () => {
 });
 
 describe("the wait of one sign-in", () => {
+  test("a returning device's sign-in waits its few seconds and no longer, also behind a read the mailbox began", async () => {
+    const pc = await following();
+    await pc.pin();
+    await pc.account.addDevice(await listMember());
+    // the mailbox names the new head, and the account service does not answer the read that follows
+    pc.world.gate = new Promise(() => {});
+    const before = pc.reads();
+    pc.list.heard(ACCOUNT, pc.hint());
+    await pc.asked(before);
+    const began = Date.now();
+    await pc.list.readForSignIn(50, () => true);
+    expect(Date.now() - began).toBeLessThan(2_000);
+  });
+
   test("a sign-in whose few seconds were spent on the pull before waits no second time for the same read", async () => {
     const pc = await following();
     await pc.pin();
@@ -447,6 +485,50 @@ describe("what a pinned PC keeps beside its pin", () => {
     await again.pull();
     expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", alarm: "fork" });
     expect(again.list.role(pc.account.first.key)).toBeNull();
+  });
+
+  test("an alarm the binding's file did not take is offered to it again, though the rows were written", async () => {
+    const pc = await following();
+    await pc.pin();
+    pc.world.alarmFails = true;
+    pc.service.tamperList(pc.account.id, { reader: { server_id: pc.deps.identity()!.server_id }, fork: (await pc.account.forkFromStart()).texts });
+    await pc.pull();
+    pc.world.seconds += PC_READ_SECONDS;
+    pc.list.tick();
+    await pc.list.settled();
+    pc.service.untamperList(pc.account.id);
+    expect(pc.list.status().alarm).toBe("fork");
+    expect(pc.world.alarmed).toBe(false);
+    // no pull, no change of the list: the clock alone brings the write again
+    pc.world.alarmFails = false;
+    pc.list.tick();
+    await pc.list.settled();
+    expect(pc.world.alarmed).toBe(true);
+  });
+
+  test("a naming that waited for the PC's keys while the PC left its account and joined again names nothing for the new binding", async () => {
+    const pc = await following();
+    await pc.pull();
+    const real = pc.deps.keys.keysFor.bind(pc.deps.keys);
+    let waiting = false;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const slow = spyOn(pc.deps.keys, "keysFor").mockImplementation(async (serverId) => { waiting = true; await held; return await real(serverId); });
+    try {
+      const naming = pc.list.wantList(pc.account.id);
+      const deadline = Date.now() + 10_000;
+      while (!waiting) { if (Date.now() > deadline) throw new Error("The naming asked for no keys"); await Bun.sleep(5); }
+      // Revoke all, then the same account again: another binding, which nobody named a list for
+      pc.world.bind = "cd".repeat(16);
+      expect(pc.list.status().want).toBeNull();
+      release();
+      expect(await naming).toEqual({ refused: "unavailable" });
+    } finally { slow.mockRestore(); }
+    expect(pc.list.status().want).toBeNull();
+    // a member adds the PC: nothing pins the new binding
+    await pc.addPc();
+    expect(pc.list.status()).toMatchObject({ pinned: false });
+    expect(pc.world.pinned).toBeNull();
   });
 
   test("a list named while the disk refuses the write is not the wanted one afterwards, and pins nothing later", async () => {
