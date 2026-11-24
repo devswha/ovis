@@ -671,7 +671,7 @@ bounded() {
   return "$bounded_status"
 }
 
-rust_host_runs() {
+answers_usage() {
   [ -x "$1" ] || return 1
   probe_err=$(mktemp) || return 1
   probe_status=0
@@ -679,8 +679,16 @@ rust_host_runs() {
   probe_first=$(sed -n 1p "$probe_err" 2>/dev/null)
   rm -f "$probe_err"
   [ "$probe_status" = 2 ] || return 1
-  case "$probe_first" in "pty-sidecar: usage:"*) ;; *) return 1 ;; esac
+  case "$probe_first" in "$2"*) return 0 ;; *) return 1 ;; esac
+}
+
+rust_host_runs() {
+  answers_usage "$1" "pty-sidecar: usage:" || return 1
   bounded 3 "$1" 1 1 true </dev/null >/dev/null 2>&1
+}
+
+keeper_runs() {
+  answers_usage "$1" "Usage: ovis-acp-keeper "
 }
 
 # the published SHA-256 of the official Node build for $platform, in $node_sha
@@ -859,7 +867,7 @@ manifest_entry() {
   # by section: the PTY hosts' keys repeat platform names
   case "$2" in
     dist) entry=$(sed -n '/^  "dist": {$/,/^  }/p' "$1") ;;
-    pty-*) entry=$(sed -n '/^  "pty": {$/,/^  }/p' "$1" | sed -n "/^    \"${2#pty-}\": {\$/,/^    }/p") ;;
+    pty-*|acpKeeper-*) entry=$(sed -n "/^  \"${2%%-*}\": {\$/,/^  }/p" "$1" | sed -n "/^    \"${2#*-}\": {\$/,/^    }/p") ;;
     *) entry=$(sed -n '/^  "assets": {$/,/^  }/p' "$1" | sed -n "/^    \"$2\": {\$/,/^    }/p") ;;
   esac
   entry_file=$(printf '%s\n' "$entry" | sed -n 's/^ *"file": "\([^"]*\)",$/\1/p')
@@ -888,35 +896,39 @@ take() {
   [ "$got_sha" = "$entry_sha" ] || refuse "$1 does not match its SHA-256 in ovis-server.json (got $got_sha)"
 }
 
-# The release's Rust PTY host into $stage/bin, only the one the signed ovis-server.json names (its SHA-256 and size
-# there, never another file's word for it), tried here; the record beside it is what the server checks before it
-# runs it (server/pty/host.ts). Without one that runs, terminals are mirrored: nothing here fails the install.
-binary_pty_host() {
+# Each optional native binary gets its own probe and record. Never remove its sibling on failure.
+binary_helper() {
+  case "$1" in
+    pty) helper_name=ovis-pty-sidecar helper_label="Rust PTY host" helper_probe=rust_host_runs without="terminals are mirrored" ;;
+    acpKeeper) helper_name=ovis-acp-keeper helper_label="ACP keeper" helper_probe=keeper_runs without="ACP children are unavailable" ;;
+    *) return 1 ;;
+  esac
   case "$platform" in
-    linux-x64 | linux-arm64) pty_asset=$platform ;;
-    darwin-*) pty_asset=darwin-universal ;;
+    linux-x64 | linux-arm64) build=$platform ;;
+    darwin-*) build=darwin-universal ;;
     *) return 0 ;;
   esac
-  manifest_entry "$stage/ovis-server.json" "pty-$pty_asset"
-  pty_file=$entry_file pty_sha=$entry_sha pty_size=$entry_size
-  if [ "$pty_file" != "ovis-pty-sidecar-$pty_asset" ] || [ -z "$pty_sha" ] || [ -z "$pty_size" ]; then
-    say "the signed ovis-server.json names no Rust PTY host for $platform, so terminals are mirrored"
+  manifest_entry "$stage/ovis-server.json" "$1-$build"
+  target="$stage/bin/$helper_name"
+  if [ "$entry_file" != "$helper_name-$build" ] || [ -z "$entry_sha" ] || [ -z "$entry_size" ]; then
+    say "the signed ovis-server.json names no $helper_label for $platform, so $without"
     return 0
   fi
-  mkdir -p "$stage/bin"
-  if ! fetch "$at/$pty_file" "$stage/bin/ovis-pty-sidecar" "$pty_size" || [ "$(wc -c <"$stage/bin/ovis-pty-sidecar" | tr -d ' ')" != "$pty_size" ] ||
-    [ "$(sha256 "$stage/bin/ovis-pty-sidecar")" != "$pty_sha" ]; then
-    rm -rf "$stage/bin"
-    say "the Rust PTY host did not download or does not match its SHA-256 and size in ovis-server.json, so it is not run and terminals are mirrored"
+  if ! mkdir -p "$stage/bin" || ! fetch "$at/$entry_file" "$target" "$entry_size" || [ "$(wc -c <"$target" | tr -d ' ')" != "$entry_size" ] ||
+    [ "$(sha256 "$target")" != "$entry_sha" ]; then
+    rm -f "$target"
+    say "the $helper_label did not download or does not match its SHA-256 and size in ovis-server.json, so it is not run and $without"
     return 0
   fi
-  chmod 755 "$stage/bin/ovis-pty-sidecar"
-  if ! rust_host_runs "$stage/bin/ovis-pty-sidecar"; then
-    rm -rf "$stage/bin"
-    say "the Rust PTY host does not run on this PC, so terminals are mirrored"
+  if ! chmod 755 "$target" || ! "$helper_probe" "$target"; then
+    rm -f "$target"
+    say "the $helper_label does not run on this PC, so $without"
     return 0
   fi
-  printf '{"sha256":"%s","version":"%s"}\n' "$pty_sha" "$version" >"$stage/bin/ovis-pty-sidecar.json"
+  if ! printf '{"sha256":"%s","version":"%s"}\n' "$entry_sha" "$version" >"$target.json"; then
+    rm -f "$target" "$target.json"
+    say "could not record the $helper_label, so $without"
+  fi
 }
 
 # One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, a folder whose pid file, created only where none is,
@@ -1031,7 +1043,8 @@ install_binary() {
   [ -z "$(find "$stage/dist" ! -type f ! -type d)" ] || refuse "ovis-dist.tar.gz unpacked something other than files and folders"
   [ -f "$stage/dist/index.html" ] || refuse "ovis-dist.tar.gz holds no index.html"
   rm -f "$stage/ovis-dist.tar.gz"
-  binary_pty_host
+  binary_helper pty
+  binary_helper acpKeeper
   rm -rf "$verify_dir"
   release_name="$version-${stage##*.stage-}"
   mv "$stage" "$OVIS_HOME/releases/$release_name" || refuse "could not move the checked release into place"
@@ -1251,9 +1264,12 @@ ref_not_moved() {
   say "${ref_not_moved_at}OVIS_REF does not move an installed Ovis (INSTALL.md, Update)"
 }
 
-# Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, built from source after
-# herdr-plugin.toml's pre-flight step, as scripts/plugin-launch.ts builds sources (the Rust PTY host aside:
-# herdr-core's terminals need none), its settings, its service, and a start now.
+install_native_helpers() {
+  [ ! -f "$1/scripts/pty-sidecar.ts" ] || (cd "$1" && bun scripts/pty-sidecar.ts install </dev/null) || true
+}
+
+# Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, its native helpers,
+# settings and service, and a start now.
 install_core() {
   if [ -d "$APP_DIR/.git" ]; then
     say "already installed in $APP_DIR, on herdr-core; Settings → Updates keeps it current"
@@ -1286,6 +1302,7 @@ install_core() {
   HERDR_PLUGIN_STATE_DIR=$state_dir
   export HERDR_PLUGIN_CONFIG_DIR HERDR_PLUGIN_STATE_DIR
   code=$(running_code "$root")
+  install_native_helpers "$code"
   core_service
   bun "$root/scripts/plugin.ts" start </dev/null \
     || say "Ovis did not start; what it said is above. Start it again with: $start_line"
@@ -1364,7 +1381,7 @@ install_plugin() {
   # Settings → Updates fetch it too, so this is for an install from before it shipped, or one whose
   # download failed. Without it, terminals use the Node sidecar where there is Node, or a mirror.
   code=$(running_code "$root")
-  [ ! -f "$code/scripts/pty-sidecar.ts" ] || (cd "$code" && bun scripts/pty-sidecar.ts install </dev/null) || true
+  install_native_helpers "$code"
   needs_node=""
   if ! rust_host_runs "$code/bin/ovis-pty-sidecar"; then
     needs_node=needed
