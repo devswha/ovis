@@ -226,6 +226,23 @@ that entry counts on its own state (`signListEntry`): it builds the entry, takes
 will, and signs nothing that would be passed over or have no effect. So no member's own entry
 leaves a signer with no name.
 
+Two more rules are for writers alone. The account service holds every writer to them, and a member
+counts an entry that breaks one all the same:
+
+- **Nobody opens an epoch at will.** A member writes an `epoch` only where names can no longer be
+  sealed under the current one: somebody who may hold its key is out or over its time (`sealEpoch`
+  says so). After a removal that is the very next entry, in one batch: the `remove`, or several,
+  then one `epoch`. Where a device past its `until` or an invite past its `exp` is still in, it is
+  put out first. So an entry that did not get its place, an add say, is signed again on the new
+  head and sealed under the same epoch as before: the service kept nothing of the request that did
+  not place, the key wrapped for the newcomer included. Should an add be given up for good, a wrap
+  for that key exists only at a service that lied about keeping nothing, and it opens names, never
+  a way in.
+- **An invite a PC joins with by itself is made for one PC**, with `uses` `1`, for as long as the
+  account service keeps invites of its own beside the list: a PC first redeems the invite with the
+  service, which takes each invite once, so a second PC under one invite is refused there (`403
+  not_redeemed`) whatever `uses` says.
+
 What stays true all the same, and what to do about it:
 
 - **A signer with no name can exist**, where an entry by a `full` signer added a key and had no
