@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import { shellAccountActions, type FreshSignIn } from "../lib/account/hostedSignIn.ts";
 import { pageListPc } from "../lib/account/listPcs.ts";
 import { removeListPc } from "../lib/account/listRemove.ts";
-import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
+import { writeScope, type WriteScope, LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { forgetSeenPc } from "../lib/account/seenPcs.ts";
@@ -46,6 +46,21 @@ type Asked = {
 };
 
 /**
+ * What a Remove is bound to from the press that asks its question: the row of this device's list it was pressed on.
+ * The relay key the list holds for the PC, and the account, the list and this device's member key then.
+ */
+export interface HeldRemoval { readonly scope: WriteScope; readonly endpoint: string }
+
+/** The list row a Remove of this PC is for, read now; null for a PC that no list of this device holds (it leaves by the account service). */
+export function heldRemoval(account: string, serverId: string): HeldRemoval | null {
+  const list = pageAccountList();
+  const endpoint = list === null ? null : pageListPc(account, serverId);
+  const view = list?.view();
+  if (list === null || endpoint === null || view === undefined || view.status.at !== "following") return null;
+  return { endpoint, scope: { account, list: view.status.list, key: writeScope(list)?.key } };
+}
+
+/**
  * A PC's removal from the account. `remove` removes it as `session` and then tells `removed`; when the service wants a
  * fresh own sign-in first it resolves false, and `prompt` says so with Sign in again. That press signs in again in place
  * (the desktop app, the PC's own window, the phone app) and removes the same PC with the fresh sign-in: the removal was
@@ -58,7 +73,8 @@ type Asked = {
  * (listRemove.ts): the account service removes nothing for it, and asks for no sign-in.
  */
 export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed: (serverId: string, how: "list" | "directory") => void | Promise<void>): {
-  readonly remove: (session: AccountSession, serverId: string, listingId?: string) => Promise<boolean>;
+  /** `held`: what the question was asked for (heldRemoval), where one was asked first; absent, the row is read at the press */
+  readonly remove: (session: AccountSession, serverId: string, listingId?: string, held?: HeldRemoval | null) => Promise<boolean>;
   readonly prompt: ReactNode;
   /** the PC \`prompt\` speaks of, for a surface that draws one row per PC; null with no prompt */
   readonly promptFor: string | null;
@@ -71,14 +87,16 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
     : here === undefined ? undefined : (from, blocked) => here(from, { signal: new AbortController().signal, wanted: () => true, blocked });
   const leaving = shell?.signInAgain;
 
-  const remove = async (session: AccountSession, serverId: string, listingId?: string): Promise<boolean> => {
+  const remove = async (session: AccountSession, serverId: string, listingId?: string, held?: HeldRemoval | null): Promise<boolean> => {
     setAsked(null);
     const list = pageAccountList();
-    const endpoint = list === null ? null : pageListPc(session.account, serverId);
-    const { status } = list?.view() ?? { status: null };
-    if (list !== null && endpoint !== null && status?.at === "following") {
-      // for the account and the list whose row the person pressed: another tab's sign-in changes neither under it
-      const outcome = await removeListPc(list, endpoint, { expect: { account: session.account, list: status.list } });
+    const bound = held === undefined ? heldRemoval(session.account, serverId) : held;
+    if (list !== null && bound !== null) {
+      // For the account, the list, the member key and the relay key of the row the person pressed: another tab's
+      // sign-in changes none of them under it, and a PC that another member put out meanwhile is found out already.
+      // Nothing of it goes to the account service's directory.
+      if (bound.scope.account !== session.account) throw new ListPcRemovalError("changed");
+      const outcome = await removeListPc(list, bound.endpoint, { expect: bound.scope });
       if (!outcome.removed && outcome.why === "waiting") window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT));
       if (!outcome.removed) throw new ListPcRemovalError(outcome.why);
       await removed(serverId, "list");

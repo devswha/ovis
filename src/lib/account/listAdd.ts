@@ -193,7 +193,9 @@ export type AddPcOutcome = { readonly added: true } | { readonly added: false; r
  * person's Cancel, checked before the admission, before signing and before sending.
  */
 export async function addPostedPc(list: AccountList, post: PostedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect" | "signal"> & { readonly admit: () => Promise<void>; readonly member?: string }): Promise<AddPcOutcome> {
-  const { member, admit, ...writeOptions } = options;
+  const { member, admit, ...rest } = options;
+  // the member key goes into the write's own scope too, so every read and retry holds it (X3)
+  const writeOptions = rest.expect === undefined || member === undefined ? rest : { ...rest, expect: { ...rest.expect, key: member } };
   const changed = (writer: ListWriter | null): boolean => writer === null || writer.list !== post.list
     || (options.expect !== undefined && writer.account !== options.expect.account) || (member !== undefined && writer.keys.key !== member);
   options.signal?.throwIfAborted();

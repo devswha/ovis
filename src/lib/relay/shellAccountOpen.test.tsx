@@ -1,3 +1,4 @@
+import { notePcTap } from "./pcTap.ts";
 import { afterEach, beforeEach, expect, it, jest } from "bun:test";
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -775,7 +776,29 @@ it("a PC that only the account service names stays a row, marked, that nothing o
   expect(state.kind === "empty" && state.account?.kind === "signed-in" ? state.account.pcs : null).toMatchObject([{ server_id: run.serverId, notInList: true, paired: false }]);
   expect([came, run.navigations, run.apps()]).toEqual([[], [], 0]);
   // its own page, where a tap on the row leads
+  notePcTap(run.serverId);
   await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["sign-in"], 1]);
+});
+
+it("the page of such a PC that no press led to opens nothing: a reload, a restored tab or the app starting again puts up the sheet, and its press opens the PC", async () => {
+  const came: string[] = [];
+  const run = await accountPc({ listed: { holds: false }, open: async (offer, options) => { came.push((await cameBy(offer, options)).how); return new Admitted(offer); } });
+  // the PC's page, loaded with no press on its row (the app reopened it as it started): its own join sheet, nothing asked
+  await run.openPage();
+  const path = run.navigations[0];
+  if (path === undefined) throw new TypeError("Missing the PC's join screen");
+  expect([came, run.apps()]).toEqual([[], 0]);
+  // a press that led to another PC's page is no word for this one
+  notePcTap("ab".repeat(16));
+  await run.openPage();
+  expect([came, run.apps(), run.navigations.length]).toEqual([[], 0, 2]);
+  await run.follow(path);
+  await run.sheetRead();
+  expect([came, run.apps()]).toEqual([[], 0]);
+  // the press on the sheet is that word: the PC is opened the way from before
+  run.current().onPair();
   await run.appOpened;
   expect([came, run.apps()]).toEqual([["sign-in"], 1]);
 });
@@ -788,6 +811,7 @@ it("a PC that follows this device's list though the device's copy does not name 
     if (how !== "list") throw new MuxProtocolError("account_list_required", "");
     return new Admitted(offer);
   } });
+  notePcTap(run.serverId);
   await run.openPage();
   await run.appOpened;
   expect([came, run.apps()]).toEqual([["sign-in", "list"], 1]);
@@ -803,6 +827,7 @@ it("a PC that says it lets devices in by the list is read for, and opened with t
     if (how !== "list") throw new MuxProtocolError("account_list_required", "");
     return new Admitted(offer);
   } });
+  notePcTap(run.serverId);
   await run.openPage();
   await run.appOpened;
   expect([came, run.apps()]).toEqual([["sign-in", "list"], 1]);

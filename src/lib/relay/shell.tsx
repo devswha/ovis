@@ -38,6 +38,7 @@ import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
 import type { PcFinding, ProbeTarget } from "./pcStatus.ts";
 import { accountOpenablePcs, keepLaunchTried, lastFirst, launchTried, openablePcs } from "./pcPick.ts";
 import { PAGE_LEAVING_EVENT } from "../paneLifetime.ts";
+import { notePcTap, takePcTap } from "./pcTap.ts";
 import { createUpdateFlow, loadObservedVersions, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
 export type { RelayShellMount } from "./shellState.ts";
 export { forgetSavedPc } from "./updateFlow.ts";
@@ -210,6 +211,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // by the app as it starts, so an off PC keeps its failure card. The mark is dropped from the address at once
   const picked = scoped && entryHash === "#picked";
   if (picked) window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  // whether a person's press led to this PC's page just now: on the phone app's connect screen, or on a link to it on
+  // the page before. Read once, so a reload, a restored tab and a page the app reopened by itself come without it
+  const tappedPc = takePcTap();
+  const tapped = entry.serverId !== null && (picked || tappedPc === entry.serverId);
   // `left`: the launch sent this page to a PC: nothing more is drawn or probed on the way out
   let launching = !scoped && entryHash === "", signedInNow = false, left = false, launched = false, accountLaunch = false;
   // the card a launch waits on for the account's PCs: only while it is the screen does a read of them go on with the launch
@@ -241,6 +246,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     let id: string | null = null;
     try { id = link === null ? null : serverIdOfPath(new URL(link.getAttribute("href") ?? "", window.location.href).pathname); } catch { /* not an address */ }
     if (id !== null && launchJoinFor(id)) keepLaunchJoin(null);
+    // and that press is the word a PC waits for which nothing but a press may open (openUnpaired)
+    if (id !== null) notePcTap(id);
   };
   document.addEventListener("click", pressedJoin, true);
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
@@ -682,13 +689,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     return { offer, code: false, paired: true, accountOpen: openKey, ...(fresh ? { freshPc: true as const } : {}) };
   };
   /**
-   * A press on the join sheet of a PC inside its 24 hours in the account, which nothing opens without that press: the
-   * account's own way first, as a load takes for a PC past them, then the join on a refusal (failed). Null when that way
-   * cannot be tried here, or for any other PC, whose press sends the join alone, as before.
+   * A press on the join sheet of a PC that nothing opens without that press (one inside its 24 hours in the account, or
+   * one the account names that this device's list does not hold): the account's own way first, as a load takes for
+   * any other PC, then the join on a refusal (failed). Null when that way cannot be tried here, or for any other PC,
+   * whose press sends the join alone, as before.
    */
   const pressedAccountOpen = (serverId: string): Attempt | null => {
     const pc = rowToJoin(serverId);
-    const open = pc !== undefined && isNewAccountPc(pc, Date.now()) ? accountOpenOf(pc) : null;
+    const open = pc !== undefined && (isNewAccountPc(pc, Date.now()) || pc.notInList === true) ? accountOpenOf(pc) : null;
     return open === null ? null : { ...open, pressed: true };
   };
   /**
@@ -1362,7 +1370,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // a PC new in the account that no device is in yet takes the number its own screen shows, as the dashboard's Add
     // does; any other asks a device already in to approve. The account's own way in, refused, falls back the same way
     const fresh = joinable !== undefined && newPcs([joinable], Date.now()).length > 0;
-    const open = joinable === undefined || isNewAccountPc(joinable, Date.now()) ? null : accountOpenOf(joinable);
+    // A PC the account names that this device's list does not hold is opened only on a press, at every open: by the
+    // press that led here, or by the one on the sheet this page puts up (pressedAccountOpen).
+    const open = joinable === undefined || isNewAccountPc(joinable, Date.now()) || (joinable.notInList === true && !tapped) ? null : accountOpenOf(joinable);
     if (open !== null) {
       await connect(open);
     } else if (joinable !== undefined) {
