@@ -691,7 +691,8 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     const other = await listMember();
     expect(await made.list.allowDevice({ key: other.key, enc: other.enc, card: await memberCard(other, made.account.id), label: "Other" }, false)).toMatchObject({ refused: "not_in_list" });
     expect(entriesPlaced(made)).toBe(0);
-  });
+    // two waits for a member's entry, the second to its end: more than a test's five seconds
+  }, 20_000);
 
   test("a PC the list removed is in no list, and says so before any card is sent", async () => {
     const made = await allowingPc();
