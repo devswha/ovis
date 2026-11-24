@@ -4,6 +4,11 @@ import { type Client, connectionData } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import { KEY_SETTLE_MS, TYPED_SETTLE_MS } from "../index.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
+import type { AcpChildren } from "../acp/children.ts";
+import { KeeperClient } from "../acp/client.ts";
+import { keeperBuilt, keeperRoot, startKeeper, until } from "../acp/keeper.fake.ts";
+import { dirname, join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 
 afterEach(() => mock.restore());
 
@@ -13,7 +18,7 @@ function connection(told: Told[]): Client {
   return { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, send: (raw: string) => { told.push(JSON.parse(raw)); return 1; }, getBufferedAmount: () => 0, close: () => {} } as unknown as Client;
 }
 
-function lane(ready = true, pty: unknown = "pty") {
+function lane(ready = true, pty: unknown = "pty", acp?: Pick<AcpChildren, "forPane">) {
   const typed: string[] = [];
   const told: Told[] = [];
   const phone = connection(told);
@@ -32,12 +37,32 @@ function lane(ready = true, pty: unknown = "pty") {
   spyOn(client, "paneSendText").mockImplementation(async (_pane, text) => { typed.push(`text ${text}`); });
   const clients = new Set([phone, other]);
   const { inputFrames, typedInto } = createInputLane({
-    TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight: () => sighting, poke: () => {},
+    TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, acp, sight: () => sighting, poke: () => {},
     terminalAttach: async () => false, terminalAttachKnown: () => true, mayType: () => true, authorizeSocket: () => {},
   });
   const results = () => told.filter((frame) => frame.type === "input-result");
   return { typed, results, clients, phone, other, inputFrames, typedInto, keyStarted, answer };
 }
+
+it.skipIf(!keeperBuilt)("Stop cancels the running ACP turn instead of typing into its terminal", async () => {
+  const root = keeperRoot();
+  const keeper = await startKeeper(root);
+  const client = new KeeperClient(root);
+  try {
+    await client.ready();
+    await until(client, "session", () => client.session !== null);
+    await client.submit("hold");
+    const child = { id: "child", terminal: "t1", harness: "codex", root, client };
+    const live = lane(true, "pty", { forPane: pane => pane === "t1" ? child : undefined });
+    live.inputFrames.input(live.phone, { type: "input", pane_id: "t1", text: "\x1b", stop: true });
+    await until(client, "cancelled turn", () => client.turn?.stopReason === "cancelled", 2000);
+    const rows = readFileSync(join(root, "archive.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.filter(row => row.dir === "to-agent").map(row => JSON.parse(row.raw))).toContainEqual({
+      jsonrpc: "2.0", method: "session/cancel", params: { sessionId: client.session },
+    });
+    expect(live.typed).toEqual([]);
+  } finally { client.close(); await keeper.stop(); rmSync(dirname(root), { recursive: true, force: true }); }
+});
 
 it("counts what a person types into a pane, by any way, and not the terminal's own answers or the mouse", async () => {
   const live = lane();

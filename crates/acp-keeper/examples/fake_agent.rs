@@ -81,6 +81,11 @@ fn main() {
             continue;
         }
         if id.is_null() {
+            if method == "session/cancel" && msg.pointer("/params/sessionId").and_then(Value::as_str) == Some(&session) {
+                for prompt in held.drain(..) {
+                    send(&mut out, &json!({"jsonrpc":"2.0","id":prompt,"result":{"stopReason":"cancelled"}}));
+                }
+            }
             continue;
         }
         let result = match method {
