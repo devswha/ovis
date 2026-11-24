@@ -6,6 +6,7 @@ import "./SettingsDialog.css";
 import type { AddPcPreset, AppActions } from "../lib/actions.ts";
 import { useInstallPrompt } from "../lib/install.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
+import { demoBuild } from "../lib/demo.ts";
 import { loadRelayShell } from "../lib/relay.ts";
 import { inRelayShell, useRelay, type RelayState } from "../lib/useRelay.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
@@ -1213,6 +1214,11 @@ function deviceKind(label: string, t: ReturnType<typeof useT>): string | null {
   return t("Browser");
 }
 
+/** What the app's Change PC row says of this page: the demo only where the demo build marked it (lib/demo.ts) */
+export function changePcDescription(t: Translate, demo: boolean, host: string): string {
+  return demo ? t("This is the demo. Go back to the app's list of PCs to open yours.") : t("This app shows {address}. Go back to its list of PCs to open another.", { address: host });
+}
+
 function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSettings, pcSettingsError, onPcSettings, openAddPc, connectPc, onHome, opensAll, withdrawn }: {
   /** closes Settings onto the main screen, after a sign-in in the sheet the setup checklist opened (closedBySignIn) */
   onHome: () => void;
@@ -1294,7 +1300,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const joinBySignIn = account.account !== null && pcAccount === account.account && relay.status?.phase === "online";
   // where Add PC over SSH adds the PC to the account (MachineDialog asks the same), the relay tab lists the PCs to add
   const addsOverSsh = sshAddListed({ pcAddFromAccount, auth, signedInAccount: account.signedIn ? account.account : null, pcAccount });
-  const accountPcs = useMemo(() => account.pcs?.filter((pc) => pc.listed).map((pc) => pc.server_id) ?? [], [account.pcs]);
+  // the PCs in the account, which the relay tab's list says so of: one only listed or admitted is still offered Add
+  const accountPcs = useMemo(() => account.pcs?.filter((pc) => pc.listed && pc.joined === true).map((pc) => pc.server_id) ?? [], [account.pcs]);
   const openAccount = useCallback(() => {
     setConnecting(false);
     const group = document.querySelector<HTMLElement>('.settings-dialog [data-section="account"]');
@@ -1337,7 +1344,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         {(nativeApp || relayPc !== null) && (
           <SettingsGroup title={t("This app")} section="this-app">
             {nativeApp && (
-              <SettingsRow label={t("Change PC")} description={window.location.protocol === "capacitor:" ? t("This is the demo. Go back to the app's list of PCs to open yours.") : t("This app shows {address}. Go back to its list of PCs to open another.", { address: window.location.host })}>
+              <SettingsRow label={t("Change PC")} description={changePcDescription(t, demoBuild(), window.location.host)}>
                 <button type="button" className="btn" onClick={() => void changePc()}>{t("Change PC")}</button>
               </SettingsRow>
             )}
