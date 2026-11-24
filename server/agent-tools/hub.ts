@@ -113,10 +113,11 @@ export class AgentToolHub {
     if (!harnessVerb(verb)) return refuse("bad_request", "Unknown verb.");
     if (!isView(verb) && this.setting.level !== "start") return deny();
     if (!validArgs(verb, args)) return refuse("bad_request", "Invalid or unexpected argument.");
-    if (verb === "read" && args.what === "result" && this.setting.level !== "start") return deny();
+    const privilegedRead = verb === "read" && (args.what === "result" || args.what === "screen");
+    if (privilegedRead && this.setting.level !== "start") return deny();
     if (isView(verb)) {
       const result = await this.view.query(verb, args, this.turns);
-      return auth() && !(args.what === "result" && this.setting.level !== "start") ? result : deny();
+      return auth() && !(privilegedRead && this.setting.level !== "start") ? result : deny();
     }
     const allowed = () => !!auth() && this.setting.level === "start";
     const session = String(args.session ?? "");

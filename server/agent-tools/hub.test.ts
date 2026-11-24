@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
+import * as herdr from "../herdr/client.ts";
+import * as prompts from "../prompt.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +24,17 @@ afterEach(() => { hub.close(); rmSync(dir, { recursive: true, force: true }); })
 const call = (verb: string, args: object = {}, credential = token) =>
   lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token: credential, verb, args }, 2000);
 const start = () => { setting = { level: "start", depth: 1, harnesses: ["gjc"] }; };
+
+it("never consults a plain shell's prompt or contents for agent read", async () => {
+  const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ protocol: 22, version: "fixture", agents: [], workspaces: [], tabs: [], layouts: [],
+    panes: [{ pane_id: "shell", terminal_id: "term", agent: null, tab_id: "tab", workspace_id: "ws", focused: false, revision: 1, agent_status: "unknown" }] });
+  const prompt = spyOn(prompts, "readPrompt").mockRejectedValue(new Error("unexpected content read"));
+  try {
+    expect(await call("ls")).toMatchObject({ sessions: [] });
+    expect(await call("read", { session: "shell", what: "state" })).toMatchObject({ error: { code: "unknown_session" } });
+    expect(prompt).not.toHaveBeenCalled();
+  } finally { snapshot.mockRestore(); prompt.mockRestore(); }
+});
 
 it("at view level start, send, wait, result, ask and stop are refused", async () => {
   for (const verb of ["start", "send", "wait", "result", "ask", "stop"]) expect(await call(verb)).toMatchObject({ error: { code: "not_granted" } });

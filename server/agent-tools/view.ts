@@ -18,6 +18,7 @@ export interface ViewOptions {
   readonly machines?: () => readonly Machine[];
   readonly hasHook?: (kind: string) => boolean;
 }
+const eligible = (pane: { pane_id: string; agent?: string | null }) => !!pane.agent && !pane.pane_id.includes("/");
 export class HarnessView {
   readonly signInNeeded = new Set<string>();
   constructor(private readonly options: ViewOptions, private readonly acp: AcpChildren, private readonly ledger: Ledger) {}
@@ -39,7 +40,7 @@ export class HarnessView {
       }
       case "ls": {
         const { panes } = await sessionSnapshot();
-        return answer("sessions", { sessions: panes.filter(p => p.agent && !p.pane_id.includes("/")).map(p => {
+        return answer("sessions", { sessions: panes.filter(eligible).map(p => {
           const child = this.acp.forPane(p.pane_id), row = this.ledger.children.get(p.pane_id);
           return { address: p.pane_id, drive: child ? "acp" : "terminal", harness: p.agent, machine: "local", parent: panes.some(parent => parent.pane_id === p.parent_pane_id) ? p.parent_pane_id : null, agent_session_id: child?.client.session ?? p.agent_session?.value ?? null,
             started_by: row && row.id === child?.id ? "agent" : "human", state: child ? childState(child, row) : { state: p.agent_status === "blocked" ? "waiting_human" : p.agent_status, turn: null } };
@@ -52,6 +53,8 @@ export class HarnessView {
     const session = String(args.session);
     if (session.includes("/")) return refuse("unknown_session", "Only sessions on this PC can be read.");
     const child = this.acp.forPane(session), row = this.ledger.children.get(session);
+    const target = child ? null : (await sessionSnapshot()).panes.find(p => p.pane_id === session && eligible(p));
+    if (!child && !target) return refuse("unknown_session", "No eligible agent in this pane.");
     let uncertain = false;
     const observe = () => { uncertain ||= this.acp.forPane(session) !== child || child?.client.status === "unknown"; };
     const off = child?.client.onChange(observe);
@@ -61,6 +64,7 @@ export class HarnessView {
     const state = async () => {
       if (child) return childState(child, row);
       const read = await readPrompt(session);
+      if (!eligible(read.pane) || read.pane.terminal_id !== target?.terminal_id || read.pane.agent !== target?.agent) throw new Error("Agent session changed.");
       if (read.stale || read.inputUnverified) throw new Error("Session changed.");
       return { state: read.prompt || read.status === "blocked" ? "waiting_human" : read.status, turn: null };
     };
