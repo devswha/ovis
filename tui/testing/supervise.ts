@@ -44,7 +44,9 @@ const running = () => child !== null && child.exitCode === null && child.signalC
 /** whether the entry is stopped now; null where there is no /proc to tell */
 const stopped = (): boolean | null => {
   try {
-    return readFileSync(`/proc/${child!.pid}/stat`, "latin1").split(") ")[1]!.startsWith("T");
+    // the state follows the last ") ": the command name before it may hold one itself
+    const stat = readFileSync(`/proc/${child!.pid}/stat`, "latin1");
+    return stat.slice(stat.lastIndexOf(") ") + 2).startsWith("T");
   } catch {
     return null;
   }
@@ -60,8 +62,13 @@ process.on("SIGCHLD", () => {
 });
 const deliver = (name: Signal) => {
   if (!running()) return;
-  if (name === "SIGCONT" && stopped() === false) continueAtStop = true;
-  else child!.kill(name);
+  if (name === "SIGCONT" && stopped() === false) {
+    continueAtStop = true;
+    return;
+  }
+  // a continue sent now answers one still held, which must not carry over to a later stop
+  if (name === "SIGCONT") continueAtStop = false;
+  child!.kill(name);
 };
 
 let buffered = "";

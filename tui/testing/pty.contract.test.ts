@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processesWith } from "./processes.ts";
@@ -107,7 +107,8 @@ describe("runSupervised", () => {
     expect(processesWith(`PTY_TEST_MARK=${env.PTY_TEST_MARK}`, env.HOME)).toEqual([]);
   }, TEST_MS);
 
-  it("holds a continue that came before the entry stopped itself until it has stopped, as a shell does", async () => {
+  // the supervisor tells a stopped entry by /proc: without it, a continue is sent at once, as before
+  it.skipIf(!existsSync("/proc/self/stat"))("holds a continue that came before the entry stopped itself until it has stopped, as a shell does", async () => {
     // like the screen, the entry gives the terminal back at SIGTSTP and stops itself after: here only once a line is typed
     const script = [
       'process.on("SIGTSTP", () => {',
