@@ -615,14 +615,58 @@ describe("a removal the PC has seen is final", () => {
     await pc.account.addDevice(await listMember());
     expect((await heads({ list: pc.account.id, place: pc.account.place, asks: { list: pc.account.id, after: head.seq } })).body)
       .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: head.seq, entries: [], head }, asks: { list: pc.account.id, after: head.seq } });
-    // a read of another list, or a head of another list, is answered with the PC's own head and nothing else
-    expect((await heads({ list: pc.account.id, place: head, asks: { list: "ef".repeat(32), after: 0 } })).body).toEqual({ list: pc.account.id, place: head });
+    // a read of another list, or a head of another list, is answered with the PC's own head and nothing else: wherever
+    // the device says it stands, behind the PC (no page of the PC's own), level, or further (no read asked of it)
+    const foreign = { list: "ef".repeat(32), after: 0 };
+    for (const place of [{ seq: 0, hash: pc.account.id }, head, pc.account.place]) {
+      expect((await heads({ list: pc.account.id, place, asks: foreign })).body).toEqual({ list: pc.account.id, place: head });
+    }
     expect((await heads({ list: "ef".repeat(32), place: null, asks: { list: pc.account.id, after: 0 } })).body).toEqual({ list: pc.account.id, place: head });
-    // and a read out of form is refused, as a head out of form is
-    for (const asks of [{ list: pc.account.id, after: -1 }, { list: pc.account.id }, { list: 7, after: 0 }, "all"]) {
+    // and a read out of form is refused, as a head out of form is; a read is left out, never sent as null
+    for (const asks of [{ list: pc.account.id, after: -1 }, { list: pc.account.id }, { list: 7, after: 0 }, "all", null]) {
       expect((await heads({ list: pc.account.id, place: head, asks })).status).toBe(400);
     }
-    expect((await heads({ list: pc.account.id, place: head, asks: null })).body).toEqual({ list: pc.account.id, place: head });
+  });
+
+  test("the PC answers a device's own read only for a key its list holds: a pairing of its own keeps the plain exchange", async () => {
+    const pc = await pinnedPc();
+    const head = pc.list.status().head!;
+    const entries = pc.service.accountList(ACCOUNT)!.entries;
+    const local = await listMember();
+    const paired = pc.services.devices.pairRelay(pc.services.devices.startPairing().code, "Local", local.key)!.device;
+    const pairing = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await pairing.auth({ keys: local.keys, publicKey: local.key, id: paired.id });
+    const read = { list: pc.account.id, place: head, asks: { list: pc.account.id, after: 0 } };
+    // the same head and the same read: what a key of no entry is told is E6's answer, the PC's head alone
+    expect((await ask(pairing, "/api/account/list/head", { method: "POST", body: read })).body).toEqual({ list: pc.account.id, place: head });
+    // and where it stands at an earlier place of the PC's history, the page the comparison gives, not the one it asked for
+    expect((await ask(pairing, "/api/account/list/head", { method: "POST", body: { ...read, place: { seq: 0, hash: pc.account.id } } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: 0, entries: entries.slice(1, head.seq + 1), head } });
+    // a device the list holds gets the read it asked for
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.laptop));
+    expect((await ask(member, "/api/account/list/head", { method: "POST", body: read })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: 0, entries: entries.slice(1, head.seq + 1), head } });
+  });
+
+  test("a call that began while the PC was pinned and ends after it left its list is answered as a new call would be", async () => {
+    const pc = await pinnedPc();
+    const head = pc.list.status().head!;
+    for (const path of ["/api/account/list/head", "/api/account/list/page"]) {
+      const reading = deferred<void>();
+      let body!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({ start(controller) { body = controller; }, pull() { reading.resolve(); } });
+      const answer = handleRequest(new Request(`https://relay.ovis.invalid${path}`, {
+        method: "POST", headers: { origin: "https://relay.ovis.invalid", "x-herdr-machine": "1", "content-type": "application/json" }, body: stream, duplex: "half",
+      } as RequestInit), { ...pc.fixture.app.context, peer: { kind: "relay", device: { id: pc.idOf(pc.laptop).id, label: "Laptop", role: "drive" }, sessionId: `s-${path}`, serverId: pc.serverId, key: pc.laptop.key }, timeout: () => {} });
+      await bounded(reading.promise);
+      // the call was let in and its body is on its way: the PC leaves its account and its list
+      if (path.endsWith("/head")) pc.services.devices.revokeAll();
+      body.enqueue(new TextEncoder().encode(JSON.stringify({ list: pc.account.id, place: head, after: head.seq, entries: [], head })));
+      body.close();
+      const answered = (await answer)!;
+      expect([path, answered.status, ((await answered.json()) as { error?: { code?: string } }).error?.code]).toEqual([path, 404, "not_found"]);
+    }
   });
 
   test("one session makes thirty of these calls a minute, and no more", async () => {

@@ -1618,16 +1618,18 @@ export class ListFollow implements ListAuthority {
    * the place the PC asks the device for when the device stands further, or at another entry (`asks`). `wanted`: the
    * read the device asks for itself (where it sees the two differ, or looks for where they part); the PC answers it
    * with its own entries after that place, as any member answers a read, in place of the page its own comparison
-   * would give. For another list than the PC's: its own head and nothing else. Null while it follows no list a person
-   * named.
+   * would give. The caller passes it only for a key the list lets in. For another list than the PC's, named by the
+   * head or by the read: its own head and nothing else. Null while it follows no list a person named.
    */
   peerHeads(theirs: ListHead, session?: PeerCaller, wanted: PeerAsk | null = null): { readonly list: string; readonly place: ListHead["place"]; readonly page?: ListPage; readonly asks?: PeerAsk } | null {
     const own = this.peerHead();
     const copy = this.copy;
     if (own === null || copy === null) return null;
+    // a head of another list, or a read of another list: the PC's own head and nothing else, wherever the device stands
+    if (theirs.list !== copy.list || (wanted !== null && wanted.list !== copy.list)) return own;
     const compared = compareHeads(copy, theirs);
     if (compared.verdict === "not_my_list") return own;
-    const served = wanted !== null && wanted.list === copy.list ? servePage(copy, wanted, PEER_PAGE_MAX) : null;
+    const served = wanted === null ? null : servePage(copy, wanted, PEER_PAGE_MAX);
     if (compared.verdict === "ahead") {
       const page = served ?? servePage(copy, { list: copy.list, after: theirs.place?.seq ?? null }, PEER_PAGE_MAX);
       return page === null ? own : { ...own, page };
