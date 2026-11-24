@@ -28,6 +28,14 @@ describe("what the device notices have shown", () => {
     expect(closeNotice(one, shown, "k1")).toEqual({ list: "l", member: "me", floor: 6, closed: [] });
   });
 
+  it("keeps closed a notice above the floor that a later close moves up to: a redraw that no longer shows it does not bring it back", () => {
+    const shown: ListNewcomer[] = [{ key: "k1", seq: 4, by: "a" }, { key: "k2", seq: 6, by: "a" }];
+    const one = closeNotice({ list: "l", member: "me", floor: 2, closed: [] }, shown, "k2");
+    // drawn again: the closed notice is no longer among those shown
+    const two = closeNotice(one, shown.filter((newcomer) => !one.closed.includes(newcomer.key)), "k1");
+    expect(two).toEqual({ list: "l", member: "me", floor: 4, closed: ["k2"] });
+  });
+
   it("keeps both of two notices two tabs closed from the same record", () => {
     const shown: ListNewcomer[] = [{ key: "x", seq: 4, by: "a" }, { key: "y", seq: 5, by: "a" }, { key: "z", seq: 6, by: "a" }];
     writeNoticesSeen("acct", { list: "l", member: "me", floor: 2, closed: [] });

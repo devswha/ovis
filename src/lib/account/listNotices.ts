@@ -34,11 +34,15 @@ export function listNewcomers(state: ListState, self: string, seen: NoticesSeen 
     .map((row) => ({ key: row.key, seq: row.seq, by: row.by }));
 }
 
-/** What is seen once the person closed `key`'s notice: with every notice closed, the floor moves up to the last of them. */
+/**
+ * What is seen once the person closed `key`'s notice: with every notice shown closed, the floor moves up to the last
+ * of them. A notice closed earlier and no longer shown stays closed: it may stand above that floor.
+ */
 export function closeNotice(seen: NoticesSeen, shown: readonly ListNewcomer[], key: string): NoticesSeen {
   const closed = [...new Set([...seen.closed, key])];
-  if (shown.every((newcomer) => closed.includes(newcomer.key))) return { list: seen.list, member: seen.member, floor: Math.max(seen.floor, ...shown.map((newcomer) => newcomer.seq)), closed: [] };
-  return { ...seen, closed };
+  if (!shown.every((newcomer) => closed.includes(newcomer.key))) return { ...seen, closed };
+  const drawn = new Set(shown.map((newcomer) => newcomer.key));
+  return { list: seen.list, member: seen.member, floor: Math.max(seen.floor, ...shown.map((newcomer) => newcomer.seq)), closed: closed.filter((each) => !drawn.has(each)) };
 }
 
 const STORAGE = "ovis-list-device-notices";
