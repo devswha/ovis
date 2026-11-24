@@ -212,7 +212,14 @@ export class KeeperClient {
     this.lastSeq = entry.row.seq;
     const previousStatus = this.status;
     const previousPlan = this.history.plan;
+    const previousSession = this.history.session;
     this.history.observe(entry, Buffer.byteLength(line) + 1);
+    if (previousSession !== this.history.session) {
+      this.approvals.clear();
+      this.answers.close();
+      this.prompts.clear();
+      this.turn = null;
+    }
     if (entry.message === null) { this.malformedRows++; return false; }
     const changed = this.row(entry.row, entry.message) || this.history.plan !== previousPlan;
     // A short prompt and its stopReason can share one socket read: the queue needs both edges.
@@ -223,6 +230,8 @@ export class KeeperClient {
   private row(row: Row, message: Message): boolean {
     const method = text(message.method);
     const params = record(message.params) ?? {};
+    if ((method === "session/update" || method === "session/request_permission" || method === "session/prompt")
+      && (!this.history.session || params.sessionId !== this.history.session)) return false;
     switch (row.dir) {
       case "to-client":
         if (row.client === this.client && this.client !== null) {

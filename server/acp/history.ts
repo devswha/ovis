@@ -8,9 +8,9 @@ import { answerVersion, ConversationReadPending, ConversationUnavailable, Histor
 import { parseLine, record, type Message, type Row } from "./messages.ts";
 import { digestOf, projectUpdates, type Picture, type UpdateEvent } from "./updates.ts";
 
-interface Prompt { start: number; end: number; replay: boolean }
-interface History { generation: number; prompts: Prompt[]; plan: PlanStep[] | null; user: boolean }
-const empty = (generation: number): History => ({ generation, prompts: [], plan: null, user: false });
+interface Prompt { start: number; end: number; replay: boolean; session: string }
+interface History { generation: number; prompts: Prompt[]; plan: PlanStep[] | null; user: boolean; session: string | null }
+const empty = (generation: number, session: string | null = null): History => ({ generation, prompts: [], plan: null, user: false, session });
 const MAX_BYTES = 64 * 1024 * 1024;
 type Entry = { row: Row; message: Message | null };
 
@@ -36,6 +36,7 @@ export class AcpHistory {
   get signature(): string { return `${this.active.generation}:${this.active.prompts.at(-1)?.end ?? 0}`; }
 
   get plan(): PlanStep[] | null { return this.active.plan; }
+  get session(): string | null { return (this.loading ?? this.active).session; }
 
   observe({ row, message }: Entry, length: number): void {
     const start = this.position;
@@ -48,19 +49,29 @@ export class AcpHistory {
     if (message === null) return;
     const params = message.params;
     if (row.dir === "keeper" && message.method === "_keeper/mode" && params?.mode === "acp") {
-      if (params.phase === "start") this.loading = empty(row.seq);
+      if (params.phase === "start") this.loading = empty(row.seq, typeof params.sessionId === "string" ? params.sessionId : this.active.session);
       if (params.phase === "ready" && this.loading) { this.active = this.loading; this.loading = null; }
       if (params.phase === "failed") this.loading = null;
       return;
     }
     const state = this.loading ?? this.active;
+    if ((row.dir === "keeper" && message.method === "_keeper/session")
+      || (row.dir === "to-agent" && message.method === "session/load" && typeof message.id === "string" && message.id.startsWith("keeper-"))) {
+      const session = typeof params?.sessionId === "string" ? params.sessionId : null;
+      if (session !== state.session) {
+        if (this.loading) this.loading = empty(row.seq, session);
+        else this.active = empty(row.seq, session);
+      }
+      return;
+    }
+    if (!state.session || params?.sessionId !== state.session) return;
     const update = row.dir === "from-agent" && message.method === "session/update" ? record(params?.update) : null;
     if (update?.sessionUpdate === "plan" && Array.isArray(update.entries)) state.plan = planSteps(update.entries);
     const prompt = row.dir === "to-agent" && message.method === "session/prompt";
     const user = update?.sessionUpdate === "user_message_chunk";
     if (!prompt && (typeof update?.sessionUpdate !== "string" || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan", "user_message_chunk"].includes(update.sessionUpdate))) return;
     if (user && !this.loading) return; // the agent's echo of the outgoing prompt, not another user turn
-    if (prompt || (user && !state.user) || !state.prompts.length) state.prompts.push({ start, end: this.position, replay: this.loading !== null });
+    if (prompt || (user && !state.user) || !state.prompts.length) state.prompts.push({ start, end: this.position, replay: this.loading !== null, session: state.session });
     const last = state.prompts.at(-1);
     if (last) last.end = this.position;
     state.user = user;
@@ -87,7 +98,7 @@ export class AcpHistory {
         const entry = parseLine(line);
         if (!entry || !("row" in entry)) continue;
         const { row, message } = entry;
-        if (!message) continue;
+        if (!message || message.params?.sessionId !== prompt.session) continue;
         const ts = typeof row.ts === "number" && Number.isFinite(row.ts) && Math.abs(row.ts) <= 8.64e15 ? new Date(row.ts).toISOString() : null;
         if (row.dir === "to-agent" && message.method === "session/prompt" && Array.isArray(message.params?.prompt)) {
           for (const content of message.params.prompt) yield { ts, update: { sessionUpdate: "user_message_chunk", content } };

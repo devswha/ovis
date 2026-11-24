@@ -12,9 +12,10 @@ it("reserves an answer while replay is pending, without waiting for the watermar
   const socket = new Socket();
   const client = new KeeperClient("", { connect: () => socket });
   const raw = JSON.stringify({ id: "example", method: "session/request_permission", params: {
+    sessionId: "s",
     options: [{ optionId: "dismiss", name: "Dismiss", kind: "reject_once" }],
   } });
-  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "from-agent", raw })}\n`);
+  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n${JSON.stringify({ seq: 2, dir: "from-agent", raw })}\n`);
   const first = client.answer("example", "dismiss");
   try {
     const duplicate = client.answer("example", "dismiss");

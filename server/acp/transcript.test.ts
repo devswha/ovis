@@ -19,8 +19,27 @@ function archive() {
   const chunk = (sessionUpdate: string, text: string) => update({ sessionUpdate, content: { type: "text", text } });
   const prompt = (text: string) => row("to-agent", { id: "p" + seq, method: "session/prompt", params: { sessionId: "child", prompt: [{ type: "text", text }] } });
   const mode = (phase: string) => row("keeper", { method: "_keeper/mode", params: { mode: "acp", phase } });
+  row("keeper", { method: "_keeper/session", params: { sessionId: "child" } });
   return { client, root, row, update, chunk, prompt, mode, close: () => { client.close(); rmSync(root, { recursive: true, force: true }); } };
 }
+
+it("only shows messages, plans and approvals for the keeper session", async () => {
+  const { client, row, prompt, chunk, mode, close } = archive();
+  const other = (sessionUpdate: string) => row("from-agent", { method: "session/update", params: {
+    sessionId: "other", update: { sessionUpdate, content: { type: "text", text: "foreign" }, entries: [{ content: "foreign", status: "pending" }] },
+  } });
+  try {
+    prompt("Hello"); other("agent_message_chunk"); other("plan");
+    row("from-agent", { method: "session/request_permission", id: "elsewhere", params: { sessionId: "other" } });
+    chunk("agent_message_chunk", "Mine");
+    expect((await client.history.page({})).turns.at(-1)?.parts).toEqual([{ kind: "text", text: "Mine" }]);
+    expect(client.turn?.text).toBe("Mine");
+    expect(client.pending()).toEqual([]);
+    expect(client.history.plan).toBeNull();
+    mode("start"); other("user_message_chunk"); chunk("user_message_chunk", "Loaded"); mode("ready");
+    expect((await client.history.page({})).turns.map(t => t.parts)).toEqual([[{ kind: "text", text: "Loaded" }]]);
+  } finally { close(); }
+});
 
 it("counts and skips non-string discriminators both live and on restore", async () => {
   const { root, client, row, prompt, chunk, update, close } = archive();
