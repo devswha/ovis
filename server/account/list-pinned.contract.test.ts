@@ -16,6 +16,7 @@ import { handleRequest } from "../dispatch.ts";
 import { bounded, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
 import { STALE_READ_MS } from "./account-devices.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
+import { ask } from "./pairing.test-helpers.ts";
 import { ACCOUNT_LIST_FILE } from "./list-follow.ts";
 import { signCard } from "../../shared/account-list.ts";
 import { listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
@@ -580,6 +581,8 @@ describe("a key the list holds, which this PC also holds by a pairing of its own
     // the answer names the device as the app named it
     const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
     expect(await link.auth(pc.idOf(phone))).toMatchObject({ device_id: pc.idOf(phone).id, role: "watch" });
+    // and the session opens streams under that id: what the app stamps on each is the id the answer named
+    expect((await ask(link, "/api/health")).status).toBe(200);
     // a key that is not the row's proves nothing under that id
     const stranger = await listMember();
     expect(await pc.signsIn({ keys: stranger.keys, publicKey: stranger.key, id: pc.idOf(phone).id })).toBeNull();
@@ -652,9 +655,9 @@ describe("a pin outlives this PC's own settings", () => {
 describe("two histories, and another account's list", () => {
   test("a second history a member signed raises the alarm: the PC adds nobody, and keeps whom it held", async () => {
     const pc = await pinnedPc();
-    const onFork = await listMember();
-    // the first device signs another continuation from entry 0, with a device this PC never saw
-    pc.service.tamperList(pc.account.id, { reader: pc.reader, fork: [await deviceEntry(pc.account, onFork, pc.first, { seq: 0, hash: pc.account.id })] });
+    // the first device signs another continuation from entry 0, with a device this PC never saw, which signs on it
+    const { texts, device: onFork } = await pc.account.forkFromStart();
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, fork: texts });
     await pc.pull();
     pc.list.tick();
     await pc.list.settled();

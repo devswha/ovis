@@ -366,7 +366,9 @@ export class ListFollow implements ListAuthority {
       if (this.removedFrom(scope.account)) return { refused: "removed" as const };
       if (scope.list !== null) return scope.list === list ? { status: this.status() } : { refused: "pinned" as const };
       const keys = await this.keysOf(scope);
-      if (keys === null) return { refused: "unavailable" as const };
+      // the binding or the identity went while the keys were read (Revoke all, and the account joined again): the
+      // naming was for the PC it was, and names nothing for the one it is now
+      if (keys === null || !this.live(scope)) return { refused: "unavailable" as const };
       const before = { want: this.want, copy: this.copy, wantedAt: this.wantedAt, postedAt: this.postedAt, postedUntil: this.postedUntil };
       if (this.copy === null || this.copy.list !== list) {
         const first = pinList(null, { account: scope.account, list, me: { key: keys.key, endpoint: scope.endpoint }, pin: { how: "added" } });
@@ -451,7 +453,8 @@ export class ListFollow implements ListAuthority {
     await this.ready;
     if (this.copy === null) return;
     if (this.reading === null && this.askedRecently(this.seconds())) {
-      if (readmission) await this.enqueue(() => { this.settle(readmission); });
+      // no new read, and the same few seconds: the turn may stand behind a read the mailbox began, which goes on by itself
+      if (readmission) await this.within(this.enqueue(() => { this.settle(readmission); }), waitMs);
       return;
     }
     await this.within(this.readNow().then(() => this.enqueue(() => { if (readmission) this.settle(readmission); })), waitMs);
@@ -660,6 +663,8 @@ export class ListFollow implements ListAuthority {
       // a copy of another list than the one the PC is pinned to is no copy of its list
       if (scope.list !== null && saved.copy.list !== scope.list) return;
       this.copy = saved.copy;
+      // the hour the file holds: a decision that turns on a later one saves it first
+      this.savedAt = saved.copy.seen_at;
       // another build wrote it: its entries were replayed, never dropped, and the copy is written back as this build
       // writes it. An update costs a pinned PC nothing it held
       if (saved.rebuilt && scope.bindId !== null && scope.account !== null) {
@@ -726,7 +731,7 @@ export class ListFollow implements ListAuthority {
       if (!first.pinned) { this.lastVerdict = "not_my_list"; return; }
       copy = first.copy;
     }
-    const heard = heardHead(copy, { list: named.id, place: named.head }, this.seconds());
+    const heard = heardHead(copy, { list: named.id, head: named.head }, this.seconds());
     this.lastVerdict = heard.verdict;
     this.keep(heard.copy, scope, false);
     // each pull, a pinned PC gives its rows another turn: one a full notice list or a hold kept out comes in then
@@ -844,13 +849,18 @@ export class ListFollow implements ListAuthority {
       pinning = true;
       try { this.deps.repinned?.(); } catch { /* the commit below ends what is left of them */ }
     }
-    // an alarm is kept with the pin, on disk: a copy that is lost and read again must not lift it
+    // an alarm is kept with the pin, on disk: a copy that is lost and read again must not lift it. One the binding's
+    // file did not take is offered to it again at the next tick, whatever becomes of the rows below
+    let alarmKept = true;
     if (copy.alarm !== null && this.deps.binding()?.alarmed !== true) {
-      try { if (this.deps.alarm?.(scope.bindId) === false) this.dirty = true; } catch { this.dirty = true; }
+      try { alarmKept = this.deps.alarm?.(scope.bindId) !== false; } catch { alarmKept = false; }
     }
+    if (!alarmKept) this.dirty = true;
     const now = this.seconds();
-    // a device's time has passed: the hour that says so is on disk before anything is done by it
-    if (this.untilAt !== null && now >= this.untilAt) { this.clocked(); this.saveFloor(this.untilAt); }
+    // A device's time has passed: the hour that says so is on disk before anything is done by it. Also one that
+    // passed while Ovis was stopped, so that a later start with the clock set back does not let the device in again
+    const passed = passedUntil(copy, now);
+    if (passed !== null) { this.clocked(); this.saveFloor(passed); }
     if (standing(copy) === "out") {
       // what the list put out before it put this PC out goes first: leaving keeps the pairings this PC made itself,
       // and a device the list removed must not stay in by one of them
@@ -867,7 +877,7 @@ export class ListFollow implements ListAuthority {
       this.keepRemovals(copy);
       const rows = listCommit(copy, now);
       this.deps.commit?.(this.alarmLost ? { ...rows, devices: rows.devices.map((row) => ({ ...row, eligible: false })) } : rows, readmission, pinning);
-      this.dirty = false;
+      this.dirty = !alarmKept;
     } catch (error) {
       this.dirty = true;
       this.error = `The list's devices could not be written (${error instanceof Error ? error.message : String(error)})`;
@@ -922,6 +932,13 @@ export class ListFollow implements ListAuthority {
   }
 }
 
+/** The latest `until` of a device the list still holds whose time has passed at `now`, or null. */
+function passedUntil(copy: FollowerCopy, now: number): number | null {
+  if (copy.state === null) return null;
+  const passed = listView(copy.state).devices.flatMap((row) => (row.ended === null && row.until !== null && row.until <= now ? [row.until] : []));
+  return passed.length === 0 ? null : Math.max(...passed);
+}
+
 function changed(before: FollowerCopy, after: FollowerCopy): boolean {
   return after.entries !== before.entries || after.state !== before.state || after.alarm !== before.alarm || after.stop !== before.stop;
 }
@@ -959,12 +976,18 @@ export function bringSiblingList(stateDir: string, siblingDir: string, pin: { re
   if (typeof keys !== "object" || keys === null || Array.isArray(keys)) return failed(from, new Error("it holds no keys"));
   const copyFrom = join(siblingDir, ACCOUNT_LIST_FILE);
   let copy: ListFile | null = null;
-  try {
-    copy = parseFile(readFileSync(copyFrom, "utf8"));
-    // a copy of another binding is not the pinned one's
-    if (copy !== null && copy.bind_id !== pin.bind_id) copy = null;
-  } catch (error) {
+  let text: string | null = null;
+  try { text = readFileSync(copyFrom, "utf8"); } catch (error) {
+    // no copy there: this folder reads the list from its start, as the pinned one would
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") return failed(copyFrom, error);
+  }
+  if (text !== null) {
+    copy = parseFile(text);
+    // A copy that does not read is no missing copy: the pinned folder lets nobody in until a person restores or
+    // removes it, and this folder must not read the list anew from whatever the account service shows instead
+    if (copy === null) return failed(copyFrom, new Error("it does not read"));
+    // a copy of another binding is not the pinned one's
+    if (copy.bind_id !== pin.bind_id) copy = null;
   }
   try {
     writePrivateState(to, keys);

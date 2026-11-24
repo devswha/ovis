@@ -405,11 +405,20 @@ describe("a device whose list stands in its way", () => {
     await second.list.adopt(allowed(await allowDevice(first.list, newcomer, noWait)));
     const third = await w.device({ label: "Laptop" });
     await third.list.sync();
-    // the service shows another history that a member signed from entry 0 on: the device raises its alarm
+    // The service shows another history that a member signed from entry 0 on, longer than any one request: the device
+    // raises its alarm. (A few entries by a signer that went on in the device's own history are a request it left
+    // behind, and no fork.)
     const keys = await first.keys();
     const list = w.held();
-    const body = kindBody({ issued_at: Math.floor(w.clock.now / 1000), list: list.id, prev: list.id, seq: 1, signer: keys.key }, { kind: "carried", endpoint: "ab".repeat(32), sealed: null });
-    w.fake.tamperList(list.id, { fork: [entryToText(await signEntry(body, keys.signs))] });
+    const at = Math.floor(w.clock.now / 1000);
+    const other: string[] = [];
+    let prev = list.id;
+    for (let seq = 1; seq <= 17; seq += 1) {
+      const entry = await signEntry(kindBody({ issued_at: at, list: list.id, prev, seq, signer: keys.key }, { kind: "carried", endpoint: seq.toString(16).padStart(2, "0").repeat(32), sealed: null }), keys.signs);
+      other.push(entryToText(entry));
+      prev = entryHash(entry.body);
+    }
+    w.fake.tamperList(list.id, { fork: other });
     w.clock.now += 30_000;
     expect(following(await first.list.sync()).trouble).toBe("fork");
     const before = placements(first).length;
