@@ -803,6 +803,46 @@ describe("an entry this PC signed and does not know to be placed", () => {
     expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
   });
 
+  test("is the one another Ovis on the same state folder sends: two servers on one folder sign one entry for one place", async () => {
+    const { pc, phone, tablet, sent, state, signer } = await twoAsked();
+    const other = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    const otherSent: string[] = [];
+    const real = other.deps.call;
+    const calls = spyOn(other.deps, "call").mockImplementation(async (path, body, ready) =>
+      await real(path, body, path !== "/v2/pc/list/entries" ? ready : () => { ready?.(); otherSent.push((body.entries as string[])[0]!); }));
+    stops.push(() => calls.mockRestore());
+    // that server has looked for a kept entry before, and found none
+    const stranger = await listMember();
+    expect(await other.list.allowDevice({ key: stranger.key, enc: stranger.enc, card: await memberCard(stranger, pc.account.id), label: "Stranger" }, true)).toMatchObject({ refused: "not_claimed" });
+    otherSent.length = 0;
+    state.away = true;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    // the other server on this folder is asked for another device while the first one's entry is not known to be placed
+    expect(await other.list.allowDevice(tablet, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    expect(otherSent[0]).toBe(sent[0]!);
+    expect(otherSent.map(signer)).toEqual([phone.key, tablet.key]);
+  });
+
+  test("whose answer was lost, and whose place the log cannot show, is told as not known: the service is away, not that the head was lost", async () => {
+    const { pc, phone, sent } = await twoAsked();
+    let lost = false;
+    const down = { reads: false };
+    // the service's own answers are changed under the PC's calls
+    const answers = pc.service.fetch.bind(pc.service);
+    const fetched = spyOn(pc.service, "fetch").mockImplementation(async (input, init) => {
+      const path = new URL((input as Request).url).pathname;
+      if (path === "/v2/pc/list/log" && down.reads) throw new Error("the read failed");
+      const answer = await answers(input, init);
+      if (path === "/v2/pc/list/entries" && !lost) { lost = true; down.reads = true; throw new Error("the answer was lost"); }
+      return answer;
+    });
+    stops.push(() => fetched.mockRestore());
+    // placed, the answer lost; every later try is answered head_moved, and no read shows the new head
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    expect(new Set(sent).size).toBe(1);
+    expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeDefined();
+  });
+
   test("of another binding of this PC is none of this one's", async () => {
     const { pc, phone, sent, kept } = await twoAsked();
     writeFileSync(kept, JSON.stringify({ v: 1, server_id: loadRelayIdentity(pc.stateDir).server_id, bind_id: "cd".repeat(16), list: pc.account.id, seq: 0, on_head: "00".repeat(32), key: phone.key, enc: phone.enc, entries: ["x"], wraps: [] }), { mode: 0o600 });
