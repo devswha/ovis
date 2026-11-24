@@ -440,7 +440,10 @@ export function createServer(
   // the agents this server drives over ACP run under keepers in this PC's own herdr-core; the ones an earlier run
   // started are taken up again, as their keepers outlive the server
   const acp = coreAcp();
-  const acpReady = acp?.restore().catch((error: unknown) => console.warn(`acp: could not take up the earlier run's children: ${error instanceof Error ? error.message : String(error)}`));
+  const acpReady = acp?.restore().then(() => true, (error: unknown) => {
+    console.warn(`acp: could not take up the earlier run's children: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  });
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
   const stopPinBridge = capabilities().pins ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   try {
@@ -544,8 +547,9 @@ export function createServer(
     try {
       agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
       const hub = agentTools;
-      void acpReady?.then(async () => {
-        const { terminals } = await coreConnection().call("terminal.list", {});
+      void acpReady?.then(async restored => {
+        if (!restored) throw new Error("ACP restore incomplete.");
+        const terminals = await hub.reconcileLaunches();
         if (agentTools !== hub) return;
         hub.runs.reconcile(terminals, pane => acp.forPane(pane)?.id);
         try { hub.listen(); useAgentToolHub(hub); }

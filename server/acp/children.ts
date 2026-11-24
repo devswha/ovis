@@ -228,7 +228,7 @@ export class AcpChildren {
   }
 
   private async liveTerminals(): Promise<Map<string, string | null>> {
-    const { terminals } = await this.hc().call("terminal.list", {});
+    const terminals = await this.terminals();
     const live = new Map<string, string | null>();
     for (const terminal of terminals) {
       const id = terminal.labels[LABEL];
@@ -241,6 +241,8 @@ export class AcpChildren {
     }
     return live;
   }
+
+  async terminals() { return (await this.hc().call("terminal.list", {})).terminals; }
 
   private add(child: AcpChild): AcpChild {
     this.children.set(child.id, child);

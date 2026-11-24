@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HARNESS_CONTRACT, isRecord } from "../../shared/harness-tool.ts";
@@ -145,6 +145,17 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
       expect(await call("send", { session, task: "late" })).toMatchObject({ error: { code: "time_limit" } });
       expect(proc.exitCode).toBeNull();
     }
+  });
+  it("recovers a keeper whose completed launch intent has not yet become a child row", async () => {
+    const session = await start();
+    const folder = join(dir, "tools");
+    const [row] = JSON.parse(readFileSync(join(folder, "children.json"), "utf8"));
+    hub.close(); acp.close();
+    writeFileSync(join(folder, "children.json"), "[]");
+    writeFileSync(join(folder, "launches.json"), JSON.stringify([{ run: row.run, parent: row.parent, starter: row.starter, harness: row.harness, created: row.created }]));
+    open(); await acp.restore();
+    await hub.reconcileLaunches();
+    expect(await call("send", { session, task: "echo restored" })).toMatchObject({ accepted: true });
   });
   it("a keeper that never opens its session is refused cleanly", async () => {
     expect(await call("start", { cwd: dir, harness: "mute" })).toMatchObject({ error: { code: "start_failed" } });
