@@ -335,6 +335,9 @@ impl Hub {
         if let Some(meta) = &self.opts.session_meta {
             params["_meta"] = meta.clone();
         }
+        if let Some(options) = &self.opts.config_options {
+            params["configOptions"] = Value::Array(options.clone());
+        }
         self.request("session/new", params, Own::NewSession);
     }
 

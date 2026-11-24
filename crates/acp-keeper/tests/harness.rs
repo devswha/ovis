@@ -36,6 +36,30 @@ fn mcp_servers_flag_reaches_session_new_and_load() {
 }
 
 #[test]
+fn config_options_flag_reaches_session_new() {
+    let root = Root::new("config");
+    let options = json!([{"configId":"mode","value":"default"}]);
+    let stderr = root.0.join("keeper.stderr");
+    let child = Command::new(env!("CARGO_BIN_EXE_ovis-acp-keeper"))
+        .arg(&root.0)
+        .args(["--headless", "--config-options", &options.to_string(), "--"])
+        .arg(fake_agent())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(std::fs::File::create(&stderr).unwrap())
+        .spawn()
+        .unwrap();
+    let mut keeper = Keeper { child, stderr };
+    let mut ready = String::new();
+    BufReader::new(keeper.child.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), "KEEPER_READY");
+    let mut client = Client::connect(&root);
+    let session = client.wait("session/new", |r| method(r) == Some("session/new"));
+    assert_eq!(session["msg"]["params"]["configOptions"], options);
+    client.session();
+}
+
+#[test]
 fn mcp_servers_flag_rejects_what_is_not_an_array() {
     let root = Root::new("bad-mcp");
     let output = Command::new(env!("CARGO_BIN_EXE_ovis-acp-keeper"))

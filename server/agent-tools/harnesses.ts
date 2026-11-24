@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { isRecord } from "../../shared/harness-tool.ts";
 
 const adapters = {
-  claude: { command: "claude-agent-acp", version: "0.110.0", pathVar: "CLAUDE_CODE_EXECUTABLE" },
-  codex: { command: "codex-acp", version: "2.10.0", pathVar: "CODEX_PATH" },
+  claude: { command: "claude-agent-acp", versions: ["0.110.0", "0.112.0"], pathVar: "CLAUDE_CODE_EXECUTABLE" },
+  codex: { command: "codex-acp", versions: ["2.10.0"], pathVar: "CODEX_PATH" },
 } as const;
 export interface HarnessCommand {
   readonly argv: readonly string[]; readonly env?: Record<string, string>;
@@ -29,7 +29,7 @@ export function resolveHarness(kind: string): HarnessCommand | null {
           try {
             const pkg: unknown = JSON.parse(readFileSync(file, "utf8"));
             if (isRecord(pkg) && pkg.name === `@agentclientprotocol/${adapter.command}`) {
-              return pkg.version === adapter.version ? { argv: [path, ...(kind === "claude" ? ["--hide-claude-auth"] : [])], env: { [adapter.pathVar]: executable } } : null;
+              return (adapter.versions as readonly unknown[]).includes(pkg.version) ? { argv: [path, ...(kind === "claude" ? ["--hide-claude-auth"] : [])], env: { [adapter.pathVar]: executable } } : null;
             }
           } catch { return null; }
         }
