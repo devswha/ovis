@@ -690,6 +690,13 @@ function refreshPicker(acc: Acc): void {
     overlays: overlays.map((overlay) => {
       if (overlay.kind === "switcher") {
         const entries = switcherEntries(world, focus);
+        // A refresh with the same row targets and order must not invalidate the taken switcher's hit map.
+        if (entries.length === overlay.entries.length && entries.every((entry, index) => {
+          const previous = overlay.entries[index];
+          return entry.kind === previous?.kind && (entry.kind === "action"
+            ? previous.kind === "action" && entry.action === previous.action
+            : previous.kind !== "action" && entry.id === previous.id);
+        })) return overlay;
         const was = JSON.stringify(overlay.entries[overlay.cursor]);
         const same = entries.findIndex((entry) => JSON.stringify(entry) === was);
         return { ...overlay, entries, cursor: same >= 0 ? same : Math.max(0, Math.min(overlay.cursor, entries.length - 1)) };
