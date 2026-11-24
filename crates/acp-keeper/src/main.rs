@@ -370,6 +370,15 @@ async fn wait_for(agent: &mut Option<Agent>) -> std::io::Result<std::process::Ex
     }
 }
 
+async fn finish_reader(reader: Option<JoinHandle<()>>) {
+    if let Some(mut task) = reader {
+        if tokio::time::timeout(Duration::from_millis(500), &mut task).await.is_err() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
 fn write_process(root: &Path, acp: Option<&Agent>, tui: Option<&Agent>) {
     let pid = |a: Option<&Agent>| a.map(|a| a.pid);
     let scope = acp.or(tui).and_then(|a| a.scope.clone());
@@ -575,12 +584,11 @@ async fn run(mut opts: Opts) -> i32 {
             }
             result = wait_for(&mut acp) => {
                 // What the agent wrote before it exited (a last answer, a last request) is handled first.
-                if let Some(task) = reader.take() {
-                    let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
-                }
+                finish_reader(reader.take()).await;
                 while let Ok(ev) = rx.try_recv() {
                     hub.handle(ev);
                 }
+                hub.generation += 1;
                 let text = match &result {
                     Ok(s) => format!("에이전트 끝남 ({s})"),
                     Err(e) => format!("에이전트 끝남 ({e})"),
@@ -656,9 +664,7 @@ async fn run(mut opts: Opts) -> i32 {
                     agent.stop_remaining_scope().await;
                 }
             }
-            if let Some(task) = reader.take() {
-                let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
-            }
+            finish_reader(reader.take()).await;
             while let Ok(ev) = rx.try_recv() {
                 hub.handle(ev);
             }
@@ -703,9 +709,7 @@ async fn run(mut opts: Opts) -> i32 {
         (None, Some(agent)) => agent.stop(Duration::from_millis(1500)).await,
         (None, None) => Ok(Default::default()),
     };
-    if let Some(task) = reader.take() {
-        let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
-    }
+    finish_reader(reader.take()).await;
     while let Ok(ev) = rx.try_recv() {
         // a client's number is noted even when it connected just before the end, so the next keeper
         // in this ROOT numbers on past it
@@ -727,5 +731,16 @@ async fn run(mut opts: Opts) -> i32 {
     match result {
         Ok(result) if result.success() || by_signal || hub.quit => 0,
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn the_reader_cannot_keep_running_past_the_drain_deadline() {
+        let reader = tokio::spawn(std::future::pending());
+        let state = reader.abort_handle();
+        super::finish_reader(Some(reader)).await;
+        assert!(state.is_finished());
     }
 }
