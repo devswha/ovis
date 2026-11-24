@@ -80,8 +80,9 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const current = await indexedAccountService.session();
         if (mine !== version) return;
         const now = Date.now();
-        // a device that is in its account's signed list tells of the PCs that list holds, new by the list's own word
-        const pcs = pagePcs(session.account, listed, now);
+        // a device that is in its account's signed list tells of the PCs that list holds, new by the list's own word,
+        // and of none that the list does not hold: such a PC has its row, marked, and no notice
+        const pcs = pagePcs(session.account, listed, now).filter((pc) => pc.not_in_list !== true);
         // a service that does not say when this device signed in leaves every new PC told, as before
         const addedSinceJoin = (pc: NewPc): boolean => joinedAt === null || pc.admitted_at === null || !(Date.parse(pc.admitted_at) < joinedAt);
         const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now && addedSinceJoin(pc)));

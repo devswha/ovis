@@ -169,8 +169,9 @@ function launchOrder(devices: readonly RelayDevice[], opens: boolean, signedIn =
  * too (security-triage, #16): the request grants nothing, and its approval opens no session without a tap (App). One
  * this device may sign in to by the account's key is not asked: its sheet waits for the press that opens it that way.
  */
-function accountLaunchPcs(pcs: readonly MyPc[]): (MyPc & { readonly join: NonNullable<MyPc["join"]> })[] {
-  const open = pcs.filter((pc): pc is MyPc & { readonly join: NonNullable<MyPc["join"]> } => !pc.paired && pc.join !== undefined && pc.state !== "offline");
+export function accountLaunchPcs(pcs: readonly MyPc[]): (MyPc & { readonly join: NonNullable<MyPc["join"]> })[] {
+  // never a PC that this device's list of the account does not hold: its row waits for a tap
+  const open = pcs.filter((pc): pc is MyPc & { readonly join: NonNullable<MyPc["join"]> } => !pc.paired && pc.join !== undefined && pc.state !== "offline" && pc.notInList !== true);
   const last = lastPc();
   const seen = (pc: MyPc): number => pc.last_seen_at === null ? 0 : Date.parse(pc.last_seen_at);
   return [...open].sort((a, b) => Number(b.server_id === last) - Number(a.server_id === last) || seen(b) - seen(a));
@@ -670,7 +671,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const fresh = newPcs([pc], Date.now()).length > 0;
     const offer = { v: 1 as const, server_id: pc.server_id, ...pc.join, name: pc.name };
     // A PC the account's signed list holds is opened with the key that list holds for this device. A PC that follows
-    // no list refuses that (AccountListUnsupportedError), and the way from before is tried (failed).
+    // no list refuses that (AccountListUnsupportedError), and the way from before is tried (failed). A PC the list
+    // does not hold is opened the way from before, and says so itself where it follows the list all the same (failed).
     const listKey = account.listHolds(pc.server_id) ? account.listKey : null;
     if (listKey !== null) return { offer, code: false, paired: true, listOpen: listKey, ...(fresh ? { freshPc: true as const } : {}) };
     const openKey = account.openKey;
@@ -692,7 +694,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     comparison = null;
     // The PC follows no list, and this device came with its list key: the way from before, once. And the other way
     // round: the PC lets its account's devices in by the list (`account_list_required`, or its session ended as a
-    // row that changed, at the moment it pinned), so the device reads its list and comes with its list key, once.
+    // row that changed, at the moment it pinned), so the device reads its list and comes with its list key, once,
+    // whether or not its copy names that PC: a PC that follows this device's list lets in the keys that list holds.
     if (attempt.listOpen !== undefined && error instanceof AccountListUnsupportedError && !attempt.retriedListOpen) {
       const openKey = account.openKey;
       const { listOpen: _key, ...rest } = attempt;
@@ -701,7 +704,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (attempt.listOpen === undefined && error instanceof MuxProtocolError && error.code === "account_list_required" && !attempt.retriedListOpen) {
       await account.readList();
       if (last !== attempt) return;
-      const listKey = account.listHolds(attempt.offer.server_id) ? account.listKey : null;
+      const listKey = account.listKey;
       const { accountOpen: _key, ...rest } = attempt;
       if (listKey !== null) { await connect({ ...rest, listOpen: listKey, retriedListOpen: true }); return; }
     }

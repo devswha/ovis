@@ -183,4 +183,6 @@ export const RELAY_JA: Record<string, string> = {
   "SSH PC": "SSH の PC",
   "Open {host}": "{host} を開く",
   "More ways to open {name}": "{name}を別の方法で開く",
+  "This device cannot read your account's list. Update the app.": "この端末ではアカウントの名簿を読めません。アプリを更新してください。",
+  "This device cannot read your account's list.": "この端末ではアカウントの名簿を読めません。",
 };

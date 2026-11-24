@@ -3,7 +3,7 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList } from "../account/accountList.ts";
-import { pcsByList } from "../account/listPcs.ts";
+import { listReading, pcsByList } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
 import { listNames } from "../account/listGenesis.ts";
@@ -133,6 +133,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * the directory only as the way to reach them (account/listPcs.ts); the directory as it is otherwise.
    */
   const drawnPcs = (rows: readonly DirectoryPc[], account: string, now: number): readonly DirectoryPc[] => (lists === null ? null : pcsByList(lists.view(), account, rows, now)) ?? rows;
+  /** That this device cannot read its list of the account, and which way, for the line My PCs then shows; nothing where it can, or has none. */
+  const unreadList = (account: string): { list?: "newer" | "damaged" } => {
+    const reading = lists === null ? null : listReading(lists.view(), account);
+    return reading === "newer" || reading === "damaged" ? { list: reading } : {};
+  };
   /** `at`: when the account last answered; the rows of a failed read are aged to then, never past what it confirmed */
   let listedFor: { readonly epoch: number; readonly projection: { readonly accountKey: string; readonly account: string; readonly registered: boolean }; readonly at: number; readonly openKey: SignInKey | null } | undefined;
   let shownFor: AccountSession | undefined;
@@ -212,7 +217,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const at = Date.now();
         const projection = { accountKey: key.public_spki, account: session.account, registered: openKey !== null };
         listedFor = { epoch, projection, at, openKey };
-        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(drawnPcs(listed, session.account, at), devices, { now: at, ...projection, outdated: view.outdated() }) };
+        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(drawnPcs(listed, session.account, at), devices, { now: at, ...projection, outdated: view.outdated() }), ...unreadList(session.account) };
         keepKnownPcs(session.account, accountView.pcs ?? []);
         void compareList();
         sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
@@ -267,7 +272,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const devices = await store.list();
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) {
       const now = Date.now();
-      accountView = { ...accountView, pcs: myPcs(drawnPcs(directory, listedFor.projection.account, now), devices, { now, ...listedFor.projection, outdated: view.outdated() }) };
+      const { list: _before, ...rest } = accountView;
+      accountView = { ...rest, pcs: myPcs(drawnPcs(directory, listedFor.projection.account, now), devices, { now, ...listedFor.projection, outdated: view.outdated() }), ...unreadList(listedFor.projection.account) };
     }
     await changed();
   };

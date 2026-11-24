@@ -1111,16 +1111,28 @@ start of the PC's id, never as the account service's word for it. The directory
 | the relay of a PC | the row's relay key is the very key the list holds |
 | when the PC was last there (`last_seen_at`) | the same; it only says whether the row reads as offline |
 
-A PC that the directory alone names gets no row, and nothing opens it through the account. A PC
-the list holds with no route in the directory keeps its row and cannot be opened from it. What the
-directory says of a PC being new, or added before this device joined, is not read. A pairing this
-device made with a PC stays a row of its own, whatever either says.
+A PC the list holds with no route in the directory keeps its row and cannot be opened from it.
+What the directory says of a list PC being new, or added before this device joined, is not read. A
+pairing this device made with a PC stays a row of its own, whatever either says.
+
+**A PC that only the directory names stays on the screen**, after the list's own, with **Not in
+your account's list yet** on its row. A person never loses a PC from view: a PC on an Ovis from
+before lists cannot be in one, and a PC added while the account service kept no list is not in
+it yet. Such a row is the directory's as it is. Nothing opens it by itself, a start of the app
+does not ask to join it, and no notice tells of it; a tap opens it the way from before
+([Linking devices with an account](account.md)).
+
+**A device that cannot read its list** lists the directory's PCs, every one marked the same way
+and none opened by itself, under one line that says so: **This device cannot read your account's
+list. Update the app.** where only a newer app reads it (a later build saved the copy, or the list
+holds an entry this build cannot place), and **This device cannot read your account's list.**
+where what it saved does not read.
 
 The list is read before the account's PCs are first drawn on a device that keeps a copy of one, so
-no row is drawn by the account service's word alone, not even for a moment.
+no row is drawn as the account's own by the account service's word alone, not even for a moment.
 
 **What opens by itself.** A PC the list holds, that the directory gives a route for, and that is
-not new to this device. That the account service ever saw the PC is not asked: the entry is what
+not new to this device; never a PC the list does not hold. That the account service ever saw the PC is not asked: the entry is what
 makes it the account's. The sign-in is the one of
 [What a pinned PC asks of the app](#what-a-pinned-pc-asks-of-the-app).
 
@@ -1166,8 +1178,10 @@ the list holds for it, the account key, and no longer by the key a sign-in regis
   list: the device comes once more the way from before, with the key its sign-in registered.
 - **`account_list_required`** is the PC's answer to a device that offered the feature and came
   with another key. The device reads its list at once, and comes again with the account key if
-  the list now holds it and the PC. A device the list does not hold is led to the join: it asks
-  to be let in, and nothing says it was removed.
+  the list holds the device, whether or not its copy names that PC: a PC that follows the
+  device's list lets in the keys that list holds, and one that follows another list refuses the
+  key. A device that is in no list is led to the join: it asks to be let in, and nothing says it
+  was removed.
 - **A PC that pins under an open session** ends that session as a row that changed
   (`auth_changed`). The transport comes back by itself, is answered `account_list_required`, and
   the app opens the PC again with the account key. Nothing typed is sent by this: what was typed

@@ -157,21 +157,35 @@ describe("the hosted shell and the account's signed list", () => {
     const account = controller(list, () => { const { state } = account; if (state?.kind === "signed-in" && state.pcs !== null) drawn.push(state.pcs.map((pc) => pc.server_id)); });
     await account.refresh(true);
     await settle();
-    // never a row for the PC that only the account service names
+    // never drawn by the account service's word alone: from the first draw on, the PC that only the directory names is marked
     expect(drawn.length).toBeGreaterThan(0);
-    expect(drawn.every((rows) => rows.length === 1 && rows[0] === held!.server_id)).toBe(true);
-    expect(account.state).toMatchObject({ kind: "signed-in", pcs: [{ server_id: held!.server_id, name: "Desk", byList: true, accountOpen: true, join: { relay: "wss://relay.test" } }] });
+    const marks = (pcs: readonly { server_id: string; byList?: true; notInList?: true }[]) => pcs.map((pc) => [pc.server_id, pc.byList === true ? "list" : pc.notInList === true ? "outside" : "plain"]);
+    const rowsNow = () => marks((account.state as { pcs: { server_id: string; byList?: true; notInList?: true }[] }).pcs);
+    expect(drawn.every((rows) => rows.length === 2)).toBe(true);
+    expect(rowsNow().sort()).toEqual([[held!.server_id, "list"], [rogue!.server_id, "outside"]].sort());
+    expect((account.state as { pcs: { server_id: string }[] }).pcs.find((pc) => pc.server_id === held!.server_id)).toMatchObject({ name: "Desk", byList: true, accountOpen: true, join: { relay: "wss://relay.test" } });
+    expect((account.state as { list?: string }).list).toBeUndefined();
     // the list moved: a PC came in that the account service does not say how to reach
     view = { ...view, pcs: [...view.pcs, listed(unreached!, "Laptop")] };
     for (const tell of heard) tell();
     await settle();
-    expect(account.state).toMatchObject({ pcs: [{ server_id: held!.server_id }, { server_id: unreached!.server_id, name: "Laptop", byList: true }] });
-    expect((account.state as { pcs: { join?: unknown }[] }).pcs[1]!.join).toBeUndefined();
+    const laptop = (account.state as { pcs: { server_id: string; name: string; byList?: true; join?: unknown }[] }).pcs.find((pc) => pc.server_id === unreached!.server_id)!;
+    expect([laptop.name, laptop.byList, laptop.join]).toEqual(["Laptop", true, undefined]);
     // put out of the list, this device goes by the account service's directory again, as a device of an account with no list does
     view = { ...view, status: { at: "following", list: "5c".repeat(32), standing: "out", head: 3, read_at: 1, trouble: null }, pcs: [] };
     for (const tell of heard) tell();
     await settle();
-    expect((account.state as { pcs: { server_id: string }[] }).pcs.map((pc) => pc.server_id).sort()).toEqual([held!.server_id, rogue!.server_id].sort());
+    expect(rowsNow().sort()).toEqual([[held!.server_id, "plain"], [rogue!.server_id, "plain"]].sort());
+    // a copy that only a newer app reads: the directory's PCs, every one marked, and the view says why
+    view = { ...view, status: { at: "newer_save" }, pcs: [] };
+    for (const tell of heard) tell();
+    await settle();
+    expect([rowsNow().sort(), (account.state as { list?: string }).list]).toEqual([[[held!.server_id, "outside"], [rogue!.server_id, "outside"]].sort(), "newer"]);
+    // read again, the line goes
+    view = { ...view, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 4, read_at: 1, trouble: null }, pcs: [listed(held!, "Desk")] };
+    for (const tell of heard) tell();
+    await settle();
+    expect((account.state as { list?: string }).list).toBeUndefined();
   });
 
   it("asks the PC a member just let it in at for its place in the list, and takes the first one it is handed", async () => {

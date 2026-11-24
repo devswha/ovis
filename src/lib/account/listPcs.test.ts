@@ -3,7 +3,7 @@ import type { AccountListView, ListedPc } from "./accountList.ts";
 import { accountList } from "./accountList.ts";
 import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice } from "./listAllow.ts";
-import { NEW_LIST_PC_MS, pcsByList } from "./listPcs.ts";
+import { NEW_LIST_PC_MS, listReading, pcsByList } from "./listPcs.ts";
 import { memoryListLock } from "./listStore.ts";
 import { myPcs } from "./myPcs.ts";
 import type { DirectoryPc } from "./service.ts";
@@ -71,11 +71,30 @@ describe("My PCs of an account with a signed list", () => {
 
   it("is the account service's directory as it is for a device that is in no list", () => {
     const directory = [row(pc(1))];
-    expect(pcsByList(view([pc(1)], { status: { at: "off" } }), "acct", directory, NOW)).toBeNull();
-    expect(pcsByList(view([pc(1)], { status: { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" } }), "acct", directory, NOW)).toBeNull();
-    expect(pcsByList(view([pc(1)], { status: { at: "following", list: "5c".repeat(32), standing: "out", head: 9, read_at: 1, trouble: null } }), "acct", directory, NOW)).toBeNull();
+    for (const status of [
+      { at: "off" }, { at: "none", why: "not_new" }, { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" },
+      { at: "following", list: "5c".repeat(32), standing: "out", head: 9, read_at: 1, trouble: null }, { at: "following", list: "5c".repeat(32), standing: "waiting", head: 9, read_at: 1, trouble: null },
+    ] as const) {
+      expect([pcsByList(view([pc(1)], { status }), "acct", directory, NOW), listReading(view([pc(1)], { status }), "acct")]).toEqual([null, null]);
+    }
     // the list in view is another account's
-    expect(pcsByList(view([pc(1)]), "another", directory, NOW)).toBeNull();
+    expect([pcsByList(view([pc(1)]), "another", directory, NOW), listReading(view([pc(1)]), "another")]).toEqual([null, null]);
+    expect(listReading(view([pc(1)]), "acct")).toBe("in");
+  });
+
+  it("keeps every PC of the directory on the screen where this device cannot read its list, each marked, and says which kind of trouble it is", () => {
+    const directory = [row(pc(1), { new_until: new Date(NOW + 3_600_000).toISOString() }), row(pc(2))];
+    for (const [status, reading] of [
+      [{ at: "damaged", why: "sum" }, "damaged"], [{ at: "newer_save" }, "newer"],
+      [{ at: "following", list: "5c".repeat(32), standing: "stopped", head: 9, read_at: 1, trouble: "needs_newer_client" }, "newer"],
+    ] as const) {
+      const rows = pcsByList(view([], { status }), "acct", directory, NOW)!;
+      expect(listReading(view([], { status }), "acct")).toBe(reading);
+      // the directory's rows as they are, its names and its new window too, each marked as not in the list
+      expect(rows).toEqual(directory.map((each) => ({ ...each, not_in_list: true })));
+      // and none of them opens by itself
+      expect(accountOpenablePcs(myPcs(rows, [], { now: NOW + 86_400_000, registered: true }), { account: "acct", devices: [], now: NOW + 86_400_000 })).toEqual([]);
+    }
   });
 
   it("lists the PCs the list holds under the names the list seals, and takes from the directory only how to reach them", () => {
@@ -84,12 +103,14 @@ describe("My PCs of an account with a signed list", () => {
     const rows = pcsByList(view([desk, laptop, unreached, lied]), "acct", [
       row(desk, { new_until: new Date(NOW + 3_600_000).toISOString(), admitted_at: new Date(NOW).toISOString(), admitted_before_you: true, invited_at: new Date(NOW).toISOString() }),
       row(laptop, { last_seen_at: null }),
-      // a PC only the account service names is none of the account's
+      // a PC only the account service names stays on the screen, after the list's, marked
       row(stranger),
       // a route for another key than the one the list holds is no route to that PC
       row({ server_id: lied.server_id, endpoint: "ee".repeat(32) }),
     ], NOW)!;
-    expect(rows.map((each) => each.server_id)).toEqual([desk, laptop, unreached, lied].map((each) => each.server_id));
+    expect(rows.map((each) => each.server_id)).toEqual([desk, laptop, unreached, lied, stranger].map((each) => each.server_id));
+    expect(rows[4]).toEqual({ ...row(stranger), not_in_list: true });
+    expect(rows.slice(0, 4).every((each) => each.not_in_list === undefined)).toBe(true);
     expect(rows[0]).toEqual({ server_id: desk.server_id, label: "PC 1", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: "2026-11-24T00:00:00.000Z", public_key: desk.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false, by_list: true });
     // a name this device cannot open is no name: the directory's word for it is not taken
     expect(rows[1]).toMatchObject({ label: laptop.server_id.slice(0, 8), last_seen_at: null, public_key: laptop.endpoint, by_list: true });
@@ -125,6 +146,10 @@ describe("My PCs of an account with a signed list", () => {
     const opens = (now: number) => accountOpenablePcs(myPcs(pcsByList(view([desk, fresh, away]), "acct", directory, now)!, [], { now }), { account: "acct", devices: [], now }).map((each) => each.server_id);
     expect(opens(NOW)).toEqual([desk.server_id]);
     expect(opens(seen * 1000 + NEW_LIST_PC_MS)).toEqual([desk.server_id, fresh.server_id]);
+    // the PC that only the directory names is a row that a tap opens the way from before, and it never opens by itself
+    const outside = myPcs(pcsByList(view([desk, fresh, away]), "acct", directory, NOW)!, [], { now: NOW, registered: true }).find((each) => each.server_id === pc(9).server_id)!;
+    expect(outside).toMatchObject({ notInList: true, accountOpen: true, paired: false, listed: true });
+    expect(outside.byList).toBeUndefined();
     // by the directory alone, a PC the account service never saw opens nothing by itself
     expect(accountOpenablePcs(myPcs(directory, [], { now: NOW, registered: true }), { account: "acct", devices: [], now: NOW }).map((each) => each.server_id)).toEqual([fresh.server_id, pc(9).server_id]);
   });

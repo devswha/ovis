@@ -183,4 +183,6 @@ export const RELAY_KO: Record<string, string> = {
   "SSH PC": "SSH PC",
   "Open {host}": "{host} 열기",
   "More ways to open {name}": "{name} 다른 방법으로 열기",
+  "This device cannot read your account's list. Update the app.": "이 기기에서 계정 명단을 읽을 수 없어요. 앱을 업데이트하세요.",
+  "This device cannot read your account's list.": "이 기기에서 계정 명단을 읽을 수 없어요.",
 };

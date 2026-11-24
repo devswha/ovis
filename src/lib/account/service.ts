@@ -232,6 +232,11 @@ export interface DirectoryPc {
   readonly by_list?: true;
   /** On such a row, while it is new: the name of the device whose signature brought the PC in, where this device can read it. */
   readonly added_by?: string;
+  /**
+   * Never from the account service: this device is in a list of the account, or cannot read the one it has, and that
+   * list does not hold the PC (listPcs.ts). The row is the directory's; nothing opens it by itself.
+   */
+  readonly not_in_list?: true;
 }
 
 type Fetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;

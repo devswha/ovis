@@ -183,4 +183,6 @@ export const RELAY_ZH: Record<string, string> = {
   "SSH PC": "SSH 电脑",
   "Open {host}": "打开 {host}",
   "More ways to open {name}": "用其他方式打开 {name}",
+  "This device cannot read your account's list. Update the app.": "此设备无法读取账户名单。请更新应用。",
+  "This device cannot read your account's list.": "此设备无法读取账户名单。",
 };
