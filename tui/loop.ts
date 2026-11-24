@@ -696,9 +696,13 @@ export function startLoop(options: LoopOptions): Loop {
   const USER_EVENTS: ReadonlySet<ModelEvent["type"]> = new Set(["key", "text", "paste", "mouse", "action", "select", "close_overlay", "choose", "hover", "context"]);
 
   /** One event through the state core, and its effects performed in order, now. */
+  let paintedDelete: ModelState["overlays"][number] | undefined;
+
   function dispatch(event: ModelEvent, route?: DeferredMouse): void {
     const before = state;
     const step = reduce(state, event);
+    if (step.effects.some((effect) => effect.type === "run" && effect.action === "remove_worktree")
+      && (paintedDelete === undefined || paintedDelete !== before.overlays.at(-1))) return;
     const user = USER_EVENTS.has(event.type);
     if (step.state !== before) {
       if (user) {
@@ -1180,6 +1184,7 @@ export function startLoop(options: LoopOptions): Loop {
     // taken before the write, as the overlay is: input read during it may move the focus the frame does not show
     const frameFocus = paneFocus;
     const chrome = chromeOf(frameShape, scroll, copying);
+    const framePainter = painter;
     const frame = painter.paint({
       width: size.cols, height: size.rows, parts: chrome.parts,
       panes: scenes, overlays: chrome.overlays, focus: paneFocus, input: chrome.input, dim: chrome.dim,
@@ -1191,6 +1196,8 @@ export function startLoop(options: LoopOptions): Loop {
     }
     painter.taken(taken);
     if (ended || !taken) return;
+    paintedDelete = framePainter === painter && frameMenu?.kind === "confirm" && frameMenu.purpose === "remove_worktree"
+      && chrome.overlays.some((part) => part.key === "overlay:confirm") ? frameMenu : undefined;
     hits = frame.hits;
     drawn = nextDrawn;
     presented = { pane: frameFocus, overlay: frameMenu !== undefined };
@@ -1240,6 +1247,7 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   function rebuildPainter(): void {
+    paintedDelete = undefined;
     if (!painter) return;
     painter = new Painter({ sync, colors: host.colorDepth });
     grids = new Map();

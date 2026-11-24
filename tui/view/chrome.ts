@@ -899,7 +899,8 @@ function newWorktreePart(width: number, height: number, field: Field, repo: stri
 /** herdr's Delete worktree checkout... (R7): the folder that goes, and what stays, before anything is removed. */
 function removeWorktreePart(width: number, height: number, path: string, colors: Colors): Part | null {
   const rect = dialogRect(width, height, 72, 10);
-  if (!rect) return null;
+  // Both the question and the checkout row must fit inside the border.
+  if (!rect || rect.height < 5 || rect.width < widthOf(` ${STRINGS.removeWorktreeTitle}`) + 2) return null;
   return {
     key: "overlay:confirm", rect, version: 0,
     draw(canvas) {
@@ -1061,7 +1062,8 @@ function buildOverlays(input: ChromeInput, colors: Colors): { overlays: Part[]; 
     }
     case "confirm": {
       if (top.purpose === "remove_worktree") {
-        const asked = removeWorktreePart(width, height, top.path ?? "", colors);
+        const checkout = top.worktree?.checkout;
+        const asked = checkout ? removeWorktreePart(width, height, checkout.path, colors) : null;
         return { overlays: asked ? [...overlays, asked] : overlays, input: "overlay", dim: true };
       }
       const rect = dialogRect(width, height, 64, 6);

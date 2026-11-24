@@ -5,7 +5,7 @@
  */
 import { parseHerdrBinding } from "../../shared/herdr-keys.ts";
 import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
-import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } from "./effects.ts";
+import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput, WorktreeTarget } from "./effects.ts";
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
 import { type ContextAction, contextCursor } from "./context.ts";
@@ -25,12 +25,12 @@ export type Overlay =
    */
   | { readonly kind: "help"; readonly scroll: number; readonly paged: number; readonly filter: Field; readonly filtering: boolean }
   /** `repo`: for New worktree, the repository's name, which names the checkout's folder */
-  | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field; readonly repo?: string }
+  | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field; readonly repo?: string; readonly worktree?: WorktreeTarget }
   /**
    * `seen`: the terminals the close ends, as the screen showed them when the dialog opened; `close_group` closes a
    * repository's workspace and the worktree workspaces under it (`spaces`: how many)
    */
-  | { readonly kind: "confirm"; readonly purpose: "close_workspace" | "close_group" | "remove_worktree"; readonly target: Target; readonly seen: readonly Seen[]; readonly spaces?: number; readonly path?: string }
+  | { readonly kind: "confirm"; readonly purpose: "close_workspace" | "close_group" | "remove_worktree"; readonly target: Target; readonly seen: readonly Seen[]; readonly spaces?: number; readonly worktree?: WorktreeTarget }
   /**
    * a right-click menu (context.ts): what it is for, its entries, the chosen one, and the cell it was opened at; `epoch`
    * the core line it was opened on and `created` when the core made its pane's terminal, so another terminal at that
@@ -342,7 +342,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: (overlay) => overlay.target,
     input: (overlay, input) => fieldInput(overlay, input, (name) => {
       if (overlay.purpose === "new_tab") return { overlay: null, effects: [run("new_tab", overlay.target, name)] };
-      if (overlay.purpose === "create_worktree") return name.trim() === "" ? { overlay, effects: [] } : { overlay: null, effects: [run("create_worktree", overlay.target, name.trim())] };
+      if (overlay.purpose === "create_worktree") return name.trim() === "" ? { overlay, effects: [] } : { overlay: null, effects: [{ ...run("create_worktree", overlay.target, name.trim()), worktree: overlay.worktree }] };
       // herdr sends a rename only when the name changed; a name past the field's bounds shows cut, and that cut value
       // accepted as shown is no change either: Enter never shortens a name nobody edited
       const unchanged = !overlay.field.edited || name === overlay.field.original;
@@ -354,7 +354,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
     target: (overlay) => overlay.target,
     input: (overlay, input) => {
       const yes = isEnter(input) || inputChords(input).some((chord) => chord.key === "y" && !chord.ctrl && !chord.alt && !chord.meta);
-      return yes ? { overlay: null, effects: [{ ...run(overlay.purpose, overlay.target, null), seen: overlay.seen }] } : { overlay, effects: [] };
+      return yes ? { overlay: null, effects: [{ ...run(overlay.purpose, overlay.target, null), seen: overlay.seen, ...(overlay.worktree ? { worktree: overlay.worktree } : {}) }] } : { overlay, effects: [] };
     },
   },
   context: {

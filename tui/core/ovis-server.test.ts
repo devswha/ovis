@@ -18,7 +18,7 @@ describe("the screen's door to the Ovis server", () => {
     const first = listening(() => new Response(null, { status: 307, headers: { location: `${other.origin}/api/workspace/close` } }));
     expect(await ovisServer(first.origin).removeWorktree("w1")).toEqual({ ok: false, code: "server_redirected", message: "307" });
     expect(await ovisServer(first.origin).createWorktree("w1", "worktree/a")).toEqual({ ok: false, code: "server_redirected", message: "307" });
-    expect(first.seen).toEqual(["POST /api/worktree/remove", "POST /api/worktree/create"]);
+    expect(first.seen).toEqual(["POST /api/worktree/remove-checked", "POST /api/worktree/create-checked"]);
     expect(other.seen).toEqual([]);
   });
 
@@ -37,7 +37,7 @@ describe("the screen's door to the Ovis server", () => {
       }
     }
     expect(proxy.seen).toEqual([]);
-    expect(target.seen).toEqual(["POST /api/worktree/remove"]);
+    expect(target.seen).toEqual(["POST /api/worktree/remove-checked"]);
   });
 
   it("asks only a loopback http origin with no path; any other address is refused before a request leaves", async () => {
@@ -54,8 +54,8 @@ describe("the screen's door to the Ovis server", () => {
       expect((await ovisServer(given, send).removeWorktree("w1")).ok).toBe(true);
     }
     expect(asked.map((one) => [one.url, one.redirect])).toEqual([
-      ["http://127.0.0.1:5/api/worktree/remove", "manual"], ["http://127.4.5.6:5/api/worktree/remove", "manual"],
-      ["http://localhost:5/api/worktree/remove", "manual"], ["http://[::1]:5/api/worktree/remove", "manual"], ["http://127.0.0.1:5/api/worktree/remove", "manual"],
+      ["http://127.0.0.1:5/api/worktree/remove-checked", "manual"], ["http://127.4.5.6:5/api/worktree/remove-checked", "manual"],
+      ["http://localhost:5/api/worktree/remove-checked", "manual"], ["http://[::1]:5/api/worktree/remove-checked", "manual"], ["http://127.0.0.1:5/api/worktree/remove-checked", "manual"],
     ]);
   });
 

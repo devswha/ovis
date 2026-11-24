@@ -28,6 +28,12 @@ export type OverlayChoice =
 /** A terminal as the screen showed it when an action was chosen: its address and when the core made it (null: not known). */
 export interface Seen { readonly id: string; readonly created: number | null }
 
+export interface WorktreeTarget {
+  readonly core: string;
+  readonly repository: string;
+  readonly checkout?: { readonly path: string; readonly gitId: string };
+}
+
 /**
  * An action the reducer cannot finish itself, for the caller to perform.
  * `zoom_follow`: the zoom of the target pane's tab moves to it, because focus went to a pane
@@ -42,6 +48,7 @@ export interface RunEffect {
   readonly name: string | null;
   /** a close: every terminal it ends, as the screen showed them; the caller ends nothing when the core holds others */
   readonly seen?: readonly Seen[];
+  readonly worktree?: WorktreeTarget;
   /** A directional focus or swap: the resolved neighbour at selection time, null at an edge. */
   readonly neighbor?: string | null;
   /** a pane moved to another workspace: that workspace */

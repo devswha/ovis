@@ -160,14 +160,14 @@ describe("the screen's product code", () => {
 
   it("reaches the Ovis server only through tui/core/ovis-server.ts, and only its worktree routes", () => {
     // herdr's New worktree and Delete worktree checkout... run git, which only the Ovis server does (row 83): that one
-    // file may call it, on /api/worktree/create and /api/worktree/remove (its `route` is typed to those two) and nothing else
+    // file may call it, on the two checked worktree routes and nothing else
     const door = "tui/core/ovis-server.ts";
     const routes = [...read(door).matchAll(/\/api\/[^`"'\s)]*/g)].map((match) => match[0]);
     fail([
       ...matches(productCode().filter((file) => file !== door), /\bfetch\s*\(|\/api\//),
-      ...routes.filter((route) => route !== "/api/worktree/${route}").map((route) => `${door}: ${route}`),
-    ], "The screen talks to herdr-core, and to the Ovis server only in tui/core/ovis-server.ts for the worktree calls the web uses (/api/worktree/create, /api/worktree/remove): no fetch( and no other /api/ route under tui/.");
-    expect(routes).toEqual(["/api/worktree/${route}"]);
+      ...routes.filter((route) => route !== "/api/worktree/${route}-checked").map((route) => `${door}: ${route}`),
+    ], "The screen talks to herdr-core, and to the Ovis server only in tui/core/ovis-server.ts for the checked worktree calls.");
+    expect(routes).toEqual(["/api/worktree/${route}-checked"]);
   });
 
   it("never names the Ovis server's settings", () => {

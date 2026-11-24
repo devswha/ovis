@@ -392,7 +392,7 @@ describe("New worktree and Delete worktree checkout... through the Ovis server (
     const server = ovisServer("http://127.0.0.1:9", async (url, init) => {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       asked.push({ url, body });
-      const answer = answers[url.slice(url.lastIndexOf("/") + 1)];
+      const answer = answers[url.slice(url.lastIndexOf("/") + 1).replace(/-checked$/, "")];
       if (!answer) throw new TypeError("connection refused");
       return answer(body);
     });
@@ -420,7 +420,7 @@ describe("New worktree and Delete worktree checkout... through the Ovis server (
     expect(shown.length).toBeGreaterThanOrEqual(Math.min(` ${defaultCheckoutPath("repo", branch)}`.length, 60));
     await run.keys("enter");
     await run.advance(300);
-    expect(asked).toEqual([{ url: "http://127.0.0.1:9/api/worktree/create", body: { workspace_id: spaceId(run, "repo"), branch } }]);
+    expect(asked).toEqual([{ url: "http://127.0.0.1:9/api/worktree/create-checked", body: { workspace_id: spaceId(run, "repo"), branch, expected_core: (await run.loop.link.hello()).core.id, expected_repo: join(folders.at(-1)!, "repo", ".git") } }]);
     expect(run.loop.model().focus.workspace).toBe(spaceId(run, "feat"));
   }, TEST_MS);
 
@@ -437,8 +437,41 @@ describe("New worktree and Delete worktree checkout... through the Ovis server (
     expect(run.grid().some((line) => line.includes("delete worktree checkout?"))).toBe(true);
     await run.keys("enter");
     await run.advance(300);
-    expect(asked.map((one) => [one.url, one.body])).toEqual([["http://127.0.0.1:9/api/worktree/remove", { workspace_id: spaceId(run, "feat") }]]);
+    expect(asked).toEqual([{ url: "http://127.0.0.1:9/api/worktree/remove-checked", body: {
+      workspace_id: spaceId(run, "feat"), expected_core: (await run.loop.link.hello()).core.id,
+      expected_repo: join(folders.at(-1)!, "repo", ".git"), expected_checkout: join(folders.at(-1)!, "repo-wt"),
+      expected_git_id: expect.any(String),
+    } }]);
     expect(run.loop.model().notices.some((notice) => notice.code === "ovis_server_none")).toBe(true);
+  }, TEST_MS);
+
+  it.each(["before selection", "after drawing"])("requires a taken delete question after resize %s", async (when) => {
+    const { asked, server } = standIn({});
+    const run = await start({ git: true, server });
+    await choose(run, cellOf(run, " repo"), "Open worktree...");
+    await run.keys("down,enter");
+    await run.advance(300);
+    if (when === "before selection") {
+      await rclick(run, cellOf(run, "└─"));
+      run.host.resize(100, 5);
+      await run.advance(100);
+      await run.keys("down,down,enter");
+    } else {
+      await choose(run, cellOf(run, "└─"), "Delete worktree checkout...");
+      expect(run.grid().some((line) => line.includes("delete worktree checkout?"))).toBe(true);
+      run.host.resize(100, 5);
+    }
+    await run.advance(100);
+    expect(top(run)?.kind).toBe("confirm");
+    expect(run.grid().some((line) => line.includes("delete worktree checkout?"))).toBe(false);
+    await run.keys("enter");
+    await run.advance(100);
+    expect(asked).toEqual([]);
+    run.host.resize(120, 40);
+    await run.advance(100);
+    await run.keys("enter");
+    await run.advance(100);
+    expect(asked.map(({ url }) => url)).toEqual(["http://127.0.0.1:9/api/worktree/remove-checked"]);
   }, TEST_MS);
 
   it("the server's refusal is said in its own words, and nothing else changes", async () => {

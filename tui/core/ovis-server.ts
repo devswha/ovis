@@ -10,15 +10,16 @@
  * done.
  */
 import { loopbackOrigin } from "../../shared/loopback-origin.ts";
+import type { WorktreeTarget } from "../model/effects.ts";
 
 /** What a call came to: the server's answer, or why there was none (`no_server`: no server answered at that address). */
 export type ServerAnswer<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly code: string; readonly message: string };
 
 export interface OvisServer {
   /** a checkout of `branch` made from the repository the workspace is on, and a workspace opened on it, grouped as the web's */
-  createWorktree(workspace: string, branch: string): Promise<ServerAnswer<{ readonly workspace: string; readonly pane: string; readonly path: string }>>;
+  createWorktree(workspace: string, branch: string, target?: WorktreeTarget): Promise<ServerAnswer<{ readonly workspace: string; readonly pane: string; readonly path: string }>>;
   /** the linked checkout the workspace is on removed with git, and its workspace closed */
-  removeWorktree(workspace: string): Promise<ServerAnswer<{ readonly path: string }>>;
+  removeWorktree(workspace: string, target?: WorktreeTarget): Promise<ServerAnswer<{ readonly path: string }>>;
 }
 
 /** A request's options with Bun's `proxy: false` (no proxy the environment names), which Bun's types do not list. */
@@ -39,7 +40,7 @@ export function ovisServer(given: string | null, send: (url: string, init: Direc
     if (origin === null) return { ok: false, code: "server_not_loopback", message: given };
     let response: Response;
     try {
-      response = await send(`${origin}/api/worktree/${route}`, {
+      response = await send(`${origin}/api/worktree/${route}-checked`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(CALL_MS), redirect: "manual", proxy: false,
       });
     } catch {
@@ -59,12 +60,12 @@ export function ovisServer(given: string | null, send: (url: string, init: Direc
   const text = (value: unknown): string | null => typeof value === "string" ? value : null;
   return {
     // the create route's answer names the workspace, its pane, the checkout and the branch asked for
-    createWorktree: (workspace, branch) => call("create", { workspace_id: workspace, branch }, (value) => {
+    createWorktree: (workspace, branch, target) => call("create", { workspace_id: workspace, branch, expected_core: target?.core, expected_repo: target?.repository }, (value) => {
       const [made, pane, path] = [text(value["workspace_id"]), text(value["pane_id"]), text(value["path"])];
       return made !== null && pane !== null && path !== null && value["branch"] === branch && typeof value["already_open"] === "boolean" ? { workspace: made, pane, path } : null;
     }),
     // the remove route's answer: ok, the checkout removed and whether it was forced
-    removeWorktree: (workspace) => call("remove", { workspace_id: workspace }, (value) => {
+    removeWorktree: (workspace, target) => call("remove", { workspace_id: workspace, expected_core: target?.core, expected_repo: target?.repository, expected_checkout: target?.checkout?.path, expected_git_id: target?.checkout?.gitId }, (value) => {
       const path = text(value["path"]);
       return value["ok"] === true && path !== null && typeof value["forced"] === "boolean" ? { path } : null;
     }),
