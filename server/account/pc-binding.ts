@@ -22,9 +22,15 @@ export type ClearReason = "revoke_all" | "identity_reset" | "unlisted";
 export const FIRST_LISTING_MS = 10 * 60_000;
 /** Who made an `unlisted` clear when the PC did it itself: its older one-press binding named no listing the account service still confirms. */
 export const UNPINNED_CLEAR = "unpinned";
+/** Who made an `unlisted` clear when the account's signed list removed this PC: an entry a member signed, never the account service's word. */
+export const LIST_REMOVED = "list";
 // A receipt written by an older version still invalidates its bind_id; new clears cannot emit that reason.
 /** `admits`: this PC's next admission number when it cleared, so what it admitted since can be told from what it kept. */
-export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string; readonly admits?: number }
+/**
+ * `removed_as`: the account's signed list removed this PC (`by` LIST_REMOVED): the account it was removed from and the
+ * relay identity it had. That identity joins that account again on no path.
+ */
+export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string; readonly admits?: number; readonly removed_as?: { readonly account: string; readonly server_id: string } }
 export interface AccountBinding {
   readonly account: string;
   readonly bind_id: string;
@@ -43,6 +49,12 @@ export interface AccountBinding {
    * or the first listing named, a read that finds the PC not listed is no removal.
    */
   readonly listing_due?: string;
+  /**
+   * The account's signed list this PC is pinned to (server/account/list-follow.ts): from then on it lets the account's
+   * devices in by that list alone. Set once, by a person's act at this PC and an entry of that list for this PC's own
+   * key; it ends only with the binding.
+   */
+  readonly list?: string;
 }
 
 interface ServiceStep2 {
@@ -71,6 +83,7 @@ interface PcDoc {
 const REASONS: ReadonlySet<string> = new Set(["revoke_all", "identity_reset", "left_on_pc", "unlisted"]);
 const ID = /^[0-9a-f]{32}$/;
 const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
+const LIST = /^[0-9a-f]{64}$/;
 
 function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "it is not this PC's account state";
@@ -85,8 +98,11 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (binding !== null && !(typeof binding === "object" && binding !== undefined && typeof binding.account === "string" && ACCOUNT.test(binding.account) && typeof binding.bind_id === "string" && ID.test(binding.bind_id) && (binding.pending === undefined || binding.pending === true) && (binding.service === undefined || (binding.service === true && binding.pending === undefined)))) return "invalid binding";
   if (binding?.listing_id !== undefined && (binding.pending === true || typeof binding.listing_id !== "string" || !ID.test(binding.listing_id))) return "invalid listing";
   if (binding?.listing_due !== undefined && (binding.service === true || typeof binding.listing_due !== "string" || Number.isNaN(Date.parse(binding.listing_due)))) return "invalid listing wait";
+  if (binding?.list !== undefined && (binding.pending === true || typeof binding.list !== "string" || !LIST.test(binding.list))) return "invalid list";
   if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string"
-    && (clear.admits === undefined || (Number.isSafeInteger(clear.admits) && clear.admits >= 0)))) return "invalid clears";
+    && (clear.admits === undefined || (Number.isSafeInteger(clear.admits) && clear.admits >= 0))
+    && (clear.removed_as === undefined || (typeof clear.removed_as === "object" && clear.removed_as !== null && typeof clear.removed_as.account === "string" && ACCOUNT.test(clear.removed_as.account)
+      && typeof clear.removed_as.server_id === "string" && ID.test(clear.removed_as.server_id))))) return "invalid clears";
   if (binding !== null && doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "a cleared binding stands";
   const first = doc.first;
   if (first !== null && !(typeof first === "object" && first !== undefined && typeof first.key === "string" && (first.list_key === null || typeof first.list_key === "string"))) return "invalid first";
@@ -238,9 +254,12 @@ export class PcAccountState {
     if (typeof parsed === "string") { this.problem = `${path} cannot be trusted: ${parsed}`; return; }
     const clears = [...new Map([...this.doc.clears, ...parsed.clears].map((clear) => [clear.bind_id, clear])).values()];
     const standing = (binding: AccountBinding | null) => binding !== null && binding.pending !== true && !clears.some((clear) => clear.bind_id === binding.bind_id) ? binding : null;
-    const own = standing(this.doc.binding);
+    const mine = standing(this.doc.binding);
     const theirs = standing(parsed.binding);
-    if (own !== null && theirs !== null && own.account !== theirs.account) { this.problem = `${this.path} and ${path} bind this PC to two accounts`; return; }
+    if (mine !== null && theirs !== null && mine.account !== theirs.account) { this.problem = `${this.path} and ${path} bind this PC to two accounts`; return; }
+    // one binding in both folders is pinned to a list in both once it is in either: the pin is one-way for the PC, not for a folder
+    if (mine !== null && theirs !== null && mine.bind_id === theirs.bind_id && mine.list !== undefined && theirs.list !== undefined && mine.list !== theirs.list) { this.problem = `${this.path} and ${path} pin this PC to two lists`; return; }
+    const own = mine !== null && theirs !== null && mine.bind_id === theirs.bind_id && mine.list === undefined && theirs.list !== undefined ? { ...mine, list: theirs.list } : mine;
     this.siblingBinding = theirs;
     const doc = { ...this.doc, binding: own, clears, others_ever: this.doc.others_ever || parsed.others_ever };
     const sharedStep2 = (binding: AccountBinding | null) => {
@@ -375,6 +394,24 @@ export class PcAccountState {
     }
   }
 
+  /**
+   * Pins the binding `bindId` to the account's signed list `list`. One-way: a binding pinned to a list is pinned to no
+   * other, and nothing here unpins. It raises `gen`, so no decision that widens on the account service's word and noted
+   * the gen before commits after it (P14). False when that binding does not stand or is pinned to another list.
+   */
+  pinToList(bindId: string, list: string): boolean {
+    const binding = this.doc.binding;
+    if (binding === null || binding.pending === true || binding.bind_id !== bindId || !LIST.test(list)) return false;
+    if (binding.list !== undefined) return binding.list === list;
+    this.write({ ...this.doc, binding: { ...binding, list }, gen: this.doc.gen + 1 });
+    return true;
+  }
+
+  /** Whether the account's signed list removed this PC from `account` while it had the relay identity `serverId` (AccountClear.removed_as). */
+  removedByList(account: string, serverId: string): boolean {
+    return this.doc.clears.some((clear) => clear.removed_as?.account === account && clear.removed_as.server_id === serverId);
+  }
+
   /** Whether this binding still waits for the device that made it to list the PC (AccountBinding.listing_due). */
   awaitsFirstListing(now = Date.now()): boolean {
     const due = this.doc.binding?.listing_due;
@@ -383,11 +420,13 @@ export class PcAccountState {
   }
 
   /** The PC leaves its account: only for one of the named reasons. The clear is kept, and the file stays. */
-  clear(reason: ClearReason, by: string): boolean {
+  /** `removedAs`: the relay identity this PC has, when the account's signed list removed it (`by` LIST_REMOVED). */
+  clear(reason: ClearReason, by: string, removedAs?: string): boolean {
     const binding = this.doc.binding;
     // a PC already strict writes nothing: what it was told to clear waits for its repair, and it serves nobody meanwhile
     if (binding === null || this.problem !== null) return false;
-    this.write({ ...this.doc, binding: null, clears: [...this.doc.clears, { bind_id: binding.bind_id, reason, by, admits: this.doc.next_admit }], gen: this.doc.gen + 1 });
+    const removed = removedAs === undefined ? {} : { removed_as: { account: binding.account, server_id: removedAs } };
+    this.write({ ...this.doc, binding: null, clears: [...this.doc.clears, { bind_id: binding.bind_id, reason, by, admits: this.doc.next_admit, ...removed }], gen: this.doc.gen + 1 });
     logAccess({ event: "account.binding.cleared", reason });
     return true;
   }
