@@ -1062,6 +1062,25 @@ describe("how a member writes: an entry is signed only when it counts on the wri
     expect(await refusal(state, { kind: "remove", ends: tablet.key }, tablet)).toBe("signed");
   });
 
+  test("nobody opens an epoch at will: an epoch is written only where names can no longer be sealed under the current one", async () => {
+    const next1: ListKind = { kind: "epoch", epoch: 0, opens: OPENS(1), link: LINK(1) };
+    const why = async (state: ListState, at = T0 + 600) => await signListEntry(state, { ...next1, epoch: state.epoch, opens: OPENS(state.epoch + 1), link: LINK(state.epoch + 1) }, signer(owner), at)
+      .then(() => "signed", (error: unknown) => (error instanceof ListWriteError ? error.reason ?? (error.outcome === null ? "not written" : said(error.outcome)) : String(error)));
+    // Nobody is out: no epoch, also right after an add, and after an add that lost its place and is signed again.
+    expect(await why((await play([])).state)).toBe("epoch_not_needed");
+    expect(await why((await play([[owner, device(phone)], [owner, pc(desk, 1)], [owner, invite(pool, 2)], [pool, join(2)]])).state)).toBe("epoch_not_needed");
+    // After a removal, the join that took an invite's last use, or a time that is over: the next epoch is called for.
+    expect(await why((await play([[owner, device(phone)], [owner, remove(phone)]])).state)).toBe("signed");
+    expect(await why((await play([[owner, invite(pool, 1)], [pool, join(2)]])).state)).toBe("signed");
+    const timed = (await play([[owner, device(tablet, "bound", "drive", { until: String(T0 + 3600) })]])).state;
+    expect([await why(timed, T0 + 3599), await why(timed, T0 + 3600)]).toEqual(["epoch_not_needed", "signed"]);
+    // Once it is open, no second one: of two members that open it at once, one does, and the other finds nothing left to do.
+    const opened = (await play([[owner, device(phone)], [owner, remove(phone)], [owner, opening(0)]])).state;
+    expect(await why(opened)).toBe("epoch_not_needed");
+    // Members count an epoch that somebody placed all the same: this is what a writer does, not what an entry is.
+    expect((await play([[owner, opening(0)]])).said).toEqual(["counts"]);
+  });
+
   test("a writer that is stopped for a replay writes nothing, and a private key that is not the signer's signs nothing that leaves", async () => {
     const { links, state } = await play([[owner, later()]]);
     const stopped = (await takeEntry(state, (await next(at(links, 1), stranger, later())).held)).state;
@@ -1091,17 +1110,22 @@ describe("how a member writes: an entry is signed only when it counts on the wri
   });
 
   test("over generated histories of honest writers, no key is ever a signer with no name", async () => {
-    for (let seed = 41; seed <= 46; seed++) {
+    let total = 0;
+    for (let seed = 41; seed <= 50; seed++) {
       const random = seeded(seed);
       const pick = <Item>(items: readonly Item[]): Item => at(items, Math.floor(random() * items.length));
       const all = [owner, phone, tablet, desk, tower, pool, pool2, plain, late, stranger, other];
       let state = (await signGenesis({ kind: "genesis", account: "TEST-ONLY-account", enc: owner.enc, opens: OPENS(0), sealed: SEAL }, signer(owner), T0)).state;
       let written = 0;
-      for (let step = 0; step < 60; step++) {
-        const by = pick(all.filter((key) => signerPower(state, key.key) !== null));
+      for (let step = 0; step < 150; step++) {
+        const signers = all.filter((key) => signerPower(state, key.key) !== null);
+        // Whoever acts first wins: a list may end with everybody out.
+        if (signers.length === 0) break;
+        const by = pick(signers);
         const about = pick(all);
         const n = 1 + Math.floor(random() * 6);
-        const names: Sealed | null = random() < 0.8 ? { epoch: random() < 0.9 ? state.epoch : state.epoch + 1, bytes: SEALED } : null;
+        // An honest writer seals where the writer's rule lets it, and writes no names where it does not.
+        const names: Sealed | null = sealEpoch(state, T0 + 60 * (step + 1)) === null ? null : { epoch: state.epoch, bytes: SEALED };
         const power: SignerPower = random() < 0.3 ? "bound" : "full";
         const kinds: (() => Promise<ListKind> | ListKind)[] = [
           async () => ({ kind: "device", key: about.key, power, role: power === "bound" && random() < 0.5 ? "watch" : "drive", until: power === "bound" && random() < 0.5 ? T0 + 86400 : null, enc: about.enc, card: await card(about), sealed: names, rotates: random() < 0.1 }),
@@ -1124,8 +1148,10 @@ describe("how a member writes: an entry is signed only when it counts on the wri
         state = result.state;
         expect({ seed, step, nameless: Object.values(state.signers).filter((row) => row.as === null).length, listed: listView(state).signers }).toEqual({ seed, step, nameless: 0, listed: [] });
       }
-      expect(written).toBeGreaterThan(10);
+      total += written;
     }
+    // Some lists end early, with everybody out; over all of them enough was written to mean something.
+    expect(total).toBeGreaterThan(100);
   }, 120_000);
 });
 
