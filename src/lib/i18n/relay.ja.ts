@@ -184,6 +184,7 @@ export const RELAY_JA: Record<string, string> = {
   "Open {host}": "{host} を開く",
   "More ways to open {name}": "{name}を別の方法で開く",
   "This device cannot read your account's list. Update the app.": "この端末ではアカウントの名簿を読めません。アプリを更新してください。",
+  "This device has not read your account's list yet. It keeps trying.": "この端末はまだアカウントの名簿を読めていません。引き続き試します。",
   "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "この端末ではアカウントの名簿を読めません。この端末でサインアウトしてからもう一度サインインし、別の端末で許可してください。",
   "Sign in again on this device": "この端末でもう一度サインインしてください",
   "{name} lets a device in only after it signed in to your account in the last ten minutes. Sign out and in again on this device, then ask to join again.": "{name} は、直近 10 分以内にアカウントへサインインした端末だけを受け入れます。この端末でサインアウトしてサインインし直してから、もう一度参加をリクエストしてください。",

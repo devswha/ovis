@@ -4,7 +4,7 @@ import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList, type ListOffer } from "../account/accountList.ts";
 import { deviceCard, deviceListKeys } from "../account/listKeys.ts";
-import { listReading, pcsByList } from "../account/listPcs.ts";
+import { listReading, pcsByList, allOutside, unreadCopy } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
 import { listNames } from "../account/listGenesis.ts";
@@ -78,7 +78,11 @@ function signInFailure(error: unknown): string {
 }
 
 
-export function createAccountController(mount: RelayShellMount, view: { readonly active: () => boolean; readonly changed: () => Promise<void>; readonly outdated: () => ReadonlySet<string> }) {
+export function createAccountController(mount: RelayShellMount, view: {
+  readonly active: () => boolean; readonly changed: () => Promise<void>; readonly outdated: () => ReadonlySet<string>;
+  /** this device's copy of the account's list moved: whoever holds a session that the list opened looks at it again */
+  readonly listMoved?: () => void;
+}) {
   const store = mount.store ?? indexedDeviceStore;
   const accountStore = mount.accountStore ?? indexedAccountStore;
   const accountService = mount.accountService === undefined ? shellAccountServiceOf(document, window.location.origin, nativeSignInAvailable()) : mount.accountService;
@@ -117,9 +121,17 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * The rows My PCs is drawn from: for a device that is in its account's signed list, the PCs that list holds, with
    * the directory only as the way to reach them (account/listPcs.ts); the directory as it is otherwise.
    */
-  const drawnPcs = (rows: readonly DirectoryPc[], account: string, now: number): readonly DirectoryPc[] => (lists === null ? null : pcsByList(lists.view(), account, rows, now)) ?? rows;
+  const drawnPcs = (rows: readonly DirectoryPc[], account: string, now: number): readonly DirectoryPc[] => notRead(account) ? allOutside(rows) : (lists === null ? null : pcsByList(lists.view(), account, rows, now)) ?? rows;
+  /**
+   * The account whose saved copy of the list this page has not read (no read ended yet, or it failed): a state of its
+   * own, never "no list". Its rows are the directory's, every one marked, so nothing opens or asks by itself, and the
+   * read is tried again at every refresh.
+   */
+  let copyUnread: string | null = null;
+  const notRead = (account: string): boolean => copyUnread === account && lists !== null && lists.view().account !== account;
   /** That this device cannot read its list of the account, and which way, for the line My PCs then shows; nothing where it can, or has none. */
-  const unreadList = (account: string): { list?: "newer" | "damaged" } => {
+  const unreadList = (account: string): { list?: "newer" | "damaged" | "unread" } => {
+    if (notRead(account)) return { list: "unread" };
     const reading = lists === null ? null : listReading(lists.view(), account);
     return reading === "newer" || reading === "damaged" ? { list: reading } : {};
   };
@@ -188,10 +200,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         // The list is read after this sign-in's key is registered, which says whether this device may start the
         // account's list. A device that keeps a copy of its account's list draws its PCs by that list from the first
         // draw on, never by the account service's word alone: for it, that read is waited for
-        if (followedFor === undefined || !sameSignIn(followedFor, session)) {
+        if (followedFor === undefined || !sameSignIn(followedFor, session) || copyUnread === session.account) {
           followedFor = session;
           const round = followed?.poke();
-          if (lists !== null && await lists.follows(session.account).catch(() => false)) await round;
+          // a store that cannot even be asked counts as holding a copy: "not read" is never "no list"
+          if (lists !== null && await lists.follows(session.account).catch(() => true)) await round;
+          if (!live()) return;
+          copyUnread = lists !== null && await unreadCopy(lists, session.account) ? session.account : copyUnread === session.account ? null : copyUnread;
           if (!live()) return;
         }
         const still = await account.session();
@@ -252,6 +267,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   // the list moved: the rows are drawn again from it and the directory last read, and the two are compared again
   const unfollow = lists?.subscribe(() => {
+    view.listMoved?.();
     const failed = (error: unknown): void => console.warn("Ovis: the account's PCs were not drawn again by its list", error instanceof Error ? error.name : error);
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList).catch(failed);
     else void compareList().catch(failed);
@@ -577,6 +593,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * claim is resolved for the join by a read of the list made now, which also makes it again where it is due: a view
    * drawn before the page slept, or before its first read landed, says nothing of a claim that lasts ten minutes.
    */
+  /** The account each list a join brought this device's card for belongs to: the place a PC hands back is that account's. */
+  const cardAccounts = new Map<string, string>();
   const cardFor = async (session: AccountSession, key: AccountKey): Promise<{ readonly list: string; readonly enc: string; readonly card: string } | null> => {
     if (lists === null) return null;
     try {
@@ -587,6 +605,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       const keys = await deviceListKeys(accountStore);
       if (now === undefined || !sameSignIn(now, session) || keys.key !== key.public_spki) return null;
       const made = await deviceCard(keys, view.status.list);
+      cardAccounts.set(view.status.list, session.account);
       return { list: view.status.list, enc: made.enc, card: made.card };
     } catch (error) {
       console.warn("Ovis: this device's card for the account's list could not be made", error instanceof Error ? error.name : error);
@@ -599,7 +618,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    */
   const takePlace = async (place: { readonly id: string; readonly seq: number; readonly hash: string }): Promise<void> => {
     if (lists === null) return;
-    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }).catch((error: unknown) => {
+    // kept for the account the card was made for, also where that sign-in ended meanwhile: a sign-in to it again takes it up
+    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }, cardAccounts.get(place.id)).catch((error: unknown) => {
       if (error instanceof SignedOutError) throw error;
       console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error);
     });
@@ -706,13 +726,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * Whether the account lets its devices and PCs in by a signed list, as far as this device knows: it follows one, or
    * the account service named one it is not in. Before the first read of a sign-in has ended, that read is waited for.
    */
-  const keepsList = async (account: string): Promise<boolean> => {
+  const keepsList = async (account: string): Promise<boolean | "unanswered"> => {
     if (lists === null) return false;
     let view = lists.view();
     if (view.account !== account) view = await lists.sync().catch(() => lists.view());
     // Not answered (no word of the account service this round, and no copy here that says): the writes of the way from
     // before wait for a round that tells. The pairing opens all the same.
-    if (view.account !== account || (!view.reached && (view.status.at === "off" || view.status.at === "none"))) return true;
+    if (view.account !== account || (!view.reached && (view.status.at === "off" || view.status.at === "none"))) return "unanswered";
     return view.status.at !== "off" && view.status.at !== "none";
   };
   const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled, signal }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
@@ -788,7 +808,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // An account with a signed list takes a PC in by an entry of that list, and its account service lists none for a
       // pairing that was only opened: a saved pairing lists no PC there and starts no enrollment (docs/account-list.md,
       // "PCs of a list account")
-      const byList = !fresh && await keepsList(session.account);
+      const kept = fresh ? false : await keepsList(session.account);
+      // not answered counts as a list for what is sent (nothing of the way from before goes out), and as no word at
+      // all for what is kept: the row is left as it is
+      const byList = kept !== false;
       signal?.throwIfAborted();
       /** The pairing stays this device's own, with nothing said of an account at its row. */
       const keptOwn = async (): Promise<"local"> => {
@@ -802,6 +825,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // kept still opens it, as a device of its own: no link goes out and nothing is listed. A new pairing sends its
       // link as ever, since only the PC knows whether a code it issued itself was used. A PC in no account is not
       // brought into a list account by a link either
+      // (where the account service did not say whether the account keeps a list, the link only waits: nothing is taken
+      // from the row, and the next open that gets an answer decides)
+      if (!fresh && status.account === null && status.pcAddRequired !== true && kept === "unanswered") return "local";
       if (!fresh && status.account === null && (status.pcAddRequired === true || byList)) return await keptOwn();
       const linking = needsLink(status, device, session.account);
       // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),
@@ -999,11 +1025,27 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let memberKey: AccountKey | null = null;
   const listKey = (): AccountKey | null => {
     const view = lists?.view();
+    // only for the sign-in in view, as the key of the sign-in is given (openKey): from the moment a sign-out begins
+    // there is none, whatever the list's own view still shows until the account service has answered
+    if (accountView?.kind !== "signed-in" || listedFor?.epoch !== generation) return null;
     return view !== undefined && view.status.at === "following" && view.status.standing === "in" && shownFor !== undefined && view.account === shownFor.account
       && memberKey !== null && view.devices.some((device) => device.self && device.key === memberKey!.public_spki) ? memberKey : null;
   };
   /** Whether the account's signed list, as this device holds it, holds the PC with this id. */
   const listHolds = (serverId: string): boolean => listKey() !== null && (lists?.view().pcs.some((pc) => pc.server_id === serverId) ?? false);
+  /**
+   * What this device's own copy of the list says of a session it opened with the list key at this PC: `holds`, the
+   * list holds the PC and this device; `pc-out`, it holds the PC no more; `device-out`, it holds this device no more.
+   * `unknown` where the copy is not one to go by now (not this account's, not read, stopped, shown two histories).
+   */
+  const listSays = (serverId: string): "holds" | "pc-out" | "device-out" | "unknown" => {
+    const read = lists?.view();
+    if (read === undefined || shownFor === undefined || read.account !== shownFor.account || read.status.at !== "following" || read.status.trouble !== null) return "unknown";
+    if (read.status.standing === "out") return "device-out";
+    if (read.status.standing !== "in") return "unknown";
+    if (memberKey === null || !read.devices.some((device) => device.self && device.key === memberKey!.public_spki)) return "device-out";
+    return read.pcs.some((pc) => pc.server_id === serverId) ? "holds" : "pc-out";
+  };
   /**
    * Whether the account's list holds this device only until a time that is past, by the time this device shows by:
    * its own clock held against the latest time it saved and the list's own (AccountList.shown). So a clock set back
@@ -1014,11 +1056,27 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const now = lists?.shown() ?? Math.floor(Date.now() / 1000);
     return view !== undefined && view.status.at === "following" && view.devices.some((device) => device.self && device.until !== null && device.until <= now);
   };
-  /** Reads the list now, as when a PC said that it lets devices in by it (shell.tsx). */
+  /**
+   * Reads the list now, as when a PC said that it lets devices in by it (shell.tsx). A page that has not read its
+   * sign-in yet (a PC's own page opens a saved pairing before it reads the account) reads that first: without it the
+   * device has no list key to come with, though its list may hold it and the PC.
+   */
   const readList = async (): Promise<void> => {
+    if (accountService !== null && (shownFor === undefined || memberKey === null)) {
+      await refresh(false, true).catch((error: unknown) => { console.warn("Ovis: the sign-in could not be read before the account's list", error instanceof Error ? error.name : error); });
+    }
     await lists?.sync().catch((error: unknown) => { if (!(error instanceof SignedOutError)) console.warn("Ovis: the account's list could not be read", error instanceof Error ? error.name : error); });
   };
-  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listTimeOver, readList, takePlace,
+  /**
+   * Whether this device has a list to answer a PC with: it follows a list of the signed-in account, waits to be let
+   * into one, or holds a copy it has not read or cannot read. A device with no sign-in here, or of an account that
+   * keeps no list, has none: to it a PC that lets devices in by a list says no more than a pairing that is gone.
+   */
+  const knowsList = (): boolean => {
+    const view = lists?.view();
+    return copyUnread !== null || (view !== undefined && view.account !== null && view.status.at !== "off");
+  };
+  return { dispose, get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listSays, listTimeOver, readList, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }

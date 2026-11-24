@@ -20,7 +20,7 @@ import { indexedDeviceStore } from "../lib/relay/device.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
 import { AccountApprovalPrompt } from "./AccountApprovalPrompt.tsx";
-import { keepStalled, ListAllowNotice, stalledReason, useWaitingChange, type Stalled } from "./ListChangeNotice.tsx";
+import { keepStalled, ListAllowNotice, NotReadError, stalledReason, useWaitingChange, type Stalled } from "./ListChangeNotice.tsx";
 import { VouchedPcApproval } from "./VouchedPcApproval.tsx";
 
 /**
@@ -134,7 +134,13 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
           const kept = waits && list !== null ? await list.waiting().catch(() => null) : null;
           const retry = stalled.why === "waiting" && kept !== null && list !== null ? async (): Promise<void> => { await resendWaiting(list, kept); await stalled.retry(); } : stalled.retry;
           onStalled(request.key, { key: request.key, device: stalled.label, pc: where.pcName, pairedAtPc: stalled.pairedAtPc, why: stalled.why, retryAfterMs: stalled.retryAfterMs, retry,
-            ...(kept !== null && list !== null ? { cancel: () => list.cancel(kept) } : {}) });
+            // Cancel reads the log first: a request that was placed after all is this approval going through, which
+            // is then finished; one whose outcome cannot be read is not let go, and the card stays
+            ...(kept !== null && list !== null ? { cancel: async () => {
+              const said = await list.cancel(kept);
+              if (said === "unread") throw new NotReadError();
+              if (said === "placed" && kept.for === `allow:${request.key}`) await stalled.retry();
+            } } : {}) });
         },
       });
     } catch (error) {

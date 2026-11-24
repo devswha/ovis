@@ -327,8 +327,11 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       const read = await list.sync({ read: true });
       const again = (options.writer ?? (() => list.writer()))();
       if (again === null || again.list !== writer.list || again.state.footing.seq !== writer.state.footing.seq || again.state.footing.hash !== writer.state.footing.hash) continue;
-      // the head did not move, by a read that reached the log: while the kept request is young the person is told of it
-      if (!read.reached || writer.issued_at - kept.at < KEPT_SECONDS) return refused("waiting");
+      // the head did not move, by a read that reached the log: while the kept request is young the person is told of
+      // it. One dated after this device's clock as it reads now (the clock was set back) has no age to go by: it is
+      // let go, since that read showed it unplaced.
+      const age = writer.issued_at - kept.at;
+      if (!read.reached || (age >= 0 && age < KEPT_SECONDS)) return refused("waiting");
       // older than that, it is an attempt its writer left behind, and no fork: it is let go, and this change is signed
       await list.unkeep(writer.account, kept).catch(() => undefined);
       kept = null;
@@ -383,6 +386,17 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       // whether the answer proves that nothing was placed: only `409 head_moved` does, of those that lead on to a read
       let unplaced = false;
       options.signal?.throwIfAborted();
+      // A request that goes again after a pause is sent only while it is still the one kept for this place: a Cancel
+      // meanwhile (on a card, on another page) let it go, and what a person cancelled is not placed after that. One
+      // already on its way cannot be called back.
+      if (sends > 0) {
+        const standing = await list.kept(writer).catch(() => null);
+        if (standing === null || standing.place.hash !== request.place.hash) {
+          moved = movedNow();
+          if (!moved) return refused("busy", retryAfterMs);
+          break;
+        }
+      }
       try {
         await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal));
         if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };

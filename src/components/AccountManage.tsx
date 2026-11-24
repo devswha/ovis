@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
-import { pagePcs } from "../lib/account/listPcs.ts";
+import { pagePcs, readPageList } from "../lib/account/listPcs.ts";
 import { holdsList } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
@@ -149,7 +149,15 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
-  const read = useCallback(() => service.listPcs().then((listed) => setPcs(pagePcs(account, listed)), () => setPcs("failed")), [service, account]);
+  // (a page that has not read its copy of the list yet reads it first: until a read ends, every row is marked)
+  // Reads overlap (the list moves while the directory is read): only the newest one draws, so an older answer, or an
+  // older failure, never takes the place of a newer one
+  const reads = useRef(0);
+  const read = useCallback(() => {
+    const mine = ++reads.current;
+    return service.listPcs().then(async (listed) => { await readPageList(account); if (mine === reads.current) setPcs(pagePcs(account, listed)); })
+      .catch(() => { if (mine === reads.current) setPcs("failed"); });
+  }, [service, account]);
   useEffect(() => {
     void read();
     const changed = () => { void read(); };
