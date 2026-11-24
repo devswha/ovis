@@ -466,22 +466,27 @@ for it before they show or ask anything.
   differ: the add ends, nothing is added, and the PC is taken off the account's list. Any other
   line answers nothing, and so does one typed before the number showed or within a second and a
   half of it. A number lasts 2 minutes; when it runs out the command says so, and choosing Add
-  again on the device gives a new one, three times in one run at most.
+  again on the device gives a new one, three times in one run at most. The PC joins only by the
+  entry of the device whose number was confirmed. The command names its add to the PC, so a second
+  `ovis add` that takes its place is never reported as this one's, and when the command stops
+  (Ctrl+C, an error) it gives its add up at the PC: nothing joins after it.
 
   Where nobody can type (no terminal, with `--account`), the command prints the number and the
   command that confirms it, and confirms nothing itself: **This PC shows 482 913. If the device
   that adds it shows the same number, run ovis add --confirm 482913 on this PC within 2 minutes,
   then press Add on that device.** `ovis add --confirm <number>` is that second command: it signs in
   to nothing, and confirms only the number this PC shows at that moment, so it cannot be run by
-  somebody who did not read it. A script or an agent that adds a PC in one step uses an invite
+  somebody who did not read it. A wrong number ends the one that shows: the command says so, names
+  none, and the device has to ask again. A script or an agent that adds a PC in one step uses an invite
   (`ovis join`), whose line names the list.
 
   **A PC its account's list removed** comes back only as a new PC. At a terminal the command asks
   first (**This PC was removed from this Ovis account. It can come back only as a new PC: its relay
   identity is reset, so every device that opens it through the Ovis relay is let in again. Add it
   again as a new PC? Type yes**); `yes` resets the relay identity (`POST
-  /api/relay/reset-identity`), lists the new PC and goes on with the add, and anything else leaves
-  everything as it was. Without a terminal it never does this, and says to run `ovis add` in one.
+  /api/relay/reset-identity`, naming the identity the question was about, so a yes to a question
+  another terminal answered first resets nothing), lists the new PC and goes on with the add, and
+  anything else leaves everything as it was. Without a terminal it never does this, and says to run `ovis add` in one.
 - **`add --qr`** (also `--print`) signs in and lists this PC the same way and, once the relay is
   online, shows **one QR code** with a code to type and this PC's ID. Ovis's own account service gives a
   PC listed by such a sign-in no relay pass until a device of the account pressed **Add** for it, so
@@ -739,9 +744,10 @@ for it before they show or ask anything.
 
   **A line that names the account's signed list** ([A PC joins the list with an
   invite](account.md#a-pc-joins-the-list-with-an-invite)) joins the PC by that list instead, and
-  the admission is never asked for. With a **plain** invite the PC posts its card and the command
-  asks it every 6 seconds whether the list holds it (`POST /api/account/list/join`), which it does
-  once a device of the account chose **Add**. With an **auto** invite the PC builds its own entry,
+  the admission is never asked for. With a **plain** invite the command first shows the PC that it
+  holds the line (the PC says what to sign, the line signs it); the PC then posts its card and the
+  command asks it every 6 seconds whether the list holds it (`POST /api/account/list/join`), which
+  it does once a device of the account chose **Add**. With an **auto** invite the PC builds its own entry,
   the command signs it with the line's key and hands it back, and the PC places it and joins
   (`…/join/prepare`, `…/join/body`, `…/join/place`); a list that moved meanwhile is tried again, a
   few times. A line that names no list, for an account that keeps one, ends the run with the PC's

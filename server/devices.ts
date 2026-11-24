@@ -2478,10 +2478,12 @@ export class DeviceStore {
    * since is never taken for a device. A waiting row sends WAITING_LINKS links; the next turns it away, and null
    * says so.
    */
-  linkArrived(id: string, wasProvisional = false): LinkArrival | null {
+  linkArrived(id: string, wasProvisional = false, counted = true): LinkArrival | null {
     const row = this.provisional(id);
     const waiting = this.pending?.waiting;
-    if (row && waiting) {
+    // `counted` false: the row asks again where it stands after it named its account's list (listNamedBy), which is no
+    // new try of anything: only its first naming is one of its few
+    if (row && waiting && counted) {
       row.links += 1;
       if (row.links > WAITING_LINKS) { this.dropProvisional(waiting, row, "link_refused"); return null; }
     }

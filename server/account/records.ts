@@ -340,6 +340,12 @@ const namedLists = new WeakMap<DeviceStore, Map<string, { readonly account: stri
  * link holds for it, and the account service's word on the device's key, so it brings the PC nowhere a link would
  * not. A row names one list. Nothing is written: the PC then joins by that list, or not at all (ListFollow.joinList).
  */
+/** Whether the row `deviceId` named `named` before (listNamedBy), with the key `sessionKey`: its asks from then on are of where that naming stands. */
+export function listNamedBefore(store: DeviceStore, deviceId: string, named: { readonly account: string; readonly list: string }, sessionKey: string): boolean {
+  const before = namedLists.get(store)?.get(deviceId);
+  return before !== undefined && before.account === named.account && before.list === named.list && before.key === sessionKey;
+}
+
 export async function listNamedBy(store: DeviceStore, named: { readonly account: string; readonly list: string }, session: { deviceId: string; sessionKey: string }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ ok: true } | LinkRefused> {
   const { deviceId, sessionKey } = session;
   const link = { account: named.account } as LinkRecord;

@@ -466,6 +466,8 @@ describe("a device that scans the PC's QR code names the list over that pairing,
     expect(await cardHolds({ key, enc, list: account.id, endpoint: made.endpoint, invite: null }, card)).toBe(true);
     expect(made.pc.account.accountList(ACCOUNT)!.posts.map((post) => [post.endpoint, post.key])).toEqual([[made.endpoint, key]]);
     expect(made.pc.devices.account()).toBeNull();
+    // asking again where it stands is no new try: the device may ask as often as it needs
+    for (let asks = 0; asks < 8; asks++) expect((await phone.names(account.id)).body.state).toBe("waiting");
     await made.admit();
     await account.addPostedPc(made.endpoint);
     expect((await phone.names(account.id)).body).toEqual({ state: "added", account: ACCOUNT });

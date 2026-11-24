@@ -13,7 +13,7 @@ import { AccountAddError } from "../machines.ts";
 import { ListAddAway, type AddState } from "./list-add.ts";
 import type { JoinOutcome } from "./list-follow.ts";
 import { noteListAdd, notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
-import { applyAccountRecords, applyEnrollment, applyLink, listNamedBy, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
+import { applyAccountRecords, applyEnrollment, applyLink, listNamedBefore, listNamedBy, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
   record_invalid: 400, signature_invalid: 400, account_mismatch: 409, signer_not_member: 403,
@@ -360,7 +360,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (peer.kind !== "relay") return fail("link_not_owner", "Name the list from the device's own connection through the relay", 403);
       const { account, list: id } = body;
       if (typeof account !== "string" || typeof id !== "string" || !isListHash(id)) return fail("invalid_list", "Name the account and its list", 400);
-      const arrival = devices.linkArrived(peer.device.id, peer.device.provisional === true);
+      // the first naming is one of the row's few tries, as a link is; asking again where it stands is not
+      const arrival = devices.linkArrived(peer.device.id, peer.device.provisional === true, !listNamedBefore(devices, peer.device.id, { account, list: id }, peer.key));
       if (arrival === null) return fail("link_required", "The list was not named: link_required", LINK_STATUS.link_required);
       const named = await listNamedBy(devices, { account, list: id }, { deviceId: peer.device.id, sessionKey: peer.key }, arrival, {
         setUpFor: () => context.services.relay.savedRelayAccount(),
