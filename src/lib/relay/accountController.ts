@@ -570,15 +570,21 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     await refresh(true, false, registrationJustTried);
   };
   /**
-   * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.
-   * A sign-in: the confirm named its account, and a pairing under any other sign-in, or none, is refused.
+   * This device's card for the list of the account `session` signed in to, which it waits to be let into, for the key
+   * `key` the join signs with; null for a device that is in a list, or whose claim of that key does not stand. The
+   * claim is resolved for the join by a read of the list made now, which also makes it again where it is due: a view
+   * drawn before the page slept, or before its first read landed, says nothing of a claim that lasts ten minutes.
    */
-  /** This device's card for the list of `account` that it waits to be let into; null for a device that is in a list, or claimed none. */
-  const cardFor = async (account: string): Promise<{ readonly list: string; readonly enc: string; readonly card: string } | null> => {
-    const view = lists?.view();
-    if (view === undefined || view.account !== account || view.status.at !== "not_in" || view.status.why !== "not_mine" || view.status.claim !== "claimed") return null;
+  const cardFor = async (session: AccountSession, key: AccountKey): Promise<{ readonly list: string; readonly enc: string; readonly card: string } | null> => {
+    if (lists === null) return null;
     try {
-      const made = await deviceCard(await deviceListKeys(accountStore), view.status.list);
+      const view = await lists.sync();
+      if (view.account !== session.account || view.status.at !== "not_in" || view.status.why !== "not_mine" || view.status.claim !== "claimed") return null;
+      // the sign-in and the key the claim was read for are the join's own: one replaced meanwhile gets no card
+      const now = await account.session();
+      const keys = await deviceListKeys(accountStore);
+      if (now === undefined || !sameSignIn(now, session) || keys.key !== key.public_spki) return null;
+      const made = await deviceCard(keys, view.status.list);
       return { list: view.status.list, enc: made.enc, card: made.card };
     } catch (error) {
       console.warn("Ovis: this device's card for the account's list could not be made", error instanceof Error ? error.name : error);
@@ -597,6 +603,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     });
     await refresh(false, true);
   };
+  /**
+   * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.
+   * A sign-in: the confirm named its account, and a pairing under any other sign-in, or none, is refused.
+   */
   const prepare = async (offer: RelayOffer, signal: AbortSignal, consent?: PairingConsent) => {
     const session = accountService !== null && consent !== null ? await account.session() : undefined;
     if (consent != null && (session === undefined || !sameSignIn(consent, session))) throw new ConsentChangedError();
@@ -663,7 +673,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // A device that waits to be let into its account's signed list, its claim of its key standing: the join brings its
     // card, for a PC that lets devices in by that list (docs/account.md, "A PC allows a device into the list"). Any
     // other PC never sees it.
-    const listCard = intent === "account" && session !== undefined ? await cardFor(session.account) : null;
+    const listCard = intent === "account" && session !== undefined && key !== undefined ? await cardFor(session, key) : null;
     signal.throwIfAborted();
     const prepared: { accountKey?: AccountKey; intent?: "pc" | "account"; listCard?: { readonly list: string; readonly enc: string; readonly card: string } } =
       key ? { accountKey: key, intent, ...(listCard === null ? {} : { listCard }) } : {};

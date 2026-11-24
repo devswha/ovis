@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { AccountList, AccountListView } from "../account/accountList.ts";
+import type { AccountList, AccountListView, ListClaimState } from "../account/accountList.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { memoryAccountStore, newKey, type AccountSession, type AccountStore } from "../account/store.ts";
@@ -81,6 +81,7 @@ describe("the hosted shell and the account's signed list", () => {
     accountFetch: async (input) => {
       const { pathname } = new URL(new Request(input).url);
       asked.push(pathname);
+      if (pathname === "/v1/admissions") return Response.json({}, { status: 201 });
       return pathname === "/v1/pcs" ? Response.json({ pcs: directory }) : Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
     },
     renderApp: () => ({ render() {}, unmount() {} }),
@@ -381,6 +382,29 @@ describe("the hosted shell and the account's signed list", () => {
     expect(await account.storedAccount()).toBe("acct-one");
     expect(await accountStore.get("session")).toEqual(legacy);
     expect(asked).toEqual([]);
+  });
+
+  it("brings its card to a join only for a claim of its key that stands by a read of the list made for that join", async () => {
+    await signIn("acct-one");
+    const LIST = "5c".repeat(32);
+    const waits = (claim: ListClaimState, account = "acct-one"): AccountListView => ({ account, reached: true, status: { at: "not_in", list: LIST, why: "not_mine", claim }, devices: [], pcs: [] });
+    const { list, calls } = recordingList();
+    let drawn = waits("claimed");
+    let read = waits("unclaimed");
+    list.view = () => drawn;
+    list.sync = async () => { calls.push("sync"); drawn = read; return read; };
+    const account = controller(list);
+    const offer = { v: 1 as const, server_id: "a1".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+    const card = async () => (await account.prepare(offer, new AbortController().signal)).listCard;
+    // the view drawn before this page slept shows a claim, which lapsed: the read for the join could not make it again
+    expect(await card()).toBeUndefined();
+    // a page whose first read had not landed shows none: the claim stands by the read the join waits for
+    drawn = OFF;
+    read = waits("claimed");
+    expect(await card()).toMatchObject({ list: LIST });
+    // the read finds this device signed in to another account meanwhile: no card for it
+    read = waits("claimed", "acct-two");
+    expect(await card()).toBeUndefined();
   });
 
   it("follows no list where a test gives its own account store or fetch and no list", async () => {
