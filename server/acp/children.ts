@@ -78,6 +78,21 @@ const CHILD_FILE = "child.json";
 const SOCKET_PATH_MAX = 100;
 const SOCKET_MS = 10_000;
 const SESSION_MS = 30_000;
+/** How long a stop waits for a keeper to end after its terminal was killed (it ends its agent within 1.5 s). */
+const KEEPER_END_MS = 3_000;
+
+/**
+ * Waits, bounded, for the keeper in `root` to exit. It is no child of this server, so nothing signals its end: its pid is
+ * looked at again every 20 ms.
+ */
+async function keeperEnds(root: string, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (keeperRunning(root)) {
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(20);
+  }
+  return true;
+}
 
 /** Waits, bounded, for the keeper to create its socket in `root`: a file it makes, watched rather than polled. */
 function socketAppears(root: string, ms: number): Promise<boolean> {
@@ -247,10 +262,14 @@ export class AcpChildren {
     return undefined;
   }
 
-  /** Kills the keeper's terminal (the keeper ends its agent with it); ROOT goes once the terminal is gone. */
+  /**
+   * Kills the keeper's terminal (the keeper ends its agent with it); ROOT goes once the keeper is gone, as a keeper still
+   * ending writes its last rows there. One that outlives the wait leaves ROOT to restore().
+   */
   private async end(terminal: string, root: string): Promise<void> {
     await this.hc().call("terminal.kill", { terminal });
-    rmSync(root, { recursive: true, force: true });
+    if (await keeperEnds(root, KEEPER_END_MS)) rmSync(root, { recursive: true, force: true });
+    else console.warn(`acp: keeping ${root}: its keeper is still running after its terminal was killed`);
   }
 
   private async endFailedStart(terminal: string, root: string): Promise<void> {
