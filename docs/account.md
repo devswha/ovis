@@ -565,7 +565,7 @@ account after `ovis logout` is so a sign-in on the PC itself.
 alone (403 `owner_only` otherwise); 404 with Step 2 off.
 
 ```json
-{ "account": "acct_1", "list": "<list id>", "pinned": false, "want": null, "standing": "in", "head": { "seq": 12, "hash": "<64 hex>" }, "devices": 3, "pcs": 2, "alarm": null, "last_read_at": "2026-11-24T01:02:03.000Z", "last_verdict": "caught_up", "differences": 0, "keys": "ready", "posted_until": null, "error": null }
+{ "account": "acct_1", "list": "<list id>", "pinned": false, "want": null, "standing": "in", "head": { "seq": 12, "hash": "<64 hex>" }, "devices": 3, "pcs": 2, "alarm": null, "last_read_at": "2026-11-24T01:02:03.000Z", "last_verdict": "caught_up", "differences": 0, "keys": "ready", "posted_until": null, "error": null, "behind": false }
 ```
 
 `list` is `null` while the PC reads none. `pinned` says whether the PC lets its account's devices in
@@ -580,7 +580,9 @@ holds, `none` when the service named no list, or why nothing was taken: `withhel
 `differences` counts what the list would have decided otherwise since this start, credentials and
 devices alike (see `account.list.differs` below). `keys` is `ready`,
 or `unreadable` for a keys file that will not read. `posted_until` is until when the account
-service holds this PC's keys for a member to add it. No answer holds a key.
+service holds this PC's keys for a member to add it. `behind` is true once a member wrote an
+entry this Ovis is too old to read: the PC goes on letting in whoever the list holds and putting
+out whoever it removes, and signs nobody in until Ovis on it is updated. No answer holds a key.
 
 `POST /api/account/list/pin` `{ "list" }`: a person at this PC names the list of its account, by its
 id (64 of `0-9a-f`). This PC's own window and CLI alone (403 `owner_only` otherwise). It answers as
@@ -1796,7 +1798,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
 - **The person decides as before**: the digits compared in the PC's own window, or typed at
   `ovis approve`. Nothing is signed before both sides said the digits match. `GET
   /api/relay/joins` marks such a join `list`, and `ovis approve` then says that the approval was
-  received, not that the device is let in: it is in once its entry is in the list.
+  received, not that the device is let in: it is in once its entry is in the list. On a PC whose
+  Ovis is behind the list the join is marked `list_behind` too, and `ovis approve` says that the
+  device was not let in and that Ovis on this PC needs an update.
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.
@@ -1821,7 +1825,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   and nothing is written in its place: no pairing of this PC's own stands in for the list. The
   refusal's `message` says which cause it was: `list_not_claimed` (no sign-in of the account
   claimed the key), `list_service_away` or `list_head_lost` (it could not be placed in time),
-  `list_not_in` (a member allowed it and no entry reached this PC), else `list_refused`. One entry
+  `list_not_in` (a member allowed it and no entry reached this PC), `list_pc_behind` (Ovis on this
+  PC is older than what a member wrote into the list, so the PC signs nobody in until it is
+  updated; a device of the account can still allow the newcomer), else `list_refused`. One entry
   is signed for one place: the same signed entry is sent again while this PC's copy shows the same
   head (a lost answer, a read that failed, a service that asks to try again or is reading the list
   again, after the time its `retry-after` names), and another is signed only once the copy shows a
