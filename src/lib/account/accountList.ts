@@ -317,7 +317,12 @@ export function accountList(options: AccountListOptions): AccountList {
       await store.drop(account);
       return fresh;
     }
-    return read.copy.account === account ? { ...fresh, copy: read.copy, saved } : "broken";
+    if (read.copy.account !== account) return "broken";
+    // the entries gave another state than the one saved with them (another build's, as after an update): the copy is
+    // written again as this build writes it, once
+    const text = read.rebuilt ? writeSave(read.copy) : saved;
+    if (read.rebuilt) await store.set("copy", account, text);
+    return { ...fresh, copy: read.copy, saved: text };
   };
 
   /** Saves a copy that changed in more than the time of its last full read, which a device has no use for after a reload. */

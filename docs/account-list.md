@@ -881,7 +881,9 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
   not agree) is reported as `damaged` and kept as it is: the device then follows nothing and puts
   nothing in its place, since a device that lost its copy must not take the account service's word
   for a new one. Only a person's reset forgets it. A `copy` that was saved under another account key
-  is dropped: with a new key the device is another member.
+  is dropped: with a new key the device is another member. A `copy` whose entries hold and give
+  another state than the one saved with them (a save of another build, after an update) is no
+  damage: the entries are the truth, and the device writes the copy again as this build writes it.
 - **What protects it is the app's origin**, as for the account key. A PC's own page is served at
   the PC's address, another origin with a storage of its own. A page rendered from a PC's file
   runs in a frame with no origin of the app's ([relay.md](relay.md), "Rendered HTML pages"), a web

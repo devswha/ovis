@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { hexToBytes } from "@noble/hashes/utils.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { LIST_LEVEL, kindBody, listView, namesFields, replayList, sealEpoch, signCard, signListEntry, type ListKind } from "../../../shared/account-list.ts";
 import { entryFromText, entryHash, entryToText, readBody, signEntry } from "../../../shared/account-list-entry.ts";
+import { LIST_SAVE_PREFIX } from "../../../shared/account-list-follower.ts";
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { pcAddSigningBytes } from "../../../shared/account-records.ts";
 import { FakeAccountService, WEB_REDIRECT, type ListTamper } from "../../../shared/account-service-fake.ts";
@@ -626,6 +628,28 @@ describe("after a reload", () => {
     await again.list.forget(ACCOUNT);
     expect(await phone.lists.get("copy", ACCOUNT)).toBeUndefined();
     expect(following(await again.list.sync()).standing).toBe("in");
+  });
+
+  it("takes a save whose state another build wrote: the entries are the truth, and the save is written again as this build writes it", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await addPc(phone, "Desk");
+    const before = await phone.list.sync();
+    const saved = await phone.lists.get("copy", ACCOUNT) as string;
+    // the same entries with a state that says something else of them, under a sum that holds
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+      : typeof value === "object" && value !== null ? `{${Object.keys(value).sort().map((name) => `${JSON.stringify(name)}:${canonical((value as Record<string, unknown>)[name])}`).join(",")}}`
+      : JSON.stringify(value);
+    const { sum: _sum, ...body } = JSON.parse(saved) as { sum: string; state: { pcs: Record<string, unknown> } };
+    const other = { ...body, state: { ...body.state, pcs: {}, pc_keys: {} } };
+    const hex = Array.from(sha256(utf8ToBytes(LIST_SAVE_PREFIX + canonical(other))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const changed = canonical({ ...other, sum: hex });
+    expect(changed).not.toBe(saved);
+    await phone.lists.set("copy", ACCOUNT, changed);
+    const again = reloaded(phone);
+    again.wire.down = true;
+    expect(await again.list.sync()).toEqual({ ...before, reached: false });
+    expect(await phone.lists.get("copy", ACCOUNT)).toBe(saved);
   });
 
   it("drops what it saved under an account key it no longer has: with a new key it is another device, in no list", async () => {
