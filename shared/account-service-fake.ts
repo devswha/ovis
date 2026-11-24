@@ -1895,11 +1895,6 @@ export class FakeAccountService {
         const reason = "code" in taken.outcome ? taken.outcome.code : null;
         return this.refusedAt(index, taken.outcome.outcome === "counts" ? "no_effect" : taken.outcome.outcome, reason, "A member would not count this entry");
       }
-      // the writers' rule (the library's sealEpoch, at the service's clock): names are sealed only under an epoch opened after
-      // the last entry that put a member out, and while nobody in is over its time; else whoever is out still reads them
-      if ("sealed" in kind && kind.sealed !== null && sealEpoch(state, nowS) === null) {
-        return this.refusedAt(index, "service", "epoch_stale", "Names are sealed only under an epoch opened after the last removal: open the next epoch, or write this entry without names");
-      }
       // carrying members in from before the list has no second lock yet, so the service places none
       if (kind.kind === "carried") return this.refusedAt(index, "service", "carried_not_open", "Carrying members in from before the list is not open yet");
       if (kind.kind === "invite") {
@@ -1911,6 +1906,11 @@ export class FakeAccountService {
         if (invite !== null && nowS > invite.exp) return this.v2Problem(409, "invite_expired", "That invite has expired", { index });
         if (caller.endpoint !== kind.endpoint) return this.v2Problem(403, "pc_proof_required", "A join is placed by the PC it names, with its own proof", { index });
         joins.push({ index, server_id: caller.server_id! });
+      }
+      // the writers' rule (the library's sealEpoch, at the service's clock): names are sealed only under an epoch opened after
+      // the last entry that put a member out, and while nobody in is over its time; else whoever is out still reads them
+      if ("sealed" in kind && kind.sealed !== null && sealEpoch(state, nowS) === null) {
+        return this.refusedAt(index, "service", "epoch_stale", "Names are sealed only under an epoch opened after the last removal: open the next epoch, or write this entry without names");
       }
       if (kind.kind === "device") claims.push({ index, key: kind.key });
       if (kind.kind === "pc") posts.push({ index, key: kind.key, endpoint: kind.endpoint });
