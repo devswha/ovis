@@ -399,5 +399,23 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     await drawForDrag(TUI, { shown: splitSnapshot });
     expect((await dragTabOver("w2", "drop"))?.workspaceTarget).toBeUndefined();
     expect(moved).toEqual([]);
+
+    // A second pane joining mid-drag clears the sidebar target immediately and prevents moving on drop.
+    await drawForDrag(TUI);
+    pointerElement = fakeWorkspaceRow("w2");
+    const captureTarget = { ...node(), setPointerCapture() {}, hasPointerCapture: () => true, releasePointerCapture() {} };
+    await act(async () => {
+      tab().props.onPointerDown({ pointerType: "mouse", button: 0, ctrlKey: false, isPrimary: true, pointerId: 2, clientX: 40, clientY: 5, preventDefault() {}, currentTarget: captureTarget });
+    });
+    await act(async () => {
+      tab().props.onPointerMove({ pointerId: 2, clientX: 40, clientY: 120 });
+    });
+    expect(paneDrag.snapshot()?.workspaceTarget).toEqual({ machineId: "local", workspaceId: "w2" });
+    await drawForDrag(TUI, { shown: splitSnapshot });
+    expect(paneDrag.snapshot()?.workspaceTarget).toBeUndefined();
+    await act(async () => {
+      tab().props.onPointerUp({ pointerId: 2, clientX: 40, clientY: 120 });
+    });
+    expect(moved).toEqual([]);
   });
 });

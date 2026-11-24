@@ -6,7 +6,7 @@ export interface WorkspaceDropTarget {
 }
 
 export interface TabWorkspaceMove {
-  targets: ReadonlySet<string>;
+  targets: ReadonlySet<string> | (() => ReadonlySet<string>);
   move: (workspaceId: string) => void;
 }
 
@@ -58,6 +58,22 @@ const set = (next: PaneDrag | null): void => {
   for (const listener of listeners) listener();
 };
 
+const workspaceTargets = (move: TabWorkspaceMove | null): ReadonlySet<string> | null =>
+  move === null ? null : typeof move.targets === "function" ? move.targets() : move.targets;
+
+const workspaceTargetAt = (
+  x: number,
+  y: number,
+  machineId: string,
+  move: TabWorkspaceMove | null,
+  prior?: WorkspaceDropTarget,
+): WorkspaceDropTarget | undefined => {
+  const targets = workspaceTargets(move);
+  const hit = targets ? workspaceDropAt(x, y, machineId, targets) : null;
+  if (hit === null) return undefined;
+  return prior?.machineId === hit.machineId && prior.workspaceId === hit.workspaceId ? prior : hit;
+};
+
 export const paneDrag = {
   subscribe(listener: () => void): () => void {
     listeners.add(listener);
@@ -70,12 +86,16 @@ export const paneDrag = {
   },
   move(x: number, y: number): void {
     if (!current) return;
-    const hit = workspaceMove ? workspaceDropAt(x, y, current.target.machineId, workspaceMove.targets) : null;
-    const workspaceTarget = hit === null ? undefined
-      : current.workspaceTarget?.machineId === hit.machineId && current.workspaceTarget.workspaceId === hit.workspaceId
-        ? current.workspaceTarget
-        : hit;
+    const workspaceTarget = workspaceTargetAt(x, y, current.target.machineId, workspaceMove, current.workspaceTarget);
     set(workspaceTarget === undefined ? { target: current.target, point: { x, y } } : { target: current.target, point: { x, y }, workspaceTarget });
+  },
+  refresh(): void {
+    if (!current?.point) return;
+    const workspaceTarget = workspaceTargetAt(current.point.x, current.point.y, current.target.machineId, workspaceMove, current.workspaceTarget);
+    if (workspaceTarget === current.workspaceTarget) return;
+    set(workspaceTarget === undefined
+      ? { target: current.target, point: current.point }
+      : { target: current.target, point: current.point, workspaceTarget });
   },
   back(): void {
     if (current?.point || current?.workspaceTarget) set({ target: current.target, point: null });
@@ -83,10 +103,10 @@ export const paneDrag = {
   drop(x: number, y: number): void {
     const held = current;
     const heldMove = workspaceMove;
-    const hit = held && heldMove ? workspaceDropAt(x, y, held.target.machineId, heldMove.targets) : null;
+    const hit = held ? workspaceTargetAt(x, y, held.target.machineId, heldMove) : undefined;
     workspaceMove = null;
     set(null);
-    if (hit !== null) {
+    if (hit !== undefined) {
       heldMove?.move(hit.workspaceId);
       return;
     }

@@ -157,4 +157,25 @@ describe("tab drag out of its strip", () => {
     expect(moved).toEqual(["w2"]);
     expect(splits).toEqual([[A, 240, 20]]);
   });
+
+  it("rechecks dynamic workspace targets on refresh, move, and drop", () => {
+    const moved: string[] = [];
+    let currentTargets: ReadonlySet<string> = new Set(["w2"]);
+    withElementAt(() => rowElement({ machine: "local", workspace: "w2" }));
+
+    paneDrag.start(A, { targets: () => currentTargets, move: (workspaceId) => moved.push(workspaceId) });
+    paneDrag.move(40, 20);
+    expect(paneDrag.snapshot()?.workspaceTarget).toEqual({ machineId: "local", workspaceId: "w2" });
+
+    // Eligibility drops while pointer stays stationary -> refresh clears highlight immediately.
+    currentTargets = new Set();
+    paneDrag.refresh();
+    expect(paneDrag.snapshot()?.workspaceTarget).toBeUndefined();
+    expect(paneDrag.snapshot()?.point).toEqual({ x: 40, y: 20 });
+
+    paneDrag.move(42, 20);
+    expect(paneDrag.snapshot()?.workspaceTarget).toBeUndefined();
+    paneDrag.drop(42, 20);
+    expect(moved).toEqual([]);
+  });
 });
