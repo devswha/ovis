@@ -219,6 +219,14 @@ describe("herdr-core adapter", () => {
     ]);
   });
 
+  it("refuses legacy prompts before writing to a terminal owned by an ACP keeper", async () => {
+    const { socket, cores } = await setup([terminal("t1", {
+      labels: { "ovis.acp": "child" }, status: { app: "codex", state: "idle" },
+    })], { "terminal.send": () => ({ turn: 1 }) });
+    await expect(agentPrompt("t1", "do not silently drop this", socket)).rejects.toMatchObject({ code: "acp_prompt_required" });
+    expect(cores.flatMap(core => core.calls).some(call => call.method === "terminal.send")).toBeFalse();
+  });
+
   it("tells agy's plan review at rest in its status events as in the snapshot, done on the turn that counts it with nothing new to draw, and its question blocked", async () => {
     let channel = 0;
     const working = { app: "antigravity", state: "working" };
@@ -1061,6 +1069,27 @@ describe("herdr-core adapter, new and closed terminals", () => {
     });
     return ready;
   }
+
+  it("refuses to delete B when the question named A at the same workspace address", async () => {
+    const { dir, repo, git } = repository();
+    const a = join(dir, "a"), b = join(dir, "b");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "a", a).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "b", b).exitCode).toBe(0);
+    const { socket } = await labeling([terminal("t1", { cwd: b, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    await expect(herdrRpc("worktree.remove", { workspace_id: "S", expected_core: "c1", expected_checkout: a }, socket))
+      .rejects.toMatchObject({ code: "worktree_target_changed" });
+    expect([existsSync(a), existsSync(b)]).toEqual([true, true]);
+  });
+
+  it("does not create a branch on another core with the same workspace address", async () => {
+    const { dir, repo, git } = repository();
+    const checkout = join(dir, "misdirected");
+    const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    await expect(herdrRpc("worktree.create", { workspace_id: "S", branch: "misdirected", path: checkout, expected_core: "other-core" }, socket))
+      .rejects.toMatchObject({ code: "worktree_other_core", message: "The Ovis server serves another core" });
+    expect(existsSync(checkout)).toBeFalse();
+    expect(git("-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/misdirected").exitCode).toBe(1);
+  });
 
   it("makes, lists, opens and removes a worktree with git on a core Ovis lays out, grouped under the repository's workspace", async () => {
     const { dir, repo } = repository();
