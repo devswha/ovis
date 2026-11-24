@@ -692,6 +692,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
     if (last !== attempt) return;
     comparison = null;
+    // This device was let into its account's list for a limited time, and by its own copy that time is over: the PC
+    // ended its session, or refused its key, for that. Nobody removed it, so nothing is forgotten and no join is asked
+    // for by itself: the screen says that its time is over.
+    if (attempt.listOpen !== undefined && error instanceof MuxProtocolError && (error.code === "auth_revoked" || error.code === "auth_failed") && account.listTimeOver()) {
+      show({ kind: "failed", failure: "list-time-over", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id });
+      return;
+    }
     // The PC follows no list, and this device came with its list key: the way from before, once. And the other way
     // round: the PC lets its account's devices in by the list (`account_list_required`, or its session ended as a
     // row that changed, at the moment it pinned), so the device reads its list and comes with its list key, once,

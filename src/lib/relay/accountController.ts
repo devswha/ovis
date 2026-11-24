@@ -980,11 +980,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   /** Whether the account's signed list, as this device holds it, holds the PC with this id. */
   const listHolds = (serverId: string): boolean => listKey() !== null && (lists?.view().pcs.some((pc) => pc.server_id === serverId) ?? false);
+  /** Whether the account's list holds this device only until a time that is past, by this device's own clock. */
+  const listTimeOver = (): boolean => {
+    const view = lists?.view();
+    return view !== undefined && view.status.at === "following" && view.devices.some((device) => device.self && device.until !== null && device.until <= Math.floor(Date.now() / 1000));
+  };
   /** Reads the list now, as when a PC said that it lets devices in by it (shell.tsx). */
   const readList = async (): Promise<void> => {
     await lists?.sync().catch((error: unknown) => { if (!(error instanceof SignedOutError)) console.warn("Ovis: the account's list could not be read", error instanceof Error ? error.name : error); });
   };
-  return { get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, readList,
+  return { get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listTimeOver, readList,
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }
