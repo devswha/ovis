@@ -119,6 +119,8 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
  * Tailscale controls answer this PC's own window alone (dispatch.ts ownWindow), which a relayed principal never is.
  */
 export function accountRouteGuard(method: string, pathname: string): boolean {
+  // the joins that wait at this PC: its handler says which of them a device of the account's list may see (relay/routes.ts)
+  if (method === "GET" && pathname === "/api/relay/pairings") return true;
   return method === "POST" && (pathname === "/api/account/introduce" || pathname === "/api/account/confirm-page"
     || Object.values(RELAY_CONTROLS).some(path => path === pathname)
     || Object.values(TAILSCALE_CONTROLS).some(path => path === pathname));

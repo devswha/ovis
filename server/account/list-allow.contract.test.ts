@@ -53,10 +53,14 @@ async function boundPc() {
   return { pc: made, services, serverId: identity.server_id, endpoint, list, pull, hook };
 }
 
-/** The same PC, pinned to the account's list as a PC a person added: its own key signs for the list. */
-async function allowingPc() {
+/**
+ * The same PC, pinned to the account's list as a PC a person added: its own key signs for the list. `first`: what
+ * the list holds before the PC pins it (a device let in then waits no join hold on this PC).
+ */
+async function allowingPc(first?: (account: TestList) => Promise<void>) {
   const made = await boundPc();
   const account = await TestList.start(made.pc.account, ACCOUNT);
+  await first?.(account);
   await made.pull();
   expect(await made.list.wantList(account.id)).toMatchObject({ status: { pinned: false } });
   await account.addPostedPc(made.endpoint);
@@ -719,6 +723,104 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     await made.pull();
     expect(made.list.allowRefusal()).toBe("not_pinned");
     expect(made.list.canAllow()).toBe(false);
+  });
+});
+
+describe("a device of the list at a pinned PC, over its own session", () => {
+  /** A device the list holds, signed in to this PC with its list key. */
+  async function signedIn(made: Awaited<ReturnType<typeof allowingPc>>, device: ListMember) {
+    const link = await relayConnection(made.pc, { serverId: made.serverId });
+    await link.auth({ keys: device.keys, publicKey: device.key, id: accountDeviceId(made.serverId, device.key) }, [ACCOUNT_LIST_FEATURE], [ACCOUNT_LIST_FEATURE]);
+    return link;
+  }
+  type Waiting = { id: string; key: string; list?: boolean; choices: string[] };
+  const waitingFor = async (link: Awaited<ReturnType<typeof signedIn>>) => await ask(link, "/api/relay/pairings") as { status: number; body: { pairings?: Waiting[]; error?: { code: string } } };
+
+  test("one the list holds to drive with full power sees the join that waits and allows it: it signs the entry, and the PC lets the newcomer in by that entry", async () => {
+    const made = await allowingPc();
+    const member = await signedIn(made, made.account.first);
+    const phone = await listMember();
+    const asked = await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
+    await ownJoin(made);
+    const seen = await waitingFor(member);
+    expect(seen.status).toBe(200);
+    expect(seen.body.pairings).toHaveLength(1);
+    expect(seen.body.pairings![0]).toMatchObject({ key: phone.key, list: true });
+    // never the digits themselves: three numbers to pick the new device's from
+    expect(seen.body.pairings![0]!.choices).toContain(asked.digits);
+    const allowed = await ask(member, "/api/relay/pairing", { method: "POST", body: { id: seen.body.pairings![0]!.id, decision: "approve", digits: asked.digits } });
+    expect([allowed.status, allowed.body]).toEqual([200, { ok: true, device_id: accountDeviceId(made.serverId, phone.key) }]);
+    // the member signs the newcomer's entry and places it; the PC signs nothing
+    await made.account.addDevice(phone);
+    asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    const answer = await asked.next(FrameType.AUTH_OK);
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK, payload: { list: { id: made.account.id, ...made.account.place } } });
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
+  test("a wrong number from such a device lets nobody in, as from any approver", async () => {
+    const made = await allowingPc();
+    const member = await signedIn(made, made.account.first);
+    const phone = await listMember();
+    const asked = await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
+    await ownJoin(made);
+    const { id } = (await waitingFor(member)).body.pairings![0]!;
+    const wrong = asked.digits === "000000" ? "000001" : "000000";
+    const refused = await ask(member, "/api/relay/pairing", { method: "POST", body: { id, decision: "approve", digits: wrong } });
+    expect([refused.status, refused.body.error?.code]).toEqual([409, "wrong_digits"]);
+    expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
+  });
+
+  test("a device the list holds only to watch, or with bound power, sees no join and allows none: its refusal has a name of its own", async () => {
+    const [watcher, borrowed] = [await listMember(), await listMember()];
+    const made = await allowingPc(async (account) => {
+      await account.addDevice(watcher, { role: "watch", power: "bound" });
+      await account.addDevice(borrowed, { role: "drive", power: "bound" });
+    });
+    const phone = await listMember();
+    const asked = await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
+    const waiting = await ownJoin(made);
+    for (const device of [watcher, borrowed]) {
+      const link = await signedIn(made, device);
+      const seen = await waitingFor(link);
+      expect([seen.status, seen.body.error?.code]).toEqual([403, "list_cannot_allow"]);
+      const refused = await ask(link, "/api/relay/pairing", { method: "POST", body: { id: waiting.id, decision: "approve", digits: asked.digits } });
+      expect([refused.status, refused.body.error?.code]).toEqual([403, "list_cannot_allow"]);
+      // and it ends no join either
+      const declined = await ask(link, "/api/relay/pairing", { method: "POST", body: { id: waiting.id, decision: "decline" } });
+      expect([declined.status, declined.body.error?.code]).toEqual([403, "list_cannot_allow"]);
+    }
+    // the join still waits for somebody who may decide it
+    expect((await ownJoin(made)).id).toBe(waiting.id);
+  });
+
+  test("the right is read from the list as it stands at the call: a device removed a moment ago has none", async () => {
+    const tablet = await listMember();
+    const made = await allowingPc(async (account) => { await account.addDevice(tablet); });
+    const link = await signedIn(made, tablet);
+    const phone = await listMember();
+    const asked = await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
+    const waiting = await ownJoin(made);
+    expect((await waitingFor(link)).status).toBe(200);
+    await made.account.remove(tablet.key);
+    await made.pull();
+    // its session ends with its place in the list; a call that raced the removal is refused
+    const refused = await ask(link, "/api/relay/pairing", { method: "POST", body: { id: waiting.id, decision: "approve", digits: asked.digits } }).catch(() => null);
+    expect(refused === null || refused.status === 403).toBe(true);
+    expect((await ownJoin(made)).id).toBe(waiting.id);
+  });
+
+  test("a join that brought no card is this PC's own pairing, and no device of the list decides it", async () => {
+    const made = await allowingPc();
+    const member = await signedIn(made, made.account.first);
+    const phone = await listMember();
+    const asked = await join(made, phone);
+    const waiting = await ownJoin(made);
+    expect(waiting.list).toBeUndefined();
+    expect((await waitingFor(member)).body.pairings).toEqual([]);
+    const refused = await ask(member, "/api/relay/pairing", { method: "POST", body: { id: waiting.id, decision: "approve", digits: asked.digits } });
+    expect([refused.status, refused.body.error?.code]).toEqual([404, "relay_pairing_gone"]);
+    expect((await ownJoin(made)).id).toBe(waiting.id);
   });
 });
 

@@ -7,7 +7,7 @@ import { shownTo, type JoinViewer } from "./join-notices.ts";
 
 /** Pairing events visible to this browser's authorized machine-event document. */
 export function machinePairingEvents({ services, peer }: ServerContext, access: Access, keys: readonly string[], viewer: JoinViewer): NonNullable<MachineEventDocument["pairings"]> {
-  const { devices, joins, pendingRedemptions, relay } = services;
+  const { devices, joins, pendingRedemptions, relay, accountList } = services;
   const deviceId = access.level === "full" ? access.device?.id : undefined;
   const openAccess = access.level === "full" && access.via === "open";
   const driving = access.level === "full" && access.role === "drive" && access.via !== "open";
@@ -28,8 +28,13 @@ export function machinePairingEvents({ services, peer }: ServerContext, access: 
     // Direct approvers see the digits; drive account members on the relay get three candidates instead.
     const approver = driving && access.via !== "relay" && access.via !== "portal";
     const remoteApprover = peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
+    // a device of the account's list that may add devices to it is told the joins into the list, as its read of them
+    // is (relay/routes.ts): asked of the list at each telling, so a device that lost the right is told nothing more
+    const listKey = !remoteApprover && peer.kind === "relay" && peer.key !== "" && accountList?.allowsJoins(peer.key) === true ? peer.key : null;
     const stopRelay = approver ? relay.approvals.subscribe((list) => listener({ type: "relay-pairings", pairings: list }))
-      : remoteApprover ? relay.approvals.subscribeRemote((list) => listener({ type: "remote-pairings", pairings: list })) : undefined;
+      : remoteApprover ? relay.approvals.subscribeRemote((list) => listener({ type: "remote-pairings", pairings: list }))
+      : listKey !== null ? relay.approvals.subscribeList((list) => { if (accountList?.allowsJoins(listKey) === true) listener({ type: "remote-pairings", pairings: list }); })
+      : undefined;
     // A window that lost the right to approve needs to clear its prompts.
     if (!approver) listener({ type: "relay-pairings", pairings: [] });
     let stopPending: (() => void) | undefined;

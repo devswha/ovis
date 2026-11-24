@@ -441,6 +441,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const ownLink = relayPeer?.provisional === true && request.method === "POST" && pathname === "/api/account/link";
   if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink)) {
     setRequestRoute("watch-refusal");
+    // A device the account's list holds only to watch, asking for the joins that wait at this pinned PC or deciding one:
+    // it is told, in a code of its own, that it is in the list and may not let a device in (relay/routes.ts says the
+    // same to a device that drives with bound power)
+    if (ctx.peer.kind === "relay" && ctx.peer.key !== "" && (pairingDigits && request.method === "GET" || pathname === "/api/relay/pairing" && request.method === "POST")
+      && ctx.services.accountList?.allowsJoins(ctx.peer.key) === false) {
+      return jsonResponse({ error: { code: "list_cannot_allow", message: "This device is in your account's list, but only a device that can add devices to the list may let one in." } }, 403);
+    }
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
   // a text file is edited (read for it and saved) only by a device that drives this PC, here or through it on another PC (file-edit.ts)
