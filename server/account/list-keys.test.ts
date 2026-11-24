@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isListKeyEncoding, isListPoint, verifySignature } from "../../shared/account-list-entry.ts";
@@ -28,6 +28,64 @@ describe("the PC's list keys (account-list-keys.json)", () => {
     const file = JSON.parse(readFileSync(listKeysPath(dir), "utf8")) as Record<string, unknown>;
     expect(Object.keys(file).sort()).toEqual(["encryption", "server_id", "signing", "v"]);
     expect(file.server_id).toBe(PC_A);
+  });
+
+  test("two servers on one state folder that both find no file end with one pair: the one on disk", async () => {
+    const dir = stateDir();
+    const [a, b] = await Promise.all([new ListKeyStore(dir).keysFor(PC_A), new ListKeyStore(dir).keysFor(PC_A)]);
+    expect(a.key).toBe(b.key);
+    expect(a.enc).toBe(b.enc);
+    const reopened = await new ListKeyStore(dir).keysFor(PC_A);
+    expect([reopened.key, reopened.enc]).toEqual([a.key, a.enc]);
+    // and no temporary file of the loser stays
+    expect(readdirSync(dir).filter((name) => name !== ACCOUNT_LIST_KEYS_FILE)).toEqual([]);
+  });
+
+  test("two servers that both find another identity's file end with one pair for the new identity", async () => {
+    const dir = stateDir();
+    const old = await new ListKeyStore(dir).keysFor(PC_A);
+    const [a, b] = await Promise.all([new ListKeyStore(dir).keysFor(PC_B), new ListKeyStore(dir).keysFor(PC_B)]);
+    expect(a.key).toBe(b.key);
+    expect(a.key).not.toBe(old.key);
+    expect((await new ListKeyStore(dir).keysFor(PC_B)).key).toBe(a.key);
+    expect(readdirSync(dir).filter((name) => name !== ACCOUNT_LIST_KEYS_FILE)).toEqual([]);
+  });
+
+  test("three servers that find another identity's file at once end with one pair, and no lock stays", async () => {
+    const dir = stateDir();
+    await new ListKeyStore(dir).keysFor(PC_A);
+    const made = await Promise.all([1, 2, 3].map(() => new ListKeyStore(dir).keysFor(PC_B)));
+    expect(new Set(made.map((keys) => keys.key)).size).toBe(1);
+    expect((await new ListKeyStore(dir).keysFor(PC_B)).key).toBe(made[0]!.key);
+    expect(readdirSync(dir)).toEqual([ACCOUNT_LIST_KEYS_FILE]);
+  });
+
+  test("keys whose making began before the relay identity was reset are not written after it", async () => {
+    const dir = stateDir();
+    const making = new ListKeyStore(dir).keysFor(PC_A);
+    // the reset comes while the pair is being generated: there is no file to remove yet
+    forgetListKeys(dir);
+    await expect(making).rejects.toBeInstanceOf(ListKeysError);
+    expect(readdirSync(dir)).toEqual([]);
+    // the PC it became makes its own
+    const next = await new ListKeyStore(dir).keysFor(PC_B);
+    expect(JSON.parse(readFileSync(listKeysPath(dir), "utf8")).server_id).toBe(PC_B);
+    expect(next.serverId).toBe(PC_B);
+  });
+
+  test("a lock an Ovis left behind is taken over, and one that is held makes the call wait and then say so", async () => {
+    const dir = stateDir();
+    const lock = `${listKeysPath(dir)}.lock`;
+    writeFileSync(lock, "");
+    // held right now by another Ovis: the call gives up after its wait, and writes nothing
+    await expect(new ListKeyStore(dir, 100).keysFor(PC_A)).rejects.toThrow("another Ovis on this state folder");
+    expect(readdirSync(dir)).toEqual([`${ACCOUNT_LIST_KEYS_FILE}.lock`]);
+    // left behind long ago
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    const keys = await new ListKeyStore(dir, 100).keysFor(PC_A);
+    expect(keys.serverId).toBe(PC_A);
+    expect(readdirSync(dir)).toEqual([ACCOUNT_LIST_KEYS_FILE]);
   });
 
   test("the signing key signs the PC's card, and what it signs verifies under the public key it names", async () => {

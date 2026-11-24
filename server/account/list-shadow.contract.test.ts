@@ -188,9 +188,9 @@ describe("where the list would decide otherwise, the PC says so once", () => {
       const { pc } = await differing();
       // the first pull's snapshot read met a list that does not hold this PC yet, the second one that does
       expect(said(log)).toEqual([
-        { event: "account.list.differs", snapshot: "admitted", list: "waiting" },
-        { event: "account.list.differs", snapshot: "admitted", list: "never_added" },
-        { event: "account.list.differs", snapshot: "none", list: "drive" },
+        { event: "account.list.differs", snapshot: "admitted", list: "waiting", of: "device" },
+        { event: "account.list.differs", snapshot: "admitted", list: "never_added", of: "credential" },
+        { event: "account.list.differs", snapshot: "none", list: "drive", of: "credential" },
       ]);
       await pc.pull();
       await pc.pull();
@@ -235,7 +235,7 @@ describe("where the list would decide otherwise, the PC says so once", () => {
       expect(said(log)).toEqual([]);
       expect(await pc.signsIn(idOf(pc.serverId, phone))).toBe(false);
       await pc.list.settled();
-      expect(said(log)).toEqual([{ event: "account.list.differs", snapshot: "none", list: "drive" }]);
+      expect(said(log)).toEqual([{ event: "account.list.differs", snapshot: "none", list: "drive", of: "credential" }]);
     } finally { log.mockRestore(); }
   });
 
@@ -248,11 +248,11 @@ describe("where the list would decide otherwise, the PC says so once", () => {
     const log = spyOn(console, "info").mockImplementation(() => {});
     try {
       await pc.pull();
-      expect(said(log).filter((event) => event.snapshot === "admitted")).toEqual([{ event: "account.list.differs", snapshot: "admitted", list: "watch" }]);
+      expect(said(log).filter((event) => event.snapshot === "admitted")).toEqual([{ event: "account.list.differs", snapshot: "admitted", list: "watch", of: "device" }]);
       const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 3601_000);
       try {
         await pc.signsIn(pc.device);
-        expect(said(log).filter((event) => event.snapshot === "admitted").at(-1)).toEqual({ event: "account.list.differs", snapshot: "admitted", list: "expired" });
+        expect(said(log).filter((event) => event.snapshot === "admitted").at(-1)).toEqual({ event: "account.list.differs", snapshot: "admitted", list: "expired", of: "device" });
       } finally { clock.mockRestore(); }
     } finally { log.mockRestore(); }
   });
@@ -351,15 +351,19 @@ describe("what the account service shows wrongly changes the copy's verdict and 
 describe("nothing secret leaves the PC", () => {
   test("no log line and no answer holds a key, and the keys file is this user's alone", async () => {
     const lines: string[] = [];
-    const sinks = (["info", "log", "warn", "error"] as const).map((name) => spyOn(console, name).mockImplementation((...parts: unknown[]) => { lines.push(parts.map(String).join(" ")); }));
+    const sinks: { mockRestore(): void }[] = (["info", "log", "warn", "error"] as const).map((name) => spyOn(console, name).mockImplementation((...parts: unknown[]) => { lines.push(parts.map(String).join(" ")); }));
     try {
       const pc = await shadowPc();
+      // every call of a list route, as the PC's own code hands it over to be proved and sent
+      const route = spyOn(pc.services.accountMailbox, "listRoute");
+      sinks.push(route);
       const account = await TestList.start(pc.service, ACCOUNT);
       await account.addDevice(pc.laptop);
       await pc.pull();
       await account.addPostedPc(pc.endpoint);
       await pc.pull();
       await pc.pull();
+      const sent = route.mock.calls.map(([called, body]) => `${called} ${JSON.stringify(body)}`);
       const path = join(pc.fixture.stateDir, ACCOUNT_LIST_KEYS_FILE);
       if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
       const file = JSON.parse(readFileSync(path, "utf8")) as { signing: string; encryption: string };
@@ -373,8 +377,11 @@ describe("nothing secret leaves the PC", () => {
       }
       // the copy holds the list, which names public keys, and neither secret
       for (const secret of [file.signing, file.encryption]) expect(copy).not.toContain(secret);
-      // what the account service was sent holds neither
-      expect(pc.service.requests.join("\n")).not.toContain(file.signing.slice(40, 100));
+      // what the account service was sent holds neither secret, whole or in part; and it was sent the keys post
+      expect(sent.some((body) => body.includes(own.key!) && body.includes(own.enc!))).toBe(true);
+      for (const body of sent) {
+        for (const secret of [file.signing, file.encryption]) for (const part of [secret, secret.slice(40, 100), secret.slice(-60)]) expect(body).not.toContain(part);
+      }
     } finally { for (const sink of sinks) sink.mockRestore(); }
   });
 
