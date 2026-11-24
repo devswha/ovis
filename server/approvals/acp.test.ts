@@ -39,6 +39,14 @@ describe("acpCard", () => {
     expect(card.own_text?.title).toEqual({ key: "Permission request" });
     expect(card.title).toBe("Permission request");
     expect(card.body).toBe("{\n  \"path\": \"a.txt\"\n}\n\nWrite a.txt\n\na.txt\nhello");
+    expect(card.options.map((option) => option.label)).toEqual(["Allow once", "Reject"]);
+  });
+
+  it("only offers rejection when the request's only description is an unshowable title", () => {
+    const card = acpCard("fake", approval({ title: "Delete \u202efile" }));
+    expect(card.own_text?.title).toBeDefined();
+    expect(card.own_text?.body).toBeDefined();
+    expect(card.options.map((option) => option.label)).toEqual(["Reject"]);
   });
 
   it("only offers rejection when the body cannot be shown in full", () => {

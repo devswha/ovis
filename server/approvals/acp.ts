@@ -52,7 +52,8 @@ function words({ rawInput, content }: AcpApproval["toolCall"]): string[] | null 
 
 function choices(approval: AcpApproval) {
   const wordsShown = words(approval.toolCall)?.join("\n\n");
-  const hidden = wordsShown === undefined || wordsShown.length > CARD_BODY_MAX || !showable(wordsShown);
+  const title = text(approval.toolCall.title);
+  const hidden = (title !== null && !showable(title)) || wordsShown === undefined || wordsShown.length > CARD_BODY_MAX || !showable(wordsShown);
   const options = hidden ? approval.options.filter(({ kind }) => kind === "reject_once" || kind === "reject_always" || kind === "cancel") : approval.options;
   return { body: hidden ? englishOf(INCOMPLETE) : wordsShown || null, options, hidden };
 }
