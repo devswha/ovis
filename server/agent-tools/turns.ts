@@ -1,7 +1,7 @@
 import type { AcpChild, AcpChildren } from "../acp/children.ts";
 import { KeeperRequestError } from "../acp/client.ts";
 import type { Ledger, ToolChild } from "./ledger.ts";
-import { HARNESS_LIMITS, answer, refuse } from "../../shared/harness-tool.ts";
+import { HARNESS_LIMITS, answer, harnessStopReason, refuse } from "../../shared/harness-tool.ts";
 import type { SessionRef, SessionState, Untrusted } from "../../shared/harness-contract.generated.ts";
 
 export function untrusted(from: string, text: string): Untrusted {
@@ -33,7 +33,7 @@ export class ChildTurns {
         this.ledger.save();
       }
       if (!row || row.id !== child.id || !turn || turn.end !== null || turn.seq === null || turn.seq !== client.turnSequence || !client.connected || !client.turn || client.turn.running) return;
-      turn.end = client.turn.stopReason ?? (client.agentGone ? "gone" : "unknown");
+      turn.end = harnessStopReason(client.turn.stopReason ?? (client.agentGone ? "gone" : "unknown"));
       this.ledger.audit(row, "turn", turn.n, turn.end);
       this.ledger.save();
     };
@@ -86,7 +86,7 @@ export class ChildTurns {
     if (id !== undefined && !turn) return refuse("unknown_session", "Unknown turn.");
     if (!turn || state.state === "waiting_human" || turn.end === null || !child.client.connected) return answer("state", { session: row.terminal, state });
     const latest = turn.seq === child.client.turnSequence ? child.client.turn : null;
-    return answer("result", { session: row.terminal, turn_id: `${row.id}.${turn.n}`, stop_reason: turn.end, end_from: "acp", answer_from: latest ? "acp" : null,
+    return answer("result", { session: row.terminal, turn_id: `${row.id}.${turn.n}`, stop_reason: harnessStopReason(turn.end), end_from: "acp", answer_from: latest ? "acp" : null,
       final_message: latest?.text ? untrusted(row.terminal, latest.text) : null, error: latest?.error ? untrusted(row.terminal, latest.error) : null, usage: latest ? child.client.usage : null,
       model: latest && child.client.model && /^[\w.:-]+(?:\/[\w.:-]+)*$/.test(child.client.model) ? child.client.model : null });
   }

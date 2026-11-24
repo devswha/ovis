@@ -189,6 +189,12 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     expect(await call("start", { cwd: dir, harness: "mute" })).toMatchObject({ error: { code: "start_failed" } });
     for (const proc of programs.values()) expect(await proc.exited).toBeNumber();
   });
+  it("normalizes non-protocol stop reasons before exposing or auditing them", async () => {
+    const session = await start("fixture-stop-reason");
+    await call("wait", { session });
+    expect(await call("result", { session })).toMatchObject({ stop_reason: "unknown" });
+    expect(readFileSync(join(dir, "tools/audit.jsonl"), "utf8")).not.toContain("fixture annotation");
+  });
 
   it("allow always on one child leaves a wider-mode request on another child waiting for a person", async () => {
     const a = await start("widen");

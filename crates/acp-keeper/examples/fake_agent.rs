@@ -127,6 +127,10 @@ fn main() {
                 let text = msg.pointer("/params/prompt/0/text").and_then(Value::as_str).unwrap_or("").to_string();
                 let mut words = text.split_whitespace();
                 match words.next().unwrap_or("") {
+                    "fixture-stop-reason" => {
+                        send(&mut out, &json!({"jsonrpc":"2.0","id":id,"result":{"stopReason":"fixture annotation"}}));
+                        continue;
+                    }
                     "echo" => send(&mut out, &chunk(&session, &format!("echo bytes={}", text.len()))),
                     "hold" => {
                         held.push(id);
