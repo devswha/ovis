@@ -100,6 +100,19 @@ export class TestList {
     return entryToText(await signEntry(body, signer.keys.privateKey));
   }
 
+  /**
+   * Another history from entry 0, which is a fork to whoever is shown it: the first device lets in a device nobody
+   * saw, and that device signs on it. (The first entry alone would be what a member signed and left behind when
+   * another entry got its place, which raises no alarm.) Nothing is placed, and the list's own head stays.
+   */
+  async forkFromStart(): Promise<{ readonly texts: readonly [string, string]; readonly device: ListMember }> {
+    const device = await listMember();
+    const first = await this.sign({ kind: "device", key: device.key, power: "full", role: "drive", until: null, enc: device.enc, card: await memberCard(device, this.id), sealed: null, rotates: false },
+      this.first, { seq: 0, hash: this.id });
+    const lived = await this.sign({ kind: "remove", ends: device.key }, device, { seq: 1, hash: entryHash(entryFromText(first).body) });
+    return { texts: [first, lived], device };
+  }
+
   /** Places texts at the account service as one batch, from a sign-in of the account. */
   async placeTexts(texts: readonly string[], wraps: readonly { epoch: number; member: string; wrap: string }[] = []): Promise<void> {
     const answer = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/entries`, { method: "POST", headers: { authorization: `Bearer ${this.token}` },

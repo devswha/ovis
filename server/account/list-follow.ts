@@ -1309,7 +1309,7 @@ export class ListFollow implements ListAuthority {
       if (!first.pinned) { this.lastVerdict = "not_my_list"; return; }
       copy = first.copy;
     }
-    const heard = heardHead(copy, { list: named.id, place: named.head }, this.seconds());
+    const heard = heardHead(copy, { list: named.id, head: named.head }, this.seconds());
     this.lastVerdict = heard.verdict;
     this.keep(heard.copy, scope, false);
     // each pull, a pinned PC gives its rows another turn: one a full notice list or a hold kept out comes in then

@@ -633,11 +633,8 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
   test("a PC on which an alarm stands takes no card: it lets nobody new into the list", async () => {
     const made = await allowingPc();
     expect(made.list.allowRefusal()).toBeNull();
-    // the first device signs a second history from entry 0, and the service shows it to this PC
-    const other = await listMember();
-    const forked = await made.account.sign({ kind: "device", key: other.key, power: "full", role: "drive", until: null, enc: other.enc,
-      card: await memberCard(other, made.account.id), sealed: null, rotates: false }, made.account.first, { seq: 0, hash: made.account.id });
-    made.pc.account.tamperList(made.account.id, { reader: { server_id: made.serverId }, fork: [forked] });
+    // the first device signs a second history from entry 0 that a device nobody saw signs on, and the service shows it to this PC
+    made.pc.account.tamperList(made.account.id, { reader: { server_id: made.serverId }, fork: (await made.account.forkFromStart()).texts });
     await made.pull();
     made.list.tick();
     await made.list.settled();
