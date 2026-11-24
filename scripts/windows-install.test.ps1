@@ -1015,10 +1015,7 @@ exit /b 1
         try { $out = & $runJoin @{ JoinFile = $inviteFile; Account = 'acct_1' } } finally { $state.joinExit = 0 }
         Assert ($out.Message -match 'did not join your Ovis account' -and $state.joins.Count -eq 1 -and $out.Said -match $case.said -and -not $out.Said.Contains($shown)) "ovis join ending $($case.code) must fail the install with its line: $($out.Message) $($out.Said)"
     }
-    # with no account named: not run where nobody can answer, said how to name it; at a terminal, run there, where it asks
-    $givenCi = $env:CI; $env:CI = 'true'
-    try { $out = & $runJoin @{ JoinFile = $inviteFile } } finally { $env:CI = $givenCi }
-    Assert ($out.Message -match 'did not join' -and $state.joins.Count -eq 0 -and $out.Said -match 'nobody here can confirm the account the invite is for, so this PC did not join it, and the invite was not used\. Name that account: run this again with -Account <id>') "A join with no account and no terminal must not run, and say how to name the account: $($out.Message) $($out.Said)"
+    # with no account named, at a terminal: run there, where it asks (where nobody can answer it is refused before installing, below)
     $givenNoOpen = $env:OVIS_NO_OPEN; Remove-Item Env:\OVIS_NO_OPEN -ErrorAction SilentlyContinue
     try { $out = & $runJoin @{ JoinFile = $inviteFile } $atTerminal } finally { if ($null -ne $givenNoOpen) { $env:OVIS_NO_OPEN = $givenNoOpen } }
     Assert (-not $out.Message -and ($state.joins -join '|') -eq 'join <terminal>' -and ($state.joinInvites -join '|') -eq $joinLine) "A join with no account at a terminal must run there, the line in its environment: $($state.joins -join '|') $($out.Message)"
@@ -1030,9 +1027,14 @@ exit /b 1
     $state.explorerOwner = 'S-1-5-21-1-2-3-1001'; $state.running = $false
     try { $out = & $runJoin @{ JoinFile = $inviteFile; Account = 'acct_1' } $inSession0 } finally { $state.explorerOwner = $me.User.Value }
     Assert ($out.Message -match 'did not join' -and $state.joins.Count -eq 0 -and $out.Said -match 'the app is not running, so this PC did not join your Ovis account') "With the app not running, the join must not run: $($out.Message) $($out.Said)"
-    # refused before anything is installed or started, never naming the line
+    # refused before anything is installed or started, never naming the line; with no terminal (CI), a join with no account
+    # names the flag to add
     $installs = $state.installs
-    foreach ($case in @(
+    $givenCi = $env:CI; $env:CI = 'true'
+    $nobodyToAnswer = 'A join where nobody can answer needs the account the invite is for: add -Account <id> (the id shown with the invite, or ovis status --json on a PC already in it; OVIS_ADD_ACCOUNT=<id> for irm | iex). Nothing was installed.'
+    try { foreach ($case in @(
+        @{ options = @{ JoinFile = $inviteFile }; said = $nobodyToAnswer },
+        @{ options = @{ Join = $joinLine; NoService = $true }; said = $nobodyToAnswer },
         @{ options = @{ Join = 'not-an-invite' }; said = 'That is not an Ovis invite' },
         @{ options = @{ Join = 'ovis-join:1:' }; said = 'That is not an Ovis invite' },
         @{ options = @{ Join = "ovis-join:1:$joinPayload==" }; said = 'That is not an Ovis invite' },
@@ -1047,7 +1049,11 @@ exit /b 1
         $state.installed = $false; $state.running = $false
         $out = & $runJoin $case.options
         Assert ($out.Message.Contains($case.said) -and -not $out.Message.Contains($shown) -and $state.installs -eq $installs -and -not $out.Starts -and $state.joins.Count -eq 0) "An invite refused before installing ($($case.said)): $($out.Message)"
-    }
+    } } finally { $env:CI = $givenCi }
+    # the same under OVIS_NO_OPEN (an install run for someone else, as the app's SSH installer runs it), even at a terminal
+    $givenNoOpen = $env:OVIS_NO_OPEN; $env:OVIS_NO_OPEN = '1'
+    try { $out = & $runJoin @{ JoinFile = $inviteFile } $atTerminal } finally { if ($null -eq $givenNoOpen) { Remove-Item Env:\OVIS_NO_OPEN } else { $env:OVIS_NO_OPEN = $givenNoOpen } }
+    Assert ($out.Message.StartsWith($nobodyToAnswer) -and $state.installs -eq $installs -and -not $out.Starts -and $state.joins.Count -eq 0) "A join with no account under OVIS_NO_OPEN must be refused before installing: $($out.Message)"
     # a run refused with OVIS_ADD=1 leaves OVIS_JOIN for the run that follows; OVIS_JOIN of another shape is refused too
     $env:OVIS_ADD = '1'; $env:OVIS_JOIN = $joinLine
     try { $out = & $runJoin } finally { Remove-Item Env:\OVIS_ADD }
@@ -1059,7 +1065,7 @@ exit /b 1
     Assert (-not $out.Message -and $out.Said.StartsWith('usage: & ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) [-Add | -JoinFile <path>]') -and ($out.Said -replace '\s+', ' ').Contains('shows in the process list to every user of this PC, so use -JoinFile or OVIS_JOIN instead') -and $state.installs -eq $installs -and -not $out.Starts) "-Help must say each option and install nothing: $($out.Message) $($out.Said)"
     Remove-Item -LiteralPath $joinScript, $inviteFile -Force -ErrorAction SilentlyContinue
     $state.running = $true
-    Write-Host 'PASS the join: -JoinFile, -Join and OVIS_JOIN give ovis join the line in its environment alone, with -Account and no input or at a terminal; each failure said and failing the install; herdr never given the line; lines of another shape, two ways, a join with -Add refused before installing; -Help'
+    Write-Host 'PASS the join: -JoinFile, -Join and OVIS_JOIN give ovis join the line in its environment alone, with -Account and no input or at a terminal; each failure said and failing the install; herdr never given the line; lines of another shape, two ways, a join with -Add, and one with no account where nobody can answer refused before installing; -Help'
 
     # The launcher herdr's sign-in start and the task run, as Windows PowerShell runs it: written for a herdr in a folder
     # with an apostrophe, into a user folder outside ASCII (read whole only with its byte order mark), it starts herdr's

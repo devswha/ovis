@@ -139,7 +139,9 @@ environment only, and fails unless the PC joined, its last `Ovis:` line saying w
 invite needs a new one). An invite that needs **Add** waits up to 10 minutes: when the log says
 `press Add for <name>`, tell the user to press it. `-Join <line>` works too, but a command line that
 holds the line shows in the process list. Without `-Account` the join runs only at a terminal, where it
-asks the user whether the invite's account is theirs. `-Help` lists the options.
+asks the user whether the invite's account is theirs; where nobody can answer (no terminal, as from your
+tool) the installer refuses before installing anything and names `-Account <id>`. `-Help` lists the
+options.
 
 ## 3A. Install as a herdr plugin
 

@@ -60,6 +60,8 @@ if ($env:OS -ne 'Windows_NT' -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
 if ($Account -and $Account -cnotmatch '^(?!-)[A-Za-z0-9_-]{1,64}\z') {
     throw "-Account (or OVIS_ADD_ACCOUNT) takes your Ovis account's id: ovis status on a PC already in it shows it. $usage"
 }
+# Whether someone can answer at this console: a script's or an agent's run has its input or output redirected, or CI set
+function Test-Terminal { -not ($env:CI -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) }
 # An invite's line (-JoinFile, -Join, or OVIS_JOIN where neither is given), as install.sh reads it: trimmed as `ovis join`
 # trims it, and refused before anything is installed unless it has a join line's shape (shared/account-list-join.ts: its
 # prefix, then base64url, at most 1024 characters). Never printed, nor a path that may be the line put where a path goes:
@@ -85,6 +87,11 @@ if ($joinGiven) {
     $joinLine = @("$joinLine" -split "`n" | ForEach-Object { $_.Trim([char[]]" `t`r") } | Where-Object { $_ }) -join "`n"
     if ($joinLine.Length -gt 1024 -or $joinLine -cnotmatch '^ovis-join:1:[A-Za-z0-9_-]+\z') {
         throw "That is not an Ovis invite: an invite is one line that starts with ovis-join:1:, made on a device signed in to your account. Nothing was installed. $usage"
+    }
+    # with no account named, the person at this terminal confirms the invite's account: where nobody can answer, the join
+    # is refused now, not after the install
+    if (-not $Account -and (-not (Test-Terminal) -or $env:OVIS_NO_OPEN -or $env:HERDR_WEB_NO_OPEN)) {
+        throw "A join where nobody can answer needs the account the invite is for: add -Account <id> (the id shown with the invite, or ovis status --json on a PC already in it; OVIS_ADD_ACCOUNT=<id> for irm | iex). Nothing was installed. $usage"
     }
 }
 Remove-Item Env:\OVIS_JOIN -ErrorAction SilentlyContinue
@@ -1448,7 +1455,6 @@ namespace Ovis {
 # A script that runs this has nobody to answer. A terminal can have nobody at it either (an agent's),
 # so the answer is read key by key within 20 seconds in all: what was typed before the question is
 # discarded, and a line left unfinished when the time is up is no answer.
-function Test-Terminal { -not ($env:CI -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) }
 function Read-Answer {
     $Host.UI.RawUI.FlushInputBuffer()
     $until = (Get-Date).AddSeconds(20)
@@ -1520,9 +1526,9 @@ if ($wantAdd) {
 # PC in the invite's account on its own key's proof, with no sign-in here, and it alone is given the line, in its
 # environment (OVIS_INVITE), never on a command line. Whoever handed the invite over chose the account, so it is confirmed
 # first: with -Account (OVIS_ADD_ACCOUNT) and an empty, closed input, as a script or an agent runs it; or at a terminal,
-# where `ovis join` asks for yes once what was typed while the installer worked is flushed. $joinResult: none, old (a
-# release without it), waits (Ovis is not running), unconfirmed (nobody can confirm the account), or the exit code of
-# `ovis join` (scripts/plugin-join.ts, JOIN_EXIT).
+# where `ovis join` asks for yes once what was typed while the installer worked is flushed (where nobody can answer, the
+# join was refused before the install). $joinResult: none, old (a release without it), waits (Ovis is not running), or the
+# exit code of `ovis join` (scripts/plugin-join.ts, JOIN_EXIT).
 $joinResult = 'none'
 if ($joinGiven) {
     $joinFrom = if ($joinGiven -eq 'file') { "'$([Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($joinPath))'" } else { '<a file holding the invite>' }
@@ -1531,7 +1537,6 @@ if ($joinGiven) {
     if ($addAccount) { $joinArguments += @('--account', $addAccount) }
     if (-not $takesJoin) { $joinResult = 'old' }
     elseif (-not $ovisRunning) { $joinResult = 'waits' }
-    elseif (-not $addAccount -and (-not (Test-Terminal) -or $env:OVIS_NO_OPEN -or $env:HERDR_WEB_NO_OPEN)) { $joinResult = 'unconfirmed' }
     else {
         Write-Host ''
         Write-Host $tokenLine
@@ -1552,7 +1557,6 @@ if ($joinGiven) {
     $joinSaid = switch ("$joinResult") {
         'old' { "this Ovis release has no ovis join (it came in 0.5.10), so this PC did not join your Ovis account. Update Ovis in Settings -> Updates, then run on this PC: $joinRetry" }
         'waits' { "the app is not running, so this PC did not join your Ovis account. Once it runs, run on this PC: $joinRetry" }
-        'unconfirmed' { "nobody here can confirm the account the invite is for, so this PC did not join it, and the invite was not used. Name that account: run this again with -Account <id> (the id shown with the invite, or ovis status --json on a PC already in it), or run in a terminal on this PC: $joinRetry" }
         '0' { "this PC is in the Ovis account the invite is for. Check: $ovisCommand status --json" }
         '3' { 'the invite did not work: it is mistyped, used or expired (an invite works once, for 15 minutes), or for another account service. Ask for a new one on a device signed in to your account' }
         '4' { 'the account the invite is for was not confirmed, so this PC did not join it, and the invite was not used' }
