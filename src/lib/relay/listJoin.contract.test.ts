@@ -182,11 +182,15 @@ test("a new device brings its card to a pinned PC, a person at the PC allows it,
   again.close();
 }, 30_000);
 
-test("a device of the account allows a new device through a pinned PC: nothing until the new device confirmed, then the approval and the entry it signs, and the PC lets the device in by that entry", async () => {
+/**
+ * A device of the account that is in the list from before the PC pinned it (an app with its own copy of the list),
+ * signed in to the pinned PC with the key the list holds for it; `listed` reads the joins the PC shows it.
+ */
+async function memberOnPinnedPc() {
   // the member: an app with its own copy of the account's list, in the list before the PC pinned it
   const store = memoryAccountStore();
   const lists: { own?: AccountList; service?: AccountService } = {};
-  const { made, serverId, offer, account, open, join } = await pinnedPc(async (started) => {
+  const pc = await pinnedPc(async (started) => {
     await store.set("session", { service: "https://account.test", account: ACCOUNT, provider: "github", access_token: made0().issueToken(ACCOUNT, { twoStep: true }), refresh_token: "r", expires_at: Date.now() + 3_600_000, sign_in_id: "member", signed_in_at: Date.now() });
     lists.service = new AccountService({ store, fetch: made0().fetch, lock: memoryLock() });
     lists.own = accountList({ service: lists.service, accountStore: store, listStore: memoryListStore(), lock: memoryListLock(), genesis: () => "never", durable: async () => true, names: () => ({ label: "Member", os: "ios" }) });
@@ -194,6 +198,7 @@ test("a device of the account allows a new device through a pinned PC: nothing u
     await started.addDevice({ key: keys.key, enc: keys.enc.key, keys: { privateKey: keys.signs } } as unknown as ListMember);
     expect((await lists.own.adopt({ list: started.id, ...started.place })).status).toMatchObject({ at: "following", standing: "in" });
   });
+  const { offer, open } = pc;
   const member = lists.own!;
   const service = lists.service!;
   const keys = await deviceListKeys(store);
@@ -205,19 +210,30 @@ test("a device of the account allows a new device through a pinned PC: nothing u
   closes.push(() => transport.close());
   expect(transport.followsList).toBe(true);
 
+  /** The join of `key` as the PC lists it for this device, read again until `ready` holds for it; null where it never does. */
+  const listed = async (key: string, ready: (request: RemotePairingRequest) => boolean): Promise<RemotePairingRequest | null> => {
+    for (let round = 0; round < 200; round += 1) {
+      const { pairings } = await (await transport.fetch("/api/relay/pairings")).json() as { pairings: RemotePairingRequest[] };
+      const found = pairings.find((each) => each.key === key);
+      if (found !== undefined && ready(found)) return found;
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+    }
+    return null;
+  };
+  return { ...pc, store, member, service, keys, transport, listed };
+}
+
+test("a device of the account allows a new device through a pinned PC: nothing until the new device confirmed, then the approval and the entry it signs, and the PC lets the device in by that entry", async () => {
+  const { made, serverId, account, join, store, member, service, keys, transport, listed: listedFor } = await memberOnPinnedPc();
   const phone = await listMember();
   const card = await claimKey(made.account, ACCOUNT, account.id, phone);
   const asked = await join(phone, card);
   const digits = await asked.digits;
   /** The join as the PC lists it for this device, read again until `ready` holds for it. */
   const listed = async (ready: (request: RemotePairingRequest) => boolean): Promise<RemotePairingRequest> => {
-    for (let round = 0; round < 200; round += 1) {
-      const { pairings } = await (await transport.fetch("/api/relay/pairings")).json() as { pairings: RemotePairingRequest[] };
-      const found = pairings.find((each) => each.key === phone.key);
-      if (found !== undefined && ready(found)) return found;
-      await new Promise<void>((resolve) => { setImmediate(resolve); });
-    }
-    throw new Error("The PC did not list the join as expected");
+    const found = await listedFor(phone.key, ready);
+    if (found === null) throw new Error("The PC did not list the join as expected");
+    return found;
   };
   // while the new device's person has not said that the numbers match, the member approves nothing and signs nothing
   const early = await listed(() => true);
@@ -249,6 +265,34 @@ test("a device of the account allows a new device through a pinned PC: nothing u
   expect(joined.listPlace).toEqual({ id: account.id, seq: row.seq, hash: entryHash(entryFromText(held.entries[row.seq]!).body) });
   expect(await asked.store.get(serverId)).toBeUndefined();
   joined.close();
+}, 40_000);
+
+test("a join that brought no card is never shown to a device of the list as confirmed, so no member signs anybody in for it from afar", async () => {
+  const { serverId, services, join, store, member, service, transport } = await memberOnPinnedPc();
+  const phone = await listMember();
+  // no card: its claim did not stand, or its app is from before cards; its person says that the numbers match
+  const asked = await join(phone, null);
+  const digits = await asked.digits;
+  asked.match();
+  // the PC took the confirm (its own record of the join says so) ...
+  const approvals = services.relay.approvals;
+  const held = approvals as unknown as { waiting: Map<string, { key: string; confirmed: boolean }> };
+  for (let round = 0; round < 500 && ![...held.waiting.values()].some((each) => each.key === phone.key && each.confirmed); round += 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
+  expect([...held.waiting.values()].filter((each) => each.key === phone.key).map((each) => each.confirmed)).toEqual([true]);
+  // ... and shows it confirmed to nobody: not to a device of the list, which is not shown the join at all, nor to a
+  // device of the PC's own (remoteList), to which it is the PC's own pairing, with no mark of the list
+  const { pairings } = await (await transport.fetch("/api/relay/pairings")).json() as { pairings: RemotePairingRequest[] };
+  expect(pairings.filter((each) => each.key === phone.key)).toEqual([]);
+  expect(approvals.remoteList().filter((each) => each.key === phone.key && (each.list !== undefined || each.confirmed !== undefined))).toEqual([]);
+  // and an approval of it, as a card would send one, approves and signs nothing
+  const decided: string[] = [];
+  const request: RemotePairingRequest = { id: "cardless", label: "Phone", intent: "account", choices: [digits, "000000", "111111"], expires_at: "", key: phone.key };
+  const refused = await approveForAccount({
+    request, digits, through: serverId, service, account: ACCOUNT, key: store.key(), list: member,
+    pc: { fetch: (path, init) => transport.fetch(path, init), followsList: transport.followsList },
+    decide: async (decision) => { decided.push(decision); }, paired: async () => [], directory: async () => [serverId], onStalled: () => {},
+  }).catch((error: unknown) => error);
+  expect([refused instanceof NotConfirmedError, decided]).toEqual([true, []]);
 }, 40_000);
 
 test("a device whose key no sign-in of the account claimed is told so, in words of its own, and is in no list", async () => {

@@ -1499,12 +1499,16 @@ list](account.md#a-pc-allows-a-device-into-the-list)). The app's half is in
   the log ([The place handed over](#letting-a-device-in)). A PC that took the card and names no
   place is refused (`auth_failed`, `list_refused`) before anything is saved. No pairing is saved:
   that session serves nothing else, so the app closes it at once and opens the PC anew with the
-  key the list holds. A sign-in that ended meanwhile leaves the front page, and the place is kept for
-  the account the card was made for: a sign-in to that account again takes it up, and the device
-  follows the list from there without asking to join again.
+  key the list holds. The place is the account's the card was made for, and is kept for that account
+  alone, whatever sign-in is stored when the answer lands: a sign-in that ended meanwhile, or one of
+  another account another tab made, leads to the front page, the PC is never opened with another
+  account's key, and a sign-in to the card's account again takes the place up: the device follows
+  the list from there without asking to join again.
 - **How long it waits.** The comparison's 90 seconds, and then as long as the PC keeps the join
   open for its entry after both sides said yes (90 seconds, the PC's `LIST_ALLOW_MS`: its own
-  window's signing, or the half minute it waits for a member's entry and its last read).
+  window's signing, or the half minute it waits for a member's entry and its last read). That is
+  longer than the relay keeps a socket that sent nothing (two minutes), so while it waits the app
+  sends the relay's own keepalive every minute. The relay answers it itself, and no PC sees it.
 - **When no entry lets it in**, the PC ends the join `auth_failed` and names the cause, which the
   app says in words of its own: no sign-in of the account claimed the key (sign in again on this
   device), the entry could not be placed in time (ask again), a device of the account approved
@@ -1524,10 +1528,11 @@ list](account.md#a-pc-allows-a-device-into-the-list)). The app's half is in
   the list does not take the device after the approval, the request is gone from the PC: a card
   says why (**{device} is not in your account**: such a PC made no pairing of its own, so the
   card never says that the device was added to it only), and **Try again** signs it in; a device
-  the PC turned away meanwhile (`list_not_in`) asks again. The introduction is tried once and
-  whatever such a PC refuses it for holds back nothing: the `add` for the account's other PCs
-  goes out as ever. On any other PC the approval comes first, and the entry once the PC holds the
-  device's row.
+  the PC turned away meanwhile (`list_not_in`) asks again. The introduction is tried once, names
+  the device's place as on any other PC (formats E6; such a PC drops it), and whatever such a PC
+  refuses it for holds back nothing: the `add` for the account's other PCs goes out as ever. On any
+  other PC the approval comes first, and the entry once the PC holds the device's row; the account,
+  list and member key it signs under are fixed by its first read, before the wait for that row.
 - **Nothing more for a device put out meanwhile.** On either PC, before the introduction that
   names the account's PCs and again before the `add` is signed, the approver's own copy, as it
   holds it then, must still have the new device in, in the list and under the member key the

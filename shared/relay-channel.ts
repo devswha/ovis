@@ -120,6 +120,15 @@ const PAIR_APPROVAL_GRACE_MS = 5_000;
  * comparison's own time.
  */
 export const LIST_JOIN_PLACING_MS = 90_000;
+/**
+ * A join that brought the card may wait longer than the relay keeps a socket that sent nothing (relay/core.ts IDLE_MS,
+ * 120 s): while it waits it sends the relay's own keepalive this often. The relay answers it itself, and no PC, of any
+ * version, ever sees it.
+ */
+export const LIST_JOIN_KEEPALIVE_MS = 60_000;
+/** The relay's own keepalive and its answer (relay/core.ts KEEPALIVE_PING, KEEPALIVE_PONG). */
+const RELAY_PING = '{"type":"ping"}';
+const RELAY_PONG = '{"type":"pong"}';
 
 export interface RelaySocket {
   binaryType: BinaryType;
@@ -314,11 +323,15 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     let server: RelayServerInfo = { version: "", relayProtocol: RELAY_PROTOCOL };
     let receipt: Uint8Array | undefined;
     let incoming = Promise.resolve();
+    /** the keepalive of a join that brought the card, while it waits (LIST_JOIN_KEEPALIVE_MS); `pinged`: one went out */
+    let keepalive: ReturnType<typeof setInterval> | undefined;
+    let pinged = false;
     const stop = (error: Error): void => {
       if (phase === "closed") return;
       const admitted = phase === "ready";
       phase = "closed";
       clearTimeout(deadline);
+      clearInterval(keepalive);
       options.signal?.removeEventListener("abort", aborted);
       mux?.carrierLost();
       secure?.close(4000, "relay channel closed");
@@ -397,6 +410,14 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           const pairing = PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS + (carded === undefined ? 0 : LIST_JOIN_PLACING_MS);
           expect(pairing, () => new RelayAdmissionTimeoutError("auth"));
           mux?.extendSetup(pairing);
+          // and longer than the relay keeps a socket that sends nothing: the relay's own keepalive, which the PC never sees
+          if (carded !== undefined && direct === undefined) {
+            keepalive = setInterval(() => {
+              if (phase === "closed" || phase === "ready" || socket.readyState !== OPEN) return;
+              pinged = true;
+              socket.send(RELAY_PING);
+            }, LIST_JOIN_KEEPALIVE_MS);
+          }
           await send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
             payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)), ...(options.pcProof ? { server_key: options.pcProof.publicKey } : {}),
               ...(carded === undefined ? {} : { list_enc: carded.enc, list_card: carded.card }) } });
@@ -501,6 +522,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       if (receipt) mux.receive(receipt);
       mux.authenticate(admitted.device_id ?? frame.payload.device_id);
       phase = "ready";
+      clearInterval(keepalive);
       clearTimeout(deadline);
       resolve({ mux, device: admitted, connectionId, sessionId: frame.payload.session_id, role: frame.payload.role, server,
         directCarriers: options.offerDirect ? frame.payload.direct ?? [] : [],
@@ -527,6 +549,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     };
     socket.onmessage = (event) => {
       if (phase === "closed") return;
+      // the relay's answer to the keepalive this join sent: nothing of the PC's
+      if (pinged && event.data === RELAY_PONG) return;
       if (phase !== "assigned") {
         if (typeof event.data !== "string" && !(event.data instanceof ArrayBuffer)) {
           stop(new MuxProtocolError("protocol_error", "Invalid relay carrier frame"));

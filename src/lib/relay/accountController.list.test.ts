@@ -510,6 +510,15 @@ describe("the hosted shell and the account's signed list", () => {
     expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${LIST} 4 for acct-one`]);
   });
 
+  it("keeps no place a PC handed for a list no card of this page was made for: never under whichever account is signed in", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    list.adopt = async (offer, account) => { calls.push(`adopt ${offer.list} for ${account}`); return OFF; };
+    const account = controller(list);
+    expect(await account.takePlace({ id: "5c".repeat(32), seq: 4, hash: "ab".repeat(32) })).toBe(false);
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
+  });
+
   it("follows no list where a test gives its own account store or fetch and no list", async () => {
     await signIn("acct-one");
     const account = controller();

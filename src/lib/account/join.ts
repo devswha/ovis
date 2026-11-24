@@ -289,6 +289,11 @@ export async function admitToAccount(options: {
    * sent for a device another member put out while this approval waited on X.
    */
   holds?: () => void;
+  /**
+   * The place the list let the new device in at, where this device placed it already (on a PC that lets devices in by
+   * the list): the introduction names it in that case too (formats E6), and a PC that follows the list drops it.
+   */
+  place?: ListOffer;
 }): Promise<AddRecord> {
   const now = options.now ?? Date.now;
   // fixed wait: the pause between tries of a poll bounded by ADMITTED_MS
@@ -300,7 +305,8 @@ export async function admitToAccount(options: {
   const deadline = now() + ADMITTED_MS;
   for (;;) {
     if (options.allow === undefined) options.holds?.();
-    try { await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs: options.allow === undefined ? pcs : [] }); break; }
+    const placed = options.allow === undefined && options.place !== undefined ? { list: { id: options.place.list, seq: options.place.seq, hash: options.place.hash } } : {};
+    try { await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs: options.allow === undefined ? pcs : [], ...placed }); break; }
     catch (error) {
       if (!(error instanceof AccountPcError)) throw error;
       // X lets devices in by the list: it keeps no row a member added, and takes an introduction only from a device of its own
@@ -387,6 +393,11 @@ export async function admitWithList(list: AccountList | null, options: Omit<Para
   if (view.account !== options.account) throw new ListAllowError("changed", null);
   // what stops this device from writing is said before anything goes to the PC
   const began = beganOn(list, view, options.scope);
+  // bound from this read on, before the wait for the PC's row: a key another tab puts on this device meanwhile signs nothing
+  if (options.scope !== undefined) {
+    options.scope.list ??= began.list;
+    options.scope.key ??= began.signer;
+  }
   let offer: ListOffer | null = null;
   const add = await admitToAccount({ ...options, allow: async () => {
     offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.scope === undefined ? {} : { scope: options.scope }), ...(options.wait === undefined ? {} : { wait: options.wait }) });
@@ -532,14 +543,14 @@ export async function approveForAccount(options: {
       const attempt = async (): Promise<void> => {
         try {
           if (pinned) {
-            await allowOnPinnedPc(options.list, { fetch: pc.fetch, account: options.account, joining: joiningOf(admission), scope, ...(options.wait === undefined ? {} : { wait: options.wait }) });
+            const place = await allowOnPinnedPc(options.list, { fetch: pc.fetch, account: options.account, joining: joiningOf(admission), scope, ...(options.wait === undefined ? {} : { wait: options.wait }) });
             // the list holds the device: the card that said otherwise goes, whatever the rest answers
             await options.onStalled(null);
             const rest = await base();
             const { list } = options;
             const bound = began;
             if (list === null || bound === null) throw new ListAllowError("changed", null);
-            await admitToAccount({ ...rest, inList: true, holds: () => { holdsStill(list, bound, rest.joining.key, rest.key.public_spki); } });
+            await admitToAccount({ ...rest, inList: true, place, holds: () => { holdsStill(list, bound, rest.joining.key, rest.key.public_spki); } });
             return;
           }
           await admitWithList(options.list, { ...await base(), scope });

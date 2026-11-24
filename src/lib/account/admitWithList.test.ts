@@ -12,6 +12,8 @@ import { memoryAccountStore } from "./store.ts";
 
 const THROUGH = "a1".repeat(16);
 const noWait = async (): Promise<void> => {};
+/** A pause that moves the world's clock by its length: a poll bounded by a deadline (the introduction's) ends instead of spinning. */
+const passes = (w: { clock: { now: number } }) => async (ms: number): Promise<void> => { w.clock.now += ms; };
 
 /** PC X as an approval meets it: it records what it is sent, and answers the introduction, the records and the list's two calls. */
 function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknown) => Response | Promise<Response>; introduce?: (body: Record<string, unknown>) => Response | Promise<Response> } = {}) {
@@ -219,7 +221,7 @@ describe("an approval on a card, from the press to what is left to say", () => {
     const approve = (pc: ReturnType<typeof pcX>, followsList: boolean, told: { list?: true; confirmed?: true } = {}, list: typeof member.list | null = member.list) => approveForAccount({
       request: { ...request, ...told }, digits: "222222", through: X, service: member.service, account: w.account, key: member.store.key(), list,
       pc: { fetch: async (path, init) => { order.push(path); return pc.fetch(path, init); }, followsList },
-      decide: async (decision) => { order.push(decision); }, paired: async () => [], directory: async () => [X], wait: noWait, now: () => w.clock.now,
+      decide: async (decision) => { order.push(decision); }, paired: async () => [], directory: async () => [X], wait: passes(w), now: () => w.clock.now,
       onStalled: (stalled) => { said.push(stalled === null ? null : stalled.why); if (stalled !== null) { retries.push(stalled.retry); ways.push(stalled.pairedAtPc); } },
     });
     return { w, member, X, key, order, said, ways, retries, approve };

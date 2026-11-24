@@ -614,16 +614,21 @@ export function createAccountController(mount: RelayShellMount, view: {
   };
   /**
    * The place in the account's list a PC handed this device when it let it in (RelayChannel.listPlace): the device
-   * follows the list from there, by its own read of the log, and its key for it is read with the account's PCs.
+   * follows the list from there, by its own read of the log, and its key for it is read with the account's PCs. The
+   * place is the account's the card was made for, and is kept for that account alone, whatever sign-in is stored
+   * when it lands: one that ended meanwhile, or another account's, leaves it for a sign-in to that account again.
+   * True where that account is the one signed in now, so the PC may be opened anew with its list key.
    */
-  const takePlace = async (place: { readonly id: string; readonly seq: number; readonly hash: string }): Promise<void> => {
-    if (lists === null) return;
-    // kept for the account the card was made for, also where that sign-in ended meanwhile: a sign-in to it again takes it up
-    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }, cardAccounts.get(place.id)).catch((error: unknown) => {
+  const takePlace = async (place: { readonly id: string; readonly seq: number; readonly hash: string }): Promise<boolean> => {
+    const owner = cardAccounts.get(place.id);
+    if (lists === null || owner === undefined) return false;
+    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }, owner).catch((error: unknown) => {
       if (error instanceof SignedOutError) throw error;
       console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error);
     });
+    const now = await account.session().catch(() => undefined);
     await refresh(false, true);
+    return now?.account === owner;
   };
   /**
    * `consent` null: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it.

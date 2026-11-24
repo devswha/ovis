@@ -979,11 +979,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       opening = null;
       comparison = null;
       markRemovedPc(attempt.offer.server_id, null);
-      let taken = true;
-      // the sign-in ended while the place was taken: the front page, which says so
-      await account.takePlace(place).catch((error: unknown) => {
-        taken = false;
+      // the sign-in ended, or moved to another account, while the place was taken: the front page, which says so; the
+      // PC is never opened with the key of another account than the one the place is for
+      const taken = await account.takePlace(place).catch((error: unknown) => {
         console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error);
+        return false;
       });
       if (controller.signal.aborted || last !== attempt) return;
       const { code: _spent, ...offer } = attempt.offer;

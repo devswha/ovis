@@ -13,6 +13,7 @@ import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { exportPublicKey, generateKeyPair, openDaemonSecureChannel } from "../../../shared/relay-e2ee.ts";
 import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG } from "../../../relay/core.ts";
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
 import type { RelayChannelOptions } from "../../../shared/relay-channel.ts";
@@ -44,12 +45,19 @@ class FakeSocket implements RelaySocket {
   /** closing with no close event yet, as a browser socket the page closed while the relay has not answered */
   closing = false;
   get readyState(): number { return this.closed ? 3 : this.closing ? 2 : 1; }
+  /** when each frame was put on this socket, by `clock`, and how many were the relay's own keepalive */
+  readonly sentAt: number[] = [];
+  pings = 0;
+  clock: () => number = () => 0;
   constructor(readonly daemon: Transport) {}
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
     if (this.closed) throw new Error("Socket closed");
     // a browser socket in CLOSING drops what it is given, without an error
     if (this.closing) return;
     if (typeof data !== "string" && !(data instanceof ArrayBuffer)) throw new Error("Unexpected carrier type");
+    this.sentAt.push(this.clock());
+    // the relay answers its own keepalive (relay/core.ts), and the PC behind it never sees it
+    if (data === KEEPALIVE_PING) { this.pings += 1; queueMicrotask(() => this.deliver(KEEPALIVE_PONG)); return; }
     this.daemon.onmessage?.({ data, isBinary: typeof data !== "string" });
   }
   deliver(data: string | ArrayBuffer): void {
@@ -760,7 +768,7 @@ function scriptedJoin(pc: { features: readonly string[]; list?: string; place?: 
     void opening.catch(() => {});
     return opening;
   };
-  return { offer, store, open, hello: bounded(hello.promise), request: bounded(request.promise), confirmed: confirmed.promise };
+  return { offer, store, open, socket, hello: bounded(hello.promise), request: bounded(request.promise), confirmed: confirmed.promise };
 }
 
 describe("a new device that joins through a PC pinned to its account's list", () => {
@@ -868,6 +876,33 @@ describe("a new device that joins through a PC pinned to its account's list", ()
     jest.advanceTimersByTime(1);
     await settle();
     expect(outcomes.map((each) => [each.carded, each.error instanceof RelayAdmissionTimeoutError])).toEqual([[false, true], [true, true]]);
+  });
+
+  it("keeps its relay socket from going idle for the whole wait with the relay's own keepalive, which no PC sees; a join without a card sends none", async () => {
+    jest.useFakeTimers();
+    let elapsed = 0;
+    const { key, listCard } = await card();
+    const outcomes: boolean[] = [];
+    const waits = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, answers: false });
+    const plain = scriptedJoin({ features: ["pair-sas"], answers: false });
+    for (const each of [waits, plain]) each.socket.clock = () => elapsed;
+    void waits.open({ accountKey: key, listCard }).then(() => null, () => { outcomes.push(true); });
+    void plain.open({ accountKey: key, listCard }).then(() => null, () => { outcomes.push(false); });
+    await Promise.all([waits.confirmed, plain.confirmed]);
+    const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+    // the person pressed at once; the PC answers nothing until the join's own deadline
+    while (outcomes.length < 2) {
+      jest.advanceTimersByTime(5_000);
+      elapsed += 5_000;
+      await settle();
+    }
+    expect(outcomes).toEqual([false, true]);
+    expect(elapsed).toBeGreaterThan(IDLE_MS);
+    // never as long as the relay's idle limit without a frame, from the confirm to the end of the wait; and the PC was
+    // sent nothing it did not ask for
+    const gaps = [...waits.socket.sentAt, elapsed].map((at, index, all) => index === 0 ? 0 : at - all[index - 1]!);
+    expect(Math.max(...gaps)).toBeLessThan(IDLE_MS);
+    expect([waits.socket.pings > 0, plain.socket.pings]).toEqual([true, 0]);
   });
 });
 
