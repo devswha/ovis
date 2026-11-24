@@ -740,7 +740,7 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
   test("the join routes are this PC's own window's alone, and name the account this PC was set up for", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
-    for (const path of ["/api/account/list/join", "/api/account/list/join/prepare", "/api/account/list/join/body", "/api/account/list/join/place", "/api/account/list/allow/cancel"]) {
+    for (const path of ["/api/account/list/join", "/api/account/list/join/prepare", "/api/account/list/join/body", "/api/account/list/join/place"]) {
       const base = `http://127.0.0.1:${made.pc.app.port}`;
       const answer = await fetch(`${base}${path}`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-herdr-machine": "1", "x-forwarded-for": "100.64.0.9", ...own }, body: JSON.stringify({ account: ACCOUNT, list: account.id }) });
       expect(answer.status).toBe(403);

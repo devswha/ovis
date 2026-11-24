@@ -563,18 +563,15 @@ export class ListFollow implements ListAuthority {
   }
 
   /**
-   * A person at this PC gives up the entry it signed and keeps for `key`, a device it has since come to hold back
-   * (POST /api/account/list/allow/cancel): that entry is never sent, and the place it held goes to the next Allow at
-   * once instead of after LIST_KEPT_HELD_MS. Nothing for an entry of any other device, or of one it still lets in.
-   * Answers whether one was given up.
+   * The person at this PC declined a join of the device with `key` (its own window): what this PC signed for that
+   * device and keeps is never sent, and the place it held goes to the next Allow at once. Nothing for an entry of any
+   * other device. Never throws.
    */
-  cancelKept(key: string): boolean {
+  declinedHere(key: string): void {
     const scope = this.bound();
-    if (this.stopped || scope === null || !this.isPinned) return false;
+    if (this.stopped || scope === null || !this.isPinned) return;
     const kept = this.allowOnDisk(scope);
-    if (kept === null || kept === "unread" || kept.key !== key || this.deps.mayAdmit?.(key) !== false) return false;
-    this.dropAllow();
-    return true;
+    if (kept !== null && kept !== "unread" && kept.key === key) this.dropAllow();
   }
 
   /** How long ago the entry this PC keeps (ACCOUNT_LIST_ALLOW_FILE) was kept, by the file's own time, which is never written over; 0 when not known. */
@@ -798,7 +795,10 @@ export class ListFollow implements ListAuthority {
     if (stands === "stopped") return "A device of your account wrote something into its list that this Ovis is too old to read, so this PC lets no device of your account in. Update Ovis on this PC.";
     if (stands === "waiting") return "This PC is reading your account's list again from its start, and lets no device of your account in until that read shows this PC in the list.";
     if (this.allowUnread !== null) return `This PC cannot read its record of an entry it signed (${ACCOUNT_LIST_ALLOW_FILE}), so it lets no new device into your account's list until the list has moved on. It then removes that file by itself.`;
-    if (this.keptHeld) return "This PC signed a device into your account's list that it has since held back. That entry is not sent, and for up to ten minutes after it was signed this PC lets no other new device in at its place, unless you cancel that entry on this PC.";
+    if (this.keptHeld) {
+      const until = new Date(Date.now() - this.keptFor() + LIST_KEPT_HELD_MS).toISOString();
+      return `A device this PC lets into your account's list waits behind an entry this PC signed earlier for a device it has since held back, until ${until}. That entry is not sent; declining that device's join on this PC ends the wait at once.`;
+    }
     return null;
   }
 
