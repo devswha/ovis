@@ -959,11 +959,14 @@ export class FakeAccountService {
       // confirm, and where Step 2 is on a PUT that lists a PC the account does not list yet. Upkeep of a listed PC and a device
       // code's listing ask nothing of the sign-in, and read no proof. The service before ignores `key_proof`
       if (this.pcAddProofs && body.key_proof !== undefined && keyProofOf(body.key_proof) === null) return problem(400, "invalid_request", "Send key_proof as { challenge_id, signature }");
-      if (this.pcAddProofs && own && (confirm || (this.opensAll && !directory.has(pc)))) {
+      // an account that has a signed list lists a new PC only by a sign-in that may add one, whatever Step 2 and the list
+      // rule's switch say: its listing is what the list's `pc` lock counts
+      const hasList = this.listOfAccount(account) !== undefined;
+      if (this.pcAddProofs && own && (confirm || ((this.opensAll || hasList) && !directory.has(pc)))) {
         const listing = named ? body.listing_id as string : directory.get(pc)?.listing_id ?? "";
         const proved = await this.provedKey(session, body.key_proof, confirm ? "confirm" : "list", pc, listing);
         if (proved instanceof Response) return proved;
-        const enforced = confirm || this.listProofRequired || body.key_proof !== undefined;
+        const enforced = confirm || this.listProofRequired || hasList || body.key_proof !== undefined;
         if (!recent && proved === null && enforced) return problem(403, "session_not_fresh", "Sign in again on this device first");
       }
       // PCL-4: a confirm asks what the one-press admit asks of the sign-in: fresh (or proved, above), and two-step set unless the

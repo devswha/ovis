@@ -545,6 +545,9 @@ every route in use.
   that signer's own counter instead of the account's requests; a replay never does.
 - **A PC with no standing** (neither listed by the account nor a row in the list) gets `404` from
   the placing route before its batch is read: it learns nothing of the list there.
+- **Listing a new PC** (`PUT /v1/pcs/{server_id}`) in an account that has a list takes an own
+  sign-in made in the last ten minutes, or its key proof with the purpose `list`, whatever Step 2
+  and `listProofRequired` say: that listing is what the `pc` lock counts.
 - **Limits** are in `listLimits`, which a test may lower to reach `list_full`, `entry_budget` or a
   PC's calls a minute.
 - `accountList(account)` gives what the service holds, no lie applied: the list id, every entry's
