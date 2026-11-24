@@ -24,8 +24,10 @@ const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
 
 const DAY_MS = 86_400_000;
-/** How often the PC under test reads its account's snapshot while time passes. */
-const READ_EVERY_MS = 30 * 60_000;
+/** How often the PC under test reads its account's snapshot while time passes: within the hour after which its rows would wait for a read. */
+const READ_EVERY_MS = 55 * 60_000;
+/** Each test lets a day pass on the PC, a read of its snapshot at a time: more than bun's five seconds on a busy machine. */
+const SLOW = 30_000;
 /** A key this PC put out: what a device's sign-in key was before somebody removed it here. */
 const removedKey = (await migratingDevice("Old phone")).signIn.key;
 
@@ -113,7 +115,7 @@ describe("what a PC tells a device of its account before the account moves", () 
     const outsider = await relayConnection(pc.fixture, { serverId: pc.serverId });
     await outsider.auth(guest);
     expect((await ask(outsider, "/api/account/list/witness")).status).toBe(403);
-  });
+  }, SLOW);
 
   test("a key let in a moment ago is told with what it has; a row that waits for the account service is told as none", async () => {
     const pc = await accountInUse();
@@ -130,7 +132,7 @@ describe("what a PC tells a device of its account before the account moves", () 
     // two hours with no whole read of the snapshot: every row waits for one, and lets nobody in meanwhile
     pc.time.advance(2 * 60 * 60_000);
     expect(pc.services.accountWitness!.admits()).toEqual({ account: ACCOUNT, admits: [] });
-  });
+  }, SLOW);
 
   test("a staging run's factor multiplies what the PC tells, and says so in its status; the production service never takes it", async () => {
     const was = process.env[MIGRATE_TIME_SCALE_ENV];
@@ -146,7 +148,7 @@ describe("what a PC tells a device of its account before the account moves", () 
     const production = relayFixture(false, { accountOpensAll: true, accountService: { url: "https://account.ovis.sh", fetch: pc.service.fetch } });
     closes.push(() => production.close());
     expect(production.app.context.services.accountWitness!.scale).toBe(1);
-  });
+  }, SLOW);
 
   test("a PC in no account answers not_in_account", async () => {
     const fixture = relayFixture(false, { accountOpensAll: true });
@@ -154,7 +156,7 @@ describe("what a PC tells a device of its account before the account moves", () 
     const base = `http://127.0.0.1:${fixture.app.port}`;
     const answer = await fetch(`${base}/api/account/list/witness`, { headers: { origin: base } });
     expect([answer.status, ((await answer.json()) as { error: { code: string } }).error.code]).toEqual([409, "not_in_account"]);
-  });
+  }, SLOW);
 });
 
 /** A session of `device` signed in with one of its keys: what it says over it, and what it is told. */
@@ -196,7 +198,7 @@ describe("a PC that follows no list, and a device of its account names one in it
     // naming it again tells the same
     const again = await sessionOf(pc, pc.phone, "member");
     expect(await names(again, { naming: await born.naming(pc.phone, pc.phone.member.key, pc.endpoint) })).toEqual({ pinned: true, list: born.id });
-  });
+  }, SLOW);
 
   test("its WELCOME says the list it follows to a client that knows of lists, and nothing to one that does not; a PC that follows none says nothing new", async () => {
     const pc = await accountInUse();
@@ -221,7 +223,7 @@ describe("a PC that follows no list, and a device of its account names one in it
     expect(knows.at(-1)).toMatchObject({ features: [ACCOUNT_LIST_FEATURE], list: born.id });
     expect(knows.at(-1)).not.toHaveProperty("provisional");
     expect((await welcomes([])).some((welcome) => "list" in welcome)).toBe(false);
-  });
+  }, SLOW);
 
   test("a session this PC let in an hour ago names nothing yet, and says how long it waits; after a day it does", async () => {
     const pc = await accountInUse();
@@ -243,7 +245,7 @@ describe("a PC that follows no list, and a device of its account names one in it
     expect(await names(await sessionOf(pc, laptop), body)).toEqual({ pinned: true, list: born.id });
     await pc.settle();
     expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in" });
-  });
+  }, SLOW);
 
   test("a list started by a key this PC never let in is followed on nobody's word: not on a carried device's, and not in a pairing's session", async () => {
     const pc = await accountInUse();
@@ -264,7 +266,7 @@ describe("a PC that follows no list, and a device of its account names one in it
     expect(await names(await sessionOf(pc, pc.phone), { naming: await born.naming(pc.phone, pc.phone.signIn.key, "ab".repeat(32), "signIn") })).toEqual({ pinned: false, why: "naming_invalid", wait: null });
     expect(pc.list.status().pinned).toBe(false);
     expect(await pc.signsIn(pc.phone)).toBe("drive");
-  });
+  }, SLOW);
 
   test("a device that signed in again names the list by its vouch, which the PC keeps for the next session", async () => {
     const pc = await accountInUse();
@@ -287,7 +289,7 @@ describe("a PC that follows no list, and a device of its account names one in it
     expect(await names(await sessionOf(pc, again), { naming: await naming() })).toEqual({ pinned: true, list: born.id });
     await pc.settle();
     expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in" });
-  });
+  }, SLOW);
 
   test("what the route takes: at most 16 vouches, only from a device's own session", async () => {
     const pc = await accountInUse();
@@ -302,7 +304,7 @@ describe("a PC that follows no list, and a device of its account names one in it
     const local = await fetch(`${base}/api/account/list/name`, { method: "POST", headers: { origin: base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ naming }) });
     expect(local.status).toBe(403);
     expect(pc.list.status().pinned).toBe(false);
-  });
+  }, SLOW);
 });
 
 /** The PC once the phone moved the account onto its list, carrying the tablet in and this PC as an endpoint with no key, and named it here. */
@@ -350,7 +352,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     expect(pc.list.status().reason).toBeNull();
     // once it holds its keys, nobody asks for its card again
     expect((await ask(phone, "/api/account/list/card", { method: "POST", body: {} })).status).toBe(409);
-  });
+  }, SLOW);
 
   test("a pc entry with its keys that another device signed is no key it signs with, and one with another key at its relay key: it says so", async () => {
     const pc = await followsByMove();
@@ -365,7 +367,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     expect(pc.list.status().reason).toContain("ovis add");
     // its devices are let in all the same
     expect(await pc.signsIn(pc.phone, "member")).toBe("drive");
-  });
+  }, SLOW);
 
   test("the list holds another key at this PC's relay key: the PC follows its list, signs nothing, and says so", async () => {
     const pc = await followsByMove();
@@ -377,7 +379,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     expect(pc.list.allowRefusal()).toBe("not_signer");
     expect(pc.list.status().reason).toContain("another key");
     expect(await pc.signsIn(pc.tablet)).toBe("drive");
-  });
+  }, SLOW);
 
   test("who may ask for the card: a device the list holds with full power, to drive, over its own session", async () => {
     const pc = await followsByMove();
@@ -396,7 +398,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     // a PC that follows no list has no card to give for one
     const unpinned = await accountInUse();
     expect((await ask(await sessionOf(unpinned, unpinned.phone), "/api/account/list/card", { method: "POST", body: {} })).status).toBe(409);
-  });
+  }, SLOW);
 
   test("with nobody's evidence, the number at the PC gives it its keys: ovis add on a PC that follows its list with no key of its own", async () => {
     const pc = await followsByMove();
@@ -414,7 +416,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     await pc.born.append({ kind: "pc", key: post.key, endpoint: pc.endpoint, enc: post.enc, card: post.card, sealed: null }, pc.phone.member);
     expect((await pc.local("/api/account/list/add")).body).toMatchObject({ state: "added", list: pc.born.id });
     expect(pc.list.allowRefusal()).toBeNull();
-  });
+  }, SLOW);
 
   test("a PC that follows its list with no key of its own and lost its copy lets nobody in, and says to run ovis add", async () => {
     const pc = await followsByMove();
@@ -429,7 +431,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     await accountList!.settled();
     expect(accountList!.status()).toMatchObject({ pinned: true, standing: "waiting" });
     expect(accountList!.summary()?.reason).toContain("ovis add");
-  });
+  }, SLOW);
 });
 
 /** The same PC, once the phone moved the account onto its list carrying the tablet in, and pinned to that list by a person at it. */
@@ -467,7 +469,7 @@ describe("after the pin, the rows the list makes", () => {
     expect(pc.services.devices.isTombstoned(pc.tablet.signIn.key)).toBe(false);
     expect(existsSync(join(pc.fixture.stateDir, ACCOUNT_LIST_OWED_FILE))).toBe(false);
     expect([published.mock.calls.length, announced.mock.calls.length]).toEqual([0, 0]);
-  });
+  }, SLOW);
 
   test("a device this PC holds a removal against stays out by whichever of its keys it is in by", async () => {
     const pc = await pinnedToBirth();
@@ -480,7 +482,7 @@ describe("after the pin, the rows the list makes", () => {
     expect(pc.rowOf(pc.tablet.member.key)).toBeNull();
     expect(await pc.signsIn(pc.tablet, "member")).toBeNull();
     expect(pc.list.role(pc.tablet.member.key)).toBeNull();
-  });
+  }, SLOW);
 
   test("a carried key that never handed over is let in only while the account's snapshot names it too", async () => {
     const pc = await pinnedToBirth();
@@ -503,5 +505,31 @@ describe("after the pin, the rows the list makes", () => {
     await pc.pull();
     pc.time.advance(JOIN_HOLD_MS + 1_000);
     expect(await pc.signsIn(pc.tablet)).toBe("drive");
-  });
+  }, SLOW);
+
+  test("after a restart such a key waits for the first whole read of the snapshot, and keeps its row: no new admission, no notice", async () => {
+    const pc = await pinnedToBirth();
+    expect(await pc.signsIn(pc.tablet)).toBe("drive");
+    const before = pc.rowOf(pc.tablet.signIn.key)!;
+    pc.fixture.app.stop();
+    const reach = { away: true };
+    const again = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: async (request: Request) => { if (reach.away) throw new Error("away"); return await pc.service.fetch(request); } } });
+    closes.push(() => again.app.stop());
+    const { accountList, accountMailbox, accountRows, devices } = again.app.context.services;
+    devices.useClock(pc.time.waits);
+    const announced = spyOn(devices, "announceListAdmissions");
+    await accountList!.settled();
+    accountList!.tick();
+    await accountList!.settled();
+    const signsIn = async () => { const link = await relayConnection(again, { serverId: pc.serverId }); return await link.auth(asSignIn(pc.serverId, pc.tablet)).then((ok) => ok.role, () => null); };
+    // the service is away: nothing says the tablet's sign-in still stands, so it waits, and its row stays
+    expect(await signsIn()).toBeNull();
+    expect(accountRows!.rows().find((row) => row.key === pc.tablet.signIn.key)).toMatchObject({ id: before.id, no: before.no });
+    reach.away = false;
+    await accountMailbox.pull();
+    await accountList!.settled();
+    expect(await signsIn()).toBe("drive");
+    expect(accountRows!.rows().find((row) => row.key === pc.tablet.signIn.key)).toMatchObject({ id: before.id, origin: before.origin });
+    expect(announced).not.toHaveBeenCalled();
+  }, SLOW);
 });

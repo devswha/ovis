@@ -521,7 +521,7 @@ export class ListFollow implements ListAuthority {
   role(key: string): ListRole | null | undefined {
     if (!this.pinned()) return undefined;
     const copy = this.clocked();
-    if (copy === null || this.alarmLost || this.mustRead || this.owedKey(key) || this.keptOut(copy)(key)) return null;
+    if (copy === null || this.alarmLost || this.mustRead || this.owedKey(key) || this.keptOut(copy, true)(key)) return null;
     const answer = admitsSession(copy, key, this.seconds());
     // refused for its time: the hour that says so is on disk before the answer is used, so no clock set back undoes it
     const until = copy.state?.devices[key]?.until ?? null;
@@ -547,16 +547,19 @@ export class ListFollow implements ListAuthority {
    * removal against by any key the device has been in the list by, or by a sign-in key that vouched for it (heldOut);
    * and a key a `carried` entry named that never handed its place on, while the account service's last whole snapshot
    * of this run does not name it too. That one stays out until the snapshot names it again: local, and undone by the
-   * same word, as nobody signs a removal on the service's word.
+   * same word, as nobody signs a removal on the service's word. Before the first whole snapshot of this run such a key
+   * waits: no sign-in (`signIn`), and its row stays as it is, so the read that names it brings it back as it was.
    */
-  private keptOut(copy: FollowerCopy): (key: string) => boolean {
+  private keptOut(copy: FollowerCopy, signIn: boolean): (key: string) => boolean {
     const state = copy.state;
     if (state === null || state.needs_replay !== undefined) return () => false;
     const vouched = this.vouchedFor(copy.list);
     const holds = this.deps.holdsRemoval;
     const removed = holds === undefined ? [] : [...new Set([...Object.keys(state.signers), ...vouched.map((vouch) => vouch.device)])].filter((key) => holds(key));
     const alone = new Set(carriedAlone(state));
-    return (key) => (alone.has(key) && this.snapshotNames?.has(key) !== true) || (removed.length > 0 && heldOut(state, { removed, vouched }, key));
+    const names = this.snapshotNames;
+    const gated = (key: string): boolean => alone.has(key) && (names === null ? signIn : !names.has(key));
+    return (key) => gated(key) || (removed.length > 0 && heldOut(state, { removed, vouched }, key));
   }
 
   /** The vouches this PC holds for the list `list` that hold: a sign-in key's word, with the member key's, that the two are one device's. */
@@ -2332,7 +2335,7 @@ export class ListFollow implements ListAuthority {
       const rows = listCommit(copy, now);
       // nobody while the copy does not show whom the PC lets in (a lost alarm, a removal it has not read again), and never a key the mark names
       const closed = this.alarmLost || this.mustRead;
-      const out = this.keptOut(copy);
+      const out = this.keptOut(copy, false);
       this.deps.commit?.({ ...rows, devices: rows.devices.map((row) => (closed || this.owedKey(row.key) || out(row.key) ? { ...row, eligible: false } : row)) }, readmission, pinning || this.freshPin ? () => true : (key) => this.allowing.has(key));
       this.dirty = !alarmKept;
       this.freshPin = false;
