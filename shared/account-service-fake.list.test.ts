@@ -778,7 +778,8 @@ describe("the fake account service's list routes (Part D)", () => {
       await post(pc);
       expect((await w.call("DELETE", `/v1/pcs/${pc.serverId}`, undefined, w.service.issueToken(ACCOUNT))).status).toBe(204);
       expect(refusal(await w.place(list, added.texts))).toBe("403 not_posted");
-      await listPc(w, pc);
+      // an account that has a list lists a new PC only from a sign-in that may add one: a fresh one here
+      await listPc(w, pc, w.service.issueToken(ACCOUNT));
       expect((await w.place(list, added.texts)).status).toBe(200);
       // the post is used up by the entry it let in
       expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts).toEqual([]);
@@ -885,6 +886,33 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await pull(w, pc)).list).toEqual({ id: list, head });
       expect((await pull(w, asking)).list).toBeNull();
       expect("list" in await pull(w, pc, false)).toBe(false);
+    });
+  });
+
+  describe("listing a new PC in an account that has a list", () => {
+    test("an account that has a list lists a new PC only by a sign-in that may add one, whatever the list rule's switch says; an account without a list lists as it did", async () => {
+      const w = await world();
+      w.service.listProofRequired = false;
+      const put = (pc: Machine, bearer: string, more: Record<string, unknown> = {}) =>
+        w.call("PUT", `/v1/pcs/${pc.serverId}`, { label: "tower", public_key: pc.endpoint, relay: "wss://relay.test", ...more }, bearer);
+      const registered = await newKey();
+      const old = staleSignIn(w, registered);
+      // no list yet: the switch decides, and it is off here
+      expect((await put(machine(), old)).status).toBe(200);
+      const genesis = await sign(w.owner, { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
+      expect((await w.call("POST", "/v2/lists", { entry: genesis.text }, w.service.issueToken(ACCOUNT))).status).toBe(201);
+      // with a list: an old own sign-in lists nothing new without its key's proof, and writes nothing
+      const fresh = machine();
+      const refused = await put(fresh, old);
+      expect([refused.status, (refused.body as unknown as { error: { code: string } }).error.code]).toEqual([403, "session_not_fresh"]);
+      expect(w.service.pcs(ACCOUNT).some((row) => row.server_id === fresh.serverId)).toBe(false);
+      w.service.opensAll = true;
+      const challenge = await (await w.service.fetch(new Request(`${BASE}/v1/pcs/challenge`, { method: "POST", body: "{}", headers: { authorization: `Bearer ${old}` } }))).json() as { challenge_id: string; challenge: string };
+      const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, registered.pair.privateKey, pcAddSigningBytes("list", ACCOUNT, fresh.serverId, "", challenge.challenge_id, challenge.challenge))));
+      expect((await put(fresh, old, { key_proof: { challenge_id: challenge.challenge_id, signature } })).status).toBe(200);
+      // upkeep of a listed PC and a device code's listing are as before
+      expect((await put(fresh, old)).status).toBe(200);
+      expect((await put(machine(), w.service.issueToken(ACCOUNT, { device: true }))).status).toBe(200);
     });
   });
 
