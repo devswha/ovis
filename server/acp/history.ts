@@ -8,7 +8,9 @@ import { answerVersion, ConversationReadPending, ConversationUnavailable, Histor
 import { parseLine, record, type Message, type Row } from "./messages.ts";
 import { digestOf, projectUpdates, type Picture, type UpdateEvent } from "./updates.ts";
 
-interface Prompt { start: number; end: number; replay: boolean; session: string }
+interface Span { start: number; end: number }
+interface Prompt extends Span { tail: number; prior: readonly Span[]; replay: boolean; session: string }
+const byteCount = (p: Prompt) => p.prior.reduce((n, span) => n + span.end - span.start, p.end - p.tail);
 interface History { generation: number; prompts: Prompt[]; plan: PlanStep[] | null; user: boolean; session: string | null }
 const empty = (generation: number, session: string | null = null): History => ({ generation, prompts: [], plan: null, user: false, session });
 const MAX_BYTES = 64 * 1024 * 1024;
@@ -28,6 +30,8 @@ export class AcpHistory {
   readonly path: string;
   private active = empty(0);
   private loading: History | null = null;
+  private incomplete = false;
+  private resumeSpan = false;
   private position = 0;
   private fileId?: { dev: bigint; ino: bigint };
 
@@ -46,12 +50,21 @@ export class AcpHistory {
       if (stat?.isFile()) this.fileId = { dev: stat.dev, ino: stat.ino };
     }
     this.position += length;
-    if (message === null) return;
+    if (message === null || (row.dir === "keeper" && message.method === "_keeper/oversize")) {
+      if (this.loading) this.incomplete = true;
+      return;
+    }
     const params = message.params;
     if (row.dir === "keeper" && message.method === "_keeper/mode" && params?.mode === "acp") {
-      if (params.phase === "start") this.loading = empty(row.seq, typeof params.sessionId === "string" ? params.sessionId : this.active.session);
-      if (params.phase === "ready" && this.loading) { this.active = this.loading; this.loading = null; }
-      if (params.phase === "failed") this.loading = null;
+      if (params.phase === "start") {
+        this.loading = empty(row.seq, typeof params.sessionId === "string" ? params.sessionId : this.active.session);
+        this.incomplete = false;
+      }
+      if ((params.phase === "ready" || params.phase === "failed") && this.loading) {
+        this.resumeSpan = params.phase === "failed" || this.incomplete;
+        if (!this.resumeSpan) this.active = this.loading;
+        this.loading = null;
+      }
       return;
     }
     const state = this.loading ?? this.active;
@@ -71,26 +84,39 @@ export class AcpHistory {
     const user = update?.sessionUpdate === "user_message_chunk";
     if (!prompt && (typeof update?.sessionUpdate !== "string" || !["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan", "user_message_chunk"].includes(update.sessionUpdate))) return;
     if (user && !this.loading) return; // the agent's echo of the outgoing prompt, not another user turn
-    if (prompt || (user && !state.user) || !state.prompts.length) state.prompts.push({ start, end: this.position, replay: this.loading !== null, session: state.session });
+    if (prompt || (user && !state.user) || !state.prompts.length) state.prompts.push({ start, end: this.position, tail: start, prior: [], replay: this.loading !== null, session: state.session });
     const last = state.prompts.at(-1);
-    if (last) last.end = this.position;
+    if (last) {
+      if (!this.loading && this.resumeSpan && last.start !== start) {
+        last.prior = [...last.prior, { start: last.tail, end: last.end }];
+        last.tail = start;
+      }
+      if (!this.loading) this.resumeSpan = false;
+      last.end = this.position;
+    }
     state.user = user;
   }
 
   private async read(prompt: Prompt, asset?: { ref: string; image?: Picture; output?: string }) {
     const { start, end } = prompt;
-    if (end - start > MAX_BYTES) throw new ConversationUnavailable("transcript_unreadable");
+    const size = byteCount(prompt);
+    const spans = [...prompt.prior, { start: prompt.tail, end }];
+    if (size > MAX_BYTES) throw new ConversationUnavailable("transcript_unreadable");
 
     const file = await open(this.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let bytes: Buffer;
     try {
       const stat = await file.stat({ bigint: true });
       if (!stat.isFile() || stat.dev !== this.fileId?.dev || stat.ino !== this.fileId.ino) throw new ConversationUnavailable("transcript_unreadable");
-      bytes = Buffer.alloc(end - start);
-      for (let at = 0; at < bytes.length;) {
-        const { bytesRead } = await file.read(bytes, at, bytes.length - at, start + at);
-        if (!bytesRead) throw new ConversationReadPending();
-        at += bytesRead;
+      bytes = Buffer.alloc(size);
+      let at = 0;
+      for (const span of spans) {
+        for (let pos = span.start; pos < span.end;) {
+          const { bytesRead } = await file.read(bytes, at, span.end - pos, pos);
+          if (!bytesRead) throw new ConversationReadPending();
+          at += bytesRead;
+          pos += bytesRead;
+        }
       }
     } finally { await file.close(); }
     function* updates(): Generator<UpdateEvent> {
@@ -140,8 +166,8 @@ export class AcpHistory {
     let start = end, bytes = 0;
     while (start > floor && end - start < count) {
       const prompt = state.prompts[start - 1];
-      if (!prompt || (bytes > 0 && bytes + prompt.end - prompt.start > MAX_BYTES)) break;
-      bytes += prompt.end - prompt.start;
+      if (!prompt || (bytes > 0 && bytes + byteCount(prompt) > MAX_BYTES)) break;
+      bytes += byteCount(prompt);
       start--;
     }
     const selection = state.prompts.slice(start, end).map(prompt => ({ ...prompt }));

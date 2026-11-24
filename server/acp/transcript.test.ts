@@ -41,6 +41,24 @@ it("only shows messages, plans and approvals for the keeper session", async () =
   } finally { close(); }
 });
 
+for (const issue of ["failed", "oversize", "malformed"] as const) {
+  it(`retains a complete transcript after a ${issue} replay and later plan`, async () => {
+    const { client, row, prompt, chunk, update, mode, close } = archive();
+    try {
+      prompt("Original"); chunk("agent_message_chunk", "Old answer");
+      const before = await client.history.page({});
+      mode("start"); chunk("agent_message_chunk", "DISCARDED");
+      if (issue === "oversize") row("keeper", { method: "_keeper/oversize", params: { dir: "from-agent" } });
+      if (issue === "malformed") update({ sessionUpdate: null });
+      mode(issue === "failed" ? "failed" : "ready");
+      update({ sessionUpdate: "plan", entries: [] });
+      const after = await client.history.page({});
+      expect(after.history_id).toBe(before.history_id);
+      expect(after.turns.at(-1)?.parts).toMatchObject([{ kind: "text", text: "Old answer" }, { kind: "tool", name: "plan" }]);
+    } finally { close(); }
+  });
+}
+
 it("counts and skips non-string discriminators both live and on restore", async () => {
   const { root, client, row, prompt, chunk, update, close } = archive();
   const replay = new Socket();
