@@ -63,6 +63,15 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     await next;
   });
 
+  it("refuses a chat submission after the agent closed stdin but stayed alive", async () => {
+    const { root } = await keeper();
+    const client = attach(root);
+    await client.ready();
+    await until(client, "session", () => client.session !== null);
+    expect(await prompt(client, "end-and-close-input")).toEqual({ stopReason: "end_turn" });
+    await expect(client.submit("not delivered")).rejects.toThrow("could not write");
+  });
+
   it("shows a permission request with the agent's options unchanged, and the chosen option reaches the agent", async () => {
     const { root } = await keeper();
     const client = attach(root);

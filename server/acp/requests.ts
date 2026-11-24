@@ -5,20 +5,22 @@ interface InFlight { resolve: (result: unknown) => void; reject: (error: Error) 
  * have separate lifetimes. Neither is transferred to a later connection. */
 export class KeeperRequests {
   private nextId = 1;
-  private readonly receipts = new Map<string, () => void>();
+  private readonly receipts = new Map<number, () => void>();
   private readonly inFlight = new Map<number, InFlight>();
 
   constructor(private readonly write: (message: unknown) => void) {}
 
-  /** Chat acknowledges the archived write, not the end of a turn that may itself wait for an approval. */
+  /** Chat waits for the writer, not the end of a turn that may itself wait for an approval. */
   async submit(sessionId: string, text: string): Promise<void> {
-    const key = crypto.randomUUID();
+    const id = this.nextId++;
     const receipt = Promise.withResolvers<void>();
-    this.receipts.set(key, receipt.resolve);
+    this.receipts.set(id, receipt.resolve);
     const timer = setTimeout(() => receipt.reject(new KeeperDisconnected()), 5000);
     try {
-      await Promise.race([receipt.promise, this.request("session/prompt", { sessionId, prompt: [{ type: "text", text }], _meta: { "ovis.sh/submit": key } })]);
-    } finally { clearTimeout(timer); this.receipts.delete(key); }
+      this.inFlight.set(id, { resolve: () => {}, reject: receipt.reject });
+      this.write({ jsonrpc: "2.0", id, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text }] } });
+      await receipt.promise;
+    } finally { clearTimeout(timer); this.receipts.delete(id); this.inFlight.delete(id); }
   }
 
   request(method: string, params: unknown): Promise<unknown> {
@@ -30,7 +32,7 @@ export class KeeperRequests {
   }
 
   delivered(key: unknown): void {
-    if (typeof key === "string") this.receipts.get(key)?.();
+    if (typeof key === "number") this.receipts.get(key)?.();
   }
 
   answered(message: Message): void {
@@ -38,7 +40,7 @@ export class KeeperRequests {
     if (id === null) return;
     const call = this.inFlight.get(id);
     if (call === undefined) return;
-    this.inFlight.delete(id);
+    if (!this.receipts.has(id)) this.inFlight.delete(id);
     const error = record(message.error);
     if (error !== null) call.reject(new KeeperRequestError(typeof error["code"] === "number" ? error["code"] : 0, text(error["message"]) ?? "error"));
     else call.resolve(message.result);

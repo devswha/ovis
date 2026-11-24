@@ -223,12 +223,13 @@ export class KeeperClient {
     const params = record(message.params) ?? {};
     switch (row.dir) {
       case "to-client":
-        if (row.client === this.client && this.client !== null && method === null) this.requests.answered(message);
+        if (row.client === this.client && this.client !== null) {
+          if (method === "_keeper/delivered") this.requests.delivered(params.id);
+          else if (method === null) this.requests.answered(message);
+        }
         return false;
       case "to-agent":
         if (method === "session/prompt" && typeof message.id === "string") {
-          const key = record(params._meta)?.["ovis.sh/submit"];
-          if (this.client !== null && message.id.startsWith(`client-${this.client}-`)) this.requests.delivered(key);
           this.prompts.add(message.id);
           this.turn = { running: true, stopReason: null, text: "", error: null };
           return true;
