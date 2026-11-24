@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
@@ -448,6 +448,58 @@ describe("a binding pinned to the account's signed list", () => {
       PcAccountState.open(taker).takeSibling(from);
       for (const folder of [dir, sibling]) expect(PcAccountState.open(folder).removedByList(ACCOUNT, SERVER_ID)).toBe(true);
     }
+  });
+
+  test("another server on the same folder pinned the binding: one that read the file before takes the pin over, clears nothing on the service's word and never writes the file without it", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    await linked(devices);
+    const pc = PcAccountState.open(dir);
+    const path = join(dir, ADMISSION_FILE);
+    const onDisk = () => JSON.parse(readFileSync(path, "utf8")) as { v: number; gen: number; next_admit: number; binding: { bind_id: string; list?: string; list_alarm?: true } | null; clears: unknown[] };
+    // the other server pins the binding and keeps an alarm beside it: the file gains both, this server's memory neither
+    const theirs = onDisk();
+    writeFileSync(path, JSON.stringify({ ...theirs, v: 2, gen: theirs.gen + 1, binding: { ...theirs.binding, list: LIST, list_alarm: true } }));
+    expect(pc.binding()?.list).toBeUndefined();
+    // the account service stops listing the PC: the server with the old document leaves nothing
+    expect(devices.clearAccountBinding("unlisted", "account")).toBe(false);
+    expect(onDisk().binding).toMatchObject({ list: LIST, list_alarm: true });
+    expect(pc.binding()).toMatchObject({ list: LIST, list_alarm: true });
+    // a write for anything else (a number for an admission) keeps the pin too
+    writeFileSync(path, JSON.stringify({ ...onDisk(), binding: { ...onDisk().binding, list: LIST, list_alarm: true } }));
+    const other = stateDir();
+    const stale = store(other);
+    await linked(stale);
+    const mine = PcAccountState.open(other);
+    const before = JSON.parse(readFileSync(join(other, ADMISSION_FILE), "utf8")) as { v: number; gen: number; binding: object };
+    writeFileSync(join(other, ADMISSION_FILE), JSON.stringify({ ...before, v: 2, gen: before.gen + 1, binding: { ...before.binding, list: LIST } }));
+    mine.admit("pc", "code", null, Date.now());
+    expect((JSON.parse(readFileSync(join(other, ADMISSION_FILE), "utf8")) as { v: number; binding: { list?: string } })).toMatchObject({ v: 2, binding: { list: LIST } });
+    expect(mine.binding()).toMatchObject({ list: LIST });
+    // a pin for another list than the one this server holds is no pin to take over: nothing is written
+    expect(mine.pinToList(mine.binding()!.bind_id, OTHER_LIST)).toBe(false);
+    // what a person does at the PC, and the list's own removal, still end the binding
+    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    expect(onDisk().binding).toBeNull();
+    expect(stale.clearAccountBinding("unlisted", "list", SERVER_ID)).toBe(true);
+    expect(PcAccountState.open(other).removedByList(ACCOUNT, SERVER_ID)).toBe(true);
+  });
+
+  test("two writers of the binding's file take turns: one that finds the other at it waits, and a lock nobody holds any more is taken over", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const pc = PcAccountState.open(dir);
+    const lock = `${join(dir, ADMISSION_FILE)}.lock`;
+    // a lock left by a server that ended while it wrote
+    writeFileSync(lock, "");
+    utimesSync(lock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    expect(pc.pinToList(pc.binding()!.bind_id, LIST)).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+    // one that another server holds right now is waited for, a moment, and the write then fails with nothing written
+    writeFileSync(lock, "");
+    expect(() => pc.admit("pc", "code", null, Date.now())).toThrow();
+    rmSync(lock);
+    expect(PcAccountState.open(dir).binding()).toMatchObject({ list: LIST });
   });
 
   test("a file that holds a pin or a list's removal is one an Ovis from before the list refuses to read; any other stays as it was", async () => {

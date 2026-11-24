@@ -455,11 +455,21 @@ export class RelaySession {
         if (frame.type === FrameType.PAIR && this.pcCodeAdd && this.options.services.devices.accountPolicyActive()) { this.close("unsupported_version"); return; }
         if (frame.type === FrameType.PAIR && keyProofPairings !== undefined) { this.pairByProof(keyProofPairings, frame.payload); return; }
         this.keyProven = frame.type === FrameType.AUTH;
-        const device = frame.type === FrameType.AUTH
+        let device = frame.type === FrameType.AUTH
           ? await devices.matchRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId)
           : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key, undefined, this.admitNewDevice)?.device;
         // no auth_failed: the code held and was not spent, and the relay closes this client for the pass
         if (this.refused) return;
+        // On a pinned PC a session opened through the account (the id is the account's own for the key) is the list's
+        // to answer for, and nothing else's: a row of this PC's own devices under that id gives it no role, no time
+        // and no way in. It is let in as the list says, and ends when the list lets the key in no more (enter)
+        const governed = frame.type === FrameType.AUTH && device ? devices.listGoverned(device.id, this.options.serverId) : null;
+        if (device && governed !== null) {
+          const role = devices.listRoleOf(governed);
+          if (role === null) { this.close("auth_failed"); return; }
+          this.listKey = governed;
+          device = { ...device, role };
+        }
         if (frame.type === FrameType.AUTH && device && devices.catchingUp(device.id)) {
           // Step 2 (S2-27): a row not paired at this PC waits for the first whole read after a start (T41)
           if (!await this.readComing(device.id) || !this.mux.active) return;

@@ -4,18 +4,19 @@
  * a real account wrote; the clock, the binding and the disk are the test's.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { PC_READ_SECONDS } from "../../shared/account-list-follower.ts";
+import { entryFromText, entryHash } from "../../shared/account-list-entry.ts";
+import { PC_READ_SECONDS, pinList, writeSave } from "../../shared/account-list-follower.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import { loadRelayIdentity } from "../relay/identity.ts";
 import { privateStateFs } from "../private-state.ts";
 import type { ListCommit } from "./account-device-state.ts";
-import { ACCOUNT_LIST_FILE, ListFollow, type ListFollowDeps } from "./list-follow.ts";
+import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, ListFollow, type ListFollowDeps } from "./list-follow.ts";
 import { ListKeyStore } from "./list-keys.ts";
 import { listMember, TestList } from "./list.test-helpers.ts";
 import { AccountServiceRefusal } from "./mailbox.ts";
@@ -438,6 +439,84 @@ describe("a device the list lets in until a time", () => {
   });
 });
 
+describe("what the PC acted on and could not save", () => {
+  /** The disk takes no write of the list's copy; every other file is written. */
+  const copyUnwritable = () => spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+    if (String(to).endsWith(ACCOUNT_LIST_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+    renameSync(String(from), String(to));
+  });
+
+  test("a PC that stopped with a removal acted on and not saved lets nobody of its list in after the restart, until it has read the list again", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.pin();
+    await pc.account.remove(phone.key);
+    const failing = copyUnwritable();
+    try {
+      await pc.pull();
+      // acted on, from memory
+      expect(pc.world.removed).toContain(phone.key);
+      expect(pc.list.role(phone.key)).toBeNull();
+      // and the PC stops before the disk takes the copy
+      pc.list.stop();
+    } finally { failing.mockRestore(); }
+    expect(existsSync(join(pc.stateDir, ACCOUNT_LIST_OWED_FILE))).toBe(true);
+    // the copy on disk still holds the phone, and the account service is away
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.world.log = () => { throw new Error("away"); };
+    again.list.start();
+    await again.pull();
+    expect(again.list.role(phone.key)).toBeNull();
+    expect(again.list.role(pc.account.first.key)).toBeNull();
+    expect(again.list.status().reason).toContain("before it could save");
+    expect(again.world.commits.at(-1)!.devices.every((row) => !row.eligible)).toBe(true);
+    // the service answers: the list is read to its end, and decides again
+    again.world.log = null;
+    await again.pull();
+    expect(again.list.role(phone.key)).toBeNull();
+    expect(again.list.role(pc.account.first.key)).toBe("drive");
+    expect(again.list.status().reason).toBeNull();
+    expect(existsSync(join(pc.stateDir, ACCOUNT_LIST_OWED_FILE))).toBe(false);
+  });
+
+  test("a restart with nothing owed lets the list's devices in with the service away, and leaves no mark behind a saved change", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.pin();
+    await pc.account.remove(phone.key);
+    await pc.pull();
+    expect(existsSync(join(pc.stateDir, ACCOUNT_LIST_OWED_FILE))).toBe(false);
+    pc.list.stop();
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.world.log = () => { throw new Error("away"); };
+    again.list.start();
+    await again.pull();
+    expect(again.list.role(pc.account.first.key)).toBe("drive");
+    expect(again.list.role(phone.key)).toBeNull();
+  });
+
+  test("a device's time that passed while the copy could not be saved stays passed after a restart with the clock set back", async () => {
+    const pc = await following({ seconds: 1_800_000_000 });
+    const guest = await listMember();
+    await pc.account.addDevice(guest, { role: "watch", power: "bound", until: 1_800_000_050 });
+    await pc.pin();
+    const failing = copyUnwritable();
+    try {
+      pc.world.seconds = 1_800_000_055;
+      expect(pc.list.role(guest.key)).toBeNull();
+      pc.list.stop();
+    } finally { failing.mockRestore(); }
+    // the clock is set back to before that time, and the service answers
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id, seconds: 1_800_000_010 });
+    again.list.start();
+    await again.pull();
+    expect(again.list.role(pc.account.first.key)).toBe("drive");
+    expect(again.list.role(guest.key)).toBeNull();
+  });
+});
+
 describe("the wait of one sign-in", () => {
   test("a returning device's sign-in waits its few seconds and no longer, also behind a read the mailbox began", async () => {
     const pc = await following();
@@ -478,13 +557,86 @@ describe("what a pinned PC keeps beside its pin", () => {
     await pc.list.settled();
     pc.service.untamperList(pc.account.id);
     expect(pc.list.status().alarm).toBe("fork");
+    // what a person is told: what happened, whom the PC still lets in, and what to do
+    expect(pc.list.status().reason).toContain("two versions of your account's list");
+    expect(pc.list.summary()).toEqual({ pinned: pc.account.id, standing: "in", reason: pc.list.status().reason });
     expect(pc.world.alarmed).toBe(true);
     pc.list.stop();
     rmSync(join(pc.stateDir, ACCOUNT_LIST_FILE));
     const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id, alarmed: true });
     await again.pull();
     expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", alarm: "fork" });
+    expect(again.list.status().reason).toContain("its copy of the list was lost");
     expect(again.list.role(pc.account.first.key)).toBeNull();
+  });
+
+  test("a removal the PC verified is kept though the same read then stops at an entry this Ovis is too old to place", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.pin();
+    expect(pc.list.role(phone.key)).toBe("drive");
+    // a member removes the phone; a member with a newer Ovis then writes an entry this build cannot read, and a key this
+    // build does not know writes one after it: there it stops
+    await pc.account.remove(phone.key);
+    const later = await pc.account.signLater();
+    const beyond = await pc.account.signLater(await listMember(), { seq: pc.account.place.seq + 1, hash: entryHash(entryFromText(later).body) });
+    pc.service.tamperList(pc.account.id, { inject: [later, beyond] });
+    await pc.pull();
+    expect(pc.list.status().last_verdict).toBe("needs_newer_client");
+    expect(pc.world.removed).toContain(phone.key);
+    expect(pc.list.status()).toMatchObject({ standing: "stopped", reason: expect.stringContaining("Update Ovis on this PC") });
+  });
+
+  test("work that waited in the queue when the follower stopped writes nothing", async () => {
+    const pc = await following();
+    await pc.pin();
+    const commits = pc.world.commits.length;
+    // a read is out, and a tick's turn waits behind it
+    let release = () => {};
+    pc.world.gate = new Promise<void>((resolve) => { release = resolve; });
+    const before = pc.reads();
+    pc.world.seconds += PC_READ_SECONDS;
+    pc.list.tick();
+    await pc.asked(before);
+    pc.list.start();
+    pc.list.stop();
+    release();
+    await pc.list.settled();
+    expect(pc.world.commits.length).toBe(commits);
+  });
+
+  test("says nothing is wrong while it follows its list, and why it lets nobody in while it reads the list again after its copy was lost", async () => {
+    const pc = await following();
+    expect(pc.list.summary()).toBeNull();
+    await pc.pin();
+    expect(pc.list.status().reason).toBeNull();
+    expect(pc.list.summary()).toEqual({ pinned: pc.account.id, standing: "in", reason: null });
+    pc.list.stop();
+    rmSync(join(pc.stateDir, ACCOUNT_LIST_FILE));
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.world.log = () => { throw new Error("away"); };
+    await again.pull();
+    expect(again.list.summary()).toMatchObject({ pinned: pc.account.id, standing: "waiting", reason: expect.stringContaining("reading your account's list again") });
+    expect(again.list.role(pc.account.first.key)).toBeNull();
+  });
+
+  test("a copy made for other keys than this PC holds is dropped on a pinned PC too: the list is read again with the PC's own", async () => {
+    const pc = await following();
+    await pc.pin();
+    pc.list.stop();
+    // the file holds a copy of the same list and binding, made for a key this PC does not hold (its other folder's old copy)
+    const stranger = await listMember();
+    const other = pinList(null, { account: ACCOUNT, list: pc.account.id, me: { key: stranger.key, endpoint: pc.endpoint }, pin: { how: "added" } });
+    if (!other.pinned) throw new Error("no copy");
+    const path = join(pc.stateDir, ACCOUNT_LIST_FILE);
+    const file = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...file, save: writeSave(other.copy) }));
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.list.start();
+    await again.pull();
+    expect(again.list.status()).toMatchObject({ pinned: true, standing: "in" });
+    expect(again.list.role(pc.account.first.key)).toBe("drive");
   });
 
   test("an alarm the binding's file did not take is offered to it again, though the rows were written", async () => {
