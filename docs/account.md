@@ -1606,11 +1606,12 @@ approved at the PC) and sends its `link` still brings the PC into its account as
 pin; a device that follows its account's list names the list over that pairing instead
 ([A device that scans the PC's QR code](#a-device-that-scans-the-pcs-qr-code)).
 
-**These ways ship with the app that signs in with its list key, in one release.** The apps released
-before open a PC through the account with the key of their sign-in, which a pinned PC lets in no
-more ([How an app signs in](#how-an-app-signs-in-to-a-pinned-pc)): a PC pinned before that app is
-out would shut every such app out of it. One press never pins: the list it would follow would be
-the one the service names.
+**Do not pin a PC that older apps use**: an app from before this release opens a PC through the
+account with the key of its sign-in, which a pinned PC lets in no more
+([How an app signs in](#how-an-app-signs-in-to-a-pinned-pc)), so such an app is shut out of the PC
+until it is updated. The app signs in with its list key from this release on
+([What a pinned PC asks of the app](account-list.md#what-a-pinned-pc-asks-of-the-app)). One press
+never pins: the list it would follow would be the one the service names.
 
 The pin is one-way. It ends only by an act at the PC that ends its place in the account (**Revoke
 all**, **Reset relay identity**), or by an entry of the list that removes this PC. Nothing the
