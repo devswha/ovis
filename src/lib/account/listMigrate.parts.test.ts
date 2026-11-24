@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { MIGRATION_KNOWN_SECONDS } from "../../../shared/account-list-migrate.ts";
 import {
   birthRecord, handOverRecord, knownPcs, MIGRATION_QA_SCALE_MAX, migrationScale, noticeRecord, notCarriedAt, pageScale, pcAnswerOf, pcAnswers, pcHowOf, QA_TWIN_APP, readAppId, readBirth, readHandOver,
-  readNotice, readRefusal, refusalRecord, scaled, type KeptBirth,
+  readNotice, readRefusal, refusalRecord, scaled, ownRemovals, type KeptBirth,
 } from "./listMigrate.ts";
+import { memoryAccountStore } from "./store.ts";
 
 const KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5lhuexKpDRsxAK4WTOjTQTjBurzk0iGngvCpNGetUiwtppuB-SgVWvMwkHCQe6FNPoAzLJZntcFyjzv0sk82Bg";
 const E = (n: number) => n.toString(16).padStart(2, "0").repeat(32);
@@ -134,5 +135,18 @@ describe("which app this page runs in, for the QA twin's factor", () => {
       if (saved === undefined) delete (globalThis as Record<string, unknown>).localStorage;
       else Object.defineProperty(globalThis, "localStorage", saved);
     }
+  });
+});
+
+describe("the keys this device holds a removal against itself (R-F)", () => {
+  test("a Not me's blocks it keeps until the service confirms them, and the removals it signed, of this account alone", async () => {
+    const store = memoryAccountStore();
+    await store.set("unsent_blocks", {
+      a: { account: "acct", sign_in_id: "s", records: [{ target: "K1" }, { target: "K2" }] },
+      b: { account: "other", sign_in_id: "s", records: [{ target: "K9" }] },
+    } as never);
+    await store.set("removals", { K3: { account: "acct", key: "K3" }, K8: { account: "other", key: "K8" } } as never);
+    expect((await ownRemovals(store, "acct")).sort()).toEqual(["K1", "K2", "K3"]);
+    expect(await ownRemovals(memoryAccountStore(), "acct")).toEqual([]);
   });
 });

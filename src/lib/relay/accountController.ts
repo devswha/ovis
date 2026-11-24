@@ -21,7 +21,7 @@ import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS,
 import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
-import { askWitness, onPcSession, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
+import { askWitness, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
 import { callNative, hasNativeMethod } from "../nativeApp.ts";
 import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
@@ -133,7 +133,8 @@ export function createAccountController(mount: RelayShellMount, view: {
       service: account, accountStore,
       names: () => listNames(label, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0)),
       linkedPcs: async (id) => (await store.list()).filter((device) => device.account === id).length,
-      migration: { scale: pageScale },
+      // a key this device itself blocked or removed, sent or not, is never carried into a list (R-F)
+      migration: { scale: pageScale, removed: (id) => ownRemovals(accountStore, id) },
     });
   const followed = lists === null ? null : followAccountList(lists);
   // which build of the phone app this page runs in: only the QA twin may turn the waits of a move down

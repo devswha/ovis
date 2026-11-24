@@ -1989,7 +1989,8 @@ move is never named to any PC.
   PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
 - **The start.** When `GET /v2/lists/mine` says `migrate` and the account is not new, the device
   plans from `GET /v1/devices`, the directory's PCs that are listed as let in (a PC outside it is
-  left out, as the service would refuse it), its record and this run's answers. It notes its first
+  left out, as the service would refuse it), its record, this run's answers, and the keys it holds
+  a block or a removal against itself (a Not me's blocks not yet confirmed, the removals it signed). It notes its first
   try (`tried`) and waits while the plan says so. It signs the birth once, keeps it in its own
   store and sends it (`POST /v2/lists` with `entries`, the wraps of epoch 1 to itself, and the link
   of its account key to its sign-in key) as it is until a 201 or its own list back in a `409
@@ -2010,7 +2011,7 @@ move is never named to any PC.
   naming by its account key with the vouch of the sign-in key the session signed in with) to every
   PC that takes no `account-list-1`. On a PC that does, a PC the move left with no keys gets them
   from a member that did something itself for that PC: it takes the PC's card over the session
-  (`GET /api/account/list/card`), checks it for this list and that relay key, signs the `pc` entry
+  (`POST /api/account/list/card`), checks it for this list and that relay key, signs the `pc` entry
   and hands the PC the page. Any other member leaves it to the number at the PC.
 - **What the person sees.** Once, after the pin, who made the list and every device and PC it
   brought in that is still in, each PC with Not me, which removes it from the list after a

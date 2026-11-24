@@ -29,10 +29,10 @@ function movingWorld() {
   const json = (body: unknown, bearer: string): RequestInit => ({ headers: { "content-type": "application/json", authorization: `Bearer ${bearer}` }, body: JSON.stringify(body) });
   const seconds = () => Math.floor(world.clock.now / 1000);
   /** A device of the account, signed in long ago (no new account's genesis is its to make), with its record and its answers. */
-  const member = async (label: string, scale = 1) => {
+  const member = async (label: string, scale = 1, removed: () => readonly string[] = () => []) => {
     const storage = memoryStorage();
     const answers = pcAnswers();
-    const device = await world.device({ label, migration: { answers, storage, scale: () => scale } });
+    const device = await world.device({ label, migration: { answers, storage, scale: () => scale, removed: async () => removed() } });
     const signIn = (await device.store.get("signin_key"))!.key.public_spki;
     const member = (await device.store.key()).public_spki;
     const record = (pcs: SeenPcs["pcs"], tried?: number) => storage.setItem(`ovis:seen-pcs:${world.account}`, JSON.stringify({ v: 1, account: world.account, pcs, ...(tried === undefined ? {} : { tried }) }));
@@ -196,6 +196,21 @@ describe("the first device moves the account onto its list", () => {
     expect(listView(world.held().state).devices.some((row) => row.key === laptop.signIn)).toBe(false);
   });
 
+  test("a key this device itself blocked or removed, sent or not, is never carried (R-F)", async () => {
+    const moving = movingWorld();
+    let blocked: readonly string[] = [];
+    const phone = await moving.member("Phone", 1, () => blocked);
+    const laptop = await moving.member("Laptop");
+    const pc = await moving.pcOf(phone.device);
+    moving.world.clock.now += 11 * 60_000;
+    const at = moving.seconds() - 40 * DAY;
+    phone.record({ [pc.endpoint]: { since: at, last: at, how: "paired" } });
+    phone.answers.set(moving.world.account, pc.endpoint, moving.answer([{ key: phone.signIn }, { key: laptop.signIn }]));
+    blocked = [laptop.signIn];
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    expect(listView(moving.world.held().state).devices.some((row) => row.key === laptop.signIn)).toBe(false);
+  });
+
   test("a key a PC holds a removal against is never carried, whatever the service lists", async () => {
     const { phone, laptop, pc, world } = await inUse();
     world.fake.tamperAccount(world.account, { eligibleAgain: [laptop.signIn] });
@@ -281,9 +296,9 @@ void MIGRATION_KNOWN_SECONDS;
 export type { Member, PcAnswers };
 
 describe("a PC the move carried in with no key, met over a session while it follows the list", () => {
-  /** The PC's own answer to `GET /api/account/list/card` over the session (W4), after it posted those keys for the list. */
-  const cardWire = (card: { key: string; enc: string; card: string; endpoint: string; list: string }) => async (path: string): Promise<Response> =>
-    path === "/api/account/list/card" ? Response.json(card) : Response.json({ error: { code: "not_found" } }, { status: 404 });
+  /** The PC's own answer to `POST /api/account/list/card` over the session (W4), after it posted those keys for the list. */
+  const cardWire = (card: { key: string; enc: string; card: string; endpoint: string; list: string }) => async (path: string, init?: RequestInit): Promise<Response> =>
+    path === "/api/account/list/card" && init?.method === "POST" ? Response.json(card) : Response.json({ error: { code: "not_found" } }, { status: 404 });
 
   test("a device that paired with it at the PC signs its `pc` entry with the card the PC gave over the session", async () => {
     const { phone, pc, world } = await moved();

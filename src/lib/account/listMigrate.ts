@@ -20,6 +20,7 @@ import { namesFields, type ListNames } from "../../../shared/account-list.ts";
 import { epochKeyCommitment, LIST_WRAP_TEXT_LENGTH, newEpochKey, nextEpoch, sealFields, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import type { AccountList, AccountListView } from "./accountList.ts";
+import type { AccountStore } from "./store.ts";
 import type { PlacedWrap } from "./listAnswers.ts";
 import { howOf, type SeenPcs } from "./seenPcs.ts";
 
@@ -386,4 +387,15 @@ export async function onPcSession(given: {
   } catch {
     // a PC that follows no list, from before this release or away: it is named again at the next session
   }
+}
+
+/**
+ * The keys this device itself holds a block or a removal against (R-F), which it never carries into a list: a Not me's
+ * blocks it keeps until the account service confirms them, and the removals it signed, of `account` alone. A block the
+ * service confirmed is the service's word from then on, and every PC that applied it says so in its answer.
+ */
+export async function ownRemovals(store: Pick<AccountStore, "get">, account: string): Promise<string[]> {
+  const blocks = Object.values((await store.get("unsent_blocks")) ?? {}).filter((kept) => kept.account === account).flatMap((kept) => kept.records.map((record) => record.target));
+  const removals = Object.values((await store.get("removals")) ?? {}).filter((record) => record.account === account).map((record) => record.key);
+  return [...new Set([...blocks, ...removals])];
 }

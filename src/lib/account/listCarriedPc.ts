@@ -3,8 +3,9 @@
  * Part F, F8): such a PC follows the list and lets its devices in, and it allows nobody until a `pc` entry gives it its
  * keys. A member that did something itself for that PC (addedItself, by its own record: it paired with it at the PC,
  * pressed Add for it, added it over SSH, joined it by its own invite, or is its own window) signs that entry with no
- * question, with the card the PC hands it over their end-to-end session. Never on the directory's word, and never
- * because the PC says which list it follows: any other member leaves it to the number at the PC.
+ * question, with the card the PC hands it over their end-to-end session (`POST /api/account/list/card`). Never on the
+ * directory's word, and never because the PC says which list it follows: any other member leaves it to the number at
+ * the PC.
  */
 import { addedItself } from "../../../shared/account-list-migrate.ts";
 import { cardHolds, isListKey, type ListNames } from "../../../shared/account-list.ts";
@@ -38,7 +39,8 @@ export async function keysForCarriedPc(given: {
   if (!addedItself({ how: pcHowOf(given.record.pcs[endpoint]) })) return "no_evidence";
   let card: unknown;
   try {
-    const answer = await given.fetch("/api/account/list/card", { method: "GET", headers: { "x-herdr-machine": "1" } });
+    // the PC posts this very card for the list in the same call, so the account service takes the entry right after
+    const answer = await given.fetch("/api/account/list/card", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: "{}" });
     card = answer.ok ? await answer.json() : null;
   } catch {
     return "no_card";
