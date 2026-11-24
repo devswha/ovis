@@ -636,10 +636,12 @@ export function lockRefusal(code: "locked" | "strict"): string {
  * them, for the own window's card to show; this terminal never shows them, and asks for them typed all the same.
  */
 /** `list`: the join is let in by the account's signed list, so an approval is only received here: the device is in once its entry is in the list. */
-export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean }
+export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean; readonly list_behind?: boolean }
 
 /** What a terminal says once this PC took the approval of `label`: it is let in at once, or, by the account's list, once its entry is there. */
-const approvedWords = (label: string, list: boolean): string => list
+const approvedWords = (label: string, list: boolean, behind = false): string => behind
+  ? `${label} was not let in: Ovis on this PC is older than what a device wrote into your account's list, and lets nobody new in until it is updated. Update Ovis on this PC (Settings → Updates), then have ${label} ask again; or allow it on another device of your account.\n`
+  : list
   ? `The approval of ${label} was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n`
   : `${label} is let in; it opens this PC in a moment.\n`;
 
@@ -696,7 +698,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
       const outcome = await options.approve(join.id, typed);
       if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
       if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
-      out(outcome === "approved" ? first ? approvedWords(label, join.list === true) : `Approved: ${label} joins your account once it confirms.\n`
+      out(outcome === "approved" ? first ? approvedWords(label, join.list === true, join.list_behind === true) : `Approved: ${label} joins your account once it confirms.\n`
         : outcome === "wrong_digits" ? first ? `That is not the number ${label} shows, so it was not let in. To try again, have ${label} ask again, then run ${command} again.\n`
           : `That is not the number ${label} shows. It was not let in; it can ask again.\n`
         : `${label} is no longer waiting.\n`);

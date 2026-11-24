@@ -120,6 +120,11 @@ export interface ListStatus {
   readonly posted_until: string | null;
   /** Why the copy or the service could not be used, in words that name no key. */
   readonly error: string | null;
+  /**
+   * A member wrote an entry this Ovis is too old to read. The PC goes on letting in whoever the list holds and
+   * putting out whoever it removes, and signs nobody in until Ovis on it is updated.
+   */
+  readonly behind: boolean;
 }
 
 /**
@@ -131,7 +136,7 @@ export interface ListStatus {
  * `service_away`, `head_lost`: it could not be placed in LIST_ALLOW_TRIES tries. `not_in_list`: nobody at this PC
  * decided, and no entry lets the device in.
  */
-export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
+export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "behind" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
 
 /** The device a PC is asked to let into its list: its member key, its encryption key, its card for the list, and the name it gave. */
 export interface AllowedDevice { readonly key: string; readonly enc: string; readonly card: string; readonly label: string }
@@ -367,6 +372,7 @@ export class ListFollow implements ListAuthority {
       keys: this.keysState,
       posted_until: posted === null ? null : new Date(posted * 1000).toISOString(),
       error: this.problem ?? this.error,
+      behind: copy?.state != null && copy.state.behind !== null,
     };
   }
 
@@ -580,6 +586,7 @@ export class ListFollow implements ListAuthority {
         if (cannot !== null) return no(cannot);
         if (request === null || request.onHead !== state.footing.hash) {
           try { request = { onHead: state.footing.hash, ...await this.writeAllow(copy, state, device, keys) }; } catch (error) {
+            if (error instanceof ListWriteError && error.reason === "behind") return no("behind");
             if (error instanceof ListWriteError) return no("not_written", error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome);
             if (error instanceof ListKindError) return no("not_written", "entry_invalid");
             throw error;
@@ -1137,14 +1144,19 @@ function placeOf(copy: FollowerCopy, device: AllowedDevice): { id: string; seq: 
   return { id: copy.list, seq: row.seq, hash: entryHash(entryFromText(text).body) };
 }
 
-/** Why the member this copy is of signs no Allow, or null: it is in, no alarm stands, and its key signs with full power. */
+/**
+ * Why the member this copy is of signs no Allow, or null: it is in, no alarm stands, its key signs with full power,
+ * and it has read everything the members wrote (`behind`: one of them wrote what this Ovis is too old to read, and a
+ * member that is behind signs nobody in).
+ */
 function cannotAllow(copy: FollowerCopy): AllowRefusal | null {
   const { state } = copy;
   if (state === null) return "unavailable";
   if (state.needs_replay !== undefined || standing(copy) === "stopped") return "stopped";
   if (standing(copy) !== "in") return "not_signer";
   if (copy.alarm !== null) return "alarm";
-  return signerPower(state, copy.me.key) === "full" ? null : "not_signer";
+  if (signerPower(state, copy.me.key) !== "full") return "not_signer";
+  return state.behind === null ? null : "behind";
 }
 
 function changed(before: FollowerCopy, after: FollowerCopy): boolean {

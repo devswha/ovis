@@ -648,6 +648,28 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     expect(asked.features).not.toContain(ACCOUNT_LIST_ALLOW);
   });
 
+  test("a PC whose Ovis is older than what a member wrote into the list signs nobody in, and says that it is behind", async () => {
+    const made = await allowingPc();
+    made.pc.account.tamperList(made.account.id, { reader: { server_id: made.serverId }, inject: [await made.account.signLater()] });
+    await made.pull();
+    made.list.tick();
+    await made.list.settled();
+    expect(made.list.status()).toMatchObject({ pinned: true, standing: "in", behind: true });
+    expect(made.list.allowRefusal()).toBe("behind");
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    expect(await made.list.allowDevice({ key: phone.key, enc: phone.enc, card, label: "Phone" }, true)).toEqual({ refused: "behind", detail: null });
+    expect(entriesPlaced(made)).toBe(0);
+    // the device is told which cause it was, so it can say that the PC needs an update
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    const waiting = await ownJoin(made);
+    expect(waiting).toMatchObject({ list: true, list_behind: true });
+    expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+    asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_pc_behind" } });
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
   test("the challenge names the list this PC follows, and a refusal says which cause it was", async () => {
     const made = await allowingPc();
     const phone = await listMember();

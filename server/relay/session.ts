@@ -90,7 +90,7 @@ function listSignInRequired(): Response {
  * else is `list_refused`.
  */
 const LIST_ALLOW_CAUSES: Partial<Record<AllowRefusal, string>> = {
-  not_claimed: "list_not_claimed", service_away: "list_service_away", head_lost: "list_head_lost", not_in_list: "list_not_in",
+  not_claimed: "list_not_claimed", service_away: "list_service_away", head_lost: "list_head_lost", not_in_list: "list_not_in", behind: "list_pc_behind",
 };
 
 export interface RelaySessionOptions {
@@ -751,7 +751,8 @@ export class RelaySession {
     // the service's refusal, or its silence, is no failed pairing of this device's: it counts against nobody
     this.endPairing(true);
     if ("refused" in outcome) {
-      console.warn(`[account] a device was not let into the list: ${outcome.refused}${outcome.detail === null ? "" : ` (${outcome.detail})`}`);
+      console.warn(outcome.refused === "behind" ? "[account] a device was not let into the list: this Ovis is too old to read what a member wrote into it. Update Ovis on this PC"
+        : `[account] a device was not let into the list: ${outcome.refused}${outcome.detail === null ? "" : ` (${outcome.detail})`}`);
       // the refusal is `auth_failed`, as for any join that was not let in; its message says which of the causes a
       // device can act on it was (LIST_ALLOW_CAUSES), so the phone can say "sign in again" or "try again" apart
       this.failJoin(LIST_ALLOW_CAUSES[outcome.refused] ?? "list_refused");
