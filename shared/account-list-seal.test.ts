@@ -215,6 +215,17 @@ describe("a member's encryption key", () => {
     expect(toBase64Url(concatBytes(SPKI_PREFIX, fromBase64Url(jwk.x ?? ""), fromBase64Url(jwk.y ?? "")))).toBe(made.key);
   });
 
+  test("a key in the PKCS8 form of the list's other vectors reads as a stored key: an invite's line can carry the key its wraps open with", async () => {
+    const vector = JSON.parse(readFileSync(join(import.meta.dir, "account-list-vectors", "envelope", "genesis-entry.json"), "utf8")) as { keys: Record<string, { pkcs8: string; spki: string }> };
+    const pair = vector.keys["TEST-ONLY-owner"];
+    if (!pair) throw new Error("no test key");
+    const member = await readStoredEncryptionKey(pair.pkcs8);
+    expect(member.key).toBe(pair.spki);
+    const epoch = newEpochKey(2);
+    const wrap = await wrapEpochKey({ list: LIST, epoch, member: pair.spki });
+    expect(await openWrap({ list: LIST, epoch: 2, commitment: epochKeyCommitment(epoch), wrap, member })).toEqual({ open: true, value: epoch });
+  });
+
   test("a stored key that is not in its one form, or whose point is not its own, is refused without a byte of it in the message", async () => {
     const made = await generateStoredEncryptionKey();
     const bytes = fromBase64Url(made.secret);

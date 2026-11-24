@@ -273,7 +273,7 @@ export async function readStoredEncryptionKey(secret: string): Promise<MemberEnc
   return { key: toBase64Url(spkiOf(point)), privateKey };
 }
 
-/** A new key for an epoch: epoch 0 with the list, the next one at each removal. */
+/** A new key for an epoch: epoch 0 with the list, the next one after each removal. */
 export function newEpochKey(epoch: number): EpochKey {
   if (!isListCount(epoch)) refuse("argument", "An epoch is a number of the list: 0 or more, at most 15 digits");
   return { epoch, key: randomBytes(LIST_EPOCH_KEY_BYTES) };
@@ -467,10 +467,10 @@ export async function openSealed(given: {
 }
 
 /**
- * What a removal makes, given the members that stay: the next epoch's key, its commitment and its
- * link (both for the entry that opens the epoch) and its wrap for each member that stays. The
- * removal's own fields are sealed under the epoch before, so the member that leaves reads its
- * removal and nothing after it.
+ * What follows a removal, given the members that stay: the next epoch's key, its commitment and
+ * its link (both for the entry that opens the epoch) and its wrap for each member that stays. What
+ * was sealed under the epoch before stays readable to the member that left; nothing under the new
+ * key is.
  */
 export async function nextEpoch(given: { readonly list: string; readonly current: EpochKey; readonly members: readonly string[] }): Promise<NextEpoch> {
   if (!isEpochKey(given.current)) refuse("argument", "An epoch key is an epoch number and 32 bytes");

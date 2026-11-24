@@ -130,13 +130,12 @@ GCM(key, nonce, data, text) = AES-256-GCM, a 12-byte nonce: the ciphertext, then
 
 ### The keys
 
-- A member's **encryption key** is a P-256 key used for ECDH only, never to sign, written as a
-  key. A device makes it in WebCrypto so that it cannot be exported and keeps it in IndexedDB. A PC
-  keeps its private key in a file, as the base64url of the 138-byte PKCS8 form a join line's
-  secret has.
-- An **epoch key** is 32 random bytes. Epochs count from 0: entry 0 opens epoch 0, and an entry
-  that removes a member opens the next. An entry with a `sealed` field says in clear which epoch
-  it is sealed under.
+- A member's **encryption key** is a P-256 key used for ECDH, written as a key. A device makes it
+  in WebCrypto so that it cannot be exported and keeps it in IndexedDB. A PC keeps its private key
+  in a file, as the base64url of the 138-byte PKCS8 form a join line's secret has.
+- An **epoch key** is 32 random bytes. Epochs count from 0: entry 0 opens epoch 0, and after a
+  member is removed an entry opens the next. An entry with a `sealed` field says in clear which
+  epoch it is sealed under.
 - The **commitment** to an epoch key is `SHA-256("ovis-list-epoch-key/1" || number(epoch) || key)`,
   as a hash. The entry that opens an epoch carries it in clear, under its signature. A member
   takes an epoch key, from a wrap or from a link, only when it gives the commitment the list holds
@@ -194,10 +193,10 @@ plaintext = "ovis-list-sealed/1" field field ...
 
 ### A removal, an addition
 
-- The entry that removes a member is sealed under the epoch it ends, so the member reads its own
-  removal. The remover makes the next epoch key, puts its commitment and its link into that entry,
-  and gives the service a wrap for every member that stays. The removed member's key and its old
-  wraps open nothing sealed afterwards.
+- After a removal a member that stays makes the next epoch key, puts its commitment and its link
+  into the entry that opens the epoch, and gives the service a wrap for every member that stays.
+  What was sealed before stays readable to the removed member, its own removal included; its key
+  and its old wraps open nothing sealed under the new key.
 - A member that adds another wraps the current epoch key to it.
 - A member whose encryption key is not a point of the curve gets no wrap; the removal or the
   addition goes on without it.
