@@ -979,6 +979,9 @@ export function createAccountController(mount: RelayShellMount, view: {
   let memberKey: AccountKey | null = null;
   const listKey = (): AccountKey | null => {
     const view = lists?.view();
+    // only for the sign-in in view, as the key of the sign-in is given (openKey): from the moment a sign-out begins
+    // there is none, whatever the list's own view still shows until the account service has answered
+    if (accountView?.kind !== "signed-in" || listedFor?.epoch !== generation) return null;
     return view !== undefined && view.status.at === "following" && view.status.standing === "in" && shownFor !== undefined && view.account === shownFor.account
       && memberKey !== null && view.devices.some((device) => device.self && device.key === memberKey!.public_spki) ? memberKey : null;
   };
