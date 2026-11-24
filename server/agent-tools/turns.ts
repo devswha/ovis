@@ -23,17 +23,14 @@ export class ChildTurns {
   forget(child: AcpChild): void { this.watches.get(child)?.(); this.watches.delete(child); }
   watch(child: AcpChild): void {
     if (this.watches.has(child)) return;
-    let inTerminal = false;
     const change = () => {
       const row = this.ledger.children.get(child.terminal);
       const turn = row?.turns.at(-1);
       const client = child.client;
-      if (row && row.id === child.id && inTerminal && row.held && client.connected && (client.status === "idle" || client.status === "done")) {
-        row.held = false;
+      if (row && row.id === child.id && client.connected && row.held !== (client.holdGeneration !== null)) {
+        row.held = client.holdGeneration !== null;
         this.ledger.save();
-        inTerminal = false;
       }
-      if (client.terminalReady) inTerminal = true;
       if (!row || row.id !== child.id || !turn || turn.end !== null || turn.seq === null || turn.seq !== client.turnSequence || !client.connected || !client.turn || client.turn.running) return;
       turn.end = client.turn.stopReason ?? (client.agentGone ? "gone" : "unknown");
       this.ledger.audit(row, "turn", turn.n, turn.end);
@@ -41,14 +38,6 @@ export class ChildTurns {
     };
     this.watches.set(child, child.client.onChange(change));
     change();
-  }
-  hold(session: string, held: boolean): boolean {
-    const row = this.ledger.children.get(session), child = this.acp.forPane(session);
-    if (!row || !child || row.id !== child.id || !child.client.connected) return false;
-    row.held = held;
-    this.ledger.save();
-    if (held) this.acp.cancelTurn(child.id);
-    return true;
   }
   async send(child: AcpChild, row: ToolChild, args: Record<string, unknown>) {
     const key = typeof args.key === "string" ? args.key : null;
@@ -68,7 +57,7 @@ export class ChildTurns {
     if (row.turns.length > 256) row.turns.shift();
     this.ledger.save();
     this.ledger.audit(row, "send", n);
-    try { await child.client.submit(String(args.task)); }
+    try { await child.client.submit(String(args.task), true); }
     catch { return refuse(child.client.terminalReady ? "taken_over" : "unavailable", "Delivery could not be confirmed. Do not repeat without checking."); }
     turn.seq = child.client.turnSequence;
     this.ledger.save();

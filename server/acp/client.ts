@@ -30,6 +30,7 @@ const BACKOFF_MS = [100, 250, 500, 1_000, 2_000, 5_000] as const;
 export class KeeperClient {
   readonly history: AcpHistory;
   session: string | null = null;
+  holdGeneration: number | null = null;
   sessionError: { code: number; message: string } | null = null;
   turnSequence = 0;
   usage: { tokens?: number; cost?: { amount: number; currency: string } } | null = null;
@@ -109,9 +110,15 @@ export class KeeperClient {
     return this.requests.request(method, params);
   }
 
-  async submit(text: string): Promise<void> {
+  async submit(text: string, tool = false): Promise<void> {
     if (!this.session || (this.status !== "idle" && this.status !== "done")) throw new KeeperDisconnected();
-    await this.requests.submit(this.session, text);
+    await this.requests.submit(this.session, text, tool);
+  }
+
+  async hold(sessionId: string): Promise<number> {
+    const generation = record(await this.request("_keeper/hold", { sessionId }))?.generation;
+    if (typeof generation !== "number" || !Number.isSafeInteger(generation)) throw new KeeperDisconnected();
+    return generation;
   }
 
   /** A notification to the agent through the keeper (`session/cancel`). Dropped when no connection is up. */
@@ -309,6 +316,9 @@ export class KeeperClient {
   private note(method: string | null, params: Record<string, unknown>): boolean {
     const id = text(params["id"]);
     switch (method) {
+      case "_keeper/hold_changed":
+        this.holdGeneration = typeof params.generation === "number" ? params.generation : null;
+        return true;
       case "_keeper/delivered":
         if (this.client !== null && params.client === this.client) this.requests.delivered(params.id);
         return false;

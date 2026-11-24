@@ -100,9 +100,16 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
   });
   it("a person's cancel holds the child until release", async () => {
     const session = await start("hold");
-    expect(hub.hold(session, true)).toBe(true);
+    const child = acp.forPane(session);
+    if (!child) throw new Error("missing child");
+    const first = await child.client.request("_keeper/hold", { sessionId: child.client.session });
+    const second = await child.client.request("_keeper/hold", { sessionId: child.client.session });
+    if (!isRecord(first) || !isRecord(second)) throw new Error("missing hold receipt");
+    expect(second.generation).not.toBe(first.generation);
+    expect(child.client.turn?.stopReason).toBe("cancelled");
     expect(await call("send", { session, task: "ignored" })).toMatchObject({ error: { code: "taken_over" } });
-    expect(hub.hold(session, false)).toBe(true);
+    await expect(child.client.request("_keeper/release", { generation: first.generation, sessionId: child.client.session })).rejects.toThrow();
+    await child.client.request("_keeper/release", { generation: second.generation, sessionId: child.client.session });
     await call("wait", { session });
     expect(await call("send", { session, task: "echo again" })).toMatchObject({ accepted: true });
   });

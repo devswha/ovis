@@ -67,7 +67,6 @@ export class AgentToolHub {
     finally { process.umask(mask); }
   }
   close(): void { this.closed = true; this.off(); this.turns.close(); this.server?.close(); this.server = null; }
-  hold(session: string, held: boolean): boolean { return this.turns.hold(session, held); }
   command(tokenFile: string) {
     const [command, ...args] = projectSafeCommand("agent-mcp");
     if (!command) throw new Error("Missing relay command.");

@@ -47,7 +47,8 @@ The shell command never tries the server's ordinary HTTP credential.
 
 A driving device can cancel a tool child's turn with `POST /api/pane/turn/cancel {"pane_id":"t12"}`.
 This leaves the child alive but holds it against new agent input. The same device route group
-accepts `POST /api/pane/turn/release` with the same body to hand it back.
+accepts `POST /api/pane/turn/release` with `pane_id` and the cancel receipt's `child_id` and
+`generation`. An older receipt cannot release a newer hold.
 
 The token travels only over the private Unix socket, not HTTP. A same-account program can read
 the token file: this is run attribution, not isolation from other programs of the same OS user.

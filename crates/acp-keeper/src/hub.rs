@@ -56,6 +56,7 @@ pub struct ToAgent {
 pub enum Receipt {
     Answer(PendingAnswer),
     Request { conn: u64, id: Value },
+    Hold { route: String, generation: u64 },
 }
 
 pub struct PendingAnswer {
@@ -139,6 +140,7 @@ pub struct Hub {
     answering: HashSet<String>,
     client_ids: HashSet<(u64, String)>,
     prompts: HashSet<String>,
+    hold: Option<u64>,
     pub quit: bool,
     /// The pane was resized: paint the status line again.
     pub redraw: bool,
@@ -167,6 +169,7 @@ impl Hub {
             answering: HashSet::new(),
             client_ids: HashSet::new(),
             prompts: HashSet::new(),
+            hold: None,
             quit: false,
             redraw: false,
         }
@@ -349,6 +352,12 @@ impl Hub {
                 if generation == self.generation {
                     match receipt {
                         Receipt::Answer(answer) => self.answer_written(answer),
+                        Receipt::Hold { route, generation } => {
+                            if let Some(r) = self.routes.remove(&route) {
+                                self.client_ids.remove(&(r.conn, key_of(&r.id)));
+                                self.reply(r.conn, &json!({"jsonrpc":"2.0","id":r.id,"result":{"generation":generation}}));
+                            }
+                        }
                         Receipt::Request { conn, id } => self.note_row("_keeper/delivered", json!({"client": conn, "id": id})),
                     }
                 }
@@ -574,12 +583,49 @@ impl Hub {
                     return;
                 }
                 self.client_ids.insert((conn, key_of(&id)));
+                let params = msg.get("params").cloned().unwrap_or(Value::Null);
+                if matches!(method.as_str(), "_keeper/hold" | "_keeper/release" | "_keeper/tool_prompt") {
+                    if self.model.session.is_none() || params.get("sessionId").and_then(Value::as_str) != self.model.session.as_deref() {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"session changed"}}));
+                        return;
+                    }
+                    if method == "_keeper/hold" {
+                        self.next += 1;
+                        let generation = self.next;
+                        self.hold = Some(generation);
+                        self.note_row("_keeper/hold_changed", json!({"generation":generation}));
+                        let route = format!("hold-{generation}");
+                        self.routes.insert(route.clone(), Route { conn, id, change: None });
+                        let session = self.model.session.clone();
+                        let cancel = json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}});
+                        self.queue(&cancel.to_string(), Some(Receipt::Hold { route, generation }));
+                        self.cancel_pending(session.as_deref(), &by);
+                        return;
+                    }
+                    if method == "_keeper/release" {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        if self.hold.is_some() && self.hold == params.get("generation").and_then(Value::as_u64) {
+                            self.hold = None;
+                            self.note_row("_keeper/hold_changed", json!({"generation":null}));
+                            self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"result":{"released":true}}));
+                        } else {
+                            self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"hold changed"}}));
+                        }
+                        return;
+                    }
+                    if self.hold.is_some() {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"held by a person"}}));
+                        return;
+                    }
+                    msg.insert("method".into(), json!("session/prompt"));
+                }
                 self.next += 1;
                 let routed = Value::String(format!("{by}-{}", self.next));
                 let key = key_of(&routed);
                 let receipt = Receipt::Request { conn, id: id.clone() };
-                let params = msg.get("params").cloned().unwrap_or(Value::Null);
-                if method == "session/prompt" && params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref() {
+                if matches!(method.as_str(), "session/prompt" | "_keeper/tool_prompt") && params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref() {
                     self.prompts.insert(key.clone());
                     self.model.working = true;
                 }

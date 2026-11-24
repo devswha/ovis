@@ -742,7 +742,6 @@ export function createServer(
       step2Off: () => accountCatchUp.step2Off() })
     : null;
   const services: RequestServices = {
-    get agentTools() { return agentTools; },
     checkAccountFreshness: () => accountCatchUp.checkFreshness(),
     runtimeMove: options.runtimeService ? moveService({
       stateDir, port: server.port ?? DEFAULT_PORT, serving: runtime, facts: () => options.runtimeService?.facts(),

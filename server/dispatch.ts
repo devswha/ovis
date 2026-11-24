@@ -141,7 +141,6 @@ export interface RequestServices {
   readonly approvals: ApprovalHub;
   /** the agents this server drives over ACP (server/acp/children.ts); null off this PC's herdr-core */
   readonly acp: AcpChildren | null;
-  readonly agentTools?: { hold(session: string, held: boolean): boolean } | null;
   readonly cliProxyRoutes: CLIProxyRoutes;
   readonly usageLogin: UsageLoginService;
   readonly usage: UsageService;
@@ -1064,7 +1063,16 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const body = await readJsonObject(request);
     if (body instanceof Response) return body;
     if (typeof body.pane_id !== "string") return badRequest("missing_pane_id", "pane_id is required.");
-    return ctx.services.agentTools?.hold(body.pane_id, pathname.endsWith("/cancel")) ? jsonResponse({ ok: true }) : badRequest("unavailable", "No connected agent tool child in this pane.");
+    const child = acp?.forPane(body.pane_id);
+    if (!child?.client.connected || !child.client.session) return badRequest("unavailable", "No connected ACP child.");
+    const cancel = pathname.endsWith("/cancel");
+    if (!cancel && (body.child_id !== child.id || !Number.isSafeInteger(body.generation))) return badRequest("hold_changed", "The child and hold generation are required.");
+    try {
+      if (cancel) return jsonResponse({ ok: true, child_id: child.id, generation: await child.client.hold(child.client.session) });
+      const receipt = await child.client.request("_keeper/release", { sessionId: child.client.session, generation: body.generation });
+      if (!receipt || typeof receipt !== "object" || !("released" in receipt && receipt.released === true)) return badRequest("unavailable", "No keeper receipt.");
+      return jsonResponse({ ok: true, child_id: child.id, ...receipt });
+    } catch { return badRequest("hold_changed", "The keeper could not confirm that operation."); }
   }
   if (pathname.startsWith("/api/pane/prompt")) {
     try {
