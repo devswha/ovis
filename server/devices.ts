@@ -876,6 +876,11 @@ export class DeviceStore {
     // while a lock stands only a row confirmed on this PC's screen gets in, whether or not its teardown ran (P11, T46)
     // a row whose last journal entry removed it is out, whether or not the start could finish that removal (P24)
     if (this.failedRows.has(device.id) || (device.relay_public_key !== undefined && this.failedDenies.has(device.relay_public_key))) return true;
+    // a removal by the account's list that this PC acted on and has only in its mark so far (list-follow.ts) keeps
+    // every row of the key out, as the removal's record will once it is on disk
+    if (device.relay_public_key !== undefined && this.signedList?.owesRemoval(device.relay_public_key) === true) return true;
+    // this server follows no list and found the PC pinned to one (closeAccountPart): no row under an account's id
+    if (this.pinClosed !== null && device.relay_public_key !== undefined && accountDeviceId(this.pinClosed.serverId, device.relay_public_key) === device.id) return true;
     // main's own rule stays the floor under the evidence: a tombstone of this PC keeps its key out, whatever path took
     // the evidence in or skipped it (P13, rule 1)
     const tombstoned = device.relay_public_key !== undefined
@@ -885,7 +890,25 @@ export class DeviceStore {
   }
 
   get accountError(): string | null {
-    return this.accountIntegrityError;
+    return this.accountIntegrityError ?? this.pinClosed?.reason ?? null;
+  }
+
+  /**
+   * This server follows no list (it was started with Step 2 turned off) and found the PC pinned to its account's list
+   * by another Ovis on this folder. It cannot ask the list, so it closes its account part: no session and no sign-in
+   * under an account's id for a key, no account record, and `accountError` says why. A pairing this PC made itself
+   * under an id of its own goes on. It stays so until this server is started again, which then follows the list.
+   */
+  closeAccountPart(reason: string, serverId: string): void {
+    if (this.pinClosed !== null) return;
+    this.pinClosed = { reason, serverId };
+    this.closeListGovernedSessions(serverId);
+  }
+  private pinClosed: { readonly reason: string; readonly serverId: string } | null = null;
+
+  /** The sessions of every row of this PC's own devices that holds `key` end, as for a row that changed under them. */
+  closeKeySessions(key: string): void {
+    for (const row of [...this.devices]) if (row.relay_public_key === key) this.closeAccountSessions(row.id);
   }
 
   /** A local denial does not need the listed registry; it still needs the rest of the PC's safety state. */
@@ -1564,7 +1587,7 @@ export class DeviceStore {
     const pc = this.pc ?? (existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath) : null);
     // also where another Ovis server on this folder pinned the binding after this one read it: asked of the file,
     // before a row is ended for a clear that will not be written
-    pc?.adoptPin();
+    pc?.refresh();
     if (reason === "unlisted" && by !== LIST_REMOVED && pc?.binding()?.list !== undefined) return false;
     if (reason !== "revoke_all") this.resumeRevokeAll();
     const binding = pc?.binding();
@@ -2354,6 +2377,16 @@ export class DeviceStore {
     if (!this.listFollowed()) return null;
     const key = this.devices.find((d) => d.id === id)?.relay_public_key;
     return key !== undefined && accountDeviceId(serverId, key) === id ? key : null;
+  }
+
+  /**
+   * The PC pinned its list: every session open under the account's id for a key (listGoverned) ends as one whose row
+   * changed under it (`auth_changed`), whoever wrote the row, so its next sign-in gets the list's answer.
+   */
+  closeListGovernedSessions(serverId: string): void {
+    for (const row of [...this.devices]) {
+      if (row.relay_public_key !== undefined && accountDeviceId(serverId, row.relay_public_key) === row.id) this.closeAccountSessions(row.id);
+    }
   }
 
   /** The role the list this PC is pinned to gives `key` now; null when it lets the key in as nothing, and on a PC that follows no list. */
