@@ -477,13 +477,9 @@ describe("what the PC does when the entry does not go in", () => {
     // the pairing window is open, so the comparison is this PC's to decide, by any browser that drives it
     expect((await made.pc.local("/api/relay/link", { method: "POST", headers: { ...own, "x-herdr-update": "1" } })).status).toBe(200);
     const asking = await join(made, phone, { card: { enc: phone.enc, card } });
-    const waiting = await bounded((async () => {
-      for (;;) {
-        const listed = made.services.relay.approvals.list();
-        if (listed[0]) return listed[0];
-        await Bun.sleep(10);
-      }
-    })());
+    const shown = deferred<{ id: string }>();
+    const stop = made.services.relay.approvals.subscribe((listed) => { if (listed[0]) shown.resolve(listed[0]); });
+    const waiting = await bounded(shown.promise).finally(stop);
     // a browser on the LAN with the access token: it drives this PC, and is not this PC's own window
     const answer = await fetch(`${base}/api/relay/pairing`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", "x-forwarded-for": "100.64.0.9", ...own },
       body: JSON.stringify({ id: waiting.id, decision: "approve" }) });
