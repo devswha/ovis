@@ -118,9 +118,16 @@ export class AccountWitness {
    * goes and comes back between two timer steps is not taken for one that stayed.
    */
   step(): void {
+    // it only records: a failure of its own never reaches the write of the rows or the timer that called it
+    try { this.take(); } catch (error) { this.say(error); }
+  }
+
+  private take(): void {
     const wall = this.wall();
     const mono = this.mono();
     const before = this.last;
+    // set before anything is read: an interval whose rows could not be read is one in which no key counts, at both of its ends
+    this.last = { wall, mono, letting: new Set() };
     const scope = this.deps.scope();
     const rows = scope === null || scope.account === null ? null : this.deps.rows();
     const letting = new Set((rows ?? []).filter((row) => row.lets).map((row) => row.key));
@@ -185,7 +192,7 @@ export class AccountWitness {
   private say(error: unknown): void {
     if (this.failed) return;
     this.failed = true;
-    console.error(`[account] ${ACCOUNT_WITNESS_FILE} could not be written: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`[account] ${ACCOUNT_WITNESS_FILE} could not be kept: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   private wall(): number { return this.deps.wall?.() ?? Date.now(); }

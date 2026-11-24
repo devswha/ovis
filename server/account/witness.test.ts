@@ -209,6 +209,26 @@ describe("the record of how long this PC has let each key in through its account
     expect(made.file().keys[PHONE]).toMatchObject({ wall: 3 * 3600, ran: 3 * 3600 });
   });
 
+  test("rows that throw when they are read break nothing: the record says so once and goes on", () => {
+    const made = recording();
+    made.world.rows = [lets(PHONE)];
+    made.witness.step();
+    const rows = made.world.rows;
+    const said = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      Object.defineProperty(made.world, "rows", { configurable: true, get() { throw new Error("no rows"); } });
+      made.pass(HOUR);
+      made.pass(HOUR);
+      expect(said).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(made.world, "rows", { configurable: true, writable: true, value: rows });
+      said.mockRestore();
+    }
+    made.pass(HOUR);
+    made.pass(HOUR);
+    expect(made.file().keys[PHONE]).toMatchObject({ wall: 3600, ran: 3600 });
+  });
+
   test("it takes the time at least every five minutes while it runs, and once more when it stops", () => {
     expect(WITNESS_INTERVAL_MS).toBeLessThanOrEqual(5 * MINUTE);
     const made = recording();
