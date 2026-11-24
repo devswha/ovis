@@ -90,17 +90,18 @@ describe("rust_host_runs", () => {
     const child = script(tag, `echo up > '${up}'\nsleep 60`);
     // the host starts its child only when told to
     const host = script("late", `${USAGE}\necho $$ > '${hostPid}'\nread _ < '${go}'\n${child} & wait`);
-    // a ps whose first listing is taken before the host, if it still runs, is told to start its child, and is handed
-    // over once that child runs: a host that can still start one at that moment would leave it out of the list
+    // a ps whose first listing (kill_tree's `ps -A`) is taken before the host, if it still runs, is told to start its
+    // child, and is handed over once that child runs (or 5 s passed): a host that can still start one at that moment
+    // would leave it out of the list
     const tools = join(files, "tools");
     mkdirSync(tools);
     writeFileSync(join(tools, "ps"), `#!/bin/sh
 listing=$(${realPs} "$@")
-if [ ! -e '${done}' ] && [ -s '${hostPid}' ]; then
+if [ "$1" = -A ] && [ ! -e '${done}' ] && [ -s '${hostPid}' ]; then
   : > '${done}'
-  case $(${realPs} -o stat= -p "$(cat '${hostPid}')") in T*) ;; *) echo go > '${go}'; read _ < '${up}' ;; esac
+  case $(${realPs} -o stat= -p "$(cat '${hostPid}')") in T*) ;; *) echo go > '${go}'; timeout 5 sh -c 'read _ < "$0"' '${up}' ;; esac
 fi
-printf '%s\n' "$listing"
+printf '%s\\n' "$listing"
 `, { mode: 0o755 });
     const hung = sh(`if rust_host_runs ${host}; then echo RUNS; else echo REFUSED; fi`, { PATH: `${tools}:${process.env["PATH"]}` });
     expect(hung.out).toContain("REFUSED");
