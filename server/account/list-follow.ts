@@ -29,7 +29,7 @@ import {
   admitsSession, admittedDevices, followStep, heardHead, nextUntil, pinList, readSave, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
-import { isListLabel, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
+import { isListLabel, listClock, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -56,6 +56,12 @@ const POST_RETRY_MS = 60_000;
  * until the account service has answered one whole read.
  */
 export const ACCOUNT_LIST_OWED_FILE = "account-list-owed.json";
+/**
+ * The entry this PC signed to let a device in and does not know to be placed, beside the copy: the request as it was
+ * signed and the head it was signed on. While the copy shows that head the same bytes go out again, from another
+ * Allow and after a restart too, and nothing else is signed there.
+ */
+export const ACCOUNT_LIST_ALLOW_FILE = "account-list-allow.json";
 /** After this long a denial that still stands in the mark is said in the status. */
 const OWED_SAID_SECONDS = 3_600;
 
@@ -217,8 +223,11 @@ export interface ListFollowDeps {
   pin(bindId: string, list: string): boolean;
   /** Whether the list of `account` removed this PC while it had the relay identity `serverId` (PcAccountState.removedByList). */
   removedFrom(account: string, serverId: string): boolean;
-  /** A PC route of the list at the account service, with this PC's proof (AccountMailbox.listRoute). */
-  call(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /**
+   * A PC route of the list at the account service, with this PC's proof (AccountMailbox.listRoute). `ready` runs once
+   * that proof is made, right before the request itself goes out: what it throws stops the request, and is thrown on.
+   */
+  call(path: string, body: Record<string, unknown>, ready?: () => void): Promise<Record<string, unknown>>;
   /** The key of the account row `id` that this PC holds, or null. */
   rowKey(id: string): string | null;
   /** The PC's clock, in milliseconds. */
@@ -259,6 +268,17 @@ export interface ListFollowDeps {
 const PC_STATES: ReadonlySet<string> = new Set<SessionRefusal>(["waiting", "stopped", "out"]);
 
 /** `list`: the list the binding is pinned to, or null. */
+/** An entry this PC signed to let the device `key` (with `enc`) in: the request as it was signed, and the place and head it was signed on. */
+interface KeptAllow {
+  readonly list: string; readonly seq: number; readonly onHead: string; readonly key: string; readonly enc: string;
+  readonly entries: readonly string[]; readonly wraps: readonly { epoch: number; member: string; wrap: string }[];
+}
+
+/** The Allow stopped when its proof to the service was made, before its entry went out. */
+class AllowStopped extends Error {
+  constructor(readonly outcome: AllowOutcome) { super("the Allow was stopped before its entry went out"); }
+}
+
 interface Scope { readonly serverId: string; readonly bindId: string | null; readonly account: string | null; readonly list: string | null; readonly endpoint: string }
 type Bound = Scope & { readonly bindId: string; readonly account: string };
 
@@ -298,6 +318,8 @@ export class ListFollow implements ListAuthority {
   private savedAt: number | null = null;
   /** The copy in memory holds what the file does not: its last save failed. It is acted on all the same, and saved again at the next tick. */
   private unsaved = false;
+  /** The entry this PC signed and does not know to be placed (ACCOUNT_LIST_ALLOW_FILE); undefined until the file was looked at for this binding. */
+  private signed: KeptAllow | "unread" | null | undefined = undefined;
   /** What this PC denied and has not on disk yet (ACCOUNT_LIST_OWED_FILE), as the file holds it; null for nothing. */
   private owed: OwedMark | null = null;
   /** This start found a removal in the mark that the copy does not reach: nobody of the list is let in until a read reached it, or the account service answered one whole read. */
@@ -431,6 +453,59 @@ export class ListFollow implements ListAuthority {
   }
 
   private get owedPath(): string { return join(this.deps.stateDir, ACCOUNT_LIST_OWED_FILE); }
+
+  private get allowPath(): string { return join(this.deps.stateDir, ACCOUNT_LIST_ALLOW_FILE); }
+
+  /**
+   * The entry this PC signed and does not know to be placed (ACCOUNT_LIST_ALLOW_FILE), while the copy has not gone
+   * past the head it was signed on; null for none. One the copy has gone past, or that is another list's, is
+   * forgotten here. `unread`: the file is there and does not read, so what this PC signed is not known.
+   */
+  private keptAllow(scope: Bound, copy: FollowerCopy): KeptAllow | "unread" | null {
+    if (this.signed === undefined) this.signed = this.allowOnDisk(scope);
+    const kept = this.signed;
+    const footing = copy.state?.footing;
+    if (kept === null || kept === "unread" || footing === undefined) return kept;
+    if (kept.list === copy.list && (kept.seq > footing.seq || (kept.seq === footing.seq && kept.onHead === footing.hash))) return kept;
+    this.dropAllow();
+    return null;
+  }
+
+  private allowOnDisk(scope: Bound): KeptAllow | "unread" | null {
+    let value: unknown;
+    try { value = JSON.parse(readFileSync(this.allowPath, "utf8")); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      this.error = `${ACCOUNT_LIST_ALLOW_FILE} cannot be read: this PC signs nobody into the list until that file is removed`;
+      return "unread";
+    }
+    const file = parseAllow(value);
+    if (file === null) {
+      this.error = `${ACCOUNT_LIST_ALLOW_FILE} cannot be read: this PC signs nobody into the list until that file is removed`;
+      return "unread";
+    }
+    // another relay identity's, or another binding's: its head is not one this binding signs on
+    if (file.serverId !== scope.serverId || file.bindId !== scope.bindId) {
+      try { rmSync(this.allowPath, { force: true }); } catch { /* read again, and found foreign again, at the next start */ }
+      return null;
+    }
+    return file.kept;
+  }
+
+  private keepAllow(scope: Bound, kept: KeptAllow): boolean {
+    try {
+      writePrivateState(this.allowPath, { v: 1, server_id: scope.serverId, bind_id: scope.bindId, list: kept.list, seq: kept.seq, on_head: kept.onHead, key: kept.key, enc: kept.enc, entries: kept.entries, wraps: kept.wraps });
+    } catch (error) {
+      this.error = `${ACCOUNT_LIST_ALLOW_FILE} could not be written (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`;
+      return false;
+    }
+    this.signed = kept;
+    return true;
+  }
+
+  private dropAllow(): void {
+    this.signed = null;
+    try { rmSync(this.allowPath, { force: true }); } catch { /* read again at the next start, and dropped once the copy is past its head */ }
+  }
 
   owesRemoval(key: string): boolean {
     return this.owed !== null && this.isPinned && this.owed.removed.some((row) => row.key === key);
@@ -792,6 +867,9 @@ export class ListFollow implements ListAuthority {
         // the time is over: the account service is asked once more before the device is told it is not in the list
         if (lastLook) return no("not_in_list");
         lastLook = true;
+        // a read that went out before the time was over may answer with a head from before the member's entry: it is
+        // let end, and the last look is a read begun now
+        if (this.reading !== null) await this.reading;
         await this.readNow();
         continue;
       }
@@ -811,8 +889,9 @@ export class ListFollow implements ListAuthority {
       if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
       await this.read(scope);
       // One signature per place: the request as it was signed, and the head it was signed on. It is sent again as it
-      // is while this PC's own copy shows that head; another is signed only once the copy shows a new one
-      let request: { readonly onHead: string; readonly entries: readonly string[]; readonly wraps: readonly { epoch: number; member: string; wrap: string }[] } | null = null;
+      // is while this PC's own copy shows that head; another is signed only once the copy shows a new one. It is kept
+      // beside the copy (ACCOUNT_LIST_ALLOW_FILE), so that holds for another Allow and after a restart too
+      let request: KeptAllow | null = null;
       let last: AllowRefusal = "head_lost";
       // how long the next try waits; nothing waits after the last one
       let wait = 0;
@@ -823,28 +902,62 @@ export class ListFollow implements ListAuthority {
         const copy = this.copy;
         if (copy === null || copy.state === null) return no("unavailable");
         const { state } = copy;
+        // what this PC signed before and does not know to be placed; one the copy has gone past is forgotten here
+        const kept = this.keptAllow(scope, copy);
         // in already: this PC's own entry that the log now shows, or one a member placed
         const place = placeOf(copy, device);
         if (place !== null) return { allowed: place };
         const cannot = keys.key !== copy.me.key ? "unavailable" : cannotAllow(copy);
         if (cannot !== null) return no(cannot);
+        if (kept === "unread") return no("not_written", "kept_unreadable");
+        // the copy does not reach the head this PC signed on (a restart on an older copy, a service that shows less):
+        // nothing is signed under it
+        if (kept !== null && kept.seq > state.footing.seq) return no("service_away");
         if (request === null || request.onHead !== state.footing.hash) {
-          try { request = { onHead: state.footing.hash, ...await this.writeAllow(copy, state, device, keys) }; } catch (error) {
-            if (error instanceof ListWriteError && error.reason === "behind") return no("behind");
-            if (error instanceof ListWriteError) return no("not_written", error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome);
-            if (error instanceof ListKindError) return no("not_written", "entry_invalid");
-            throw error;
+          // signed at this very head before, for this device or another: it goes out again as it is, and goes first
+          if (kept !== null) request = kept;
+          else {
+            let written: Awaited<ReturnType<ListFollow["writeAllow"]>>;
+            try { written = await this.writeAllow(copy, state, device, keys); } catch (error) {
+              if (error instanceof ListWriteError && error.reason === "behind") return no("behind");
+              if (error instanceof ListWriteError) return no("not_written", error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome);
+              if (error instanceof ListKindError) return no("not_written", "entry_invalid");
+              throw error;
+            }
+            if (!this.live(scope)) return no("unavailable");
+            request = { list: copy.list, seq: state.footing.seq, onHead: state.footing.hash, key: device.key, enc: device.enc, ...written };
+            // an entry that cannot be kept is not sent: after a restart nothing would say that this place was signed
+            if (!this.keepAllow(scope, request)) return no("not_written", "not_kept");
           }
         }
-        // what this PC itself holds against the device, and its own place in the account, are read again right before
-        // each submission: a lock or a removal that came while the entry was prepared signs nobody in
-        if (!this.live(scope) || !this.isPinned) return no("unavailable");
-        if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
+        const sent: KeptAllow = request;
+        const own = sent.key === device.key && sent.enc === device.enc;
+        // What this PC itself holds against the device, and its own place in the account, are read again before each
+        // submission and once more when the proof to the service is made, right before the entry goes out: a lock or
+        // a removal that came while the entry was prepared, or while the PC proved itself, signs nobody in
+        // So is the copy as it stands by then: one that came to hold an alarm meanwhile (a member's page, taken beside
+        // this work) signs nobody in
+        const stopped = (): AllowOutcome | null => {
+          const now = this.copy;
+          if (!this.live(scope) || !this.isPinned || now === null || now.state === null) return no("unavailable");
+          const cannot = keys.key !== now.me.key ? "unavailable" : cannotAllow(now);
+          if (cannot !== null) return no(cannot);
+          if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
+          return this.deps.mayAdmit?.(sent.key) === false ? no("not_written", "place_kept") : null;
+        };
+        const early = stopped();
+        if (early !== null) return early;
+        // the copy moved while the entry was prepared: it is looked at again, and the entry is signed on the head it has now
+        if (this.copy?.state?.footing.hash !== sent.onHead) continue;
         try {
-          await this.deps.call("/v2/pc/list/entries", { list: copy.list, entries: request.entries, ...(request.wraps.length > 0 ? { wraps: request.wraps } : {}) });
+          await this.deps.call("/v2/pc/list/entries", { list: sent.list, entries: sent.entries, ...(sent.wraps.length > 0 ? { wraps: sent.wraps } : {}) },
+            () => { const late = stopped(); if (late !== null) throw new AllowStopped(late); });
         } catch (error) {
-          if (!(error instanceof AccountServiceRefusal)) {
-            // no answer: it may be placed all the same, which only the log says
+          if (error instanceof AllowStopped) return error.outcome;
+          const named = error instanceof AccountServiceRefusal && error.status === 503 && (error.code === "list_rebuilding" || error.code === "list_stopped");
+          if (!(error instanceof AccountServiceRefusal) || (error.status >= 500 && !named)) {
+            // no answer, or one that says nothing of the entry (a gateway in front of the service): it may be placed
+            // all the same, which only the log says
             last = "service_away";
             await this.read(scope);
             continue;
@@ -853,6 +966,11 @@ export class ListFollow implements ListAuthority {
           if (error.status === 409 && error.code === "head_moved") { last = "head_lost"; await this.read(scope); continue; }
           if (error.status === 409 && error.code === "try_again") { last = "head_lost"; wait = asked; continue; }
           if (error.status === 503 && error.code === "list_rebuilding") { last = "service_away"; wait = asked; continue; }
+          // the service's own word that it did not place the entry: nothing is kept of it
+          this.dropAllow();
+          request = null;
+          // it was another device's: this one's is signed next
+          if (!own) continue;
           if (error.status === 503 && error.code === "list_stopped") return no("list_stopped");
           if (error.status === 403 && error.code === "not_claimed") return no("not_claimed");
           return no("refused", `${error.status}${error.code !== null && REFUSAL_CODE.test(error.code) ? ` ${error.code}` : ""}`);
@@ -860,7 +978,9 @@ export class ListFollow implements ListAuthority {
         // placed: the device is in once this PC's own copy shows the entry, never on the answer
         await this.read(scope);
       }
-      const place = this.live(scope) && this.copy !== null ? placeOf(this.copy, device) : null;
+      const copy = this.live(scope) ? this.copy : null;
+      if (copy !== null && copy.state !== null) this.keptAllow(scope, copy);
+      const place = copy !== null ? placeOf(copy, device) : null;
       return place === null ? no(last) : { allowed: place };
     }
   }
@@ -871,8 +991,8 @@ export class ListFollow implements ListAuthority {
     // member signs, so a service that says tomorrow must not make this PC sign tomorrow, which would end every borrowed
     // device at once and could not be undone. The hour this PC saved is for letting in and refusing only: it signs
     // nothing and decides nothing that is signed, so an hour that was once pushed ahead keeps no names from being
-    // sealed (sealEpoch holds the clock against the list's own time itself)
-    const now = this.seconds();
+    // sealed. It is held against the list's own time, though: an entry is never dated before the one it follows
+    const now = listClock(state, this.seconds(), null);
     const seal = sealEpoch(state, now);
     const epochKey = seal === null ? null : await this.epochKey(copy, state, seal.epoch, keys);
     let sealed: Sealed | null = null;
@@ -1117,6 +1237,8 @@ export class ListFollow implements ListAuthority {
     // the mark was the old binding's: takeFile reads the one of the binding the PC has now
     this.owed = null;
     this.mustRead = false;
+    // so was the entry it signed and kept: the file is read for the binding the PC has now
+    this.signed = undefined;
   }
 
   private endpointOf: { readonly key: string; readonly endpoint: string } | null = null;
@@ -1534,10 +1656,27 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */
 export function forgetList(stateDir: string): void {
-  for (const file of [ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE]) {
+  for (const file of [ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, ACCOUNT_LIST_ALLOW_FILE]) {
     try { rmSync(join(stateDir, file), { force: true }); }
     catch (error) { console.error(`[account] ${file} could not be removed: ${(error as NodeJS.ErrnoException).code ?? "unknown error"}`); }
   }
+}
+
+function parseAllow(value: unknown): { readonly serverId: string; readonly bindId: string; readonly kept: KeptAllow } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const { v, server_id, bind_id, list, seq, on_head, key, enc, entries, wraps, ...rest } = value as Record<string, unknown>;
+  const text = (field: unknown): field is string => typeof field === "string" && field !== "";
+  if (v !== 1 || Object.keys(rest).length > 0 || typeof server_id !== "string" || !SERVER_ID_PATTERN.test(server_id) || typeof bind_id !== "string" || !BIND_ID.test(bind_id)
+    || typeof list !== "string" || !isListHash(list) || !Number.isSafeInteger(seq) || (seq as number) < 0 || !text(on_head) || !text(key) || !text(enc)
+    || !Array.isArray(entries) || entries.length === 0 || !entries.every(text) || !Array.isArray(wraps)) return null;
+  const kept: { epoch: number; member: string; wrap: string }[] = [];
+  for (const wrap of wraps as unknown[]) {
+    if (typeof wrap !== "object" || wrap === null) return null;
+    const { epoch, member, wrap: bytes } = wrap as Record<string, unknown>;
+    if (!Number.isSafeInteger(epoch) || !text(member) || !text(bytes)) return null;
+    kept.push({ epoch: epoch as number, member, wrap: bytes });
+  }
+  return { serverId: server_id, bindId: bind_id, kept: { list, seq: seq as number, onHead: on_head, key, enc, entries: entries as string[], wraps: kept } };
 }
 
 function parseFile(text: string): ListFile | null {

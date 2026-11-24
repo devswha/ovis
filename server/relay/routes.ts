@@ -75,6 +75,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       outcome = service.approvals.decideForList(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", peer.device);
     }
     if (outcome.outcome !== "decided") {
+      // a join into the list is approved only once the new device confirmed its digits (`confirmed` in the list of
+      // waiting joins): its approver signs the device's entry, and signs for nobody who gave up before that
+      if (outcome.outcome === "not_confirmed") return fail("not_confirmed", "That device has not confirmed its digits yet. Allow it once it has.", 409);
       return outcome.outcome === "gone"
         ? fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404)
         : fail("wrong_digits", "Those are not the digits the new device shows; it was not let in.", 409);

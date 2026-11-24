@@ -13,3 +13,8 @@
   list through that PC's introduction.
 - On a PC pinned to its account's list, another PC of the account keeps watching for as long as
   the list holds it, and is put out when the list removes it.
+- A PC that signed a device's entry and got no clear answer from the account service keeps that
+  signed entry and sends the same one again, also after a restart, instead of signing another at
+  the same place. A gateway error is no longer taken for a refusal: the PC reads the list first.
+- On a PC pinned to its account's list, a device's approval of a join from afar is refused until
+  the new device has confirmed its digits (`409 not_confirmed`), and the join keeps waiting.
