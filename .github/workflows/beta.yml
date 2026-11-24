@@ -134,9 +134,9 @@ jobs:
             gh release create "pty-sidecar-$TREE" --prerelease --latest=false --target "$SHA" --title "Rust PTY host $TREE" \
               --notes "The Rust PTY host built from crates/pty-sidecar tree $TREE, for beta builds whose crate no release was built from."
           fi
-          # the manifest last: install never reads one whose files are missing
-          find . -maxdepth 1 -type f ! -name ovis-pty-sidecar.json -print0 | xargs -0 gh release upload "pty-sidecar-$TREE" --clobber
-          gh release upload "pty-sidecar-$TREE" ovis-pty-sidecar.json --clobber
+          # the manifests last: install never reads one whose files are missing
+          find . -maxdepth 1 -type f ! -name '*.json' -print0 | xargs -0 gh release upload "pty-sidecar-$TREE" --clobber
+          gh release upload "pty-sidecar-$TREE" ovis-acp-keeper.json ovis-pty-sidecar.json --clobber
   # the tag comes once its host is there: the updater's install of the beta fetches it
   tag:
     needs: [pick, host-publish]

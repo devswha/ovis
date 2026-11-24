@@ -5,7 +5,7 @@ import { parseWorkflow, root } from "./shell-workflow-rules.ts";
 const workflow = (name: string) => parseWorkflow(join(root, ".github/workflows", name));
 const ATTESTS = { contents: "read", "id-token": "write", attestations: "write" };
 
-test("release and repair runs attest every Rust PTY host binary; pull requests and the build jobs get no signing token", () => {
+test("release and repair runs attest every Rust PTY host and ACP keeper binary; pull requests and the build jobs get no signing token", () => {
   const sidecar = workflow("pty-sidecar.yml");
   expect(sidecar.permissions).toEqual({ contents: "read" });
   for (const name of ["build", "manifest"]) expect(sidecar.jobs[name]!.permissions).toBeUndefined();
@@ -17,7 +17,14 @@ test("release and repair runs attest every Rust PTY host binary; pull requests a
   expect(download?.with).toEqual({ name: "ovis-pty-sidecar", path: "pty-sidecar" });
   const step = attest.steps!.find((step) => step.uses?.startsWith("actions/attest-build-provenance@"));
   expect(step?.uses).toMatch(/^actions\/attest-build-provenance@[0-9a-f]{40}$/);
-  expect(step?.with).toEqual({ "subject-path": "pty-sidecar/ovis-pty-sidecar-*" });
+  expect(step?.with).toEqual({ "subject-path": "pty-sidecar/ovis-pty-sidecar-*\npty-sidecar/ovis-acp-keeper-*\n" });
+});
+
+test("CI runs both crates' unit tests, and the release build runs the script that builds both binaries", () => {
+  const runs = workflow("ci.yml").jobs["rust-pty-host"]!.steps!.map((step) => step.run ?? "");
+  for (const crate of ["pty-sidecar", "acp-keeper"]) expect(runs).toContain(`cargo test --locked --manifest-path crates/${crate}/Cargo.toml`);
+  const build = workflow("pty-sidecar.yml").jobs["build"]!.steps!.map((step) => step.run ?? "");
+  expect(build).toContain("bun scripts/pty-sidecar.ts build ${{ matrix.asset }} pty-sidecar");
 });
 
 test("every caller grants the attest job its permissions, and Release publishes only after it", () => {

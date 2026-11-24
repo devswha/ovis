@@ -254,6 +254,9 @@ jobs:
       - name: Rust unit tests
         if: needs.changes.outputs.draft != 'true'
         run: cargo test --locked --manifest-path crates/pty-sidecar/Cargo.toml
+      - name: ACP keeper unit tests
+        if: needs.changes.outputs.draft != 'true'
+        run: cargo test --locked --manifest-path crates/acp-keeper/Cargo.toml
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
       - name: PtySession on both hosts
