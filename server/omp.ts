@@ -553,23 +553,31 @@ export function ompRouteOwns({ layout }: OmpRoute, file: string, cwd: string): b
 }
 
 /**
- * The blob store holding the pictures of an omp transcript, or null. omp 18.8.7 keeps its sessions in
- * `<data>/sessions` and their pictures in `<data>/blobs` (`<data>` is the agent directory, or omp's
- * XDG data directory), so a session of a managed store, `<data>/sessions/<cwd>/<id>.jsonl` or a
- * subagent's file a level below it, has its blobs beside the store. A session directory of its own
- * (`--session-dir`) names no data directory, and its pictures stay unnamed. The store is found from
- * the transcript's real path, by layout alone, whether it exists yet or not: the parser, a page read
+ * The data directory of an omp transcript, or null. omp 18.8.7 keeps its sessions in `<data>/sessions`
+ * and their pictures in `<data>/blobs` (`<data>` is the agent directory, or omp's XDG data directory),
+ * and omp 19 its `history.db` there too, so a session of a managed store, `<data>/sessions/<cwd>/<id>.jsonl`
+ * or a subagent's file a level below it, has its data directory above the store. A session directory of
+ * its own (`--session-dir`) names none. Found from the transcript's real path, by layout alone, whether
+ * the files in it exist yet or not.
+ */
+export function ompDataDir(transcript: string): string | null {
+  let real: string;
+  try { real = realpathSync(transcript); } catch { return null; }
+  for (let dir = dirname(dirname(real)), depth = 0; depth < 2; depth += 1, dir = dirname(dir)) {
+    if (basename(dir) === "sessions") return dirname(dir);
+  }
+  return null;
+}
+
+/**
+ * The blob store holding the pictures of an omp transcript (ompDataDir), or null: the parser, a page read
  * live and the image endpoint all ask of the store when they read a blob, and a store that is missing,
  * or a link (to another omp's store, or anywhere), answers nothing then (ompBlobPicture). A blob is
  * served only when its bytes hash to the name the transcript gave them, so a wrong guess finds nothing.
  */
 export function ompBlobStore(transcript: string): string | null {
-  let real: string;
-  try { real = realpathSync(transcript); } catch { return null; }
-  for (let dir = dirname(dirname(real)), depth = 0; depth < 2; depth += 1, dir = dirname(dir)) {
-    if (basename(dir) === "sessions") return join(dirname(dir), "blobs");
-  }
-  return null;
+  const data = ompDataDir(transcript);
+  return data === null ? null : join(data, "blobs");
 }
 
 export async function ompHeldTranscript(paneId: string, cwd: string, core = false): Promise<string | null> {

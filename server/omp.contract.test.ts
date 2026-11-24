@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -344,4 +345,19 @@ it("answers the /btw topics saved beside the pane's own OMP session, and none fo
   };
   expect((await topics(askPaneId)).map((topic) => [topic.id, topic.answer])).toEqual([["btw1", "7421"]]);
   expect(await topics(paneId)).toEqual([]);
+});
+
+it("answers the recap omp saved in history.db for the pane's own OMP session, and none for a pane whose session is not written", async () => {
+  // omp 19.1.1 keeps recaps beside the session store (session-index.ts); the ask session's last message is at 06:39:31
+  const db = new Database(join(root, ".omp", "agent", "history.db"));
+  db.run("CREATE TABLE session_recaps (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, cwd TEXT NOT NULL, recap TEXT NOT NULL, created_at INTEGER NOT NULL)");
+  db.run("INSERT INTO session_recaps (session_id, cwd, recap, created_at) VALUES (?, ?, ?, ?)", ["01a1813c-3bb4-7624-ab98-0a9a1a52506b", root, "Goal: pick a route. Next: answer the question.", Date.parse("2026-10-28T06:44:00Z") / 1000]);
+  db.close();
+  const recap = async (pane: string): Promise<unknown> => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/pane/recap?pane_id=${encodeURIComponent(pane)}`);
+    expect(response.status).toBe(200);
+    return (await response.json() as { recap: unknown }).recap;
+  };
+  expect(await recap(askPaneId)).toEqual({ text: "Goal: pick a route. Next: answer the question.", at: "2026-10-28T06:44:00.000Z" });
+  expect(await recap(paneId)).toBeNull();
 });

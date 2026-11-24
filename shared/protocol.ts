@@ -394,6 +394,8 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *  GET    /api/pane/btw?pane_id=        -> OmpBtwHistory (the side conversations an OMP pane's session
  *         saved with /btw, newest first, under hard caps; `more` when a cap left some out; empty for any
  *         other pane or one without any)
+ *  GET    /api/pane/recap?pane_id=      -> { recap: OmpRecap | null } (the newest recap omp 19 wrote for an
+ *         OMP pane's session while its user was away; null once a message is newer, and for any other pane)
  *  GET    /api/pane/plan?pane_id=       -> PanePlan (the plan the pane's Claude Code, Codex or OmO session
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
@@ -843,6 +845,12 @@ export interface OmpBtwTopic extends OmpBtwExchange {
 export interface OmpBtwHistory {
   topics: OmpBtwTopic[];
   more: boolean;
+}
+
+/** The recap omp wrote for a session gone idle (`※ recap:`), capped at 4,000 characters; `at` is when it was saved. */
+export interface OmpRecap {
+  text: string;
+  at: string;
 }
 
 /** How far a pane's plan has got, for the sidebar: `current` names the step in progress. */

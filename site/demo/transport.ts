@@ -512,6 +512,9 @@ function focusDemoPane(pane: Pane): void {
   }
 }
 
+// omp's recap of the omp pane, saved a while before the visit (server/omp-recap.ts); one time, so a dismissal holds
+const OMP_RECAP = { text: "Goal: a config file for cli-tools. TOML picked and loaded at start; flags still win. Next: document the keys.", at: new Date(Date.now() - 12 * 60_000).toISOString() };
+
 function agentOf(paneId: string): string {
   const key = keyOfPane.get(paneId);
   return SPECS.find((spec) => spec.key === key)?.agent ?? paneOf(paneId)?.agent ?? "the agent";
@@ -1553,6 +1556,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   }
   if (path === "/api/pane/artifacts") return json({ artifacts: [] });
   if (path === "/api/pane/btw") return json({ topics: [], more: false });
+  if (path === "/api/pane/recap") return json({ recap: agentOf(paneId) === "omp" ? OMP_RECAP : null });
   if (path === "/api/pane/omo-tasks") return json({ tasks: keyOfPane.get(paneId) === "flaky" ? BACKGROUND_TASKS : [], runs: [], server_time: new Date().toISOString() } satisfies OmoActivity);
   if (path === "/api/pane/background-agent") {
     if (method !== "GET") return error("method_not_allowed", "use GET", 400);

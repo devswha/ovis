@@ -54,6 +54,7 @@ export function useMachineApi() {
     fetchPanePlan: (pane: string) => api.fetchPanePlan(pane, id),
     fetchPaneArtifacts: (pane: string) => api.fetchPaneArtifacts(pane, id),
     fetchPaneBtw: (pane: string, signal?: AbortSignal) => api.fetchPaneBtw(pane, id, signal),
+    fetchPaneRecap: (pane: string, signal?: AbortSignal) => api.fetchPaneRecap(pane, id, signal),
     closePane: (pane: string) => api.closePane(pane, id),
     focusPane: (pane: string) => api.focusPane(pane, id),
     closeWorkspace: (workspace: string, closeGroup = false) => api.closeWorkspace(workspace, id, closeGroup),

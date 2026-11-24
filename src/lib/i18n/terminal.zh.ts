@@ -127,4 +127,5 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Codex selected this: Shift+drag copies or quotes it here": "Codex 已选择：按住 Shift 拖动可在此复制或引用",
   "Codex selected this: Option+drag copies or quotes it here": "Codex 已选择：按住 Option 拖动可在此复制或引用",
   "Pane {index} of {count}": "第 {index} 个窗格，共 {count} 个",
+  "Recap": "回顾",
 };

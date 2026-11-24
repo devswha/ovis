@@ -25,6 +25,7 @@ import { handleTasksRequest } from "./tasks-routes.ts";
 import { handlePlanRequest } from "./plan-routes.ts";
 import { handleArtifactsRequest } from "./claude-artifacts.ts";
 import { handleBtwRequest } from "./omp-btw.ts";
+import { handleRecapRequest } from "./omp-recap.ts";
 import { paneTranscript } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import type { ShellAgentLocator } from "./shell-agent.ts";
@@ -1041,13 +1042,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const artifactsResponse = await handleArtifactsRequest(request, url, pathname, { claudeAgents });
   if (artifactsResponse) return artifactsResponse;
 
-  const btwResponse = await handleBtwRequest(request, url, pathname, {
-    transcript: (paneId) => paneTranscript(paneId, options.codexHome, undefined, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData).then(
-      (found) => found.source === "omp-transcript" ? found.path : null,
-      (error: unknown) => { if (error instanceof ConversationUnavailable) return null; throw error; },
-    ),
-  });
+  const ompTranscript = { transcript: (paneId: string) => paneTranscript(paneId, options.codexHome, undefined, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData).then(
+    (found) => found.source === "omp-transcript" ? found.path : null,
+    (error: unknown) => { if (error instanceof ConversationUnavailable) return null; throw error; },
+  ) };
+  const btwResponse = await handleBtwRequest(request, url, pathname, ompTranscript);
   if (btwResponse) return btwResponse;
+  const recapResponse = await handleRecapRequest(request, url, pathname, ompTranscript);
+  if (recapResponse) return recapResponse;
 
   if (pathname === SESSION_HISTORY_PATH) {
     setRequestRoute(SESSION_HISTORY_PATH);

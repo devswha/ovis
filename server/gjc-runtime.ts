@@ -160,7 +160,7 @@ function transcriptCwd(path: string): string | null {
   return transcriptHeader(path)?.cwd ?? null;
 }
 
-export function transcriptHeader(path: string): { cwd: string; version: unknown } | null {
+export function transcriptHeader(path: string): { cwd: string; version: unknown; id: unknown } | null {
   let fd: number;
   try {
     fd = openSync(path, "r");
@@ -171,9 +171,9 @@ export function transcriptHeader(path: string): { cwd: string; version: unknown 
     const buffer = Buffer.alloc(4096);
     const size = readSync(fd, buffer, 0, buffer.length, 0);
     const lines = buffer.subarray(0, size).toString("utf8").split("\n");
-    let header = JSON.parse(lines[0] ?? "") as { type?: string; cwd?: unknown; version?: unknown };
-    if (header.type === "title") header = JSON.parse(lines[1] ?? "") as { type?: string; cwd?: unknown; version?: unknown };
-    return header.type === "session" && typeof header.cwd === "string" ? { cwd: header.cwd, version: header.version } : null;
+    let header = JSON.parse(lines[0] ?? "") as { type?: string; cwd?: unknown; version?: unknown; id?: unknown };
+    if (header.type === "title") header = JSON.parse(lines[1] ?? "") as { type?: string; cwd?: unknown; version?: unknown; id?: unknown };
+    return header.type === "session" && typeof header.cwd === "string" ? { cwd: header.cwd, version: header.version, id: header.id } : null;
   } catch {
     return null;
   } finally {

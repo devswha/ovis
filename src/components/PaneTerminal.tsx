@@ -2,7 +2,7 @@ import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, us
 import { fontSettled } from "../lib/fontFamily.ts";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, History, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import "./PaneTerminal.css";
 
@@ -52,7 +52,8 @@ import { usePaneLane } from "../lib/chatLane.ts";
 import { useSettings } from "../lib/settings.ts";
 import type { TerminalColors } from "../lib/themes.ts";
 import { learnFromSend } from "../lib/tabLabels.ts";
-import { useT } from "../lib/i18n.ts";
+import { useLocale, useT } from "../lib/i18n.ts";
+import { useOmpRecap } from "../lib/useOmpRecap.ts";
 import { isAppShortcut } from "../lib/shortcuts.ts";
 import { plainPageDirection } from "../lib/pageScroll.ts";
 import { keyboardTypingField, keyboardUp } from "../lib/keyboard.ts";
@@ -823,6 +824,9 @@ export function PaneTerminal({
   }, [greetingDue, paneId]);
 
   const noticesDocked = presented && paneId !== null && chatView && !secretActive && !observing && !ended;
+  // read while the pane is shown, not only while notices dock: a dismissal is forgotten once its notice goes
+  const recap = useOmpRecap(paneId, agent === "omp" && presented);
+  const locale = useLocale();
   const noticeItems: ComposerNoticeRow[] = [];
   if (paneId !== null) {
     const owner = paneStorageId(machineId, paneId);
@@ -849,6 +853,11 @@ export function PaneTerminal({
       </>,
     });
     if (clipboardNote) noticeItems.push({ id: `${owner}:clipboard`, priority: "notice", revision: clipboardNote, warning: false, mark: <ClipboardCheck />, text: clipboardNote });
+    // dismissed until omp writes a newer one; the server drops it once a message is newer
+    if (recap !== null) noticeItems.push({
+      id: `${owner}:recap`, priority: "notice", revision: recap.at, warning: false, mark: <History />,
+      text: <>{t("Recap")} · {new Date(recap.at).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })} — <em>{recap.text}</em></>,
+    });
     // a peek ended by hand over a screen still open in the terminal: the next message would land in it
     if (stillOpen !== null && stillOpen.pane === paneId) noticeItems.push({
       id: `${owner}:still-open`, priority: "urgent", revision: stillOpen.named ? stillOpen.command : "", warning: false, mark: <SquareTerminal />,
