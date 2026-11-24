@@ -91,4 +91,7 @@ export const SETUP_JA: Record<string, string> = {
   "On this PC only. You still answer every permission request.": "この PC のみ。許可のリクエストには常にあなたが答えます。",
   "Agents they may call": "呼び出せるエージェント",
   "Not saved: this PC did not answer. Try again.": "保存できませんでした: この PC が応答しませんでした。もう一度お試しください。",
+  "Give {name} the tool to call other agents?": "{name} にほかのエージェントを呼び出すツールを渡しますか?",
+  "Programs in this pane can start other agents and give them work until it closes. You still answer every permission request.": "このペインが閉じるまで、中のプログラムがほかのエージェントを起動して作業を任せられます。許可はいつも自分で行います。",
+  "A pane you allowed to call other agents, until it closes.": "ほかのエージェントの呼び出しを許可したペインです。閉じると終わります。",
 };

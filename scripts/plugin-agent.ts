@@ -1,7 +1,13 @@
 import { TOOL_SCHEMAS, harnessVerb, refuse } from "../shared/harness-tool.ts";
-import { callHarness } from "../server/agent-tools/mcp.ts";
+import { join } from "node:path";
+import { callAsPane, callHarness } from "../server/agent-tools/mcp.ts";
+import { defaultStateDir } from "../server/update-state.ts";
 
-/** This command has no fallback to the owner's HTTP door, the current pane or another run. */
+/**
+ * This command has no fallback to the owner's HTTP door or another run. With a launch's token (OVIS_AGENT_SOCKET and
+ * OVIS_AGENT_TOKEN_FILE, even one alone) it uses that run only; with neither it asks as the hc pane it runs in, which
+ * the server proves and its owner allows once (docs/harness-tool.md).
+ */
 export async function runAgent(words: readonly string[]): Promise<number> {
   const [word, ...rest] = words;
   const verb = word === "list" ? "ls" : word === "cancel" ? "stop" : word;
@@ -25,7 +31,9 @@ export async function runAgent(words: readonly string[]): Promise<number> {
   for (const key of ["session","task"]) if (positional.length && Object.hasOwn(TOOL_SCHEMAS[verb].properties, key) && !(key in args)) args[key] = positional.shift();
   if (positional.length) return bad();
   const socket = process.env["OVIS_AGENT_SOCKET"], tokenFile = process.env["OVIS_AGENT_TOKEN_FILE"];
-  const value = socket && tokenFile ? await callHarness({ socket, tokenFile }, verb, args) : refuse("not_granted", "This shell has no Ovis agent run.");
+  const value = socket !== undefined || tokenFile !== undefined
+    ? socket && tokenFile ? await callHarness({ socket, tokenFile }, verb, args) : refuse("not_granted", "This shell has no Ovis agent run.")
+    : await callAsPane(join(defaultStateDir(), "agent-tools", "hub.sock"), verb, args, process.env["HC_TERMINAL_ID"]);
   console.log(JSON.stringify(value));
   return value.kind === "refusal" ? 1 : 0;
 }

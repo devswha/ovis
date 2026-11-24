@@ -91,4 +91,7 @@ export const SETUP_ZH: Record<string, string> = {
   "On this PC only. You still answer every permission request.": "仅限此 PC。每个权限请求仍由你回答。",
   "Agents they may call": "可调用的 Agent",
   "Not saved: this PC did not answer. Try again.": "未保存：此 PC 没有响应。请重试。",
+  "Give {name} the tool to call other agents?": "要让 {name} 使用调用其他 Agent 的工具吗?",
+  "Programs in this pane can start other agents and give them work until it closes. You still answer every permission request.": "在此窗格关闭前，其中的程序可以启动其他 Agent 并分派任务。每个权限请求仍由你亲自批准。",
+  "A pane you allowed to call other agents, until it closes.": "你允许调用其他 Agent 的窗格，关闭后失效。",
 };

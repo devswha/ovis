@@ -1,4 +1,5 @@
-import type { Access } from "./access.ts";
+import { ownerAccess, type Access } from "./access.ts";
+import { paneFeed } from "./agent-tools/pane-grants.ts";
 import { sameBrowser } from "./devices.ts";
 import type { ServerContext } from "./dispatch.ts";
 import type { MachineEventDocument } from "./machine-events.ts";
@@ -76,6 +77,12 @@ export function machinePairingEvents(ctx: ServerContext, access: Access, keys: r
       tellPending();
       stopPending = pendingRedemptions.onChange(tellPending);
     }
-    return () => { stopPaired(); stopListed?.(); stopSeen?.(); stopRemoved?.(); stopRelay(); stopPending?.(); };
+    // the panes waiting for his word on the agent tool, and those he allowed: the owner's windows alone
+    let stopPanes: (() => void) | undefined;
+    if (ownerAccess(access)) {
+      listener({ type: "agent-tool-panes", ...paneFeed.view() });
+      stopPanes = paneFeed.subscribe((panes) => listener({ type: "agent-tool-panes", ...panes }));
+    }
+    return () => { stopPaired(); stopListed?.(); stopSeen?.(); stopRemoved?.(); stopRelay(); stopPending?.(); stopPanes?.(); };
   } };
 }

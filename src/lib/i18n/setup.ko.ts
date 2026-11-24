@@ -91,4 +91,7 @@ export const SETUP_KO: Record<string, string> = {
   "On this PC only. You still answer every permission request.": "이 PC에서만. 승인은 항상 직접 합니다.",
   "Agents they may call": "부를 수 있는 에이전트",
   "Not saved: this PC did not answer. Try again.": "저장하지 못했습니다: 이 PC가 답하지 않았습니다. 다시 시도하세요.",
+  "Give {name} the tool to call other agents?": "{name} 칸에 다른 에이전트 부르기 도구를 줄까요?",
+  "Programs in this pane can start other agents and give them work until it closes. You still answer every permission request.": "이 칸이 닫힐 때까지 칸 안의 프로그램이 다른 에이전트를 띄우고 일을 맡길 수 있습니다. 승인은 항상 직접 합니다.",
+  "A pane you allowed to call other agents, until it closes.": "다른 에이전트를 부르도록 허락한 칸입니다. 칸이 닫히면 끝납니다.",
 };

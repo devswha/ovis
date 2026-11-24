@@ -78,6 +78,7 @@ import { USER_FONTS_PATH } from "../shared/user-fonts.ts";
 import type { UsageAccountList } from "./usage-account-list.ts";
 import { handleVoiceRequest } from "./voice.ts";
 import { handleMemoryRequest } from "./memory/routes.ts";
+import { handleAgentPanesRequest } from "./agent-tools/pane-routes.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
@@ -756,6 +757,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
   // Settings → Memory: every change is a person's on a screen; the bridge token never reaches it (not a bridge path)
+  // the owner's word on panes hc started that asked for the agent tool: his alone, a watching device's never
+  if (pathname === "/api/agent-tools/panes" || pathname.startsWith("/api/agent-tools/panes/")) return handleAgentPanesRequest(request, pathname, ownerAccess(access) && !readOnly);
   if (pathname === "/api/memory" || pathname.startsWith("/api/memory/")) {
     const by = access.level !== "full" ? "unknown" : access.device ? `device:${access.device.id}` : access.via;
     return handleMemoryRequest(request, url, ctx.services.memory, { readOnly, by });
