@@ -7,6 +7,7 @@ import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { entryFromText, readBody } from "../../shared/account-list-entry.ts";
 import { addListPc, listWorld } from "../lib/account/accountList.test-helpers.ts";
 import { allowDevice } from "../lib/account/listAllow.ts";
+import { removeListPc } from "../lib/account/listRemove.ts";
 import { setPageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_SIGN_OUT_EVENT } from "../lib/account/service.ts";
 import { indexedAccountStore, memoryAccountStore } from "../lib/account/store.ts";
@@ -395,5 +396,30 @@ it("on an account with a signed list, tells of a PC another device added by the 
     spyOn(indexedAccountStore, "get").mockImplementation(first.store.get);
     const laptop = await addListPc(w, first, "Laptop");
     expect([first.list.holdsPc(laptop.endpoint), (await mount(null)).findAllByProps({ role: "status" })]).toEqual([true, []]);
+  } finally { setPageAccountList(null); }
+});
+
+it("follows the account's list: the notice of a PC goes when another device puts that PC out, with no reload and no press here (M61)", async () => {
+  const w = listWorld(ACCOUNT, Date.now());
+  const first = await w.device({ label: "Dana's phone" });
+  await first.list.sync();
+  const second = await w.device({ label: "Dana's tablet" });
+  await second.list.sync();
+  const let_in = await allowDevice(first.list, { key: (await second.keys()).key, label: "Dana's tablet", os: "android" }, { wait: async () => {} });
+  if (!let_in.allowed) throw new TypeError("The second device was not let in");
+  await second.list.adopt(let_in.offer);
+  const desk = await addListPc(w, first, "Desk in the study");
+  await second.list.sync();
+  service = w.fake;
+  spyOn(indexedAccountStore, "get").mockImplementation(second.store.get);
+  spyOn(indexedAccountStore, "update").mockImplementation(second.store.update);
+  setPageAccountList(second.list);
+  try {
+    const root = await mount(null);
+    expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
+    // the phone removes the PC; the tablet's page reads its list by its own clock, and nothing else tells the notice
+    expect(await removeListPc(first.list, desk.endpoint, { wait: async () => {} })).toEqual({ removed: true });
+    await act(async () => { await second.list.sync(); for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); });
+    expect([second.list.holdsPc(desk.endpoint), root.findAllByProps({ role: "status" })]).toEqual([false, []]);
   } finally { setPageAccountList(null); }
 });

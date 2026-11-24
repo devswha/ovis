@@ -42,6 +42,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
   const list: AccountList = {
     sync: async () => { calls.push("sync"); return OFF; },
     follows: async () => false,
+    shown: () => Math.floor(Date.now() / 1000),
     view: () => OFF,
     subscribe: (listener) => { heard.push(() => listener(OFF)); return () => {}; },
     holdsPc: () => false,
@@ -56,7 +57,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
     holdsEntry: () => false,
     gossip: () => null,
     pageAfter: () => null,
-    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
   };
   return { list, calls, heard };
 }
@@ -118,6 +119,72 @@ describe("the hosted shell and the account's signed list", () => {
     await account.refresh(false, true);
     await settle();
     expect(calls.slice(4)).toEqual(["sync", `shadow acct-two ${"a1".repeat(16)},${"b2".repeat(16)} opens:`]);
+  });
+
+  for (const [status, says] of [[{ at: "newer_save" }, "newer"], [{ at: "damaged", why: "form" }, "damaged"]] as const) {
+    it(`says that this device cannot read its list from the very first draw, and marks every row then (${says}) (M64)`, async () => {
+      await signIn("acct-one");
+      directory = [row("a1".repeat(16))];
+      const { list } = recordingList();
+      const unreadable = { account: "acct-one", reached: true, status, devices: [], pcs: [] } as unknown as AccountListView;
+      let read = false;
+      list.view = () => read ? unreadable : OFF;
+      list.sync = async () => { read = true; return unreadable; };
+      list.follows = async () => true;
+      const lines: (string | undefined)[] = [];
+      const marked: boolean[] = [];
+      const account = controller(list, empty, () => {
+        const { state } = account;
+        if (state?.kind !== "signed-in" || state.pcs === null) return;
+        lines.push(state.list);
+        marked.push(state.pcs.every((pc) => pc.notInList === true));
+      });
+      await account.refresh(true);
+      await settle();
+      expect([lines[0], marked[0], lines.length > 0]).toEqual([says, true, true]);
+    });
+  }
+
+  it("says that this device has not read its list yet where it holds a copy and no read ended, marks every row, and reads again at the next refresh", async () => {
+    await signIn("acct-one");
+    directory = [row("a1".repeat(16))];
+    const { list, calls } = recordingList();
+    // the page's rounds fail: no view of the account is ever there, and the device holds a copy
+    let fails = true;
+    list.view = () => fails ? OFF : inList("acct-one");
+    list.sync = async () => { calls.push("sync"); if (fails) throw new DOMException("The quota has been exceeded.", "QuotaExceededError"); return inList("acct-one"); };
+    list.follows = async () => true;
+    const account = controller(list);
+    await account.refresh(true);
+    await settle();
+    const first = account.state as { kind: string; list?: string; pcs: { notInList?: true }[] };
+    expect([first.kind, first.list, first.pcs.every((pc) => pc.notInList === true), account.knowsList]).toEqual(["signed-in", "unread", true, true]);
+    // the read is tried again with the next refresh, and once one ends the rows are the list's
+    const reads = calls.filter((call) => call === "sync").length;
+    fails = false;
+    await account.refresh(false, true);
+    await settle();
+    expect(calls.filter((call) => call === "sync").length).toBeGreaterThan(reads);
+    expect((account.state as { list?: string }).list).toBeUndefined();
+  });
+
+  it("stops following the list once it is disposed: no later round reads it", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    let viewed = "acct-one";
+    list.view = () => inList(viewed);
+    const account = controller(list);
+    await account.refresh(true);
+    await settle();
+    const reads = (): number => calls.filter((call) => call === "sync").length;
+    expect(reads()).toBe(1);
+    account.dispose();
+    // what would begin a round: another sign-in, read by a refresh
+    viewed = "acct-two";
+    await signIn("acct-two");
+    await account.refresh(false, true);
+    await settle();
+    expect(reads()).toBe(1);
   });
 
   it("compares nothing for a sign-in that ended while it read this device's pairings", async () => {
