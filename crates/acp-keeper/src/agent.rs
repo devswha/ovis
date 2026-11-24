@@ -223,12 +223,12 @@ fn child_status(pid: u32, status: libc::c_int) -> std::io::Result<bool> {
 }
 
 /// Whether `pid` (a child of the keeper) is stopped, as a TUI is after Ctrl+Z; the stop is not consumed.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn stopped(pid: u32) -> bool {
     child_status(pid, libc::WSTOPPED).unwrap_or(false)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 pub fn stopped(_pid: u32) -> bool {
     false
 }
