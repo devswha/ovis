@@ -46,7 +46,7 @@ function listIn(view: () => AccountListView, naming: AccountList["naming"] = und
     sync: async () => { synced += 1; return view(); }, follows: async () => false, view, subscribe: (listener: (view: AccountListView) => void) => { listeners.push(listener); return () => {}; },
     holdsPc: () => false, pcOfKey: () => null, due: () => null, shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => view(),
     writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
-    kept: async () => null, keep: async () => { throw new Error("nothing is signed here"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed here"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const, shown: () => Math.floor(Date.now() / 1000),
     ...(naming === undefined ? {} : { naming }),
   } as AccountList;
   return { list, tell: () => { for (const listener of listeners) listener(view()); }, synced: () => synced };

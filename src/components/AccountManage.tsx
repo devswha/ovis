@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
 import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
-import { pageListReading, pagePcs } from "../lib/account/listPcs.ts";
+import { pageListReading, pagePcs, readPageList } from "../lib/account/listPcs.ts";
 import { holdsList } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
@@ -153,9 +153,14 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
   const [posts, setPosts] = useState<readonly PostedPc[] | null>(null);
   const [adding, setAdding] = useState<{ readonly pc: DirectoryPc; readonly post: PostedPc } | null>(null);
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
+  // (a page that has not read its copy of the list yet reads it first: until a read ends, every row is marked)
   const read = useCallback(async () => {
     let shown: readonly DirectoryPc[];
-    try { shown = pagePcs(account, await service.listPcs()); } catch { setPcs("failed"); return; }
+    try {
+      const listed = await service.listPcs();
+      await readPageList(account);
+      shown = pagePcs(account, listed);
+    } catch { setPcs("failed"); return; }
     setPcs(shown);
     const list = pageAccountList();
     // only a device that may write the list adds a PC to it

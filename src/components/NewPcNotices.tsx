@@ -1,6 +1,6 @@
 import { Monitor, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { pagePcs } from "../lib/account/listPcs.ts";
+import { pagePcs, readPageList } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { newPcNoticeClosed, newPcNoticeKey } from "../lib/account/newPcNotice.ts";
@@ -82,6 +82,9 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const now = Date.now();
         // a device that is in its account's signed list tells of the PCs that list holds, new by the list's own word,
         // and of none that the list does not hold: such a PC has its row, marked, and no notice
+        // (on a page that has not read its copy yet, that read is waited for: until one ends, nothing is told)
+        await readPageList(session.account);
+        if (mine !== version) return;
         const pcs = pagePcs(session.account, listed, now).filter((pc) => pc.not_in_list !== true);
         // a service that does not say when this device signed in leaves every new PC told, as before
         const addedSinceJoin = (pc: NewPc): boolean => joinedAt === null || pc.admitted_at === null || !(Date.parse(pc.admitted_at) < joinedAt);
