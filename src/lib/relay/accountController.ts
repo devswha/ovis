@@ -179,7 +179,13 @@ export function createAccountController(mount: RelayShellMount, view: {
    * The rows My PCs is drawn from: for a device that is in its account's signed list, the PCs that list holds, with
    * the directory only as the way to reach them (account/listPcs.ts); the directory as it is otherwise.
    */
-  const drawnPcs = (rows: readonly DirectoryPc[], account: string, now: number): readonly DirectoryPc[] => notRead(account) ? allOutside(rows) : (lists === null ? null : pcsByList(lists.view(), account, rows, now)) ?? rows;
+  const drawnPcs = (rows: readonly DirectoryPc[], account: string, now: number): readonly DirectoryPc[] => {
+    const byList = notRead(account) ? allOutside(rows) : lists === null ? null : pcsByList(lists.view(), account, rows, now);
+    drewByList = byList !== null;
+    return byList ?? rows;
+  };
+  /** Whether the rows last drawn came from this device's list (or were marked for one it has not read), and not from the directory as it is. */
+  let drewByList = false;
   /**
    * The account whose saved copy of the list this page has not read (no read ended yet, or it failed): a state of its
    * own, never "no list". Its rows are the directory's, every one marked, so nothing opens or asks by itself, and the
@@ -327,7 +333,11 @@ export function createAccountController(mount: RelayShellMount, view: {
   const unfollow = lists?.subscribe(() => {
     view.listMoved?.();
     const failed = (error: unknown): void => console.warn("Ovis: the account's PCs were not drawn again by its list", error instanceof Error ? error.name : error);
-    if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList).catch(failed);
+    // Only a list that the rows are drawn from, or were, draws them again: on an account that keeps no list, its
+    // moves (the first read's "none" most of all) change nothing on the screen, and nothing is drawn for them.
+    const account = listedFor?.epoch === generation ? listedFor.projection.account : null;
+    const byList = account !== null && (notRead(account) || (lists !== null && listReading(lists.view(), account) !== null));
+    if (accountView?.kind === "signed-in" && accountView.pcs !== null && account !== null && (byList || drewByList)) void redraw().then(compareList).catch(failed);
     else void compareList().catch(failed);
     void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
   });
