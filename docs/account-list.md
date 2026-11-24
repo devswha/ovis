@@ -1129,6 +1129,11 @@ nothing and is never signed: a service that said "tomorrow" could otherwise make
 removal that nothing undoes. Where the service refuses a request for its time or its epoch, the
 device signs nothing else and says that its clock looks wrong.
 
+**No request over sixteen entries.** The request that lets a device in holds the removal of
+everybody who is over their time, the epoch and the device. Where more are over their time than
+fit beside those two, they go out first, sixteen removals a request, four such requests at most,
+and the device's request follows on the head they leave.
+
 **A device that is behind.** Once a member of a later level has written, this build lets nobody in
 on what it holds (the kinds refuse the entry, `behind`): the request is not sent, and the device
 says to update Ovis on it. It still removes.

@@ -238,6 +238,33 @@ describe("an invite whose time is over, still in the list", () => {
     expect((await first.list.sync()).devices.map((row) => row.name?.label)).toEqual(["Dana's phone", "Dana's tablet"]);
   });
 
+  it("builds no request the account service must refuse for its size: more keys over their time than one request holds go out first, in requests of their own", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const keys = await first.keys();
+    // fifteen invites that a PC joins with by itself, none used: with the epoch and the newcomer that is seventeen entries
+    const invites: string[] = [];
+    for (let made = 0; made < 15; made += 1) {
+      const invite = await deviceListKeys(memoryAccountStore());
+      const at = Math.floor(w.clock.now / 1000);
+      const placed = await signListEntry(w.held().state, { kind: "invite", key: invite.key, exp: at + 900, uses: 1, auto: true, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+      await first.service.placeEntries(w.held().id, [placed.text], []);
+      invites.push(invite.key);
+    }
+    w.clock.now += 16 * 60_000;
+    await second.list.sync();
+    const before = placements(first).length;
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    const sent = placements(first).slice(before).map((each) => kinds(each.body!.entries as string[]));
+    expect(sent.every((request) => request.length <= 16)).toBe(true);
+    // every one of them is out, the epoch moved once, and the newcomer came in under it
+    const list = w.held();
+    expect(listView(list.state).invites.filter((row) => invites.includes(row.key)).map((row) => row.refusal)).toEqual(invites.map(() => "invite_revoked"));
+    expect(sent.flat().filter((kind) => kind !== "remove")).toEqual(["epoch", "device"]);
+    expect(sent.flat().filter((kind) => kind === "remove")).toHaveLength(15);
+    expect([list.state.epoch, offer.seq]).toEqual([1, list.head.seq]);
+    expect((await second.list.adopt(offer)).devices.map((row) => row.name?.label)).toEqual(["Dana's phone", "Dana's tablet"]);
+  });
+
   it("is judged by this device's own clock, never the account service's: where the two differ the device signs once, and says that its clock looks wrong", async () => {
     // this device's clock is twenty minutes behind the service's, so by its own the invite still has time
     const { w, first, second, newcomer } = await withStaleInvite(-20 * 60_000);

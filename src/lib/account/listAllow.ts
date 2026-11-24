@@ -13,7 +13,7 @@ import { sealFields, wrapEpochKey, wrapToText, type EpochKey } from "../../../sh
 import type { AccountList, ListOffer, ListWriter } from "./accountList.ts";
 import type { ListClaim } from "./listAnswers.ts";
 import { listNames } from "./listGenesis.ts";
-import { WRITE_RESENDS, WRITE_TRIES, placeOf, signedOn, signedWithEpoch, writeToList, type WriteRefusal, type Written } from "./listWrite.ts";
+import { WRITE_ENTRIES_MAX, WRITE_RESENDS, WRITE_TRIES, placeOf, signedOn, signedWithEpoch, writeToList, type WriteRefusal, type Written } from "./listWrite.ts";
 
 /** The device a person is letting in: the key it showed the PC it asked, and the name and system it gave the account service. */
 export interface Newcomer {
@@ -56,6 +56,9 @@ async function written(writer: ListWriter, claim: ListClaim, names: ListNames | 
     (next) => [async (after) => device(await seal(after, next.epoch, next.commitment))]);
 }
 
+/** How many requests of removals alone one Allow places before the newcomer's: 64 keys over their time. */
+const TIDY_ROUNDS = 4;
+
 /**
  * Lets `newcomer` into the list this device follows. It reads the list first, signs on what it then holds, and
  * places the request. When the head moved under it, or the account service judged the request by a clock a moment
@@ -64,15 +67,28 @@ async function written(writer: ListWriter, claim: ListClaim, names: ListNames | 
  */
 export async function allowDevice(list: AccountList, newcomer: Newcomer, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<AllowOutcome> {
   const names = listNames(newcomer.label, newcomer.os);
-  const outcome = await writeToList<"removed">(list, async (writer) => {
-    const row = writer.state.signers[newcomer.key];
-    // the list holds the key already: let in before (the place handed on is where this device stands now), or put out for good
-    // (the place handed on is that of the entry that let it in, where this device's copy shows it)
-    if (row !== undefined) return row.ended !== null || row.as !== "device" ? { refused: "removed" } : { done: list.placeAt(row.seq) ?? placeOf(writer.state) };
-    const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === newcomer.key);
-    if (claim === undefined) return { refused: "not_claimed" };
-    return { request: await written(writer, claim, names) };
-  }, options);
-  return outcome.written ? { allowed: true, offer: { list: outcome.list, seq: outcome.place.seq, hash: outcome.place.hash } }
-    : { allowed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
+  // No request is built that the account service must refuse for its size. The newcomer's request holds every key
+  // that is over its time, the epoch and the newcomer; where those keys are more than fit, they go out first, a
+  // request of removals at a time, and the newcomer's request follows on the head they leave.
+  for (let rounds = 0; rounds <= TIDY_ROUNDS; rounds += 1) {
+    let tidied = false;
+    const outcome = await writeToList<"removed">(list, async (writer) => {
+      tidied = false;
+      const row = writer.state.signers[newcomer.key];
+      // the list holds the key already: let in before (the place handed on is where this device stands now), or put out for good
+      // (the place handed on is that of the entry that let it in, where this device's copy shows it)
+      if (row !== undefined) return row.ended !== null || row.as !== "device" ? { refused: "removed" } : { done: list.placeAt(row.seq) ?? placeOf(writer.state) };
+      const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === newcomer.key);
+      if (claim === undefined) return { refused: "not_claimed" };
+      const lapsed = writer.epochs.has(writer.state.epoch) && sealEpoch(writer.state, writer.clock) === null ? lapsedRemovals(writer.state, writer.clock) : [];
+      if (lapsed.length > WRITE_ENTRIES_MAX - 2) {
+        tidied = true;
+        return { request: await signedOn(writer, lapsed.slice(0, WRITE_ENTRIES_MAX)) };
+      }
+      return { request: await written(writer, claim, names) };
+    }, options);
+    if (!outcome.written) return { allowed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
+    if (!tidied) return { allowed: true, offer: { list: outcome.list, seq: outcome.place.seq, hash: outcome.place.hash } };
+  }
+  return { allowed: false, why: "busy", retryAfterMs: null };
 }
