@@ -129,7 +129,7 @@ export class RunStore {
     this.pending.delete(id);
     if (this.entries.delete(id)) this.save();
     rmSync(join(this.dir, "tokens", `${id}.token`), { force: true });
-    rmSync(join(this.dir, "mcp", `${id}.json`), { force: true });
+    for (const end of [".json", ".js"]) rmSync(join(this.dir, "mcp", `${id}${end}`), { force: true });
   }
   forgetTerminal(self: string, keep?: string): void {
     for (const { run } of this.entries.values()) if (run.self === self && run.id !== keep) this.revoke(run.id);
