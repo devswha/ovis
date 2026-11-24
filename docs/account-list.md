@@ -242,11 +242,15 @@ The library sees no list, so these are rules for the member that writes an entry
   into the entry that opens the epoch, and gives the service a wrap for every member that stays,
   in the same request. What was sealed before stays readable to the removed member, its own
   removal included; its key and its old wraps open nothing sealed under the new key.
-- Every attempt makes a new key. A key whose wraps went out in a request that did not place its
-  entry is never used again: by the next attempt the members that stay may be others.
+- Every attempt to open an epoch makes a new key. A key whose wraps went out in a request that did
+  not place its entry is never used again: by the next attempt the members that stay may be
+  others.
 - A member that adds another wraps the current epoch key to it, in the request that places the
-  entry. If that entry never gets its place, the key has been wrapped to a key that is no
-  member's: the member opens the next epoch before it seals again.
+  entry. If that request does not place the entry, the member signs the entry again on the new
+  head and goes on under the current epoch; it opens no epoch for that. The service keeps nothing
+  of a request that does not place, the wrap included. If the addition is given up for good, a
+  wrap for a key that never became a member's exists only at a service that kept it against this
+  rule: it opens names, until the next removal moves the epoch, and never a way in.
 - A member whose encryption key is not a point of the curve gets no wrap; the removal or the
   addition goes on without it.
 
