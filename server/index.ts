@@ -76,6 +76,7 @@ import { ListAdd } from "./account/list-add.ts";
 import { ADMISSION_FILE } from "./account/admission-order.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
 import { AccountWitness } from "./account/witness.ts";
+import { migrateTimeScale } from "./account/migrate-time.ts";
 import type { Readmission } from "./account/readmission.ts";
 import { AccountOrder } from "./account/account-order.ts";
 import { accountRowsFor } from "./account/account-devices.ts";
@@ -444,6 +445,8 @@ export function createServer(
     rows: () => accountRows.store()?.witnessed() ?? null,
     // the clock a waiting row's time runs on: it only moves forward, as the record's running time must
     mono: () => devices.waitClock().now(),
+    // a staging run turns the waits of a move onto the list down; never against the production account service
+    scale: migrateTimeScale((() => { try { return accountServiceUrl(options.accountService?.url); } catch { return null; } })()),
   });
   // the account's signed list, read beside the snapshot and compared with it: it lets nobody in yet (list-follow.ts)
   const accountList = pcAccount === null ? null : new ListFollow({

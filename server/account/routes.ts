@@ -144,7 +144,21 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       waiting_for_add: waitingForAdd(devices),
       // a PC pinned to its account's list: which list, where the PC stands in it, and why it lets nobody in when it does not
       ...(context.services.accountList?.summary() ? { list: context.services.accountList.summary() } : {}),
+      // a staging run that turned the waits of a move onto the list down (server/account/migrate-time.ts)
+      ...((context.services.accountWitness?.scale ?? 1) !== 1 ? { migrate_time_scale: context.services.accountWitness!.scale } : {}),
     });
+  }
+  if (pathname === "/api/account/list/witness" && request.method === "GET") {
+    setRequestRoute(pathname);
+    // A device of this PC's account asks, before the account moves onto its signed list, whom this PC lets in through
+    // the account and for how long (docs/account-list.md, "An account that was in use"): the device's own session, or
+    // this PC's own window. Keys and durations only, and of removals the keys alone, never why
+    if (peer.kind === "relay" && !devices.accountSession(peer.device.id, peer.key)) return fail("account_required", "Ask this from a device of this PC's account", 403);
+    const held = context.services.accountWitness?.admits() ?? null;
+    const account = devices.account();
+    if (account === null || held === null || held.account !== account) return fail("not_in_account", "This PC is in no account", 409);
+    const removed = [...new Set([...devices.removalKeys(), ...context.services.accountHolds.list()])].sort();
+    return reply({ account, pinned: context.services.accountList?.summary()?.pinned_list ?? null, admits: held.admits, removed });
   }
   if (pathname === "/api/account/list" && request.method === "GET") {
     setRequestRoute(pathname);

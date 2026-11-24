@@ -10,16 +10,22 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
-import { bounded, relayAccountFixture, relayConnection, TestClock } from "../relay/test-helpers.ts";
+import { bounded, relayAccountFixture, relayConnection, relayDevice, relayFixture, TestClock } from "../relay/test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT_LIST_OWED_FILE } from "./list-follow.ts";
+import { MIGRATE_TIME_SCALE_ENV } from "./migrate-time.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
+import { ask } from "./pairing.test-helpers.ts";
 import { asSignIn, birthPlan, migratingDevice, MigratedList, type MigratingPhone } from "./migrate.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
 
 const DAY_MS = 86_400_000;
+/** How often the PC under test reads its account's snapshot while time passes. */
+const READ_EVERY_MS = 30 * 60_000;
+/** A key this PC put out: what a device's sign-in key was before somebody removed it here. */
+const removedKey = (await migratingDevice("Old phone")).signIn.key;
 
 /** The PC's clocks, moved by hand together: the time of day every part of it reads, and the clock its waits and its running time are counted on. */
 function testTime() {
@@ -54,9 +60,18 @@ async function accountInUse() {
   for (const device of [phone, tablet]) expect(services.accountRows!.access(accountDeviceId(serverId, device.signIn.key))).toEqual({ ok: true });
   const witness = services.accountWitness!;
   witness.step();
-  /** Time passes with the PC running: both of its clocks move, and its record takes the stretch. */
-  const run = (ms: number) => { time.advance(ms); witness.step(); };
-  run(DAY_MS + 60_000);
+  /**
+   * Time passes with the PC running: both of its clocks move, it reads the account's snapshot as it does every few
+   * minutes (with no whole read for an hour its rows would wait for one), and its record takes each stretch.
+   */
+  const run = async (ms: number) => {
+    for (let left = ms; left > 0; left -= READ_EVERY_MS) {
+      time.advance(Math.min(left, READ_EVERY_MS));
+      expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      witness.step();
+    }
+  };
+  await run(DAY_MS + 60_000);
   const list = services.accountList!;
   const pull = async () => { await services.accountMailbox.pull(); await list.settled(); };
   /** What a sign-in comes to: the role the PC lets the device in as, or null. */
@@ -67,6 +82,76 @@ async function accountInUse() {
   const rowOf = (key: string) => services.accountRows!.rows().find((row) => row.key === key) ?? null;
   return { time, service, fixture, member, serverId, services, endpoint, phone, tablet, witness, run, list, pull, signsIn, rowOf };
 }
+
+describe("what a PC tells a device of its account before the account moves", () => {
+  test("the keys it lets in through the account now, for how long by its two counters, and the keys it holds a removal against", async () => {
+    const pc = await accountInUse();
+    const guest = await relayDevice(pc.fixture);
+    pc.services.devices.removeAccountKey(removedKey, ACCOUNT, { id: "b".repeat(32), issuedAt: new Date().toISOString() });
+    const phone = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await phone.auth(asSignIn(pc.serverId, pc.phone));
+    const answer = await ask(phone, "/api/account/list/witness");
+    expect(answer.status).toBe(200);
+    const body = answer.body as { account: string; pinned: string | null; admits: { key: string; wall: number; ran: number; idle: number | null }[]; removed: string[] };
+    expect([body.account, body.pinned, body.removed]).toEqual([ACCOUNT, null, [removedKey]]);
+    // the account's rows alone: the pairing made at this PC is none, and neither is a guest's
+    expect(body.admits.map((row) => row.key).sort()).toEqual([pc.phone.signIn.key, pc.tablet.signIn.key].sort());
+    for (const row of body.admits) {
+      expect(row.wall).toBeGreaterThanOrEqual(86_400);
+      expect(row.ran).toBeGreaterThanOrEqual(86_400);
+    }
+    // the phone signed in today; the tablet's row was let in and not used since
+    expect(body.admits.find((row) => row.key === pc.phone.signIn.key)?.idle).toBeLessThan(86_400);
+    // a pairing of the account's member may ask too, and a device outside the account may not
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.member);
+    expect((await ask(member, "/api/account/list/witness")).status).toBe(200);
+    const outsider = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await outsider.auth(guest);
+    expect((await ask(outsider, "/api/account/list/witness")).status).toBe(403);
+  });
+
+  test("a key let in a moment ago is told with what it has; a row that waits for the account service is told as none", async () => {
+    const pc = await accountInUse();
+    const laptop = await migratingDevice("Laptop");
+    pc.service.registerDevice(ACCOUNT, laptop.signIn.key, "Laptop");
+    expect(await pc.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    expect(pc.services.accountRows!.access(accountDeviceId(pc.serverId, laptop.signIn.key))).toEqual({ ok: true });
+    await pc.run(60_000);
+    const phone = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await phone.auth(asSignIn(pc.serverId, pc.phone));
+    const admits = (await ask(phone, "/api/account/list/witness")).body as { admits: { key: string; wall: number; ran: number }[] };
+    expect(admits.admits.find((row) => row.key === laptop.signIn.key)).toMatchObject({ wall: 60, ran: 60 });
+    // two hours with no whole read of the snapshot: every row waits for one, and lets nobody in meanwhile
+    pc.time.advance(2 * 60 * 60_000);
+    expect(pc.services.accountWitness!.admits()).toEqual({ account: ACCOUNT, admits: [] });
+  });
+
+  test("a staging run's factor multiplies what the PC tells, and says so in its status; the production service never takes it", async () => {
+    const was = process.env[MIGRATE_TIME_SCALE_ENV];
+    process.env[MIGRATE_TIME_SCALE_ENV] = "60";
+    closes.push(() => { if (was === undefined) delete process.env[MIGRATE_TIME_SCALE_ENV]; else process.env[MIGRATE_TIME_SCALE_ENV] = was; });
+    const pc = await accountInUse();
+    const phone = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await phone.auth(asSignIn(pc.serverId, pc.phone));
+    const told = (await ask(phone, "/api/account/list/witness")).body as { admits: { key: string; wall: number; ran: number }[] };
+    const record = pc.witness.record()!.keys[pc.phone.signIn.key]!;
+    expect(told.admits.find((row) => row.key === pc.phone.signIn.key)).toMatchObject({ wall: record.wall * 60, ran: record.ran * 60 });
+    expect((await ask(phone, "/api/account/status")).body).toMatchObject({ migrate_time_scale: 60 });
+    const production = relayFixture(false, { accountOpensAll: true, accountService: { url: "https://account.ovis.sh", fetch: pc.service.fetch } });
+    closes.push(() => production.close());
+    expect(production.app.context.services.accountWitness!.scale).toBe(1);
+  });
+
+  test("a PC in no account answers not_in_account", async () => {
+    const fixture = relayFixture(false, { accountOpensAll: true });
+    closes.push(() => fixture.close());
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    const answer = await fetch(`${base}/api/account/list/witness`, { headers: { origin: base } });
+    expect([answer.status, ((await answer.json()) as { error: { code: string } }).error.code]).toEqual([409, "not_in_account"]);
+  });
+});
 
 /** The same PC, once the phone moved the account onto its list carrying the tablet in, and pinned to that list by a person at it. */
 async function pinnedToBirth() {
