@@ -888,15 +888,17 @@ export class RelaySession {
    * sent and never signed with opens nothing under that id, so the row a comparison just made is recorded and the
    * device gets in by a sign-in. From then on the session is the list's (listKey): it ends when the list lets the key
    * in no more. A row under an id of its own is not asked about here: that pairing is the PC's own business.
-   * The one exception is another PC of the account that was just compared (intent `vouched`): the list answered for
-   * its relay key in that same turn (vouchedInList), and it only watches.
+   * Two sessions are not asked here, because the list answered for them in the same turn: another PC of the account
+   * that was just compared (intent `vouched`; vouchedInList), which only watches; and the session of a join into the
+   * list (`listPlace`), which carries the place of the device's own entry and serves nothing else (every call on it
+   * answers `sign_in_required`): the device signs in with its list key afterwards.
    */
   private enter(device: DeviceMatch | null | undefined): void {
     const devices = this.options.services.devices;
     if (!this.mux.active) return;
     if (!device) { this.close("auth_failed"); return; }
     const governed = devices.listGoverned(device.id, this.options.serverId);
-    if (governed !== null && !(this.intent === "vouched" && !this.keyProven)) {
+    if (governed !== null && !(this.intent === "vouched" && !this.keyProven) && this.listPlace === undefined) {
       const role = this.keyProven ? devices.listRoleOf(governed) : null;
       if (role === null) {
         // a client that knows of lists and came without its key's proof is told to sign in with its list key
