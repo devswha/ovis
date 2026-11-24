@@ -138,6 +138,7 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
   });
   it("wait and read show only waiting_human at a card, including after restart", async () => {
     const session = await start("ask");
+    expect(await call("wait", { session })).toMatchObject({ state: { state: "waiting_human" } });
     hub.close(); acp.close(); open(); await acp.restore();
     expect(await call("wait", { session })).toMatchObject({ state: { state: "waiting_human" } });
     for (const what of ["transcript","screen","result"]) {
