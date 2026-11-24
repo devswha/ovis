@@ -14,6 +14,7 @@ import { ListAddAway, type AddState } from "./list-add.ts";
 import type { JoinOutcome } from "./list-follow.ts";
 import { noteListAdd, notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
 import { applyAccountRecords, applyEnrollment, applyLink, listNamedBy, listNamingOf, LIST_NAMED_LINK, LIST_NAMED_OTHER, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
+import { addOverSshByList } from "./ssh-add-list.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
   record_invalid: 400, signature_invalid: 400, account_mismatch: 409, signer_not_member: 403,
@@ -337,8 +338,17 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // that PC waits up to ADDED_RELAY_ONLINE_MS for its relay after its press: more than the default budget of an API call
       context.timeout(request, 120);
       let taken: { account: string; relay: AccountAddRelay | null; unanswered?: true };
-      try { taken = await machines.accountTake(jobId, target, account); }
-      catch (error) {
+      // A PC that follows its account's signed list adds another one by that list alone: it names the list and its own
+      // key over the SSH channel and signs that PC's entry itself (ssh-add-list.ts). With no list, as ever
+      const list = context.services.accountList;
+      try {
+        if (list === null || !list.pinned()) taken = await machines.accountTake(jobId, target, account);
+        else {
+          const byList = await addOverSshByList({ list, take: (named) => machines.accountTake(jobId, target, account, named), end: () => machines.accountAddEnd(jobId) });
+          if ("refused" in byList) return fail(byList.refused.code, byList.refused.message, byList.refused.status);
+          taken = byList;
+        }
+      } catch (error) {
         if (!(error instanceof AccountAddError)) throw error;
         return fail(error.code, error.message, error.code === "job_not_found" ? 404 : 409);
       }

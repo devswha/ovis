@@ -1,0 +1,92 @@
+/**
+ * Adding another PC over SSH to an account that keeps a signed list, from this PC's own window (docs/account.md,
+ * "Adding a PC over SSH to an account that keeps a list"). This PC follows the list as a PC a person added, so its own
+ * list key signs for it, on the act of the person at its own window. Over the SSH channel that add opened, this PC
+ * names the list and its own key to that PC (the take), takes back that PC's card for the list, signs the `pc` entry
+ * with it at the relay key the inspect read, places it, and sends the same take again: that PC joins its account by
+ * the list once it finds that entry, signed by this very key. The account service carries the entry and that PC's
+ * post of its keys (the second lock), and names nothing to either PC.
+ */
+import type { AccountAddNamed } from "../account-add-channel.ts";
+import type { AccountAddCard } from "../machines.ts";
+import type { AccountAddRelay } from "../../shared/machines.ts";
+import type { AllowOutcome, AllowRefusal, ListFollow } from "./list-follow.ts";
+
+export interface SshListRefusal { readonly code: string; readonly message: string; readonly status: number }
+
+/** That PC in the account, as a take answers it: the same answer as an add with no list. */
+export type SshListTaken = { readonly account: string; readonly relay: AccountAddRelay | null; readonly unanswered?: true };
+
+export interface SshListDeps {
+  readonly list: Pick<ListFollow, "allowRefusal" | "status" | "own" | "addPc">;
+  /** The take over the add's SSH channel, naming the list and the adder (MachineManager.accountTake); its refusals throw. */
+  take(named: AccountAddNamed): Promise<SshListTaken | { readonly waiting: AccountAddCard }>;
+  /** Closes the add's forward: this add ends before a take was answered for good. */
+  end(): Promise<void>;
+  /** How often the take goes again after the entry is placed while that PC has not read it yet. */
+  readonly tries?: number;
+  wait?(ms: number): Promise<void>;
+}
+
+/** How often the take goes again once the entry is placed, and how long between two. */
+const AFTER_PLACED_TRIES = 5;
+const AFTER_PLACED_WAIT_MS = 1_000;
+
+/** Why this PC signs nobody into its list now, in words for the person at its window. */
+const CANNOT_ADD: Readonly<Record<AllowRefusal, string>> = {
+  not_pinned: "This PC does not follow your account's signed list, so it cannot add another PC to it.",
+  not_signer: "This PC joined your account with an invite, so it cannot add other PCs to your account's signed list. Run ovis add on that PC instead.",
+  alarm: "This PC was shown two different lists of your account, so it adds nobody until that is resolved.",
+  stopped: "Your account's list holds what this Ovis is too old to read. Update Ovis on this PC first.",
+  behind: "Your account's list holds what this Ovis is too old to read. Update Ovis on this PC first.",
+  unavailable: "This PC's copy of your account's list, or its keys, cannot be read right now.",
+  held_here: "This PC keeps that key out.",
+  not_written: "That PC's card does not fit your account's list, so nothing was signed.",
+  refused: "The account service did not take the entry that adds that PC.",
+  not_claimed: "The account service did not take the entry that adds that PC.",
+  list_stopped: "The account service changes your account's list for nobody right now. Try again later.",
+  service_away: "The account service did not answer, so the entry that adds that PC may or may not be in your account's list. Connect again to check.",
+  head_lost: "Your account's list kept changing while the entry was placed. Try again.",
+  not_in_list: "The entry that adds that PC is not in your account's list.",
+};
+/** What stops this PC from signing anyone, as against what stopped this one entry. */
+const CANNOT_SIGN: ReadonlySet<AllowRefusal> = new Set(["not_pinned", "not_signer", "alarm", "stopped", "behind", "unavailable"]);
+
+const refuse = (code: string, message: string, status: number): { readonly refused: SshListRefusal } => ({ refused: { code, message, status } });
+
+function notAdded(outcome: Extract<AllowOutcome, { refused: AllowRefusal }>): { readonly refused: SshListRefusal } {
+  const words = CANNOT_ADD[outcome.refused] + (outcome.detail === null ? "" : ` (${outcome.detail})`);
+  if (CANNOT_SIGN.has(outcome.refused)) return refuse("list_cannot_add", words, 409);
+  // no answer from the service: the entry may be in the list all the same, which only the log says
+  if (outcome.refused === "service_away") return refuse("take_unanswered", words, 409);
+  return refuse("list_not_added", words, 409);
+}
+
+export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken | { readonly refused: SshListRefusal }> {
+  const { list } = deps;
+  // asked before anything goes to that PC: one that cannot sign names no list to it
+  const cannot = list.allowRefusal();
+  if (cannot !== null) return refuse("list_cannot_add", CANNOT_ADD[cannot], 409);
+  const pinned = list.status().pinned_list;
+  const own = await list.own();
+  if (pinned === null || own === null) return refuse("list_cannot_add", CANNOT_ADD.unavailable, 409);
+  const named: AccountAddNamed = { list: pinned, adder: own.keys.key };
+  let taken = await deps.take(named);
+  if (!("waiting" in taken)) return taken;
+  const added = await list.addPc(taken.waiting);
+  if ("refused" in added) {
+    await deps.end();
+    return notAdded(added);
+  }
+  const wait = deps.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const tries = deps.tries ?? AFTER_PLACED_TRIES;
+  // the entry is in this PC's own copy: that PC reads it at its next take
+  for (let tried = 1; ; tried++) {
+    taken = await deps.take(named);
+    if (!("waiting" in taken)) return taken;
+    if (tried >= tries) break;
+    await wait(AFTER_PLACED_WAIT_MS);
+  }
+  await deps.end();
+  return refuse("take_unanswered", "That PC is in your account's list, and has not read it yet. Connect to it again to finish.", 409);
+}
