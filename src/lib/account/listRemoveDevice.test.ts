@@ -10,6 +10,7 @@ import {
   cameInThrough, carriedPcs, removalRequest, removeFromList, removeOtherDevices, removeSelf, scopeOf, tidyList,
   type RemoveOutcome,
 } from "./listRemoveDevice.ts";
+import { leaveList } from "./listLeave.ts";
 import { memoryAccountStore } from "./store.ts";
 
 type World = ReturnType<typeof listWorld>;
@@ -589,6 +590,46 @@ describe("each write of this lane names its change (after the writer's C1)", () 
     const before = w.held().entries.length;
     expect(await removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `remove:${other}` })).toMatchObject({ removed: false, why: "waiting" });
     expect(w.held().entries).toHaveLength(before);
+  });
+});
+
+describe("a clean-up that waits is nobody's own change (the lead's ruling, round 2)", () => {
+  /** `device` tidies while the service answers `409 head_moved` to every placement: its request stays kept for `tidy`. Answers the bytes it signed. */
+  async function keptTidy(w: World, device: WorldDevice): Promise<string[]> {
+    await placeInvite(w, device, { auto: true });
+    w.clock.now += 16 * 60_000;
+    await device.list.sync();
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    await tidyList(device.list, new Set(), noWait);
+    w.fake.untamperList(w.held().id);
+    expect((await device.list.waiting())?.for).toBe("tidy");
+    return placements(device).at(-1)!.body!.entries as string[];
+  }
+  const sentEntries = (from: WorldDevice): string[][] => placements(from).map((each) => each.body!.entries as string[]);
+
+  it("a Remove pressed while a tidy request waits sends those very bytes, then puts its own device out on the head that follows", async () => {
+    const { w, first, second } = await twoDevices();
+    const tidy = await keptTidy(w, first);
+    const sent = placements(first).length;
+    const other = (await second.keys()).key;
+    expect(await removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `remove:${other}` })).toEqual(REMOVED);
+    // the tidy's request went as it was signed, never signed anew, and the Remove's own came after it
+    expect(sentEntries(first).slice(sent)[0]).toEqual(tidy);
+    // every removal of the lapsed invite this device ever sent is the one it signed first
+    const lapsed = ends(tidy[0]!);
+    expect(sentEntries(first).flat().filter((text) => kinds([text])[0] === "remove" && ends(text) === lapsed).every((text) => text === tidy[0])).toBe(true);
+    expect(kinds(w.held().entries).slice(-4)).toEqual(["remove", "epoch", "remove", "epoch"]);
+    expect(w.held().entries.slice(-4, -2)).toEqual(tidy);
+    expect(ends(w.held().entries.at(-2)!)).toBe(other);
+    expect(await first.list.waiting()).toBeNull();
+  });
+
+  it("a leave while a tidy request waits sends those bytes first, and reports only its own removal", async () => {
+    const { w, second } = await twoDevices();
+    const tidy = await keptTidy(w, second);
+    expect(await leaveList(second.list, w.account, noWait)).toEqual(REMOVED);
+    expect(w.held().entries.slice(-3, -1)).toEqual(tidy);
+    expect(ends(w.held().entries.at(-1)!)).toBe((await second.keys()).key);
   });
 });
 

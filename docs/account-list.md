@@ -1379,8 +1379,10 @@ keeps its question up (also Not me's, whose notice goes with the device) with ho
 
 **Each change has a name of its own.** A request a device signed and has not seen placed is kept
 for its change: `remove:<key>`, `not-me:<key>`, `sign-out-all`, `leave`, `tidy`. It goes again only
-for that same change (the tidy-up resends its own quietly), and a person's act is never sent, nor
-reported done, on a request kept for another one.
+for that same change, and a person's act is never sent, nor reported done, on a request kept for
+another one. The clean-up is nobody's own change: a request kept for `tidy` never refuses a
+person's act. Whatever change comes next sends those very bytes again (never a new signature),
+waits for their outcome, and then signs its own on the head that follows.
 
 **A write belongs to what it began with.** A removal is begun for one account, one list and the
 member key this device is in it with, as the page showed them; after every read of the list it

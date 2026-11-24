@@ -12,7 +12,7 @@ import { listView, pcRemoval, readKind, sealEpoch, signListEntry, type ListKind,
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { standsFor } from "../../../shared/account-list-migrate.ts";
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
-import { placeOf, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
+import { placeOf, signedOn, signedWithEpoch, TIDY_OPERATION, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
 import { SignedOutError } from "./service.ts";
 
 /**
@@ -278,5 +278,5 @@ export async function tidyList(list: AccountList, tried: Set<string>, options: P
     // only what still calls for the epoch on the state it is signed on
     if (signs.adrift || current === null || sealEpoch(signs.state, signs.clock) !== null) return null;
     return { ...(await signedWithEpoch(signs, current, [])), whole: true, asked: 0 };
-  }, { ...options, operation: "tidy" });
+  }, { ...options, operation: TIDY_OPERATION });
 }
