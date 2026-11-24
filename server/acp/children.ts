@@ -187,8 +187,8 @@ export class AcpChildren {
       });
       if (live !== null) {
         const address = live.get(id);
-        if (address !== undefined) await this.endFailedStart(address, root);
-        else rmSync(root, { recursive: true, force: true });
+        if (typeof address === "string") await this.endFailedStart(address, root);
+        else if (address === undefined) rmSync(root, { recursive: true, force: true });
       }
       throw error;
     }
@@ -205,12 +205,19 @@ export class AcpChildren {
     return this.add({ id, harness: start.harness, root, terminal, client });
   }
 
-  private async liveTerminals(): Promise<Map<string, string>> {
+  private async liveTerminals(): Promise<Map<string, string | null>> {
     const { terminals } = await this.hc().call("terminal.list", {});
-    return new Map(terminals.flatMap((terminal) => {
+    const live = new Map<string, string | null>();
+    for (const terminal of terminals) {
       const id = terminal.labels[LABEL];
-      return id !== undefined && terminal.state === "live" ? [[id, terminal.address] as const] : [];
-    }));
+      if (id === undefined || terminal.state !== "live") continue;
+      if (!live.has(id)) live.set(id, terminal.address);
+      else if (live.get(id) !== null && live.get(id) !== terminal.address) {
+        console.warn(`acp: multiple live terminals for ${id}; leaving it unbound`);
+        live.set(id, null);
+      }
+    }
+    return live;
   }
 
   private add(child: AcpChild): AcpChild {
@@ -279,6 +286,7 @@ export class AcpChildren {
       const harness = harnessOf(root);
       if (harness === null) continue;
       const terminal = live.get(id);
+      if (terminal === null) continue;
       if (terminal !== undefined) {
         if (!this.children.has(id)) this.add({ id, harness, root, terminal, client: new KeeperClient(root) });
       } else if (!keeperRunning(root)) {
