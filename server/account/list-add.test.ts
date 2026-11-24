@@ -27,7 +27,7 @@ async function adding(options: { list?: string | null } = {}) {
   const keys = await new ListKeyStore(dir).keysFor(SERVER);
   const phone = await listMember();
   const binding = cardBinding({ key: keys.key, enc: keys.enc, list: LIST, endpoint: ENDPOINT, invite: null });
-  const world = { now: 1_800_000_000_000, serverId: SERVER, open: null as Open | null, calls: [] as string[], joins: 0, joined: { waiting: "waiting" } as JoinOutcome, told: 0 };
+  const world = { now: 1_800_000_000_000, serverId: SERVER, open: null as Open | null, calls: [] as string[], joins: 0, by: undefined as string | null | undefined, joined: { waiting: "waiting" } as JoinOutcome, told: 0, phone: phone.key };
   const add = new ListAdd({
     own: async () => ({ serverId: world.serverId, endpoint: ENDPOINT, keys }),
     listNamed: async () => options.list === undefined ? LIST : options.list,
@@ -40,9 +40,10 @@ async function adding(options: { list?: string | null } = {}) {
       world.open = { ...open, nonce: body.nonce as string };
       return { attempt: world.open };
     },
-    join: async () => { world.joins++; return world.joined; },
+    join: async (given) => { world.joins++; world.by = given.by; return world.joined; },
     joined: async () => { world.told++; },
     now: () => world.now,
+    mono: () => world.now,
   });
   /** The phone opens an attempt; `reveal` gives its nonce away once the PC answered, and says the number the phone shows. */
   const commits = (adder = phone.key) => {
@@ -127,7 +128,8 @@ test("a number lasts two minutes: after them a yes to it confirms nothing", asyn
   await add.start(ACCOUNT);
   const digits = await number();
   world.now += ADD_ATTEMPT_MS;
-  expect(await add.confirm(digits)).toMatchObject({ state: "waiting" });
+  expect(await add.confirm(digits)).toEqual({ mismatch: true });
+  expect(await add.state()).toMatchObject({ state: "waiting" });
   expect(world.joins).toBe(0);
 });
 
@@ -137,7 +139,7 @@ test("a new commitment takes the place of the number on the screen: never two, a
   const first = await number();
   const second = commits();
   expect(await next()).toMatchObject({ state: "waiting" });
-  expect(await add.confirm(first)).toMatchObject({ state: "waiting" });
+  expect(await add.confirm(first)).toEqual({ mismatch: true });
   const digits = second.reveal();
   expect(await next()).toMatchObject({ state: "number", digits });
   expect(world.joins).toBe(0);
@@ -164,24 +166,26 @@ test("one add answers three commitments; the fourth ends it", async () => {
   await add.start(ACCOUNT);
   for (let index = 0; index < ADD_COMMITMENTS_MAX; index++) { commits(); expect(await next()).toMatchObject({ state: "waiting" }); }
   commits();
-  expect(await next()).toEqual({ state: "ended", account: ACCOUNT, why: "attempts" });
-  expect(await next()).toEqual({ state: "ended", account: ACCOUNT, why: "attempts" });
+  expect(await next()).toMatchObject({ state: "ended", account: ACCOUNT, why: "attempts" });
+  expect(await next()).toMatchObject({ state: "ended", account: ACCOUNT, why: "attempts" });
 });
 
 test("after the yes the PC asks for no further number and joins once its entry is there", async () => {
   const { add, world, commits, number, next } = await adding();
   await add.start(ACCOUNT);
   const digits = await number();
-  expect(await add.confirm(digits)).toMatchObject({ state: "confirmed" });
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "confirmed" } });
   expect(world.joins).toBe(1);
+  // the entry that adds this PC must be the one the device whose number was confirmed signed
+  expect(world.by).toBe(world.phone);
   const asked = world.calls.length;
   commits();
   expect(await next()).toMatchObject({ state: "confirmed" });
   expect(world.calls).toHaveLength(asked);
   world.joined = { joined: {} as never };
-  expect(await next()).toEqual({ state: "added", account: ACCOUNT, list: LIST });
+  expect(await next()).toMatchObject({ state: "added", account: ACCOUNT, list: LIST });
   expect(world.told).toBe(1);
-  expect(await next()).toEqual({ state: "added", account: ACCOUNT, list: LIST });
+  expect(await next()).toMatchObject({ state: "added", account: ACCOUNT, list: LIST });
   expect(world.told).toBe(1);
 });
 
@@ -189,18 +193,23 @@ test("the add ends ten minutes after it began, confirmed or not, and with a refu
   const waiting = await adding();
   await waiting.add.start(ACCOUNT);
   waiting.world.now += ADD_WINDOW_MS;
-  expect(await waiting.add.state()).toEqual({ state: "ended", account: ACCOUNT, why: "timeout" });
+  expect(await waiting.add.state()).toMatchObject({ state: "ended", account: ACCOUNT, why: "timeout" });
 
   const confirmed = await adding();
   await confirmed.add.start(ACCOUNT);
   await confirmed.add.confirm(await confirmed.number());
+  // the entry is there by the time the ten minutes are over: it joins nothing any more
+  confirmed.world.joined = { joined: {} as never };
   confirmed.world.now += ADD_WINDOW_MS;
-  expect(await confirmed.add.state()).toEqual({ state: "ended", account: ACCOUNT, why: "timeout" });
+  const joins = confirmed.world.joins;
+  expect(await confirmed.add.state()).toMatchObject({ state: "ended", account: ACCOUNT, why: "timeout" });
+  expect(confirmed.world.joins).toBe(joins);
+  expect(confirmed.world.told).toBe(0);
 
   const refused = await adding();
   await refused.add.start(ACCOUNT);
   refused.world.joined = { refused: "removed" };
-  expect(await refused.add.confirm(await refused.number())).toEqual({ state: "ended", account: ACCOUNT, why: "removed" });
+  expect(await refused.add.confirm(await refused.number())).toMatchObject({ confirmed: { state: "ended", account: ACCOUNT, why: "removed" } });
 });
 
 test("a relay identity reset meanwhile ends the add: it was the old PC's", async () => {
@@ -208,7 +217,7 @@ test("a relay identity reset meanwhile ends the add: it was the old PC's", async
   await add.start(ACCOUNT);
   const digits = await number();
   world.serverId = "f".repeat(32);
-  expect(await add.confirm(digits)).toEqual({ state: "ended", account: ACCOUNT, why: "unavailable" });
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "ended", account: ACCOUNT, why: "unavailable" } });
   expect(world.joins).toBe(0);
 });
 
@@ -229,4 +238,71 @@ test("starting again while an add runs goes on with it; after its end it starts 
   expect(await add.state()).toMatchObject({ state: "ended", why: "cancelled" });
   world.now += ADD_POLL_MS;
   expect(await add.start(ACCOUNT)).toMatchObject({ state: "waiting" });
+});
+
+test("a yes to another number than the one on the screen ends that number, and the answer names none", async () => {
+  const { add, world, number, next } = await adding();
+  await add.start(ACCOUNT);
+  const digits = await number();
+  const wrong = digits === "000000" ? "000001" : "000000";
+  const answer = await add.confirm(wrong);
+  expect(answer).toEqual({ mismatch: true });
+  expect(JSON.stringify(answer)).not.toContain(digits);
+  // the number is gone: the right one confirms nothing any more, and the device has to ask again
+  expect(await add.confirm(digits)).toEqual({ mismatch: true });
+  expect(await next()).toMatchObject({ state: "waiting" });
+  expect(world.joins).toBe(0);
+});
+
+test("once confirmed, only the number it was confirmed with is answered as confirmed", async () => {
+  const { add, number } = await adding();
+  await add.start(ACCOUNT);
+  const digits = await number();
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "confirmed" } });
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "confirmed" } });
+  expect(await add.confirm(digits === "111111" ? "222222" : "111111")).toEqual({ mismatch: true });
+});
+
+test("a poll, a yes and a cancel that name another run than the one this PC holds learn nothing of it and change nothing", async () => {
+  const { add, world, number } = await adding();
+  const started = await add.start(ACCOUNT) as { run: string };
+  const digits = await number();
+  expect(await add.state("0".repeat(16))).toEqual({ state: "replaced" });
+  expect(await add.confirm(digits, "0".repeat(16))).toEqual({ state: "replaced" });
+  expect(await add.cancel("0".repeat(16))).toEqual({ state: "replaced" });
+  world.now += ADD_POLL_MS;
+  expect(await add.state(started.run)).toMatchObject({ state: "number", digits, run: started.run });
+  expect(await add.cancel(started.run)).toMatchObject({ state: "ended", why: "cancelled" });
+});
+
+test("the PC's clock set back gives a number no more time", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-list-add-"));
+  dirs.push(dir);
+  const keys = await new ListKeyStore(dir).keysFor(SERVER);
+  const phone = await listMember();
+  const binding = cardBinding({ key: keys.key, enc: keys.enc, list: LIST, endpoint: ENDPOINT, invite: null });
+  const clock = { wall: 1_800_000_000_000, mono: 0 };
+  let open: Open | null = null;
+  const add = new ListAdd({
+    own: async () => ({ serverId: SERVER, endpoint: ENDPOINT, keys }), listNamed: async () => LIST,
+    call: async (path, body) => {
+      if (path === "/v2/pc/list/keys") return {};
+      if (body.nonce !== undefined && open !== null) open = { ...open, nonce: body.nonce as string };
+      return { attempt: open };
+    },
+    join: async () => ({ waiting: "waiting" }), now: () => clock.wall, mono: () => clock.mono,
+  });
+  await add.start(ACCOUNT);
+  const nonce = randomPairNonce();
+  open = { adder: phone.key, commitment: toBase64Url(pairCommitment(binding, phone.key, nonce)), nonce: null, reveal: null };
+  clock.mono += ADD_POLL_MS;
+  await add.state();
+  open = { ...(open as Open), reveal: toBase64Url(nonce) };
+  clock.mono += ADD_POLL_MS;
+  const shown = await add.state() as { digits: string };
+  expect(shown.digits).toMatch(/^[0-9]{6}$/);
+  // two minutes pass, and the clock on the wall is set back an hour
+  clock.mono += ADD_ATTEMPT_MS;
+  clock.wall -= 3_600_000;
+  expect(await add.confirm(shown.digits)).toEqual({ mismatch: true });
 });

@@ -11,6 +11,7 @@
  * The account service carries the four messages on this PC's post of its keys (POST /v2/pc/list/keys,
  * /v2/pc/list/attempt). It may drop, delay or change them: then no number shows, or two numbers differ.
  */
+import { randomBytes } from "node:crypto";
 import { isListKeyEncoding } from "../../shared/account-list-entry.ts";
 import { cardBinding, signCard } from "../../shared/account-list.ts";
 import { commitmentHolds, fromBase64Url, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
@@ -41,10 +42,18 @@ export type AddEnd = "timeout" | "attempts" | "cancelled" | JoinRefusal;
 export type AddState =
   | { readonly state: "none" }
   | { readonly state: "no_list"; readonly account: string }
-  | { readonly state: "waiting" | "confirmed"; readonly account: string; readonly list: string; readonly until: string }
-  | { readonly state: "number"; readonly account: string; readonly list: string; readonly digits: string; readonly until: string }
-  | { readonly state: "added"; readonly account: string; readonly list: string }
-  | { readonly state: "ended"; readonly account: string; readonly why: AddEnd };
+  | { readonly state: "waiting" | "confirmed"; readonly run: string; readonly account: string; readonly list: string; readonly until: string }
+  | { readonly state: "number"; readonly run: string; readonly account: string; readonly list: string; readonly digits: string; readonly until: string }
+  | { readonly state: "added"; readonly run: string; readonly account: string; readonly list: string }
+  | { readonly state: "ended"; readonly run: string; readonly account: string; readonly why: AddEnd }
+  /** Asked for another run than the one this PC holds now: that one was replaced, and nothing of the present one is told. */
+  | { readonly state: "replaced" };
+
+/**
+ * What a yes came to (ListAdd.confirm). `confirmed`: that number was the one on this PC's screen, or the one this
+ * run was confirmed with before. `mismatch`: it was not; the number that showed is gone, and the answer names none.
+ */
+export type ConfirmOutcome = { readonly confirmed: AddState } | { readonly mismatch: true } | { readonly state: "none" | "replaced" };
 
 export interface ListAddDeps {
   /** This PC's relay identity now, its relay key as the list names it, and its own list keys (ListFollow.own); null when it has none. */
@@ -58,6 +67,8 @@ export interface ListAddDeps {
   /** The PC joined `account` by its list, once: what the account service is told of it. It never throws. */
   joined?(account: string): Promise<void>;
   now(): number;
+  /** A clock that only moves forward, in milliseconds, which every lifetime here is counted by (performance.now when unset): setting the PC's clock back gives a number, or an add, no more time. */
+  mono?(): number;
   /** The least time between two asks of the account service for the phone's next message: ADD_POLL_MS when unset. */
   readonly pollMs?: number | undefined;
 }
@@ -65,6 +76,8 @@ export interface ListAddDeps {
 interface Attempt { readonly adder: string; readonly commitment: string; readonly nonce: Uint8Array; readonly sentAt: number; readonly digits: string | null }
 
 interface Run {
+  /** names this run to whoever started it: its polls, its yes and its cancel say which run they mean */
+  readonly id: string;
   readonly account: string;
   readonly list: string;
   readonly serverId: string;
@@ -72,15 +85,18 @@ interface Run {
   readonly keys: PcListKeys;
   readonly card: string;
   readonly binding: Uint8Array;
+  /** by the clock that only moves forward */
   readonly startedAt: number;
+  /** when the add ends, by the PC's own clock: only for showing */
+  readonly until: number;
   postedAt: number | null;
   polledAt: number | null;
   answered: number;
   attempt: Attempt | null;
   /** the commitments this run has answered or dropped: none is answered twice */
   readonly seen: Set<string>;
-  /** the person at this PC said the phone shows the number this PC showed */
-  confirmed: boolean;
+  /** the person at this PC said the phone shows the number this PC showed: the adder whose number it was, and the number */
+  confirmed: { readonly adder: string; readonly digits: string } | null;
   end: AddState | null;
 }
 
@@ -101,58 +117,78 @@ export class ListAdd {
       const running = this.run;
       // an add of the relay identity this PC had before a reset was another PC's
       if (running !== null && running.account === account && running.end === null && running.serverId === identity?.serverId
-        && this.deps.now() - running.startedAt < ADD_WINDOW_MS) return await this.step(running);
+        && this.mono() - running.startedAt < ADD_WINDOW_MS) return await this.step(running);
       this.run = null;
       this.none = null;
       // not asked: nothing says whether the account keeps a list, and the caller asks again (ListAddAway)
       let list: string | null;
       try { list = await this.deps.listNamed(account); } catch (error) { throw new ListAddAway(error instanceof Error ? error.message : String(error)); }
       if (list === null) { this.none = { account }; return { state: "no_list", account }; }
-      if (identity === null) return { state: "ended", account, why: "unavailable" };
+      const id = randomBytes(8).toString("hex");
+      if (identity === null) return { state: "ended", run: id, account, why: "unavailable" };
       const { keys } = identity;
       const card = { key: keys.key, enc: keys.enc, list, endpoint: identity.endpoint, invite: null };
       const run: Run = {
-        account, list, serverId: identity.serverId, endpoint: identity.endpoint, keys, card: await signCard(card, keys.privateKey), binding: cardBinding(card),
-        startedAt: this.deps.now(), postedAt: null, polledAt: null, answered: 0, attempt: null, seen: new Set(), confirmed: false, end: null,
+        id, account, list, serverId: identity.serverId, endpoint: identity.endpoint, keys, card: await signCard(card, keys.privateKey), binding: cardBinding(card),
+        startedAt: this.mono(), until: this.deps.now() + ADD_WINDOW_MS, postedAt: null, polledAt: null, answered: 0, attempt: null, seen: new Set(), confirmed: null, end: null,
       };
       this.run = run;
       return await this.step(run);
     });
   }
 
-  /** Where the Add stands now. Each ask takes the phone's next message from the account service, at most every ADD_POLL_MS. */
-  state(): Promise<AddState> {
-    return this.inTurn(async () => this.run !== null ? await this.step(this.run) : this.none !== null ? { state: "no_list", account: this.none.account } : { state: "none" });
+  /**
+   * Where the Add stands now. Each ask takes the phone's next message from the account service, at most every
+   * ADD_POLL_MS. `runId`: the run the caller started; another run in its place is `replaced`, and told nothing of.
+   */
+  state(runId?: string): Promise<AddState> {
+    return this.inTurn(async () => {
+      if (this.run === null) return this.none !== null && runId === undefined ? { state: "no_list", account: this.none.account } : { state: runId === undefined ? "none" : "replaced" };
+      if (runId !== undefined && runId !== this.run.id) return { state: "replaced" };
+      return await this.step(this.run);
+    });
   }
 
   /**
-   * The person at this PC says the phone shows the same number. `digits` is the number they were shown: a yes to a
-   * number that is no longer the one on this screen confirms nothing.
+   * The person at this PC says the phone shows the same number. `digits` is the number they were shown. Only the
+   * number on this PC's screen at that moment confirms. Any other ends that number: it is shown no more, the answer
+   * names none, and the device has to ask again. A run that is confirmed already answers `confirmed` only to the number
+   * it was confirmed with.
    */
-  confirm(digits: string): Promise<AddState> {
+  confirm(digits: string, runId?: string): Promise<ConfirmOutcome> {
     return this.inTurn(async () => {
       const run = this.run;
       if (run === null) return { state: "none" };
+      if (runId !== undefined && runId !== run.id) return { state: "replaced" };
+      if (run.confirmed !== null) return run.confirmed.digits === digits ? { confirmed: await this.step(run) } : { mismatch: true };
       const attempt = this.live(run);
-      if (run.end === null && !run.confirmed && attempt !== null && attempt.digits !== null && attempt.digits === digits) {
-        run.confirmed = true;
-        // the list is read at once
-        run.polledAt = null;
+      if (run.end !== null || attempt === null || attempt.digits === null) return { mismatch: true };
+      if (attempt.digits !== digits) {
+        // a wrong number ends the attempt: nobody tries the six digits one after another against one number
+        run.attempt = null;
+        return { mismatch: true };
       }
-      return await this.step(run);
+      run.confirmed = { adder: attempt.adder, digits };
+      // the list is read at once
+      run.polledAt = null;
+      return { confirmed: await this.step(run) };
     });
   }
 
-  /** The person at this PC gave it up, or said the numbers differ: nothing is confirmed, and this Add shows no further number. */
-  cancel(): Promise<AddState> {
+  /** The person at this PC gave it up, or said the numbers differ: nothing is confirmed, and this Add shows no further number. `runId`: only that run is ended. */
+  cancel(runId?: string): Promise<AddState> {
     return this.inTurn(async () => {
       const run = this.run;
       if (run === null) return { state: "none" };
-      if (run.end === null || run.end.state !== "added") run.end = { state: "ended", account: run.account, why: "cancelled" };
+      if (runId !== undefined && runId !== run.id) return { state: "replaced" };
+      if (run.end === null || run.end.state !== "added") run.end = { state: "ended", run: run.id, account: run.account, why: "cancelled" };
       run.attempt = null;
+      run.confirmed = null;
       return run.end;
     });
   }
+
+  private mono(): number { return this.deps.mono?.() ?? performance.now(); }
 
   private inTurn<T>(work: () => Promise<T>): Promise<T> {
     const next = this.turn.then(work, work);
@@ -164,47 +200,49 @@ export class ListAdd {
   private live(run: Run): Attempt | null {
     const attempt = run.attempt;
     if (attempt === null) return null;
-    const age = this.deps.now() - attempt.sentAt;
-    if (age >= 0 && age < ADD_ATTEMPT_MS) return attempt;
+    if (this.mono() - attempt.sentAt < ADD_ATTEMPT_MS) return attempt;
     run.attempt = null;
     return null;
   }
 
   private shown(run: Run): AddState {
-    const until = new Date(run.startedAt + ADD_WINDOW_MS).toISOString();
-    if (run.confirmed) return { state: "confirmed", account: run.account, list: run.list, until };
+    const until = new Date(run.until).toISOString();
+    if (run.confirmed !== null) return { state: "confirmed", run: run.id, account: run.account, list: run.list, until };
     const attempt = this.live(run);
     return attempt !== null && attempt.digits !== null
-      ? { state: "number", account: run.account, list: run.list, digits: attempt.digits, until: new Date(attempt.sentAt + ADD_ATTEMPT_MS).toISOString() }
-      : { state: "waiting", account: run.account, list: run.list, until };
+      ? { state: "number", run: run.id, account: run.account, list: run.list, digits: attempt.digits, until: new Date(this.deps.now() + ADD_ATTEMPT_MS - (this.mono() - attempt.sentAt)).toISOString() }
+      : { state: "waiting", run: run.id, account: run.account, list: run.list, until };
   }
 
   private async step(run: Run): Promise<AddState> {
     if (run.end !== null) return run.end;
+    const ended = (why: AddEnd): AddState => run.end = { state: "ended", run: run.id, account: run.account, why };
     const identity = await this.deps.own();
     // a reset relay identity is another PC: this Add was the old one's
-    if (identity === null || identity.serverId !== run.serverId) return run.end = { state: "ended", account: run.account, why: "unavailable" };
-    const now = this.deps.now();
-    const asked = run.polledAt !== null && now - run.polledAt >= 0 && now - run.polledAt < (this.deps.pollMs ?? ADD_POLL_MS);
-    if (run.confirmed) {
+    if (identity === null || identity.serverId !== run.serverId) return ended("unavailable");
+    // its ten minutes are over, confirmed or not: nothing is joined after them, whatever the list holds by now
+    if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return ended("timeout");
+    const now = this.mono();
+    const asked = run.polledAt !== null && now - run.polledAt < (this.deps.pollMs ?? ADD_POLL_MS);
+    if (run.confirmed !== null) {
       if (asked) return this.shown(run);
       run.polledAt = now;
-      // the yes named the list; which of its members then signs the entry is the list's own matter
-      const joined = await this.deps.join({ account: run.account, list: run.list, by: null });
+      // the yes named the list and the device whose number it was: only an entry that device signed adds this PC
+      const joined = await this.deps.join({ account: run.account, list: run.list, by: run.confirmed.adder });
+      // the time ran out, or the person gave it up, while the list was read: that read joins nothing
+      if (run.end !== null) return run.end;
       if ("joined" in joined) {
-        run.end = { state: "added", account: run.account, list: run.list };
+        run.end = { state: "added", run: run.id, account: run.account, list: run.list };
         await this.deps.joined?.(run.account);
         return run.end;
       }
-      if ("refused" in joined) return run.end = { state: "ended", account: run.account, why: joined.refused };
-      if (this.deps.now() - run.startedAt >= ADD_WINDOW_MS) return run.end = { state: "ended", account: run.account, why: "timeout" };
+      if ("refused" in joined) return ended(joined.refused);
       return this.shown(run);
     }
-    if (this.deps.now() - run.startedAt >= ADD_WINDOW_MS) return run.end = { state: "ended", account: run.account, why: "timeout" };
     if (asked) return this.shown(run);
     run.polledAt = now;
     try {
-      if (run.postedAt === null || now - run.postedAt < 0 || now - run.postedAt >= POST_RENEW_MS) {
+      if (run.postedAt === null || now - run.postedAt >= POST_RENEW_MS) {
         // the same keys each time: other keys would be another card, and drop the comparison under way
         await this.deps.call("/v2/pc/list/keys", { list: run.list, key: run.keys.key, enc: run.keys.enc, card: run.card });
         run.postedAt = now;
@@ -226,12 +264,12 @@ export class ListAdd {
     if (held === null || held.commitment !== open.commitment || held.adder !== open.adder) {
       // a commitment this PC has seen before gets no second nonce, and shows no number again
       if (run.seen.has(open.commitment)) return;
-      if (run.answered >= ADD_COMMITMENTS_MAX) { run.end = { state: "ended", account: run.account, why: "attempts" }; run.attempt = null; return; }
+      if (run.answered >= ADD_COMMITMENTS_MAX) { run.end = { state: "ended", run: run.id, account: run.account, why: "attempts" }; run.attempt = null; return; }
       run.seen.add(open.commitment);
       run.answered++;
       // a new commitment takes the place of the one before: never two numbers at once
       const nonce = randomPairNonce();
-      run.attempt = { adder: open.adder, commitment: open.commitment, nonce, sentAt: this.deps.now(), digits: null };
+      run.attempt = { adder: open.adder, commitment: open.commitment, nonce, sentAt: this.mono(), digits: null };
       await answer(nonce);
       return;
     }

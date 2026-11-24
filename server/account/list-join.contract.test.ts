@@ -81,15 +81,15 @@ describe("a PC in no account is added to an account that keeps a signed list", (
   test("the phone and the PC show one number, the person says so at the PC, and the PC joins by the list, pinned from its first moment", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
-    expect((await made.start()).body).toEqual({ state: "waiting", account: ACCOUNT, list: account.id, until: expect.any(String) });
+    expect((await made.start()).body).toEqual({ state: "waiting", run: expect.stringMatching(/^[0-9a-f]{16}$/), account: ACCOUNT, list: account.id, until: expect.any(String) });
     expect((await made.status()).waiting_for_add).toBe(true);
     const { phone, shown } = await compared(made, account);
-    expect(shown).toEqual({ state: "number", account: ACCOUNT, list: account.id, digits: phone, until: expect.any(String) });
+    expect(shown).toEqual({ state: "number", run: expect.any(String), account: ACCOUNT, list: account.id, digits: phone, until: expect.any(String) });
     expect((await made.confirm(phone)).body).toMatchObject({ state: "confirmed" });
     // the phone's Add: the account admits the PC, then the entry
     await made.admit();
     await account.addPostedPc(made.endpoint);
-    expect(await made.state()).toEqual({ state: "added", account: ACCOUNT, list: account.id });
+    expect(await made.state()).toEqual({ state: "added", run: expect.any(String), account: ACCOUNT, list: account.id });
     expect(made.pc.devices.account()).toBe(ACCOUNT);
     // bound by the list: no binding on the service's word ever stood, and the pin is in the binding itself
     expect(made.binding()).toMatchObject({ account: ACCOUNT, list: account.id });
@@ -158,6 +158,34 @@ describe("a PC in no account is added to an account that keeps a signed list", (
     expect(services.accountRows!.rows().map((row) => row.key).sort()).toEqual([account.first.key, phone.key].sort());
   });
 
+  test("only an entry the device whose number was confirmed signed adds the PC: another member's entry joins nothing", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const other = await listMember();
+    await account.addDevice(other);
+    await made.start();
+    // the person compared with the account's first device, and said yes to that number
+    const { phone } = await compared(made, account);
+    expect((await made.confirm(phone)).body).toMatchObject({ state: "confirmed" });
+    // another device of the account signs the PC in
+    await made.admit();
+    await account.addPostedPc(made.endpoint, other);
+    expect(await made.state()).toMatchObject({ state: "ended", why: "other_adder" });
+    expect(made.pc.devices.account()).toBeNull();
+    expect(made.binding()).toBeNull();
+  });
+
+  test("a poll that names its run learns nothing of the run that replaced it", async () => {
+    const made = await listedPc();
+    await TestList.start(made.pc.account, ACCOUNT);
+    const started = (await made.start()).body as { run: string };
+    expect((await made.pc.local(`/api/account/list/add?run=${started.run}`, { headers: own })).body).toMatchObject({ state: "waiting", run: started.run });
+    expect((await made.pc.local(`/api/account/list/add?run=${"0".repeat(16)}`, { headers: own })).body).toEqual({ state: "replaced" });
+    expect((await made.post("/api/account/list/add/cancel", { run: "0".repeat(16) })).body).toEqual({ state: "replaced" });
+    expect((await made.pc.local(`/api/account/list/add?run=x`, { headers: own })).status).toBe(400);
+    expect((await made.post("/api/account/list/add/cancel", { run: started.run })).body).toMatchObject({ state: "ended", why: "cancelled" });
+  });
+
   test("without the person's yes at the PC nothing is joined, whatever the list then holds", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
@@ -180,11 +208,16 @@ describe("a PC in no account is added to an account that keeps a signed list", (
     await made.start();
     const { phone } = await compared(made, account);
     const other = phone === "000000" ? "000001" : "000000";
-    expect((await made.confirm(other)).body).toMatchObject({ state: "number", digits: phone });
     expect((await made.confirm(12)).status).toBe(400);
+    // a wrong number ends that number, and the answer names none
+    const wrong = await made.confirm(other);
+    expect([wrong.status, wrong.body.error?.code]).toEqual([409, "wrong_number"]);
+    expect(JSON.stringify(wrong.body)).not.toContain(phone);
+    // the right one confirms nothing any more: the device has to ask again
+    expect((await made.confirm(phone)).status).toBe(409);
     await made.admit();
     await account.addPostedPc(made.endpoint);
-    expect(await made.state()).toMatchObject({ state: "number" });
+    expect(await made.state()).toMatchObject({ state: "waiting" });
     expect(made.pc.devices.account()).toBeNull();
   });
 
@@ -193,10 +226,10 @@ describe("a PC in no account is added to an account that keeps a signed list", (
     const account = await TestList.start(made.pc.account, ACCOUNT);
     await made.start();
     await compared(made, account);
-    expect((await made.post("/api/account/list/add/cancel")).body).toEqual({ state: "ended", account: ACCOUNT, why: "cancelled" });
+    expect((await made.post("/api/account/list/add/cancel")).body).toMatchObject({ state: "ended", account: ACCOUNT, why: "cancelled" });
     await made.admit();
     await account.addPostedPc(made.endpoint);
-    expect(await made.state()).toEqual({ state: "ended", account: ACCOUNT, why: "cancelled" });
+    expect(await made.state()).toMatchObject({ state: "ended", account: ACCOUNT, why: "cancelled" });
     expect(made.pc.devices.account()).toBeNull();
   });
 

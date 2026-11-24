@@ -22,6 +22,9 @@ const LINK_STATUS: Record<LinkRefusal, number> = {
   replacement_needs_app: 409, list_followed: 409, list_removed: 409,
 };
 
+/** The id of one add by the list (ListAdd), as its starter names it. */
+const RUN_ID = /^[0-9a-f]{16}$/;
+
 /** The most entries a member hands this PC in one call (POST /api/account/list/page), and the longest text of one. */
 const LIST_PEER_PAGE_MAX = 256;
 const LIST_PEER_ENTRY_CHARS = 16_384;
@@ -128,7 +131,10 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     // this PC's own window and CLI alone (dispatch.ts ownWindow): the number is shown only at this PC
     const add = context.services.listAdd;
     if (add === null) return fail("not_found", "This PC follows no list", 404);
-    return reply(noted(await add.state()));
+    // `run`: the run the caller started. Another one in its place is answered `replaced`, and nothing of it is told
+    const run = new URL(request.url).searchParams.get("run");
+    if (run !== null && !RUN_ID.test(run)) return fail("invalid_run", "Name the run by its id", 400);
+    return reply(noted(await add.state(run ?? undefined)));
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
@@ -202,13 +208,18 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const add = context.services.listAdd;
       if (add === null) return fail("not_found", "This PC follows no list", 404);
       if (typeof body.digits !== "string" || !/^[0-9]{6}$/.test(body.digits)) return fail("invalid_digits", "Send the six digits this PC shows", 400);
-      return reply(noted(await add.confirm(body.digits)));
+      if (body.run !== undefined && (typeof body.run !== "string" || !RUN_ID.test(body.run))) return fail("invalid_run", "Name the run by its id", 400);
+      const outcome = await add.confirm(body.digits, body.run);
+      // a number that is not the one on this PC's screen confirms nothing and ends that number; the answer names none
+      if ("mismatch" in outcome) return fail("wrong_number", "That is not the number this PC shows now, so nothing was confirmed. A number lasts 2 minutes, and a wrong one ends it: have the device ask again.", 409);
+      return reply("confirmed" in outcome ? noted(outcome.confirmed) : outcome);
     }
     case "/api/account/list/add/cancel": {
       setRequestRoute(pathname);
       const add = context.services.listAdd;
       if (add === null) return fail("not_found", "This PC follows no list", 404);
-      return reply(noted(await add.cancel()));
+      if (body.run !== undefined && (typeof body.run !== "string" || !RUN_ID.test(body.run))) return fail("invalid_run", "Name the run by its id", 400);
+      return reply(noted(await add.cancel(body.run)));
     }
     case "/api/account/list/join":
     case "/api/account/list/join/prepare":

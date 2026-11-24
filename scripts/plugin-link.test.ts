@@ -1665,6 +1665,8 @@ describe("ovis link, on the PC itself", () => {
     said?: (text: string, type: (line: string, after?: number) => void) => void;
     /** this PC's answer to a reset of its relay identity (POST /api/relay/reset-identity); no such route by default */
     reset?: () => Response;
+    /** Ctrl+C once the command said the number was confirmed */
+    stopAfterConfirm?: boolean;
   } = {}) {
     const pc = identity();
     const time = clock();
@@ -1715,7 +1717,8 @@ describe("ovis link, on the PC itself", () => {
       if (path === "/api/devices" && options.devices !== undefined) return Response.json({ devices: options.devices(++deviceReads) });
       if (path.startsWith("/api/account/list/add") && options.list !== undefined) {
         const action = request.method === "GET" ? "state" : path.endsWith("/confirm") ? "confirm" : path.endsWith("/cancel") ? "cancel" : "start";
-        const body = request.method === "GET" ? {} : await request.json() as Record<string, unknown>;
+        // a poll names its run in the query, every other call in its body
+        const body = request.method === "GET" ? Object.fromEntries(new URL(request.url).searchParams) : await request.json() as Record<string, unknown>;
         listCalls.push({ action, body });
         const answer = options.list({ action, body, count: listCalls.filter((call) => call.action === action).length });
         if (answer !== undefined && answer.ok && (await answer.clone().json() as { state?: string }).state === "added") state.account = "acct_1";
@@ -1766,6 +1769,7 @@ describe("ovis link, on the PC itself", () => {
         // typed once the question could be read
         if (text.includes("Is this your account? Type yes") && options.confirm !== false) { time.pass(2_000); keys.type(options.confirm ?? "yes"); }
         options.said?.(text, (line, after = 2_000) => { setTimeout(() => { time.pass(after); keys.type(line); }, 0); });
+        if (options.stopAfterConfirm === true && text.includes("Confirmed. Press Add")) setTimeout(() => stop.abort(), 0);
         if (text.startsWith("Added")) added = true;
         if (added) {
           const answer = (line: string, after = 2_000): void => { setTimeout(() => { time.pass(after); keys.type(line); }, 0); };
@@ -1813,22 +1817,25 @@ describe("ovis link, on the PC itself", () => {
   });
 
   describe("an account that keeps a signed list (POST /api/account/list/add)", () => {
-    const state = (body: Record<string, unknown>) => Response.json({ account: "acct_1", list: "ab".repeat(32), until: "2026-11-06T12:10:00.000Z", ...body });
+    const RUN = "0123456789abcdef";
+    const state = (body: Record<string, unknown>) => Response.json({ run: RUN, account: "acct_1", list: "ab".repeat(32), until: "2026-11-06T12:10:00.000Z", ...body });
+    const wrongNumber = () => Response.json({ error: { code: "wrong_number", message: "That is not the number this PC shows now" } }, { status: 409 });
     const NUMBER = "This PC shows 482 913. Does the device that adds it show the same number? Type yes if it does, or press Enter if it does not: ";
     /** this PC's add as its states go: waiting, the number until it is answered, confirmed, then added once Add was pressed */
-    const adding = (options: { added?: boolean; onConfirm?: (digits: unknown) => Record<string, unknown> } = {}) => {
+    const adding = (options: { added?: boolean; onConfirm?: (digits: unknown) => Record<string, unknown> | Response } = {}) => {
       let confirmed = false;
       let cancelled = false;
       return ({ action, body, count }: { action: string; body: Record<string, unknown>; count: number }): Response => {
         if (action === "start") return state({ state: "waiting" });
-        if (action === "cancel") { cancelled = true; return Response.json({ state: "ended", account: "acct_1", why: "cancelled" }); }
+        if (action === "cancel") { cancelled = true; return Response.json({ state: "ended", run: RUN, account: "acct_1", why: "cancelled" }); }
         if (action === "confirm") {
           const answer = options.onConfirm?.(body.digits) ?? { state: "confirmed" };
+          if (answer instanceof Response) return answer;
           confirmed = answer.state === "confirmed";
           return state(answer);
         }
-        if (cancelled) return Response.json({ state: "ended", account: "acct_1", why: "cancelled" });
-        if (confirmed) return count >= 4 && options.added !== false ? Response.json({ state: "added", account: "acct_1", list: "ab".repeat(32) }) : state({ state: "confirmed" });
+        if (cancelled) return Response.json({ state: "ended", run: RUN, account: "acct_1", why: "cancelled" });
+        if (confirmed) return count >= 4 && options.added !== false ? Response.json({ state: "added", run: RUN, account: "acct_1", list: "ab".repeat(32) }) : state({ state: "confirmed" });
         return state({ state: "number", digits: "482913" });
       };
     };
@@ -1840,8 +1847,10 @@ describe("ovis link, on the PC itself", () => {
       expect(run.text).toContain(`${NUMBER}Confirmed. Press Add for old-desktop on that device now.\n`);
       expect(run.text).toContain("Added. ");
       // the yes carries the number it was typed under, and nothing asks for the account service's own admission
-      expect(run.listCalls.filter((call) => call.action === "confirm").map((call) => call.body)).toEqual([{ digits: "482913" }]);
+      expect(run.listCalls.filter((call) => call.action === "confirm").map((call) => call.body)).toEqual([{ digits: "482913", run: RUN }]);
       expect(run.listCalls[0]).toEqual({ action: "start", body: { account: "acct_1" } });
+      // every poll names the run this command started
+      expect(run.listCalls.filter((call) => call.action === "state").every((call) => call.body.run === RUN)).toBe(true);
       expect(run.pressed).toEqual([]);
       expect(run.named).toEqual(["acct_1", "acct_1"]);
       expect(run.signedOut).toBe(true);
@@ -1871,7 +1880,7 @@ describe("ovis link, on the PC itself", () => {
     });
     it("says so when the number it was typed under is no longer the one this PC shows", async () => {
       let asked = 0;
-      const run = await pressing({ list: adding({ onConfirm: () => ++asked === 1 ? { state: "waiting" } : { state: "confirmed" } }),
+      const run = await pressing({ list: adding({ onConfirm: () => ++asked === 1 ? wrongNumber() : { state: "confirmed" } }),
         said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); } });
       expect(run.code).toBe(0);
       expect(run.text).toContain("That number is no longer the one this PC shows, so nothing was confirmed.\n");
@@ -1881,7 +1890,7 @@ describe("ovis link, on the PC itself", () => {
     it("where nobody can type, prints the number with the command that confirms it, and confirms nothing itself", async () => {
       let reads = 0;
       const run = await pressing({ args: ["--account", "acct_1"], terminal: false, isTty: false,
-        list: ({ action }) => action === "start" ? state({ state: "waiting" }) : ++reads < 3 ? state({ state: "number", digits: "482913" }) : ++reads < 6 ? state({ state: "confirmed" }) : Response.json({ state: "added", account: "acct_1", list: "ab".repeat(32) }) });
+        list: ({ action }) => action === "start" ? state({ state: "waiting" }) : ++reads < 3 ? state({ state: "number", digits: "482913" }) : ++reads < 6 ? state({ state: "confirmed" }) : Response.json({ state: "added", run: RUN, account: "acct_1", list: "ab".repeat(32) }) });
       expect(run.code).toBe(0);
       expect(run.text.split("This PC shows 482 913. If the device that adds it shows the same number, run ovis add --confirm 482913 on this PC within 2 minutes, then press Add on that device.").length).toBe(2);
       expect(run.text).toContain("An agent adds a PC in one step with an invite: ovis join.");
@@ -1897,8 +1906,23 @@ describe("ovis link, on the PC itself", () => {
       expect(run.listCalls.map((call) => call.action)).toEqual(["start", "start", "start"]);
     });
 
+    it("gives its add up when it stops: a yes confirmed before joins nothing once the command is gone", async () => {
+      // the number is confirmed, and the command is stopped while it waits for Add on the device
+      const run = await pressing({ list: adding({ added: false }), said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); },
+        watch: () => undefined, stopAfterConfirm: true });
+      expect(run.code).toBe(1);
+      expect(run.listCalls.at(-1)).toEqual({ action: "cancel", body: { run: RUN } });
+    });
+
+    it("reports nothing of an add that took its place on this PC", async () => {
+      const run = await pressing({ list: ({ action }) => action === "start" ? state({ state: "waiting" }) : Response.json({ state: "replaced" }) });
+      expect(run.code).toBe(1);
+      expect(run.text).toContain("Could not add this PC: another add was started on this PC meanwhile, which took this one's place.");
+      expect(run.text).not.toContain("Added");
+    });
+
     it("ends with what this PC said when its add ended otherwise", async () => {
-      const run = await pressing({ list: ({ action }) => action === "start" ? state({ state: "waiting" }) : Response.json({ state: "ended", account: "acct_1", why: "attempts" }) });
+      const run = await pressing({ list: ({ action }) => action === "start" ? state({ state: "waiting" }) : Response.json({ state: "ended", run: RUN, account: "acct_1", why: "attempts" }) });
       expect(run.code).toBe(1);
       expect(run.text).toContain("Could not add this PC: this PC showed three numbers in this run and none was confirmed.");
     });
@@ -1925,12 +1949,16 @@ describe("ovis link, on the PC itself", () => {
         expect(run.text).toBe("Confirmed: this PC and that device show 482 913. Press Add for this PC on that device now; the ovis add that showed the number finishes when it is added.\n");
       });
 
-      it("says so when that is not the number this PC shows now", async () => {
-        const run = await confirming(["--confirm=111111"], () => state({ state: "number", digits: "482913" }));
+      it("says so when that is not the number this PC shows now, which this PC then shows no more", async () => {
+        const run = await confirming(["--confirm=111111"], () => wrongNumber());
         expect(run.code).toBe(1);
-        expect(run.text).toContain("111 111 is not the number this PC shows now");
-        // the number on the screen is never told to one who did not read it
-        expect(run.text).not.toContain("482");
+        expect(run.text).toContain("111 111 is not the number this PC shows now, so nothing was confirmed, and that number is no longer shown");
+      });
+
+      it("says so when the add it would confirm has ended", async () => {
+        const run = await confirming(["--confirm=482913"], () => Response.json({ state: "ended", run: RUN, account: "acct_1", why: "timeout" }));
+        expect(run.code).toBe(1);
+        expect(run.text).toBe("The add this PC was running has ended (timeout), so nothing was confirmed. Run ovis add again.\n");
       });
 
       it("takes six digits only, and says so where this PC shows no number", async () => {

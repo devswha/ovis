@@ -1622,9 +1622,10 @@ function terminalReader(options: LinkOptions, now: () => number): TerminalReader
 
 /** Where this PC's add by its account's signed list stands (GET /api/account/list/add, server/account/list-add.ts). */
 type ListAddState =
-  | { readonly state: "none" | "no_list" | "waiting" | "confirmed" | "added" }
-  | { readonly state: "number"; readonly digits: string }
-  | { readonly state: "ended"; readonly why: string };
+  | { readonly state: "none" | "no_list" | "replaced" }
+  | { readonly state: "waiting" | "confirmed" | "added"; readonly run: string }
+  | { readonly state: "number"; readonly run: string; readonly digits: string }
+  | { readonly state: "ended"; readonly run?: string; readonly why: string };
 
 /** How often `add` asks this PC where its add by the list stands: the number shows, and a typed yes is taken, within this. */
 const LIST_ADD_POLL_MS = 2_000;
@@ -1642,10 +1643,17 @@ async function confirmNumber(options: LinkOptions, api: Api, given: string): Pro
     options.out(`--confirm takes the six digits ${cli(options)} add shows on this PC.\n`);
     return 1;
   }
+  const none = `The Ovis on this PC shows no number to confirm. Run ${cli(options)} add first.\n`;
   let state: ListAddState;
   try { state = await api<ListAddState>("POST", "/api/account/list/add/confirm", { body: { digits } }); } catch (error) {
-    if (!(error instanceof LocalError) || (error.status !== 404 && error.status !== 405)) throw error;
-    options.out(`The Ovis on this PC shows no number to confirm. Run ${cli(options)} add first.\n`);
+    if (!(error instanceof LocalError)) throw error;
+    // not the number on this PC's screen: that number is gone with it, and this PC told none
+    if (error.code === "wrong_number") {
+      options.out(`${spaced(digits)} is not the number this PC shows now, so nothing was confirmed, and that number is no longer shown (a wrong one ends it). Choose Add on the device again, read the new number ${cli(options)} add shows, and confirm that one.\n`);
+      return 1;
+    }
+    if (error.status !== 404 && error.status !== 405) throw error;
+    options.out(none);
     return 1;
   }
   if (state.state === "confirmed" || state.state === "added") {
@@ -1653,7 +1661,7 @@ async function confirmNumber(options: LinkOptions, api: Api, given: string): Pro
       : `Confirmed: this PC and that device show ${spaced(digits)}. Press Add for this PC on that device now; the ${cli(options)} add that showed the number finishes when it is added.\n`);
     return 0;
   }
-  options.out(`${spaced(digits)} is not the number this PC shows now (a number lasts 2 minutes, and a new one replaces it), so nothing was confirmed. Read the number ${cli(options)} add shows, compare it with the device that adds this PC, and confirm that one.\n`);
+  options.out(state.state === "ended" ? `The add this PC was running has ended (${state.why}), so nothing was confirmed. Run ${cli(options)} add again.\n` : none);
   return 1;
 }
 
@@ -1873,6 +1881,14 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
   // this PC knows of no add (it restarted): the add is started again
   let restart = false;
   let listOver = false;
+  // the add this run started on this PC: its polls, its yes and its cancel name it, so another run's add is never taken for it
+  let runId: string | null = null;
+  const dropRun = async (): Promise<void> => {
+    if (runId === null) return;
+    const id = runId;
+    runId = null;
+    await api("POST", "/api/account/list/add/cancel", { body: { run: id }, signal: AbortSignal.timeout(2_000) }).catch(() => undefined);
+  };
   let reader: TerminalReader | null = null;
   const canType = options.terminal === true && options.isTty === true;
   let question: { readonly digits: string; readonly prompt: string; shownAt: number | null } | null = null;
@@ -1913,10 +1929,10 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
       const { digits } = question;
       question = null;
       try {
-        if (typed === "") { await api("POST", "/api/account/list/add/cancel"); continue; }
-        const after = await api<ListAddState>("POST", "/api/account/list/add/confirm", { body: { digits } });
-        if (after.state !== "confirmed" && after.state !== "added") say("That number is no longer the one this PC shows, so nothing was confirmed.\n");
+        if (typed === "") { await api("POST", "/api/account/list/add/cancel", { body: runId === null ? {} : { run: runId } }); continue; }
+        await api<ListAddState>("POST", "/api/account/list/add/confirm", { body: { digits, ...runId === null ? {} : { run: runId } } });
       } catch (error) {
+        if (!signal.aborted && error instanceof LocalError && error.code === "wrong_number") { say("That number is no longer the one this PC shows, so nothing was confirmed.\n"); continue; }
         if (signal.aborted || !(error instanceof AwayError)) throw error;
         heldLine = "the answer before it may not have reached the Ovis on this PC, and it may have been typed meanwhile.";
         say("Your answer may not have reached the Ovis on this PC. The number is asked about again while it still shows.\n");
@@ -1948,7 +1964,7 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     let state: ListAddState;
     try {
       await typedLines();
-      state = byList === true && !restart ? await api<ListAddState>("GET", "/api/account/list/add")
+      state = byList === true && !restart && runId !== null ? await api<ListAddState>("GET", `/api/account/list/add?run=${runId}`)
         : await api<ListAddState>("POST", "/api/account/list/add", { body: { account: press.signedIn } });
     } catch (error) {
       if (signal.aborted) throw error;
@@ -1962,8 +1978,12 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
       await addAgain();
       return "none";
     }
+    // another add took this one's place on this PC (another terminal, the PC's own window): this run says so, and
+    // reports nothing that is the other's
+    if (state.state === "replaced") { runId = null; throw new LocalError("another add was started on this PC meanwhile, which took this one's place"); }
     restart = state.state === "none";
     if (state.state === "no_list") return null;
+    if ("run" in state && state.run !== undefined) runId = state.run;
     if (byList === null && state.state !== "none") {
       byList = true;
       say(`${STEP_INDENT}Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.\n`);
@@ -2102,6 +2122,7 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     if (atPrompt) say("");
     // the time is up. A bind whose answer was lost is found first; then an Add that landed as it ran out keeps the
     // listing from being taken off, and is taken by one more ask
+    await dropRun();
     const account = await where();
     if (account === press.signedIn) return await added();
     if (account !== null && account !== undefined) return await elsewhere(account);
@@ -2127,6 +2148,8 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
   } catch (error) {
     if (!signal.aborted && !(error instanceof LocalError || error instanceof AwayError)) throw error;
     if (atPrompt) { try { say(""); } catch {} }
+    // the add this run started is given up with it: a yes confirmed here joins nothing once the run is gone
+    if (!bound) await dropRun();
     if (signal.aborted && press.stopFast) {
       const account = bound ? press.signedIn : await where(1_000);
       if (account === press.signedIn) {
