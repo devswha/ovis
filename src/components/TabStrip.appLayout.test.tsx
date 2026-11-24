@@ -328,7 +328,7 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
       return headerNode as unknown as Element;
     };
 
-    const drawForDrag = async (offer: LayoutOffer, { shown = snapshot, closable = true }: { shown?: SessionSnapshot; closable?: boolean } = {}): Promise<void> => {
+    const drawForDrag = async (offer: LayoutOffer, { shown = snapshot, closable = true, splitDrag = true }: { shown?: SessionSnapshot; closable?: boolean; splitDrag?: boolean } = {}): Promise<void> => {
       const tree = createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
         createElement(TabStrip, {
           snapshot: shown,
@@ -338,7 +338,7 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
           onNewTab: () => {},
           onNewTerminal: async () => {},
           onMoveToWorkspace: async (tabId, workspaceId) => { moved.push({ tabId, workspaceId }); },
-          splitDrag: true,
+          splitDrag,
           closable,
         })));
       await act(async () => { if (renderer) renderer.update(tree); else renderer = create(tree, { createNodeMock: node }); });
@@ -415,6 +415,22 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     expect(paneDrag.snapshot()?.workspaceTarget).toBeUndefined();
     await act(async () => {
       tab().props.onPointerUp({ pointerId: 2, clientX: 40, clientY: 120 });
+    });
+    expect(moved).toEqual([]);
+
+    // Disabling splitDrag mid-drag (e.g. viewport resize below 769px) cancels the shared drag cleanly.
+    await drawForDrag(TUI);
+    await act(async () => {
+      tab().props.onPointerDown({ pointerType: "mouse", button: 0, ctrlKey: false, isPrimary: true, pointerId: 3, clientX: 40, clientY: 5, preventDefault() {}, currentTarget: captureTarget });
+    });
+    await act(async () => {
+      tab().props.onPointerMove({ pointerId: 3, clientX: 40, clientY: 120 });
+    });
+    expect(paneDrag.snapshot()?.workspaceTarget).toEqual({ machineId: "local", workspaceId: "w2" });
+    await drawForDrag(TUI, { splitDrag: false });
+    expect(paneDrag.snapshot()).toBeNull();
+    await act(async () => {
+      tab().props.onPointerUp({ pointerId: 3, clientX: 40, clientY: 120 });
     });
     expect(moved).toEqual([]);
   });

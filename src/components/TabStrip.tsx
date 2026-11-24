@@ -212,6 +212,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   useLayoutEffect(() => {
     if (draggedTabId !== null) paneDrag.refresh();
   }, [draggedTabId, draggedWorkspaceTargets]);
+  useLayoutEffect(() => {
+    if (!splitDrag && draggedTabId !== null) {
+      reorder.cancelDrag();
+      paneDrag.cancel();
+    }
+  }, [splitDrag, draggedTabId]);
   const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
   const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
   // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label

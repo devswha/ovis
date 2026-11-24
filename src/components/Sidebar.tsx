@@ -816,7 +816,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const unfolded = children.length > 0 && repoKey !== undefined && !collapsed;
     const face = <WorkspaceFavicon root={workspace.worktree?.checkout_path ?? pane.cwd ?? null} fallback={<span className="sidebar-mark workspace-folder" aria-hidden="true">{unfolded ? <FolderOpen /> : <Folder />}</span>} />;
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void => setMenu(menuOpen ? null : { anchor, point, previousFocus, workspace, title: rowTitle, place: [branchNote, ...paths].filter(Boolean).join(" · ") || workspace.label });
-    const tabDrop = online && tabDropWorkspaceId === workspace.workspace_id;
+    const tabDrop = online && !watching && tabDropWorkspaceId === workspace.workspace_id;
     return <li
       className={`workspace workspace-group pane-item${selected ? " is-selected" : ""}${workerSelected ? " has-selected-agent" : ""}${collapsed ? " is-collapsed" : ""}${context ? " is-filter-context" : ""}${dragWorkspaceId === workspace.workspace_id ? " is-dragging" : ""}${touchDrag?.source === workspace.workspace_id ? " is-lifted" : ""}${tabDrop ? " is-tab-drop" : ""}`}
       key={workspace.workspace_id}
@@ -936,7 +936,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   };
 
   return (
-    <div className={`machine-workspaces${twoLine ? " is-two-line" : ""}`} data-machine={online ? machineId : undefined} ref={workspaceRoot}>
+    <div className={`machine-workspaces${twoLine ? " is-two-line" : ""}`} data-machine={online && !watching ? machineId : undefined} ref={workspaceRoot}>
       <nav className="sidebar-list" aria-label={t("Herdr workspaces")}>
         <>
           <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>

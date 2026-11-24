@@ -51,11 +51,24 @@ let current: PaneDrag | null = null;
 const listeners = new Set<() => void>();
 let dropHandler: ((target: SplitTarget, x: number, y: number) => void) | null = null;
 let workspaceMove: TabWorkspaceMove | null = null;
+let scrollCleanup: (() => void) | null = null;
 
 const set = (next: PaneDrag | null): void => {
   if (next === current) return;
   current = next;
   for (const listener of listeners) listener();
+};
+
+const attachScroll = (): void => {
+  if (scrollCleanup || typeof document === "undefined" || typeof document.addEventListener !== "function") return;
+  const onScroll = (): void => { paneDrag.refresh(); };
+  document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+  scrollCleanup = () => { document.removeEventListener("scroll", onScroll, { capture: true }); };
+};
+
+const detachScroll = (): void => {
+  scrollCleanup?.();
+  scrollCleanup = null;
 };
 
 const workspaceTargets = (move: TabWorkspaceMove | null): ReadonlySet<string> | null =>
@@ -82,6 +95,7 @@ export const paneDrag = {
   snapshot: (): PaneDrag | null => current,
   start(target: SplitTarget, moveToWorkspace?: TabWorkspaceMove): void {
     workspaceMove = moveToWorkspace ?? null;
+    if (workspaceMove) attachScroll(); else detachScroll();
     set({ target, point: null });
   },
   move(x: number, y: number): void {
@@ -105,6 +119,7 @@ export const paneDrag = {
     const heldMove = workspaceMove;
     const hit = held ? workspaceTargetAt(x, y, held.target.machineId, heldMove) : undefined;
     workspaceMove = null;
+    detachScroll();
     set(null);
     if (hit !== undefined) {
       heldMove?.move(hit.workspaceId);
@@ -114,6 +129,7 @@ export const paneDrag = {
   },
   cancel(): void {
     workspaceMove = null;
+    detachScroll();
     set(null);
   },
   onDrop(handler: ((target: SplitTarget, x: number, y: number) => void) | null): void {

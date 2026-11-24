@@ -178,4 +178,31 @@ describe("tab drag out of its strip", () => {
     paneDrag.drop(42, 20);
     expect(moved).toEqual([]);
   });
+
+  it("updates the highlighted workspace target when a scroll moves another row under a stationary pointer", () => {
+    const moved: string[] = [];
+    const scrollEvents = new EventTarget();
+    let rowUnderPointer = rowElement({ machine: "local", workspace: "w2" });
+    if (!descriptors.has("document")) descriptors.set("document", Object.getOwnPropertyDescriptor(globalThis, "document"));
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: {
+        elementFromPoint: () => rowUnderPointer,
+        addEventListener: scrollEvents.addEventListener.bind(scrollEvents),
+        removeEventListener: scrollEvents.removeEventListener.bind(scrollEvents),
+      },
+    });
+
+    paneDrag.start(A, { targets: new Set(["w2", "w3"]), move: (workspaceId) => moved.push(workspaceId) });
+    paneDrag.move(40, 20);
+    expect(paneDrag.snapshot()?.workspaceTarget).toEqual({ machineId: "local", workspaceId: "w2" });
+
+    rowUnderPointer = rowElement({ machine: "local", workspace: "w3" });
+    scrollEvents.dispatchEvent(new Event("scroll"));
+    expect(paneDrag.snapshot()?.workspaceTarget).toEqual({ machineId: "local", workspaceId: "w3" });
+
+    paneDrag.drop(40, 20);
+    expect(moved).toEqual(["w3"]);
+  });
 });
