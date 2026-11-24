@@ -386,6 +386,17 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       // whether the answer proves that nothing was placed: only `409 head_moved` does, of those that lead on to a read
       let unplaced = false;
       options.signal?.throwIfAborted();
+      // A request that goes again after a pause is sent only while it is still the one kept for this place: a Cancel
+      // meanwhile (on a card, on another page) let it go, and what a person cancelled is not placed after that. One
+      // already on its way cannot be called back.
+      if (sends > 0) {
+        const standing = await list.kept(writer).catch(() => null);
+        if (standing === null || standing.place.hash !== request.place.hash) {
+          moved = movedNow();
+          if (!moved) return refused("busy", retryAfterMs);
+          break;
+        }
+      }
       try {
         await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal));
         if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };

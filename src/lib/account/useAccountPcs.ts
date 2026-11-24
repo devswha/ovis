@@ -15,7 +15,11 @@ import { deviceOs } from "../phone.ts";
  * the PC in it: the row says so and nothing adds it by itself. `unreachable`: the list holds the PC and the account
  * service gives no way to it: the row says so, with no key or relay to ask it by.
  */
-export type AccountPcRow = AccountPcEntry & { readonly new_until?: string | null; readonly outside?: true; readonly unreachable?: true };
+export type AccountPcRow = AccountPcEntry & {
+  readonly new_until?: string | null; readonly outside?: true; readonly unreachable?: true;
+  /** the row is a PC that this device's list of the account holds: while it is new to this device (`new_until`), nothing adds it by itself */
+  readonly byList?: true;
+};
 
 /** The account as this list uses it: its PCs that a device can pair with (key and relay from the directory), and the admission that vouches for this PC. */
 export interface AccountPcsSource {
@@ -45,7 +49,7 @@ export function signedInAccount(): AccountPcsSource {
       await readPageList(session.account);
       const pcs = myPcs(pagePcs(session.account, listed), [], { now: Date.now() }).flatMap((pc): AccountPcRow[] => pc.join === undefined
         ? (pc.byList === true ? [{ server_id: pc.server_id, name: pc.name, server_public_key: "", relay: "", unreachable: true }] : [])
-        : [{ server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }), ...(pc.notInList === true ? { outside: true as const } : {}) }]);
+        : [{ server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }), ...(pc.notInList === true ? { outside: true as const } : {}), ...(pc.byList === true ? { byList: true as const } : {}) }]);
       return { account: session.account, pcs };
     },
     async admit(serverId, label, key) {

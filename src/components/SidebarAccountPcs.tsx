@@ -144,8 +144,10 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     onListed?.(listed === "" ? [] : listed.split("\n"));
     return () => onListed?.([]);
   }, [listed, onListed]);
-  // never a PC that this device's list of the account does not hold: nothing is asked of it without a person
-  const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id) && !declined(pc) && pc.outside !== true) : undefined;
+  // never a PC that this device's list of the account does not hold: nothing is asked of it without a person. Nor a
+  // PC of the list while it is new to this device: for its day it opens only by hand, here as on My PCs
+  const next = accountPcs.pairing === null ? waiting.find((pc) => accountPcs.stateOf(pc.server_id) === "ready" && !tried.has(pc.server_id) && !declined(pc) && pc.outside !== true
+    && !(pc.byList === true && isNewAccountPc(pc, Date.now()))) : undefined;
   useEffect(() => {
     if (next === undefined) return;
     setTried((current) => new Set(current).add(next.server_id));
