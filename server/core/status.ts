@@ -775,7 +775,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       look({ path: path!, size });
       return (codexTurns.get(paneId) ?? 0) === turn ? end : null;
     })().then((end) => {
-      if (end !== null && end !== "running") codexEnded(paneId, end);
+      // the server's word on this turn stands over a rollout read begun before it came
+      if (end !== null && end !== "running" && (codexTurns.get(paneId) ?? 0) === turn && servedTurnEnd(paneId) !== "failed") codexEnded(paneId, end);
     }, () => undefined).finally(() => codexLooking.delete(paneId));
     codexLooking.set(paneId, done);
     return done;

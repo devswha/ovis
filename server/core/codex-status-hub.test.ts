@@ -11,6 +11,9 @@ const failed = readFileSync(join(import.meta.dir, "..", "fixtures", "codex-usage
 const answered = `${JSON.stringify({ type: "event_msg", timestamp: "2026-11-12T05:56:00.000Z", payload: { type: "task_complete", last_agent_message: "Done", error: null } })}\n`;
 const pane = (status: string) => ({ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "codex", agent_status: status, cwd: root });
 
+// the reader itself, taken before any test puts a spy in its place
+const readTurnEnd = codex.codexLastTurnEnd;
+
 let rollouts = 0;
 function codexHub(text: string) {
   const path = join(root, `rollout-${++rollouts}.jsonl`);
@@ -52,6 +55,35 @@ describe("a Codex pane whose turn ended in an error", () => {
       expect(h.failures).toEqual(["w1:p1"]);
       expect(h.read).not.toHaveBeenCalled();
     } finally { told.mockRestore(); h.restore(); }
+  });
+
+  it("keeps a failure its app server told when a rollout read begun before it says answered", async () => {
+    const h = codexHub(answered);
+    const told = spyOn(served, "servedTurnEnd").mockReturnValue(null);
+    const reading = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<void>();
+    h.read.mockImplementation(async (file, tail) => {
+      reading.resolve();
+      await release.promise;
+      try { return await readTurnEnd(file, tail); } finally { read.resolve(); }
+    });
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.herdrSays(pane("done"));
+      handlers.onStatus("w1:p1", "done", "codex");
+      await reading.promise;
+      told.mockReturnValue("failed");
+      await h.snapshot();
+      expect(h.failures).toEqual(["w1:p1"]);
+      release.resolve();
+      await read.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await h.snapshot();
+      expect(h.failures).toEqual(["w1:p1"]);
+      expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+    } finally { release.resolve(); told.mockRestore(); h.restore(); }
   });
 
   it("reads at rest and tells the failure once, never DONE first, for a turn this server saw run", async () => {

@@ -195,7 +195,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
     return { agent_started: true };
   } catch (error) {
     // a launcher that never ran: its folder goes, and Ovis stops waiting for its server
-    if (program !== undefined) approvals?.codex?.abandon(paneId);
+    if (program !== undefined) approvals?.codex?.abandon(paneId, program);
     return {
       agent_started: false,
       error: requestFault(error, "agent_start_failed"),

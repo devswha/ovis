@@ -6,7 +6,7 @@ import type { Server, ServerWebSocket } from "bun";
 
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
-import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, privateParent, serverArgs, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, privateChain, privateFolder, serverArgs, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
 import { parsePrompt } from "../dialogs/live.ts";
 import { ApprovalHub } from "./hub.ts";
 
@@ -181,19 +181,49 @@ describe("which launches run on their own server", () => {
     expect(statSync(dirname(program)).mode & 0o777).toBe(0o700);
     expect(readFileSync(program, "utf8")).toContain(`codex --remote "unix://$socket" '--model' 'm'`);
   });
+
+  it("drops only the launch that failed: its folder, and the pane's wait while the pane is still that launch's", () => {
+    const hub = new ApprovalHub(join(root(), "h"), []);
+    const tmp = root();
+    const servers = new CodexServers(hub, { tmp });
+    cleanups.push(() => servers.stop());
+    const first = servers.launch("w1:p1", [], "0.171.0")!;
+    const second = servers.launch("w1:p1", [], "0.171.0")!;
+    servers.abandon("w1:p1", first);
+    expect(existsSync(dirname(first))).toBe(false);
+    expect(existsSync(second)).toBe(true);
+    // the pane is the second launch's still: its server is waited for
+    writeFileSync(join(dirname(second), "elsewhere"), "");
+    servers.abandon("w1:p1", join(tmp, "not-a-launch", "launch"));
+    servers.abandon("w1:p1", second);
+    expect(existsSync(dirname(second))).toBe(false);
+  });
 });
 
 describe("where the launcher is written", () => {
   it("is a folder no other account can rename entries in", () => {
+    const mine = 1000;
+    const tmp = [{ uid: 0, mode: 0o755 }, { uid: 0, mode: 0o1777 }];
+    expect(privateChain(tmp, mine)).toBe(true);
+    expect(privateChain([{ uid: 0, mode: 0o755 }, { uid: mine, mode: 0o755 }], mine)).toBe(true);
+    // writable by all or by a group, which another account may share: only a sticky one is private
+    for (const mode of [0o777, 0o775, 0o770]) {
+      expect(privateChain([{ uid: 0, mode: 0o755 }, { uid: mine, mode }], mine), mode.toString(8)).toBe(false);
+      expect(privateChain([{ uid: 0, mode: 0o755 }, { uid: mine, mode: mode | 0o1000 }], mine), mode.toString(8)).toBe(true);
+    }
+    // a folder no other account can pass through shields what is under it
+    expect(privateChain([{ uid: 0, mode: 0o755 }, { uid: mine, mode: 0o700 }, { uid: mine, mode: 0o777 }], mine)).toBe(true);
+    // another account's folder on the way, or a writable one above a private one
+    expect(privateChain([{ uid: 0, mode: 0o755 }, { uid: 1001, mode: 0o755 }, { uid: mine, mode: 0o700 }], mine)).toBe(false);
+    expect(privateChain([{ uid: 0, mode: 0o755 }, { uid: mine, mode: 0o777 }, { uid: mine, mode: 0o700 }], mine)).toBe(false);
+
+    // the path as resolved, not a link to it; none for a folder that is not there
     const dir = root();
-    expect(privateParent(dir)).toBe(true);
-    const shared = join(dir, "shared");
-    mkdirSync(shared);
-    chmodSync(shared, 0o777);
-    expect(privateParent(shared)).toBe(false);
-    chmodSync(shared, 0o1777);
-    expect(privateParent(shared)).toBe(true);
-    expect(privateParent(join(dir, "none"))).toBe(false);
+    const real = join(dir, "real");
+    mkdirSync(real, { mode: 0o700 });
+    symlinkSync(real, join(dir, "link"));
+    expect(privateFolder(join(dir, "link"))).toBe(real);
+    expect(privateFolder(join(dir, "none"))).toBeNull();
   });
 });
 

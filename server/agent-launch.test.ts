@@ -88,7 +88,7 @@ describe("agentLaunch", () => {
     const abandoned: string[] = [];
     const codex = {
       launch: (paneId: string, args: readonly string[] | undefined, version: string | null) => { launches.push({ paneId, args, version }); return "/tmp/ovis-codex-x/launch"; },
-      abandon: (paneId: string) => { abandoned.push(paneId); },
+      abandon: (paneId: string, program: string) => { abandoned.push(`${paneId} ${program}`); },
     } as unknown as CodexServers;
     const hub = new ApprovalHub(join(dirname(settingsDir()), "h"), []);
     useApprovalHub(hub, async () => "0.171.0", codex);
@@ -101,9 +101,9 @@ describe("agentLaunch", () => {
       starts.length = 0;
       const failing = spyOn(herdr, "agentStart").mockRejectedValue(new Error("no shell"));
       try {
-        expect(await agentLaunch(PANE, { kind: "codex", name: "codex-1", args: [] })).toMatchObject({ agent_started: false });
+        expect(await agentLaunch(PANE, { kind: "codex", name: "codex-1", args: [] }, undefined, undefined, { platform: "linux" })).toMatchObject({ agent_started: false });
       } finally { failing.mockRestore(); }
-      expect(abandoned).toEqual([PANE]);
+      expect(abandoned).toEqual([`${PANE} /tmp/ovis-codex-x/launch`]);
       runtimeHere.mockReturnValue(served.HERDR);
       expect((await launch("codex", ["--model", "m"], { platform: "linux", settingsDir: settingsDir() })).program).toBeUndefined();
       expect(launches).toHaveLength(2);

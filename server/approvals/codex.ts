@@ -41,6 +41,7 @@ const CONNECT_MS = 30_000;
 /** How often a socket that is there but not yet up is looked at again. */
 const SOCKET_LOOK_MS = 50;
 const SOCKET_NAME = "codex.sock";
+const LAUNCH_PREFIX = "ovis-codex-";
 /** A path a `unix://` address and a `ws+unix://` URL both take as it is, and under the shortest limit on one. */
 const PLAIN_PATH = /^[A-Za-z0-9._/-]{1,100}$/;
 
@@ -266,23 +267,33 @@ export function serverSocket(path: string): boolean {
 }
 
 /**
- * Whether only this account can rename what is in `folder` and in each folder above it: each is this account's or
- * root's, and one others may write in (all, or a group other than this account's own) is sticky (as /tmp), where
- * only an entry's owner may rename it.
+ * Whether only `uid` can rename what is in the last of `folders`, each given from the root down with its owner and
+ * mode. Each is that account's or root's. One another account can reach (every folder above it lets others pass) and
+ * write in, by its group or by all, must be sticky (as /tmp), where only an entry's owner may rename it; whose group
+ * it is does not matter, as another account may share it.
  */
-export function privateParent(folder: string): boolean {
-  const uid = process.getuid?.();
-  const gid = process.getgid?.();
+export function privateChain(folders: readonly { uid: number; mode: number }[], uid: number | undefined): boolean {
+  let reachable = true;
+  for (const entry of folders) {
+    if (entry.uid !== uid && entry.uid !== 0) return false;
+    if (reachable && (entry.mode & 0o022) !== 0 && (entry.mode & 0o1000) === 0) return false;
+    reachable &&= (entry.mode & 0o011) !== 0;
+  }
+  return true;
+}
+
+/** `folder` as the kernel resolves it, when only this account can rename what is in it (privateChain), else null. */
+export function privateFolder(folder: string): string | null {
   try {
-    for (let at = realpathSync(folder); ; at = dirname(at)) {
-      const entry = statSync(at);
-      if (entry.uid !== uid && entry.uid !== 0) return false;
-      const othersWrite = (entry.mode & 0o002) !== 0 || ((entry.mode & 0o020) !== 0 && entry.gid !== gid);
-      if (othersWrite && (entry.mode & 0o1000) === 0) return false;
-      if (at === dirname(at)) return true;
+    const resolved = realpathSync(folder);
+    const up: string[] = [];
+    for (let at = resolved; ; at = dirname(at)) {
+      up.unshift(at);
+      if (at === dirname(at)) break;
     }
+    return privateChain(up.map((at) => statSync(at)), process.getuid?.()) ? resolved : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -468,12 +479,13 @@ export class CodexServers {
     if (this.stopped || version === null || !supportsCodexServer(version)) return null;
     const split = serverArgs(args ?? []);
     if (split === null) return null;
-    const tmp = this.options.tmp ?? tmpdir();
-    // the pane runs the launcher by its path: a folder another account may rename entries in is no place for it
-    if (!privateParent(tmp)) return null;
+    // the pane runs the launcher by its path: a folder another account may rename entries in is no place for it. The
+    // folder is made under the very path that was checked, not under a link to it
+    const tmp = privateFolder(this.options.tmp ?? tmpdir());
+    if (tmp === null) return null;
     let dir: string;
     try {
-      dir = mkdtempSync(join(tmp, "ovis-codex-"));
+      dir = mkdtempSync(join(tmp, LAUNCH_PREFIX));
     } catch (error) {
       console.error(`codex server: ${error instanceof Error ? error.message : String(error)}`);
       return null;
@@ -536,11 +548,15 @@ export class CodexServers {
     served.connection?.close();
   }
 
-  /** A launch whose launcher never ran: Ovis stops waiting for its server and removes its folder. */
-  abandon(paneId: string): void {
-    const served = this.panes.get(paneId);
-    this.forget(paneId);
-    if (served !== undefined) rmSync(served.dir, { recursive: true, force: true });
+  /**
+   * The launch of `program` never ran: its folder goes, and Ovis stops waiting for its server while `paneId` is still
+   * that launch's (another launch there since is left as it is).
+   */
+  abandon(paneId: string, program: string): void {
+    const dir = dirname(program);
+    if (this.panes.get(paneId)?.dir === dir) this.forget(paneId);
+    // only a folder launch made: its name, in the folder launchers go in
+    if (basename(dir).startsWith(LAUNCH_PREFIX) && privateFolder(this.options.tmp ?? tmpdir()) === dirname(dir)) rmSync(dir, { recursive: true, force: true });
   }
 
   stop(): void {
