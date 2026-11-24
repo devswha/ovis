@@ -184,5 +184,5 @@ export const RELAY_JA: Record<string, string> = {
   "Open {host}": "{host} を開く",
   "More ways to open {name}": "{name}を別の方法で開く",
   "This device cannot read your account's list. Update the app.": "この端末ではアカウントの名簿を読めません。アプリを更新してください。",
-  "This device cannot read your account's list.": "この端末ではアカウントの名簿を読めません。",
+  "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "この端末ではアカウントの名簿を読めません。この端末でサインアウトしてからもう一度サインインし、別の端末で許可してください。",
 };

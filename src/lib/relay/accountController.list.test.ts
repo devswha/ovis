@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { AccountList, AccountListView } from "../account/accountList.ts";
 import type { DirectoryPc } from "../account/service.ts";
-import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { memoryAccountStore, newKey, type AccountSession, type AccountStore } from "../account/store.ts";
 import { createAccountController } from "./accountController.ts";
-import type { ShellDeviceStore } from "./device.ts";
+import type { RelayDevice, ShellDeviceStore } from "./device.ts";
+import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { ACCOUNT_FEATURE } from "../../../shared/relay-mux.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import type { RelayTransport } from "./transport.ts";
 
@@ -73,8 +74,8 @@ describe("the hosted shell and the account's signed list", () => {
   afterEach(() => browser.dispose());
 
   const settle = async (): Promise<void> => { for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
-  const controller = (accountList?: AccountList | null, store: ShellDeviceStore = empty, changed: () => void = () => {}) => createAccountController({
-    container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE,
+  const controller = (accountList?: AccountList | null, store: ShellDeviceStore = empty, changed: () => void = () => {}, open?: () => Promise<RelayTransport>) => createAccountController({
+    container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE, ...(open === undefined ? {} : { open }),
     accountFetch: async (input) => {
       const { pathname } = new URL(new Request(input).url);
       asked.push(pathname);
@@ -234,42 +235,93 @@ describe("the hosted shell and the account's signed list", () => {
     expect((account.state as { list?: string }).list).toBeUndefined();
   });
 
-  it("asks the PC a member just let it in at for its place in the list, and takes the first one it is handed", async () => {
+  /** A pairing this device just made with a PC of its account by the digits, which a member approved: its session, and what the PC answers. */
+  async function approvedPairing(introductions: unknown[]) {
+    const signedIn = await accountStore.get("session");
+    const key = await accountStore.key();
+    const serverId = "a1".repeat(16);
+    const row: RelayDevice = { server_id: serverId, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.test", device_id: "12".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone", account: signedIn!.account };
+    const rows = new Map([[serverId, row]]);
+    const store: ShellDeviceStore = {
+      get: async (id) => rows.get(id), list: async () => [...rows.values()], remove: async (id) => { rows.delete(id); }, removeRow: async () => false,
+      update: async (id, change) => { const next = change(rows.get(id)); rows.set(id, next); return next; },
+    };
+    const asked: string[] = [];
+    const renewed: number[] = [];
+    const fetch = async (path: string): Promise<Response> => {
+      asked.push(`${path} ${renewed.length > 0 ? "signed in" : "not yet"}`);
+      if (path === "/api/account/status") return Response.json({ account: signedIn!.account, unlinked: [], removals: [], enrolling: false });
+      if (path === "/api/account/introduction") return Response.json(introductions.shift() ?? { pcs: [] });
+      throw new TypeError(`Unexpected PC request: ${path}`);
+    };
+    const session = { server: { features: [ACCOUNT_FEATURE] }, fetch, renew: async () => { renewed.push(Date.now()); }, close() {} } as unknown as RelayTransport;
+    return { serverId, store, session, asked, introductions: () => asked.filter((each) => each.startsWith("/api/account/introduction")) };
+  }
+  const place = { id: "5c".repeat(32), seq: 4, hash: "ab".repeat(32) };
+  const waitingView = (): AccountListView => ({ account: "acct-one", status: { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" }, reached: true, devices: [], pcs: [] });
+
+  it("reads its place in the list from the introduction of the PC a member just let it in at, over the session that signed in, and takes the first one", async () => {
     await signIn("acct-one");
     const { list, calls } = recordingList();
-    const waiting: AccountListView = { account: "acct-one", status: { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" }, reached: true, devices: [], pcs: [] };
-    let view = waiting;
+    let view = waitingView();
     list.view = () => view;
     list.adopt = async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq} ${offer.hash}`); view = OFF; return OFF; };
-    const account = controller(list);
-    const asked: string[] = [];
-    const answers: unknown[] = [{ pcs: [] }, { pcs: [], list: { id: "5c".repeat(32), seq: 4, hash: "ab".repeat(32) } }];
-    const opened = { server: { features: [] }, fetch: async (path: string) => { asked.push(path); return Response.json(answers.shift() ?? { pcs: [] }); }, close() {} } as unknown as RelayTransport;
+    const pairing = await approvedPairing([{ pcs: [] }, { pcs: [], list: place }, { pcs: [], list: { ...place, seq: 9 } }]);
+    const account = controller(list, pairing.store, () => {}, async () => pairing.session);
     const timers = useFakeWaits();
     try {
-      await account.enroll(opened, "a1".repeat(16), true, true);
+      const done = account.enroll(pairing.session, pairing.serverId, true, true);
       await settle();
       expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
       await timers.next();
-      await settle();
+      expect(await done).toMatchObject({ state: "complete" });
     } finally { timers.restore(); }
-    expect(asked).toEqual(["/api/account/introduction", "/api/account/introduction"]);
-    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${"5c".repeat(32)} 4 ${"ab".repeat(32)}`]);
+    // asked twice, never before the session signed in again, and not a third time once a place was taken
+    expect(pairing.introductions()).toEqual(["/api/account/introduction signed in", "/api/account/introduction signed in"]);
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${place.id} 4 ${place.hash}`]);
   });
 
-  it("asks a PC for no place where the device does not wait to be let into a list, or the pairing was made with a code", async () => {
+  it("takes no place where the device does not wait to be let into a list, or the pairing was made with a code", async () => {
     await signIn("acct-one");
     const { list, calls } = recordingList();
-    const account = controller(list);
-    const asked: string[] = [];
-    const opened = { server: { features: [] }, fetch: async (path: string) => { asked.push(path); return Response.json({ pcs: [], list: { id: "5c".repeat(32), seq: 4, hash: "ab".repeat(32) } }); }, close() {} } as unknown as RelayTransport;
-    // it follows no list and waits for none
-    await account.enroll(opened, "a1".repeat(16), true, true);
-    // it waits, and the pairing is not one a member's approval made
-    list.view = () => ({ account: "acct-one", status: { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" }, reached: true, devices: [], pcs: [] });
-    await account.enroll(opened, "a1".repeat(16), true, false);
-    await settle();
-    expect([asked, calls.filter((call) => call.startsWith("adopt"))]).toEqual([[], []]);
+    // it follows no list and waits for none: the place a PC carries is not its to take
+    const first = await approvedPairing([{ pcs: [], list: place }, { pcs: [], list: place }]);
+    const idle = controller(list, first.store, () => {}, async () => first.session);
+    const timers = useFakeWaits();
+    try {
+      const done = idle.enroll(first.session, first.serverId, true, true).catch(() => undefined);
+      await settle();
+      await timers.next();
+      await settle();
+      expect(first.introductions().length).toBe(2);
+      idle.cancelEnrollment(first.serverId);
+      await done;
+      // it waits, and the pairing is not one a member's approval made: the introduction is read once, as before, and no place taken
+      list.view = waitingView;
+      const second = await approvedPairing([{ pcs: [], list: place }]);
+      await controller(list, second.store, () => {}, async () => second.session).enroll(second.session, second.serverId, true, false);
+      expect(second.introductions().length).toBe(1);
+    } finally { timers.restore(); }
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
+  });
+
+  it("stops asking for its place when the pairing is forgotten", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    list.view = waitingView;
+    const pairing = await approvedPairing([]);
+    const account = controller(list, pairing.store, () => {}, async () => pairing.session);
+    const timers = useFakeWaits();
+    try {
+      const done = account.enroll(pairing.session, pairing.serverId, true, true).catch((error: unknown) => (error as Error).name);
+      await settle();
+      account.cancelEnrollment(pairing.serverId);
+      expect(await done).toBe("AbortError");
+      const asked = pairing.introductions().length;
+      await timers.next();
+      await settle();
+      expect([pairing.introductions().length, calls.filter((call) => call.startsWith("adopt"))]).toEqual([asked, []]);
+    } finally { timers.restore(); }
   });
 
   it("follows no list where a test gives its own account store or fetch and no list", async () => {

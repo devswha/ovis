@@ -329,7 +329,7 @@ export function RelayShell(props: RelayShellProps) {
     // this device cannot read its account's list: the PCs below are then the account service's word, each marked, and none opens by itself
     const listUnread = account.list !== undefined && (
       <p className="account-error relay-add-directory-error" role="status" data-list-unread={account.list}>
-        {account.list === "newer" ? t("This device cannot read your account's list. Update the app.") : t("This device cannot read your account's list.")}
+        {account.list === "newer" ? t("This device cannot read your account's list. Update the app.") : t("This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.")}
       </p>
     );
     const directoryError = account.error !== null && !offline && (

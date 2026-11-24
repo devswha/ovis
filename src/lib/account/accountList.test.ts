@@ -736,31 +736,39 @@ describe("catching up", () => {
     expect(asked(phone, "GET /v2/lists/mine")).toBe(2);
   });
 
-  it("saves its copy when the list moved and once for each round that reached the account service, and never when it was not reached", async () => {
+  it("writes its copy only when the list moved, and keeps when it last read it in full, and the floor of its clock, in a small record beside it", async () => {
     const phone = await device();
     let writes = 0;
     const swap = phone.lists.swap.bind(phone.lists);
     phone.lists.swap = async (record, account, expected, value) => { const swapped = await swap(record, account, expected, value); if (record === "copy" && swapped) writes += 1; return swapped; };
-    const savedAt = async () => { const { read_at, seen_at } = JSON.parse(await phone.lists.get("copy", ACCOUNT) as string) as { read_at: number; seen_at: number }; return [read_at, seen_at]; };
     await phone.list.sync();
     expect(writes).toBe(1);
-    // each round that reached the service moves the time of the last full read and the floor of the clock: both are saved
+    const copy = await phone.lists.get("copy", ACCOUNT);
+    // rounds that reach the service move the time of the last full read and the floor of the clock: the long copy is not written for that
     for (let round = 0; round < 3; round += 1) { now += 30_000; await phone.list.sync(); }
-    expect([writes, await savedAt()]).toEqual([4, [Math.floor(now / 1000), Math.floor(now / 1000)]]);
-    // a round that did not reach it writes nothing
+    expect([writes, await phone.lists.get("copy", ACCOUNT)]).toEqual([1, copy]);
+    expect(await phone.lists.get("times", ACCOUNT)).toEqual({ v: 1, list: held().id, read_at: Math.floor(now / 1000), seen_at: Math.floor(now / 1000) });
+    // a round that did not reach it writes neither
+    const read = now;
     phone.wire.down = true;
     now += 30_000;
     await phone.list.sync();
-    expect(writes).toBe(4);
+    expect([writes, (await phone.lists.get("times", ACCOUNT) as { read_at: number }).read_at]).toEqual([1, Math.floor(read / 1000)]);
+    // a page loaded again, with the service away, knows when the list was last read in full
+    const again = reloaded(phone);
+    again.wire.down = true;
+    expect(following(await again.list.sync()).read_at).toBe(Math.floor(read / 1000));
+    // the list moved: the copy is written
     phone.wire.down = false;
     await addPc(phone, "Desk");
     now += 5 * MINUTE;
     await phone.list.sync();
-    expect(writes).toBe(5);
-    // after a reload with the service away, the view says when the list was last read in full
-    const again = reloaded(phone);
-    again.wire.down = true;
-    expect(following(await again.list.sync()).read_at).toBe(Math.floor(now / 1000));
+    expect(writes).toBe(2);
+    // a record that is another list's, or out of form, moves nothing
+    await phone.lists.set("times", ACCOUNT, { v: 1, list: "ef".repeat(32), read_at: 9_999_999_999, seen_at: 9_999_999_999 });
+    const other = reloaded(phone);
+    other.wire.down = true;
+    expect(following(await other.list.sync()).read_at).toBe(Math.floor(now / 1000));
   });
 
   it("tells who listens of each view that differs, and of none that does not", async () => {

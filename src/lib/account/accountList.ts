@@ -304,14 +304,25 @@ const WORST: readonly ListTrouble[] = ["fork", "stuck", "other_list", "refused",
 const worst = (troubles: readonly (ListTrouble | null)[]): ListTrouble | null => WORST.find((trouble) => troubles.includes(trouble)) ?? null;
 
 /**
- * Whether two copies of one list are the same save: the same entries, stop and alarm, last read in full at the same
- * time, under the same floor of the clock. Each entry names the one before it by its hash, so the same last entry at
- * the same place is the same history, and the state is what the entries give.
+ * Whether two copies of one list hold the same entries, stop and alarm: they then differ in nothing but when they were
+ * last read in full and the floor of the clock, which are kept in a record of their own (`times`). Each entry names
+ * the one before it by its hash, so the same last entry at the same place is the same history, and the state is what
+ * the entries give.
  */
-function sameSave(a: FollowerCopy, b: FollowerCopy): boolean {
+function sameHistory(a: FollowerCopy, b: FollowerCopy): boolean {
   return a.list === b.list && a.entries.length === b.entries.length && a.entries.at(-1) === b.entries.at(-1) && a.stop === b.stop
-    && (a.state === null) === (b.state === null) && JSON.stringify(a.alarm) === JSON.stringify(b.alarm) && a.read_at === b.read_at && a.seen_at === b.seen_at;
+    && (a.state === null) === (b.state === null) && JSON.stringify(a.alarm) === JSON.stringify(b.alarm);
 }
+
+/** When a copy of `list` was last read in full and the floor of its clock, as kept beside the copy; null for no such record. */
+function readTimes(value: unknown, list: string): { readonly read_at: number | null; readonly seen_at: number | null } | null {
+  if (!isRecord(value) || value.v !== RECORD_VERSION || value.list !== list) return null;
+  const time = (at: unknown): number | null | undefined => at === null ? null : typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? at : undefined;
+  const [read_at, seen_at] = [time(value.read_at), time(value.seen_at)];
+  return read_at === undefined || seen_at === undefined ? null : { read_at, seen_at };
+}
+
+const later = (a: number | null, b: number | null): number | null => a === null ? b : b === null ? a : Math.max(a, b);
 
 /** One account's list in this page's memory. */
 interface Held {
@@ -497,17 +508,29 @@ export function accountList(options: AccountListOptions): AccountList {
       if (!await store.swap("copy", account, saved, text)) throw new StaleCopyError();
       console.info("Ovis: the account's list was read again from its entries, and saved as this build saves it");
     }
-    return { ...fresh, copy: read.copy, saved: text };
+    // with the later of what the copy says and what was kept beside it since, of its last full read and its clock's floor
+    const times = readTimes(await store.get("times", account), read.copy.list);
+    const copy: FollowerCopy = times === null ? read.copy : { ...read.copy, read_at: later(read.copy.read_at, times.read_at), seen_at: later(read.copy.seen_at, times.seen_at) };
+    return { ...fresh, copy, saved: text };
   };
 
   /**
-   * Saves a copy that differs from the one this page read: in its entries, its stop or its alarm, or in the time of
-   * its last full read and the floor of its clock, which move with every round that reached the account service. It
-   * is written only over the very text this page read (`before`): where another page saved meanwhile, nothing is
-   * written and the round reads again (StaleCopyError), so no page's save goes over a newer one, or over an alarm.
+   * Saves a copy that differs from the one this page read in its entries, its stop or its alarm. It is written only
+   * over the very text this page read (`before`): where another page saved meanwhile, nothing is written and the
+   * round reads again (StaleCopyError), so no page's save goes over a newer one, or over an alarm.
+   *
+   * The time of its last full read and the floor of its clock move with every round that reached the account
+   * service. They go into a small record of their own, so that such a round does not write a long copy again.
    */
   const save = async (before: { readonly copy: FollowerCopy | null; readonly saved: string | null }, copy: FollowerCopy): Promise<string> => {
-    if (before.copy !== null && before.saved !== null && sameSave(before.copy, copy)) return before.saved;
+    if (before.copy !== null && before.saved !== null && sameHistory(before.copy, copy)) {
+      if (before.copy.read_at !== copy.read_at || before.copy.seen_at !== copy.seen_at) {
+        // never back: another page may have read later
+        const kept = readTimes(await store.get("times", copy.account), copy.list);
+        await store.set("times", copy.account, { v: RECORD_VERSION, list: copy.list, read_at: later(kept?.read_at ?? null, copy.read_at), seen_at: later(kept?.seen_at ?? null, copy.seen_at) });
+      }
+      return before.saved;
+    }
     const text = writeSave(copy);
     if (text === before.saved) return text;
     if (!await store.swap("copy", copy.account, before.saved ?? undefined, text)) throw new StaleCopyError();

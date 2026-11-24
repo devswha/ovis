@@ -184,5 +184,5 @@ export const RELAY_ZH: Record<string, string> = {
   "Open {host}": "打开 {host}",
   "More ways to open {name}": "用其他方式打开 {name}",
   "This device cannot read your account's list. Update the app.": "此设备无法读取账户名单。请更新应用。",
-  "This device cannot read your account's list.": "此设备无法读取账户名单。",
+  "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "此设备无法读取账户名单。请在此设备上退出后重新登录，然后在另一台设备上允许它。",
 };

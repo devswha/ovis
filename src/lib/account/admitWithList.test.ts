@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { readAccountRecord } from "../../../shared/account-records.ts";
 import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
-import { admitWithList, handListToPc, ListAllowError, listOffer, type PcFetch } from "./join.ts";
+import { admitWithList, handListToPc, ListAllowError, takeIntroduction, type PcFetch } from "./join.ts";
+import type { ListOffer } from "./accountList.ts";
+import { MemoryDeviceStore } from "../relay/device.test.ts";
+import { memoryAccountStore } from "./store.ts";
 
 const THROUGH = "a1".repeat(16);
 const noWait = async (): Promise<void> => {};
@@ -17,6 +20,13 @@ function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknow
     return new Response(null, { status: 204 });
   };
   return { sent, fetch, paths: () => sent.map((each) => each.path) };
+}
+
+/** The place a PC's introduction carries for a device, as that device reads it over its own session. */
+async function listOffer(fetch: PcFetch): Promise<ListOffer | null> {
+  let offer: ListOffer | null = null;
+  await takeIntroduction({ fetch, key: await memoryAccountStore().key(), label: "Tablet", store: new MemoryDeviceStore(), relay: "wss://relay.test", onList: (handed) => { offer = handed; } });
+  return offer;
 }
 
 async function admit(from: WorldDevice, joining: { key: string; label: string; os: "android" | null }, pc: ReturnType<typeof pcX>, withList = true) {
@@ -109,11 +119,13 @@ describe("handing a PC the list's new entries over a session", () => {
     ]);
   });
 
-  it("hands nothing to a PC that stands where it does, follows another list, or has no such call", async () => {
+  it("counts a PC that stands at that place already as handed, and hands nothing to one that follows another list or has no such call", async () => {
     const { w, member } = await memberWithNews();
     const list = w.held();
+    const there = pcX({ head: () => Response.json({ list: list.id, place: list.head }) });
+    expect(await handListToPc(there.fetch, member.list)).toBe(true);
+    expect(there.paths()).toEqual(["/api/account/list/head"]);
     for (const head of [
-      () => Response.json({ list: list.id, place: list.head }),
       () => Response.json({ list: "ef".repeat(32), place: { seq: 0, hash: "ef".repeat(32) } }),
       () => Response.json({ list: list.id, place: { seq: "0" } }),
       undefined,
@@ -121,6 +133,31 @@ describe("handing a PC the list's new entries over a session", () => {
       const pc = pcX(head === undefined ? {} : { head });
       expect(await handListToPc(pc.fetch, member.list)).toBe(false);
       expect(pc.paths()).toEqual(["/api/account/list/head"]);
+    }
+  });
+
+  it("sends the page the PC asks for, and says the entry was handed only when the PC stands at its place", async () => {
+    const { w, member } = await memberWithNews();
+    const list = w.held();
+    // the PC says it stands at entry 1 of some history, then asks for the list from entry 0, and takes that page
+    const answers = [Response.json({ verdict: "asks_after", list: list.id, place: null, asks: { list: list.id, after: null } }), Response.json({ verdict: "caught_up", list: list.id, place: list.head })];
+    const pc = pcX({ head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }), page: () => answers.shift()! });
+    expect(await handListToPc(pc.fetch, member.list, list.head)).toBe(true);
+    expect(pc.sent.slice(1).map((each) => [each.path, (each.body as { after: number | null }).after])).toEqual([["/api/account/list/page", 0], ["/api/account/list/page", null]]);
+  });
+
+  it("says the entry was not handed where the PC refuses the page, takes less than it, or keeps asking", async () => {
+    const { w, member } = await memberWithNews();
+    const list = w.held();
+    const behind = { head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }) };
+    for (const page of [
+      () => Response.json({ verdict: "refused", list: list.id, place: { seq: 0, hash: list.id } }),
+      () => Response.json({ verdict: "refused" }),
+      () => Response.json({ verdict: "asks_after", asks: { list: list.id, after: 0 } }),
+      () => Response.json({ verdict: "asks_after", asks: { list: "ef".repeat(32), after: null } }),
+      () => Response.json({ error: { code: "rate_limited" } }, { status: 429 }),
+    ]) {
+      expect(await handListToPc(pcX({ ...behind, page }).fetch, member.list, list.head)).toBe(false);
     }
   });
 
