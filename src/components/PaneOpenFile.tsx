@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import { OpenFileContext } from "../lib/filePaths.ts";
 
 /**
@@ -8,7 +8,7 @@ import { OpenFileContext } from "../lib/filePaths.ts";
  */
 export function PaneOpenFile({ paneId, machineId, open, children }: { paneId: string | null; machineId: string; open: (file: { path: string; paneId: string; machineId: string }) => void; children: ReactNode }) {
   const openRef = useRef(open);
-  openRef.current = open;
+  useLayoutEffect(() => { openRef.current = open; }, [open]);
   const value = useMemo(() => paneId === null ? null : (path: string) => openRef.current({ path, paneId, machineId }), [paneId, machineId]);
   return <OpenFileContext.Provider value={value}>{children}</OpenFileContext.Provider>;
 }
