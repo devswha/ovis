@@ -10,7 +10,7 @@ import { KeeperRequestError } from "../acp/client.ts";
 import { resolveHarness, type HarnessCommand } from "./harnesses.ts";
 import { RunStore, type Run } from "./runs.ts";
 import { Ledger, type ToolChild } from "./ledger.ts";
-import { RunRate, validArgs } from "./guards.ts";
+import { validArgs } from "./guards.ts";
 import { ChildTurns, childRef, childState } from "./turns.ts";
 import { HarnessView, type ViewOptions } from "./view.ts";
 
@@ -30,7 +30,6 @@ export class AgentToolHub {
   private readonly turns: ChildTurns;
   private readonly view: HarnessView;
   private readonly now: () => number;
-  private readonly rate = new RunRate();
   private readonly waits = new Map<string, number>();
   private readonly tails = new Map<string, Promise<unknown>>();
   private readonly off: () => void;
@@ -46,7 +45,6 @@ export class AgentToolHub {
       const row = this.ledger.children.get(child.terminal);
       if (row?.id === child.id && (child.client.keeperGone || child.client.agentGone)) {
         this.runs.revoke(row.run);
-        this.rate.forget(row.run);
         if (child.client.keeperGone) { this.turns.forget(child); return; }
       }
       this.turns.watch(child);
@@ -116,8 +114,7 @@ export class AgentToolHub {
       if (depth !== undefined) return answer("scope", { verbs: this.verbs(depth) });
     }
     if (!run) return deny();
-    const limited = this.rate.take(run.id, this.now());
-    if (limited) return limited;
+    if (!this.runs.takeCall(run.id, this.now())) return refuse("rate_limited", "Too many calls in the past minute.");
     if (verb === "scope") return answer("scope", { verbs: this.verbs(run.depth) });
     if (!harnessVerb(verb)) return refuse("bad_request", "Unknown verb.");
     if (!isView(verb) && this.setting.level !== "start") return deny();

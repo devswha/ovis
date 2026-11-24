@@ -85,6 +85,9 @@ it("neither an unticked harness nor an approval verb can act", async () => {
 });
 it("the 31st call in a minute is refused", async () => {
   for (let i = 0; i < 30; i++) expect(await call("scope")).toMatchObject({ kind: "scope" });
+  hub.close();
+  hub = new AgentToolHub({ dir, setting: () => setting, acp: new AcpChildren(join(dir, "acp")) });
+  hub.listen();
   expect(await call("scope")).toMatchObject({ error: { code: "rate_limited" } });
 });
 it("the off switch rejects every verb and revokes credentials already issued", async () => {

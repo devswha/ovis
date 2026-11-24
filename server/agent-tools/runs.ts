@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeStateDocument } from "../state-document.ts";
+import { HARNESS_LIMITS } from "../../shared/harness-tool.ts";
 import { readProcessBirth } from "../process-owner.ts";
 
 export interface Run {
@@ -13,7 +14,7 @@ export interface Run {
   readonly harness: string;
   readonly created_ms: number;
 }
-interface Saved { readonly run: Run; readonly hash: string; readonly starts?: readonly { key: string; run: string }[]; readonly foreground?: { pid: number; birth: string } }
+interface Saved { readonly run: Run; readonly hash: string; readonly starts?: readonly { key: string; run: string }[]; readonly calls?: readonly number[]; readonly foreground?: { pid: number; birth: string } }
 const idPattern = /^[a-f0-9]{16}$/;
 const digest = (token: string) => createHash("sha256").update(token).digest();
 export interface LiveToolTerminal {
@@ -36,6 +37,7 @@ export function writePrivate(path: string, text: string): void {
 function saved(value: unknown): value is Saved {
   if (!value || typeof value !== "object" || !("hash" in value) || typeof value.hash !== "string" || !/^[a-f0-9]{64}$/.test(value.hash) || !("run" in value)) return false;
   if ("starts" in value && (!Array.isArray(value.starts) || !value.starts.every(s => s && typeof s.key === "string" && typeof s.run === "string" && idPattern.test(s.run)))) return false;
+  if ("calls" in value && (!Array.isArray(value.calls) || value.calls.length > HARNESS_LIMITS.calls_per_minute || !value.calls.every(Number.isFinite))) return false;
   const r = value.run;
   return !!r && typeof r === "object" && "id" in r && typeof r.id === "string" && idPattern.test(r.id)
     && "root" in r && typeof r.root === "string" && idPattern.test(r.root)
@@ -99,6 +101,15 @@ export class RunStore {
     return chain;
   }
   previousStart(id: string, key: string): string | undefined { return this.entries.get(id)?.starts?.find(s => s.key === key)?.run; }
+  takeCall(id: string, now: number): boolean {
+    const row = this.entries.get(id);
+    if (!row) return false;
+    const calls = (row.calls ?? []).filter(at => at > now - 60_000);
+    const max = HARNESS_LIMITS.calls_per_minute;
+    this.entries.set(id, { ...row, calls: [...calls, now].slice(-max) });
+    this.save();
+    return calls.length < max;
+  }
   rememberStart(id: string, key: string, child: string): void {
     const row = this.entries.get(id);
     if (!row) throw new Error("Agent tool run has ended.");
