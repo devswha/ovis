@@ -155,3 +155,11 @@ describe("the keys this device holds a removal against itself (R-F)", () => {
     expect(await ownRemovals(memoryAccountStore(), "acct")).toEqual([]);
   });
 });
+
+describe("the device's own signed removals count as its own (astra-migapp 5)", () => {
+  test("a `remove` it signed and keeps among its devices' records, of this account alone", async () => {
+    const store = memoryAccountStore();
+    await store.set("devices", { K4: { kind: "remove", account: "acct", key: "K4" }, K5: { kind: "add", account: "acct", key: "K5" }, K6: { kind: "remove", account: "other", key: "K6" } } as never);
+    expect(await ownRemovals(store, "acct")).toEqual(["K4"]);
+  });
+});

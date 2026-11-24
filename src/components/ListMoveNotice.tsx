@@ -16,7 +16,7 @@ import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import type { AccountList, AccountListView } from "../lib/account/accountList.ts";
 import { knownPcs } from "../lib/account/knownPcs.ts";
 import { removeListPc } from "../lib/account/listRemove.ts";
-import { writeScope } from "../lib/account/listWrite.ts";
+import { writeScope, type WriteScope } from "../lib/account/listWrite.ts";
 import type { MoveNoticeView } from "../lib/account/listMigrate.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
@@ -34,10 +34,12 @@ function useView(list: AccountList | null): AccountListView | null {
   return view;
 }
 
-/** Puts the PC at `endpoint` out of the list, for the account and list the notice was drawn for: true once the list took it. */
-async function removeFromList(list: AccountList, endpoint: string): Promise<boolean> {
-  const scope = writeScope(list);
-  const outcome = await removeListPc(list, endpoint, scope === null ? {} : { expect: scope });
+/** What a Not me is bound to from its press: the account, the list and the member key it was pressed for (X3). */
+type NotMeScope = Required<WriteScope>;
+
+/** Puts the PC at `endpoint` out of the list, for the account, list and member key of the press: true once the list took it. */
+async function removeFromList(list: AccountList, endpoint: string, scope: NotMeScope): Promise<boolean> {
+  const outcome = await removeListPc(list, endpoint, { expect: scope });
   return outcome.removed;
 }
 
@@ -51,13 +53,13 @@ export function ListMoveNotice({ list = pageAccountList(), removePc, notMeDevice
   readonly list?: AccountList | null;
   /** drawn over a scrim of its own, in the page's body, as a modal is */
   readonly scrim?: boolean;
-  readonly removePc?: (endpoint: string) => Promise<boolean>;
+  readonly removePc?: (endpoint: string, scope: NotMeScope) => Promise<boolean>;
   readonly notMeDevice?: (key: string, name: string) => void;
 }) {
   const t = useT();
   const view = useView(list);
   const [notice, setNotice] = useState<MoveNoticeView | null>(null);
-  const [asked, setAsked] = useState<{ readonly endpoint: string; readonly name: string } | null>(null);
+  const [asked, setAsked] = useState<{ readonly endpoint: string; readonly name: string; readonly scope: NotMeScope } | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   const account = view?.account ?? null;
@@ -75,6 +77,16 @@ export function ListMoveNotice({ list = pageAccountList(), removePc, notMeDevice
     });
     return () => { live = false; };
   }, [list, account, following, view]);
+  /** Whether the device still follows the list of the account, and signs with the member key, a Not me was pressed for. */
+  const inScope = (scope: NotMeScope): boolean => {
+    const now = list === null ? null : writeScope(list);
+    return view !== null && view.account === scope.account && view.status.at === "following" && view.status.list === scope.list
+      && now !== null && now.account === scope.account && now.list === scope.list && now.key === scope.key;
+  };
+  // a question asked for another account, list or member key than the device's now is put away: it acts on nothing
+  useEffect(() => {
+    if (asked !== null && !busy && !inScope(asked.scope)) setAsked(null);
+  });
   // Back answers the question that is asked first, then is the notice's OK; never while a removal is under way
   usePhoneSheetBack(() => {
     if (busy) return false;
@@ -87,9 +99,10 @@ export function ListMoveNotice({ list = pageAccountList(), removePc, notMeDevice
 
   const remove = async (): Promise<void> => {
     if (asked === null) return;
+    if (!inScope(asked.scope)) { setAsked(null); return; }
     setBusy(true);
     try {
-      const gone = await (removePc ?? ((endpoint: string) => removeFromList(list, endpoint)))(asked.endpoint);
+      const gone = await (removePc ?? ((endpoint: string, scope: NotMeScope) => removeFromList(list, endpoint, scope)))(asked.endpoint, asked.scope);
       setSaid(gone ? t("{pc} was removed from your account.", { pc: asked.name }) : t("{pc} could not be removed. Try again.", { pc: asked.name }));
       if (gone) setNotice((now) => now === null ? now : { ...now, pcs: now.pcs.filter((pc) => pc.endpoint !== asked.endpoint) });
     } catch (error) {
@@ -119,7 +132,11 @@ export function ListMoveNotice({ list = pageAccountList(), removePc, notMeDevice
             <li key={row.endpoint} className="list-move-row">
               <Monitor aria-hidden="true" />
               <span className="list-move-name">{pcName(row.name)}</span>
-              <NotMeButton sending={busy && asked?.endpoint === row.endpoint} onPress={() => { setSaid(null); setAsked({ endpoint: row.endpoint, name: pcName(row.name) }); }} />
+              <NotMeButton sending={busy && asked?.endpoint === row.endpoint} onPress={() => {
+                const scope = writeScope(list);
+                setSaid(null);
+                if (scope !== null && scope.list === notice.list) setAsked({ endpoint: row.endpoint, name: pcName(row.name), scope });
+              }} />
             </li>
           ))}
         </ul>

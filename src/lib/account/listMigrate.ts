@@ -142,9 +142,12 @@ export function knownPcs(given: {
   return pcs;
 }
 
-/** The relay keys of the PCs this device knows by its own record (ownEvidence) that have not answered in this run: the ones a move asks. */
-export function pcsToAsk(given: { readonly account: string; readonly record: SeenPcs; readonly answers: PcAnswers; readonly now: number; readonly scale: number }): string[] {
-  return knownPcs({ ...given, letIn: null, names: () => null }).filter((pc) => pc.says === null && ownEvidence(pc)).map((pc) => pc.endpoint);
+/**
+ * The relay keys of the PCs this device knows by its own record (ownEvidence) that a move asks: those that have not
+ * answered in this run, and with `again` those that did too, whose answer is the reason it waits or refuses.
+ */
+export function pcsToAsk(given: { readonly account: string; readonly record: SeenPcs; readonly answers: PcAnswers; readonly now: number; readonly scale: number; readonly again?: boolean }): string[] {
+  return knownPcs({ ...given, letIn: null, names: () => null }).filter((pc) => (pc.says === null || given.again === true) && ownEvidence(pc)).map((pc) => pc.endpoint);
 }
 
 /** The sealing of a birth (MigrationSeals), with the epoch keys it made and the wraps of the epoch the birth opens, for the device's own encryption key. */
@@ -373,8 +376,20 @@ export async function askWitness(fetch: PcFetch): Promise<PcAnswer | null> {
  * of one, which clears when its cause does, or the check of a list a carried device follows against PCs silent at its join.
  */
 export function waitsOnPcs(status: AccountListView["status"]): boolean {
-  return (status.at === "none" && status.why === "moving") || (status.at === "not_in" && (status.why === "carried" || status.refused !== undefined))
-    || (status.at === "following" && (status.asks?.length ?? 0) > 0);
+  return (status.at === "none" && status.why === "moving" && status.move?.why !== "sending" && status.move?.why !== "paused")
+    || (status.at === "not_in" && (status.why === "carried" || status.refused !== undefined))
+    || (status.at === "following" && ((status.asks?.length ?? 0) > 0 || status.doubt !== undefined));
+}
+
+/**
+ * Whether where the device stands turns on what PCs that already answered said, so that each such answer is asked for
+ * again, not only the PCs that never answered: a start that waits on a key let in for less than a day, a join that
+ * waits or refused, a doubt on the list a carried device follows. An answer kept from earlier says nothing of now.
+ */
+export function asksAgain(status: AccountListView["status"]): boolean {
+  return (status.at === "none" && status.why === "moving" && status.move?.why !== "sending" && status.move?.why !== "paused" && status.move?.why !== "pcs_silent")
+    || (status.at === "not_in" && (status.why === "carried" || status.refused !== undefined))
+    || (status.at === "following" && status.doubt !== undefined);
 }
 
 /**
@@ -390,22 +405,24 @@ export async function onPcSession(given: {
   readonly carriedKeys?: () => Promise<unknown>;
 }): Promise<void> {
   const { list, account, endpoint } = given;
-  const view = list.view();
-  if (view.account !== account || !ENDPOINT.test(endpoint)) return;
-  if (waitsOnPcs(view.status)) {
+  const began = list.view();
+  if (began.account !== account || !ENDPOINT.test(endpoint)) return;
+  if (waitsOnPcs(began.status)) {
     const said = await askWitness(given.fetch);
     // no answer here (a pairing's session, which a PC answers for its account's rows alone) takes no answer heard before
     if (said !== null || given.answers.get(account, endpoint) === undefined) given.answers.set(account, endpoint, said);
     if (said !== null) await list.sync().catch(() => undefined);
-    // a device that follows its list goes on to name it below: only its check asked
-    if (view.status.at !== "following") return;
   }
+  // where the device stands now, for the account this session was opened for: a device that this very answer let
+  // move its account names its list on this session; one of another account signed in meanwhile names nothing here
+  const view = list.view();
+  if (view.account !== account || view.status.at !== "following" || view.status.standing !== "in") return;
   if (given.pinned) {
-    if (view.status.at === "following" && view.status.standing === "in") await given.carriedKeys?.();
+    await given.carriedKeys?.();
     return;
   }
   if (given.session === null || list.naming === undefined) return;
-  const named = await list.naming({ session: given.session, endpoint, signIn: given.signIn });
+  const named = await list.naming({ account, session: given.session, endpoint, signIn: given.signIn });
   if (named === null) return;
   try {
     await given.fetch("/api/account/list/name", {
@@ -419,13 +436,16 @@ export async function onPcSession(given: {
 
 /**
  * The keys this device itself holds a block or a removal against (R-F), which it never carries into a list: a Not me's
- * blocks it keeps until the account service confirms them, and the removals it signed, of `account` alone. A block the
- * service confirmed is the service's word from then on, and every PC that applied it says so in its answer.
+ * blocks it keeps until the account service confirms them, the removals PCs showed it, and the `remove`s it signed
+ * itself, of `account` alone. A block the service confirmed is the service's word from then on, and every PC that
+ * applied it says so in its answer.
  */
 export async function ownRemovals(store: Pick<AccountStore, "get">, account: string): Promise<string[]> {
   const blocks = Object.values((await store.get("unsent_blocks")) ?? {}).filter((kept) => kept.account === account).flatMap((kept) => kept.records.map((record) => record.target));
   const removals = Object.values((await store.get("removals")) ?? {}).filter((record) => record.account === account).map((record) => record.key);
-  return [...new Set([...blocks, ...removals])];
+  // what this device's own Remove signed (join.ts rememberDevice), whether or not it has reached a PC yet
+  const signed = Object.values((await store.get("devices")) ?? {}).filter((record) => record.kind === "remove" && record.account === account).map((record) => record.key);
+  return [...new Set([...blocks, ...removals, ...signed])];
 }
 
 /** The keys the device that started a list has been in it by: entry 0's signer, and each key it handed its place on to. */

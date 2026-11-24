@@ -286,7 +286,7 @@ describe("a device that was carried in", () => {
 describe("what a device that follows its moved list says to a PC that follows none", () => {
   test("a naming of the list by its member key, bound to the session's key and the PC, and a vouch of its sign-in key", async () => {
     const { phone, pc, world } = await moved();
-    const said = await phone.device.list.naming!({ session: phone.signIn, endpoint: pc.endpoint, signIn: phone.signIn });
+    const said = await phone.device.list.naming!({ account: world.account, session: phone.signIn, endpoint: pc.endpoint, signIn: phone.signIn });
     expect(said).not.toBeNull();
     const held = await heldNaming(world.account, pc.endpoint, phone.signIn, said!.naming);
     expect(held).toEqual({ list: world.held().id, key: phone.member, session: phone.signIn });
@@ -298,7 +298,7 @@ describe("what a device that follows its moved list says to a PC that follows no
     const phone = await world.device({ label: "Phone" });
     await phone.list.sync();
     const pc = await askingPc();
-    expect(await phone.list.naming!({ session: (await phone.keys()).key, endpoint: pc.endpoint, signIn: null })).toBeNull();
+    expect(await phone.list.naming!({ account: world.account, session: (await phone.keys()).key, endpoint: pc.endpoint, signIn: null })).toBeNull();
   });
 });
 
@@ -353,7 +353,8 @@ describe("the one-time notice of the move", () => {
     await laptop.device.list.sync();
     await phone.device.list.sync({ read: true });
     // a carried device's name is sealed only where the account service names it (GET /v1/devices carries no label yet)
-    expect((await phone.device.list.notice!(world.account))?.devices).toEqual([{ key: laptop.member, name: null }]);
+    // the name the birth sealed for it stays its name after its hand-over (astra-migapp, others)
+    expect((await phone.device.list.notice!(world.account))?.devices).toEqual([{ key: laptop.member, name: { label: "Laptop", os: null } }]);
     const theirs = await laptop.device.list.notice!(world.account);
     expect(theirs).toMatchObject({ first: { self: false, key: phone.member }, devices: [], pcs: [{ endpoint: pc.endpoint }] });
     await phone.device.list.noticeSeen!(world.account, world.held().id);
@@ -413,7 +414,7 @@ describe("a device that followed a list its PCs turn out not to know (V4-6)", ()
     laptop.answers.set(world.account, silent!.endpoint, answer([]));
     const view = await laptop.device.list.sync();
     expect(view.status).toMatchObject({ at: "following", standing: "in", doubt: { why: "first_signer_unknown", pcs: [silent!.endpoint] } });
-    expect(await laptop.device.list.naming!({ session: laptop.signIn, endpoint: pc.endpoint, signIn: laptop.signIn })).toBeNull();
+    expect(await laptop.device.list.naming!({ account: world.account, session: laptop.signIn, endpoint: pc.endpoint, signIn: laptop.signIn })).toBeNull();
     // the person resets this device's copy: it follows that list no more, says why, and asks to be let in as a new device does
     await laptop.device.list.forget(world.account);
     const reset = await laptop.device.list.sync();
@@ -601,5 +602,38 @@ describe("a carried device's hand-over across a sign-in or a key that changed (a
     const held = listView(world.held().state).devices.filter((row) => row.ended === null).map((row) => row.key);
     expect(held).not.toContain(laptop.member);
     expect(held).toContain(renewed);
+  });
+});
+
+describe("the planner hears every witness it heard (astra-migapp 5)", () => {
+  test("a PC the directory omits still counts as a witness: its removal keeps a key out, and it is not carried", async () => {
+    const moving = movingWorld();
+    const { phone, laptop, world } = await inUse(moving);
+    const hidden = await askingPc();
+    phone.record({ ...phone.kept()!.pcs, [hidden.endpoint]: { since: moving.seconds() - 40 * DAY, last: moving.seconds(), how: "paired" } });
+    phone.answers.set(world.account, hidden.endpoint, moving.answer([{ key: phone.signIn }, { key: laptop.signIn }], { removed: [laptop.signIn] }));
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    const rows = listView(world.held().state);
+    expect(rows.devices.some((row) => row.key === laptop.signIn)).toBe(false);
+    expect(rows.pcs.some((row) => row.endpoint === hidden.endpoint)).toBe(false);
+  });
+});
+
+describe("naming by the key the list holds now (astra-migapp 8)", () => {
+  test("a carried device whose hand-over is not placed yet names its list by its sign-in key", async () => {
+    const { laptop, pc, world } = await moved();
+    laptop.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ error: { code: "list_rebuilding", message: "x" } }, { status: 503, headers: { "retry-after": "1" } }) : null;
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    const said = await laptop.device.list.naming!({ account: world.account, session: laptop.signIn, endpoint: pc.endpoint, signIn: laptop.signIn });
+    expect(said).not.toBeNull();
+    expect(await heldNaming(world.account, pc.endpoint, laptop.signIn, said!.naming)).toEqual({ list: world.held().id, key: laptop.signIn, session: laptop.signIn });
+    expect(said!.vouches).toEqual([]);
+  });
+
+  test("a naming asked for another account than the one the device follows now is none", async () => {
+    const { phone, pc, world } = await moved();
+    expect(await phone.device.list.naming!({ account: "acct_other", session: phone.signIn, endpoint: pc.endpoint, signIn: phone.signIn })).toBeNull();
+    expect(await phone.device.list.naming!({ account: world.account, session: phone.signIn, endpoint: pc.endpoint, signIn: phone.signIn })).not.toBeNull();
   });
 });

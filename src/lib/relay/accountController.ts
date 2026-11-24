@@ -22,7 +22,7 @@ import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS,
 import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
-import { askWitness, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
+import { askWitness, asksAgain, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
 import { callNative, hasNativeMethod } from "../nativeApp.ts";
 import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
@@ -373,7 +373,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     try {
       const now = Date.now();
       const record = readSeenPcs(session.account);
-      const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale() })
+      const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(listed.status) })
         .filter((endpoint) => now - (askedPcs.get(endpoint) ?? -Infinity) >= ASK_AGAIN_MS);
       if (due.length === 0) return;
       const saved = await store.list();
@@ -395,7 +395,8 @@ export function createAccountController(mount: RelayShellMount, view: {
         try {
           opened = await open(way.offer, { ...way.options, label, signal: AbortSignal.timeout(ASK_OPEN_MS) });
           const said = await askWitness((path, init) => opened!.fetch(path, init));
-          pageAnswers.set(session.account, endpoint, said);
+          // no answer here takes no answer heard meanwhile (a session of this page's own may have heard one)
+          if (said !== null || pageAnswers.get(session.account, endpoint) === undefined) pageAnswers.set(session.account, endpoint, said);
           heard ||= said !== null;
         } catch (error) {
           console.info("Ovis: a PC of the account did not answer for the move onto its list", error instanceof Error ? error.name : error);

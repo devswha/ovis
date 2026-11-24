@@ -87,7 +87,7 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     const account = controller(list, empty);
     const unpinned = sessionOf({ key: signedIn });
     await account.sessionOpened(unpinned.opened, pc.offerKey);
-    expect(named).toEqual({ session: signedIn, endpoint: pc.endpoint, signIn: signedIn });
+    expect(named).toEqual({ account: "acct-named", session: signedIn, endpoint: pc.endpoint, signIn: signedIn });
     expect(unpinned.asked.map((one) => `${one.method} ${one.path}`)).toEqual(["POST /api/account/list/name"]);
     // a PC that took account-list-1 follows a list already: it is named nothing
     const pinned = sessionOf({ key: signedIn, pinned: true });
@@ -181,5 +181,48 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     // and a key the list holds for no device of its own opens nothing by the list
     selfKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5lhuexKpDRsxAK4WTOjTQTjBurzk0iGngvCpNGetUiwtppuB-SgVWvMwkHCQe6FNPoAzLJZntcFyjzv0sk82Bg";
     expect(account.listKey).toBeNull();
+  });
+
+  it("an ask in the background that gets no answer keeps the answer a session heard meanwhile (astra-migapp 5)", async () => {
+    await signIn("acct-kept");
+    const pc = pcKeys();
+    const at = Math.floor(Date.now() / 1000) - 40 * DAY;
+    globalThis.localStorage.setItem("ovis:seen-pcs:acct-kept", JSON.stringify({ v: 1, account: "acct-kept", pcs: { [pc.endpoint]: { since: at, last: at, how: "paired" } } }));
+    const paired = { server_id: pc.serverId, device_id: "dev-1", private_key: (await newKey()).private_key, public_spki: "spki", label: "Phone", server_public_key: pc.offerKey, relay: "wss://relay.test" } as RelayDevice;
+    const store: ShellDeviceStore = { ...empty, get: async (id) => (id === pc.serverId ? paired : undefined), list: async () => [paired] };
+    const heard = { account: "acct-kept", pinned: "ab".repeat(32), admits: [], removed: [] };
+    // this PC answers the background session nothing (a pairing's session), while a session of the shell heard it meanwhile
+    const silent = sessionOf({});
+    const waiting = (): AccountListView => ({ account: "acct-kept", reached: true, status: { at: "none", why: "moving", move: { why: "pcs_silent", wait: 60, asks: [pc.endpoint] } }, devices: [], pcs: [] });
+    const { list, tell } = listIn(waiting);
+    const account = controller(list, store, async () => { pageAnswers.set("acct-kept", pc.endpoint, heard); return silent.opened; });
+    await account.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(silent.asked.map((one) => one.path)).toEqual(["/api/account/list/witness"]);
+    expect(pageAnswers.get("acct-kept", pc.endpoint)).toEqual(heard);
+  });
+
+  it("a PC whose answer is why the move waits is asked again: an answer kept from before says nothing of now (astra-migapp, others)", async () => {
+    const signedIn = await signIn("acct-again");
+    const pc = pcKeys();
+    const at = Math.floor(Date.now() / 1000) - 40 * DAY;
+    globalThis.localStorage.setItem("ovis:seen-pcs:acct-again", JSON.stringify({ v: 1, account: "acct-again", pcs: { [pc.endpoint]: { since: at, last: at, how: "paired" } } }));
+    const paired = { server_id: pc.serverId, device_id: "dev-1", private_key: (await newKey()).private_key, public_spki: "spki", label: "Phone", server_public_key: pc.offerKey, relay: "wss://relay.test" } as RelayDevice;
+    const store: ShellDeviceStore = { ...empty, get: async (id) => (id === pc.serverId ? paired : undefined), list: async () => [paired] };
+    // it answered: the device's key has been let in for less than a day there
+    pageAnswers.set("acct-again", pc.endpoint, { account: "acct-again", pinned: null, admits: [], removed: [] });
+    const fresh = { account: "acct-again", pinned: null, admits: [{ key: signedIn, wall: 90_000, ran: 30_000, idle: null }], removed: [] };
+    const asking = sessionOf({ answers: { "GET /api/account/list/witness": fresh } });
+    const waiting = (): AccountListView => ({ account: "acct-again", reached: true, status: { at: "none", why: "moving", move: { why: "too_new", wait: 600, asks: [] } }, devices: [], pcs: [] });
+    const { list, tell } = listIn(waiting);
+    const account = controller(list, store, async () => asking.opened);
+    await account.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(asking.asked.map((one) => one.path)).toEqual(["/api/account/list/witness"]);
+    expect(pageAnswers.get("acct-again", pc.endpoint)).toEqual(fresh);
   });
 });

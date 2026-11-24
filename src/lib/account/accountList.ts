@@ -328,6 +328,11 @@ function kindAt(text: string | undefined): string | null {
   }
 }
 
+/** A row of its own, or null: what every object answers to is no row. */
+function rowOf<Row>(rows: { readonly [name: string]: Row }, name: string): Row | null {
+  return Object.hasOwn(rows, name) ? (rows[name] ?? null) : null;
+}
+
 /** Whether a copy holds the whole of a birth this device kept: its last entry, the `epoch`, at its own place. */
 function holdsBirth(copy: FollowerCopy, birth: KeptBirth): boolean {
   const last = birth.entries.length;
@@ -612,10 +617,12 @@ export interface AccountList {
   /**
    * What this device says inside a session to a PC that follows no list (Part F, F6), or null where it has nothing to
    * say: only a device that follows a list its account moved onto, and is in it with power `full`, names that list, by
-   * the key the list holds it by. `session`: the key that session signed in with; `endpoint`: the PC's relay key;
-   * `signIn`: this device's sign-in key, when that session signed in with it, which then vouches for the member key.
+   * the key the list holds it by now (its account key, or a carried device's sign-in key before its hand-over is
+   * placed). `account`: the account the session was opened for, which the device must still follow a list of after
+   * every wait. `session`: the key that session signed in with; `endpoint`: the PC's relay key; `signIn`: this
+   * device's sign-in key, when that session signed in with it, which then vouches for the account key.
    */
-  naming?(given: { readonly session: string; readonly endpoint: string; readonly signIn: string | null }): Promise<{ readonly naming: SignedNaming; readonly vouches: readonly SignedVouch[] } | null>;
+  naming?(given: { readonly account: string; readonly session: string; readonly endpoint: string; readonly signIn: string | null }): Promise<{ readonly naming: SignedNaming; readonly vouches: readonly SignedVouch[] } | null>;
   /** The one-time notice of the move of this account onto its list, while the person has not seen it and this device follows that list; null otherwise. */
   notice?(account: string): Promise<MoveNoticeView | null>;
   /** The person saw the notice of the move onto `list`: it is not shown again. */
@@ -1674,18 +1681,30 @@ export function accountList(options: AccountListOptions): AccountList {
       return copy === null || copy.state === null ? null : servePage(copy, { list: copy.list, after }, limit);
     },
     async naming(given) {
-      const copy = held?.copy ?? null;
-      const { status } = shown;
-      if (copy === null || copy.state === null || ctx === null || ctx.account !== held?.account || shown.account !== held.account) return null;
-      // nor a list a PC it knows says it does not know (V4-6)
-      if (status.at !== "following" || status.standing !== "in" || status.trouble !== null || status.doubt !== undefined || !movedList(copy.state)) return null;
-      const member = { key: ctx.keys.key, privateKey: ctx.keys.signs };
-      const naming = await signNaming(copy.state, { member, session: given.session, endpoint: given.endpoint });
-      if (naming === null) return null;
-      // the sign-in key this session signed in with vouches for the member key, while it is this device's of now
+      /** The copy to name, while it is the one of `given.account` this page holds and follows, and nothing stands in the way. */
+      const current = (): FollowerCopy | null => {
+        const copy = held?.copy ?? null;
+        const { status } = shown;
+        if (copy === null || copy.state === null || ctx === null || held?.account !== given.account || ctx.account !== given.account || shown.account !== given.account) return null;
+        // nor a list a PC it knows says it does not know (V4-6)
+        return status.at === "following" && status.standing === "in" && status.trouble === null && status.doubt === undefined && movedList(copy.state) ? copy : null;
+      };
+      const copy = current();
+      if (copy === null || copy.state === null || ctx === null) return null;
+      const keys = ctx.keys;
       const session = await service.session();
-      const signIn = given.signIn === null || given.signIn !== given.session || session === undefined ? null : await signInOf(session);
-      const vouch = signIn === null || signIn.key !== given.signIn ? null : await signVouch(copy.state, { signIn, member });
+      const signIn = session === undefined || session.account !== given.account ? null : await signInOf(session);
+      // what was read is still what this device follows, after the waits
+      if (current() !== copy || ctx?.keys !== keys) return null;
+      const state = copy.state!;
+      const holds = standsFor(state, copy.me.key);
+      const member = holds === keys.key ? { key: keys.key, privateKey: keys.signs } : signIn !== null && holds === signIn.key ? signIn : null;
+      if (member === null) return null;
+      const naming = await signNaming(state, { member, session: given.session, endpoint: given.endpoint });
+      if (naming === null) return null;
+      // the sign-in key this session signed in with vouches for the account key, while it is this device's of now
+      const vouching = given.signIn !== null && given.signIn === given.session && signIn !== null && signIn.key === given.signIn && member.key === keys.key;
+      const vouch = vouching ? await signVouch(state, { signIn, member }) : null;
       return { naming, vouches: vouch === null ? [] : [vouch] };
     },
     async notice(account) {
@@ -1694,11 +1713,22 @@ export function accountList(options: AccountListOptions): AccountList {
       const self = ctx?.account === account ? ctx.keys.key : null;
       if (notice === null || notice.seen || copy === null || copy.state === null || copy.list !== notice.list || self === null || shown.account !== account) return null;
       const { state } = copy;
-      const nameOf = (key: string): ListNames | null => shown.devices.find((row) => row.key === key)?.name ?? null;
+      // a device is named as the list names the key it stands by now, else by the name the birth sealed for the key it
+      // was carried in by: its hand-over carries no name of its own
+      const opened = named !== null && named.history === historyOf(copy) ? named.keys : new Map<number, EpochKey>();
+      const nameOf = async (now: string, carried: string): Promise<ListNames | null> => {
+        const shownName = shown.devices.find((row) => row.key === now)?.name ?? null;
+        const at = rowOf(state.signers, carried)?.seq;
+        return shownName ?? (at === undefined ? null : await namesAt(copy.list, copy.entries, at, opened));
+      };
       const first = standsFor(state, notice.first);
-      const devices = notice.devices.flatMap((key) => { const now = standsFor(state, key); return now === null || now === self ? [] : [{ key: now, name: nameOf(now) }]; });
+      const devices: { key: string; name: ListNames | null }[] = [];
+      for (const key of notice.devices) {
+        const now = standsFor(state, key);
+        if (now !== null && now !== self) devices.push({ key: now, name: await nameOf(now, key) });
+      }
       const pcs = notice.pcs.flatMap((endpoint) => { const row = shown.pcs.find((pc) => pc.endpoint === endpoint); return row === undefined ? [] : [{ endpoint, name: row.name }]; });
-      return { list: notice.list, first: { self: first === self, key: first, name: first === null ? null : nameOf(first) }, devices, pcs };
+      return { list: notice.list, first: { self: first === self, key: first, name: first === null ? null : await nameOf(first, notice.first) }, devices, pcs };
     },
     async noticeSeen(account, list) {
       await lock(account, async () => {

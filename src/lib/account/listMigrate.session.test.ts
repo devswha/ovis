@@ -132,3 +132,29 @@ describe("a carried device that follows its list and still asks about it (V4-6)"
     expect(waitsOnPcs({ ...asking, asks: [] })).toBe(false);
   });
 });
+
+describe("a session's acts re-read where the device stands after each wait (astra-migapp 8, others)", () => {
+  const naming = { naming: { list: "a".repeat(64), key: KEY, signature: "s".repeat(86) }, vouches: [] };
+  const following = { at: "following" as const, list: "a".repeat(64), standing: "in" as const, head: 3, read_at: null, trouble: null };
+  const moving = { at: "none" as const, why: "moving" as const, move: { why: "pcs_silent" as const, wait: 10, asks: [E(1)] } };
+
+  test("a device that moves its account because of this very answer names the list on this session", async () => {
+    let view: AccountListView = { account: ACCOUNT, status: moving, reached: true, devices: [], pcs: [] };
+    const asked: unknown[] = [];
+    const list = { view: () => view, naming: async (given: unknown) => { asked.push(given); return naming; }, sync: async () => { view = { ...view, status: following }; return view; } };
+    const wire = pcWire({ "GET /api/account/list/witness": json({ account: ACCOUNT, pinned: null, admits: [], removed: [] }), "POST /api/account/list/name": json({ pinned: true, list: "a".repeat(64) }) });
+    await onPcSession({ list, answers: pcAnswers(), account: ACCOUNT, fetch: wire.fetch, endpoint: E(1), pinned: false, session: KEY, signIn: KEY });
+    expect(wire.asked.map((one) => `${one.method} ${one.path}`)).toEqual(["GET /api/account/list/witness", "POST /api/account/list/name"]);
+    expect(asked).toEqual([{ account: ACCOUNT, session: KEY, endpoint: E(1), signIn: KEY }]);
+  });
+
+  test("another account signed in while this session waited: nothing is named with its key", async () => {
+    let view: AccountListView = { account: ACCOUNT, status: moving, reached: true, devices: [], pcs: [] };
+    let named = 0;
+    const list = { view: () => view, naming: async () => { named += 1; return naming; }, sync: async () => { view = { account: "acct_b", status: following, reached: true, devices: [], pcs: [] }; return view; } };
+    const wire = pcWire({ "GET /api/account/list/witness": json({ account: ACCOUNT, pinned: null, admits: [], removed: [] }) });
+    await onPcSession({ list, answers: pcAnswers(), account: ACCOUNT, fetch: wire.fetch, endpoint: E(1), pinned: false, session: KEY, signIn: KEY });
+    expect(named).toBe(0);
+    expect(wire.asked.map((one) => one.path)).toEqual(["/api/account/list/witness"]);
+  });
+});

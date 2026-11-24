@@ -38,6 +38,7 @@ function listWith(view: AccountListView, notice: MoveNoticeView | null) {
   const seen: string[] = [];
   const list = {
     view: () => view, subscribe: () => () => {},
+    writer: () => (view.status.at === "following" ? { account: view.account, list: view.status.list, keys: { key: "MEMBER" } } : null),
     notice: async () => (seen.length > 0 ? null : notice),
     noticeSeen: async (_account: string, list: string) => { seen.push(list); },
   } as unknown as AccountList;
@@ -135,4 +136,34 @@ it("tells a device whose PCs do not know the list it follows so, and offers the 
     await act(async () => { renderer!.update(<SettingsProvider><ListJoinRefusal list={listWith(view, null).list} pcName={() => "Desk"} /></SettingsProvider>); });
     expect(text()).toContain(line);
   }
+});
+
+it("Not me on a PC acts on the account, list and member key it was pressed for, and asks nothing once they changed (astra-migapp 9)", async () => {
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [], pcs: [{ endpoint: E(1), name: { label: "Desk", os: null } }] };
+  let view: AccountListView = following;
+  const listeners: ((next: AccountListView) => void)[] = [];
+  const list = {
+    view: () => view, subscribe: (listener: (next: AccountListView) => void) => { listeners.push(listener); return () => {}; },
+    notice: async () => notice, noticeSeen: async () => {},
+    writer: () => ({ account: view.account, list: view.status.at === "following" ? view.status.list : "", keys: { key: "MEMBER" } }),
+  } as unknown as AccountList;
+  const removed: [string, unknown][] = [];
+  await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={list} removePc={async (endpoint, scope) => { removed.push([endpoint, scope]); return true; }} /></SettingsProvider>); });
+  await settle();
+  const press = async (label: string) => { const button = renderer!.root.findAll((node) => node.type === "button" && node.props.children === label)[0]!; await act(async () => { await button.props.onClick(); }); };
+  await press("Not me");
+  expect(text()).toContain("Remove Desk from your account?");
+  // another account signs in while the question is up: the question goes, and nothing is removed
+  view = { ...following, account: "acct_other" };
+  await act(async () => { for (const listener of listeners) listener(view); });
+  await settle();
+  expect(text()).not.toContain("Remove Desk from your account?");
+  expect(removed).toEqual([]);
+  // back on the list it was shown for: the removal names that account, that list and that member key
+  view = following;
+  await act(async () => { for (const listener of listeners) listener(view); });
+  await settle();
+  await press("Not me");
+  await press("Remove");
+  expect(removed).toEqual([[E(1), { account: ACCOUNT, list: LIST, key: "MEMBER" }]]);
 });
