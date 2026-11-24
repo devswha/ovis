@@ -1548,12 +1548,10 @@ export class FakeAccountService {
   private listLimited(key: string, max: number, window: number, code = "rate_limited"): Response | null {
     const now = this.now();
     const counter = this.counters.get(key);
-    if (counter === undefined || now - counter.start >= window) {
-      this.counters.set(key, { start: now, count: 1 });
-      return null;
-    }
-    counter.count += 1;
-    return counter.count <= max ? null : this.v2Problem(429, code, "Too many requests; try again later", {}, Math.ceil((counter.start + window - now) / 1000));
+    const fresh = counter === undefined || now - counter.start >= window;
+    const held = fresh ? { start: now, count: 1 } : { start: counter.start, count: counter.count + 1 };
+    this.counters.set(key, held);
+    return held.count <= max ? null : this.v2Problem(429, code, "Too many requests; try again later", {}, Math.ceil((held.start + window - now) / 1000));
   }
 
   /** What the service tells `caller` of the list's log, with every lie a test turned on for it. */
@@ -1761,6 +1759,11 @@ export class FakeAccountService {
     if (!await cardHolds({ key, enc, list: list.id, endpoint: null, invite: null }, card)) return this.v2Problem(400, "card_invalid", "The card is not that key's for this list");
     const fresh = await this.freshOrProved(session, body.key_proof, "list-claim", list.id, key);
     if (fresh !== null) return fresh;
+    // judged again in the write: the sign-in still stands and the list is still the account's, or another's claim stays
+    if (this.revokedFamilies.has(session.family)) return this.v2Problem(401, "unauthorized", "Sign in again");
+    const fell = this.writeRefusal(session.account, session.family);
+    if (fell !== null) return fell;
+    if (this.ownList(session.account, id) !== list) return this.v2Unknown();
     // one claim per sign-in and list, and one per key and list: a later claim of a key takes it over
     for (const [claimed, held] of list.claims) if (held.family === session.family && claimed !== key) list.claims.delete(claimed);
     const at = this.now();
@@ -1803,8 +1806,10 @@ export class FakeAccountService {
     const batch = parseTexts(texts);
     const refused = list === undefined ? null : this.writeRefusal(account, session.family);
     const first = Array.isArray(batch) ? batch[0] : undefined;
+    // the head and the signer are read again after the signature check, right before the counter is chosen: a copy of a
+    // removal placed meanwhile is a replay, on the account's requests
     const removal = list !== undefined && refused === null && Array.isArray(batch) && first !== undefined && isRemoval(list, batch)
-      && await verifySignature(first.entry.body, first.entry.signature, first.body.signer) && signerPower(list.state, first.body.signer) !== null;
+      && await verifySignature(first.entry.body, first.entry.signature, first.body.signer) && isRemoval(list, batch) && signerPower(list.state, first.body.signer) !== null;
     const limited = removal
       ? this.listLimited(`removals:${first!.body.signer}:${account}`, this.listLimits.removalsPerWindow, LIMIT_WINDOW_MS)
       : this.listLimited(`requests:${account}`, ACCOUNT_REQUESTS_PER_WINDOW, LIMIT_WINDOW_MS);
@@ -1984,7 +1989,9 @@ export class FakeAccountService {
       const fresh = await this.freshOrProved(device.session, device.proof, invited.auto ? "invite-auto" : "invite", "", invited.key);
       if (fresh !== null) return fresh;
     }
-    // the write, judged again as one: the head it was judged on, the writer, the locks; nothing waits from here on
+    // the write, judged again as one: the list still stands (an account's deletion takes it), the head it was judged on,
+    // the writer, the locks; nothing waits from here on
+    if (this.lists.get(list.id) !== list) return this.v2Unknown();
     if (list.last !== judged) return this.notAtHead(list, batch);
     if (caller.family !== undefined) {
       if (this.revokedFamilies.has(caller.family)) return this.v2Problem(401, "unauthorized", "Sign in again");

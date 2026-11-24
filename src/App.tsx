@@ -1340,6 +1340,7 @@ export function App() {
                         agent={item?.agent ?? null}
                         agentStatus={item?.agent_status}
                         agentSession={item ? paneSessionKey(item) : null}
+                        acpChild={item?.acp_child === true}
                         backgroundTasks={item?.background_tasks ?? 0}
                         plan={machine?.state === "connected" ? (item as HerdrPane | undefined)?.plan ?? null : null}
                         backgroundWait={item?.background_wait === true}
@@ -1378,7 +1379,7 @@ export function App() {
           {listScreen && modeList(false)}
           {inboxWide && inbox.shown && <InboxUnchosen />}
           {dividers.length > 0 && !inMode && <SplitDividers dividers={dividers} areaRef={paneAreaRef} onResize={resizeDivider} />}
-          <SplitDropPreview visible={!inMode && splitDragOn && (paneDragging || tabDrag !== null)} grid={gridPreview} />
+          <SplitDropPreview visible={!inMode && splitDragOn && (paneDragging || (tabDrag !== null && !tabDrag.workspaceTarget))} grid={gridPreview} />
         </div>}
         {statusBarShown && selectedPane && crumb && <StatusBar machineId={selectedMachineId} workspaceId={selectedPane.workspace_id}
           machine={crumb.machine} place={crumb.folder === null ? crumb.workspace : `${crumb.workspace} › ${crumb.folder}`} path={crumb.path}
