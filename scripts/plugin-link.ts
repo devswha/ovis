@@ -2118,6 +2118,10 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
       if (got === "added") return await added();
       // an Add pressed before this run is taken at once, within its ten minutes; after them nothing offers Add again
       if (got === "none" && press.confirmed && ++nones >= (press.noneTries ?? 1)) {
+        // a PC its account bound meanwhile (a join by its list whose copy is not on disk yet still says it waits)
+        // keeps its listing and is added: where this PC stands is asked before anything is taken off
+        const account = await where();
+        if (account === press.signedIn) return await added();
         out(words.noneWaiting);
         return ended({ kind: "not_added", why: "none_waiting", listed: true }, 1);
       }
@@ -2167,10 +2171,11 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     tell(`Nobody pressed Add for ${name} within 10 minutes of its listing. ${left(off, `On a device of your account, choose No or Remove from my account on its card, then run ${command} again.`, account === null)}\n`);
     return ended({ kind: "not_added", why: "timeout", listed: listedAfter(off) }, 1);
   } catch (error) {
+    // the add this run started is given up with it, whatever ended the run (an error of its own, its terminal gone
+    // too): a yes confirmed here joins nothing once the run is gone. A PC already bound keeps what it has
+    if (!bound) await dropRun();
     if (!signal.aborted && !(error instanceof LocalError || error instanceof AwayError)) throw error;
     if (atPrompt) { try { say(""); } catch {} }
-    // the add this run started is given up with it: a yes confirmed here joins nothing once the run is gone
-    if (!bound) await dropRun();
     if (signal.aborted && press.stopFast) {
       const account = bound ? press.signedIn : await where(1_000);
       if (account === press.signedIn) {
