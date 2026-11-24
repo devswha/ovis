@@ -1,7 +1,9 @@
 # The signed list: an entry
 
-No released part of Ovis reads or writes this format yet: the account as it works today signs its
-records one by one, with no chain ([Linking devices with an account](account.md#rules)).
+Nothing lets a device in by this list yet: the account as it works today signs its records one by
+one, with no chain ([Linking devices with an account](account.md#rules)). A PC reads the list of its
+account and checks it, and decides nothing by it
+([The account's signed list on a PC](account.md#the-accounts-signed-list-on-a-pc)).
 
 An owner's devices and machines share one signed list. Every member keeps a copy and checks every
 entry by itself; the account service stores entries and must never be able to write one that
