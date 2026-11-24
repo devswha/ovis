@@ -725,6 +725,8 @@ export type ConversationPart =
     kind: "tool"; name: string; summary: string; input: string; output: string; error?: boolean;
     /** Hermes could not load a tool-call list whose arguments exceeded its page limit. */
     arguments_omitted?: true;
+    /** File changes reported by ACP, separate from the call arguments and text output. */
+    edits?: { path: string; before: string; after: string }[];
     skill?: SkillActivity;
     /** set when `output` was cut: an opaque ref for GET /api/pane/conversation/tool-output, and the whole output's length */
     output_ref?: string; output_size?: number;

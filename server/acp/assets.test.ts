@@ -25,7 +25,7 @@ it("serves the prompt picture from the active archive and renders a create-file 
     expect(client.history.plan?.[0]).toMatchObject({ label: "Look up alpha in the Ovis vault.", status: "in_progress" });
     const edit = turns[1]?.parts.find(part => part.kind === "tool" && part.name === "edit");
     if (edit?.kind !== "tool") throw new Error("missing edit");
-    expect(JSON.parse(edit.input)).toEqual({ file_path: "probe-note.txt", old_string: "", new_string: "sample" });
+    expect(edit).toMatchObject({ edits: [{ path: "probe-note.txt", before: "", after: "sample" }], output: "" });
     const mode = (seq: number, phase: string) => JSON.stringify({ seq, dir: "keeper", raw: JSON.stringify({ method: "_keeper/mode", params: { mode: "acp", phase } }) });
     socket.emit("data", mode(5,"start") + "\n" + mode(6,"ready") + "\n");
     expect(await client.history.asset(image.ref)).toBeNull();

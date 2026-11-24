@@ -29,7 +29,6 @@ function outputText(value: unknown): string {
     const block = record(item);
     const content = record(block.content);
     if (block.type === "content" && content.type === "text" && typeof content.text === "string") return content.text;
-    if (block.type === "diff") return `--- ${typeof block.path === "string" ? block.path : ""}\n${typeof block.oldText === "string" ? block.oldText : ""}\n+++ ${typeof block.path === "string" ? block.path : ""}\n${typeof block.newText === "string" ? block.newText : ""}`;
     // This is a native reference, not terminal output we have fetched via ACP.
     if (block.type === "terminal" && typeof block.terminalId === "string") return JSON.stringify(block);
     return "";
@@ -59,7 +58,7 @@ export function projectUpdates(events: Iterable<UpdateEvent | null>, options: Pr
   let user: ConversationTurn | undefined;
   let assistant: ConversationTurn | undefined;
   let prompt: number | undefined;
-  const calls = new Map<string, { fields: RecordValue; part: Tool; diffs: Map<string, RecordValue> }>();
+  const calls = new Map<string, { fields: RecordValue; part: Tool; diffs: Map<string, NonNullable<Tool["edits"]>[number]> }>();
   const promptSkills = new Map<ConversationTurn, SkillActivity>();
   const appendText = (turn: ConversationTurn, value: unknown) => {
     if (typeof value !== "string" || !value) return;
@@ -146,14 +145,12 @@ export function projectUpdates(events: Iterable<UpdateEvent | null>, options: Pr
     const content = Array.isArray(fields.content) ? fields.content : [];
     for (const value of content) {
       const block = record(value);
-      if (block.type === "diff") call.diffs.set(hash(JSON.stringify(block)), block);
+      if (block.type !== "diff" || typeof block.path !== "string" || typeof block.newText !== "string" || (block.oldText != null && typeof block.oldText !== "string")) continue;
+      const edit = { path: block.path, before: block.oldText ?? "", after: block.newText };
+      call.diffs.set(hash(JSON.stringify(edit)), edit);
     }
-    // Some adapters send an edit only as ACP diff content, with no native tool input.
-    const [edit] = call.diffs.values();
-    if (options.keeper && edit && call.diffs.size === 1 && typeof edit.path === "string" && typeof edit.newText === "string" && (edit.oldText == null || typeof edit.oldText === "string") && !call.part.input) {
-      call.part.input = JSON.stringify({ file_path: edit.path, old_string: edit.oldText ?? "", new_string: edit.newText });
-    }
-    const output = outputText([...call.diffs.values(), ...content.filter((block) => record(block).type !== "diff")]);
+    if (call.diffs.size) call.part.edits = [...call.diffs.values()];
+    const output = outputText(content);
     const images = [...new Set(updatePictures(fields).map((picture) => `${picture.mediaType}\0${options.imageRef(picture)}`))]
       .map((key) => ({ media_type: key.slice(0, key.indexOf("\0")), ref: key.slice(key.indexOf("\0") + 1) }));
     if (images.length > 0) call.part.images = images; else delete call.part.images;

@@ -358,6 +358,9 @@ function PatchView({ patch }: { patch: string }) {
 function ToolInputView({ part }: { part: ToolPartType }) {
   const open = useContext(OpenFileContext);
   const t = useT();
+  if (part.edits?.length) return <div className="chat-tool-io">{part.edits.map((edit, index) => <div key={index}>
+    <ToolFile path={edit.path} /><EditDiff before={edit.before} after={edit.after} />
+  </div>)}</div>;
   if (part.arguments_omitted) return <pre className="chat-tool-io">{t("Arguments omitted (too large)")}</pre>;
   const after = isTodoTool(part.name) ? parseTodoAnswer(part.output) ?? todoSnapshot(part) : null;
   if (after !== null && after.length > 0) return <TodoList items={after} />;
