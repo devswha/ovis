@@ -1855,10 +1855,11 @@ export class ListFollow implements ListAuthority {
    */
   shadowSnapshot(eligible: readonly string[]): void {
     const was = this.snapshotNames;
-    this.snapshotNames = new Set(eligible);
+    const names = new Set(eligible);
+    this.snapshotNames = names;
     // a pinned PC lets a carried key that never handed over in only while the snapshot names it: what this read changed of that is done now
     const copy = this.copy;
-    if (this.isPinned && copy?.state != null && carriedAlone(copy.state).some((key) => (was?.has(key) ?? false) !== this.snapshotNames.has(key))) {
+    if (this.isPinned && copy?.state != null && carriedAlone(copy.state).some((key) => (was?.has(key) ?? false) !== names.has(key))) {
       void this.enqueue(async () => { await this.ready; this.settle(); });
     }
     void this.enqueue(() => {

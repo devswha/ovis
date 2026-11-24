@@ -61,6 +61,11 @@ const JOIN_REFUSALS: Readonly<Record<string, string>> = {
 export async function handleAccountRequest(request: Request, pathname: string, context: ServerContext, access: Access): Promise<Response> {
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
   const fail = (code: string, message: string, status: number) => reply({ error: { code, message } }, status);
+  const limited = () => {
+    const refused = fail("rate_limited", "Too many calls; try again in a minute", 429);
+    refused.headers.set("retry-after", "60");
+    return refused;
+  };
   // An add by the list that still runs counts as waiting for Add (GET /api/account/status). What was asked of a run that
   // was replaced tells nothing of the run that stands, which keeps its own
   const noted = (state: AddState): AddState => {
@@ -100,11 +105,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (list === null || own === null) return fail("not_found", "This PC follows no list", 404);
     // each call may cost signature checks: 30 a minute for one session, charged before its body is read
     const session = peer.kind === "relay" ? peer.sessionId ?? peer.device.id : "direct";
-    if (!list.peerBudget(session)) {
-      const limited = fail("rate_limited", "Too many calls; try again in a minute", 429);
-      limited.headers.set("retry-after", "60");
-      return limited;
-    }
+    if (!list.peerBudget(session)) return limited();
     const body = await readJsonObject(request);
     if (body instanceof Response) return body;
     const placeOf = (value: unknown): { seq: number; hash: string } | null => {
@@ -394,6 +395,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const list = context.services.accountList;
       if (list === null) return fail("not_found", "This PC follows no list", 404);
       if (peer.kind !== "relay" || peer.key === "") return fail("session_required", "Name the list from the device's own session", 403);
+      // each call may cost signature checks and a read of the account service: within the session's calls a minute
+      if (!list.peerBudget(peer.sessionId ?? peer.device.id)) return limited();
       const { naming, vouches = [] } = body as { naming?: unknown; vouches?: unknown };
       if (typeof naming !== "object" || naming === null || Array.isArray(naming) || !Array.isArray(vouches) || vouches.length > LIST_NAMING_VOUCHES_MAX) {
         return fail("invalid_naming", `Send the naming, and at most ${LIST_NAMING_VOUCHES_MAX} vouches`, 400);
@@ -409,6 +412,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const list = context.services.accountList;
       if (list === null) return fail("not_found", "This PC follows no list", 404);
       if (peer.kind !== "relay" || peer.key === "") return fail("session_required", "Ask for this PC's card from the device's own session", 403);
+      // each call posts this PC's keys at the account service: within the session's calls a minute
+      if (!list.peerBudget(peer.sessionId ?? peer.device.id)) return limited();
       const asked = await list.cardForMember(peer.key);
       if ("card" in asked) return reply(asked.card);
       const refusals = {

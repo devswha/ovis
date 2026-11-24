@@ -304,6 +304,11 @@ describe("a PC that follows no list, and a device of its account names one in it
     const local = await fetch(`${base}/api/account/list/name`, { method: "POST", headers: { origin: base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ naming }) });
     expect(local.status).toBe(403);
     expect(pc.list.status().pinned).toBe(false);
+    // each call costs signature checks: a session makes 30 a minute, with the list's other session calls
+    const other = await sessionOf(pc, pc.tablet);
+    const statuses: number[] = [];
+    for (let call = 0; call < 31; call++) statuses.push((await ask(other, "/api/account/list/name", { method: "POST", body: { naming } })).status);
+    expect([statuses.slice(0, 30).every((status) => status === 200), statuses[30]]).toEqual([true, 429]);
   }, SLOW);
 });
 
