@@ -26,6 +26,45 @@ async fn a_stuck_scope_probe_does_not_stop_the_keeper_running() {
 }
 
 #[test]
+fn an_archive_write_error_stops_the_keeper_and_its_agent() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let root = Root::new("write-error");
+    let stderr = root.0.join("keeper.stderr");
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "ulimit -f 64; trap '' XFSZ; exec \"$@\"", "sh"])
+        .arg(env!("CARGO_BIN_EXE_ovis-acp-keeper"))
+        .arg(&root.0)
+        .args(["--headless", "--"])
+        .arg(fake_agent())
+        .arg("--linger")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(std::fs::File::create(&stderr).unwrap())
+        .spawn()
+        .unwrap();
+    let mut ready = BufReader::new(child.stdout.take().unwrap());
+    let mut keeper = Keeper { child, stderr };
+    let mut line = String::new();
+    ready.read_line(&mut line).unwrap();
+    assert_eq!(line, "KEEPER_READY\n");
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    let agent = process_json(&root)["child"].as_i64().unwrap().try_into().unwrap();
+    client.send(&prompt(1, &session, &format!("helpers {}", root.0.display())));
+    client.turn_end("the helpers turn");
+    let (group, own_session) = helpers(&root);
+    let _reap = Reap(vec![agent, group, own_session]);
+    client.send(&prompt(2, &session, &"x".repeat(128 * 1024)));
+    assert_eq!(keeper.wait_exit().code(), Some(1));
+    assert!(wait_gone(agent), "the agent outlived the failed keeper");
+    assert!(wait_gone(group), "the agent's helper outlived the failed keeper");
+    let archive = std::fs::read(root.0.join("archive.jsonl")).unwrap();
+    assert_ne!(archive.last(), Some(&b'\n'), "the file limit must cut a row short");
+}
+
+#[test]
 fn a_prompt_above_the_old_line_limit_reaches_the_agent() {
     let root = Root::new("big-prompt");
     let _keeper = Keeper::start(&root, &[]);

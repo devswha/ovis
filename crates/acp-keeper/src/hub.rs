@@ -237,7 +237,9 @@ impl Hub {
     }
 
     fn forward(&self, raw: &str) {
-        self.archive.append("to-agent", raw);
+        if self.archive.append("to-agent", raw).is_none() {
+            return;
+        }
         if let Some(agent) = &self.agent {
             let mut bytes = raw.as_bytes().to_vec();
             bytes.push(b'\n');
@@ -300,6 +302,9 @@ impl Hub {
     }
 
     pub fn handle(&mut self, ev: Ev) {
+        if self.archive.error().is_some() {
+            return;
+        }
         match ev {
             Ev::Agent(generation, text) => {
                 if generation == self.generation {
@@ -356,7 +361,9 @@ impl Hub {
                 self.next += 1;
                 let ours = Value::String(format!("agent-{}", self.next));
                 msg.insert("id".into(), ours.clone());
-                let seq = self.archive.append("from-agent", &Value::Object(msg.clone()).to_string());
+                let Some(seq) = self.archive.append("from-agent", &Value::Object(msg.clone()).to_string()) else {
+                    return;
+                };
                 if method.starts_with("fs/") || method.starts_with("terminal/") {
                     let raw = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}).to_string();
                     self.forward(&raw);

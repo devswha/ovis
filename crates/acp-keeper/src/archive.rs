@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -266,6 +266,7 @@ struct Log {
 
 pub struct Archive {
     log: Mutex<Log>,
+    error: OnceLock<std::io::Error>,
     pub end: watch::Sender<u64>,
     pub path: PathBuf,
     /// set as the keeper ends: every replay stream sends what is left, then ends
@@ -306,6 +307,7 @@ impl Archive {
         Ok((
             Archive {
                 log: Mutex::new(Log { file, offsets }),
+                error: OnceLock::new(),
                 end: tx,
                 path,
                 closing: watch::Sender::new(false),
@@ -315,30 +317,41 @@ impl Archive {
         ))
     }
 
-    pub fn append(&self, dir: &str, raw: &str) -> u64 {
+    pub fn append(&self, dir: &str, raw: &str) -> Option<u64> {
         self.row(dir, None, raw)
     }
 
     /// A row meant for one client: the keeper's answer to that client's own request.
-    pub fn append_for(&self, client: u64, raw: &str) -> u64 {
-        self.row("to-client", Some(client), raw)
+    pub fn append_for(&self, client: u64, raw: &str) {
+        self.row("to-client", Some(client), raw);
     }
 
-    fn row(&self, dir: &str, client: Option<u64>, raw: &str) -> u64 {
+    pub fn error(&self) -> Option<&std::io::Error> {
+        self.error.get()
+    }
+
+    fn row(&self, dir: &str, client: Option<u64>, raw: &str) -> Option<u64> {
         let ts = now_ms();
         let mut log = self.log.lock().expect("archive lock");
+        if self.error().is_some() {
+            return None;
+        }
         let seq = log.offsets.len() as u64;
         let client = client.map(|c| format!(",\"client\":{c}")).unwrap_or_default();
         let row = format!(
             "{{\"seq\":{seq},\"dir\":\"{dir}\"{client},\"ts\":{ts},\"raw\":{}}}\n",
             serde_json::to_string(raw).expect("a string serializes")
         );
-        log.file.write_all(row.as_bytes()).expect("archive write");
+        if let Err(error) = log.file.write_all(row.as_bytes()) {
+            // Do not publish or write past a partial row. The next open repairs the tail.
+            self.error.get_or_init(|| error);
+            return None;
+        }
         let end = log.offsets.last().copied().unwrap_or(0) + row.len() as u64;
         log.offsets.push(end);
         drop(log);
         self.end.send_replace(end);
-        seq
+        Some(seq)
     }
 
     /// Where row `n` starts, the current end and the last sequence number, read together.
@@ -475,7 +488,7 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().len(), whole);
         assert_eq!(previous.session.as_deref(), Some("s1"));
         assert_eq!(previous.pending, vec![(serde_json::json!(5), 3)]);
-        assert_eq!(archive.append("keeper", "{}"), 5);
+        assert_eq!(archive.append("keeper", "{}"), Some(5));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

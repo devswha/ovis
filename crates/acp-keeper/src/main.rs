@@ -443,6 +443,10 @@ async fn run(mut opts: Opts) -> i32 {
     for (id, seq) in &previous.pending {
         hub::note(&archive, "_keeper/expired", json!({"id": id, "seq": seq, "reason": "the agent that asked it is gone"}));
     }
+    if let Some(error) = archive.error() {
+        eprintln!("archive: {error}");
+        return 1;
+    }
     let resumed = opts.load.is_none() && previous.session.is_some();
     if resumed {
         opts.load = previous.session.clone();
@@ -538,7 +542,7 @@ async fn run(mut opts: Opts) -> i32 {
         json!({"sinceStartMs": ms(started), "keeper": std::process::id(), "child": child_pid, "tty": tty, "jobControl": job_control, "scope": acp.as_ref().and_then(|a| a.scope.clone()), "resumed": resumed, "expired": previous.pending.len()}),
     );
     hub.start();
-    if !tty {
+    if !tty && archive.error().is_none() {
         println!("KEEPER_READY");
     }
 
@@ -555,15 +559,18 @@ async fn run(mut opts: Opts) -> i32 {
             }
             status.draw(status::lines(&hub.model, hub.mode));
         }
-        if hub.quit {
+        if hub.quit || archive.error().is_some() {
             break;
         }
         tokio::select! {
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
                 hub.handle(ev);
-                while let Ok(ev) = rx.try_recv() {
-                    hub.handle(ev);
+                while archive.error().is_none() {
+                    match rx.try_recv() {
+                        Ok(ev) => hub.handle(ev),
+                        Err(_) => break,
+                    }
                 }
             }
             result = wait_for(&mut acp) => {
@@ -600,6 +607,9 @@ async fn run(mut opts: Opts) -> i32 {
                     hub.model.error(format!("진짜 TUI가 {:.1}초 만에 끝났습니다 (종료 코드 {code:?}). 이어 열기가 안 된 것 같습니다", ran / 1000.0));
                 }
                 hub.mode_note("acp", "start", json!({"tuiExit": code, "tuiRanMs": ran}));
+                if archive.error().is_some() {
+                    break;
+                }
                 if let Some((agent, task)) = restart_acp(&mut hub, &stderr, &tx).await {
                     agent_pid.store(agent.pid, Ordering::Relaxed);
                     acp = Some(agent);
@@ -618,6 +628,9 @@ async fn run(mut opts: Opts) -> i32 {
                 break;
             }
         }
+        if archive.error().is_some() {
+            break;
+        }
         if let Some(pressed) = hub.want_terminal.take() {
             if !gate.pause() {
                 gate.resume();
@@ -632,6 +645,9 @@ async fn run(mut opts: Opts) -> i32 {
                 status.draw(status::lines(&hub.model, hub.mode));
             }
             hub.mode_note("terminal", "start", json!({"argv": argv}));
+            if archive.error().is_some() {
+                break;
+            }
             hub.agent = None;
             if let Some(mut agent) = acp.take() {
                 if tokio::time::timeout(Duration::from_millis(800), agent.wait()).await.is_err() {
@@ -647,6 +663,9 @@ async fn run(mut opts: Opts) -> i32 {
                 hub.handle(ev);
             }
             hub.expire_pending("the agent that asked it was ended for the real TUI");
+            if archive.error().is_some() {
+                break;
+            }
             hub.generation += 1;
             let agent_ended = ms(pressed);
             if let Some(status) = status.as_mut() {
@@ -700,6 +719,10 @@ async fn run(mut opts: Opts) -> i32 {
     let _ = std::fs::remove_file(root.join("acp.sock"));
     if status.is_some() {
         status::restore_terminal();
+    }
+    if let Some(error) = archive.error() {
+        eprintln!("archive: {error}");
+        return 1;
     }
     match result {
         Ok(result) if result.success() || by_signal || hub.quit => 0,
