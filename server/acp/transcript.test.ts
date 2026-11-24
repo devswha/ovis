@@ -11,10 +11,11 @@ function archive() {
   const socket = new Socket();
   const client = new KeeperClient(root, { connect: () => socket });
   let seq = 0;
-  const row = (dir: string, message: unknown) => {
-    const line = JSON.stringify({ dir, seq: ++seq, ts: 1000 + seq, raw: JSON.stringify(message) }) + "\n";
+  const rawRow = (dir: string, raw: string) => {
+    const line = JSON.stringify({ dir, seq: ++seq, ts: 1000 + seq, raw }) + "\n";
     appendFileSync(join(root, "archive.jsonl"), line); socket.emit("data", line);
   };
+  const row = (dir: string, message: unknown) => rawRow(dir, JSON.stringify(message));
   const update = (value: unknown) => row("from-agent", { method: "session/update", params: { sessionId: "child", update: value } });
   const chunk = (sessionUpdate: string, text: string) => update({ sessionUpdate, content: { type: "text", text } });
   const prompt = (text: string) => {
@@ -24,7 +25,7 @@ function archive() {
   };
   const mode = (phase: string) => row("keeper", { method: "_keeper/mode", params: { mode: "acp", phase } });
   row("keeper", { method: "_keeper/session", params: { sessionId: "child" } });
-  return { client, root, row, update, chunk, prompt, mode, close: () => { client.close(); rmSync(root, { recursive: true, force: true }); } };
+  return { client, root, row, rawRow, update, chunk, prompt, mode, close: () => { client.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 
 it("marks the last agent text final only after the matching end_turn", async () => {
@@ -60,15 +61,16 @@ it("only shows messages, plans and approvals for the keeper session", async () =
   } finally { close(); }
 });
 
-for (const issue of ["failed", "oversize", "malformed"] as const) {
+for (const issue of ["failed", "oversize", "malformed", "invalid JSON"] as const) {
   it(`retains a complete transcript after a ${issue} replay and later plan`, async () => {
-    const { client, row, prompt, chunk, update, mode, close } = archive();
+    const { client, row, rawRow, prompt, chunk, update, mode, close } = archive();
     try {
       prompt("Original"); chunk("agent_message_chunk", "Old answer");
       const before = await client.history.page({});
       mode("start"); chunk("agent_message_chunk", "DISCARDED");
       if (issue === "oversize") row("keeper", { method: "_keeper/oversize", params: { dir: "from-agent" } });
       if (issue === "malformed") update({ sessionUpdate: null });
+      if (issue === "invalid JSON") rawRow("from-agent", '{"broken":"☃"');
       mode(issue === "failed" ? "failed" : "ready");
       update({ sessionUpdate: "plan", entries: [] });
       const after = await client.history.page({});
@@ -78,21 +80,25 @@ for (const issue of ["failed", "oversize", "malformed"] as const) {
   });
 }
 
-it("counts and skips non-string discriminators both live and on restore", async () => {
-  const { root, client, row, prompt, chunk, update, close } = archive();
+it("counts malformed archive rows without losing later prompts, live and on restore", async () => {
+  const { root, client, row, rawRow, prompt, chunk, update, close } = archive();
   const replay = new Socket();
   const restored = new KeeperClient(root, { connect: () => replay });
   try {
-    prompt("Hello");
     for (const kind of [{}, [], 1, null]) {
       update({ sessionUpdate: kind });
       row("from-agent", { method: kind });
     }
+    rawRow("from-agent", '{"broken":"☃"');
+    rawRow("from-agent", "[]");
+    prompt("Hello");
     chunk("agent_message_chunk", "Still here");
     replay.emit("data", readFileSync(join(root, "archive.jsonl"), "utf8"));
     for (const reader of [client, restored]) {
-      expect(reader.malformedRows).toBe(8);
-      expect((await reader.history.page({})).turns.at(-1)?.parts).toEqual([{ kind: "text", text: "Still here" }]);
+      expect((await reader.history.page({})).turns.map(turn => turn.parts)).toEqual([
+        [{ kind: "text", text: "Hello" }], [{ kind: "text", text: "Still here" }],
+      ]);
+      expect(reader.malformedRows).toBe(10);
     }
   } finally { restored.close(); close(); }
 });

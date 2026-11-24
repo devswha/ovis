@@ -63,11 +63,9 @@ export function parseLine(line: string): { client: number } | { row: Row; messag
   if (typeof object["through"] === "number" && typeof object["client"] === "number") return { client: object["client"] };
   const { seq, dir, raw } = object;
   if (typeof seq !== "number" || typeof dir !== "string" || typeof raw !== "string") return null;
-  let message: unknown;
-  try { message = JSON.parse(raw); } catch { return null; }
-  const body = record(message);
-  if (!body) return null;
-  return { row: { seq, dir, raw, ...(typeof object["ts"] === "number" ? { ts: object["ts"] } : {}), ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message: validMessage(body) ? body : null };
+  let body: Record<string, unknown> | null = null;
+  try { body = record(JSON.parse(raw)); } catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+  return { row: { seq, dir, raw, ...(typeof object["ts"] === "number" ? { ts: object["ts"] } : {}), ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message: body && validMessage(body) ? body : null };
 }
 
 export function approval(row: Row, keeperId: string, params: Record<string, unknown>): AcpApproval {
