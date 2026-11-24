@@ -43,7 +43,7 @@ describe("signing in on a PC's own page", () => {
   let ended: AccountSession | undefined;
   let directoryWrites: string[];
   let boundOnDirectoryRead: boolean;
-  let membershipGate: { afterToken: boolean; requested: boolean; release: Promise<void> } | undefined;
+  let membershipGate: { afterToken: boolean; requested: boolean; answered: boolean; release: Promise<void> } | undefined;
 
   beforeEach(() => {
     ahead = 0;
@@ -97,6 +97,7 @@ describe("signing in on a PC's own page", () => {
           if (membershipGate?.afterToken) {
             membershipGate.requested = true;
             await membershipGate.release;
+            membershipGate.answered = true;
           }
           return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
         }
@@ -265,12 +266,14 @@ describe("signing in on a PC's own page", () => {
     await until(() => buttons().includes("Sign in"));
     expect(buttons()).not.toContain("Sign in and add this PC");
     const { promise, resolve } = Promise.withResolvers<void>();
-    const gate = { afterToken: false, requested: false, release: promise };
+    const gate = { afterToken: false, requested: false, answered: false, release: promise };
     membershipGate = gate;
     await press("Sign in");
     await until(() => buttons().includes("Sign out") && gate.requested);
-    // Deliver the post-sign-in membership answer and flush its updates before checking the UI.
-    await act(async () => { resolve(); await promise; });
+    // Deliver the post-sign-in membership answer. Everything after it (this fake fetch, the answer's body, the fake
+    // IndexedDB session read, the state update) is microtasks only, so once a setImmediate runs the answer is applied.
+    await act(async () => { resolve(); await new Promise<void>((done) => { setImmediate(done); }); });
+    expect(gate.answered).toBe(true);
     expect(links()).toHaveLength(0);
     expect(buttons()).not.toContain("Stop waiting");
     expect(buttons()).not.toContain("Add this PC to my account");
