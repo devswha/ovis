@@ -1,7 +1,8 @@
+import { readSeenPcs } from "./seenPcs.ts";
 import { describe, expect, it } from "bun:test";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
 import type { AccountAddTarget } from "../../../shared/machines.ts";
-import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { exportPublicKey, generateKeyPair, importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { AccountService } from "./service.ts";
 import { addOverSsh, sshAddListed, sshAddOffered, type SshTake } from "./sshAdd.ts";
@@ -41,7 +42,22 @@ describe("adding another PC to the account over SSH, from this PC's own window",
   it("lists that PC, admits it with this window's own two-step sign-in, then has this PC hand it the account", async () => {
     const { service, take, takes } = await window({ twoStep: true });
     const target = pcFields();
-    expect(await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take })).toBe("added");
+    const kept = new Map<string, string>();
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => { kept.set(key, value); }, removeItem: (key: string) => { kept.delete(key); } } });
+    try {
+      expect(await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take })).toBe("added");
+      // what this device did for that PC is kept in its own record of its PCs, by the relay key the PC gave
+      const endpoint = Array.from(importPublicKey(target.public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const deadline = Date.now() + 2_000;
+      while (readSeenPcs(ACCOUNT).pcs[endpoint] === undefined) {
+        if (Date.now() > deadline) throw new Error("the SSH add was not written to the record");
+        await Bun.sleep(5);
+      }
+      expect(readSeenPcs(ACCOUNT).pcs[endpoint]).toEqual({ how: "ssh" });
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "localStorage", saved); else Reflect.deleteProperty(globalThis, "localStorage");
+    }
     expect(await listedIds(service)).toContain(target.server_id);
     expect(takes).toEqual([`job-1 ${target.server_id}`]);
   });

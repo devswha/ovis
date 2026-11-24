@@ -11,6 +11,7 @@ import type { AccountOs } from "../../shared/account-asker.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { memoryAccountStore, memoryLock, newKey, type AccountProvider, type AccountStore } from "../lib/account/store.ts";
 import { accountOpenablePcs } from "../lib/relay/pcPick.ts";
+import { readSeenPcs } from "../lib/account/seenPcs.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
@@ -371,6 +372,8 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     expect(text()).toContain(`New PC added to your account: ${LABEL}`);
     expect(buttons()).toContain("I didn't add this");
     expect(buttons()).not.toContain("Add");
+    // the person added it on this device: its own record of its PCs says so, by the relay key the listing gave
+    expect(readSeenPcs(ACCOUNT).pcs[Buffer.from(key).toString("hex")]).toEqual({ how: "added" });
   });
 
   it("keeps the new-PC card closed under the service's admission time, not this device's clock", async () => {

@@ -11,6 +11,7 @@ import { apiFetch } from "../api-request-id.ts";
 import { ownWindowHere } from "./addThisPc.ts";
 import type { PcAccountStatus } from "./join.ts";
 import { AccountServiceError, sameSignIn, type AccountService } from "./service.ts";
+import { noteAct } from "./seenPcs.ts";
 import type { AccountSession } from "./store.ts";
 
 /**
@@ -119,5 +120,8 @@ export async function addOverSsh(service: AccountService, job: { readonly id: st
   }
   const still = await service.session();
   if (still === undefined || !sameSignIn(still, session) || !options.running()) return "refused";
-  return await taken(take, job.id, target.server_id, false);
+  const outcome = await taken(take, job.id, target.server_id, false);
+  // this device added that PC over SSH: kept in its own record of its PCs, by the relay key the PC gave over that channel
+  if (outcome.startsWith("added")) void noteAct(session.account, hex(target.public_key), "ssh");
+  return outcome;
 }

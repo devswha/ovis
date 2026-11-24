@@ -2,6 +2,7 @@ import { Monitor } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ACCOUNT_OS_NAMES, accountLabel, placeName, type AccountAsker } from "../../shared/account-asker.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { noteAct } from "../lib/account/seenPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
@@ -221,6 +222,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, onSignInAgain, 
       return;
     }
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+    // the person added this PC here: kept in this device's own record of its PCs, by the relay key its listing gave
+    if (pc.public_key !== null) void noteAct(session.account, pc.public_key, "added");
     // the new-PC card's dismissal is kept under the admission's time (newPcNoticeKey): the service's own, as its directory
     // row gives it, never this device's clock, so a card closed here stays closed when the row is read again
     const at = admitted.admitted_at ?? (await directory.listPcs().catch(() => [])).find((each) => each.server_id === pc.server_id)?.admitted_at ?? null;
