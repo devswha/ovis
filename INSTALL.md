@@ -124,8 +124,22 @@ command line would lose them.)
 
 Then read `~\ovis-install.log` every few seconds, give the user the address and code as soon as it
 shows `1. On any device, open: <address>` and `2. Enter this code: <code>`, and keep reading until it
-ends with `install-exit=<n>`, for at most 15 minutes: `install-exit=0` means the PC was added.
-`-Add` alone runs `ovis add` at a terminal, where the user answers it.
+ends with `install-exit=<n>`, for at most 15 minutes: `install-exit=0` means the PC was added, and
+`ovis status --json` on it then names the account (`account`) and says when its relay is online
+(`relay.connected`). `-Add` alone runs `ovis add` at a terminal, where the user answers it.
+
+With an invite the user made on a device of their account (one line, `ovis-join:1:…`, single use, 15
+minutes), the PC joins with no sign-in: put the line in a file only the user can read, with your file
+tool (never in a command line or a log), and pass `-JoinFile <file> -Account <id>`:
+`& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -JoinFile $HOME\ovis-invite.txt -Account <id>`.
+The background recipe above runs `irm … | iex`, which takes no arguments: there, set
+`$env:OVIS_JOIN = Get-Content -Raw "$HOME\ovis-invite.txt"` beside `$env:OVIS_ADD_ACCOUNT`, and
+afterwards `Remove-Item Env:\OVIS_JOIN` in your own session (the installer takes it out of its own). It runs `ovis join` once Ovis runs, with the line in its
+environment only, and fails unless the PC joined, its last `Ovis:` line saying why (a used or expired
+invite needs a new one). An invite that needs **Add** waits up to 10 minutes: when the log says
+`press Add for <name>`, tell the user to press it. `-Join <line>` works too, but a command line that
+holds the line shows in the process list. Without `-Account` the join runs only at a terminal, where it
+asks the user whether the invite's account is theirs. `-Help` lists the options.
 
 ## 3A. Install as a herdr plugin
 

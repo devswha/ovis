@@ -14,3 +14,9 @@
   Ovis account with no terminal, as a script or a coding agent runs it: the installer runs
   `ovis add --account <id>` and fails when the PC was not added. `-Add` alone runs `ovis add` at a
   terminal.
+- `& ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) -JoinFile <file> -Account <id>` (or
+  the line in `OVIS_JOIN`) joins a Windows PC to your Ovis account with an invite a device of it made,
+  with no sign-in on the PC: once Ovis runs, the installer runs `ovis join` with the line in its
+  environment, never on a command line, and fails unless the PC joined, saying why in one line.
+  Without `-Account` it runs the join at a terminal, which asks whether the invite's account is yours.
+  `-Help` lists the installer's options.

@@ -204,6 +204,17 @@ try {
         try { & $Installer -Ref $Ref -NoService -Account 'acct_e2e' *>&1 | ForEach-Object { $said.Add("$_") } }
         catch { $failed = $_.Exception.Message } finally { Remove-Item Env:\OVIS_ACCOUNT_SERVICE_URL }
         Assert ($failed -match 'was not added to your Ovis account' -and ($said -join "`n") -match 'The account service is off on this PC') "-Account must fail the install with the add's own words when the add cannot run: $failed $($said -join ' / ')"
+        # an invite's line of another shape is refused at once; a line in OVIS_JOIN reaches this release's own `ovis join`,
+        # which with no account service says so itself, and the install fails without ever saying the line
+        $refused = ''
+        try { & $Installer -Ref $Ref -Join 'not-an-invite' } catch { $refused = $_.Exception.Message }
+        Assert ($refused -match '^That is not an Ovis invite') "-Join of another shape must be refused at once: $refused"
+        $said = New-Object Collections.Generic.List[string]; $failed = ''
+        $env:OVIS_ACCOUNT_SERVICE_URL = 'off'; $env:OVIS_JOIN = 'ovis-join:1:eyJ2IjoxLCJlMmUiOiJub3QtYS1rZXkifQ'
+        try { & $Installer -Ref $Ref -NoService -Account 'acct_e2e' *>&1 | ForEach-Object { $said.Add("$_") } }
+        catch { $failed = $_.Exception.Message } finally { Remove-Item Env:\OVIS_ACCOUNT_SERVICE_URL; Remove-Item Env:\OVIS_JOIN -ErrorAction SilentlyContinue }
+        $joined = $said -join "`n"
+        Assert ($failed -match 'did not join your Ovis account' -and $joined -match 'The account service is off on this PC' -and $joined -match 'the relay or the account service is off on this PC, so it did not join' -and -not $joined.Contains('eyJ2IjoxLCJlMmUi')) "An invite must reach ovis join, and the install fail with its words when the join cannot run: $failed $($said -join ' / ')"
         # over SSH (session 0) with this account signed in at the desktop, as here: herdr starts in the desktop session
         Write-Host 'e2e: installing again from session 0, as over SSH, with herdr stopped'
         Stop-OvisAndHerdr

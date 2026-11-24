@@ -10,38 +10,98 @@
 # the install with `ovis add`, and -Account <id> names the account, so nothing is asked and a script or an agent can run
 # it: the installer then fails when the PC was not added. Each also has a variable, for `irm | iex`, which takes no
 # arguments: OVIS_ADD=1, OVIS_ADD_ACCOUNT=<id>, OVIS_NO_SERVICE=1, OVIS_HEADLESS=1 (-Headless: with nobody of this account
-# signed in at this PC, start herdr without a desktop).
+# signed in at this PC, start herdr without a desktop). Or the PC joins the account with an invite a device signed in to it
+# made (one line, ovis-join:1:...), with no sign-in here: -JoinFile <path> (or the line in OVIS_JOIN; -Join <line> too, though
+# a command line that holds it shows in the process list) ends the install with `ovis join`, given the line in its
+# environment, never on a command line; -Account then names the account the invite must be for, and the installer fails
+# unless the PC joined. -Help lists them.
 param(
     [string]$Ref = $(if ($env:OVIS_REF) { $env:OVIS_REF } else { $env:HERDR_WEB_UI_REF }),
     [switch]$Add,
     [string]$Account = $env:OVIS_ADD_ACCOUNT,
     [switch]$NoService,
-    [switch]$Headless
+    [switch]$Headless,
+    [string]$Join,
+    [string]$JoinFile,
+    [switch]$Help
 )
 
 & {
 $ErrorActionPreference = 'Stop'
+$usage = 'usage: & ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) [-Add | -JoinFile <path>] [-Account <id>] [-NoService] [-Headless] [-Help]'
+if ($Help) {
+    Write-Host $usage
+    Write-Host @'
+
+Installs Ovis for this Windows account (and herdr where it is missing), and leaves it running.
+
+  -Add               end with `ovis add`: this PC signs in to your Ovis account, at a terminal you answer at
+  -Account <id>      your Ovis account's id (ovis status on a PC already in it shows it): the add asks nothing
+                     (alone, it means -Add), and a join checks the invite is for that account
+  -JoinFile <path>   join your Ovis account with an invite a device signed in to it made: a file holding its one
+                     line (ovis-join:1:...). Nothing is signed in to on this PC
+  -Join <line>       the same with the line itself: a command line that holds it shows in the process list to
+                     every user of this PC, so use -JoinFile or OVIS_JOIN instead
+  -NoService         where herdr is not running, start it once and set up no sign-in start
+  -Headless          with nobody of this account signed in at this PC, start herdr without a desktop
+  -Help              this text
+
+irm https://ovis.sh/install.ps1 | iex passes no arguments: set the variables instead, OVIS_ADD=1,
+OVIS_ADD_ACCOUNT=<id>, OVIS_JOIN=<line> (taken out of this session once read), OVIS_NO_SERVICE=1,
+OVIS_HEADLESS=1, OVIS_REF=<branch or tag>. More: https://github.com/devswha/ovis/blob/main/INSTALL.md
+'@
+    return
+}
 if ($env:OS -ne 'Windows_NT' -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
     throw 'Ovis supports Windows x64. Use install.sh on Linux or macOS.'
 }
 # before anything is installed: a misspelt account must not install without the add it asked for. The shape is the one
 # `ovis add --account` takes (scripts/plugin-link.ts, ACCOUNT_SHAPE), never starting with '-', as install.sh refuses it
-$usage = 'usage: & ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) [-Add [-Account <id>]] [-NoService] [-Headless]'
 if ($Account -and $Account -cnotmatch '^(?!-)[A-Za-z0-9_-]{1,64}\z') {
     throw "-Account (or OVIS_ADD_ACCOUNT) takes your Ovis account's id: ovis status on a PC already in it shows it. $usage"
 }
-# the account named is the add asked for
+# An invite's line (-JoinFile, -Join, or OVIS_JOIN where neither is given), as install.sh reads it: trimmed as `ovis join`
+# trims it, and refused before anything is installed unless it has a join line's shape (shared/account-list-join.ts: its
+# prefix, then base64url, at most 1024 characters). Never printed, nor a path that may be the line put where a path goes:
+# it holds the invite's key. Once the line passes, OVIS_JOIN leaves this session, so nothing the installer starts (herdr,
+# and every terminal in it) is given it; a run refused here leaves it for the run that follows.
+$joinGiven = ''
+$joinLine = ''
+$joinPath = ''
+$noFile = "-JoinFile names no file you can read (a file holding the invite's line). Nothing was installed. $usage"
+if ($Join -and $JoinFile) { throw "Give the invite one way only: -JoinFile <path>, OVIS_JOIN, or -Join <line>. $usage" }
+if ($JoinFile) { $joinGiven = 'file' }
+elseif ($Join) { $joinGiven = 'argument'; $joinLine = $Join }
+elseif ($env:OVIS_JOIN) { $joinGiven = 'env'; $joinLine = $env:OVIS_JOIN }
+if ($joinGiven -and ($Add -or $env:OVIS_ADD -eq '1')) { throw "A join adds this PC with an invite, and -Add (OVIS_ADD=1) with a sign-in: give one of them. $usage" }
+if ($joinGiven -eq 'file') {
+    $joinPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($JoinFile)
+    $joinItem = Get-Item -LiteralPath $joinPath -Force -ErrorAction SilentlyContinue
+    if (-not $joinItem -or $joinItem.PSIsContainer) { throw $noFile }
+    # read whole only when it can be a line: anything longer is refused below as no invite
+    try { $joinLine = if ($joinItem.Length -gt 4096) { 'not a line' } else { [IO.File]::ReadAllText($joinPath) } } catch { throw $noFile }
+}
+if ($joinGiven) {
+    $joinLine = @("$joinLine" -split "`n" | ForEach-Object { $_.Trim([char[]]" `t`r") } | Where-Object { $_ }) -join "`n"
+    if ($joinLine.Length -gt 1024 -or $joinLine -cnotmatch '^ovis-join:1:[A-Za-z0-9_-]+\z') {
+        throw "That is not an Ovis invite: an invite is one line that starts with ovis-join:1:, made on a device signed in to your account. Nothing was installed. $usage"
+    }
+}
+Remove-Item Env:\OVIS_JOIN -ErrorAction SilentlyContinue
+# the account named is the add asked for, or with an invite, the account the invite must be for
 $addAccount = $Account
-$wantAdd = $Add -or $env:OVIS_ADD -eq '1' -or [bool]$addAccount
+$wantAdd = $Add -or $env:OVIS_ADD -eq '1' -or ([bool]$addAccount -and -not $joinGiven)
 $skipService = $NoService -or $env:OVIS_NO_SERVICE -eq '1'
 $allowHeadless = $Headless -or $env:OVIS_HEADLESS -eq '1'
 # what the add step needs, set by whichever install below runs: the Ovis command line, whether it runs now, the command a
 # person types for it, and whether the add of the release that runs checks --account and reads answers safely
 $ovisCli = $null
 $ovisRunning = $false
+$ovisCommand = ''
 $addCommand = ''
 $takesAccount = $false
 $readsAnswers = $false
+$takesJoin = $false
 
 function Run-Tool([string]$Tool, [string[]]$Arguments) {
     & $Tool @Arguments
@@ -744,9 +804,12 @@ if (-not $fromSource) {
             }
             $exe = Join-Path $ovisHome 'bin\ovis-server.exe'
             $ovisCli = @($exe, 'plugin')
+            $ovisCommand = 'ovis'
             $addCommand = 'ovis add'
             $takesAccount = [version]$version -ge [version]'0.5.10'
             $readsAnswers = $true
+            # the release's `ovis join` (scripts/plugin-join.ts) came with 0.5.10
+            $takesJoin = [version]$version -ge [version]'0.5.10'
             $herdrNow = Start-HerdrForOvis
             if ($herdrNow.Running) {
                 # a herdr started just now starts the app itself (the plugin's startup hook)
@@ -1113,11 +1176,14 @@ if ($legacy) {
 
 $script = Join-Path $plugin.plugin_root 'scripts\plugin.ts'
 $ovisCli = @('bun', $script)
-$addCommand = "bun '$([Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($script))' add"
+$ovisCommand = "bun '$([Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($script))'"
+$addCommand = "$ovisCommand add"
 # the add a checkout runs is its own or a newer release's (Settings -> Updates), which reads at least what the checkout's does
 $linkScript = Join-Path $plugin.plugin_root 'scripts\plugin-link.ts'
 $takesAccount = [bool](Select-String -LiteralPath $linkScript -SimpleMatch '"--account"' -Quiet -ErrorAction SilentlyContinue)
 $readsAnswers = [bool](Select-String -LiteralPath $linkScript -SimpleMatch 'export function answerOf' -Quiet -ErrorAction SilentlyContinue)
+# the checkout's own script runs `ovis join`: one from before it has no scripts/plugin-join.ts
+$takesJoin = Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'scripts\plugin-join.ts')
 $herdrNow = Start-HerdrForOvis
 if ($herdrNow.Running) {
     # a herdr started just now starts the app itself (the plugin's startup hook)
@@ -1409,13 +1475,14 @@ function Read-Answer {
 # add refuses that itself since `ovis join`'s release; `ovis status --json` is asked once more where it answers, and a
 # release without it, answering plain lines, is taken at the add's word).
 $addResult = 'none'
+$tokenLine = "Ovis: on a PC other people sign in to, set OVIS_TOKEN first, where Ovis reads it at every start: without it any local user counts as this PC (https://github.com/devswha/ovis/blob/main/docs/relay.md#a-pc-with-no-screen); $tokenWhere"
 if ($wantAdd) {
     if (-not $ovisRunning) { $addResult = 'waits' }
     elseif ($addAccount) {
         if (-not $takesAccount) { $addResult = 'old' }
         else {
             Write-Host ''
-            Write-Host "Ovis: on a PC other people sign in to, set OVIS_TOKEN first, where Ovis reads it at every start: without it any local user counts as this PC (https://github.com/devswha/ovis/blob/main/docs/relay.md#a-pc-with-no-screen); $tokenWhere"
+            Write-Host $tokenLine
             @() | & $ovisCli[0] $ovisCli[1] add --account $addAccount
             $addResult = if ($LASTEXITCODE -eq 0) { 'done' } else { 'failed' }
             $inAccount = if ($addResult -eq 'done') { try { @(& $ovisCli[0] $ovisCli[1] status --json 2>$null) | Select-Object -Last 1 | ConvertFrom-Json } catch { $null } }
@@ -1449,6 +1516,60 @@ if ($wantAdd) {
     }
 }
 
+# The join (an invite's line: -JoinFile, OVIS_JOIN or -Join), once Ovis runs, as install.sh runs it: `ovis join` lists this
+# PC in the invite's account on its own key's proof, with no sign-in here, and it alone is given the line, in its
+# environment (OVIS_INVITE), never on a command line. Whoever handed the invite over chose the account, so it is confirmed
+# first: with -Account (OVIS_ADD_ACCOUNT) and an empty, closed input, as a script or an agent runs it; or at a terminal,
+# where `ovis join` asks for yes once what was typed while the installer worked is flushed. $joinResult: none, old (a
+# release without it), waits (Ovis is not running), unconfirmed (nobody can confirm the account), or the exit code of
+# `ovis join` (scripts/plugin-join.ts, JOIN_EXIT).
+$joinResult = 'none'
+if ($joinGiven) {
+    $joinFrom = if ($joinGiven -eq 'file') { "'$([Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($joinPath))'" } else { '<a file holding the invite>' }
+    $joinRetry = "$ovisCommand join --invite-file $joinFrom$(if ($addAccount) { " --account $addAccount" })"
+    $joinArguments = @('join')
+    if ($addAccount) { $joinArguments += @('--account', $addAccount) }
+    if (-not $takesJoin) { $joinResult = 'old' }
+    elseif (-not $ovisRunning) { $joinResult = 'waits' }
+    elseif (-not $addAccount -and (-not (Test-Terminal) -or $env:OVIS_NO_OPEN -or $env:HERDR_WEB_NO_OPEN)) { $joinResult = 'unconfirmed' }
+    else {
+        Write-Host ''
+        Write-Host $tokenLine
+        $givenInvite = $env:OVIS_INVITE
+        $env:OVIS_INVITE = $joinLine
+        try {
+            if ($addAccount) { @() | & $ovisCli[0] $ovisCli[1] @joinArguments }
+            else {
+                # what was typed while the installer worked answers nothing
+                try { $Host.UI.RawUI.FlushInputBuffer() } catch { }
+                & $ovisCli[0] $ovisCli[1] @joinArguments
+            }
+            $joinResult = "$LASTEXITCODE"
+        } finally {
+            if ($null -eq $givenInvite) { Remove-Item Env:\OVIS_INVITE -ErrorAction SilentlyContinue } else { $env:OVIS_INVITE = $givenInvite }
+        }
+    }
+    $joinSaid = switch ("$joinResult") {
+        'old' { "this Ovis release has no ovis join (it came in 0.5.10), so this PC did not join your Ovis account. Update Ovis in Settings -> Updates, then run on this PC: $joinRetry" }
+        'waits' { "the app is not running, so this PC did not join your Ovis account. Once it runs, run on this PC: $joinRetry" }
+        'unconfirmed' { "nobody here can confirm the account the invite is for, so this PC did not join it, and the invite was not used. Name that account: run this again with -Account <id> (the id shown with the invite, or ovis status --json on a PC already in it), or run in a terminal on this PC: $joinRetry" }
+        '0' { "this PC is in the Ovis account the invite is for. Check: $ovisCommand status --json" }
+        '3' { 'the invite did not work: it is mistyped, used or expired (an invite works once, for 15 minutes), or for another account service. Ask for a new one on a device signed in to your account' }
+        '4' { 'the account the invite is for was not confirmed, so this PC did not join it, and the invite was not used' }
+        '5' { 'the invite is for another Ovis account than -Account names, so this PC did not join it, and the invite was not used' }
+        '6' { "this PC is in another Ovis account, so it did not join the invite's, and the invite was not used. To move it: $ovisCommand logout, then run on this PC: $joinRetry" }
+        '7' { 'the account service asks this PC to wait, so it did not join your Ovis account yet; what ovis join said is above' }
+        '8' { 'your Ovis account has added as many PCs as it may for now, so this PC did not join it, and the invite was not used; what ovis join said is above' }
+        '9' { 'your Ovis account holds as many PCs as it can, so this PC did not join it: remove one in the Ovis app, then try again with a new invite' }
+        '10' { "the account service did not answer, so this PC did not join your Ovis account. Try again in a moment (the invite works for 15 minutes): $joinRetry" }
+        '12' { 'the relay or the account service is off on this PC, so it did not join your Ovis account; what ovis join said is above' }
+        '13' { "the app stopped running, so this PC did not join your Ovis account. Once it runs, run on this PC: $joinRetry" }
+        '14' { 'nobody pressed Add for this PC while its card showed, so it did not join your Ovis account. Ask for a new invite' }
+        default { 'this PC did not join your Ovis account; what ovis join said is above' }
+    }
+    Write-Host "Ovis: $joinSaid"
+}
+
 # Once, on the first install, and not to an account that already starred (204). It asks only when
 # GitHub says the account has not (404), only at a terminal, and stars only on "y".
 if ($newInstall) {
@@ -1469,7 +1590,8 @@ if ($newInstall) {
         }
     } catch { }
 }
-# -Account is a script's add, or an agent's: the installer fails, as install.sh exits 1, when this PC was not added (a
-# throw, not exit, which would close the PowerShell that ran irm | iex)
-if ($addAccount -and $addResult -ne 'done') { throw "This PC was not added to your Ovis account: the lines above say why." }
+# -Account is a script's add, or an agent's, and a join was asked for with a key: the installer fails, as install.sh exits
+# 1, when this PC was not added, or did not join (a throw, not exit, which would close the PowerShell that ran irm | iex)
+if ($joinGiven -and "$joinResult" -ne '0') { throw "This PC did not join your Ovis account: the lines above say why." }
+if ($addAccount -and -not $joinGiven -and $addResult -ne 'done') { throw "This PC was not added to your Ovis account: the lines above say why." }
 }
