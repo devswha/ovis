@@ -481,8 +481,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
   }
-  // how this PC follows its account's signed list is for this PC's own window and CLI to read
-  if (pathname === "/api/account/list" && !ownWindow) {
+  // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
+  // this PC names the list it pins
+  if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin") && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Read this on this PC itself." } }, 403);
   }

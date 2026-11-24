@@ -7,6 +7,7 @@ import type { AccountAddRelay } from "../../shared/machines.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayService } from "../relay/service.ts";
 import { AccountServiceRefusal, type AccountMailbox } from "./mailbox.ts";
+import { LIST_REMOVED_FROM } from "./records.ts";
 
 export interface PressServices {
   readonly devices: DeviceStore;
@@ -33,6 +34,8 @@ export async function pressOnce(services: PressServices, account: string): Promi
   // the account the owner's browser is signed in to must be the one named for this PC, which a press never sets
   if (relay.savedRelayAccount() !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
   if (devices.account() !== null) return refuse("in_account", "This PC is already in an account", 409);
+  // an account whose signed list removed this PC takes it back on no path: only as a new PC, after a reset relay identity
+  if (devices.listRemovedFrom(account)) return refuse("list_removed", LIST_REMOVED_FROM, 409);
   // a Revoke all, a reset or a denial while the service answers raises this: the press then binds nothing (PADD-1)
   const generation = devices.gen();
   // a relay identity reset meanwhile makes this another PC to the account service: its answer was for the old one

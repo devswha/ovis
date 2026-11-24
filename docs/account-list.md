@@ -1,8 +1,8 @@
 # The signed list: an entry
 
-Nothing lets a device in by this list yet: the account as it works today signs its records one by
-one, with no chain ([Linking devices with an account](account.md#rules)). A PC reads the list of its
-account and checks it, and decides nothing by it
+A PC reads the list of its account and checks it. One that a person pinned to the list lets its
+account's devices in by the list alone; any other decides nothing by it, and its account works as it
+did, with records signed one by one and no chain
 ([The account's signed list on a PC](account.md#the-accounts-signed-list-on-a-pc)).
 
 An owner's devices and machines share one signed list. Every member keeps a copy and checks every

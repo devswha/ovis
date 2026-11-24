@@ -67,6 +67,7 @@ import { PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
 import { ListFollow } from "./account/list-follow.ts";
+import { LIST_REMOVED } from "./account/pc-binding.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
 import type { Readmission } from "./account/readmission.ts";
 import { AccountOrder } from "./account/account-order.ts";
@@ -373,7 +374,8 @@ export function createServer(
     heldByDevicesJson: (key) => devices.hasKey(key),
     checkFreshness: () => accountCatchUp.checkFreshness(),
     releaseOf: id => recoveryReleases?.releaseOf(id) ?? null,
-    serviceStep2Off: () => pcAccount.serviceStep2Off(),
+    // the account service turning Step 2 off closes no row of a PC that takes its rows from its signed list
+    serviceStep2Off: () => pcAccount.serviceStep2Off() && !devices.listFollowed(),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
     now: () => Date.now(),
     setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),
@@ -405,11 +407,29 @@ export function createServer(
   // the account's signed list, read beside the snapshot and compared with it: it lets nobody in yet (list-follow.ts)
   const accountList = pcAccount === null ? null : new ListFollow({
     stateDir, keys: new ListKeyStore(stateDir), identity: () => ovisRelay.currentIdentity(),
-    binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id }; },
+    binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null }; },
+    pin: (bindId, list) => pcAccount.pinToList(bindId, list),
+    removedFrom: (account, serverId) => pcAccount.removedByList(account, serverId),
     call: (path, body) => accountMailbox.listRoute(path, body),
     rowKey: (id) => accountRows?.row(id)?.key ?? null,
     now: () => Date.now(),
+    commit: (list, readmission, first) => {
+      const store = accountRows?.store();
+      if (!store) return;
+      store.commitList(list, readmission, first);
+      store.expire();
+    },
+    // while the rows still stand, so their sessions end as `auth_changed` and each app signs in again by itself
+    repinned: () => { for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id); },
+    removed: (key, removal) => {
+      const account = devices.account();
+      if (account !== null) devices.removeAccountKey(key, account, { id: removal.id, issuedAt: new Date(removal.at * 1000).toISOString() });
+    },
+    leave: (serverId) => devices.clearAccountBinding("unlisted", LIST_REMOVED, serverId),
+    recheck: () => { devices.recheckListedSessions(); },
+    busy: () => devices.sessionsOpen(),
   });
+  devices.attachList(accountList);
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
   const accountMailbox = new AccountMailbox({
     pendingPath: join(stateDir, "account-pending.json"), completionPath: join(stateDir, "account-completion.json"), holds: accountHolds,
@@ -706,7 +726,7 @@ export function createServer(
     },
     removalsPending: () => devices.pendingLockRemovals().length > 0,
   } }) : undefined;
-  const accountCatchUp = new AccountCatchUp(devices, accountRows, { pc: pcAccount, releases: recoveryReleases });
+  const accountCatchUp = new AccountCatchUp(devices, accountRows, { pc: pcAccount, releases: recoveryReleases, listFollowed: () => devices.listFollowed() });
   const catchUp = accountCatchUp.gate;
   const accountOrder = safetyLog !== null ? AccountOrder.open(stateDir) : null;
   devices.attachAccountOrder(accountOrder, serverIdNow);
@@ -749,6 +769,7 @@ export function createServer(
     get portalStartupResult() { return portalStartupResult; },
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);
+  accountList?.start();
   accountMailbox.start();
 
   // one listener per address on one port, all or none: a half-bound set would answer where nobody asked it to
