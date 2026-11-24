@@ -11,6 +11,7 @@ import { join as joinPath } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { verifyLineProof } from "../shared/account-list-invite.ts";
+import { epochKeyCommitment, newEpochKey, wrapEpochKey, wrapToText } from "../shared/account-list-seal.ts";
 import { listMember } from "../server/account/list.test-helpers.ts";
 import { newInvite, readJoinLine } from "../shared/account-list-join.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
@@ -378,6 +379,49 @@ describe("ovis join: the invite", () => {
       expect(await verifyLineProof({ account: "acct_1", server_id: run.serverId, list: LIST, card: await pc.card() }, pc.asked[0]!.proof, key)).toBe(true);
       expect(run.local).not.toContain("POST /api/account/list/join/body");
       expect(run.local).not.toContain("POST /api/account/list/join/place");
+    });
+
+    it("an invite a PC joins with by itself, on a PC its account bound meanwhile though its join still says waiting: it is added, and keeps its listing", async () => {
+      let prepared = 0;
+      const run = await joining({ auto: true, inviteList: LIST, localAnswer: (path, request) => {
+        if (path === "/api/account/list" && request.method === "GET") return Response.json({ pinned: false });
+        // the PC is in its list and pinned, and its copy has not reached the disk yet: each ask says it waits
+        if (path === "/api/account/list/join/prepare") { prepared++; return Response.json({ state: "waiting", standing: "in" }); }
+        if (path === "/api/account/status" && prepared > 0) return Response.json({ account: "acct_1", enrolling: false });
+        return undefined;
+      } });
+      expect(prepared).toBeGreaterThan(0);
+      expect(run.code).toBe(0);
+      expect(run.listed()).toHaveLength(1);
+      expect(run.out + run.err).not.toContain("was not added");
+    });
+
+    it("an invite a PC joins with by itself, where the account service hands a key to the names that the list does not commit to: it says so once, and joins without names", async () => {
+      const handed = newEpochKey(1);
+      const committed = epochKeyCommitment({ list: LIST, epoch: newEpochKey(1) });
+      const bodies: Record<string, unknown>[] = [];
+      let prepares = 0;
+      const run = await joining({ auto: true, inviteList: LIST, localAnswer: (path, request) => {
+        if (path === "/api/account/list" && request.method === "GET") return Response.json({ pinned: false });
+        if (path === "/api/account/list/join/prepare") return request.json().then(async (body) => {
+          prepares++;
+          // a wrap the line opens, of a key the list's opening entry does not commit to
+          const wrap = await wrapEpochKey({ list: LIST, epoch: handed, member: (body as { invite: string }).invite });
+          return Response.json({ state: "prepared", list: LIST, seq: 3, enc: (await pcKeys).enc, seal: { epoch: 1, opens: committed }, wraps: [{ epoch: 1, wrap: wrapToText(wrap!) }] });
+        });
+        if (path === "/api/account/list/join/body") return request.json().then((body) => {
+          bodies.push(body as Record<string, unknown>);
+          return Response.json(bodies.length < 2 ? { state: "again" } : { state: "added", account: "acct_1" });
+        });
+        return undefined;
+      } });
+      expect(run.code).toBe(0);
+      expect(prepares).toBe(2);
+      const said = (run.out + run.err).split("does not commit to").length - 1;
+      expect(said).toBe(1);
+      expect(run.out + run.err).toContain("Tell the account's owner: the account service did this.");
+      // nothing sealed under a key the list does not commit to
+      for (const body of bodies) expect(body).not.toHaveProperty("sealed");
     });
 
     it("ends with this PC's own words where it will not join that list, and takes itself off the account's list", async () => {

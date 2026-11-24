@@ -76,7 +76,7 @@ async function following(options: { stateDir?: string; seconds?: number; account
     binding: () => world.bound ? { account: ACCOUNT, id: world.bind, list: world.pinned, alarmed: world.alarmed } : null,
     pin: (_bindId, id) => { world.pinned = id; return true; },
     alarm: () => { if (world.alarmFails) return false; world.alarmed = true; return true; },
-    bind: (account, id) => { world.bound = true; world.pinned = id; return { id: world.bind, account, list: id, won: true }; },
+    bind: (account, id, _serverId) => { world.bound = true; world.pinned = id; return { id: world.bind, account, list: id, won: true }; },
     removedFrom: () => false,
     rowKey: () => null,
     now: () => world.real === null ? world.seconds * 1000 : world.seconds * 1000 + (Date.now() - world.real),
@@ -817,7 +817,7 @@ describe("an entry this PC signed and does not know to be placed", () => {
     state.away = false;
     pc.deps.mayAdmit = (key) => key !== phone.key;
     expect(await pc.list.allowDevice(tablet, true)).toEqual({ refused: "not_written", detail: "place_kept" });
-    expect(pc.list.status().reason).toContain("ten minutes");
+    expect(pc.list.status().reason).toContain("waits behind");
     // kept ten minutes ago and more: it is not sent, and no longer holds the place for another device
     const then = new Date(Date.now() - 10 * 60_000 - 1_000);
     utimesSync(kept, then, then);
@@ -828,20 +828,23 @@ describe("an entry this PC signed and does not know to be placed", () => {
     expect(pc.list.status().reason).toBeNull();
   });
 
-  test("of a device this PC has come to hold back gives its place up at once when the person at the PC cancels it, and no other is cancelled so", async () => {
+  test("of a device this PC has come to hold back gives its place up at once when the person at the PC declines that device's join, and no other entry goes so", async () => {
     const { pc, phone, tablet, sent, state, kept } = await twoAsked();
     state.away = true;
     expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
     sent.length = 0;
     state.away = false;
-    // the phone's entry is kept, and the PC still lets the phone in: nothing cancels it
-    expect(pc.list.cancelKept(phone.key)).toBe(false);
-    expect(existsSync(kept)).toBe(true);
     pc.deps.mayAdmit = (key) => key !== phone.key;
     expect(await pc.list.allowDevice(tablet, true)).toEqual({ refused: "not_written", detail: "place_kept" });
-    // only the entry of the device held back, named by its key
-    expect(pc.list.cancelKept(tablet.key)).toBe(false);
-    expect(pc.list.cancelKept(phone.key)).toBe(true);
+    // the reason says that an Allow waits behind an earlier one, and until when
+    const until = new Date(Date.now() + 10 * 60_000).toISOString().slice(0, 15);
+    expect(pc.list.status().reason).toContain("waits behind");
+    expect(pc.list.status().reason).toContain(until);
+    // a decline of another device's join drops nothing
+    pc.list.declinedHere(tablet.key);
+    expect(existsSync(kept)).toBe(true);
+    // the person at the PC declines the phone's join, which asked again: its entry goes, and the tablet takes the place
+    pc.list.declinedHere(phone.key);
     expect(existsSync(kept)).toBe(false);
     expect(await pc.list.allowDevice(tablet, true)).toMatchObject({ allowed: { id: pc.account.id } });
     expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();

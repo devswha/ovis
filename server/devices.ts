@@ -1489,12 +1489,12 @@ export class DeviceStore {
    * on a list a person at this PC confirmed. Only with the release flag on. An account whose list removed this relay
    * identity takes it back on no path. Answers the binding the file holds after the write (PcAccountState.bindByList).
    */
-  bindByList(account: string, list: string): ListBound {
+  bindByList(account: string, list: string, serverId: string): ListBound {
     this.assertWritable();
     if (this.pc === null) throw new Error("A signed list needs OVIS_ACCOUNT_OPENS_ALL");
     if (this.account() !== null) throw new Error("This PC is already in an account");
     if (this.listRemovedFrom(account)) throw new Error("This PC was removed from that account");
-    return this.pc.bindByList(account, list);
+    return this.pc.bindByList(account, list, serverId);
   }
 
   /** The id of this PC's binding when it stands on the account service's word alone (bindByService), else null. */

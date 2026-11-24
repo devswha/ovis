@@ -5,10 +5,10 @@
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { cpSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { entryToText, readBody } from "../../shared/account-list-entry.ts";
+import { entryFromText, entryToText, readBody } from "../../shared/account-list-entry.ts";
 import { pinList, startRead, takePage, writeSave } from "../../shared/account-list-follower.ts";
 import { lineChallenge, verifyLineProof, type LineProof } from "../../shared/account-list-invite.ts";
 import { readJoinLine, type JoinLine } from "../../shared/account-list-join.ts";
@@ -25,6 +25,7 @@ import { ask, ended, pairingPc, sendLink, signedInWith, vouchFor, type Body, typ
 import { pressOnce } from "./one-press.ts";
 import { NAMED_READ_MS } from "./routes.ts";
 import { PcAccountState } from "./pc-binding.ts";
+import { privateStateFs } from "../private-state.ts";
 
 const ACCOUNT = "acct_1";
 const OTHER = "acct_2";
@@ -251,6 +252,25 @@ describe("a PC in no account is added to an account that keeps a signed list", (
     expect(made.pc.account.requests.some((line) => line.includes("/v1/pc/admission"))).toBe(false);
   });
 
+  test("what a join owes the account service, when the disk does not take it at the join, is written at the next pull", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    made.hook.on = async (request, forward) => new URL(request.url).pathname === "/v1/pc/mailbox" ? new Response("away", { status: 503 }) : await forward();
+    await made.start();
+    const { phone } = await compared(made, account);
+    await made.admit();
+    await account.addPostedPc(made.endpoint);
+    const receipt = join(made.pc.stateDir, "account-completion.json");
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === receipt) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+      renameSync(from, to);
+    });
+    try { expect((await made.confirm(phone)).body).toMatchObject({ state: "added" }); } finally { failing.mockRestore(); }
+    expect(existsSync(receipt)).toBe(false);
+    await made.services.accountMailbox.pull();
+    expect(JSON.parse(readFileSync(receipt, "utf8"))).toMatchObject({ account: ACCOUNT, list_bind_id: made.binding()!.bind_id });
+  });
+
   test("a join whose binding ended before any pull named its listing owes the account service nothing", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
@@ -383,6 +403,76 @@ describe("a PC in no account is added to an account that keeps a signed list", (
     expect(await made.state()).toMatchObject({ state: "ended", why: "cancelled" });
     expect(made.pc.devices.account()).toBeNull();
     expect(made.binding()).toBeNull();
+  });
+
+  test("a PC in its account that another way pins to another list while the confirmed add reads its list keeps that pin, and the add ends", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    await made.start();
+    const { phone } = await compared(made, account);
+    expect((await made.confirm(phone)).body).toMatchObject({ state: "confirmed" });
+    // a device's link brings the PC into its account meanwhile, on the service's word
+    made.pc.devices.bindByService(ACCOUNT);
+    await made.admit();
+    await account.addPostedPc(made.endpoint);
+    // and another list is pinned while the add's read of its own list is out
+    const elsewhere = "ab".repeat(32);
+    let pinned = false;
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname === "/v2/pc/list/log" && !pinned) {
+        pinned = PcAccountState.open(made.pc.stateDir).pinToList(made.binding()!.bind_id as string, elsewhere);
+      }
+      return await forward();
+    };
+    const state = await made.state();
+    expect(pinned).toBe(true);
+    expect(state.state).not.toBe("added");
+    expect(made.binding()).toMatchObject({ list: elsewhere });
+    expect(made.services.accountList!.status()).toMatchObject({ pinned_list: elsewhere });
+  });
+
+  test("a follower that stopped while the confirmed add read the list binds nothing from that read", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    await made.start();
+    const { phone } = await compared(made, account);
+    await made.admit();
+    await account.addPostedPc(made.endpoint);
+    let stopped = false;
+    made.hook.on = async (request, forward) => {
+      // Ovis stops on this PC while the read of the list is out
+      if (new URL(request.url).pathname === "/v2/pc/list/log" && !stopped) { stopped = true; made.services.accountList!.stop(); }
+      return await forward();
+    };
+    const confirmed = await made.confirm(phone);
+    expect(stopped).toBe(true);
+    expect(confirmed.body.state).not.toBe("added");
+    expect(made.binding()).toBeNull();
+    expect(existsSync(join(made.pc.stateDir, "account-completion.json"))).toBe(false);
+  });
+
+  test("a PC pinned to the list says it joined only by a copy that shows it in, never by a copy it is still reading", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    await made.start();
+    await made.confirm((await compared(made, account)).phone);
+    await made.admit();
+    await account.addPostedPc(made.endpoint);
+    expect(await made.state()).toMatchObject({ state: "added" });
+    // its copy is lost, and it starts again with the account service away: it holds a copy it has not read yet
+    const kept = mkdtempSync(join(tmpdir(), "ovis-list-join-"));
+    keptDirs.push(kept);
+    cpSync(made.pc.stateDir, kept, { recursive: true, filter: (path) => !statSync(path).isSocket() });
+    rmSync(join(kept, ACCOUNT_LIST_FILE));
+    await made.pc.close();
+    pcs.splice(pcs.indexOf(made.pc), 1);
+    const again = await pairingPc({ server: { accountOpensAll: true, platform: "linux", token: TOKEN }, startRelay: false,
+      prepare: (dir) => cpSync(kept, dir, { recursive: true }), accountFetch: async () => { throw new Error("The account service is away"); } });
+    pcs.push(again);
+    const list = again.app.context.services.accountList!;
+    await list.settled();
+    expect(list.status()).toMatchObject({ pinned: true, standing: "waiting" });
+    expect(await list.joinList({ account: ACCOUNT, list: account.id, by: null })).toEqual({ waiting: "waiting" });
   });
 
   test("only an entry the device whose number was confirmed signed adds the PC: another member's entry joins nothing", async () => {
@@ -645,6 +735,34 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
     expect(made.services.accountList!.allowRefusal()).toBe("not_signer");
   });
 
+  test("a PC's own join is dated by the clock that signs, held against the list's own time: a PC whose clock reads early joins all the same", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const line = await redeemed(made, await account.invite({ auto: true }));
+    // this PC's own clock reads five minutes early: what it signs is never dated before the list's own time
+    const follower = made.services.accountList! as unknown as { seconds(): number };
+    const early = spyOn(follower, "seconds").mockImplementation(() => Math.floor(Date.now() / 1000) - 300);
+    try { expect((await joinsByItself(made, account.id, line)).body).toEqual({ state: "added", account: ACCOUNT }); } finally { early.mockRestore(); }
+    const held = made.pc.account.accountList(ACCOUNT)!;
+    // its join is dated no earlier than the entry before it
+    const join = held.entries.at(-1)!;
+    expect(readBody(entryFromText(join).body).issued_at).toBeGreaterThanOrEqual(readBody(entryFromText(held.entries.at(-2)!).body).issued_at);
+  });
+
+  test("a gateway's 5xx answer to the placement is no refusal: the PC reads the list, and joins when its entry is there", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const line = await redeemed(made, await account.invite({ auto: true }));
+    // the account service places the entry, and a gateway in front of it answers 502
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/entries") return await forward();
+      await forward();
+      return new Response("Bad gateway", { status: 502 });
+    };
+    expect((await joinsByItself(made, account.id, line)).body).toEqual({ state: "added", account: ACCOUNT });
+    expect(made.binding()).toMatchObject({ account: ACCOUNT, list: account.id });
+  });
+
   test("a PC whose Ovis is older than what a member wrote into the list does not write itself in, and says that it needs an update", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
@@ -740,7 +858,7 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
   test("the join routes are this PC's own window's alone, and name the account this PC was set up for", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
-    for (const path of ["/api/account/list/join", "/api/account/list/join/prepare", "/api/account/list/join/body", "/api/account/list/join/place", "/api/account/list/allow/cancel"]) {
+    for (const path of ["/api/account/list/join", "/api/account/list/join/prepare", "/api/account/list/join/body", "/api/account/list/join/place"]) {
       const base = `http://127.0.0.1:${made.pc.app.port}`;
       const answer = await fetch(`${base}${path}`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-herdr-machine": "1", "x-forwarded-for": "100.64.0.9", ...own }, body: JSON.stringify({ account: ACCOUNT, list: account.id }) });
       expect(answer.status).toBe(403);
@@ -893,6 +1011,22 @@ describe("a device that scans the PC's QR code names the list over that pairing,
     const second = await phone.names(account.id);
     expect([second.status, second.body.error?.code]).toEqual([409, "pairing_ended"]);
     expect(made.pc.devices.account()).toBeNull();
+    expect(made.binding()).toBeNull();
+  });
+
+  test("a key this PC removed itself names no list, though it pairs again with the account's code", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const key = { keys: account.first.keys, spki: account.first.key };
+    // the device paired with a code of this PC's own, and the person revoked it here
+    const { code } = made.pc.devices.startPairing();
+    const before = await signedInWith(made.pc, code, key, { serverId: made.serverId });
+    expect(made.pc.devices.revoke(before.id)).toBe(true);
+    // it scans the account's QR code: its row waits to link, under the key this PC removed
+    const phone = await scanned(made, account.first);
+    const refused = await phone.names(account.id);
+    expect([refused.status, refused.body.error?.code]).toEqual([409, "tombstoned"]);
+    expect(made.pc.account.accountList(ACCOUNT)!.posts).toEqual([]);
     expect(made.binding()).toBeNull();
   });
 
