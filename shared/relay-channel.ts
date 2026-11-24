@@ -6,7 +6,7 @@ import { PENDING_MS, pairFingerprint, signPairProof } from "./pair-fingerprint.t
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, ACCOUNT_OPENS_ALL_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, PC_CODE_ACCOUNT_ONLY, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, ACCOUNT_OPENS_ALL_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, PC_CODE_ACCOUNT_ONLY, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
 import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine, MUX_SETUP_MS } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
@@ -30,6 +30,14 @@ export class AccountListUnsupportedError extends Error {
   constructor() {
     super("The PC does not let devices in by the account's signed list");
     this.name = "AccountListUnsupportedError";
+  }
+}
+
+/** A join that brought this device's card met a PC that follows another list than the one the card is for: nothing was compared with it. */
+export class ListMismatchError extends Error {
+  constructor() {
+    super("The PC follows another list than this device's account's");
+    this.name = "ListMismatchError";
   }
 }
 
@@ -170,6 +178,15 @@ export interface RelayChannelOptions {
    */
   readonly accountListKey?: boolean;
   /**
+   * A join of the account by a device that claimed its key for the account's signed list (docs/account.md, "A PC
+   * allows a device into the list"): the list, its encryption key and its card for that list. The join then offers
+   * ACCOUNT_LIST_ALLOW, and to a PC that selects it (one pinned to its list) sends the card with PAIR_REQUEST. Such a
+   * PC names the list it follows in its challenge, and the attempt ends there, before any digits are shown, when that
+   * is another list than the card's (ListMismatchError). The PC's AUTH_OK then names the place of the entry that let
+   * the device in (RelayChannel.listPlace), and no pairing is saved: the list lets the key in, not a row of the PC's.
+   */
+  readonly listCard?: { readonly list: string; readonly enc: string; readonly card: string };
+  /**
    * Offer KEY_PROOF_FEATURE (device table T71, T72): a pairing by code proves its key over the PC's KEY_CHALLENGE and
    * on KEY_PENDING reports the fingerprint it computed from this offer's server_id, that challenge and its own key.
    * Nothing the PC or the relay sends is shown as a fingerprint.
@@ -194,6 +211,12 @@ export interface RelayChannel {
   readonly carrierOpen: boolean;
   readonly directCarriers?: readonly string[];
   readonly direct?: string;
+  /**
+   * A join that brought the device's card (RelayChannelOptions.listCard): the list the PC let the device into and the
+   * place of the entry that did, as the PC says. The device reads the list up to that place itself. Such a session
+   * serves nothing else: the caller closes it and signs in with the key the list now holds.
+   */
+  readonly listPlace?: { readonly id: string; readonly seq: number; readonly hash: string };
   close(): void;
 }
 
@@ -252,7 +275,9 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     const comparing = offer.code === undefined && device.device_id === null && (options.compare !== undefined || options.intent === "vouched");
     // an older PC selects none of these; a comparison names what it asks for, so the PC's prompt can say it
     const offered: readonly string[] = comparing
-      ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC, ...(options.intent === "vouched" ? [PAIR_PC_PROOF] : [])]
+      ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC, ...(options.intent === "vouched" ? [PAIR_PC_PROOF] : []),
+        // a join of the account brings the device's card for the account's list, to a PC that takes one
+        ...(options.intent === "account" && options.listCard !== undefined ? [ACCOUNT_LIST_ALLOW] : [])]
       : [ACCOUNT_FEATURE,
         // a sign-in by the list key offers the account open too, never requires it: a PC tells the ten-second hold of a device its list let in only to a client that offered it
         ...options.accountOpensAll === true || (options.accountListKey === true && offer.code === undefined) ? [ACCOUNT_OPENS_ALL_FEATURE] : [],
@@ -265,6 +290,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     let challenge: Uint8Array | undefined;
     /** set once PAIR_CONFIRM went out: before it, AUTH_OK would be a PC skipping the comparison on this phone */
     let confirmed = false;
+    /** the PC selected ACCOUNT_LIST_ALLOW for this join: the card went with the request, and its AUTH_OK names a place in that list */
+    let carded: { readonly list: string; readonly enc: string; readonly card: string } | undefined;
     let keyProof: { readonly fingerprint: string; readonly shown: boolean } | undefined;
     let secure: SecureChannel | undefined;
     let mux: MuxEngine | undefined;
@@ -358,8 +385,10 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           phase = "pair";
           expect(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
           mux?.extendSetup(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS);
+          carded = options.intent === "account" && frame.payload.features.includes(ACCOUNT_LIST_ALLOW) ? options.listCard : undefined;
           await send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
-            payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)), ...(options.pcProof ? { server_key: options.pcProof.publicKey } : {}) } });
+            payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)), ...(options.pcProof ? { server_key: options.pcProof.publicKey } : {}),
+              ...(carded === undefined ? {} : { list_enc: carded.enc, list_card: carded.card }) } });
         } else if (offer.code !== undefined) {
           if (options.pcCodeAdd && frame.payload.features.includes(PC_CODE_ACCOUNT_ONLY)) throw new TargetAccountPcError();
           await send({ type: FrameType.PAIR, flags: 0, stream_id: 0,
@@ -374,6 +403,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         return;
       }
       if (phase === "pair" && frame.type === FrameType.PAIR_CHALLENGE && binding && phoneNonce) {
+        // the PC follows another list than the one this device's card is for: nothing is compared, and nothing revealed
+        if (carded !== undefined && frame.payload.list !== carded.list) throw new ListMismatchError();
         challenge = bytes;
         phase = "auth";
         if (options.intent === "vouched") {
@@ -431,7 +462,12 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       if (offer.code === undefined && !comparing && frame.payload.device_id !== device.device_id) {
         throw new MuxProtocolError("auth_failed", "AUTH_OK named a different device");
       }
-      const admitted = await store.update(offer.server_id, (current) => {
+      // a place is taken only from a PC that took the card, and only in the list the card names
+      const listPlace = carded === undefined ? undefined : frame.payload.list;
+      if (listPlace !== undefined && listPlace.id !== carded?.list) throw new ListMismatchError();
+      // An entry of the list let this key in, and no row of the PC's own stands behind it: nothing is saved here as a
+      // pairing. The device signs in with that key as any device of the list does.
+      const admitted = listPlace !== undefined ? { ...device, device_id: frame.payload.device_id } : await store.update(offer.server_id, (current) => {
         // a first pairing's key is saved only now that the PC has admitted it (device.ts getDevice)
         const kept = current ?? (device.device_id === null ? device : undefined);
         if (!kept || kept.server_public_key !== device.server_public_key || kept.public_spki !== device.public_spki) {
@@ -454,6 +490,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       clearTimeout(deadline);
       resolve({ mux, device: admitted, connectionId, sessionId: frame.payload.session_id, role: frame.payload.role, server,
         directCarriers: options.offerDirect ? frame.payload.direct ?? [] : [],
+        ...(listPlace === undefined ? {} : { listPlace }),
         ...(direct === undefined ? {} : { direct }),
         get carrierOpen() { return phase === "ready" && socket.readyState === OPEN; },
         close: () => stop(new MuxProtocolError("internal_error", "Relay channel closed")) });
