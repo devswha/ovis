@@ -1,10 +1,10 @@
 /* The card sits on the composer's column, directly above the input card and outside the
    transcript (PaneTerminal places it; the column and the space under it are Composer.css's).
    Its height is budgeted, and a phone's keyboard counts (--app-height): the larger of 60% of the
-   app and six touch rows, so a three-option approval is never cut. Only the reference text gives
-   way (.prompt-card-body); when that is not enough the card scrolls as a whole. The composer's
-   folder strip under the input card comes out of that 60% (--prompt-card-strip), so the transcript
-   keeps what it had without one. */
+   app and six touch rows, so a three-option approval is never cut. Only an approval's or a plan's
+   reference text gives way (.prompt-card-body), never a question's context (.is-prose); when that
+   is not enough the card scrolls as a whole. The composer's folder strip under the input card
+   comes out of that 60% (--prompt-card-strip), so the transcript keeps what it had without one. */
 .prompt-card {
   --prompt-card-strip: 0px;
   flex: 0 1 auto;
@@ -339,16 +339,13 @@
   min-height: calc(1lh + 2 * var(--space-2));
 }
 
-/* a question's context is prose, not terminal output: body-size text and room for a few lines before it scrolls */
+/* a question's context is prose the answer depends on: body-size text, and its own height up to ten
+   lines (then it scrolls) rather than giving way to long options; the card scrolls as a whole instead */
 .prompt-card-body.is-prose {
-  min-height: calc(4lh + 2 * var(--space-2));
+  flex-shrink: 0;
   max-height: calc(10lh + 2 * var(--space-2));
   font-family: inherit;
   font-size: var(--fs-sm);
-}
-
-.prompt-card-body.is-prose.is-line {
-  min-height: calc(1lh + 2 * var(--space-2));
 }
 
 .prompt-card-body::after {

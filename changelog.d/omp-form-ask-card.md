@@ -5,3 +5,5 @@
 - On a phone, where omp's form box scrolls, a choice whose options run past the box no longer shows
   as a card with only the options on screen: a radio group is filled in from the agent's form, and
   otherwise the card says more options are listed in the terminal.
+- On a phone, a question's context is no longer squeezed to a line when its options are long: it
+  keeps its own height, up to ten lines, and the card scrolls as a whole.
