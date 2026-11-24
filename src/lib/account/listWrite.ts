@@ -329,8 +329,11 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       const read = await list.sync({ read: true });
       const again = (options.writer ?? (() => list.writer()))();
       if (again === null || again.list !== writer.list || again.state.footing.seq !== writer.state.footing.seq || again.state.footing.hash !== writer.state.footing.hash) continue;
-      // the head did not move, by a read that reached the log: while the kept request is young the person is told of it
-      if (!read.reached || writer.issued_at - kept.at < KEPT_SECONDS) return refused("waiting");
+      // the head did not move, by a read that reached the log: while the kept request is young the person is told of
+      // it. One dated after this device's clock as it reads now (the clock was set back) has no age to go by: it is
+      // let go, since that read showed it unplaced.
+      const age = writer.issued_at - kept.at;
+      if (!read.reached || (age >= 0 && age < KEPT_SECONDS)) return refused("waiting");
       // older than that, it is an attempt its writer left behind, and no fork: it is let go, and this change is signed
       await list.unkeep(writer.account, kept).catch(() => undefined);
       kept = null;

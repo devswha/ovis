@@ -181,9 +181,9 @@ describe("the admission before a first link", () => {
       pcs: namings.length === 0 ? [] : [{ endpoint, server_id: offer.server_id, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 2, by: key.public_spki, new_at: null }],
     });
     const accountList: AccountList | undefined = !options.namedList ? undefined : {
-      sync: async () => listView(), follows: async () => true, view: listView, subscribe: () => () => {}, holdsPc: () => namings.length > 0, pcOfKey: () => null, due: () => null,
+      sync: async () => listView(), follows: async () => true, view: listView, subscribe: () => () => {}, holdsPc: () => namings.length > 0, pcOfKey: () => null, due: () => null, shown: () => Math.floor(Date.now() / 1000),
       shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
-      kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
+      kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
       // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
       writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki } }) as ListWriter,
     };
@@ -528,6 +528,16 @@ describe("the admission before a first link", () => {
     expect([said.title, said.retry]).toEqual(["Desk was removed from your account", false]);
     expect(said.copy).toContain("only as a new PC");
     expect(JSON.stringify(said)).not.toContain("private refusal");
+  });
+
+  // a pairing with no mark is the device's own and stands whatever the link answers: the words are said all the same
+  it("says that the account's list removed the PC for a plain code's link too, and keeps the pairing that was made", async () => {
+    const run = await pairing({ pcIn: true, listed: true, links: [() => Response.json({ error: { code: "list_removed", message: "private refusal" } }, { status: 409 })] });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "failed");
+    expect([run.failure(), run.apps()]).toEqual(["list-removed", 0]);
+    // nothing of this device's was forgotten: the pairing made with the PC itself still opens it
+    expect(await run.store.get(run.offer.server_id)).toMatchObject({ server_id: run.offer.server_id });
   });
 
   // a PC already in an account keeps a row whose link names another account, and the device drives it as before

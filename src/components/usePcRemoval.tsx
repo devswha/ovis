@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 
 import { shellAccountActions, type FreshSignIn } from "../lib/account/hostedSignIn.ts";
-import { pageListPc } from "../lib/account/listPcs.ts";
+import { pageListPc, pageListUnread, readPageList } from "../lib/account/listPcs.ts";
 import { removeListPc } from "../lib/account/listRemove.ts";
 import { writeScope, type WriteScope, LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
@@ -89,8 +89,14 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
 
   const remove = async (session: AccountSession, serverId: string, listingId?: string, held?: HeldRemoval | null): Promise<boolean> => {
     setAsked(null);
+    // A device that holds a copy of its account's list goes by it also on a page that has not read it yet: the read
+    // is waited for. Where none ends, nothing is removed: not by an entry it cannot sign on, and never by the account
+    // service's directory, which would leave the PC in the list and show it as gone.
+    await readPageList(session.account);
+    if (pageListUnread(session.account)) throw new ListPcRemovalError("blocked");
     const list = pageAccountList();
-    const bound = held === undefined ? heldRemoval(session.account, serverId) : held;
+    // the row the question was asked for; where the page had not read its list then, the row as that read shows it
+    const bound = held ?? heldRemoval(session.account, serverId);
     if (list !== null && bound !== null) {
       // For the account, the list, the member key and the relay key of the row the person pressed: another tab's
       // sign-in changes none of them under it, and a PC that another member put out meanwhile is found out already.

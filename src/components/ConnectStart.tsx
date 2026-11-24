@@ -102,6 +102,8 @@ export interface RelayTabPc {
   readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | "update" | "removed" | undefined; readonly saved: boolean;
   /** the account has a list of its devices and PCs, and this device does not find the PC in it (myPcs `notInList`): the row says so */
   readonly outside?: true;
+  /** the account's list holds the PC and the account service names no way to it: the row stays, off, and opens nothing */
+  readonly noWay?: true;
 }
 
 /**
@@ -122,8 +124,11 @@ export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[
     const row = listed.get(device.server_id);
     return { server_id: device.server_id, name: device.name, status: device.status ?? (row?.state === "needs-update" ? "update" : unread ? undefined : row?.state === "offline" ? "off" : row?.listed ? "online" : undefined), saved: true };
   });
-  const more = (account ?? []).filter((pc) => !pc.paired && pc.join !== undefined && !own.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
-    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : checked.get(pc.server_id) ?? (unread ? undefined : pc.state === "offline" ? "off" : "online"), saved: false, ...(pc.notInList === true ? { outside: true as const } : {}) }));
+  // a PC the account's list holds stays a row also where the account service names no way to it: it is the account's
+  // by the list's word, and only that it cannot be reached now is the service's
+  const more = (account ?? []).filter((pc) => !pc.paired && (pc.join !== undefined || pc.byList === true) && !own.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
+    .map((pc): RelayTabPc => pc.join === undefined ? { server_id: pc.server_id, name: pc.name, status: "off", saved: false, noWay: true }
+      : { server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : checked.get(pc.server_id) ?? (unread ? undefined : pc.state === "offline" ? "off" : "online"), saved: false, ...(pc.notInList === true ? { outside: true as const } : {}) });
   const rows = [...own, ...more];
   const kept = known.filter((pc) => !rows.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
     .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : undefined, saved: false }));
@@ -232,7 +237,7 @@ function PcRow({ pc, editing = false, asking, onAsk, onKeep }: { readonly pc: Ph
     <li className="my-pc" data-pc-way={pc.way} {...pc.data}>
       {editing ? <div className="relay-add-saved-pc is-editing">{inside}</div>
         : pc.href !== undefined ? <a className="relay-add-saved-pc" href={pc.href} onClick={pc.onLink}>{inside}</a>
-        : <button type="button" className="relay-add-saved-pc" onClick={pc.open}>{inside}</button>}
+        : <button type="button" className="relay-add-saved-pc" disabled={pc.open === undefined} onClick={pc.open}>{inside}</button>}
       {others.length > 0 && (
         <button type="button" className="icon-button is-outlined my-pc-more" data-action="more-ways" aria-expanded={more} aria-controls={othersId}
           aria-label={t("More ways to open {name}", { name: pc.name })} title={t("More ways to open {name}", { name: pc.name })} onClick={() => setMore(!more)}>
@@ -460,7 +465,8 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   const fromRelay = (pc: RelayTabPc): PhonePc => {
     const used = relayUsed(pc);
     return {
-      key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
+      // a PC with no way to it (noWay) has nothing to open: its row stays, and says that it is off
+      key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : pc.noWay === true ? {} : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
       word: used ? "in-use" : pc.status, forget: forgetRelay(pc), kept: relayKept(pc), note: outsideNote(pc),
     };
   };
