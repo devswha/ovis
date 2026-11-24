@@ -14,6 +14,7 @@ import {
   wrapEpochKey, wrapEpochKeyFor, wrapFromText, wrapToText,
 } from "./account-list-seal.ts";
 import { type SealVector, type SealVectorResult, sealVectorResult } from "./account-list-seal-vectors.ts";
+import { newInvite, readJoinLine } from "./account-list-join.ts";
 import { SPKI_PREFIX } from "./account-records.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 
@@ -919,5 +920,158 @@ describe("what is handed over is read once", () => {
     const opening = openWrap({ list: LIST, epoch: 3, commitment: epochKeyCommitment({ list: LIST, epoch: kept }), wrap: wrapHanded, member: alice });
     wrapHanded.fill(0);
     expect(await opening).toEqual({ open: true, value: kept });
+  });
+
+  test("a batch of wraps is of one key, one list and one set of members, whatever the caller does while it is made", async () => {
+    const epoch: { epoch: number; key: Uint8Array } = { epoch: 3, key: newEpochKey(3).key };
+    const kept: EpochKey = { epoch: 3, key: new Uint8Array(epoch.key) };
+    const commitment = epochKeyCommitment({ list: LIST, epoch: kept });
+    const members = [alice.key, bob.key];
+    const given: { list: string; epoch: EpochKey; members: string[] } = { list: LIST, epoch, members };
+    const wrapping = wrapEpochKeyFor(given);
+    epoch.key.fill(0);
+    epoch.epoch = 9;
+    members.push(carol.key);
+    given.list = OTHER_LIST;
+    given.epoch = newEpochKey(3);
+    given.members = [carol.key];
+    const made = await wrapping;
+    expect(made.wraps.map((wrap) => wrap.member)).toEqual([alice.key, bob.key]);
+    for (const [index, member] of [alice, bob].entries()) {
+      expect(await openWrap({ list: LIST, epoch: 3, commitment, wrap: made.wraps[index]?.wrap, member })).toEqual({ open: true, value: kept });
+    }
+  });
+
+  test("a batch for nobody still refuses a list or a key that is not in form", async () => {
+    expect(await wrapEpochKeyFor({ list: LIST, epoch: newEpochKey(1), members: [] })).toEqual({ wraps: [], unwrapped: [] });
+    for (const given of [{ list: "", epoch: newEpochKey(1), members: [] }, { list: LIST, epoch: { epoch: 1, key: new Uint8Array(31) }, members: [] }, { list: LIST, epoch: newEpochKey(1), members: null as never }]) {
+      const error = await refusal(() => wrapEpochKeyFor(given));
+      expect(error instanceof ListSealError && error.reason).toBe("argument");
+    }
+  });
+
+  test("the next epoch is wrapped to the members that stayed when it was asked for: a member put back into the array meanwhile gets nothing", async () => {
+    const current = newEpochKey(0);
+    const kept: EpochKey = { epoch: 0, key: new Uint8Array(current.key) };
+    const staying = [alice.key, bob.key];
+    const given = { list: LIST, current, members: staying };
+    const making = nextEpoch(given);
+    staying.push(carol.key);
+    current.key.fill(0);
+    given.members = [carol.key];
+    given.list = OTHER_LIST;
+    const next = await making;
+    expect(next.wraps.map((wrap) => wrap.member)).toEqual([alice.key, bob.key]);
+    expect(next.unwrapped).toEqual([]);
+    expect(next.commitment).toBe(epochKeyCommitment({ list: LIST, epoch: next.epoch }));
+    for (const { wrap } of next.wraps) expect(await openWrap({ list: LIST, epoch: 1, commitment: next.commitment, wrap, member: carol })).toEqual({ open: false, why: "refused" });
+    for (const [index, member] of [alice, bob].entries()) {
+      expect(await openWrap({ list: LIST, epoch: 1, commitment: next.commitment, wrap: next.wraps[index]?.wrap, member })).toEqual({ open: true, value: next.epoch });
+    }
+    expect(await openLink({ list: LIST, from: next.epoch, link: next.link, commitment: epochKeyCommitment({ list: LIST, epoch: kept }) })).toEqual({ open: true, value: kept });
+  });
+
+  test("a link and the fields of a sealed field are of what was handed over, not of what the caller made of it meanwhile", async () => {
+    const opened = newEpochKey(2);
+    const previous = newEpochKey(1);
+    const keptOpened: EpochKey = { epoch: 2, key: new Uint8Array(opened.key) };
+    const keptPrevious: EpochKey = { epoch: 1, key: new Uint8Array(previous.key) };
+    const linkGiven = { list: LIST, opened, previous };
+    const linking = linkEpochs(linkGiven);
+    opened.key.fill(0);
+    previous.key.fill(0);
+    linkGiven.list = OTHER_LIST;
+    const link = await linking;
+    const commitment = epochKeyCommitment({ list: LIST, epoch: keptPrevious });
+    const handed = new Uint8Array(link);
+    const from: EpochKey = { epoch: 2, key: new Uint8Array(keptOpened.key) };
+    const openGiven = { list: LIST, from, link: handed, commitment };
+    const reading = openLink(openGiven);
+    handed.fill(0);
+    from.key.fill(0);
+    openGiven.list = OTHER_LIST;
+    expect(await reading).toEqual({ open: true, value: keptPrevious });
+
+    const value = utf8ToBytes("Home laptop");
+    const fields: ListField[] = [{ name: "label", value }];
+    const place = { list: LIST, seq: 4 };
+    const sealGiven = { place, epoch: keptOpened, commitment: epochKeyCommitment({ list: LIST, epoch: keptOpened }), fields };
+    const sealing = sealFields(sealGiven);
+    value.fill(0x58);
+    fields.push(text("os", "linux"));
+    place.seq = 5;
+    sealGiven.fields = [];
+    const sealed = await sealing;
+    const read = await openSealed({ place: { list: LIST, seq: 4 }, epoch: keptOpened, sealed });
+    expect(read.open && shown(read.value)).toEqual([["label", "Home laptop"]]);
+    const notBytes = await refusal(() => sealFields({ place: { list: LIST, seq: 4 }, epoch: keptOpened, commitment: epochKeyCommitment({ list: LIST, epoch: keptOpened }), fields: [{ name: "label", value: 4096 as never }] }));
+    expect(notBytes instanceof ListSealError && notBytes.reason).toBe("fields");
+  });
+
+  test("a walk reads what the list says once, before it opens anything: a map emptied or changed meanwhile changes nothing", async () => {
+    const keys = [newEpochKey(0)];
+    const openings = new Map<number, { commitment: string; link?: Uint8Array | null }>([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: keys[0] as EpochKey }) }]]);
+    for (let epoch = 1; epoch < 5; epoch += 1) {
+      const next = await nextEpoch({ list: LIST, current: keys[epoch - 1] as EpochKey, members: [] });
+      keys.push(next.epoch);
+      openings.set(epoch, { commitment: next.commitment, link: next.link });
+    }
+    const from: EpochKey = { epoch: 4, key: new Uint8Array((keys[4] as EpochKey).key) };
+    const given = { list: LIST, from, openings };
+    const walking = walkBack(given);
+    for (const opening of openings.values()) {
+      opening.link?.fill(0);
+      opening.commitment = "00".repeat(32);
+    }
+    openings.clear();
+    from.key.fill(0);
+    given.list = OTHER_LIST;
+    expect(await walking).toEqual({ keys: [...keys].reverse(), stopped: null });
+  });
+
+  test("a walk takes anything that answers as a ReadonlyMap does, and asks it only for the epochs it walks", async () => {
+    const keys = [newEpochKey(0)];
+    const inner = new Map<number, EpochOpening>([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: keys[0] as EpochKey }) }]]);
+    for (let epoch = 1; epoch < 6; epoch += 1) {
+      const next = await nextEpoch({ list: LIST, current: keys[epoch - 1] as EpochKey, members: [] });
+      keys.push(next.epoch);
+      inner.set(epoch, { commitment: next.commitment, link: next.link });
+    }
+    const asked: number[] = [];
+    /** A read-only view that is no Map: it has no way to be written, and nothing of Map.prototype works on it. */
+    class ReadOnly implements ReadonlyMap<number, EpochOpening> {
+      get size(): number { return inner.size; }
+      get(epoch: number): EpochOpening | undefined { asked.push(epoch); return inner.get(epoch); }
+      has(epoch: number): boolean { return inner.has(epoch); }
+      forEach(run: (value: EpochOpening, key: number, map: ReadonlyMap<number, EpochOpening>) => void): void { inner.forEach((value, key) => run(value, key, this)); }
+      entries() { return inner.entries(); }
+      keys() { return inner.keys(); }
+      values() { return inner.values(); }
+      [Symbol.iterator]() { return inner[Symbol.iterator](); }
+    }
+    const view = new ReadOnly();
+    expect(view instanceof Map).toBe(false);
+    expect(await walkBack({ list: LIST, from: keys[5] as EpochKey, openings: view })).toEqual({ keys: [...keys].reverse(), stopped: null });
+    asked.length = 0;
+    expect(await walkBack({ list: LIST, from: keys[5] as EpochKey, to: 3, openings: view })).toEqual({ keys: [keys[5], keys[4], keys[3]] as EpochKey[], stopped: null });
+    expect([...new Set(asked)].sort()).toEqual([3, 4, 5]);
+    const onlyGet = { get: (epoch: number) => inner.get(epoch) } as unknown as ReadonlyMap<number, EpochOpening>;
+    expect(await walkBack({ list: LIST, from: keys[5] as EpochKey, openings: onlyGet })).toEqual({ keys: [...keys].reverse(), stopped: null });
+    const frozen = Object.freeze(new Map(inner));
+    expect(await walkBack({ list: LIST, from: keys[5] as EpochKey, openings: frozen })).toEqual({ keys: [...keys].reverse(), stopped: null });
+  });
+
+  test("the key a join line gives opens a wrap made to the invite's key, and signs nothing", async () => {
+    const service = "https://accounts.ovis.test";
+    const invite = await newInvite(service, "TEST-ONLY-account", LIST);
+    const line = await readJoinLine(invite.line, { service, followsLists: true });
+    expect(line.key).toBe(invite.key);
+    expect(line.encryptionKey.extractable).toBe(false);
+    expect(line.encryptionKey.usages).toEqual(["deriveBits"]);
+    const epoch = newEpochKey(2);
+    const commitment = epochKeyCommitment({ list: LIST, epoch });
+    const wrap = await wrapEpochKey({ list: LIST, epoch, member: invite.key });
+    expect(await openWrap({ list: LIST, epoch: 2, commitment, wrap, member: { key: line.key, privateKey: line.encryptionKey } })).toEqual({ open: true, value: epoch });
+    expect(await openWrap({ list: LIST, epoch: 2, commitment, wrap, member: { key: alice.key, privateKey: line.encryptionKey } })).toEqual({ open: false, why: "refused" });
   });
 });

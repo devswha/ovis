@@ -159,6 +159,17 @@ function isEpochKey(value: EpochKey | null | undefined): value is EpochKey {
   return value !== null && value !== undefined && isListCount(value.epoch) && value.key instanceof Uint8Array && value.key.length === LIST_EPOCH_KEY_BYTES;
 }
 
+/**
+ * A caller's epoch key, read once and copied; null when it is none. Every function here takes what
+ * it is handed before its first await, so nothing a caller does to its own objects while a call
+ * is pending changes what the call makes or opens.
+ */
+function epochKeyOf(value: EpochKey | null | undefined): EpochKey | null {
+  if (value === null || value === undefined) return null;
+  const { epoch, key } = value;
+  return isListCount(epoch) && key instanceof Uint8Array && key.length === LIST_EPOCH_KEY_BYTES ? { epoch, key: new Uint8Array(key) } : null;
+}
+
 function isPlace(place: SealedPlace): boolean {
   return isListCount(place.seq) && (place.seq === 0 ? place.list === "" : isListHash(place.list));
 }
@@ -320,9 +331,14 @@ export function epochKeyCommitment(given: { readonly list: string; readonly epoc
 export async function wrapEpochKey(given: { readonly list: string; readonly epoch: EpochKey; readonly member: string }): Promise<Uint8Array | null> {
   const subtle = webCrypto();
   const { list, member } = given;
+  const epoch = epochKeyOf(given.epoch);
   if (!isListHash(list)) refuse("argument", "list is a list id: 64 of 0-9a-f");
-  if (!isEpochKey(given.epoch)) refuse("argument", "An epoch key is an epoch number and 32 bytes");
-  const epoch: EpochKey = { epoch: given.epoch.epoch, key: new Uint8Array(given.epoch.key) };
+  if (epoch === null) refuse("argument", "An epoch key is an epoch number and 32 bytes");
+  return await wrapTo(subtle, list, epoch, member);
+}
+
+/** One wrap, of a key and for a list that were already read and judged. */
+async function wrapTo(subtle: SubtleCrypto, list: string, epoch: EpochKey, member: string): Promise<Uint8Array | null> {
   if (typeof member !== "string" || !isListPoint(member)) return null;
   const ephemeral = await subtle.generateKey(ECDH, false, ["deriveBits"]);
   const point = new Uint8Array(await subtle.exportKey("raw", ephemeral.publicKey)).subarray(1);
@@ -330,12 +346,23 @@ export async function wrapEpochKey(given: { readonly list: string; readonly epoc
   return concatBytes(Uint8Array.of(LIST_SEAL_VERSION), point, await encrypt(subtle, cipher.key, cipher.iv, null, epoch.key));
 }
 
-/** An epoch key wrapped to each member of a set, each once. */
+/**
+ * An epoch key wrapped to each member of a set, each once. The list, the key and the members are
+ * read once, before the first wrap is made: every wrap of the batch is of that one key, for the
+ * members as they were handed over.
+ */
 export async function wrapEpochKeyFor(given: { readonly list: string; readonly epoch: EpochKey; readonly members: readonly string[] }): Promise<MemberWraps> {
+  const subtle = webCrypto();
+  const { list } = given;
+  const epoch = epochKeyOf(given.epoch);
+  if (!isListHash(list)) refuse("argument", "list is a list id: 64 of 0-9a-f");
+  if (epoch === null) refuse("argument", "An epoch key is an epoch number and 32 bytes");
+  if (!Array.isArray(given.members)) refuse("argument", "members is the list of the members' encryption keys");
+  const members = [...new Set<string>(given.members)];
   const wraps: MemberWrap[] = [];
   const unwrapped: string[] = [];
-  for (const member of new Set(given.members)) {
-    const wrap = await wrapEpochKey({ list: given.list, epoch: given.epoch, member });
+  for (const member of members) {
+    const wrap = await wrapTo(subtle, list, epoch, member);
     if (wrap === null) unwrapped.push(member);
     else wraps.push({ member, wrap });
   }
@@ -350,14 +377,16 @@ export async function openWrap(given: {
   readonly list: string; readonly epoch: number; readonly commitment: string; readonly wrap: Uint8Array | null | undefined; readonly member: MemberEncryptionKey;
 }): Promise<Opened<EpochKey>> {
   return await opening<EpochKey>(async (subtle) => {
-    const { list, epoch, commitment, member } = given;
-    if (given.wrap === null || given.wrap === undefined) return closed("missing");
-    const wrap = bytesOf(given.wrap, LIST_WRAP_BYTES, LIST_WRAP_BYTES);
-    if (!isListHash(list) || !isListCount(epoch) || !isListHash(commitment) || typeof member?.key !== "string" || !isListPoint(member.key)) return closed("form");
+    const { list, epoch, commitment, wrap: handed, member } = given;
+    if (handed === null || handed === undefined) return closed("missing");
+    const wrap = bytesOf(handed, LIST_WRAP_BYTES, LIST_WRAP_BYTES);
+    const memberKey = member?.key;
+    const privateKey = member?.privateKey;
+    if (!isListHash(list) || !isListCount(epoch) || !isListHash(commitment) || typeof memberKey !== "string" || !isListPoint(memberKey)) return closed("form");
     if (wrap === null || wrap[0] !== LIST_SEAL_VERSION) return closed("form");
     const point = wrap.subarray(1, 1 + POINT_BYTES);
     if (!isListPoint(toBase64Url(spkiOf(point)))) return closed("form");
-    const cipher = await wrapCipher(subtle, member.privateKey, point, wrapInfo(list, epoch, member.key, point));
+    const cipher = await wrapCipher(subtle, privateKey, point, wrapInfo(list, epoch, memberKey, point));
     const key = await decrypt(subtle, cipher.key, cipher.iv, null, wrap.subarray(1 + POINT_BYTES));
     if (key === null) return closed("refused");
     const opened: EpochKey = { epoch, key };
@@ -381,14 +410,19 @@ export function wrapFromText(text: string): Uint8Array | null {
 export async function linkEpochs(given: { readonly list: string; readonly opened: EpochKey; readonly previous: EpochKey }): Promise<Uint8Array> {
   const subtle = webCrypto();
   const { list } = given;
+  const opened = epochKeyOf(given.opened);
+  const previous = epochKeyOf(given.previous);
   if (!isListHash(list)) refuse("argument", "list is a list id: 64 of 0-9a-f");
-  if (!isEpochKey(given.opened) || !isEpochKey(given.previous)) refuse("argument", "An epoch key is an epoch number and 32 bytes");
-  if (given.opened.epoch !== given.previous.epoch + 1) refuse("argument", "A link goes from an epoch to the one before it");
-  const opened: EpochKey = { epoch: given.opened.epoch, key: new Uint8Array(given.opened.key) };
-  const previous = new Uint8Array(given.previous.key);
+  if (opened === null || previous === null) refuse("argument", "An epoch key is an epoch number and 32 bytes");
+  return await linkOf(subtle, list, opened, previous);
+}
+
+/** One link, of keys and for a list that were already read and judged. */
+async function linkOf(subtle: SubtleCrypto, list: string, opened: EpochKey, previous: EpochKey): Promise<Uint8Array> {
+  if (opened.epoch !== previous.epoch + 1) refuse("argument", "A link goes from an epoch to the one before it");
   const nonce = randomBytes(NONCE_BYTES);
   const key = await epochCipher(subtle, opened.key, LINK_TAG);
-  return concatBytes(Uint8Array.of(LIST_SEAL_VERSION), nonce, await encrypt(subtle, key, nonce, linkData(list, opened.epoch), previous));
+  return concatBytes(Uint8Array.of(LIST_SEAL_VERSION), nonce, await encrypt(subtle, key, nonce, linkData(list, opened.epoch), previous.key));
 }
 
 /** The key of the epoch before `from`, out of the link `from`'s opening entry carries, when it is the one the list commits to. */
@@ -396,11 +430,11 @@ export async function openLink(given: {
   readonly list: string; readonly from: EpochKey; readonly link: Uint8Array | null | undefined; readonly commitment: string;
 }): Promise<Opened<EpochKey>> {
   return await opening<EpochKey>(async (subtle) => {
-    const { list, commitment } = given;
-    if (given.link === null || given.link === undefined) return closed("missing");
-    const link = bytesOf(given.link, LIST_EPOCH_LINK_BYTES, LIST_EPOCH_LINK_BYTES);
-    if (!isListHash(list) || !isListHash(commitment) || !isEpochKey(given.from) || given.from.epoch < 1) return closed("form");
-    const from: EpochKey = { epoch: given.from.epoch, key: new Uint8Array(given.from.key) };
+    const { list, commitment, link: handed } = given;
+    if (handed === null || handed === undefined) return closed("missing");
+    const link = bytesOf(handed, LIST_EPOCH_LINK_BYTES, LIST_EPOCH_LINK_BYTES);
+    const from = epochKeyOf(given.from);
+    if (!isListHash(list) || !isListHash(commitment) || from === null || from.epoch < 1) return closed("form");
     if (link === null || link[0] !== LIST_SEAL_VERSION) return closed("form");
     const cipher = await epochCipher(subtle, from.key, LINK_TAG);
     const key = await decrypt(subtle, cipher, link.subarray(1, 1 + NONCE_BYTES), linkData(list, from.epoch), link.subarray(1 + NONCE_BYTES));
@@ -410,13 +444,31 @@ export async function openLink(given: {
   });
 }
 
+/** What the list says of one epoch as a walk reads it: nothing, or a commitment and a link, each still to be judged. */
+type Said = { readonly commitment: unknown; readonly link: Uint8Array | null | undefined } | "nothing" | "unreadable";
+
+/** One epoch of a caller's openings, read once through `get` alone (all a ReadonlyMap must answer), its link copied. */
+function saidOf(openings: ReadonlyMap<number, EpochOpening> | null | undefined, epoch: number): Said {
+  if (openings === null || openings === undefined) return "nothing";
+  try {
+    const opening = openings.get(epoch);
+    if (opening === null || opening === undefined) return "nothing";
+    const { commitment, link } = opening;
+    return { commitment, link: link instanceof Uint8Array ? new Uint8Array(link) : link };
+  } catch {
+    return "unreadable";
+  }
+}
+
 /**
  * From one epoch key down to epoch `to` (0 when not given), through the links: `openings` holds
  * what the list says of each epoch, by its number. The key it starts from is checked against its
  * own epoch's commitment like every key after it, so each key it gives is one the list commits
  * to. It stops where the list says nothing of an epoch, where a link is missing or does not open,
  * and after `max` links (LIST_EPOCH_WALK_MAX at most); what it reached stays good, and a caller
- * walks on from the last key. Like every opening it never throws.
+ * walks on from the last key. Like every opening it never throws. It reads the epochs it may walk
+ * out of `openings` before it opens anything, through `get` alone, so any read-only view of a map
+ * will do and nothing the caller does to it meanwhile changes the walk.
  */
 export async function walkBack(given: {
   readonly list: string; readonly from: EpochKey; readonly to?: number; readonly openings: ReadonlyMap<number, EpochOpening>; readonly max?: number;
@@ -424,28 +476,35 @@ export async function walkBack(given: {
   const keys: EpochKey[] = [];
   let epoch = 0;
   try {
-    if (!isEpochKey(given.from)) return { keys, stopped: { epoch, why: "form" } };
-    let from: EpochKey = { epoch: given.from.epoch, key: new Uint8Array(given.from.key) };
+    const { list, openings } = given;
+    const first = epochKeyOf(given.from);
+    if (first === null) return { keys, stopped: { epoch, why: "form" } };
+    let from = first;
     epoch = from.epoch;
-    const { list } = given;
     const to = given.to ?? 0;
     const max = Math.min(isListCount(given.max) ? given.max : LIST_EPOCH_WALK_MAX, LIST_EPOCH_WALK_MAX);
     if (!isListHash(list) || !isListCount(to)) return { keys, stopped: { epoch, why: "form" } };
-    const openings = new Map(given.openings);
-    const own = openings.get(epoch)?.commitment;
-    if (own === undefined) return { keys, stopped: { epoch, why: "missing" } };
-    if (!isListHash(own)) return { keys, stopped: { epoch, why: "form" } };
-    if (epochKeyCommitment({ list, epoch: from }) !== own) return { keys, stopped: { epoch, why: "other_key" } };
+    const lowest = Math.max(Math.min(to, epoch), epoch - max);
+    const said = new Map<number, Said>();
+    for (let at = epoch; at >= lowest; at -= 1) said.set(at, saidOf(openings, at));
+
+    const own = said.get(epoch) ?? "nothing";
+    if (own === "unreadable") return { keys, stopped: { epoch, why: "unavailable" } };
+    if (own === "nothing" || own.commitment === undefined) return { keys, stopped: { epoch, why: "missing" } };
+    if (typeof own.commitment !== "string" || !isListHash(own.commitment)) return { keys, stopped: { epoch, why: "form" } };
+    if (epochKeyCommitment({ list, epoch: from }) !== own.commitment) return { keys, stopped: { epoch, why: "other_key" } };
     keys.push(from);
     if (to > epoch) return { keys, stopped: { epoch: to, why: "missing" } };
     for (let steps = 0; from.epoch > to; steps += 1) {
       epoch = from.epoch - 1;
       if (steps >= max) return { keys, stopped: { epoch, why: "bound" } };
-      const commitment = openings.get(epoch)?.commitment;
-      if (commitment === undefined) return { keys, stopped: { epoch, why: "missing" } };
-      const before = await openLink({ list, from, link: openings.get(from.epoch)?.link, commitment });
-      if (!before.open) return { keys, stopped: { epoch, why: before.why } };
-      from = before.value;
+      const before = said.get(epoch) ?? "nothing";
+      const here = said.get(from.epoch) ?? "nothing";
+      if (before === "unreadable" || here === "unreadable") return { keys, stopped: { epoch, why: "unavailable" } };
+      if (before === "nothing" || before.commitment === undefined) return { keys, stopped: { epoch, why: "missing" } };
+      const opened = await openLink({ list, from, link: here === "nothing" ? null : here.link, commitment: before.commitment as string });
+      if (!opened.open) return { keys, stopped: { epoch, why: opened.why } };
+      from = opened.value;
       keys.push(from);
     }
     return { keys, stopped: null };
@@ -456,7 +515,14 @@ export async function walkBack(given: {
 
 /** The plaintext of the fields and the field that fills it up to a multiple of LIST_SEALED_PAD_BYTES. */
 function paddedPlaintext(given: readonly ListField[]): Uint8Array {
-  const fields = [...given];
+  if (!Array.isArray(given)) refuse("fields", "The fields are not in the form of an entry's fields, or do not fit a sealed field");
+  const fields: ListField[] = [];
+  for (const field of given) {
+    const name = field?.name;
+    const value = field?.value;
+    if (typeof name !== "string" || !(value instanceof Uint8Array)) refuse("fields", "The fields are not in the form of an entry's fields, or do not fit a sealed field");
+    fields.push({ name, value: new Uint8Array(value) });
+  }
   if (fields.some((field) => field.name === LIST_SEALED_PAD_NAME)) refuse("fields", `${LIST_SEALED_PAD_NAME} is the field that fills a sealed field: no caller writes it`);
   try {
     const bare = writeFieldsUnder(LIST_SEALED_PREFIX, fields).length;
@@ -490,9 +556,9 @@ export async function sealFields(given: {
   const subtle = webCrypto();
   const place: SealedPlace = { list: given.place.list, seq: given.place.seq };
   const { commitment } = given;
+  const epoch = epochKeyOf(given.epoch);
   if (!isPlace(place)) refuse("argument", "A place is a seq and the list id, which is empty for entry 0 and for no other");
-  if (!isEpochKey(given.epoch)) refuse("argument", "An epoch key is an epoch number and 32 bytes");
-  const epoch: EpochKey = { epoch: given.epoch.epoch, key: new Uint8Array(given.epoch.key) };
+  if (epoch === null) refuse("argument", "An epoch key is an epoch number and 32 bytes");
   if (place.seq === 0 && epoch.epoch !== 0) refuse("argument", "Entry 0 is sealed under epoch 0");
   if (typeof commitment !== "string" || !isListHash(commitment)) refuse("argument", "commitment is the hash the list holds for the epoch");
   if (epochKeyCommitment({ list: place.list, epoch }) !== commitment) refuse("other_key", "The key is not the one the list commits to for its epoch");
@@ -507,11 +573,12 @@ export async function openSealed(given: {
   readonly place: SealedPlace; readonly epoch: EpochKey | null | undefined; readonly sealed: Uint8Array | null | undefined;
 }): Promise<Opened<readonly ListField[]>> {
   return await opening<readonly ListField[]>(async (subtle) => {
-    if (given.sealed === null || given.sealed === undefined || given.epoch === null || given.epoch === undefined) return closed("missing");
-    const sealed = bytesOf(given.sealed, SEALED_MIN, LIST_BODY_MAX);
+    const { sealed: handed, epoch: handedKey } = given;
+    if (handed === null || handed === undefined || handedKey === null || handedKey === undefined) return closed("missing");
+    const sealed = bytesOf(handed, SEALED_MIN, LIST_BODY_MAX);
     const place: SealedPlace = { list: given.place.list, seq: given.place.seq };
-    if (!isPlace(place) || !isEpochKey(given.epoch)) return closed("form");
-    const epoch: EpochKey = { epoch: given.epoch.epoch, key: new Uint8Array(given.epoch.key) };
+    const epoch = epochKeyOf(handedKey);
+    if (!isPlace(place) || epoch === null) return closed("form");
     if (sealed === null || sealed[0] !== LIST_SEAL_VERSION) return closed("form");
     const key = await epochCipher(subtle, epoch.key, SEAL_TAG);
     const plaintext = await decrypt(subtle, key, sealed.subarray(1, 1 + NONCE_BYTES), sealedData(place, epoch.epoch), sealed.subarray(1 + NONCE_BYTES));
@@ -530,12 +597,25 @@ export async function openSealed(given: {
  * was sealed under the epoch before stays readable to the member that left; nothing under the new
  * key is. Called afresh for every attempt: a key whose wraps went out in a request that did not
  * place is never used again, since the members it was wrapped to may no longer be the ones that
- * stay.
+ * stay. The members are read once, before anything is made: the key is wrapped to the set as it
+ * was handed over, whatever the caller does to its array meanwhile.
  */
 export async function nextEpoch(given: { readonly list: string; readonly current: EpochKey; readonly members: readonly string[] }): Promise<NextEpoch> {
-  if (!isEpochKey(given.current)) refuse("argument", "An epoch key is an epoch number and 32 bytes");
-  const current: EpochKey = { epoch: given.current.epoch, key: new Uint8Array(given.current.key) };
+  const subtle = webCrypto();
+  const { list } = given;
+  const current = epochKeyOf(given.current);
+  if (!isListHash(list)) refuse("argument", "list is a list id: 64 of 0-9a-f");
+  if (current === null) refuse("argument", "An epoch key is an epoch number and 32 bytes");
+  if (!Array.isArray(given.members)) refuse("argument", "members is the list of the members' encryption keys");
+  const members = [...new Set<string>(given.members)];
   const epoch = newEpochKey(current.epoch + 1);
-  const link = await linkEpochs({ list: given.list, opened: epoch, previous: current });
-  return { epoch, commitment: epochKeyCommitment({ list: given.list, epoch }), link, ...(await wrapEpochKeyFor({ list: given.list, epoch, members: given.members })) };
+  const link = await linkOf(subtle, list, epoch, current);
+  const wraps: MemberWrap[] = [];
+  const unwrapped: string[] = [];
+  for (const member of members) {
+    const wrap = await wrapTo(subtle, list, epoch, member);
+    if (wrap === null) unwrapped.push(member);
+    else wraps.push({ member, wrap });
+  }
+  return { epoch, commitment: epochKeyCommitment({ list, epoch }), link, wraps, unwrapped };
 }

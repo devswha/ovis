@@ -190,8 +190,11 @@ data      = "ovis-list-seal/1" || id(list) || number(seq) || number(epoch)
 plaintext = "ovis-list-sealed/1" field field ...
 ```
 
-- `list`, `seq` and the epoch are the entry's own, so a sealed field opens only in the entry it
-  was sealed for.
+- `list`, `seq` and the epoch are the entry's own, so a sealed field opens only at the place it
+  was sealed for: that list, that `seq`, that epoch. It is bound to the place, not to one entry.
+  When two entries are written for one place (two members reach for the same `seq`), the sealed
+  field of either opens in the other. Which body stands at a place is said by the entry's
+  signature and the chain, which cover the bytes of `sealed` like every other field.
 - The plaintext's fields have the form of an entry's fields: lengths of 4 bytes, names ascending.
   A sealed field is the plaintext and 29 bytes, and at most 8192 bytes.
 - A writer fills the plaintext up to 256 bytes, or to the next multiple of 256 when it is longer,
@@ -203,11 +206,12 @@ plaintext = "ovis-list-sealed/1" field field ...
 - The nonce is 12 random bytes. It is never made from `seq`: a member whose entry n lost its place
   signs another entry n, with other fields, and a nonce made from `seq` would come twice under one
   key.
-- The bound of one epoch key: among n fields sealed under it, the chance that two nonces are equal
-  is under n² / 2^97, and it stays under 2^-32 up to 2^32 fields. Every field sealed counts, also
-  for an entry that never got its place. The account service takes at most 16384 entries into one
-  list; were each of them sealed under one key, and sealed again a thousand times over, the chance
-  would be under 2^-49.
+- The bound of one epoch key counts sealings, not entries: every time any member seals a field
+  under that key, for an entry that got its place, for one that lost it to another member's, and
+  for every new try. Among n sealings under one key the chance that two nonces are equal is under
+  n² / 2^97, and it stays under 2^-32 up to 2^32 sealings. For a sense of the size: the account
+  service takes at most 16384 entries into one list; with every one of them sealed under one key
+  and a thousand sealings for each, the chance is under 2^-49.
 - The epoch key never encrypts by itself: fields and links each use a key of their own made from it.
 - An epoch key belongs to one list and one epoch. It is never used for another list or made the
   key of another epoch.
