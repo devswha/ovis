@@ -117,16 +117,49 @@ impl Drop for Keeper {
     }
 }
 
-/// Waits (bounded by WAIT) for a process to end, on its pidfd: no polling.
+/// Waits (bounded by WAIT) for a process to end, on its pidfd. Where pidfd_open is refused (a
+/// container whose seccomp profile predates it answers EPERM or ENOSYS), it says so and reads
+/// /proc instead: a process that has exited and waits to be reaped (state Z) has ended too.
 pub fn wait_gone(pid: i32) -> bool {
+    let deadline = Instant::now() + WAIT;
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
     if fd < 0 {
-        return std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return true;
+        }
+        eprintln!("pidfd_open({pid}) refused ({error}): reading /proc/{pid}/stat instead");
+        while Instant::now() < deadline {
+            if ended(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        return false;
     }
     let mut poll = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-    let ready = unsafe { libc::poll(&mut poll, 1, WAIT.as_millis() as i32) };
+    let ready = loop {
+        let left = deadline.saturating_duration_since(Instant::now()).as_millis() as i32;
+        let ready = unsafe { libc::poll(&mut poll, 1, left) };
+        let error = std::io::Error::last_os_error();
+        if ready >= 0 || error.raw_os_error() != Some(libc::EINTR) {
+            if ready < 0 {
+                eprintln!("poll on the pidfd of {pid} failed: {error}");
+            }
+            break ready;
+        }
+    };
     unsafe { libc::close(fd) };
     ready == 1
+}
+
+/// Whether `pid` is gone or has exited and waits to be reaped.
+fn ended(pid: i32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        // the state follows the command's closing parenthesis
+        Ok(stat) => stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.starts_with('Z') || rest.starts_with('X')),
+    }
 }
 
 /// Kills what a test started outside the keeper's reach, so a failing test leaves nothing behind.
