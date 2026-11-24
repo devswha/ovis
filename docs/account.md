@@ -611,7 +611,9 @@ service's pages, each entry on its own signature, and answers `{ "verdict", "ask
 that no member signed, `refused`, `stuck`, `fork`), the place it wants next from that device when
 it needs an earlier one, and where it stands then. Any signed-in device may call both, one that
 only watches and one in its join hold too; nothing is taken on its word. One session makes 30 of
-these calls a minute (429 `rate_limited`, `retry-after`). 503 `not_saved`: the entries were
+these calls a minute (429 `rate_limited`, `retry-after`), counted by a clock that only moves forward
+and charged before the body is read; a session's count is never dropped to make room for another,
+so a session past the 64 that are counted waits its minute. 503 `not_saved`: the entries were
 verified and acted on, and the PC could not save them; hand them again later. 404 `not_found` on a
 PC that follows no list a person named; 409 `not_my_list` for a page of another list; 400
 `invalid_head`, `invalid_page`.
@@ -623,7 +625,10 @@ code made for the account) names the account's signed list in the place of its l
 "added", "account" }` once the PC joined by an entry that device's key signed. Refused as a link is
 (403 `link_required`, 409 `account_mismatch`, 403 `unverified_device`, 409 `pairing_ended`, 409
 `list_removed`, 503 `account_unavailable` with `retry-after`), and 409 `other_adder`, 400
-`invalid_list`, 404 on a PC that follows no list.
+`invalid_list`, 404 on a PC that follows no list. A naming is the row's from the moment it arrives:
+another list named by the same row meanwhile, or after, is refused 409 `pairing_ended` and spends
+none of the row's tries; the same naming asked again waits for the first one's answer. A row that
+named a list sends no `link` after it (409 `list_named`): it is added by that list or not at all.
 
 `POST /api/account/list/add` `{ "account" }`: a person at this PC adds it to an account that keeps a
 signed list ([A PC is added to the list](#a-pc-is-added-to-the-list)). This PC's own window and CLI
@@ -654,20 +659,27 @@ device shows the same number, and which. It confirms only the number this PC sho
 Any other is answered 409 `wrong_number`: that number is shown no more, the answer names none, and
 the device has to ask again. An add that is confirmed answers its state only to the number it was
 confirmed with. `POST /api/account/list/add/cancel` `{ "run"? }`: the numbers differ, or the person
-gave it up; the add ends and joins nothing, also when it was confirmed.
+gave it up; the add ends and joins nothing, also when it was confirmed, and also when its read of
+the list is out at that moment: the cancel, and the add's ten minutes, are asked at the binding's
+write itself.
 
 `POST /api/account/list/join` `{ "account", "list", "invite", "proof"? }`: `ovis join` with an
 invite's line that names the account's list ([A PC joins the list with an invite](#a-pc-joins-the-list-with-an-invite)).
 This PC's own window and CLI alone. `invite` is the invite's public key. Without `proof` it answers
-`{ "state": "prove", "challenge" }`: 32 hex digits made from the list's id and this PC's own card,
-which the line signs as a redeem message for this account and this PC. With that signature as
-`proof` it reads the list once and answers `{ "state": "waiting" }` (the PC's card is posted, and no
-entry adds it yet) or `{ "state": "added", "account" }`; 409 `line_unproven` for any other
-signature. A list id alone names no list. For a join the
+`{ "state": "prove", "card": { "key", "enc", "endpoint", "list" } }`: this PC's own card for that
+list, unsigned, which the line signs its proof for (`signLineProof`, the message `ovis-list-line/1`
+of [account-list.md](account-list.md): this account, this PC's id, its relay key and the challenge of
+that card). With that proof as `proof` it reads the list once and answers `{ "state": "waiting" }`
+(the PC's card is posted, with `invite` and `invite_proof` beside it, renewals too, so a device of
+the account can check by itself that the line's holder joined this PC) or `{ "state": "added",
+"account" }`; 409 `line_unproven` for anything else, a redeem signature of the line included,
+whatever challenge it signed. A list id alone names no list. For a join the
 PC makes by itself, three calls with `"invite"`, the invite's public key: `…/join/prepare` answers
 `{ "state": "prepared", "list", "seq", "enc", "seal", "wraps" }` (the place the join takes, the PC's
 encryption key, the epoch its names are sealed under, and the wraps the service holds for the
-invite); `…/join/body` `{ …, "seq", "sealed"? }` answers `{ "state": "body", "body" }`, the body the
+invite), or `{ "state": "prove", "card" }` on a PC that is in its account or in the list already:
+getting ready binds nothing, and such a PC joins only by the line's proof for its card, through
+`…/join`; `…/join/body` `{ …, "seq", "sealed"? }` answers `{ "state": "body", "body" }`, the body the
 PC built; `…/join/place` `{ …, "entry", "wraps"? }` places the entry of that body and answers as
 `…/join`. `{ "state": "again" }` from any of them: the list moved, so prepare again. 409 with the
 refusal's name where the PC joins no list (`list_removed`, `other_account`, `pinned`, `line_unproven`,
@@ -1739,8 +1751,11 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   resets the relay identity, lists the new PC and goes on with the add; anything else changes
   nothing. The reset names the relay identity the question was about (`POST
   /api/relay/reset-identity` `{ "removed": { "account", "server_id" } }`), and resets that one
-  alone (409 `identity_changed`, `not_removed`): a yes to an old question, typed after the PC was
-  reset and added again, resets nothing. Nothing does this by itself, and no run without a terminal does it: a removed PC never
+  alone, while the PC is still in no account (409 `identity_changed`, `not_removed`, `in_account`):
+  a yes to an old question, typed after the PC was reset and added again, or after it joined another
+  account with the same relay identity, resets nothing. It is asked before the reset begins and again
+  in the turn that resets, from the binding's file under its lock, so a join that lands while the
+  relay closes is seen too. Nothing does this by itself, and no run without a terminal does it: a removed PC never
   comes back unless a person at it says so. The key the list removed stays out for good.
 - **Another PC of the account** ([Adding a PC of your account](#adding-a-pc-of-your-account)) is
   taken as one only when the list holds its relay key, asked when its comparison begins and again
@@ -1812,7 +1827,12 @@ would be as good as the account's.
   nothing once the command is gone.
 - **No** at the PC (Enter at `ovis add`) ends the add. Nothing is joined, whatever the list then
   holds.
-- After the yes the PC shows no further number, and reads the list until its entry is there.
+- After the yes the PC shows no further number, and reads the list until its entry is there. The
+  ten minutes and a No are asked again at the binding's write itself: a read of the list that was
+  out when either came binds nothing.
+- Two Ovis servers on one state folder that join at once: the binding the file holds when the
+  second writes stands. The second goes by that binding and the copy the first saved, writes
+  nothing over it, and says it joined only once that copy shows the PC in.
 - An account with no list is added as before, in one press. A PC asks the account service whether
   the account keeps a list (`POST /v2/pc/list`); while that goes unanswered it waits, and binds
   nothing. An account that made its list since the PC last asked takes it in one press no more: the
@@ -1830,11 +1850,13 @@ PC confirms the account before anything is sent, so the line is what names the l
 number is compared. The line never leaves `ovis join`: not to this PC's server, not into a file.
 
 - **An invite a person adds a PC with.** The PC redeems the invite. `ovis join` then shows the PC
-  that it holds the line: the PC says what to sign (a challenge made from the list's id and its own
-  card), and the line signs it for this account and this PC. Only then does the PC post its card
-  and wait. A device of the account shows its card and chooses **Add**, which signs the `pc` entry.
-  The PC joins once it reads that entry, in a list that holds the invite (`POST
-  /api/account/list/join`).
+  that it holds the line: the PC hands over its own card for the list, and the line signs its proof
+  for that card (`ovis-list-line/1`: this account, this PC, that list, those keys). It is a message
+  of its own, never a redeem signature, whose challenge an account service chooses. Only then does
+  the PC post its card, with the invite and that proof beside it, and wait: a device of the account
+  checks the proof itself before it offers **Add** for a PC that joined with its invite, and **Add**
+  signs the `pc` entry. The PC joins once it reads that entry, in a list that holds the invite
+  (`POST /api/account/list/join`).
 - **An invite a PC joins with by itself.** Nobody else has to be awake. The PC redeems the invite,
   reads the list, and builds its own `join` entry from its own keys, with a card it signs for this
   list, its relay key and that invite. `ovis join` signs that body with the line's key, which signs
@@ -1845,6 +1867,15 @@ number is compared. The line never leaves `ovis join`: not to this PC's server, 
 - A PC joins by itself only with an invite the list holds as open, made for that purpose, and for
   one PC (`uses` 1): one that lets several PCs in is refused `invite_uses`, and one a person adds a
   PC with `invite_plain`.
+- Getting ready to join binds nothing. A PC the list holds already (an earlier run's join that
+  placed, or a device's Add), or one in its account already, writes no join: `ovis join` has the
+  line sign its proof for the PC's card instead, and the PC joins by that, as with an invite a person
+  adds a PC with.
+- **When it is in.** A PC that joined by its list tells the account service its add is complete
+  (`POST /v1/pc/complete`), once, so the account's page stops showing it as only listed. The listing
+  that names is the one its own mailbox pull names, never an admission: an account with a list takes
+  none. Nothing waits for it, and a refusal of it only drops it: the list says the PC is in, not the
+  listing.
 - A PC that joined by itself is in the list and signs for nothing: it lets no device in
   ([A PC allows a device into the list](#a-pc-allows-a-device-into-the-list)).
 - A line that names no list adds a PC nowhere in an account that keeps one (`list_add`): the
@@ -1871,8 +1902,12 @@ the PC answers with is the PC's own.
 - The device calls again. The PC reads the list and joins when the list holds its entry **and the
   key that paired signed it**: `{ "state": "added" }`. An entry another key signed is refused
   `other_adder`. The PC writes no member for the pairing: its devices are the list's.
-- A device names one list. A second list from the same pairing is refused `pairing_ended`. Its
-  first naming is one of its five tries, as a link is; asking again where it stands is not.
+- A device names one list. A second list from the same pairing is refused `pairing_ended`, also
+  while the first naming is still asked about, and spends none of its tries. Its first naming is
+  one of its five tries, as a link is; asking again where it stands is not.
+- Once it named a list, the pairing has no other way in: a `link` it sends after is refused
+  `list_named`, and it stays a pairing that waits until that list holds the PC by its key. Ending
+  the naming is ending the pairing (scan the code again).
 - Whoever can read the PC's QR code, and is a device the account service vouches for, can add the
   PC to a list that names that account. That is what the QR code is: keep it to yourself, as
   before.

@@ -1963,6 +1963,7 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     if (line === null || line.normalize("NFKC").trim().toLowerCase() !== "yes") throw new LocalError("This PC was removed from this Ovis account, and was not added again.");
     await press.unlist();
     try { await api("POST", "/api/relay/reset-identity", { body: { removed: { account: press.signedIn, server_id: removedAs } } }); } catch (error) {
+      if (error instanceof LocalError && error.code === "in_account") throw new LocalError(`This PC is in an Ovis account now, so nothing was reset. Run ${cli(options)} status to see where it stands.`);
       if (error instanceof LocalError && (error.code === "identity_changed" || error.code === "not_removed")) throw new LocalError(`This PC is no longer the one that question was about (it was reset already), so nothing was reset. Run ${cli(options)} status to see where it stands.`);
       throw error;
     }

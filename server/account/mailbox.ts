@@ -517,16 +517,19 @@ export class AccountMailbox {
   }
 
   /**
-   * This PC joined `account` by the account's signed list. The account's own page shows a PC as only listed until its
-   * admission is taken and answered as complete, so that is done here, on the PC's own proof. It lets nobody in and
-   * binds nothing: the PC is in the account by its list already. It never throws.
+   * This PC joined `account` by the account's signed list. The account's own page shows a PC as only listed until it is
+   * told the add is complete (POST /v1/pc/complete). The listing that receipt names is the one this PC's own mailbox
+   * pull names (`with_listing_id`), never an admission: an account with a list takes none (Part D11.9). So the next
+   * pull, which starts now, keeps the receipt with that listing, and sends it, once, kept and sent again as any
+   * receipt. Nothing waits for it, it lets nobody in and binds nothing, and it never throws.
    */
-  async joinedByList(account: string): Promise<void> {
-    try {
-      const admitted = await this.admission(account);
-      if (admitted !== null && admitted.account === account && admitted.listing_id !== undefined) await this.complete(account, admitted.listing_id);
-    } catch (error) { console.warn(`[account] the account service was not told that this PC joined by its list: ${error instanceof Error ? error.message : String(error)}`); }
+  joinedByList(account: string): void {
+    this.listCompletion = account;
+    if (!this.stopped) void this.pull().catch(() => undefined);
   }
+
+  /** The account this PC joined by its list and has not kept a completion receipt for yet (joinedByList). */
+  private listCompletion: string | null = null;
 
   private readonly listNames = new Map<string, { readonly list: string | null; readonly at: number }>();
 
@@ -658,10 +661,15 @@ export class AccountMailbox {
    * (409 `listing_changed`) ends it: that add is no longer the one to complete.
    */
   async complete(account: string, listingId: string): Promise<void> {
-    this.completion = { account, listing_id: listingId };
+    this.keepCompletion({ account, listing_id: listingId });
+    await this.sendCompletion();
+  }
+
+  /** The receipt goes on disk first: sendCompletion sends it, now or after a pull. */
+  private keepCompletion(scope: CompletionScope): void {
+    this.completion = scope;
     try { if (this.options.completionPath) writePrivateState(this.options.completionPath, this.completion); }
     catch (error) { console.error(`[account] the completion receipt could not be kept: ${error instanceof Error ? error.message : String(error)}`); }
-    await this.sendCompletion();
   }
 
   private async confirmCompletion(identity: RelayIdentity, scope: CompletionScope) {
@@ -692,7 +700,10 @@ export class AccountMailbox {
         return;
       }
     } catch (error) {
-      if (!listingChanged(error)) {
+      // On a PC pinned to its list the list says the PC is in, not the listing: a refusal of the receipt drops the
+      // receipt, and nothing else (confirmCompletion clears no binding but one on the service's word)
+      const refusedOnList = devices.listFollowed() && error instanceof AccountServiceRefusal && error.status >= 400 && error.status < 500;
+      if (!listingChanged(error) && !refusedOnList) {
         console.warn(`[account] the account service did not take this PC's completed add yet: ${error instanceof Error ? error.message : String(error)}`);
         return;
       }
@@ -997,6 +1008,11 @@ export class AccountMailbox {
         const asked = this.options.list?.scopeToken?.();
         const { entries, waiting, listing, list } = await this.page(identity, account, ack);
         if (page === 0 && linked !== null) this.drainedListing = { binding: linked, account, listing };
+        // a PC that joined by its list completes its add with the listing its own pull names (joinedByList)
+        if (page === 0 && typeof listing === "string" && this.listCompletion === account && this.options.devices.listFollowed()) {
+          this.listCompletion = null;
+          this.keepCompletion({ account, listing_id: listing });
+        }
         if (page === 0 && list !== undefined) this.tellList(account, list, asked);
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }

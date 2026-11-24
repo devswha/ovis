@@ -75,7 +75,7 @@ async function following(options: { stateDir?: string; seconds?: number; account
     binding: () => world.bound ? { account: ACCOUNT, id: world.bind, list: world.pinned, alarmed: world.alarmed } : null,
     pin: (_bindId, id) => { world.pinned = id; return true; },
     alarm: () => { if (world.alarmFails) return false; world.alarmed = true; return true; },
-    bind: (_account, id) => { world.bound = true; world.pinned = id; return world.bind; },
+    bind: (account, id) => { world.bound = true; world.pinned = id; return { id: world.bind, account, list: id, won: true }; },
     removedFrom: () => false,
     rowKey: () => null,
     now: () => world.real === null ? world.seconds * 1000 : world.seconds * 1000 + (Date.now() - world.real),

@@ -16,7 +16,7 @@ import { bounded } from "../server/relay/test-helpers.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { entryFromText, readBody } from "../shared/account-list-entry.ts";
 import { readKind } from "../shared/account-list.ts";
-import { signInviteRedeem } from "../shared/account-list-invite.ts";
+import { signInviteRedeem, verifyLineProof } from "../shared/account-list-invite.ts";
 import { newInvite, readJoinLine } from "../shared/account-list-join.ts";
 import { join, JOIN_EXIT } from "./plugin-join.ts";
 
@@ -128,14 +128,22 @@ test("an auto invite: the PC is in the account at once, with no Add", async () =
 
 /** A PC whose account keeps a signed list, and that list as its members write it. */
 async function listed() {
-  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" } });
+  // What the PC posts with its keys. This branch's fake service predates the two members a PC that joined by a plain
+  // invite adds to its post (`invite`, `invite_proof`): they are kept here, and the post is passed on without them
+  const posts: { invite?: unknown; invite_proof?: unknown; key?: unknown; enc?: unknown }[] = [];
+  const made = await pairingPc({ server: { accountOpensAll: true, platform: "linux" }, accountFetch: async (request, service) => {
+    if (new URL(request.url).pathname !== "/v2/pc/list/keys") return await service.fetch(request);
+    const { invite, invite_proof, ...rest } = await request.json() as Record<string, unknown>;
+    posts.push({ invite, invite_proof, key: rest.key, enc: rest.enc });
+    return await service.fetch(new Request(request.url, { method: "POST", headers: request.headers, body: JSON.stringify(rest) }));
+  } });
   made.account.opensAll = true;
   made.account.listAccounts = "*";
   made.account.completions = true;
   pcs.push(made);
   const list = await TestList.start(made.account, OWNER);
   const endpoint = bytesToHex(importPublicKey(made.app.context.services.relay.currentIdentity()!.public_key));
-  return { made, list, endpoint };
+  return { made, list, endpoint, posts };
 }
 
 /** `ovis join --account OWNER --json` on a line that names the list. `joinAsked`: after this PC answered each ask of its join by the list. */
@@ -188,7 +196,7 @@ test("an auto invite of an account that keeps a signed list: the PC joins by an 
 });
 
 test("a plain invite of an account that keeps a signed list: the PC posts its card, a device of the account adds it, and it joins by the list", async () => {
-  const { made, list, endpoint } = await listed();
+  const { made, list, endpoint, posts } = await listed();
   const invite = await list.invite({ auto: false });
   const serverId = made.app.context.services.relay.currentIdentity()!.server_id;
   const run = await joiningList(made, invite.line, async (count) => {
@@ -204,6 +212,13 @@ test("a plain invite of an account that keeps a signed list: the PC posts its ca
   expect(made.devices.account()).toBe(OWNER);
   expect(made.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in", list: list.id });
   expect(made.account.accountList(OWNER)!.state.pcs[endpoint]).toMatchObject({ how: "added" });
+  // its post carried the line's proof for the very card it posted, which a device of the account checks by itself
+  const line = await readJoinLine(invite.line, { service: SERVICE, followsLists: true });
+  expect(posts.length).toBeGreaterThan(0);
+  for (const post of posts) {
+    expect(post.invite).toBe(line.key);
+    expect(await verifyLineProof({ account: OWNER, server_id: serverId, list: list.id, card: { key: post.key as string, enc: post.enc as string, endpoint } }, post.invite_proof, line.key)).toBe(true);
+  }
   for (const text of [run.out, run.err, ...run.sent, ...stateFiles(made.stateDir)]) for (const secret of secrets(invite.line)) expect(text.includes(secret)).toBe(false);
 });
 

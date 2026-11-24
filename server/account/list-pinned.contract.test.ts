@@ -41,7 +41,9 @@ function testTime() {
   const spy = spyOn(Date, "now").mockImplementation(() => now);
   closes.push(() => spy.mockRestore());
   const waits = new TestClock();
-  return { waits, advance(ms: number) { now += ms; waits.advance(ms); }, seconds: () => Math.floor(now / 1000) };
+  return { waits, advance(ms: number) { now += ms; waits.advance(ms); }, seconds: () => Math.floor(now / 1000),
+    /** The time of day alone, as a clock set by hand: the clock the waits run on does not move. */
+    wall(ms: number) { now += ms; } };
 }
 
 /**
@@ -611,6 +613,25 @@ describe("a removal the PC has seen is final", () => {
     expect((await call()).status).toBe(200);
   });
 
+  test("the thirty calls are counted before the body is read, by a clock that only moves forward, and a live count is never forgotten", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const call = (body: unknown = { list: pc.account.id, place: head }) => ask(member, "/api/account/list/head", { method: "POST", body });
+    for (let index = 0; index < 30; index++) expect((await call()).status).toBe(200);
+    // a session already due its wait is told so before its body is read
+    expect((await call("no head")).status).toBe(429);
+    // the PC's clock set back a minute gives it no new one
+    pc.time.wall(-61_000);
+    expect((await call()).status).toBe(429);
+    // other sessions, as many as the PC keeps counts for, push no live count out
+    for (let other = 0; other < 64; other++) pc.list.peerBudget(`other-${other}`);
+    expect((await call()).status).toBe(429);
+    pc.time.advance(61_000);
+    expect((await call()).status).toBe(200);
+  });
+
   test("a page the disk does not take is acted on, and the device is told it was not saved", async () => {
     const pc = await pinnedPc();
     const held = pc.list.status().head!;
@@ -845,6 +866,35 @@ describe("the reset that makes a removed PC a new one", () => {
     const again = await reset(pc, { removed });
     expect([again?.status, ((await again!.json()) as { error: { code: string } }).error.code]).toEqual([409, "identity_changed"]);
     expect(pc.services.relay.currentIdentity()!.server_id).toBe(next);
+  });
+
+  test("an old question to add the PC again resets nothing once the PC is in an account again under the same relay identity", async () => {
+    const pc = await pinnedPc();
+    await pc.account.remove(pc.service.accountList(ACCOUNT)!.state.pcs[pc.endpoint]!.key!);
+    await pc.pull();
+    const removed = { account: ACCOUNT, server_id: pc.serverId };
+    // the question was asked; meanwhile the PC joined another account, which its removal from this one does not bar
+    pc.services.devices.bindByService("acct_2");
+    const refused = await reset(pc, { removed });
+    expect([refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([409, "in_account"]);
+    expect(pc.services.devices.account()).toBe("acct_2");
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(pc.serverId);
+  });
+
+  test("a PC that joins an account while that reset closes its relay is not reset: the reset asks again in the turn that resets", async () => {
+    const pc = await pinnedPc();
+    await pc.account.remove(pc.service.accountList(ACCOUNT)!.state.pcs[pc.endpoint]!.key!);
+    await pc.pull();
+    const was = pc.services.relay.status().phase;
+    const relay = pc.services.relay as unknown as { disconnect(): Promise<void> };
+    const disconnect = relay.disconnect.bind(relay);
+    relay.disconnect = async () => { relay.disconnect = disconnect; await disconnect(); pc.services.devices.bindByService("acct_2"); };
+    const refused = await reset(pc, { removed: { account: ACCOUNT, server_id: pc.serverId } });
+    expect([refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([409, "in_account"]);
+    expect(pc.services.devices.account()).toBe("acct_2");
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(pc.serverId);
+    // and its relay is as the reset found it: not left closed
+    expect(pc.services.relay.status().phase === "off").toBe(was === "off");
   });
 });
 

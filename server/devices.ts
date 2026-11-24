@@ -14,7 +14,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
-import { type ClearReason, LIST_REMOVED, PcAccountState } from "./account/pc-binding.ts";
+import { type ClearReason, LIST_REMOVED, type ListBound, PcAccountState } from "./account/pc-binding.ts";
 import type { ListAuthority } from "./account/list-follow.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
@@ -1487,9 +1487,9 @@ export class DeviceStore {
   /**
    * Binds this PC, in no account, to `account` by the account's signed list (PcAccountState.bindByList): its own entry
    * on a list a person at this PC confirmed. Only with the release flag on. An account whose list removed this relay
-   * identity takes it back on no path. Returns the binding's id.
+   * identity takes it back on no path. Answers the binding the file holds after the write (PcAccountState.bindByList).
    */
-  bindByList(account: string, list: string): string {
+  bindByList(account: string, list: string): ListBound {
     this.assertWritable();
     if (this.pc === null) throw new Error("A signed list needs OVIS_ACCOUNT_OPENS_ALL");
     if (this.account() !== null) throw new Error("This PC is already in an account");
@@ -2290,6 +2290,11 @@ export class DeviceStore {
 
   /** Whether this PC's relay identity was removed from `account` by that account's list: it joins it again on no path. */
   listRemovedFrom(account: string): boolean { return this.signedList?.removedFrom(account) === true; }
+
+  /** Whether the PC may be reset as the new PC that `account`'s list removed it as `serverId` (PcAccountState.readdReset), read from disk now. */
+  readdReset(account: string, serverId: string): "removed" | "in_account" | "not_removed" {
+    return this.pc === null ? "not_removed" : this.pc.readdReset(account, serverId);
+  }
 
   /** What an account row may do: on a pinned PC what the list says of its key, and to watch for a key the list no longer lets in. */
   private joinedRole(row: AccountRow): DeviceRole {

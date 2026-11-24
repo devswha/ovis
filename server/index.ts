@@ -448,6 +448,7 @@ export function createServer(
     stateDir, keys: new ListKeyStore(stateDir), identity: () => ovisRelay.currentIdentity(),
     binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null, alarmed: binding.list_alarm === true }; },
     bind: (account, list) => devices.bindByList(account, list),
+    mono: () => devices.waitClock().now(),
     pin: (bindId, list) => pcAccount.pinToList(bindId, list),
     alarm: (bindId) => pcAccount.alarmList(bindId),
     removedFrom: (account, serverId) => pcAccount.removedByList(account, serverId),

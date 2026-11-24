@@ -19,7 +19,7 @@ import { resolve } from "node:path";
 
 import { accountOsOfPlatform } from "../shared/account-asker.ts";
 import { entryToText, ListEntryError, readBody } from "../shared/account-list-entry.ts";
-import { InviteRedeemError } from "../shared/account-list-invite.ts";
+import { InviteRedeemError, type LineProof } from "../shared/account-list-invite.ts";
 import { JoinLineError, JoinLineSignError, readJoinLine, type JoinLine } from "../shared/account-list-join.ts";
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText } from "../shared/account-list-seal.ts";
 import { isListLabel, namesFields } from "../shared/account-list.ts";
@@ -279,7 +279,7 @@ async function joinRun(args: readonly string[], parsed: ReturnType<typeof parseJ
   const api = localApi(flow);
   try {
     return await joining(flow, api, undo, { key: invite.key, signRedeem: invite.signRedeem, account, pinned: parsed.account !== undefined, json, platform: options.platform ?? process.platform,
-      list: invite.list === null ? null : { id: invite.list, signJoin: invite.signJoin, encryptionKey: invite.encryptionKey } });
+      list: invite.list === null ? null : { id: invite.list, signJoin: invite.signJoin, signLineProof: invite.signLineProof, encryptionKey: invite.encryptionKey } });
   } catch (error) {
     if (!(error instanceof LocalError || error instanceof AwayError) || options.signal.aborted) throw error;
     const off = await cleanUp(undo);
@@ -290,7 +290,7 @@ async function joinRun(args: readonly string[], parsed: ReturnType<typeof parseJ
 async function joining(options: LinkOptions, api: Api, undo: Undo,
   invite: { readonly key: string; readonly signRedeem: JoinLine["signRedeem"]; readonly account: string; readonly pinned: boolean; readonly json: boolean; readonly platform: string;
     /** the account's signed list, when the line names one, with what of the line joins it: the PC then joins by that list alone */
-    readonly list: { readonly id: string; readonly signJoin: JoinLine["signJoin"]; readonly encryptionKey: CryptoKey } | null }): Promise<Outcome> {
+    readonly list: { readonly id: string; readonly signJoin: JoinLine["signJoin"]; readonly signLineProof: JoinLine["signLineProof"]; readonly encryptionKey: CryptoKey } | null }): Promise<Outcome> {
   const { out, signal } = options;
   const { account } = invite;
   const now = options.now ?? Date.now;
@@ -449,13 +449,15 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
    * command signs it with the line's key, which never leaves it, and the PC places it and joins. The names' key, which
    * the account wrapped for the invite and only the line opens, is wrapped again for the PC, and its name sealed.
    */
-  function byList(list: { readonly id: string; readonly signJoin: JoinLine["signJoin"]; readonly encryptionKey: CryptoKey }, auto: boolean) {
-    type State = { readonly state: "added" | "waiting" | "again" } | { readonly state: "body"; readonly body: string } | { readonly state: "prove"; readonly challenge: string }
+  function byList(list: { readonly id: string; readonly signJoin: JoinLine["signJoin"]; readonly signLineProof: JoinLine["signLineProof"]; readonly encryptionKey: CryptoKey }, auto: boolean) {
+    type State = { readonly state: "added" | "waiting" | "again" } | { readonly state: "body"; readonly body: string } | { readonly state: "prove"; readonly card: LineProof["card"] }
       | { readonly state: "prepared"; readonly seq: number; readonly enc: string; readonly seal: { readonly epoch: number; readonly opens: string } | null; readonly wraps: readonly { readonly epoch: number; readonly wrap: string }[] };
     const scope = { account, list: list.id };
     let wrongKeySaid = false;
     const itself = async (): Promise<State> => {
       const prepared = await api<State>("POST", "/api/account/list/join/prepare", { body: { ...scope, invite: invite.key } });
+      // this PC is in the list, or in the account, already: it writes no join, and the line proves its join instead
+      if (prepared.state === "prove") return await plain();
       if (prepared.state !== "prepared") return prepared;
       const { seq, enc, seal } = prepared;
       let sealed: { epoch: number; bytes: string } | undefined;
@@ -482,14 +484,14 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
       return await api<State>("POST", "/api/account/list/join/place", { body: { ...scope, invite: invite.key, entry, ...wraps.length === 0 ? {} : { wraps } } });
     };
     // An invite a person adds a PC with: the line names the list, so this command shows the PC that it holds the line.
-    // The PC says what to sign (made from the list and its own card); the line signs it for this account and this PC
+    // The PC hands over its own card for that list; the line signs its proof for that card, this account and this PC
     let proof: string | null = null;
     const plain = async (): Promise<State> => {
       const named = { ...scope, invite: invite.key };
       if (proof === null) {
         const asked = await api<State>("POST", "/api/account/list/join", { body: named });
         if (asked.state !== "prove") return asked;
-        proof = await invite.signRedeem({ server_id: listing.serverId, public_key: listing.entry.public_key, challenge_id: asked.challenge });
+        proof = await list.signLineProof({ server_id: listing.serverId, card: asked.card });
       }
       return await api<State>("POST", "/api/account/list/join", { body: { ...named, proof } });
     };

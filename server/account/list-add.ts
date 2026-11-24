@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto";
 import { isListKeyEncoding } from "../../shared/account-list-entry.ts";
 import { cardBinding, signCard } from "../../shared/account-list.ts";
 import { commitmentHolds, fromBase64Url, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
-import type { JoinOutcome, JoinRefusal } from "./list-follow.ts";
+import type { JoinGiven, JoinOutcome, JoinRefusal } from "./list-follow.ts";
 import type { PcListKeys } from "./list-keys.ts";
 
 /** How long one Add lasts from its start: the time its card offers Add on the account's devices. */
@@ -62,10 +62,10 @@ export interface ListAddDeps {
   listNamed(account: string): Promise<string | null>;
   /** A PC route of the list at the account service, with this PC's proof (AccountMailbox.listRoute). */
   call(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>>;
-  /** ListFollow.joinList. */
-  join(given: { readonly account: string; readonly list: string; readonly by: string | null }): Promise<JoinOutcome>;
-  /** The PC joined `account` by its list, once: what the account service is told of it. It never throws. */
-  joined?(account: string): Promise<void>;
+  /** ListFollow.joinList: `live` says, at the binding's write, whether this add still stands. */
+  join(given: JoinGiven & { readonly live: () => boolean }): Promise<JoinOutcome>;
+  /** The PC joined `account` by its list, once: what the account service is told of it, which nothing waits for. It never throws. */
+  joined?(account: string): void;
   now(): number;
   /** A clock that only moves forward, in milliseconds, which every lifetime here is counted by (performance.now when unset): setting the PC's clock back gives a number, or an add, no more time. */
   mono?(): number;
@@ -97,6 +97,8 @@ interface Run {
   readonly seen: Set<string>;
   /** the person at this PC said the phone shows the number this PC showed: the adder whose number it was, and the number */
   confirmed: { readonly adder: string; readonly digits: string } | null;
+  /** the person at this PC gave the add up: seen at once, also by a read of the list that is out now */
+  cancelled: boolean;
   end: AddState | null;
 }
 
@@ -130,7 +132,7 @@ export class ListAdd {
       const card = { key: keys.key, enc: keys.enc, list, endpoint: identity.endpoint, invite: null };
       const run: Run = {
         id, account, list, serverId: identity.serverId, endpoint: identity.endpoint, keys, card: await signCard(card, keys.privateKey), binding: cardBinding(card),
-        startedAt: this.mono(), until: this.deps.now() + ADD_WINDOW_MS, postedAt: null, polledAt: null, answered: 0, attempt: null, seen: new Set(), confirmed: null, end: null,
+        startedAt: this.mono(), until: this.deps.now() + ADD_WINDOW_MS, postedAt: null, polledAt: null, answered: 0, attempt: null, seen: new Set(), confirmed: null, cancelled: false, end: null,
       };
       this.run = run;
       return await this.step(run);
@@ -175,8 +177,14 @@ export class ListAdd {
     });
   }
 
-  /** The person at this PC gave it up, or said the numbers differ: nothing is confirmed, and this Add shows no further number. `runId`: only that run is ended. */
+  /**
+   * The person at this PC gave it up, or said the numbers differ: nothing is confirmed, and this Add shows no further
+   * number. `runId`: only that run is ended. Marked at once, before its turn: a read of the list that is out now binds
+   * nothing after it (step's `live`).
+   */
   cancel(runId?: string): Promise<AddState> {
+    const asked = this.run;
+    if (asked !== null && (runId === undefined || runId === asked.id)) asked.cancelled = true;
     return this.inTurn(async () => {
       const run = this.run;
       if (run === null) return { state: "none" };
@@ -217,6 +225,8 @@ export class ListAdd {
   private async step(run: Run): Promise<AddState> {
     if (run.end !== null) return run.end;
     const ended = (why: AddEnd): AddState => run.end = { state: "ended", run: run.id, account: run.account, why };
+    // a No that waits for its turn ends the add already
+    if (run.cancelled) return ended("cancelled");
     const identity = await this.deps.own();
     // a reset relay identity is another PC: this Add was the old one's
     if (identity === null || identity.serverId !== run.serverId) return ended("unavailable");
@@ -227,13 +237,19 @@ export class ListAdd {
     if (run.confirmed !== null) {
       if (asked) return this.shown(run);
       run.polledAt = now;
-      // the yes named the list and the device whose number it was: only an entry that device signed adds this PC
-      const joined = await this.deps.join({ account: run.account, list: run.list, by: run.confirmed.adder });
+      // The yes named the list and the device whose number it was: only an entry that device signed adds this PC. The
+      // binding is written only while this add stands, asked at the write itself: its ten minutes, and the person's No
+      const live = () => this.run === run && run.end === null && !run.cancelled && this.mono() - run.startedAt < ADD_WINDOW_MS;
+      const joined = await this.deps.join({ account: run.account, list: run.list, by: run.confirmed.adder, live });
       // the time ran out, or the person gave it up, while the list was read: that read joins nothing
       if (run.end !== null) return run.end;
+      if (!("joined" in joined)) {
+        if (run.cancelled) return ended("cancelled");
+        if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return ended("timeout");
+      }
       if ("joined" in joined) {
         run.end = { state: "added", run: run.id, account: run.account, list: run.list };
-        await this.deps.joined?.(run.account);
+        this.deps.joined?.(run.account);
         return run.end;
       }
       if ("refused" in joined) return ended(joined.refused);

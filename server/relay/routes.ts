@@ -5,7 +5,7 @@ import type { ServerContext } from "../dispatch.ts";
 import { RELAY_CONTROLS } from "../dispatch-routes.ts";
 import { accountLabel } from "../../shared/account-asker.ts";
 import { updateRequestAllowed } from "../update-api.ts";
-import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetRegistryUnavailableError } from "./service.ts";
+import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetNotAskedError, ResetRegistryUnavailableError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -211,13 +211,14 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         const text = await request.text();
         let named: unknown;
         try { named = text === "" ? undefined : (JSON.parse(text) as { removed?: unknown } | null)?.removed; } catch { return fail("invalid_json", "request body must be JSON", 400); }
+        let removed: { account: string; server_id: string } | undefined;
         if (named !== undefined) {
           const { account, server_id } = (typeof named === "object" && named !== null ? named : {}) as { account?: unknown; server_id?: unknown };
           if (typeof account !== "string" || typeof server_id !== "string") return fail("invalid_reset", "Name the account and the relay identity that was removed from it", 400);
-          if (service.currentIdentity()?.server_id !== server_id) return fail("identity_changed", "This PC's relay identity is no longer the one that was to be reset.", 409);
-          if (!context.services.devices.listRemovedFrom(account)) return fail("not_removed", "That account's list did not remove this PC.", 409);
+          removed = { account, server_id };
         }
-        const status = await service.resetIdentity();
+        // a PC that is in an account again, or another PC by now, is not reset: asked in the turn that resets (409)
+        const status = await service.resetIdentity(removed);
         return reply(status, status.blocked ? 409 : 200);
       }
       default: return fail("method_not_allowed", "Unknown relay action.", 405);
@@ -236,6 +237,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
     if (error instanceof ResetRegistryUnavailableError) return fail(error.code, error.message, 503);
+    if (error instanceof ResetNotAskedError) return fail(error.code, error.message, 409);
     // such a code lets a device in only on its account's word, which a PC with no account service cannot ask for
     if (error instanceof AccountServiceOffError) return fail(error.code, error.message, 409);
     // a machine makes a code for an account only: its command line says how a device is added there

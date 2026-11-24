@@ -21,9 +21,8 @@
  */
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
-import { verifyInviteRedeem } from "../../shared/account-list-invite.ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { verifyLineProof } from "../../shared/account-list-invite.ts";
 import { entryFromText, entryHash, isListHash, isListKeyEncoding, readBody, writeBody } from "../../shared/account-list-entry.ts";
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import { signerPower, type ListPlace } from "../../shared/account-list-signers.ts";
@@ -31,7 +30,7 @@ import {
   admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, servePage, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
-import { cardBinding, inviteRefusal, isListLabel, joinEntry, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
+import { inviteRefusal, isListLabel, joinEntry, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -43,6 +42,7 @@ import type { RelayIdentity } from "../relay/identity.ts";
 import type { ListCommit } from "./account-device-state.ts";
 import { ListKeysError, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
 import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
+import type { ListBound } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
 
 export const ACCOUNT_LIST_FILE = "account-list.json";
@@ -109,8 +109,6 @@ export const LIST_DEVICE_LABEL = "Device";
 const BIND_ID = /^[0-9a-f]{32}$/;
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const REFUSAL_CODE = /^[a-z][a-z0-9_]{0,39}$/;
-/** What the challenge an invite's line signs to name a list to this PC is made under (ListFollow.lineChallenge). */
-const LINE_CHALLENGE_PREFIX = "ovis-list-join/1";
 /** The most entries this PC serves a device in one page, and takes from one. */
 export const PEER_PAGE_MAX = 256;
 /** The calls of the two session routes one session may make in a minute. */
@@ -199,7 +197,8 @@ export interface AllowedDevice { readonly key: string; readonly enc: string; rea
 export type AllowOutcome = { readonly allowed: { readonly id: string; readonly seq: number; readonly hash: string } } | { readonly refused: AllowRefusal; readonly detail: string | null };
 
 /** `other_account`: this PC is in another account. `other_adder`: the list holds this PC, by an entry of another key than the one the person confirmed. */
-export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "line_unproven" | "invite_unknown";
+/** `ended`: what the join was for ended before the binding was written (an add's time, or the person's No). */
+export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "line_unproven" | "invite_unknown" | "ended";
 
 /**
  * Why a PC writes no `join` of its own. The invite's refusal as the list holds it (inviteRefusal); `invite_plain`: a
@@ -210,10 +209,24 @@ export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "line_
  */
 export type JoinWriteRefusal = InviteCode | "invite_plain" | "invite_uses" | "not_read" | "not_written" | "behind" | "refused";
 
+/** A PC's own card for a list, unsigned, as the holder of an invite's line signs its proof for it (signLineProof). */
+export interface LineCard { readonly key: string; readonly enc: string; readonly endpoint: string; readonly list: string }
+
+/**
+ * `prove`: the PC is in its account already, or the list holds it already, so it writes no `join`: it joins only by
+ * the line's proof for its card (joinByLine), which the caller has the line sign.
+ */
 export type JoinPrepared =
-  | { readonly joined: ListStatus }
+  | { readonly prove: LineCard }
   | { readonly prepared: { readonly list: string; readonly seq: number; readonly enc: string; readonly seal: { readonly epoch: number; readonly opens: string } | null; readonly wraps: readonly { readonly epoch: number; readonly wrap: string }[] } }
   | { readonly refused: JoinRefusal | JoinWriteRefusal };
+
+/**
+ * What a join by the list is asked with: the account, its list, and the key that must have signed the entry that adds
+ * this PC (`by`; null for whoever the list lets add one). `live`: whether what the join is for still stands, asked at
+ * the binding's write itself (ListAdd: its ten minutes and the person's No).
+ */
+export interface JoinGiven { readonly account: string; readonly list: string; readonly by: string | null; readonly live?: () => boolean }
 
 /** `waiting`: the list holds no entry for this PC yet (or the PC cannot read it yet); `out` and `stopped` as the follower says them. */
 export type JoinOutcome = { readonly joined: ListStatus } | { readonly waiting: Standing } | { readonly refused: JoinRefusal };
@@ -242,8 +255,11 @@ export interface ListFollowDeps {
   identity(): RelayIdentity | undefined;
   /** The PC's standing binding to its account, or null. `list`: the list that binding is pinned to, or null. `alarmed`: that list raised an alarm under this binding. */
   binding(): { readonly account: string; readonly id: string; readonly list: string | null; readonly alarmed?: boolean } | null;
-  /** Binds this PC, in no account, to `account` by its list `list`, pinned from the start (DeviceStore.bindByList): the binding's id. Throws when it cannot. */
-  bind(account: string, list: string): string;
+  /**
+   * Binds this PC, in no account, to `account` by its list `list`, pinned from the start (DeviceStore.bindByList): the
+   * binding the file holds after the write, which another Ovis on this folder may have made (`won` false). Throws when it cannot.
+   */
+  bind(account: string, list: string): ListBound;
   /** Keeps with the binding `bindId`, on disk, that its list raised an alarm (PcAccountState.alarmList). False when it could not. */
   alarm?(bindId: string): boolean;
   /** Pins the binding `bindId` to `list`, on disk, for good (PcAccountState.pinToList). False when it could not. */
@@ -256,6 +272,8 @@ export interface ListFollowDeps {
   rowKey(id: string): string | null;
   /** The PC's clock, in milliseconds. */
   now(): number;
+  /** A clock that only moves forward, in milliseconds (performance.now when unset): what a bound on calls a minute is counted by. */
+  mono?(): number;
   /**
    * A pinned PC's account rows, from the list: the store drops what the list no longer lets in and admits what it newly
    * does. `unheld`: the keys that come in with no join hold: every device at the commit that follows the pin itself,
@@ -334,6 +352,8 @@ export class ListFollow implements ListAuthority {
   /** When each session called the two session routes, in the last minute. */
   private readonly peerCalls = new Map<string, number[]>();
   private pendingJoin: { readonly account: string; readonly list: string; readonly invite: string; readonly body: Uint8Array } | null = null;
+  /** The proof of the invite's line this PC was named its list with (joinByLine): posted with its keys while it waits for that list. */
+  private lineProof: { readonly account: string; readonly card: LineCard; readonly invite: string; readonly proof: string } | null = null;
   /** The device that is being let in through this PC right now: its row comes in with no join hold. */
   private readonly allowing = new Set<string>();
   /** How far the account service's clock is ahead of this PC's, in seconds, by its last answer. */
@@ -705,7 +725,7 @@ export class ListFollow implements ListAuthority {
    * already in that account names the list, as `wantList` does. Until the entry is there it answers `waiting`, and the
    * caller asks again; each ask reads once.
    */
-  joinList(given: { readonly account: string; readonly list: string; readonly by: string | null }): Promise<JoinOutcome> {
+  joinList(given: JoinGiven): Promise<JoinOutcome> {
     return this.enqueue(() => this.joining(given, true));
   }
 
@@ -728,40 +748,36 @@ export class ListFollow implements ListAuthority {
       candidate = { account, copy: first.copy };
       this.postedAt = this.postedUntil = null;
       this.pendingJoin = null;
+      // a line's proof is for its own account and list
+      if (this.lineProof !== null && (this.lineProof.account !== account || this.lineProof.card.list !== list)) this.lineProof = null;
     }
     const copy = await this.readInto(candidate.copy);
     this.candidate = { account, copy };
     return { scope, keys, copy };
   }
 
-  /**
-   * What the holder of an invite's line signs to name `list` to this PC (joinByLine): 32 hex digits made from the
-   * list's id and the hash of this PC's own card for it. Signed as the challenge of a redeem message
-   * (shared/account-list-invite.ts), which also names the account, this PC's id and its relay key; the account
-   * service knows no such challenge, so the signature redeems nothing there. Null when this PC's keys cannot be used.
-   */
-  async lineChallenge(list: string): Promise<string | null> {
+  /** This PC's own card for `list`, unsigned: what the holder of an invite's line signs its proof for. Null when its keys cannot be used. */
+  async lineCard(list: string): Promise<LineCard | null> {
     const own = await this.own();
-    if (own === null || !isListHash(list)) return null;
-    const binding = cardBinding({ key: own.keys.key, enc: own.keys.enc, list, endpoint: own.endpoint, invite: null });
-    return bytesToHex(sha256(concatBytes(utf8ToBytes(LINE_CHALLENGE_PREFIX), utf8ToBytes(list), binding))).slice(0, 32);
+    return own === null || !isListHash(list) ? null : { key: own.keys.key, enc: own.keys.enc, endpoint: own.endpoint, list };
   }
 
   /**
    * A PC joins by the list an invite's line names (`ovis join`, an invite a person adds a PC with). The line is what
-   * names the list here, so the caller proves that it holds it: `proof` is the line's signature over lineChallenge,
-   * for this account and this PC. Without it nothing is named: a bare list id from this PC's own window names no
-   * list. The PC then joins as joinList does, when the list holds that invite and an entry that adds the PC.
+   * names the list here, so the caller proves that it holds it: `proof` is the line's proof for this PC's own card
+   * (lineProofBytes: this account, this PC, that list, these keys), never a redeem signature, whose challenge an account
+   * service chooses. Without it nothing is named: a bare list id from this PC's own window names no list. The PC then
+   * joins as joinList does, when the list holds that invite and an entry that adds the PC; while it waits it posts
+   * that proof with its keys, so a device of the account can see for itself that the line's holder joined it.
    */
   joinByLine(given: { readonly account: string; readonly list: string; readonly invite: string; readonly proof: string }): Promise<JoinOutcome> {
     return this.enqueue(async (): Promise<JoinOutcome> => {
       const { account, list, invite, proof } = given;
-      const own = await this.own();
-      const challenge = await this.lineChallenge(list);
-      if (own === null || challenge === null) return { refused: "unavailable" };
-      let proved = false;
-      try { proved = typeof invite === "string" && isListKeyEncoding(invite) && await verifyInviteRedeem({ account, server_id: own.serverId, public_key: own.endpoint, challenge_id: challenge }, proof, invite); } catch { proved = false; }
-      if (!proved) return { refused: "line_unproven" };
+      const card = await this.lineCard(list);
+      const own = card === null ? null : await this.own();
+      if (card === null || own === null) return { refused: "unavailable" };
+      if (typeof invite !== "string" || !isListKeyEncoding(invite) || !await verifyLineProof({ account, server_id: own.serverId, list, card }, proof, invite)) return { refused: "line_unproven" };
+      this.lineProof = { account, card, invite, proof };
       return await this.joining({ account, list, by: null }, true, invite);
     });
   }
@@ -770,15 +786,18 @@ export class ListFollow implements ListAuthority {
    * `post`: whether a PC that waits posts its keys and card for a member to add it from (a PC that joins by itself
    * posts none). `invite`: the list must hold that invite, whoever signed the entry that adds the PC.
    */
-  private async joining(given: { readonly account: string; readonly list: string; readonly by: string | null }, post: boolean, invite?: string): Promise<JoinOutcome> {
+  private async joining(given: JoinGiven, post: boolean, invite?: string): Promise<JoinOutcome> {
     {
       const { account, list, by } = given;
       const read = await this.candidateOf(account, list);
       if ("refused" in read) return read;
       if ("bound" in read) {
+        if (given.live?.() === false) return { refused: "ended" };
         const named = await this.wanted(list);
         if ("refused" in named) return { refused: named.refused };
         if (!named.status.pinned) return { waiting: named.status.standing ?? "waiting" };
+        // pinned to this list, maybe by another Ovis on this folder: it says it joined by the copy on disk, never by none
+        if (this.copy === null) return await this.copyOnDisk(read.bound);
         // joined by this list, and the copy is still not on disk: offered to it again before the PC says so
         if (this.unsaved) this.unsaved = !this.persist(read.bound);
         return this.unsaved ? { waiting: "in" } : { joined: this.status() };
@@ -796,14 +815,17 @@ export class ListFollow implements ListAuthority {
       // still in no account, and the same PC: whatever happened while the list was read
       const now = this.sync();
       if (now === null || now.serverId !== scope.serverId || now.bindId !== null) return { refused: "unavailable" };
-      let bindId: string;
-      try { bindId = this.deps.bind(account, list); } catch (error) {
+      // what the join is for still stands at the write itself (an add's ten minutes, the person's No)
+      if (given.live?.() === false) return { refused: "ended" };
+      let held: ListBound;
+      try { held = this.deps.bind(account, list); } catch (error) {
         this.error = `This PC could not join the account (${error instanceof Error ? error.message : String(error)})`;
         return { refused: "unavailable" };
       }
+      if (!held.won) return await this.boundMeanwhile(held, account, list);
       // from here the PC is in the account, pinned to the list: the copy it read is its copy
       this.sync();
-      this.bindId = bindId;
+      this.bindId = held.id;
       this.candidate = null;
       this.copy = copy;
       this.freshPin = true;
@@ -820,6 +842,40 @@ export class ListFollow implements ListAuthority {
   }
 
   /**
+   * Another Ovis on this state folder bound the PC between this server's read of the list and its write: the binding
+   * the file holds stands, and this server writes nothing of its own over what that one keeps (its copy above all). By
+   * the same account and list, this server goes by that binding and the copy that server saved; otherwise the PC
+   * joined elsewhere.
+   */
+  private async boundMeanwhile(held: ListBound, account: string, list: string): Promise<JoinOutcome> {
+    // the file's binding is this server's from here: what it held for the join goes with endBinding
+    const scope = this.bound();
+    if (scope === null || scope.bindId !== held.id) return { refused: "unavailable" };
+    if (held.account !== account) return { refused: "other_account" };
+    // in the account on the service's word: the next ask names the list as for any PC in its account
+    if (held.list === null) return { waiting: "waiting" };
+    if (held.list !== list) return { refused: "pinned" };
+    return await this.copyOnDisk(scope);
+  }
+
+  /**
+   * A PC pinned to `scope`'s list that holds no copy in memory: the copy saved for that binding (by another Ovis on
+   * this folder, say) is read from the file. It says it joined only when that copy shows the PC in; until then
+   * `waiting`, and the follower reads the list itself meanwhile. Nothing is written here.
+   */
+  private async copyOnDisk(scope: Bound): Promise<JoinOutcome> {
+    if (this.copy === null) {
+      this.takeFile(scope);
+      await this.ready;
+    }
+    const copy = this.copy;
+    if (copy === null || copy.list !== scope.list || standing(copy) !== "in") return { waiting: "in" };
+    this.freshPin = true;
+    this.settle();
+    return { joined: this.status() };
+  }
+
+  /**
    * A PC joins by itself with the invite of a line (`ovis join`, an auto invite): what the holder of the line needs
    * before the `join` is written. The line never leaves the command that read it, so this PC only says where the
    * list stands: the place the `join` takes, the epoch its names are sealed under, this PC's encryption key, and the
@@ -833,9 +889,11 @@ export class ListFollow implements ListAuthority {
       if (typeof invite !== "string" || !isListKeyEncoding(invite)) return { refused: "invalid_list" };
       const read = await this.candidateOf(account, list);
       if ("refused" in read) return read;
+      // Getting ready binds nothing. A PC in its account, or one the list holds already, writes no join: it joins only by
+      // what proves it, the line's proof for its own card (joinByLine), and is handed that card for the line to sign
       if ("bound" in read || standing(read.copy) === "in") {
-        const joined = await this.joining({ account, list, by: "bound" in read ? null : invite }, false);
-        return "joined" in joined ? joined : "refused" in joined ? joined : { refused: "unavailable" };
+        const card = await this.lineCard(list);
+        return card === null ? { refused: "unavailable" } : { prove: card };
       }
       const { copy, keys } = read;
       const { state } = copy;
@@ -1306,15 +1364,20 @@ export class ListFollow implements ListAuthority {
     return { ...own, asks: { list: compared.read.list, after: compared.read.after } };
   }
 
-  /** Whether `session` may make one more call of the two (PEER_CALLS_PER_MINUTE): each costs signature checks. Counted by this PC's own clock. */
+  /** Whether `session` may make one more call of the two (PEER_CALLS_PER_MINUTE): each costs signature checks. Charged before its body is read. */
   peerBudget(session: string): boolean {
-    const now = this.deps.now();
-    const calls = (this.peerCalls.get(session) ?? []).filter((at) => now - at >= 0 && now - at < 60_000);
-    if (calls.length >= PEER_CALLS_PER_MINUTE) { this.peerCalls.set(session, calls); return false; }
-    calls.push(now);
-    this.peerCalls.delete(session);
-    this.peerCalls.set(session, calls);
-    while (this.peerCalls.size > PEER_SESSIONS_MAX) this.peerCalls.delete(this.peerCalls.keys().next().value!);
+    // by a clock that only moves forward: a wall clock set back gives no session a new minute
+    const now = this.deps.mono?.() ?? performance.now();
+    for (const [held, calls] of this.peerCalls) {
+      const live = calls.filter((at) => now - at < 60_000);
+      if (live.length === 0) this.peerCalls.delete(held);
+      else if (live.length !== calls.length) this.peerCalls.set(held, live);
+    }
+    const calls = this.peerCalls.get(session) ?? [];
+    if (calls.length >= PEER_CALLS_PER_MINUTE) return false;
+    // A count still in its minute is never dropped to make room: a session past the sessions counted waits for one
+    if (calls.length === 0 && this.peerCalls.size >= PEER_SESSIONS_MAX) return false;
+    this.peerCalls.set(session, [...calls, now]);
     return true;
   }
 
@@ -1477,6 +1540,7 @@ export class ListFollow implements ListAuthority {
     this.copy = null;
     this.candidate = null;
     this.pendingJoin = null;
+    this.lineProof = null;
     this.ready = Promise.resolve();
     this.differences.clear();
     this.lastVerdict = this.error = null;
@@ -1702,7 +1766,11 @@ export class ListFollow implements ListAuthority {
       // nothing is posted for an account the PC has left meanwhile, or once it stopped
       const still = this.sync();
       if (this.stopped || still === null || still.serverId !== scope.serverId || still.bindId !== scope.bindId) return;
-      const answer = await this.deps.call("/v2/pc/list/keys", { list: copy.list, key: keys.key, enc: keys.enc, card });
+      // a PC an invite's line named this list to posts that line's proof for this very card, at each renewal too
+      const line = this.lineProof;
+      const proved = line !== null && line.account === copy.account && line.card.list === copy.list && line.card.key === keys.key && line.card.enc === keys.enc && line.card.endpoint === scope.endpoint
+        ? { invite: line.invite, invite_proof: line.proof } : {};
+      const answer = await this.deps.call("/v2/pc/list/keys", { list: copy.list, key: keys.key, enc: keys.enc, card, ...proved });
       const { until } = answer;
       const ends = typeof until === "number" && Number.isSafeInteger(until) && until > this.seconds() && until - this.seconds() <= POST_UNTIL_MAX_SECONDS;
       this.postedUntil = ends ? until : null;

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cardBinding } from "../../shared/account-list.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
-import { ADD_ATTEMPT_MS, ADD_COMMITMENTS_MAX, ADD_POLL_MS, ADD_WINDOW_MS, ListAdd } from "./list-add.ts";
+import { ADD_ATTEMPT_MS, ADD_COMMITMENTS_MAX, ADD_POLL_MS, ADD_WINDOW_MS, ListAdd, type ListAddDeps } from "./list-add.ts";
 import type { JoinOutcome } from "./list-follow.ts";
 import { ListKeyStore } from "./list-keys.ts";
 import { listMember } from "./list.test-helpers.ts";
@@ -27,7 +27,9 @@ async function adding(options: { list?: string | null } = {}) {
   const keys = await new ListKeyStore(dir).keysFor(SERVER);
   const phone = await listMember();
   const binding = cardBinding({ key: keys.key, enc: keys.enc, list: LIST, endpoint: ENDPOINT, invite: null });
-  const world = { now: 1_800_000_000_000, serverId: SERVER, open: null as Open | null, calls: [] as string[], joins: 0, by: undefined as string | null | undefined, joined: { waiting: "waiting" } as JoinOutcome, told: 0, phone: phone.key };
+  const world = { now: 1_800_000_000_000, serverId: SERVER, open: null as Open | null, calls: [] as string[], joins: 0, by: undefined as string | null | undefined, joined: { waiting: "waiting" } as JoinOutcome, told: 0, phone: phone.key,
+    /** What happens while the list is read, with what the join was handed. */
+    during: null as ((given: Parameters<ListAddDeps["join"]>[0]) => void) | null };
   const add = new ListAdd({
     own: async () => ({ serverId: world.serverId, endpoint: ENDPOINT, keys }),
     listNamed: async () => options.list === undefined ? LIST : options.list,
@@ -40,7 +42,7 @@ async function adding(options: { list?: string | null } = {}) {
       world.open = { ...open, nonce: body.nonce as string };
       return { attempt: world.open };
     },
-    join: async (given) => { world.joins++; world.by = given.by; return world.joined; },
+    join: async (given) => { world.joins++; world.by = given.by; world.during?.(given); return world.joined; },
     joined: async () => { world.told++; },
     now: () => world.now,
     mono: () => world.now,
@@ -210,6 +212,29 @@ test("the add ends ten minutes after it began, confirmed or not, and with a refu
   await refused.add.start(ACCOUNT);
   refused.world.joined = { refused: "removed" };
   expect(await refused.add.confirm(await refused.number())).toMatchObject({ confirmed: { state: "ended", account: ACCOUNT, why: "removed" } });
+});
+
+test("the ten minutes and a No are asked at the binding itself: a read of the list that ends after either binds nothing", async () => {
+  const late = await adding();
+  await late.add.start(ACCOUNT);
+  const digits = await late.number();
+  // the time runs out while the confirmed add reads the list: the join is handed what says so at its write
+  const seen: boolean[] = [];
+  late.world.during = (given) => { seen.push(given.live()); late.world.now += ADD_WINDOW_MS; seen.push(given.live()); };
+  expect(await late.add.confirm(digits)).toMatchObject({ confirmed: { state: "ended", why: "timeout" } });
+  expect(seen).toEqual([true, false]);
+
+  const no = await adding();
+  await no.add.start(ACCOUNT);
+  const shown = await no.number();
+  // the person at the PC says no while the list is read: the No does not wait for that read to be seen
+  const told: boolean[] = [];
+  let cancelled: Promise<unknown> | null = null;
+  no.world.during = (given) => { cancelled = no.add.cancel(); told.push(given.live()); };
+  expect(await no.add.confirm(shown)).toMatchObject({ confirmed: { state: "ended", why: "cancelled" } });
+  expect(await cancelled).toMatchObject({ state: "ended", why: "cancelled" });
+  expect(told).toEqual([false]);
+  expect(no.world.told).toBe(0);
 });
 
 test("a relay identity reset meanwhile ends the add: it was the old PC's", async () => {
