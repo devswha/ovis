@@ -501,6 +501,7 @@ export function createServer(
     call: (path, body) => accountMailbox.listRoute(path, body),
     join: (given) => accountList.joinList(given),
     joined: () => accountMailbox.joinedByList(),
+    joinedTo: (account, list) => { const status = accountList.status(); return status.pinned && status.account === account && status.pinned_list === list && status.standing === "in"; },
     now: () => Date.now(),
     pollMs: options.accountListAddPollMs,
   });

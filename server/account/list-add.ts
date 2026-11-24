@@ -66,6 +66,8 @@ export interface ListAddDeps {
   join(given: JoinGiven & { readonly live: () => boolean }): Promise<JoinOutcome>;
   /** The PC joined `account` by its list, once: what the account service is told of it, which nothing waits for. It never throws. */
   joined?(account: string): void;
+  /** Whether this PC is in `account` pinned to `list` now (its follower's own word): an add that ends finds out how it ended. */
+  joinedTo?(account: string, list: string): boolean;
   now(): number;
   /** A clock that only moves forward, in milliseconds, which every lifetime here is counted by (performance.now when unset): setting the PC's clock back gives a number, or an add, no more time. */
   mono?(): number;
@@ -115,17 +117,18 @@ export class ListAdd {
   /** A person at this PC starts adding it to `account` (its own window, `ovis add`). An Add under way for that account goes on. */
   start(account: string): Promise<AddState> {
     return this.inTurn(async () => {
-      const identity = await this.deps.own();
       const running = this.run;
       // an add of the relay identity this PC had before a reset was another PC's
-      if (running !== null && running.account === account && running.end === null && running.serverId === identity?.serverId
-        && this.mono() - running.startedAt < ADD_WINDOW_MS) return await this.step(running);
+      if (running !== null && running.account === account && running.end === null && this.mono() - running.startedAt < ADD_WINDOW_MS
+        && running.serverId === (await this.deps.own())?.serverId) return await this.step(running);
       this.run = null;
       this.none = null;
       // not asked: nothing says whether the account keeps a list, and the caller asks again (ListAddAway)
       let list: string | null;
       try { list = await this.deps.listNamed(account); } catch (error) { throw new ListAddAway(error instanceof Error ? error.message : String(error)); }
       if (list === null) { this.none = { account }; return { state: "no_list", account }; }
+      // this PC's list keys are made only for an account that keeps a list
+      const identity = await this.deps.own();
       const id = randomBytes(8).toString("hex");
       if (identity === null) return { state: "ended", run: id, account, why: "unavailable" };
       const { keys } = identity;
@@ -198,6 +201,14 @@ export class ListAdd {
 
   private mono(): number { return this.deps.mono?.() ?? performance.now(); }
 
+  /** A confirmed run whose PC is in its account by its list now ends `added` (told once, as a join is); null otherwise. */
+  private inBy(run: Run): AddState | null {
+    if (run.confirmed === null || run.cancelled || this.deps.joinedTo?.(run.account, run.list) !== true) return null;
+    run.end = { state: "added", run: run.id, account: run.account, list: run.list };
+    this.deps.joined?.(run.account);
+    return run.end;
+  }
+
   private inTurn<T>(work: () => Promise<T>): Promise<T> {
     const next = this.turn.then(work, work);
     this.turn = next.catch(() => undefined);
@@ -230,8 +241,9 @@ export class ListAdd {
     const identity = await this.deps.own();
     // a reset relay identity is another PC: this Add was the old one's
     if (identity === null || identity.serverId !== run.serverId) return ended("unavailable");
-    // its ten minutes are over, confirmed or not: nothing is joined after them, whatever the list holds by now
-    if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return ended("timeout");
+    // Its ten minutes are over, confirmed or not: nothing is joined after them, whatever the list holds by now. A
+    // confirmed add whose PC is in that account by that list already (its first copy reached the disk late) says so
+    if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return this.inBy(run) ?? ended("timeout");
     const now = this.mono();
     const asked = run.polledAt !== null && now - run.polledAt < (this.deps.pollMs ?? ADD_POLL_MS);
     if (run.confirmed !== null) {
@@ -245,7 +257,7 @@ export class ListAdd {
       if (run.end !== null) return run.end;
       if (!("joined" in joined)) {
         if (run.cancelled) return ended("cancelled");
-        if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return ended("timeout");
+        if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return this.inBy(run) ?? ended("timeout");
       }
       if ("joined" in joined) {
         run.end = { state: "added", run: run.id, account: run.account, list: run.list };
@@ -269,11 +281,14 @@ export class ListAdd {
       // the service away, or its refusal: no message came, and no number shows for it
       if (!(error instanceof Error)) throw error;
     }
+    if (run.end === null && run.cancelled) return ended("cancelled");
     return run.end ?? this.shown(run);
   }
 
   /** The phone's side of the attempt as the account service holds it, against what this PC holds of it. */
   private async take(run: Run, open: OpenAttempt | null): Promise<void> {
+    // a No that came while the phone's message was asked for answers no commitment, and shows no number
+    if (run.cancelled || run.end !== null) return;
     const held = this.live(run);
     if (open === null) return;
     const answer = (nonce: Uint8Array) => this.deps.call("/v2/pc/list/attempt", { list: run.list, commitment: open.commitment, nonce: toBase64Url(nonce) });
