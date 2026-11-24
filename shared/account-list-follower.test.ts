@@ -332,7 +332,7 @@ describe("a pin", () => {
 });
 
 describe("taking pages", () => {
-  const LONG = (async () => grow(BASE, [[owner, deviceOf(tablet, "full", "watch")], [desk, deviceOf(browser, "bound", "drive", NOW + 3600)], [phone, removeOf(tablet)], [owner, epochOf(0)], [desk, removePcOf(2)], [browser, removeOf(browser)]]))();
+  const LONG = (async () => grow(BASE, [[owner, deviceOf(tablet, "bound", "watch")], [desk, deviceOf(browser, "bound", "drive", NOW + 3600)], [phone, removeOf(tablet)], [owner, epochOf(0)], [desk, removePcOf(2)], [browser, removeOf(browser)]]))();
 
   test("what a member holds never depends on where the pages were cut, and neither does who came and went in the end", async () => {
     const log = await LONG;
@@ -694,7 +694,7 @@ describe("two members and a service that shows them two things", () => {
 
 describe("what a PC decides from its copy", () => {
   test("whether a device opens a session: its role, and for each refusal why", async () => {
-    const log = await grow(BASE, [[owner, deviceOf(tablet, "full", "watch")], [desk, deviceOf(browser, "bound", "drive", NOW + 60)], [owner, removeOf(tablet)]]);
+    const log = await grow(BASE, [[owner, deviceOf(tablet, "bound", "watch")], [desk, deviceOf(browser, "bound", "drive", NOW + 60)], [owner, removeOf(tablet)]]);
     const copy = await followed(log, PC(desk, 1), { how: "added" });
     expect([opens(copy, owner), opens(copy, phone), opens(copy, tablet), opens(copy, browser), opens(copy, browser, NOW + 59), opens(copy, browser, NOW + 60)]).toEqual(["drive", "drive", "removed", "drive", "drive", "expired"]);
     // A PC's key, an invite's key, a key no entry names and no key at all are no devices.
@@ -744,20 +744,21 @@ describe("what a PC decides from its copy", () => {
   });
 
   test("which PC a key is, and which PCs a device shows", async () => {
-    const log = await grow(BASE, [[owner, pcOf(tower, 3)], [owner, carriedPcOf(4)], [owner, removePcOf(2)]]);
+    // A PC that was in the account before the list, then the phone, two PCs a person added, and one that joined and was put out.
+    const log = await grow(await start(), [[owner, carriedPcOf(4)], [owner, deviceOf(phone)], [owner, pcOf(desk, 1)], [phone, inviteOf(pool)], [pool, joinOf(box, 2, pool)], [owner, pcOf(tower, 3)], [owner, removePcOf(2)]]);
     const device = await followed(log, DEVICE(phone), { how: "carried" });
     // The phone was not carried in: a device pinned that way waits. One that was allowed shows the PCs.
     expect([standing(device), shownPcs(device)]).toEqual(["waiting", []]);
-    const allowed = await followed(log, DEVICE(phone), allowedAt(log, 1));
-    expect(shownPcs(allowed).map((row) => [row.endpoint, row.how, row.allows])).toEqual([[E(1), "added", true], [E(3), "added", true], [E(4), "carried", false]]);
+    const allowed = await followed(log, DEVICE(phone), allowedAt(log, 2));
+    expect(shownPcs(allowed).map((row) => [row.endpoint, row.how, row.allows])).toEqual([[E(4), "carried", false], [E(1), "added", true], [E(3), "added", true]]);
     expect([pcOfKey(allowed, desk.key), pcOfKey(allowed, tower.key), pcOfKey(allowed, box.key), pcOfKey(allowed, phone.key), pcOfKey(allowed, mallory.key), pcOfKey(allowed, "constructor")]).toEqual([E(1), E(3), null, null, null, null]);
     expect(pcOfKey(await followed(BASE, DEVICE(phone), allowedAt(BASE, 1)), box.key)).toBe(E(2));
     // The devices it shows are those that are in.
-    const removed = await followed(await grow(log, [[owner, deviceOf(tablet)], [owner, removeOf(tablet)], [owner, deviceOf(browser, "bound", "watch", NOW + 5)]]), DEVICE(phone), allowedAt(log, 1));
+    const removed = await followed(await grow(log, [[owner, deviceOf(tablet)], [owner, removeOf(tablet)], [owner, deviceOf(browser, "bound", "watch", NOW + 5)]]), DEVICE(phone), allowedAt(log, 2));
     expect(shownDevices(removed).map((row) => [who(row.key), row.role, row.power])).toEqual([["owner", "drive", "full"], ["phone", "drive", "full"], ["browser", "watch", "bound"]]);
     expect(shownDevices(device)).toEqual([]);
     // A device that signed itself out shows nothing more.
-    const out = await followed(await add(log, phone, removeOf(phone)), DEVICE(phone), allowedAt(log, 1));
+    const out = await followed(await add(log, phone, removeOf(phone)), DEVICE(phone), allowedAt(log, 2));
     expect([standing(out), shownPcs(out), shownDevices(out), pcOfKey(out, desk.key)]).toEqual(["out", [], [], null]);
   });
 });
@@ -844,7 +845,7 @@ describe("over generated histories, with a service that lies", () => {
       const others = world.devices.filter((key) => key !== owner);
       if (way < 0.45) {
         const key = await spareKey(used++);
-        world = { ...world, log: await add(world.log, by, deviceOf(key, "full", random() < 0.3 ? "watch" : "drive")), devices: [...world.devices, key] };
+        world = { ...world, log: await add(world.log, by, deviceOf(key)), devices: [...world.devices, key] };
       } else if (way < 0.7 && others.length > 0) {
         const key = at(others, Math.floor(random() * others.length));
         world = { ...world, log: await add(world.log, by === key ? owner : by, removeOf(key)), devices: world.devices.filter((item) => item !== key), out: [...world.out, key] };
