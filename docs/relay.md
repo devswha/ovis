@@ -164,8 +164,9 @@ two screens instead, as in Bluetooth's numeric comparison:
    it sends an approval typed as three digits. Input that is not a terminal (a pipe, `ssh` without
    `-t`) answers nothing: the command says so and fails, and no request is declined, so each keeps
    waiting for a run at a terminal. The PC's terminal is the PC itself, so it also asks about each
-   account join a member could approve ([Who may admit a device](account.md#who-may-admit-a-device)):
-   no digits are shown for it, all six the new device shows are typed, and one wrong entry ends it.
+   account join a member could approve, and each first join, which only the PC may let in
+   ([Who may admit a device](account.md#who-may-admit-a-device)): no digits are shown for either, all
+   six the new device shows are typed, and one wrong entry ends it.
    On a machine several people log in to, set an access token: without one, any local OS account
    counts as this PC's own window and could approve a join (it would still need the six digits the
    asking device shows).
@@ -370,8 +371,8 @@ for it before they show or ask anything.
   pipe, a script, CI, a coding agent's shell), nobody can type yes, so it runs only with
   `--account` and otherwise refuses before the sign-in, in one line that says to pass it or run in a
   terminal. That is the way to script it: `ovis add --account <id>` prints plain lines with no cursor
-  control, the sign-in address and code first (and the QR code of the page), then **Added. Open (this PC) from My PCs.** and exit
-  code 0, or a line saying why not and a non-zero exit. Under the fleet preview it asks at a terminal
+  control, the sign-in address and code first (and the QR code of the page), then **Added. Open (this PC) from My PCs.**, the
+  line that says where to type a phone's six digits (below) and exit code 0, or a line saying why not and a non-zero exit. Under the fleet preview it asks at a terminal
   only, `--account` or not. Then it lists this PC in the account ([Adding a PC](account.md#adding-a-pc))
   and waits: **Open Ovis on your phone or another PC and press Add for (this PC)**. Every device signed in
   to that account with a sign-in of its own shows this PC's card, **Add this PC to your account?**,
@@ -384,10 +385,10 @@ for it before they show or ask anything.
   with the account that signed in): the PC asks the account service itself, with its relay key's
   proof, so only an admission by that account, made for this PC's listing, binds it. Then the PC
   names that account for its relay pass again, which asks for the pass the account now gives it,
-  and the command ends with **Added. Open (this PC) from My PCs.** once the relay is online (when it
-  is not within 30 seconds, it says so: the PC is in the account all the same). Past the sign-in,
-  nothing it shows lets anyone in, and the approve-here window that listing the PC opens is closed at
-  once (`POST /api/relay/link/close`): this way takes no digits. The wait lasts as long as the card offers
+  and the command says **Added.** once the relay is online (when it is not within 30 seconds, it
+  says so: the PC is in the account all the same). Past the sign-in, nothing it shows lets anyone
+  in, and the approve-here window that listing the PC opens is closed at once (`POST
+  /api/relay/link/close`): no digits come through it. The wait lasts as long as the card offers
   **Add**: 10 minutes from when this PC was listed, so less for a listing an earlier run left, and
   none for one listed more than 10 minutes ago, which the card offers to remove only (the command
   says so). A PC the account lists as its own already (an **Add** pressed for an earlier run) shows
@@ -406,6 +407,43 @@ for it before they show or ask anything.
   this terminal as the PC itself: `403 owner_only`, as for a forwarded port) answers the command's
   first ask, made with no account, otherwise than `400 invalid_account`: `add` then says which and
   goes the `--qr` way.
+
+  **Then the phone opens the PC.** The sign-in ends as the PC is added; what follows reads this PC
+  only. Adding the PC read the account's list of devices, so the phone that pressed **Add** usually
+  opens it at once with the account's key, with nothing to type. If the phone shows six digits instead,
+  only this PC may let it in: it does when this PC does not list that phone from the account yet (for
+  example the phone whose sign-in created the account, during that sign-in's first day), and a PC added
+  this way has no other device of the account to approve it, so its request is a first join
+  ([Who may admit a device](account.md#who-may-admit-a-device)). At a terminal the command goes on
+  after **Added.** for that case:
+
+  ```
+  Added. Open Desk from My PCs on your phone. If the phone shows six digits, type them here (Enter to finish without):
+  Pixel asks to open this PC (from Ovis account acct_1a2b3c4, asked at 10:02). Type the six digits Pixel shows (one wrong entry ends this request), or press Enter to finish without: 482913
+  Pixel is let in; it opens this PC in a moment.
+  ```
+
+  1. Open the PC from **My PCs** on the phone. If it shows six digits, go on here.
+  2. The terminal names the request it reads from this PC (`GET /api/relay/joins`, as `ovis approve`
+     does): the phone's name, the account its admission came from and when it asked. It never shows
+     the digits.
+  3. Type the six digits the phone shows. They go to this PC (`POST /api/relay/join`), which compares
+     them: right, the phone is let in; wrong, that request ends and the command says so (**That is not
+     the number Pixel shows, so it was not let in**). The phone may ask again, and its new request
+     shows in the terminal the same way.
+
+  A line answers only the request it was typed under, once that was on the screen a second and a half;
+  what was typed before a question showed is discarded as it shows, as for `--approve` below, and
+  anything but six digits or Enter answers nothing and is asked again. The command waits up to 10
+  minutes; Enter by itself, Ctrl+C or the input ending (Ctrl+D) end it sooner, as does a device of the
+  account that got in another way meanwhile (**Pixel can open this PC now: it got in through your
+  account**): a row of `GET /api/devices` that was not there as the wait began, or a row of the
+  account's list that signs in during it (its `last_seen_at`, the day it last signed in, or its live
+  `connection` changes). That row may be another device than the phone in hand, so each end says how
+  to let a device in later: **If your phone asks for six digits when you open (this PC), run `ovis
+  approve` on this PC and type them.** Where nobody can type (no terminal, with `--account`), or the
+  relay did not come online in time, the command prints that line right after **Added.** and ends. The
+  PC stays added however this part ends, and the exit code is 0.
 - **`add --qr`** (also `--print`) signs in and lists this PC the same way and, once the relay is
   online, shows **one QR code** with a code to type and this PC's ID. Ovis's own account service gives a
   PC listed by such a sign-in no relay pass until a device of the account pressed **Add** for it, so
@@ -1179,7 +1217,9 @@ encrypt end to end whichever relay passes the frames on, and each relay sees wha
 
 ## Direct on the same network
 
-While the relay is on, the PC also listens on its private IPv4 addresses (RFC 1918 and link-local,
+Off unless the PC's owner turns on **Direct connection** (below): until then a connection through the
+relay stays on the relay, and the PC listens on none of the addresses here. While the relay and the
+switch are both on, the PC also listens on its private IPv4 addresses (RFC 1918 and link-local,
 port 7319, or another one when that is taken): the one its default route leaves from first, then the
 others, leaving out container, VM and VPN adapters, at most four for the same channel without the relay
 ([`server/relay/direct.ts`](../server/relay/direct.ts)). It also listens on the PC's Tailscale IPv4
@@ -1245,9 +1285,11 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   Tailscale), then the relay, probing earlier routes after admission, every 5 minutes at most and
   when its own addresses change or it wakes. It opens the session on the proven carrier before it
   closes the relay one, so the PC never shows as lost.
-- **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows "Same
-  Wi-Fi direct connection on" (who can sign in there, and that it is on Tailscale too when it is)
-  with its one switch, which turns both off. Each device paired with a relay key says there how it
+- **Said where it is.** While the relay is on, Settings → Devices and PCs → More settings → Devices and
+  access shows **Direct connection** with its one switch, which governs the home network and the Tailscale
+  listener together, and one line: off, "Relay connections stay on the relay."; on, that the Ovis
+  app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct
+  connection, faster, and that this PC listens for it on those addresses. Each device paired with a relay key says there how it
   reaches the PC right now (**Same Wi-Fi, direct**, **Tailscale, direct**, the relay it uses, or
   **Offline** with when it was last seen and why), with the round trip of its session's keepalive:
   `GET /api/devices` adds `connection` to a device with a session up, and `?check=1` (**Check now**)
@@ -1256,8 +1298,10 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   listener to a client that got in (`direct_exposure`, a field of its own: a 0.4.x app takes any
   `lan_exposure` for an open server), and the app's banner says it in paired-only words. The open-server warning (`lanExposed`) is about the main listener
   only; starting the relay closes the pairing gate, so it never applies while this listener runs.
-- **On unless turned off.** `POST /api/relay/direct` with `{ "on": false }` turns it off (kept in
-  `relay/direct.json`; a file that cannot be read counts as off); `GET /api/relay` says whether it is on and where it listens. Addresses are
+- **Off unless turned on.** `POST /api/relay/direct` with `{ "on": true }` turns it on and
+  `{ "on": false }` off, kept in `relay/direct.json`, which only that switch writes: no file is no
+  choice and counts as off, as does a file that cannot be read. So a PC that only ever had the
+  earlier default (on) has it off after the update, and one whose owner turned it on keeps it on. `GET /api/relay` says whether it is on and where it listens. Addresses are
   read again every 30 s, and the listener follows them on the same port. On Windows the first
   bind of a network address shows Windows' own firewall prompt; declining it leaves the relay as
   the only way in.

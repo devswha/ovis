@@ -26,6 +26,8 @@ import { readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
 import { ApprovalHub } from "./approvals/hub.ts";
 import { AcpChildren } from "./acp/children.ts";
 import { claudeApprovals } from "./approvals/claude.ts";
+import { omoApprovals } from "./approvals/omo.ts";
+import { piApprovals } from "./approvals/pi.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -89,6 +91,10 @@ import { CLIProxyRoutes } from "./cliproxy-routes.ts";
 import { UsageLoginService } from "./usage-login.ts";
 import { UsageAccountList } from "./usage-account-list.ts";
 import { VoiceService } from "./voice.ts";
+import { hostname as hostName } from "node:os";
+import { projectKeyOf } from "./memory/project-key.ts";
+import { knownSecrets } from "./memory/secrets.ts";
+import { MemoryStore } from "./memory/store.ts";
 import { loopbackRelay, registerBridge, relayTarget } from "./bridge.ts";
 import { PiSessionReader } from "./pi-session-metadata.ts";
 import { HerdrSidebarConfig, herdrConfigPath, snapshotWithoutHiddenTokens } from "./herdr-sidebar.ts";
@@ -212,6 +218,8 @@ export function createServer(
     relayPcSocket?: (url: string) => RelaySocket;
     relayPcDirectSocket?: (url: string) => RelaySocket;
     pcUpdateTimings?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number };
+    /** how long this PC, added to an account over SSH, waits for its relay to come online before it answers (30 s) */
+    accountAddRelayMs?: number;
     tailnetPcs?: TailnetPcsOptions;
     sshCandidates?: SshCandidatesOptions;
     /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
@@ -411,7 +419,7 @@ export function createServer(
   const preferences = new PreferenceStore(stateDir);
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
   readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
-  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals]);
+  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals]);
   // the agents this server drives over ACP run under keepers in this PC's own herdr-core; the ones an earlier run
   // started are taken up again, as their keepers outlive the server
   const acp = capabilities().acpChildren && hcMachine() === null ? new AcpChildren(join(stateDir, "acp")) : null;
@@ -536,6 +544,7 @@ export function createServer(
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);
   const bridgeToken = options.bridgeToken ?? randomBytes(32).toString("hex");
+  const memory = new MemoryStore({ dir: join(stateDir, "memory"), now: Date.now, hostName: hostName(), knownSecrets: () => knownSecrets(process.env, [token, bridgeToken]), projectKeyOf });
   const piReader = new PiSessionReader({ deadlineMs: options.piSessionDeadlineMs });
 
   type PortalStartup = { ok: true } | { ok: false; error: unknown };
@@ -664,7 +673,7 @@ export function createServer(
   }) : undefined;
   const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
     stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
-    relay: ovisRelay, accountMailbox,
+    relay: ovisRelay, accountMailbox, addedRelayOnlineMs: options.accountAddRelayMs,
   }) : null;
   // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)
   const lockSignal = safetyLog ? new LockSignal() : undefined;
@@ -712,7 +721,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },

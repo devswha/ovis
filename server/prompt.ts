@@ -20,7 +20,7 @@ import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http
 import { claudePlanFile } from "./claude-plan.ts";
 import { heldBody, type ApprovalDialog, type ApprovalHub } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
-import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission } from "./opencode-service.ts";
+import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "./dialogs/registry.ts";
 import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
@@ -929,7 +929,9 @@ async function readKnownPrompt(
     const issued = ++state.issued;
     const [forms, permissions] = config ? await Promise.all([
       listPendingQuestionForms(config, sessionID, signal),
-      openCodePermissionsRead(service!.version) ? listPendingPermissions(config, sessionID, signal) : null,
+      openCodePermissionsRead(service!.version)
+        ? listPendingPermissions(config, sessionID, signal).then((listed) => withShellInput(config, listed, state.permissions, signal))
+        : null,
     ]) : [null, null];
     if (signal?.aborted || openCodeState.entries.get(paneId) !== state) return { prompt: null, stale: true };
     if (state.revision === revision && issued >= state.applied) {
@@ -1188,7 +1190,9 @@ async function readKnownPrompt(
   // OmO pane `pi` while OmO waits: told apart by its process tree, it keeps the card other agents get
   if (agent === "pi" && (prompt === null || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback"))
     && !(await paneRunsOmo(paneId).catch(() => false))) return { prompt: null, screen, suppressFallback: true };
-  if (agent === "pi" && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
+  // a command approval stays: its held request is answered through the approval hub with no key, and a key for it is
+  // still refused before it goes (beforeKey)
+  if (agent === "pi" && approvalDialog(prompt) === null && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc" && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
@@ -1349,26 +1353,31 @@ export interface PromptRequestOptions {
   beforeKey?: (paneId: string, agent: string, deadline: AbortSignal) => Promise<void>;
 }
 
-/** The Claude Bash approval on the screen, which keeps a held hook request open: null for any other dialog. */
+/**
+ * The command approval on the screen that keeps a held hook request open (Claude's Bash approval, OmO's permission
+ * dialog for a shell command, the one Ovis's pi extension draws like it): null for any other dialog.
+ */
 const approvalDialog = (prompt: InteractivePrompt | null): ApprovalDialog | null => {
   const parsed = prompt === null ? undefined : parsedByPublicPrompt.get(prompt);
-  return parsed?.responder === "claude-approval" && parsed.claudeBashCommand !== undefined ? { command: parsed.claudeBashCommand } : null;
+  return parsed?.approvalCommand !== undefined ? { command: parsed.approvalCommand } : null;
 };
 
 /**
- * A Claude command approval built from its held hook request: Claude's words and the whole command, where the screen may
+ * A command approval built from its held hook request: the agent's words and the whole command, where the screen may
  * have cut, wrapped or mixed them. Its id names that request, so that its Yes or No answers that request and no other
- * (heldRequestOf). The read is also what tells the hooks the screen no longer shows a request, which releases it.
+ * (heldRequestOf). The read is also what tells the hooks the screen no longer shows a request, which releases it. The
+ * pane's requests are those of the agent Ovis started there, whatever herdr names it now (OmO waiting on its user is
+ * pi to herdr).
  */
-function withHeldPermission(paneId: string, agent: string, prompt: InteractivePrompt | null, approvals: ApprovalHub | undefined): InteractivePrompt | null {
-  if (approvals === undefined || !approvals.handles(agent)) return prompt;
+function withHeldPermission(paneId: string, prompt: InteractivePrompt | null, approvals: ApprovalHub | undefined): InteractivePrompt | null {
+  if (approvals === undefined) return prompt;
   const held = approvals.shown(paneId, approvalDialog(prompt));
   return held === null || prompt === null ? prompt : { ...prompt, id: `${prompt.id}.${held.id}`, body: heldBody(held) };
 }
 
 /** The held request an answer's card was built on (withHeldPermission), or null for a card built on the screen alone. */
-function heldRequestOf(prompt: InteractivePrompt, promptId: string, agent: string, approvals: ApprovalHub | undefined): string | null {
-  return approvals !== undefined && approvals.handles(agent) && approvalDialog(prompt) !== null && promptId.startsWith(`${prompt.id}.`)
+function heldRequestOf(prompt: InteractivePrompt, promptId: string, approvals: ApprovalHub | undefined): string | null {
+  return approvals !== undefined && approvalDialog(prompt) !== null && promptId.startsWith(`${prompt.id}.`)
     ? promptId.slice(prompt.id.length + 1) : null;
 }
 
@@ -1519,7 +1528,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         : await paneScrollInfo(paneId, undefined, SUGGESTION_READ_MS).then((scroll) => (scroll?.offset_from_bottom ?? 0) > 0 ? null : found, () => null);
       const outcomes = await commandOutcomes(paneId, read.pane, read.prompt, read.screen, readSendId, options.codexHome, read.snapshot);
       return jsonResponse({
-        prompt: withHeldPermission(paneId, agent, prompt, options.approvals),
+        prompt: withHeldPermission(paneId, prompt, options.approvals),
         suggestion,
         restored: box === null || agent !== "claude" ? null : await restoredOnLiveScreen(paneId, box).catch(() => null),
         ...(outcomes.length ? { outcomes: watching ? outcomes.map(({ preview: _preview, result_text: _resultText, ...outcome }) => outcome) : outcomes } : {}),
@@ -1565,7 +1574,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (inputUnverified || !prompt) return promptChanged();
       // a plan card's id carries its plan file's revision: the file as it is now must match too. A command approval's
       // can carry the held hook request it showed: that request must still be held, and still the one on the screen
-      const heldId = heldRequestOf(prompt, body.prompt_id, agent, options.approvals);
+      const heldId = heldRequestOf(prompt, body.prompt_id, options.approvals);
       if (heldId !== null ? !options.approvals!.holds(body.pane_id, approvalDialog(prompt)!, heldId)
         : (await withPlanFile(prompt, options.claudeTranscript?.(body.pane_id)))!.id !== body.prompt_id) return promptChanged();
       log.matched = true;
@@ -1942,13 +1951,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       // Yes or No on a card built on a held hook request is that request's answer, with no key. Any other option goes as
       // keys to the dialog on the screen, only where it shows that request's command, whole, and no other's
       const decision = heldId === null || body.option_index === undefined || body.custom_text !== undefined ? null
-        : options.approvals!.decision(agent, prompt.options[body.option_index]?.label ?? "");
-      if (decision !== null && parsedPrompt?.responder === "claude-approval") {
+        : options.approvals!.decision(body.pane_id, heldId, prompt.options[body.option_index]?.label ?? "");
+      if (decision !== null && parsedPrompt !== undefined) {
         // the request left since the read: no key either, as the dialog now on the screen may be another command's
         if (!options.approvals!.answer(body.pane_id, approvalDialog(prompt)!, heldId!, decision)) return promptChanged();
         delivered = true;
         askingEnded(body.pane_id);
-        form.still = claudeStepStill(parsedPrompt);
+        form.still = parsedPrompt.responder === "claude-approval" ? claudeStepStill(parsedPrompt) : sameContent(contentId(prompt));
         return jsonResponse({ ok: true });
       }
       if (heldId !== null && !options.approvals!.showsOnly(body.pane_id, approvalDialog(prompt)!, heldId)) return promptChanged();

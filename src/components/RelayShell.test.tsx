@@ -183,7 +183,7 @@ describe("the front page's account part", () => {
     expect(text).toContain("homeAnswers · Same Wi-Fi, direct · 9 ms");
     expect(text).toContain("officeAnswers · Seoul relay · 148 ms");
     expect(html).toContain('<span class="connection-slow">148 ms</span>');
-    expect(text).toContain("laptopMachine offlineIt is off, has no network, or Ovis is not running on it.");
+    expect(text).toContain("laptopMachine offlineIts Ovis relay or power is off, it has no network, or Ovis is not running on it.");
     expect(html.indexOf("Check now")).toBeLessThan(html.indexOf("home"));
     expect(text).not.toContain("Connected");
   });
@@ -1874,6 +1874,132 @@ describe("the hosted front page", () => {
         app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) => method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
         await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
         expect(offer()).toHaveLength(0);
+      });
+    });
+
+    // device pass r14 (b): on Android with Tailscale off, the relay failure card's other-way button did nothing at all
+    it("ends the other way's open of a Tailscale address in the Tailscale-off card while the phone's Tailscale is off: a relay PC's own page, and My PCs", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        const offer = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
+        const card = () => renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined && shown(node));
+        const settle = async () => { for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); }); };
+        // the relay PC's own page, whose open over the relay failed, offers the Tailscale address the app saved it by
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "openTailscale"] }], (method) =>
+          method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: false } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
+        await settle();
+        expect(card()).toHaveLength(0);
+        await act(async () => { offer()[0]!.props.onClick(); });
+        await settle();
+        // as a Tailscale row of My PCs does with Tailscale off: the line and Open Tailscale, nothing opened
+        expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+        await act(async () => { card()[0]!.find((node) => node.type === "button").props.onClick(); });
+        expect(called).toContain("HerdrShell.openTailscale");
+        await act(async () => { renderer!.unmount(); });
+
+        // My PCs: a row of two saved ways opens by the one that loaded last; that open fails, and the Tailscale way it offers meets Tailscale off
+        const again = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "openTailscale"] }], (method, options) =>
+          method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: false }
+            : method === "open" && options.url === `${lan}/` ? Promise.reject(Object.assign(new Error("unknown-host"), { code: "unknown-host" })) : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await act(async () => { openers()[0]!.props.onClick(); });
+        await settle();
+        expect(offer().map((node) => node.props["aria-label"])).toEqual(["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)"]);
+        await act(async () => { offer()[0]!.props.onClick(); });
+        await settle();
+        expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
+        expect(again.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${lan}/`]);
+      });
+    });
+
+    const moreWays = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "more-ways" && shown(node));
+    const wayButtons = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
+    const wayLines = () => wayButtons().map((node) => [node.props["aria-label"], textOf(node)]);
+
+    for (const screenWide of [false, true]) {
+      it(`lists a row's other saved ways behind its More ways, closed at first, each line its tag and whole host opening that way; the row still opens by the relay (${screenWide ? "wide" : "phone"})`, async () => {
+        if (screenWide) wide();
+        await withApp(async () => {
+          const lan = "http://192.168.0.5:7317";
+          const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
+            method === "getState" ? { saved: [tail, lan, desk], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+          await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP), device(ids.desk, "Desk PC", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+          const rows = rowTexts();
+          expect(rows).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscale · Address"], ["relay", "Desk PCRelay"], ["tailscale", "deskTailscaledesk.tail1e211e.ts.net"]]);
+          // one disclosure, on the row of several ways alone, closed, named for its PC
+          expect(moreWays().map((node) => [node.props["aria-label"], node.props["aria-expanded"]])).toEqual([["More ways to open hasang-uui-MacBookPro", false]]);
+          expect(wayLines()).toEqual([]);
+          // what it controls is there while closed too, hidden
+          const controlled = () => renderer!.root.findAll((node) => typeof node.type === "string" && node.props.id === moreWays()[0]!.props["aria-controls"]).map((node) => node.props.hidden);
+          expect(controlled()).toEqual([true]);
+          // the row's own tap is still the relay's page
+          expect(openers()[0]!.type).toBe("a");
+          expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+          await act(async () => { moreWays()[0]!.props.onClick(); });
+          expect(moreWays()[0]!.props["aria-expanded"]).toBe(true);
+          expect(controlled()).toEqual([false]);
+          // each other way, one to a line: its tag and the host it opens, whole, in its accessible name too
+          expect(wayLines()).toEqual([
+            ["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"],
+            ["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"],
+          ]);
+          // opening the list opens nothing; the relay row keeps its name, its way tags and where it leads
+          expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+          expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+          await act(async () => { wayButtons()[1]!.props.onClick(); });
+          expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${lan}/`]);
+          // closed again, the rows read as they did
+          await act(async () => { moreWays()[0]!.props.onClick(); });
+          expect(wayLines()).toEqual([]);
+          expect(rowTexts()).toEqual(rows);
+        });
+      });
+    }
+
+    it("lists, on a row of saved ways alone, the ways other than the one its tap opens", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        // the address way loaded last: the row's tap opens it, so More ways lists the Tailscale one alone
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
+          method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await act(async () => { moreWays()[0]!.props.onClick(); });
+        expect(wayLines()).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
+        await act(async () => { wayButtons()[0]!.props.onClick(); });
+        for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
+      });
+    });
+
+    it("shows, on a row of saved ways alone, the way the app keeps open, whose row goes back to it, and lists the others under More ways", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        // the address loaded last, but the app keeps the Tailscale way open while the person chooses another
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "backToCurrent"] }], (method) =>
+          method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac }, choosing: true, current: tail } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317In use now"]]);
+        await act(async () => { moreWays()[0]!.props.onClick(); });
+        expect(wayLines()).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
+        await act(async () => { openers()[0]!.props.onClick(); });
+        expect(called).toContain("HerdrShell.backToCurrent");
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+      });
+    });
+
+    it("ends a More ways line's open of a Tailscale address in the Tailscale-off card while the phone's Tailscale is off, as a Tailscale row does", async () => {
+      await withApp(async () => {
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "openTailscale"] }], (method) =>
+          method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: false } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+        const card = () => renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined && shown(node));
+        await act(async () => { moreWays()[0]!.props.onClick(); });
+        await act(async () => { wayButtons()[0]!.props.onClick(); });
+        for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
+        expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
       });
     });
 

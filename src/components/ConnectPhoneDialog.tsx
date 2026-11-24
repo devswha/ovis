@@ -19,7 +19,7 @@ import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { tailscalePlan, type PhonePlan } from "../lib/phone.ts";
-import { reachablePcs, reachableState, type ReachableFacts, type ReachablePc, type ReachableState } from "../lib/reachablePcs.ts";
+import { reachablePcs, reachableState, savedAt, type ReachableFacts, type ReachablePc, type ReachableState } from "../lib/reachablePcs.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -224,7 +224,7 @@ export function ConnectPhoneDialog({ asked = null, plan: givenPlan, tailscale: g
   const local = localWays({ plan, readOnly, canPair, portal });
   const tailnet = localWays({ plan: tailscale, readOnly, canPair, portal: null });
   // one pairing code for both tabs that show one: the PC keeps one pending code, so a second would end the first
-  const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set() });
+  const sharedCode = useRef<SharedCode>({ code: null, asking: false, waiting: new Set(), wanted: false, views: new Set() });
   // the six-digit code a device types where it opens this PC's Ovis: under the relay tab, else under SSH. Where the
   // relay tab's top offers it beside the account QR code (AccountQr `pairHere`: online, this PC's relay ID known), that
   // is its one place
@@ -342,7 +342,8 @@ export function useFoundPcs(machines: readonly Machine[], enabled = true) {
   const rowState = (row: ReachablePc, accountPcs?: ReadonlySet<string>): ReachableState => reachableState(row, accountPcs === undefined ? facts : { ...facts, accountPcs });
   const stateOf = (pc: SshCandidate): ReachableState => rowState(reachablePcs([pc])[0]!);
   const retry = () => { setFound(null); setReads((count) => count + 1); };
-  return { found, rows, unread, failed, withheld, stateOf, rowState, retry };
+  const saved = (row: ReachablePc): Machine | undefined => savedAt(row, machines);
+  return { found, rows, unread, failed, withheld, stateOf, rowState, saved, retry };
 }
 
 /** The found list's failure with Try again, or where a list this window is refused can be seen. */
@@ -406,7 +407,7 @@ export function TailscaleTab({ found: { rows, unread, failed, withheld, rowState
  * ticked, which reaches that PC's own Ovis over SSH, offers to install it, and adds it to the account
  * (docs/account.md "Adding a PC over SSH"). A PC in the account, here already or with an older Ovis says so instead.
  */
-export function ReachablePcList({ found: { rows, failed, withheld, rowState, retry }, accountPcs, onAddPc }: {
+export function ReachablePcList({ found: { rows, failed, withheld, rowState, saved, retry }, accountPcs, onAddPc }: {
   found: FoundPcs; accountPcs: ReadonlySet<string>; onAddPc: (preset?: AddPcPreset) => void;
 }) {
   const t = useT();
@@ -430,6 +431,8 @@ export function ReachablePcList({ found: { rows, failed, withheld, rowState, ret
           <ul className="connect-found-list connect-reach-list">
             {rows.map((pc) => {
               const state = rowState(pc, accountPcs);
+              // a PC saved here that is not in the account is added on that same PC, never as a second one
+              const here = state === "open" ? saved(pc) : undefined;
               return (
                 <li key={pc.key} className="connect-found-row" data-reachable-state={state}>
                   <span className="connect-found-name">{pc.name}</span>
@@ -437,7 +440,7 @@ export function ReachablePcList({ found: { rows, failed, withheld, rowState, ret
                   {state === "in-account" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("In your account")}</span>
                     : state === "added" ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
                     : state === "outdated" ? <span className="settings-hint">{t("Update Ovis on that PC to 0.5 first.")}</span>
-                    : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Add")} ${pc.name}`} onClick={() => onAddPc({ destination: pc.destination, name: pc.name })}>{t("Add")}</button>}
+                    : <button type="button" className="btn" disabled={state === "waiting"} aria-label={`${t("Add")} ${pc.name}`} onClick={() => onAddPc({ destination: pc.destination, name: pc.name, ...(here === undefined ? {} : { machine_id: here.id }) })}>{t("Add")}</button>}
                 </li>
               );
             })}
@@ -1533,9 +1536,11 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
 
 /**
  * the code views of one dialog share (CodeRoute `shared`): the last one made or announced, whether one is being asked
- * for, and the views waiting on that ask, told when it ends with no code so one of them asks itself
+ * for, the views waiting on that ask, told when it ends with no code so one of them asks itself, and whether a view of
+ * this dialog has asked for one (`wanted`: a press, or a tab that shows one as it opens). Until then no view shows digits
+ * another place of the page made (the setup guide's relay QR code, Settings' Devices group)
  */
-interface SharedCode { code: PairingCode | null; asking: boolean; readonly waiting: Set<() => void> }
+interface SharedCode { code: PairingCode | null; asking: boolean; readonly waiting: Set<() => void>; wanted: boolean; readonly views: Set<(code: PairingCode) => void> }
 
 /**
  * The ask in `shared` ended: with `code`, its announcement reaches the waiting views; with none, the first waiting view
@@ -1559,10 +1564,13 @@ let latestPairRequest = 0;
  */
 export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact = false }: { pairUrl: string | null; startAtOnce: boolean; shared?: MutableRefObject<SharedCode>; phone?: boolean; compact?: boolean }) {
   const t = useT();
+  /** this view asked for a code: its press, or its tab opening with one (`startAtOnce`) */
+  const wanted = useRef(false);
+  const want = (): void => { wanted.current = true; if (shared) shared.current = { ...shared.current, wanted: true }; };
   // a view made on a press shows the code another view of the dialog shows already, while it is good
   const [code, setCode] = useState<PairingCode | null>(() => {
     const held = shared?.current.code;
-    return !startAtOnce && held && Date.parse(held.expires_at) > Date.now() ? held : null;
+    return !startAtOnce && shared?.current.wanted === true && held && Date.parse(held.expires_at) > Date.now() ? held : null;
   });
   const [left, setLeft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1572,6 +1580,14 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
   const linkRef = useRef<HTMLAnchorElement>(null);
   const announcing = useRef(false);
 
+  // the dialog's other views, told when one of them takes the PC's pending code as its tab opens: that code is wanted now
+  useEffect(() => {
+    if (!shared) return;
+    const views = shared.current.views;
+    views.add(setCode);
+    return () => { views.delete(setCode); };
+  }, [shared]);
+
   useEffect(() => {
     const onCode = (event: Event) => {
       if (announcing.current) return;
@@ -1579,8 +1595,10 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
       // a QR code shown alone (the relay tab's) is never shown here as digits; the PC's one pending code is now that
       // one, so the code this showed is gone
       const next = detail.qrOnly === true ? null : detail;
+      // read before the shared code is written: digits this dialog never asked for stay off it, whoever made them
+      const asked = wanted.current || shared?.current.wanted === true;
       if (shared) { shared.current.waiting.clear(); shared.current = { ...shared.current, code: next, asking: false }; }
-      setCode(next);
+      setCode(asked ? next : null);
     };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);
     return () => window.removeEventListener(PAIRING_CODE_EVENT, onCode);
@@ -1600,6 +1618,7 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
 
   const pair = async () => {
     if (requesting.current) return;
+    want();
     requesting.current = true;
     setBusy(true);
     setError(null);
@@ -1637,7 +1656,13 @@ export function CodeRoute({ pairUrl, startAtOnce, shared, phone = false, compact
       // a view that goes before the ask ends asks nothing; one whose effect runs again waits again
       return () => { held.waiting.delete(ask); started.current = false; };
     }
-    if (held?.code && Date.parse(held.code.expires_at) > Date.now()) { setCode(held.code); return; }
+    if (held?.code && Date.parse(held.code.expires_at) > Date.now()) {
+      want();
+      setCode(held.code);
+      // no announcement: no code was made, and the relay QR codes on the page already show this one
+      for (const show of held.views) show(held.code);
+      return;
+    }
     void pair();
   }, [startAtOnce, shared]);
 
