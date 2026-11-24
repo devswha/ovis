@@ -259,3 +259,15 @@ test("a sign-in store that fails during the add ends it as not added, never stuc
   expect(shown.status()).not.toContain("Adding it to your account…");
   expect(shown.takes).toEqual([]);
 });
+
+// review-ssh-p8 L2 and U2: an Ovis that could not answer is no old Ovis; one too old to read the list is
+test("that PC could not answer the take (an error of its own): Try again, never Update Ovis", async () => {
+  const shown = await dialog({ admit: [null], takes: [Response.json({ error: { code: "that_pc_error", message: "That PC could not answer. Try again." } }, { status: 409 })] });
+  expect(shown.status()).toContain("That PC could not answer. Try again.");
+  expect(shown.status()).not.toContain("Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.");
+});
+
+test("that PC's Ovis cannot read the account's list: update Ovis there", async () => {
+  const shown = await dialog({ admit: [null], takes: [Response.json({ error: { code: "that_pc_behind", message: "behind" } }, { status: 409 })] });
+  expect(shown.status()).toContain("Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.");
+});

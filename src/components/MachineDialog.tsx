@@ -335,6 +335,7 @@ function addedWords(outcome: SshAddOutcome | "adding" | "other-pc", t: ReturnTyp
     case "list-later": return t("Your account's list takes no more PCs for now. Add that PC again later.");
     case "list-removed": return t("That PC was removed from your account. It comes back only as a new PC: run ovis add on it and type yes when it asks to add it as a new PC.");
     case "account-changed": return t("This PC's account changed while that PC was being added. Look for that PC in the account you added it to.");
+    case "pc-error": return t("That PC could not answer. Try again.");
     case "refused": case "disconnected": return t("It was not added to your account. Try again.");
   }
 }

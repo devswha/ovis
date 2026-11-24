@@ -169,6 +169,7 @@ export const MACHINES_JA: Record<string, string> = {
   "Your account's list takes no more PCs for now. Add that PC again later.": "アカウントの名簿には今は PC を追加できません。あとでその PC をもう一度追加してください。",
   "That PC was removed from your account. It comes back only as a new PC: run ovis add on it and type yes when it asks to add it as a new PC.": "その PC はアカウントから外されました。新しい PC としてのみ戻せます。その PC で ovis add を実行し、新しい PC として追加するか聞かれたら yes と入力してください。",
   "This PC's account changed while that PC was being added. Look for that PC in the account you added it to.": "その PC を追加している間に、この PC のアカウントが変わりました。追加先のアカウントでその PC を確認してください。",
+  "That PC could not answer. Try again.": "その PC が応答できませんでした。もう一度試してください。",
   "Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.": "その PC の Ovis を更新してから、もう一度追加してください。今の Ovis ではアカウントの名簿に入れません。",
   "Add it with the number on the server's Ovis page.": "サーバーの Ovis ページに表示された番号で追加してください。",
   "Sign in again on this PC, then add it again.": "この PC でもう一度サインインしてから、もう一度追加してください。",

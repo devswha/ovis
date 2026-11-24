@@ -169,6 +169,7 @@ export const MACHINES_KO: Record<string, string> = {
   "Your account's list takes no more PCs for now. Add that PC again later.": "계정 명단에 지금은 PC를 더 추가할 수 없어요. 나중에 그 PC를 다시 추가하세요.",
   "That PC was removed from your account. It comes back only as a new PC: run ovis add on it and type yes when it asks to add it as a new PC.": "그 PC는 계정에서 제거됐어요. 새 PC로만 다시 들어올 수 있어요. 그 PC에서 ovis add를 실행하고, 새 PC로 추가할지 물으면 yes를 입력하세요.",
   "This PC's account changed while that PC was being added. Look for that PC in the account you added it to.": "그 PC를 추가하는 동안 이 PC의 계정이 바뀌었어요. 추가하려던 계정에서 그 PC를 확인하세요.",
+  "That PC could not answer. Try again.": "그 PC가 응답하지 못했어요. 다시 시도하세요.",
   "Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.": "그 PC의 Ovis를 업데이트한 뒤 다시 추가하세요. 지금 Ovis로는 계정 명단에 들어갈 수 없어요.",
   "Add it with the number on the server's Ovis page.": "서버의 Ovis 페이지에 표시된 번호로 추가하세요.",
   "Sign in again on this PC, then add it again.": "이 PC에서 다시 로그인한 뒤 다시 추가하세요.",

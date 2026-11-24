@@ -30,7 +30,8 @@ import type { AccountSession } from "./store.ts";
  * - `sign-in-again`: the service refused this sign-in (not fresh, or not this device's own).
  * - `list-cannot-add`: the account keeps a signed list, and this PC cannot sign another PC into it (it joined by an
  *   invite, or follows no list): that PC is added with the number `ovis add` shows there.
- * - `update-that-pc`: the account keeps a signed list, and that PC's Ovis is too old to be named it.
+ * - `update-that-pc`: the account keeps a signed list, and that PC's Ovis is too old to be named it, or to read it.
+ * - `pc-error`: that PC's Ovis could not answer the take (an error of its own): asking again may do.
  * - `list-not-added`: that PC posted its keys, and its entry did not go into the list: adding it again goes on from there.
  * - `list-placed`: its entry is in the list, and that PC has not taken it yet: adding it again finishes, signing nothing more.
  * - `list-later`: the account's list takes no more additions for now (its budget): adding it again later goes on.
@@ -42,7 +43,7 @@ import type { AccountSession } from "./store.ts";
  */
 export type SshAddOutcome = "added" | "already" | "added-unchecked" | "already-unchecked" | "added-unanswered" | "already-unanswered"
   | "not-online" | "relay-off" | "maybe" | "other-account" | "number" | "sign-in-again" | "list-cannot-add" | "update-that-pc" | "list-not-added" | "list-placed"
-  | "list-later" | "list-removed" | "account-changed" | "disconnected" | "refused";
+  | "list-later" | "list-removed" | "account-changed" | "pc-error" | "disconnected" | "refused";
 
 /**
  * What this PC said of the take: that PC's relay as it answered (null: not said; `unanswered`: the take's answer was lost and
@@ -90,7 +91,11 @@ const REFUSED: Readonly<Record<string, SshAddOutcome>> = {
   disconnected: "disconnected", job_not_found: "disconnected",
   // `list_add`: this PC follows no list, and that PC's account keeps one, so it takes no add on the account service's word
   list_cannot_add: "list-cannot-add", list_add: "list-cannot-add",
-  that_pc_old: "update-that-pc", list_not_added: "list-not-added", list_unbound: "list-placed", list_budget: "list-later",
+  // too old to be named a list, or to read the one it was named
+  that_pc_old: "update-that-pc", that_pc_behind: "update-that-pc",
+  // a current Ovis there that could not answer (its own error): asking again may do
+  that_pc_error: "pc-error",
+  list_not_added: "list-not-added", list_unbound: "list-placed", list_budget: "list-later",
   list_removed: "list-removed", account_changed: "account-changed",
   // the take may have gone out, or its reply said nothing of this add: never "not added"
   take_unanswered: "maybe", take_unknown: "maybe",
