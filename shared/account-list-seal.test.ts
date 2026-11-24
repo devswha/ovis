@@ -6,10 +6,10 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isListKeyEncoding, isListPoint, LIST_BODY_MAX, type ListField, readFieldsUnder, writeFieldsUnder } from "./account-list-entry.ts";
+import { isListKeyEncoding, isListPoint, LIST_BODY_MAX, type ListField, writeFieldsUnder } from "./account-list-entry.ts";
 import {
   type CannotOpen, type EpochKey, type EpochOpening, epochKeyCommitment, generateDeviceEncryptionKey, generateStoredEncryptionKey, linkEpochs,
-  LIST_EPOCH_LINK_BYTES, LIST_EPOCH_WALK_MAX, LIST_SEALED_OVERHEAD, LIST_SEALED_PREFIX, LIST_STORED_KEY_BYTES, LIST_WRAP_BYTES, LIST_WRAP_TEXT_LENGTH,
+  LIST_EPOCH_LINK_BYTES, LIST_EPOCH_WALK_MAX, LIST_SEALED_OVERHEAD, LIST_SEALED_PAD_BYTES, LIST_SEALED_PREFIX, LIST_STORED_KEY_BYTES, LIST_WRAP_BYTES, LIST_WRAP_TEXT_LENGTH,
   ListSealError, type MemberEncryptionKey, newEpochKey, nextEpoch, openLink, openSealed, openWrap, readStoredEncryptionKey, sealFields, walkBack,
   wrapEpochKey, wrapEpochKeyFor, wrapFromText, wrapToText,
 } from "./account-list-seal.ts";
@@ -44,14 +44,52 @@ async function refusal(run: () => Promise<unknown>): Promise<unknown> {
   return null;
 }
 
+/** sealFields with the commitment the key gives, as a member that holds the list's own commitment would call it. */
+function seal(given: { place: { list: string; seq: number }; epoch: EpochKey; fields: readonly ListField[] }): Promise<Uint8Array> {
+  return sealFields({ ...given, commitment: epochKeyCommitment({ list: LIST, epoch: given.epoch }) });
+}
+
 const alice = await generateDeviceEncryptionKey();
 const bob = await generateDeviceEncryptionKey();
 const carol = await generateDeviceEncryptionKey();
 
+const REF_SPKI = hexToBytes("3059301306072a8648ce3d020106082a8648ce3d03010703420004");
+function ref64(value: string): Uint8Array {
+  return new Uint8Array(Buffer.from(value, "base64url"));
+}
+function refWrapText(value: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]{151}$/.test(value)) return null;
+  const bytes = Buffer.from(value, "base64url");
+  return bytes.toString("base64url") === value ? new Uint8Array(bytes) : null;
+}
+/** The fields of a sealed plaintext, read with nothing of account-list-entry.ts; throws for any that has not the form. */
+function refFields(plaintext: Uint8Array): (readonly [string, string])[] {
+  const prefix = "ovis-list-sealed/1";
+  if (plaintext.length > 8192 || Buffer.from(plaintext.subarray(0, prefix.length)).toString("latin1") !== prefix) throw new Error("prefix");
+  const view = new DataView(plaintext.buffer, plaintext.byteOffset, plaintext.byteLength);
+  const fields: (readonly [string, string])[] = [];
+  let at = prefix.length;
+  const take = (): Uint8Array => {
+    if (at + 4 > plaintext.length) throw new Error("length");
+    const length = view.getUint32(at);
+    if (at + 4 + length > plaintext.length) throw new Error("value");
+    at += 4 + length;
+    return plaintext.subarray(at - length, at);
+  };
+  let before = "";
+  while (at < plaintext.length) {
+    const name = Buffer.from(take()).toString("latin1");
+    if (!/^[a-z][a-z_]{0,31}$/.test(name) || (fields.length > 0 && !(before < name))) throw new Error("name");
+    fields.push([name, new TextDecoder().decode(take())]);
+    before = name;
+  }
+  return fields;
+}
+
 /**
- * The formats of docs/account-list.md written a second time, with nothing of WebCrypto and nothing
- * of account-list-seal.ts: what one side writes the other must read, and both must give every
- * vector's `expect`.
+ * The formats of docs/account-list.md written a second time, with nothing of WebCrypto, of
+ * account-list-seal.ts or of the list's own readers (its base64url, its field form, its key
+ * prefix): what one side writes the other must read, and both must give every vector's `expect`.
  */
 const reference = {
   sub(epochKey: Uint8Array, tag: string): Uint8Array {
@@ -70,14 +108,14 @@ const reference = {
   },
   wrapCipher(secret: Uint8Array, point: Uint8Array, list: string, epoch: number, member: string, ephemeral: Uint8Array) {
     const shared = p256.getSharedSecret(secret, concatBytes(Uint8Array.of(4), point), true).subarray(1);
-    const info = concatBytes(utf8ToBytes("ovis-list-wrap/1"), hexToBytes(list), u64(epoch), fromBase64Url(member), SPKI_PREFIX, ephemeral);
+    const info = concatBytes(utf8ToBytes("ovis-list-wrap/1"), hexToBytes(list), u64(epoch), ref64(member), REF_SPKI, ephemeral);
     const derived = hkdf(sha256, shared, new Uint8Array(32), info, 44);
     return gcm(derived.subarray(0, 32), derived.subarray(32));
   },
   wrap(list: string, epoch: EpochKey, member: string): Uint8Array {
     const secret = p256.utils.randomSecretKey();
     const ephemeral = p256.getPublicKey(secret, false).subarray(1);
-    const cipher = reference.wrapCipher(secret, fromBase64Url(member).subarray(SPKI_PREFIX.length), list, epoch.epoch, member, ephemeral);
+    const cipher = reference.wrapCipher(secret, ref64(member).subarray(REF_SPKI.length), list, epoch.epoch, member, ephemeral);
     return concatBytes(Uint8Array.of(1), ephemeral, cipher.encrypt(epoch.key));
   },
   openWrap(list: string, epoch: number, commitment: string, wrap: Uint8Array, member: string, pkcs8: Uint8Array): SealVectorResult {
@@ -123,7 +161,7 @@ const reference = {
       return { why: "refused" };
     }
     try {
-      return { fields: readFieldsUnder("ovis-list-sealed/1", plaintext).map((field) => [field.name, new TextDecoder().decode(field.value)] as const) };
+      return { fields: refFields(plaintext).filter(([name]) => name !== "pad") };
     } catch {
       return { why: "form" };
     }
@@ -132,12 +170,12 @@ const reference = {
     if (vector.wrap) {
       const { list, epoch, commitment, member, text: wire } = vector.wrap;
       const pair = vector.keys?.[member];
-      const wrap = wrapFromText(wire);
+      const wrap = refWrapText(wire);
       if (!pair) throw new Error("no key");
-      return wrap === null ? { why: "form" } : reference.openWrap(list, epoch, commitment, wrap, pair.spki, fromBase64Url(pair.pkcs8));
+      return wrap === null ? { why: "form" } : reference.openWrap(list, epoch, commitment, wrap, pair.spki, ref64(pair.pkcs8));
     }
-    if (vector.link) return reference.openLink(vector.link.list, { epoch: vector.link.from.epoch, key: hexToBytes(vector.link.from.key) }, vector.link.commitment, fromBase64Url(vector.link.bytes));
-    if (vector.sealed) return reference.openSealed(vector.sealed.list, vector.sealed.seq, { epoch: vector.sealed.epoch.epoch, key: hexToBytes(vector.sealed.epoch.key) }, fromBase64Url(vector.sealed.bytes));
+    if (vector.link) return reference.openLink(vector.link.list, { epoch: vector.link.from.epoch, key: hexToBytes(vector.link.from.key) }, vector.link.commitment, ref64(vector.link.bytes));
+    if (vector.sealed) return reference.openSealed(vector.sealed.list, vector.sealed.seq, { epoch: vector.sealed.epoch.epoch, key: hexToBytes(vector.sealed.epoch.key) }, ref64(vector.sealed.bytes));
     throw new Error("no case");
   },
 };
@@ -149,7 +187,7 @@ describe("the vectors of seal/", () => {
     "wrap", "wrap-epoch-15-digits", "wrap-made-elsewhere", "wrap-other-member", "wrap-other-list", "wrap-other-epoch", "wrap-byte-changed", "wrap-tag-changed",
     "wrap-other-point", "wrap-point-off-curve", "wrap-version-2", "wrap-version-0", "wrap-short", "wrap-trailing-byte", "wrap-text-padded",
     "wrap-text-second-spelling", "wrap-text-empty", "wrap-of-another-key", "wrap-epoch-0", "wrap-epoch-0-commitment-with-list", "wrap-commitment-other-list",
-    "wrap-commitment-other-epoch",
+    "wrap-commitment-other-epoch", "wrap-point-x-is-p", "wrap-point-x-above-p",
   ];
   const LINKS = [
     "link", "link-made-elsewhere", "link-to-epoch-0", "link-other-list", "link-other-epoch", "link-other-from-key", "link-byte-changed", "link-nonce-changed",
@@ -159,7 +197,7 @@ describe("the vectors of seal/", () => {
     "sealed", "sealed-made-elsewhere", "sealed-entry-0", "sealed-no-fields", "sealed-utf8", "sealed-seq-15-digits", "sealed-other-seq", "sealed-other-list",
     "sealed-other-epoch", "sealed-other-epoch-key", "sealed-as-entry-0", "sealed-byte-changed", "sealed-nonce-changed", "sealed-tag-changed",
     "sealed-trailing-byte", "sealed-version-2", "sealed-short", "sealed-entry-0-with-list", "sealed-list-missing", "sealed-names-not-ascending",
-    "sealed-plaintext-other-prefix", "sealed-plaintext-cut",
+    "sealed-plaintext-other-prefix", "sealed-plaintext-cut", "sealed-filled", "sealed-filled-512", "sealed-filled-no-fields", "sealed-pad-other-bytes",
   ];
   const vectors = files.map((file) => JSON.parse(readFileSync(join(dir, file), "utf8")) as SealVector);
 
@@ -194,6 +232,24 @@ describe("a member's encryption key", () => {
     expect(alice.privateKey.extractable).toBe(false);
     expect(alice.privateKey.usages).toEqual(["deriveBits"]);
     for (const format of ["pkcs8", "jwk"] as const) expect(await refusal(() => crypto.subtle.exportKey(format, alice.privateKey))).toBeInstanceOf(Error);
+  });
+
+  test("a runtime that exports a public key otherwise than as a key of the list makes no key", async () => {
+    const spki = crypto.subtle.exportKey.bind(crypto.subtle);
+    const offCurve = spyOn(crypto.subtle, "exportKey").mockImplementation((async (format: KeyFormat, key: CryptoKey) => {
+      const exported = await spki(format as "spki", key);
+      return format === "spki" ? flipped(new Uint8Array(exported), 8 * 90).buffer : exported;
+    }) as typeof crypto.subtle.exportKey);
+    try {
+      for (const make of [generateDeviceEncryptionKey, generateStoredEncryptionKey]) {
+        const error = await refusal(make);
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(ListSealError);
+      }
+    } finally {
+      offCurve.mockRestore();
+    }
+    expect(isListPoint((await generateDeviceEncryptionKey()).key)).toBe(true);
   });
 
   test("a stored key reads back to the same public key, cannot be exported once read, and opens what is wrapped to it", async () => {
@@ -489,9 +545,41 @@ describe("the chain of epochs", () => {
     expect(await walkBack({ list: LIST, from, openings: without(3, { commitment: three.commitment, link: flipped(three.link as Uint8Array, 200) }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "refused" } });
     expect(await walkBack({ list: LIST, from, openings: without(3, { commitment: three.commitment, link: openings.get(4)?.link ?? null }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "refused" } });
     expect(await walkBack({ list: LIST, from, openings: without(2, { commitment: epochKeyCommitment({ list: LIST, epoch: newEpochKey(2) }), link: two.link ?? null }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "other_key" } });
-    expect(await walkBack({ list: OTHER_LIST, from, openings })).toEqual({ keys: [from], stopped: { epoch: 4, why: "refused" } });
+    expect(await walkBack({ list: OTHER_LIST, from, openings })).toEqual({ keys: [], stopped: { epoch: 5, why: "other_key" } });
     expect(await walkBack({ list: LIST, from, to: 9, openings })).toEqual({ keys: [from], stopped: { epoch: 9, why: "missing" } });
     expect(await walkBack({ list: LIST, from: { epoch: 5, key: new Uint8Array(3) }, openings })).toEqual({ keys: [], stopped: { epoch: 0, why: "form" } });
+  });
+
+  test("every key a walk gives is one the list commits to, the key it starts from included", async () => {
+    const { keys, openings } = await chain(4);
+    const from = keys[3] as EpochKey;
+    const notCommitted: EpochKey = { epoch: 3, key: newEpochKey(3).key };
+    expect(await walkBack({ list: LIST, from: notCommitted, openings })).toEqual({ keys: [], stopped: { epoch: 3, why: "other_key" } });
+    expect(await walkBack({ list: LIST, from: { epoch: 2, key: from.key }, openings })).toEqual({ keys: [], stopped: { epoch: 2, why: "other_key" } });
+    const silent = new Map(openings);
+    silent.delete(3);
+    expect(await walkBack({ list: LIST, from, openings: silent })).toEqual({ keys: [], stopped: { epoch: 3, why: "missing" } });
+    expect(await walkBack({ list: LIST, from, to: 3, openings: silent })).toEqual({ keys: [], stopped: { epoch: 3, why: "missing" } });
+    expect(await walkBack({ list: LIST, from, openings: new Map(openings).set(3, { commitment: "not a hash", link: null }) })).toEqual({ keys: [], stopped: { epoch: 3, why: "form" } });
+    expect(await walkBack({ list: "5C".repeat(32), from, openings })).toEqual({ keys: [], stopped: { epoch: 3, why: "form" } });
+    expect((await walkBack({ list: LIST, from, to: 3, openings })).keys).toEqual([from]);
+  });
+
+  test("a walk never throws, whatever it is handed", async () => {
+    const { keys, openings } = await chain(4);
+    const from = keys[3] as EpochKey;
+    const throwing = new Map(openings).set(1, { get commitment(): string { throw new Error("a getter that throws"); } });
+    expect(await walkBack({ list: LIST, from, openings: throwing })).toEqual({ keys: [keys[3], keys[2]] as EpochKey[], stopped: { epoch: 1, why: "unavailable" } });
+    const throwingFirst = new Map(openings).set(3, { get commitment(): string { throw new Error("a getter that throws"); } });
+    expect(await walkBack({ list: LIST, from, openings: throwingFirst })).toEqual({ keys: [], stopped: { epoch: 3, why: "unavailable" } });
+    for (const junk of [null, undefined, {}, 7, "text", [[0, null]]]) {
+      const walk = await walkBack({ list: LIST, from, openings: junk as never });
+      expect(walk.keys).toEqual([]);
+      expect(walk.stopped?.why === "unavailable" || walk.stopped?.why === "missing").toBe(true);
+    }
+    expect(await walkBack(null as never)).toEqual({ keys: [], stopped: { epoch: 0, why: "unavailable" } });
+    expect(await walkBack(undefined as never)).toEqual({ keys: [], stopped: { epoch: 0, why: "unavailable" } });
+    expect(await walkBack({ list: LIST, from: null as never, openings })).toEqual({ keys: [], stopped: { epoch: 0, why: "form" } });
   });
 });
 
@@ -500,15 +588,15 @@ describe("a sealed field", () => {
   const place = { list: LIST, seq: 7 };
 
   test("opens to its fields, in the order of their names, for its place and epoch", async () => {
-    const sealed = await sealFields({ place, epoch, fields: [...NAMES].reverse() });
+    const sealed = await seal({ place, epoch, fields: [...NAMES].reverse() });
     const opened = await openSealed({ place, epoch, sealed });
     expect(opened.open && shown(opened.value)).toEqual(shown(NAMES));
-    expect(sealed.length).toBe(writeFieldsUnder(LIST_SEALED_PREFIX, NAMES).length + LIST_SEALED_OVERHEAD);
+    expect(sealed.length).toBe(LIST_SEALED_PAD_BYTES + LIST_SEALED_OVERHEAD);
     expect(sealed[0]).toBe(1);
   });
 
   test("does not open under another list, another seq or another epoch", async () => {
-    const sealed = await sealFields({ place, epoch, fields: NAMES });
+    const sealed = await seal({ place, epoch, fields: NAMES });
     expect(await openSealed({ place: { list: OTHER_LIST, seq: 7 }, epoch, sealed })).toEqual({ open: false, why: "refused" });
     expect(await openSealed({ place: { list: LIST, seq: 6 }, epoch, sealed })).toEqual({ open: false, why: "refused" });
     expect(await openSealed({ place: { list: LIST, seq: 8 }, epoch, sealed })).toEqual({ open: false, why: "refused" });
@@ -520,18 +608,18 @@ describe("a sealed field", () => {
 
   test("entry 0 is sealed with no list id, and only entry 0", async () => {
     const first = newEpochKey(0);
-    const sealed = await sealFields({ place: { list: "", seq: 0 }, epoch: first, fields: NAMES });
+    const sealed = await seal({ place: { list: "", seq: 0 }, epoch: first, fields: NAMES });
     const opened = await openSealed({ place: { list: "", seq: 0 }, epoch: first, sealed });
     expect(opened.open && shown(opened.value)).toEqual(shown(NAMES));
     expect(await openSealed({ place: { list: "00".repeat(32), seq: 1 }, epoch: first, sealed })).toEqual({ open: false, why: "refused" });
     for (const bad of [{ list: LIST, seq: 0 }, { list: "", seq: 1 }, { list: "5C".repeat(32), seq: 1 }, { list: LIST, seq: -1 }, { list: LIST, seq: 1.5 }, { list: LIST, seq: 10 ** 15 }]) {
       expect(await openSealed({ place: bad, epoch: first, sealed })).toEqual({ open: false, why: "form" });
-      expect(await refusal(() => sealFields({ place: bad, epoch: first, fields: NAMES }))).toBeInstanceOf(ListSealError);
+      expect(await refusal(() => seal({ place: bad, epoch: first, fields: NAMES }))).toBeInstanceOf(ListSealError);
     }
   });
 
   test("no single changed bit opens", async () => {
-    const sealed = await sealFields({ place, epoch, fields: [text("label", "Phone")] });
+    const sealed = await seal({ place, epoch, fields: [text("label", "Phone")] });
     const verdicts = new Set<string>();
     for (let bit = 0; bit < sealed.length * 8; bit += 1) verdicts.add(why(await openSealed({ place, epoch, sealed: flipped(sealed, bit) })));
     expect([...verdicts].sort()).toEqual(["form", "refused"]);
@@ -539,7 +627,7 @@ describe("a sealed field", () => {
   });
 
   test("the nonce is random: sealing the same fields for the same place never gives the same bytes", async () => {
-    const sealed = await Promise.all(Array.from({ length: 256 }, () => sealFields({ place, epoch, fields: NAMES })));
+    const sealed = await Promise.all(Array.from({ length: 256 }, () => seal({ place, epoch, fields: NAMES })));
     expect(new Set(sealed.map((bytes) => bytesToHex(bytes.subarray(1, 13)))).size).toBe(256);
     expect(new Set(sealed.map((bytes) => bytesToHex(bytes.subarray(13)))).size).toBe(256);
   });
@@ -548,7 +636,7 @@ describe("a sealed field", () => {
     const plaintext = writeFieldsUnder(LIST_SEALED_PREFIX, NAMES);
     const opened = await openSealed({ place, epoch, sealed: reference.seal(LIST, 7, epoch, plaintext) });
     expect(opened.open && shown(opened.value)).toEqual(shown(NAMES));
-    expect(reference.openSealed(LIST, 7, epoch, await sealFields({ place, epoch, fields: NAMES }))).toEqual({ fields: shown(NAMES) as never });
+    expect(reference.openSealed(LIST, 7, epoch, await seal({ place, epoch, fields: NAMES }))).toEqual({ fields: shown(NAMES) as never });
   });
 
   test("a plaintext that is not fields under the sealed prefix opens to nothing", async () => {
@@ -564,22 +652,82 @@ describe("a sealed field", () => {
     expect(none).toEqual({ open: true, value: [] });
   });
 
-  test("sealing refuses fields that are not in form or do not fit, and seals what just fits", async () => {
-    const room = LIST_BODY_MAX - LIST_SEALED_OVERHEAD - LIST_SEALED_PREFIX.length - 8 - "label".length;
-    const fits = await sealFields({ place, epoch, fields: [{ name: "label", value: new Uint8Array(room) }] });
-    expect(fits.length).toBe(LIST_BODY_MAX);
-    expect((await openSealed({ place, epoch, sealed: fits })).open).toBe(true);
+  test("sealing refuses fields that are not in form, are named pad or do not fit, and seals what just fits", async () => {
+    const largest = Math.floor((LIST_BODY_MAX - LIST_SEALED_OVERHEAD) / LIST_SEALED_PAD_BYTES) * LIST_SEALED_PAD_BYTES;
+    const room = largest - LIST_SEALED_PREFIX.length - (8 + "label".length) - (8 + "pad".length);
+    const fits = await seal({ place, epoch, fields: [{ name: "label", value: new Uint8Array(room) }] });
+    expect(fits.length).toBe(largest + LIST_SEALED_OVERHEAD);
+    const opened = await openSealed({ place, epoch, sealed: fits });
+    expect(opened.open && opened.value.map((field) => [field.name, field.value.length])).toEqual([["label", room]]);
     for (const fields of [
       [{ name: "label", value: new Uint8Array(room + 1) }],
       [text("Label", "Phone")],
       [text("label", "Phone"), text("label", "Laptop")],
       [text("", "Phone")],
+      [text("label", "Phone"), text("pad", "")],
+      [{ name: "pad", value: new Uint8Array(40) }],
     ]) {
-      const error = await refusal(() => sealFields({ place, epoch, fields }));
+      const error = await refusal(() => seal({ place, epoch, fields }));
       expect(error).toBeInstanceOf(ListSealError);
       expect(error instanceof ListSealError && error.reason).toBe("fields");
     }
     expect(await openSealed({ place, epoch, sealed: new Uint8Array(LIST_BODY_MAX + 1).fill(1) })).toEqual({ open: false, why: "form" });
+  });
+
+  test("every sealed plaintext is a multiple of 256 bytes, so its length says little of the names in it", async () => {
+    const prefix = LIST_SEALED_PREFIX.length;
+    const lengths = new Map<number, number>();
+    for (const size of [0, 1, 5, 48, 200, 256 - prefix - 2 * 8 - "label".length - "pad".length, 256 - prefix - 2 * 8 - "label".length - "pad".length + 1, 300, 700]) {
+      const sealed = await seal({ place, epoch, fields: [{ name: "label", value: new Uint8Array(size).fill(0x41) }] });
+      lengths.set(size, sealed.length - LIST_SEALED_OVERHEAD);
+      expect((sealed.length - LIST_SEALED_OVERHEAD) % LIST_SEALED_PAD_BYTES).toBe(0);
+      const opened = await openSealed({ place, epoch, sealed });
+      expect(opened.open && opened.value.map((field) => [field.name, field.value.length])).toEqual([["label", size]]);
+    }
+    expect([...lengths.values()]).toEqual([256, 256, 256, 256, 256, 256, 512, 512, 768]);
+    expect((await seal({ place, epoch, fields: [] })).length).toBe(256 + LIST_SEALED_OVERHEAD);
+    expect((await seal({ place, epoch, fields: NAMES })).length).toBe((await seal({ place, epoch, fields: [text("label", "A")] })).length);
+  });
+
+  test("the field that fills it is written in its place among the names, holds zero bytes, and no reader gives it back", async () => {
+    const sealed = await seal({ place, epoch, fields: [text("zone", "home"), text("label", "Phone")] });
+    const key = hkdf(sha256, epoch.key, new Uint8Array(32), utf8ToBytes("ovis-list-seal/1"), 32);
+    const plaintext = gcm(key, sealed.subarray(1, 13), reference.sealedData(LIST, 7, 2)).decrypt(sealed.subarray(13));
+    const fields = refFields(plaintext);
+    expect(fields.map(([name]) => name)).toEqual(["label", "pad", "zone"]);
+    expect(plaintext.length).toBe(256);
+    expect(fields[1]?.[1]).toBe("\0".repeat(256 - 18 - (8 + 5 + 5) - (8 + 3) - (8 + 4 + 4)));
+    const opened = await openSealed({ place, epoch, sealed });
+    expect(opened.open && shown(opened.value)).toEqual([["label", "Phone"], ["zone", "home"]]);
+    const filledOtherwise = writeFieldsUnder(LIST_SEALED_PREFIX, [text("label", "Phone"), text("pad", "not zero bytes")]);
+    const other = await openSealed({ place, epoch, sealed: reference.seal(LIST, 7, epoch, filledOtherwise) });
+    expect(other.open && shown(other.value)).toEqual([["label", "Phone"]]);
+    const unfilled = await openSealed({ place, epoch, sealed: reference.seal(LIST, 7, epoch, writeFieldsUnder(LIST_SEALED_PREFIX, [text("label", "Phone")])) });
+    expect(unfilled.open && shown(unfilled.value)).toEqual([["label", "Phone"]]);
+  });
+
+  test("nothing is sealed under a key the list does not commit to", async () => {
+    const commitment = epochKeyCommitment({ list: LIST, epoch });
+    expect((await sealFields({ place, epoch, commitment, fields: NAMES })).length).toBe(256 + LIST_SEALED_OVERHEAD);
+    const others: [string, unknown][] = [
+      ["another key's", epochKeyCommitment({ list: LIST, epoch: newEpochKey(2) })],
+      ["another epoch's", epochKeyCommitment({ list: LIST, epoch: { epoch: 3, key: epoch.key } })],
+      ["another list's", epochKeyCommitment({ list: OTHER_LIST, epoch })],
+    ];
+    for (const [what, other] of others) {
+      const error = await refusal(() => sealFields({ place, epoch, commitment: other as string, fields: NAMES }));
+      expect(error instanceof ListSealError && error.reason, what).toBe("other_key");
+    }
+    for (const junk of [undefined, null, "", "5C".repeat(32), commitment.slice(1), 7]) {
+      const error = await refusal(() => sealFields({ place, epoch, commitment: junk as string, fields: NAMES }));
+      expect(error instanceof ListSealError && error.reason).toBe("argument");
+    }
+    const first = newEpochKey(0);
+    const atGenesis = epochKeyCommitment({ list: "", epoch: first });
+    expect((await openSealed({ place: { list: "", seq: 0 }, epoch: first, sealed: await sealFields({ place: { list: "", seq: 0 }, epoch: first, commitment: atGenesis, fields: NAMES }) })).open).toBe(true);
+    expect((await openSealed({ place, epoch: first, sealed: await sealFields({ place, epoch: first, commitment: atGenesis, fields: NAMES }) })).open).toBe(true);
+    const later = await refusal(() => sealFields({ place: { list: "", seq: 0 }, epoch, commitment, fields: NAMES }));
+    expect(later instanceof ListSealError && later.reason).toBe("argument");
   });
 });
 
@@ -588,9 +736,9 @@ describe("a removal and an addition", () => {
     const first = newEpochKey(0);
     const members = [alice, bob, carol];
     const before = await wrapEpochKeyFor({ list: LIST, epoch: first, members: members.map((member) => member.key) });
-    const removal = await sealFields({ place: { list: LIST, seq: 5 }, epoch: first, fields: [text("label", "Carol's phone")] });
+    const removal = await seal({ place: { list: LIST, seq: 5 }, epoch: first, fields: [text("label", "Carol's phone")] });
     const next = await nextEpoch({ list: LIST, current: first, members: [alice.key, bob.key] });
-    const after = await sealFields({ place: { list: LIST, seq: 6 }, epoch: next.epoch, fields: [text("label", "New laptop")] });
+    const after = await seal({ place: { list: LIST, seq: 6 }, epoch: next.epoch, fields: [text("label", "New laptop")] });
     expect(next.epoch.epoch).toBe(1);
     expect(next.commitment).toBe(epochKeyCommitment({ list: LIST, epoch: next.epoch }));
     expect(next.wraps.map((wrap) => wrap.member)).toEqual([alice.key, bob.key]);
@@ -618,10 +766,10 @@ describe("a removal and an addition", () => {
   test("a member added later is given the current key and reads the whole history", async () => {
     const keys = [newEpochKey(0)];
     const openings = new Map<number, EpochOpening>([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: keys[0] as EpochKey }) }]]);
-    const sealed: Uint8Array[] = [await sealFields({ place: { list: "", seq: 0 }, epoch: keys[0] as EpochKey, fields: [text("label", "entry 0")] })];
+    const sealed: Uint8Array[] = [await seal({ place: { list: "", seq: 0 }, epoch: keys[0] as EpochKey, fields: [text("label", "entry 0")] })];
     for (let seq = 1; seq <= 6; seq += 1) {
       const current = keys.at(-1) as EpochKey;
-      sealed.push(await sealFields({ place: { list: LIST, seq }, epoch: current, fields: [text("label", `entry ${seq}`)] }));
+      sealed.push(await seal({ place: { list: LIST, seq }, epoch: current, fields: [text("label", `entry ${seq}`)] }));
       if (seq % 2 === 0) {
         const next = await nextEpoch({ list: LIST, current, members: [alice.key] });
         keys.push(next.epoch);
@@ -680,6 +828,27 @@ describe("what cannot be opened is a result, never a throw", () => {
     expect((await openSealed(null as never)).open).toBe(false);
   });
 
+  test("only bytes of a length that can be the thing are read: an array of the right length is no bytes", async () => {
+    const epoch = newEpochKey(1);
+    const commitment = epochKeyCommitment({ list: LIST, epoch });
+    const wrap = await wrapEpochKey({ list: LIST, epoch, member: alice.key });
+    const sealed = await seal({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES });
+    expect(await openWrap({ list: LIST, epoch: 1, commitment, wrap: Array.from(wrap ?? []) as never, member: alice })).toEqual({ open: false, why: "form" });
+    expect(await openSealed({ place: { list: LIST, seq: 1 }, epoch, sealed: Array.from(sealed) as never })).toEqual({ open: false, why: "form" });
+    expect(await openLink({ list: LIST, from: epoch, link: Array.from(new Uint8Array(61)) as never, commitment })).toEqual({ open: false, why: "form" });
+    let copied = 0;
+    class Watched extends Uint8Array {
+      override get length(): number {
+        copied += 1;
+        return super.length;
+      }
+    }
+    const huge = new Watched(LIST_BODY_MAX + 1);
+    copied = 0;
+    expect(await openSealed({ place: { list: LIST, seq: 1 }, epoch, sealed: huge })).toEqual({ open: false, why: "form" });
+    expect(copied).toBeLessThanOrEqual(2);
+  });
+
   test("a key that signs instead of deriving opens nothing", async () => {
     const epoch = newEpochKey(1);
     const signing = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
@@ -692,7 +861,7 @@ describe("what cannot be opened is a result, never a throw", () => {
     const epoch = newEpochKey(1);
     const commitment = epochKeyCommitment({ list: LIST, epoch });
     const wrap = await wrapEpochKey({ list: LIST, epoch, member: alice.key });
-    const sealed = await sealFields({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES });
+    const sealed = await seal({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES });
     const before = newEpochKey(0);
     const link = await linkEpochs({ list: LIST, opened: epoch, previous: before });
     const fault = new DOMException("The runtime failed", "NotSupportedError");
@@ -702,7 +871,7 @@ describe("what cannot be opened is a result, never a throw", () => {
       expect(await openSealed({ place: { list: LIST, seq: 1 }, epoch, sealed })).toEqual({ open: false, why: "unavailable" });
       expect(await openLink({ list: LIST, from: epoch, link, commitment: epochKeyCommitment({ list: LIST, epoch: before }) })).toEqual({ open: false, why: "unavailable" });
       expect(await walkBack({ list: LIST, from: epoch, openings: new Map([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: before }) }], [1, { commitment, link }]]) })).toEqual({ keys: [epoch], stopped: { epoch: 0, why: "unavailable" } });
-      expect(await refusal(() => sealFields({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES }))).toBe(fault);
+      expect(await refusal(() => seal({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES }))).toBe(fault);
       expect(await refusal(() => wrapEpochKey({ list: LIST, epoch, member: alice.key }))).toBe(fault);
     } finally {
       broken.mockRestore();
@@ -712,7 +881,7 @@ describe("what cannot be opened is a result, never a throw", () => {
 
   test("a failed tag is `refused`, and any other failure of the runtime's decrypt is not", async () => {
     const epoch = newEpochKey(1);
-    const sealed = await sealFields({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES });
+    const sealed = await seal({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES });
     const broken = spyOn(crypto.subtle, "decrypt").mockRejectedValue(new DOMException("The runtime failed", "NotSupportedError"));
     try {
       expect(await openSealed({ place: { list: LIST, seq: 1 }, epoch, sealed })).toEqual({ open: false, why: "unavailable" });
@@ -728,7 +897,7 @@ describe("what is handed over is read once", () => {
     const epoch = newEpochKey(3);
     const kept: EpochKey = { epoch: 3, key: new Uint8Array(epoch.key) };
     const place = { list: LIST, seq: 9 };
-    const sealing = sealFields({ place, epoch, fields: NAMES });
+    const sealing = seal({ place, epoch, fields: NAMES });
     epoch.key.fill(0);
     const sealed = await sealing;
     expect((await openSealed({ place, epoch: kept, sealed })).open).toBe(true);

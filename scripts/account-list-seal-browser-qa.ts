@@ -20,7 +20,7 @@ if (!build.success || build.outputs.length !== 2) throw new AggregateError(build
 const modules = new Map(build.outputs.map((output) => [output.path.replace(/^.*\//, "/"), output]));
 const vectorDir = shared("account-list-vectors/seal");
 const vectors = readdirSync(vectorDir).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(`${vectorDir}/${file}`, "utf8")) as SealVector);
-assert.ok(vectors.length >= 53, "the vectors are read");
+assert.ok(vectors.length >= 64, "the vectors are read");
 
 const LIST = "5c".repeat(32);
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => {
@@ -91,8 +91,8 @@ try {
       list: LIST, pc: pc.key,
       wrap: wrapToText(removal.wraps[0]?.wrap ?? new Uint8Array(0)), link: toBase64Url(removal.link),
       commitments: [epochKeyCommitment({ list: LIST, epoch: first }), removal.commitment],
-      genesis: toBase64Url(await sealFields({ place: { list: "", seq: 0 }, epoch: first, fields })),
-      later: toBase64Url(await sealFields({ place: { list: LIST, seq: 4 }, epoch: removal.epoch, fields })),
+      genesis: toBase64Url(await sealFields({ place: { list: "", seq: 0 }, epoch: first, commitment: epochKeyCommitment({ list: "", epoch: first }), fields })),
+      later: toBase64Url(await sealFields({ place: { list: LIST, seq: 4 }, epoch: removal.epoch, commitment: removal.commitment, fields })),
     };
     const second = fromStore ? await context.newPage() : page;
     if (fromStore) await second.goto(`http://127.0.0.1:${server.port}`);
@@ -133,7 +133,7 @@ try {
         made: {
           commitment: next.commitment,
           wraps: next.wraps.map((wrap) => ({ member: wrap.member, text: seal.wrapToText(wrap.wrap) })),
-          sealed: hex(await seal.sealFields({ place: { list: given.list, seq: 9 }, epoch: next.epoch, fields: [{ name: "label", value: new TextEncoder().encode("Made in a browser") }] })),
+          sealed: hex(await seal.sealFields({ place: { list: given.list, seq: 9 }, epoch: next.epoch, commitment: next.commitment, fields: [{ name: "label", value: new TextEncoder().encode("Made in a browser") }] })),
         },
       };
     }, handed);

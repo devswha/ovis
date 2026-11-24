@@ -128,6 +128,9 @@ HKDF(secret, info, n) = HKDF with SHA-256, a salt of 32 zero bytes, n bytes out
 GCM(key, nonce, data, text) = AES-256-GCM, a 12-byte nonce: the ciphertext, then the 16-byte tag
 ```
 
+A wrap, a link and a sealed field each start with a version byte, `0x01`. A new version byte comes
+with new tag strings (`ovis-list-wrap/2` and so on), so no bytes of one version open as another's.
+
 ### The keys
 
 - A member's **encryption key** is a P-256 key used for ECDH, written as a key. A device makes it
@@ -174,7 +177,8 @@ data = "ovis-list-epoch-link/1" || id(list) || number(e)
 ```
 
 A member walks back one link at a time and checks each key against its commitment. One walk opens
-at most 1024 links; a longer history is walked on from the last key reached.
+at most 1024 links; a longer history is walked on from the last key reached. The key the walk
+starts from is checked against the commitment of its own epoch too.
 
 ### A sealed field
 
@@ -188,26 +192,69 @@ plaintext = "ovis-list-sealed/1" field field ...
   was sealed for.
 - The plaintext's fields have the form of an entry's fields: lengths of 4 bytes, names ascending.
   A sealed field is the plaintext and 29 bytes, and at most 8192 bytes.
+- A writer fills the plaintext up to 256 bytes, or to the next multiple of 256 when it is longer,
+  with one more field, `pad`, of zero bytes. So a sealed field is 285 bytes whatever short names
+  it holds. `pad` is no name of any kind: no kind writes it, and a reader drops it whatever it
+  holds. A reader also reads a plaintext that is not filled.
+- A member seals only under a key that gives the commitment the list holds for its epoch, the
+  same check as when it took the key.
 - The nonce is 12 random bytes. It is never made from `seq`: a member whose entry n lost its place
   signs another entry n, with other fields, and a nonce made from `seq` would come twice under one
   key.
 - The bound of one epoch key: among n fields sealed under it, the chance that two nonces are equal
-  is under n² / 2^97, and it stays under 2^-32 up to 2^32 fields. The account service takes at
-  most 16384 entries into one list; were each of them sealed under one key, and sealed again a
-  thousand times over, the chance would be under 2^-49.
+  is under n² / 2^97, and it stays under 2^-32 up to 2^32 fields. Every field sealed counts, also
+  for an entry that never got its place. The account service takes at most 16384 entries into one
+  list; were each of them sealed under one key, and sealed again a thousand times over, the chance
+  would be under 2^-49.
 - The epoch key never encrypts by itself: fields and links each use a key of their own made from it.
-- A member seals only under the key of the list's current epoch. One that does not hold that key
-  seals nothing: under an earlier key, a member already removed would read the names.
+- An epoch key belongs to one list and one epoch. It is never used for another list or made the
+  key of another epoch.
+
+### Who seals, and when
+
+The library sees no list, so these are rules for the member that writes an entry.
+
+- A member seals only under the list's current epoch, and only when the entry that opened that
+  epoch comes after the last entry that took a key out of those the epoch key is wrapped to: an
+  entry that ends a device's, a PC's or an invite's key (a revoked invite too), or that removes a
+  PC by its address. Otherwise it seals nothing and writes its entry without names. Sealed under
+  any other key, the names would be read by a member already removed.
+- So after a removal nothing is sealed until a member that stays has opened the next epoch. The
+  remover places both entries in one request. Where it cannot (a device that signs itself out
+  cannot make the key for those that stay), the entries written meanwhile carry no names.
+- An epoch that the member being removed opened itself just before its removal does not count: its
+  opening entry comes before the removal, and that member holds its key. A member that stays
+  opens another.
+- What remains: a member from which the service withholds the removal itself does not know of it
+  and still seals under the old key, which the removed member holds. Nothing in the list stops a
+  service from withholding entries; the harm is bounded to the names written by members that have
+  not yet seen the removal.
 
 ### A removal, an addition
 
 - After a removal a member that stays makes the next epoch key, puts its commitment and its link
-  into the entry that opens the epoch, and gives the service a wrap for every member that stays.
-  What was sealed before stays readable to the removed member, its own removal included; its key
-  and its old wraps open nothing sealed under the new key.
-- A member that adds another wraps the current epoch key to it.
+  into the entry that opens the epoch, and gives the service a wrap for every member that stays,
+  in the same request. What was sealed before stays readable to the removed member, its own
+  removal included; its key and its old wraps open nothing sealed under the new key.
+- Every attempt makes a new key. A key whose wraps went out in a request that did not place its
+  entry is never used again: by the next attempt the members that stay may be others.
+- A member that adds another wraps the current epoch key to it, in the request that places the
+  entry. If that entry never gets its place, the key has been wrapped to a key that is no
+  member's: the member opens the next epoch before it seals again.
 - A member whose encryption key is not a point of the curve gets no wrap; the removal or the
   addition goes on without it.
+
+### What the service still learns
+
+The service reads no name. It does see, of every list:
+
+- which entries carry names and under which epoch, and when each epoch opens;
+- the length of each sealed field, which is the length of its plaintext and 29 bytes. Filled, a
+  plaintext is 256 bytes unless its names are long: then the service learns in which multiple of
+  256 bytes they end;
+- the encryption key of every member, which key each wrap of each epoch is for, and so which
+  member has no wrap;
+- everything an entry says in clear.
 
 ### What does not open
 
@@ -248,10 +295,11 @@ object with a `name`, an optional `note`, one of `wrap`, `link` and `sealed`, an
   and `bytes` (base64url).
 - `sealed`: `list` (empty for entry 0), `seq`, `epoch` (`epoch` and its `key`) and `bytes`.
 - `expect` is `{ key }` (the epoch key that comes out, 64 hex digits), `{ fields }` (the names and
-  their values, as text) or `{ why }`, one of the codes above.
+  their values, as text, without `pad`) or `{ why }`, one of the codes above.
 
 Wraps, links and sealed fields are made with random bytes, so a vector fixes one to open; nobody is
 asked to make the same bytes again. The `-made-elsewhere` vectors were written by a second
-implementation, which also reads every vector in the tests. Devices use WebCrypto with a key that
+implementation, which also reads every vector in the tests with readers of its own (its base64url,
+its field form, its key prefix). Devices use WebCrypto with a key that
 cannot be exported, so [`scripts/account-list-seal-browser-qa.ts`](../scripts/account-list-seal-browser-qa.ts)
 reads every vector in a real browser too.
