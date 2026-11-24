@@ -72,9 +72,10 @@ function bun {
     $global:LASTEXITCODE = 0
     if ($args[0] -eq '--version') { $state.bunVersion }
     # the add (`bun <plugin.ts> add`, or the binary's run as `bun <exe> add` by a copy of the installer): what it was given,
-    # and whether any input came with it (the add with --account is given none)
+    # and whether it was given a pipe for its input (a native program then reads a closed, empty input: the add with
+    # --account) or the terminal's (the add a person answers)
     elseif ($args[1] -eq 'add') {
-        $state.adds += "$($args[1..($args.Count - 1)] -join ' ') <$(@($input).Count) input>"
+        $state.adds += "$($args[1..($args.Count - 1)] -join ' ') <$(if ($MyInvocation.ExpectingInput) { "piped $(@($input).Count)" } else { 'terminal' })>"
         if ($state.addFails) { $global:LASTEXITCODE = 1; 'Could not link this PC: the sign-in ended' } else { 'Added. Open (this PC) from My PCs.' }
     }
     elseif ($args[-1] -eq 'status') { 'running http://127.0.0.1:7317 (pid 1234)'; 'config: none' }
@@ -169,18 +170,19 @@ function herdr {
 }
 # herdr's start and its sign-in start at their Windows boundaries: Task Scheduler, WMI and the Run key. A start makes the
 # stand-in herdr answer ($state.running) unless it dies at once ($state.herdrDies); nothing reaches the real Task
-# Scheduler, WMI or registry. The explorer of a desktop session this account is signed in to answers a run in session 0.
+# Scheduler, WMI or registry. The processes of desktop sessions (explorer, this account's or another's, and a service's)
+# answer a run in session 0.
 $state.herdrStarts = @(); $state.tasks = @(); $state.taskCalls = @(); $state.runValue = $null; $state.taskRefused = $false; $state.herdrDies = $false
 $state.adds = @(); $state.addFails = $false; $state.explorerOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 function New-ScheduledTaskAction { [CmdletBinding()] param($Execute, $Argument) @{ Execute = $Execute; Argument = $Argument } }
 function New-ScheduledTaskPrincipal { [CmdletBinding()] param($UserId, $LogonType, $RunLevel) @{ UserId = $UserId; LogonType = "$LogonType"; RunLevel = "$RunLevel" } }
-function New-ScheduledTaskSettingsSet { [CmdletBinding()] param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit) @{ Limit = $ExecutionTimeLimit } }
+function New-ScheduledTaskSettingsSet { [CmdletBinding()] param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit, $Priority) @{ Limit = $ExecutionTimeLimit; Priority = $Priority } }
 function Register-ScheduledTask {
     [CmdletBinding()] param($TaskName, $Action, $Principal, $Settings)
     if ($state.taskRefused) { throw 'Access is denied.' }
     $state.tasks += $TaskName
-    $state.taskCalls += "register $($Action.Execute) $($Action.Argument) as $($Principal.UserId) $($Principal.LogonType) $($Principal.RunLevel), limit $($Settings.Limit)"
+    $state.taskCalls += "register $($Action.Execute) $($Action.Argument) as $($Principal.UserId) $($Principal.LogonType) $($Principal.RunLevel), limit $($Settings.Limit), priority $($Settings.Priority)"
 }
 function Start-ScheduledTask {
     [CmdletBinding()] param($TaskName)
@@ -191,7 +193,7 @@ function Start-ScheduledTask {
 function Unregister-ScheduledTask { [CmdletBinding()] param($TaskName, [switch]$Confirm) $state.tasks = @($state.tasks | Where-Object { $_ -ne $TaskName }) }
 function Get-CimInstance {
     [CmdletBinding()] param([Parameter(Position = 0)]$ClassName, $Filter)
-    if ("$Filter" -match 'explorer') { return @([pscustomobject]@{ SessionId = 0 }, [pscustomobject]@{ SessionId = 1; Owner = $state.explorerOwner }) }
+    if ("$Filter" -eq 'SessionId <> 0') { return @([pscustomobject]@{ Name = 'svchost.exe'; SessionId = 1; Owner = 'S-1-5-18' }, [pscustomobject]@{ Name = 'explorer.exe'; SessionId = 1; Owner = $state.explorerOwner }) }
     CimCmdlets\Get-CimInstance -ClassName $ClassName -Filter $Filter
 }
 function Invoke-CimMethod {
@@ -393,9 +395,12 @@ exit /b 1
     & $onBinary; $state.launcherCalls = @()
     $state.cutBuild = New-Object Threading.ManualResetEvent($false)
     $runspace = [RunspaceFactory]::CreateRunspace(); $runspace.Open()
-    foreach ($name in 'state', 'pluginRoot', 'ghStandIn', 'launcher') { $runspace.SessionStateProxy.SetVariable($name, (Get-Variable $name -ValueOnly)) }
+    foreach ($name in 'state', 'pluginRoot', 'ghStandIn', 'launcher', 'runKey') { $runspace.SessionStateProxy.SetVariable($name, (Get-Variable $name -ValueOnly)) }
     $stubs = [PowerShell]::Create(); $stubs.Runspace = $runspace
-    $null = $stubs.AddScript((@(foreach ($name in 'Get-TestCommit', 'git', 'bun', 'herdr') { "function global:$name {$((Get-Item "Function:\$name").Definition)}" }) -join "`n")).Invoke()
+    # every stand-in, those of herdr's start too: an installer that got past the build there must reach no real Task
+    # Scheduler, WMI or registry either
+    $standIns = 'Get-TestCommit', 'git', 'bun', 'herdr', 'Start-Process', 'New-ScheduledTaskAction', 'New-ScheduledTaskPrincipal', 'New-ScheduledTaskSettingsSet', 'Register-ScheduledTask', 'Start-ScheduledTask', 'Unregister-ScheduledTask', 'Get-CimInstance', 'Invoke-CimMethod', 'Get-ItemProperty', 'Set-ItemProperty', 'Remove-ItemProperty'
+    $null = $stubs.AddScript((@(foreach ($name in $standIns) { "function global:$name {$((Get-Item "Function:\$name").Definition)}" }) -join "`n")).Invoke()
     $stubs.Dispose()
     $cut = [PowerShell]::Create(); $cut.Runspace = $runspace
     $null = $cut.AddScript((Get-Content -Raw $installer)).AddParameter('Ref', 'feat/windows-install')
@@ -799,11 +804,16 @@ exit /b 1
     Remove-Item -LiteralPath $herdrLauncherFile -Force -ErrorAction SilentlyContinue
     $out = & $run
     Assert (-not $out.Message -and $out.Starts -eq 'desktop' -and -not $state.started -and $state.tasks.Count -eq 0) "herdr stopped: it must be started once, by a task that is removed again, and start the app itself (starts: $($out.Starts); tasks left: $($state.tasks -join ',')): $($out.Message)"
-    Assert (@($state.taskCalls).Count -eq 1 -and $state.taskCalls[0] -eq "register $powershellExe $launcherArguments as $($me.Name) Interactive Limited, limit 00:00:00") "The task must run the launcher hidden, as this account with its ordinary rights and its interactive token, with no time limit: $($state.taskCalls -join ' | ')"
+    Assert (@($state.taskCalls).Count -eq 1 -and $state.taskCalls[0] -eq "register $powershellExe $launcherArguments as $($me.User.Value) Interactive Limited, limit 00:00:00, priority 4") "The task must run the launcher hidden, as this account (its SID) with its ordinary rights and its interactive token, with no time limit, at normal priority: $($state.taskCalls -join ' | ')"
     Assert ($state.runValue -eq $ourSignIn -and (Test-Path -LiteralPath $herdrLauncherFile)) "herdr's sign-in start must run the launcher: $($state.runValue)"
     Assert ($out.Said -match 'herdr was started in your desktop for Ovis, and it starts at your sign-in' -and $out.Said -match 'signing out of Windows ends herdr' -and $out.Said -match "see them: bun '[^']+' status, herdr status server") "The closing lines must say what runs and what starts it again: $($out.Said)"
     $out = & $run
     Assert (-not $out.Message -and -not $out.Starts -and $state.started -and $state.runValue -eq $ourSignIn -and $out.Said -notmatch 'was started in your desktop') "A herdr that runs must be left as it is, the app started by its action and the sign-in start kept: $($out.Message) $($out.Said)"
+    # while herdr runs, the launcher of the installer's own sign-in start is written again, so a fix in a later installer
+    # reaches it
+    Remove-Item -LiteralPath $herdrLauncherFile -Force
+    $out = & $run
+    Assert (-not $out.Message -and -not $out.Starts -and (Test-Path -LiteralPath $herdrLauncherFile)) "With herdr running, the launcher of the installer's own sign-in start must be written again: $($out.Message) $($out.Said)"
     $out = & $run @{ NoService = $true }
     Assert (-not $out.Message -and -not $out.Starts -and $null -eq $state.runValue -and $out.Said -match 'removed the sign-in start an earlier run set up, as -NoService asks') "-NoService must remove the sign-in start an earlier run set up, starting or stopping nothing: $($out.Message) $($out.Said)"
     $state.runValue = $ourSignIn; $state.running = $false; $env:OVIS_NO_SERVICE = '1'
@@ -865,13 +875,13 @@ exit /b 1
     Set-Content -LiteralPath $linkScript -Value $bothReads
     $state.running = $true
     $out = & $run @{ Account = 'acct_1-A' }
-    Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add --account acct_1-A <0 input>' -and $out.Said -match 'set OVIS_TOKEN first') "-Account must run the add with that account and no input: $($state.adds -join '|') $($out.Message)"
+    Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add --account acct_1-A <piped 0>' -and $out.Said -match 'set OVIS_TOKEN first') "-Account must run the add with that account and no input: $($state.adds -join '|') $($out.Message)"
     $env:OVIS_ADD_ACCOUNT = 'acct_2'
     try { $out = & $run } finally { Remove-Item Env:\OVIS_ADD_ACCOUNT }
-    Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add --account acct_2 <0 input>') "OVIS_ADD_ACCOUNT must do what -Account does: $($state.adds -join '|') $($out.Message)"
+    Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add --account acct_2 <piped 0>') "OVIS_ADD_ACCOUNT must do what -Account does: $($state.adds -join '|') $($out.Message)"
     $state.addFails = $true
     try { $out = & $run @{ Account = 'acct_1' } } finally { $state.addFails = $false }
-    Assert ($out.Message -match 'was not added to your Ovis account' -and ($state.adds -join '|') -eq 'add --account acct_1 <0 input>') "An add with -Account that fails must fail the install: $($out.Message)"
+    Assert ($out.Message -match 'was not added to your Ovis account' -and ($state.adds -join '|') -eq 'add --account acct_1 <piped 0>') "An add with -Account that fails must fail the install: $($out.Message)"
     Set-Content -LiteralPath $linkScript -Value $bothReads[1]
     $out = & $run @{ Account = 'acct_1' }
     Assert ($out.Message -match 'was not added' -and $state.adds.Count -eq 0) "An add that does not check --account must not be run with it, and the install fail: $($state.adds -join '|') $($out.Message)"
@@ -888,13 +898,13 @@ exit /b 1
     $givenNoOpen = $env:OVIS_NO_OPEN; Remove-Item Env:\OVIS_NO_OPEN -ErrorAction SilentlyContinue
     try {
         $out = & $run @{ Add = $true } $atTerminal
-        Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add <0 input>') "-Add at a terminal must run the add, which asks there: $($state.adds -join '|') $($out.Message)"
+        Assert (-not $out.Message -and ($state.adds -join '|') -eq 'add <terminal>') "-Add at a terminal must run the add, which asks there: $($state.adds -join '|') $($out.Message)"
         Set-Content -LiteralPath $linkScript -Value $bothReads[0]
         $out = & $run @{ Add = $true } $atTerminal
         Assert (-not $out.Message -and $state.adds.Count -eq 0 -and $out.Said -match 'would take a line typed ahead as its answer') "-Add must not run an add that takes a line typed ahead: $($out.Message) $($out.Said)"
     } finally { if ($null -ne $givenNoOpen) { $env:OVIS_NO_OPEN = $givenNoOpen } }
     $installs = $state.installs
-    foreach ($bad in '-x', 'a b', ('a' * 65), 'acct;x') {
+    foreach ($bad in '-x', 'a b', ('a' * 65), 'acct;x', "acct`n") {
         $state.installed = $false; $state.running = $false
         $out = & $run @{ Account = $bad }
         Assert ($out.Message -match '-Account \(or OVIS_ADD_ACCOUNT\) takes your Ovis account' -and $state.installs -eq $installs -and -not $out.Starts) "An account id of another shape ($bad) must be refused before anything is installed: $($out.Message)"
@@ -911,7 +921,7 @@ exit /b 1
     # server only while herdr lists Ovis's plugin and no server runs, and finds herdr by name once that one is gone
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $installer).Path, [ref]$null, [ref]$null)
     Invoke-Expression $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-HerdrLauncher' }, $true).Extent.Text
-    $fakeHerdrDir = Join-Path $ghStandIn ("herdr's bin " + [char]0x6771 + [char]0x4eac)
+    $fakeHerdrDir = Join-Path $ghStandIn ("herdr's " + [char]0x2019 + 'bin ' + [char]0x6771 + [char]0x4eac)
     New-Item -ItemType Directory -Force -Path $fakeHerdrDir | Out-Null
     Set-Content -LiteralPath (Join-Path $fakeHerdrDir 'herdr.cmd') -Encoding Ascii -Value @'
 @echo off
@@ -935,7 +945,7 @@ exit /b 0
         @(Get-Content -LiteralPath $launcherCalls -ErrorAction SilentlyContinue | ForEach-Object { "$_".Trim() }) -join ','
     }
     Write-HerdrLauncher (Join-Path $fakeHerdrDir 'herdr.cmd')
-    Assert ((Get-Content -LiteralPath $herdrLauncher -Encoding UTF8 -Raw).Contains($fakeHerdrDir.Replace("'", "''"))) 'control: the launcher must name the herdr it was written for'
+    Assert ((Get-Content -LiteralPath $herdrLauncher -Encoding UTF8 -Raw).Contains([Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($fakeHerdrDir))) 'control: the launcher must name the herdr it was written for, both apostrophes doubled'
     $calls = & $launch $listed $false
     Assert ($calls -eq 'plugin list --json,status server --json,server') "The launcher must start herdr's server where Ovis is installed and none runs: $calls"
     $calls = & $launch $listed $true
@@ -1185,7 +1195,7 @@ console.log(key.publicKey);
     $state.adds = @()
     $again = & $copy -Ref 'v1.2.3' -Account 'acct_bin' 6>&1 | Out-String
     Assert ($again -match 'nothing to do') "A second run must have nothing to do: $again"
-    Assert (($state.adds -join '|') -eq 'add --account acct_bin <0 input>') "On the release's binary, -Account must run its add: $($state.adds -join '|') $again"
+    Assert (($state.adds -join '|') -eq 'add --account acct_bin <piped 0>') "On the release's binary, -Account must run its add: $($state.adds -join '|') $again"
     Remove-Item -LiteralPath (Join-Path $ovisHome 'bin\dist\index.html')
     $restored = & $copy -Ref 'v1.2.3' 6>&1 | Out-String
     Assert ($restored -notmatch 'nothing to do' -and ((Get-Content -Raw (Join-Path $ovisHome 'bin\dist\index.html')) -match '1\.2\.3')) "A missing client must be installed again: $restored"

@@ -27,7 +27,7 @@ if ($env:OS -ne 'Windows_NT' -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
 # before anything is installed: a misspelt account must not install without the add it asked for. The shape is the one
 # `ovis add --account` takes (scripts/plugin-link.ts, ACCOUNT_SHAPE), never starting with '-', as install.sh refuses it
 $usage = 'usage: & ([scriptblock]::Create((irm https://ovis.sh/install.ps1))) [-Add [-Account <id>]] [-NoService] [-Headless]'
-if ($Account -and $Account -cnotmatch '^(?!-)[A-Za-z0-9_-]{1,64}$') {
+if ($Account -and $Account -cnotmatch '^(?!-)[A-Za-z0-9_-]{1,64}\z') {
     throw "-Account (or OVIS_ADD_ACCOUNT) takes your Ovis account's id: ovis status on a PC already in it shows it. $usage"
 }
 # the account named is the add asked for
@@ -466,8 +466,8 @@ $windowsPowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell
 # how long a herdr just started has to answer
 $herdrWaitSeconds = 20
 function Get-LauncherArguments { "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$herdrLauncher`"" }
-# The launcher the sign-in start and Start-HerdrInDesktop run, written on every run so it names the herdr found now
-# (read again by name when that one is gone). It starts herdr only while herdr lists Ovis's plugin and no herdr server
+# The launcher the sign-in start and Start-HerdrInDesktop run, written again wherever the installer starts herdr or keeps
+# its own sign-in start, so it names the herdr found now (read again by name when that one is gone). It starts herdr only while herdr lists Ovis's plugin and no herdr server
 # runs, as Ovis.exe --start does, and never stops one. With a byte order mark, so Windows PowerShell reads a user folder
 # outside ASCII as it is.
 function Write-HerdrLauncher([string]$Herdr) {
@@ -484,7 +484,7 @@ if (-not ($plugins | Where-Object { $_.plugin_id -in 'devswha.ovis', 'devswha.he
 $running = try { (& $herdr status server --json | ConvertFrom-Json).running } catch { $false }
 if ($running) { exit 0 }
 Start-Process -FilePath $herdr -ArgumentList 'server' -WindowStyle Hidden -WorkingDirectory $HOME
-'@.Replace('__HERDR__', $Herdr.Replace("'", "''"))
+'@.Replace('__HERDR__', [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($Herdr))
     $staged = "$herdrLauncher.new"
     [IO.File]::WriteAllText($staged, $text.Replace("`r`n", "`n").Replace("`n", "`r`n"), (New-Object Text.UTF8Encoding $true))
     Move-Item -Force -LiteralPath $staged -Destination $herdrLauncher
@@ -534,13 +534,15 @@ function Wait-Herdr {
 # Whether this process runs in a desktop session: an SSH or remoting session, as a service, runs in session 0
 function Test-DesktopSession { [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 0 }
 # Where herdr can start for this account: 'desktop' where it is signed in at this PC (this process runs in its desktop
-# session, or an explorer of its own runs in one: a locked desktop counts), else 'none' (nobody of it signed in)
+# session, or a process of its own runs in one: a locked desktop counts), else 'none' (nobody of it signed in). The
+# shell, explorer, is asked first, so mostly one owner is read.
 function Get-HerdrStartPlace {
     if (Test-DesktopSession) { return 'desktop' }
     $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    foreach ($shell in @(Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue)) {
-        if ($shell.SessionId -eq 0) { continue }
-        if ("$((Invoke-CimMethod -InputObject $shell -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid)" -eq $me) { return 'desktop' }
+    $desktop = @(Get-CimInstance Win32_Process -Filter 'SessionId <> 0' -ErrorAction SilentlyContinue)
+    foreach ($process in @($desktop | Where-Object { $_.Name -eq 'explorer.exe' }) + @($desktop | Where-Object { $_.Name -ne 'explorer.exe' })) {
+        if ($process.SessionId -eq 0) { continue }
+        if ("$((Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid)" -eq $me) { return 'desktop' }
     }
     'none'
 }
@@ -550,12 +552,14 @@ function Get-HerdrStartPlace {
 # starts herdr (server/windows-herdr-start.ts); removing it leaves what it started running. 'started', 'refused' (Task
 # Scheduler did not take or start it, so nothing ran) or 'silent' (herdr did not answer).
 function Start-HerdrInDesktop([string]$Herdr) {
-    Write-HerdrLauncher $Herdr
     $task = 'Ovis herdr start ' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
     try {
+        Write-HerdrLauncher $Herdr
         $action = New-ScheduledTaskAction -Execute $windowsPowerShell -Argument (Get-LauncherArguments)
-        $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
-        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+        # by SID, which every account has, as server/windows-herdr-start.ts registers its task; Priority 4 is normal (a
+        # task's default, 7, would run herdr and all it starts below normal)
+        $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 4
         Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
     } catch {
         Write-Host "Ovis: Task Scheduler did not take the task that starts herdr: $($_.Exception.Message)"
@@ -595,13 +599,17 @@ function Start-HerdrHeadless([string]$Herdr) {
 # Clear-SignInStart said. Wait: how long Ovis has to answer.
 function Start-HerdrForOvis {
     $result = @{ Running = $false; Started = ''; SignIn = ''; Wait = 25 }
+    $herdr = (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $herdr) { $herdr = 'herdr' }
     if (Test-HerdrRunning) {
         $result.Running = $true
         $result.SignIn = if ($skipService) { Clear-SignInStart } else { Get-SignInStart }
+        # the sign-in start that is ours runs this installer's launcher, not the one an earlier installer wrote
+        if ($result.SignIn -eq 'ours') {
+            try { Write-HerdrLauncher $herdr } catch { Write-Host "Ovis: could not write $herdrLauncher, which herdr's sign-in start runs: $($_.Exception.Message)" }
+        }
         return $result
     }
-    $herdr = (Get-Command herdr -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if (-not $herdr) { $herdr = 'herdr' }
     $result.SignIn = if ($skipService) { Clear-SignInStart } else { Set-SignInStart $herdr }
     $place = Get-HerdrStartPlace
     $result.Started = if ($place -eq 'desktop') {
@@ -1105,7 +1113,7 @@ if ($legacy) {
 
 $script = Join-Path $plugin.plugin_root 'scripts\plugin.ts'
 $ovisCli = @('bun', $script)
-$addCommand = "bun '$($script -replace "'", "''")' add"
+$addCommand = "bun '$([Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($script))' add"
 # the add a checkout runs is its own or a newer release's (Settings -> Updates), which reads at least what the checkout's does
 $linkScript = Join-Path $plugin.plugin_root 'scripts\plugin-link.ts'
 $takesAccount = [bool](Select-String -LiteralPath $linkScript -SimpleMatch '"--account"' -Quiet -ErrorAction SilentlyContinue)
@@ -1159,7 +1167,7 @@ if ($herdrNow.Running) {
         }
     }
 }
-Write-HerdrLines $herdrNow "bun '$($script -replace "'", "''")'"
+Write-HerdrLines $herdrNow "bun '$([Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($script))'"
 Write-Host 'Ovis: open Phone setup in herdr for phone access.'
 }
 

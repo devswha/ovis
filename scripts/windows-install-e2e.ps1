@@ -1,10 +1,13 @@
 # It replaces an installed Ovis and leaves the one it installed. A herdr server it or the installer
 # had to start is stopped again; one that was already running is left alone.
+# -HerdrStopped: herdr must not be running before the install, so this commit's installer has to start it (CI's Native
+# Windows install, whose runner may have herdr installed).
 param(
     [string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'),
     [string]$Ref = '',
     [switch]$Update,
-    [switch]$Fresh
+    [switch]$Fresh,
+    [switch]$HerdrStopped
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -30,6 +33,37 @@ function Test-ServerRunning { (Test-Herdr) -and [bool](herdr status server --jso
 function Find-Plugin {
     if (-not (Test-Herdr)) { return $null }
     (herdr plugin list --json | ConvertFrom-Json).result.plugins | Where-Object { $_.plugin_id -eq $pluginId } | Select-Object -First 1
+}
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+# herdr's server: the herdr process that started first (a command's herdr comes and goes)
+function Get-HerdrServer { Get-Process herdr -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1 }
+# what the installer leaves where it started herdr: its own sign-in start (the Run value Ovis, its launcher) and no task
+function Assert-SignInStart([string]$After) {
+    $signIn = "$((Get-ItemProperty $runKey -Name Ovis -ErrorAction SilentlyContinue).Ovis)"
+    Assert ($signIn -like '*\ovis\start-herdr.ps1"') "After $After herdr must start at sign-in with the installer's launcher, not: $signIn"
+    Assert (-not (Get-ScheduledTask -TaskName 'Ovis herdr start*' -ErrorAction SilentlyContinue)) "After $After the task that started herdr must be gone"
+}
+# The installer as it runs over SSH, in session 0 outside this desktop: a process WMI creates (Win32_Process.Create) as this
+# account, with this run's environment, its output in a file. What it said, and whether it threw.
+function Invoke-InSession0([string]$Arguments) {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('ovis-e2e-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    $log = Join-Path $dir 'out.log'; $done = Join-Path $dir 'exit.txt'; $runner = Join-Path $dir 'run.ps1'
+    Set-Content -LiteralPath $runner -Encoding UTF8 -Value @"
+`$ProgressPreference = 'SilentlyContinue'
+"session `$([Diagnostics.Process]::GetCurrentProcess().SessionId)" | Out-File -LiteralPath '$log' -Encoding utf8
+try { & '$Installer' $Arguments *>&1 | Out-File -Append -LiteralPath '$log' -Encoding utf8 -Width 4096; `$code = 0 }
+catch { `$_ | Out-String -Width 4096 | Out-File -Append -LiteralPath '$log' -Encoding utf8; `$code = 1 }
+Set-Content -LiteralPath '$done' -Value `$code
+"@
+    $environment = [string[]]@(Get-ChildItem Env: | Where-Object { $_.Name -notmatch '[=\r\n\0]' -and "$($_.Value)" -notmatch '[\r\n\0]' } | ForEach-Object { "$($_.Name)=$($_.Value)" })
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; EnvironmentVariables = $environment }
+    $made = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -ExecutionPolicy Bypass -File `"$runner`""; CurrentDirectory = $HOME; ProcessStartupInformation = $startup }
+    Assert ($made.ReturnValue -eq 0) "WMI did not start the installer ($($made.ReturnValue))"
+    Wait-Until { Test-Path -LiteralPath $done } 300 'the installer run in session 0 to end' | Out-Null
+    $result = @{ Said = (Get-Content -Raw -LiteralPath $log); Threw = (Get-Content -Raw -LiteralPath $done).Trim() -ne '0' }
+    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    $result
 }
 function Get-ReleaseTags {
     $tags = @(git ls-remote --tags --refs 'https://github.com/devswha/ovis.git' 'v*' |
@@ -62,6 +96,7 @@ function Assert-App([string]$Expected) {
     Write-Host "PASS Ovis $($updates.current_version) ($($health.web_ui.revision)) runs with herdr $($session.snapshot.version)"
 }
 
+if ($HerdrStopped) { Assert (-not (Test-ServerRunning)) '-HerdrStopped: herdr is running already' }
 if ($Fresh) {
     Assert (-not (Test-Herdr)) '-Fresh: herdr is already installed'
     Assert (-not (Get-Command bun -ErrorAction SilentlyContinue)) '-Fresh: Bun is already installed'
@@ -85,20 +120,38 @@ try {
     $herdrRan = Test-ServerRunning
     Invoke-Installer $Ref
     if ($Installer -notmatch '^https://' -and -not $herdrRan) {
-        # this commit's installer leaves herdr running where it was not, set to start at sign-in (the Run value Ovis, its
-        # own launcher), and -NoService takes that start away again without stopping herdr
+        # this commit's installer, where herdr was not running: it leaves herdr running, and Ovis answering, set to start at
+        # sign-in, and no task behind (INSTALL.md)
         $startedServer = Test-ServerRunning
         Assert $startedServer 'The installer must leave herdr running where it was not'
-        $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-        $signIn = "$((Get-ItemProperty $runKey -Name Ovis -ErrorAction SilentlyContinue).Ovis)"
-        Assert ($signIn -like '*\ovis\start-herdr.ps1"') "The installer must set herdr to start at sign-in with its launcher, not: $signIn"
-        Assert (-not (Get-ScheduledTask -TaskName 'Ovis herdr start*' -ErrorAction SilentlyContinue)) 'The task that started herdr must be gone'
-        # the server: the herdr process that started first (a command's herdr comes and goes)
-        $herdrPid = (Get-Process herdr | Sort-Object StartTime | Select-Object -First 1).Id
+        Assert-SignInStart 'the install line'
+        Wait-Until { (Get-Json '/api/health').ok } 60 'the app to answer after the install line' | Out-Null
+        # over SSH (session 0) with this account signed in at the desktop, as here: herdr starts in the desktop session
+        Write-Host 'e2e: installing again from session 0, as over SSH, with herdr stopped'
+        herdr plugin action invoke "$pluginId.stop-windows" | Out-Null
+        herdr server stop | Out-Null
+        Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
+        $run = Invoke-InSession0 "-Ref '$Ref'"
+        Assert (-not $run.Threw -and $run.Said -match '^\W*session 0' -and $run.Said -match 'herdr was started in your desktop' -and $run.Said -notmatch 'Task Scheduler did not') "From session 0 the installer must start herdr in the desktop through its task: $($run.Said)"
+        $server = Get-HerdrServer
+        Assert ((Test-ServerRunning) -and $server -and $server.SessionId -ne 0) "herdr started from session 0 must run in the desktop session, not $($server.SessionId)"
+        Assert-SignInStart 'the install line from session 0'
+        Wait-Until { (Get-Json '/api/health').ok } 60 'the app to answer after the install line from session 0' | Out-Null
+        # -NoService takes the sign-in start away again, and leaves the herdr that runs as it is
         Write-Host 'e2e: installing again with -NoService'
         & $Installer -Ref $Ref -NoService
         Assert ($null -eq (Get-ItemProperty $runKey -Name Ovis -ErrorAction SilentlyContinue)) '-NoService must remove the sign-in start an earlier run set up'
-        Assert ((Test-ServerRunning) -and (Get-Process -Id $herdrPid -ErrorAction SilentlyContinue)) "-NoService must leave the herdr that runs as it is (pid $herdrPid)"
+        Assert ((Test-ServerRunning) -and (Get-Process -Id $server.Id -ErrorAction SilentlyContinue)) "-NoService must leave the herdr that runs as it is (pid $($server.Id))"
+        # -Account of another shape is refused before anything is installed or started; with no account service the add
+        # cannot run, says so itself, and the install fails
+        $refused = ''
+        try { & $Installer -Ref $Ref -Account '-not-an-id' } catch { $refused = $_.Exception.Message }
+        Assert ($refused -match "^-Account \(or OVIS_ADD_ACCOUNT\) takes your Ovis account's id") "-Account of another shape must be refused at once: $refused"
+        $said = New-Object Collections.Generic.List[string]; $failed = ''
+        $env:OVIS_ACCOUNT_SERVICE_URL = 'off'
+        try { & $Installer -Ref $Ref -NoService -Account 'acct_e2e' *>&1 | ForEach-Object { $said.Add("$_") } }
+        catch { $failed = $_.Exception.Message } finally { Remove-Item Env:\OVIS_ACCOUNT_SERVICE_URL }
+        Assert ($failed -match 'was not added to your Ovis account' -and ($said -join "`n") -match 'The account service is off on this PC') "-Account must fail the install with the add's own words when the add cannot run: $failed $($said -join ' / ')"
     }
     if (-not (Test-ServerRunning)) {
         Write-Host 'e2e: starting herdr'
