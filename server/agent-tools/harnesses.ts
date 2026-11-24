@@ -15,7 +15,8 @@ export interface HarnessCommand {
 export function resolveHarness(kind: string): HarnessCommand | null {
   switch (kind) {
     case "gjc": case "opencode": case "agy": {
-      const path = Bun.which(kind, { PATH: process.env["PATH"] });
+      // the file whose version is checked is the one that runs, whatever its link points to later
+      const found = Bun.which(kind, { PATH: process.env["PATH"] }), path = found && realpathSync(found);
       return path ? { argv: [path, ...(kind === "gjc" ? ["--mode", "acp"] : ["acp"])] } : null;
     }
     case "copilot": {
