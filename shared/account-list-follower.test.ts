@@ -1120,6 +1120,14 @@ describe("the save", () => {
       const read = await readSave(rewritten(text, change));
       expect({ name, why: read.read ? "read" : read.why }).toEqual({ name, why: expected });
     }
+    // A footing named at an entry that no signer signed: the entries are all there and hold, and the history a member signed ends before it.
+    const junk = await grow(log, [[mallory, deviceOf(mallory)], [mallory, removeOf(owner)]]);
+    const loose = (await reads(copy, serves(junk))).copy;
+    expect([loose.entries.length, footingOf(loose).seq]).toEqual([9, 6]);
+    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 8), seq: 8 }; }))).toEqual({ read: false, why: "broken" });
+    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 8), seq: 8 }; save["level"] = 2; }))).toEqual({ read: false, why: "version" });
+    // A footing named before the true one costs nothing: the replay holds the whole history the entries give.
+    expect(await readSave(rewritten(writeSave(loose), (save) => { save["footing"] = { hash: at(junk.hashes, 3), seq: 3 }; }))).toEqual({ read: true, copy: loose, rebuilt: false });
     // An alarm in its form is kept, whatever it names: nothing about it makes a save unreadable.
     const alarm = { at: NOW, by: mallory.key, code: "fork", devices: [mallory.key], pcs: [E(9)], seq: 30, source: "peer" };
     expect(await readSave(rewritten(text, (save) => { save["alarm"] = alarm; }))).toEqual({ read: true, copy: { ...copy, alarm } as FollowerCopy, rebuilt: false });
