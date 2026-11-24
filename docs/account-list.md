@@ -689,8 +689,9 @@ copy is. A service that is away or withholds takes out no device the PC holds.
 - **The PC's clock never counts for less than it showed before**, nor for less than the list's own
   time (`listClock`). Each page and each hint is taken at the hour the clock shows, and the copy
   keeps the latest (`seen_at`). With the account service away no page comes, so a PC also notes the
-  hour whenever it reads its clock to decide (`withClock`) and saves it now and then. A clock that
-  was set back then lets no device in past its `until`.
+  hour whenever it reads its clock to decide (`withClock`). A clock that was set back then lets no
+  device in past its `until`. Over a restart a PC holds the hour of its last save and no later one,
+  so it saves before it answers a refusal that turned on a device's `until`.
 - **A PC is a member** when its signing key belongs to a relay key that is in.
 - **A device shows** the PCs that are in. The account service's directory only says how to reach
   them.

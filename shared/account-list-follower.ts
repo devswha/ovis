@@ -385,8 +385,10 @@ export function memberClock(copy: FollowerCopy, now: number): number {
  * The copy with the hour its clock shows now, when that is later than any it showed before: the very copy
  * otherwise. Every page and every hint does this by itself. A member calls it as well whenever it reads its
  * clock to decide (each tick, each session it lets in or refuses, each look at who is past its `until`) and
- * saves the copy now and then: with the account service away no page comes, and without this a clock that was
- * set back would count again for less than it once showed.
+ * saves the copy: with the account service away no page comes, and without this a clock that was set back
+ * would count again for less than it once showed. Over a restart the member holds the hour of its last save
+ * and no later one: a PC that refuses a device for its `until` saves the copy before it answers, so that the
+ * refusal outlives a restart with the clock set back.
  */
 export function withClock(copy: FollowerCopy, now: number): FollowerCopy {
   if (!isCount(now)) throw new RangeError("The hour is seconds since 1970, a whole number");
