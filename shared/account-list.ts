@@ -18,7 +18,8 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { ACCOUNT_OSES, type AccountOs } from "./account-asker.ts";
 import {
-  ListEntryError, canonicalBase64Url, entryFromText, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readFieldsUnder, verifySignature, writeFieldsUnder,
+  ListEntryError, canonicalBase64Url, entryFromText, entryHash, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readBody, readFieldsUnder, signEntry,
+  verifySignature, writeBody, writeFieldsUnder,
   type Entry, type EntryBody, type HeldEntry, type ListField, type ListRefusalCode, type SignerPower,
 } from "./account-list-entry.ts";
 import type { JoinLine } from "./account-list-join.ts";
@@ -65,11 +66,11 @@ export const CARD_SIGNATURE_CHARS = 86;
 /** What a device may do at a PC: `drive` types into its terminals, `watch` only reads them. */
 export type ListRole = "drive" | "watch";
 /** Why an invite lets no PC in, by what the list holds; the first that applies, in this order. */
-export type InviteCode = "invite_unknown" | "invite_revoked" | "invite_void" | "invite_spent";
+export type InviteCode = "invite_unknown" | "invite_revoked" | "invite_void" | "invite_spent" | "invite_expired";
 /** Why an entry that a member reads has no effect of its kind. */
 export type NoEffectCode =
   | "entry_invalid" | "epoch_other" | InviteCode | "invite_not_auto" | "signer_not_allowed" | "already_out" | "ends_needed" | "endpoint_reused" | "key_reused"
-  | "card_invalid" | "enc_set";
+  | "card_invalid" | "enc_set" | "carried_late";
 /** Why a proof for reading is not taken: its form, then its signature. */
 export type ReadProofCode = "proof_malformed" | "signature_invalid";
 
@@ -79,6 +80,15 @@ export class ListKindError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ListKindError";
+  }
+}
+
+/** An entry that a writer would have signed and that would not count on the writer's own state: it is not signed. `outcome` is what would have become of it, or null where no entry was built. */
+export class ListWriteError extends Error {
+  readonly code = "not_written";
+  constructor(readonly outcome: ListOutcome | null, message: string) {
+    super(message);
+    this.name = "ListWriteError";
   }
 }
 
@@ -156,6 +166,16 @@ export interface EpochRow {
  * is `epoch`.
  */
 export interface ListState extends SignersState {
+  /** The account the list is of, as entry 0 names it. */
+  readonly account: string;
+  /**
+   * The latest `issued_at` among the entries that a signer of power `full` signed and that were not passed over,
+   * entry 0 among them: the one time the list itself gives. No reader's clock is in it. An invite whose `exp` lies
+   * before it lets no PC in any more, and no caller's clock reads earlier than it (listClock).
+   */
+  readonly full_at: number;
+  /** Whether a `carried` still counts: only while every entry since entry 0 that a signer signed was a `carried` that counted. */
+  readonly carrying: boolean;
   readonly signers: { readonly [key: string]: ListSignerRow };
   readonly devices: { readonly [key: string]: DeviceRow };
   readonly pcs: { readonly [endpoint: string]: PcRow };
@@ -198,7 +218,7 @@ export type ListKind =
   | { readonly kind: "join"; readonly endpoint: string; readonly pc: string; readonly enc: string; readonly card: string; readonly sealed: Sealed | null }
   | { readonly kind: "remove"; readonly ends: string }
   | { readonly kind: "remove"; readonly endpoint: string }
-  | { readonly kind: "carried"; readonly key: string; readonly role: ListRole; readonly sealed: Sealed | null }
+  | { readonly kind: "carried"; readonly key: string; readonly role: "drive"; readonly sealed: Sealed | null }
   | { readonly kind: "carried"; readonly endpoint: string; readonly sealed: Sealed | null }
   | { readonly kind: "card"; readonly enc: string }
   /** `epoch` is the epoch that is current where the entry stands; it opens the next one, whose key `opens` commits to and under which `link` holds the current key. */
@@ -357,6 +377,8 @@ export function readKind(body: EntryBody): ListKind | null {
       const [enc, seal, signed, part] = [key("enc"), sealed(), card(), role()];
       if ((!timed && named !== "card enc role") || adds === undefined || (ends !== undefined && ends !== signer)) return null;
       if (enc === null || seal === undefined || signed === null || part === null || (timed && Number.isNaN(number("until")))) return null;
+      // Only a `bound` device watches or has an `until`: a device of power `full` adds whom it likes, so neither would hold it to anything.
+      if (adds.power === "full" && (timed || part !== "drive")) return null;
       return { kind, key: adds.key, power: adds.power, role: part, until: timed ? number("until") : null, enc, card: signed, sealed: seal, rotates: ends !== undefined };
     }
     case "pc": {
@@ -388,7 +410,7 @@ export function readKind(body: EntryBody): ListKind | null {
       if (ends !== undefined || seal === undefined) return null;
       if (adds !== undefined) {
         const part = role();
-        return named === "role" && adds.power === "full" && part !== null ? { kind, key: adds.key, role: part, sealed: seal } : null;
+        return named === "role" && adds.power === "full" && part === "drive" ? { kind, key: adds.key, role: part, sealed: seal } : null;
       }
       const at = endpoint();
       return named === "endpoint" && at !== null ? { kind, endpoint: at, sealed: seal } : null;
@@ -406,8 +428,10 @@ export function readKind(body: EntryBody): ListKind | null {
 }
 
 /**
- * The body of an entry of one of the kinds at `v` 1, for signEntry; refuses `entry_invalid` for what no member
- * would read as that kind. A `device` that rotates ends its own signer, which is the place's.
+ * The body of an entry of one of the kinds at `v` 1; refuses `entry_invalid` for what no member would read as
+ * that kind. A `device` that rotates ends its own signer, which is the place's. It signs nothing: a member that
+ * writes an entry calls signListEntry (signGenesis for entry 0, joinEntry for a PC's own `join`), which builds
+ * the body here and signs it only when it counts on the member's own state.
  */
 export function kindBody(place: EntryPlace, kind: ListKind): EntryBody {
   const names = (sealed: Sealed | null): ListField[] => (sealed === null ? [] : [field("epoch", String(sealed.epoch)), field("sealed", sealed.bytes)]);
@@ -530,16 +554,21 @@ function openInvite(state: ListState, key: string): InviteRow | InviteCode {
   if (row.ended !== null) return "invite_revoked";
   const placer = row.by === null ? null : rowOf(state.signers, row.by);
   if (placer === null || placer.ended !== null) return "invite_void";
-  return invite.joins < invite.uses ? invite : "invite_spent";
+  if (!(invite.joins < invite.uses)) return "invite_spent";
+  // No reader's clock: a signer of power `full` has signed at a time after the invite's `exp`.
+  return state.full_at > invite.exp ? "invite_expired" : invite;
 }
 
 /**
  * An invite's refusal by what the list holds, the first that applies: the list holds no invite of that key,
  * whatever else the key is or was (`invite_unknown`); its key is ended (`invite_revoked`); the device or PC that
- * placed it is no signer (`invite_void`); no use is left (`invite_spent`). Null for an invite that is open as far
- * as a member can tell. It reads the key's row, the invite's row and the row of whoever placed it.
+ * placed it is no signer (`invite_void`); no use is left (`invite_spent`); a signer of power `full` has signed an
+ * entry at a time after its `exp` (`invite_expired`). Null for an invite that is open as far as a member can
+ * tell. It reads the key's row, the invite's row, the row of whoever placed it and the list's own time. A member
+ * that is stopped for a replay answers for nobody: every invite is `invite_unknown` to it.
  */
 export function inviteRefusal(state: ListState, key: string): InviteCode | null {
+  if (state.needs_replay !== undefined) return "invite_unknown";
   const invite = openInvite(state, key);
   return typeof invite === "string" ? invite : null;
 }
@@ -558,10 +587,11 @@ const named = (row: SignerRow | null, as: ListSignerRow["as"]): ListSignerRow | 
   (row === null ? null : { power: row.power, seq: row.seq, by: row.by, ended: row.ended, as });
 
 /** The state with the signers' own part as `after` has it. */
-function withBase(after: SignersState, rest: Pick<ListState, "signers" | "devices" | "pcs" | "pc_keys" | "invites" | "epoch" | "epochs">): ListState {
+type KindsPart = Pick<ListState, "account" | "full_at" | "carrying" | "signers" | "devices" | "pcs" | "pc_keys" | "invites" | "epoch" | "epochs">;
+function withBase(after: SignersState, rest: KindsPart): ListState {
   const { level, list, footing, needs, behind, needs_replay } = after;
-  const { signers, devices, pcs, pc_keys, invites, epoch, epochs } = rest;
-  return { level, list, footing, needs, behind, signers, devices, pcs, pc_keys, invites, epoch, epochs, ...(needs_replay === undefined ? {} : { needs_replay }) };
+  const { account, full_at, carrying, signers, devices, pcs, pc_keys, invites, epoch, epochs } = rest;
+  return { level, list, footing, needs, behind, account, full_at, carrying, signers, devices, pcs, pc_keys, invites, epoch, epochs, ...(needs_replay === undefined ? {} : { needs_replay }) };
 }
 
 /**
@@ -579,7 +609,9 @@ export function firstListState(first: HeldEntry, level: number): ListState {
     signers[key] = { ...row, as: "device" };
     devices[key] = { role: "drive", until: null, enc: kind.enc, carried: false };
   }
-  return withBase(base, { signers, devices, pcs: {}, pc_keys: {}, invites: {}, epoch: 0, epochs: [{ opens: kind.opens, link: null, seq: 0 }] });
+  return withBase(base, {
+    account: kind.account, full_at: first.body.issued_at, carrying: true, signers, devices, pcs: {}, pc_keys: {}, invites: {}, epoch: 0, epochs: [{ opens: kind.opens, link: null, seq: 0 }],
+  });
 }
 
 /**
@@ -597,27 +629,35 @@ export function firstListState(first: HeldEntry, level: number): ListState {
  * - `join`: signed by an open invite that is `auto`, it lets the PC at that relay key in; the PC's key is no signer.
  * - `remove`: with `ends` the signers have done it; with `endpoint` a signer of power `full` puts out a PC whose
  *   key is no signer.
- * - `carried`: signed by the first signer alone, it carries a device in (`adds`) or a PC (`endpoint`).
+ * - `carried`: signed by the first signer alone, right after entry 0, it carries a device in (`adds`) or a PC
+ *   (`endpoint`).
  * - `card`: a device that has no encryption key yet names its own.
  * - `epoch`: a signer of power `full` opens the epoch after the current one.
  *
  * An entry that has no effect for more than one reason takes the first name of this order: `entry_invalid`, for
  * its fields and the forms of their values; `epoch_other`, for names sealed under another epoch than the current
  * one, or an `epoch` that names another; then what the list holds, as the kind's rule writes it: for a `join`
- * the invite's names, `invite_not_auto`, `endpoint_reused`, `key_reused`; for a `pc` `endpoint_reused`, then
- * `key_reused`; for a `remove` of a PC `signer_not_allowed`, `already_out`, `ends_needed`; and last
- * `card_invalid`, the one check that asks the runtime.
+ * the invite's names (`invite_expired` the last of them), `invite_not_auto`, `endpoint_reused`, `key_reused`; for a `pc` `endpoint_reused`, then
+ * `key_reused`; for a `remove` of a PC `signer_not_allowed`, `already_out`, `ends_needed`; for a `carried`
+ * `signer_not_allowed`, `carried_late`; and last `card_invalid`, the one check that asks the runtime.
  */
 export async function takeEntry(state: ListState, held: HeldEntry): Promise<{ readonly outcome: ListOutcome; readonly state: ListState }> {
   const { body } = held;
   const { adds, ends, seq, signer } = body;
   const judged = judgeEntry(state, held);
-  const kept = { signers: state.signers, devices: state.devices, pcs: state.pcs, pc_keys: state.pc_keys, invites: state.invites, epoch: state.epoch, epochs: state.epochs };
+  const kept: KindsPart = {
+    account: state.account, full_at: state.full_at, carrying: state.carrying,
+    signers: state.signers, devices: state.devices, pcs: state.pcs, pc_keys: state.pc_keys, invites: state.invites, epoch: state.epoch, epochs: state.epochs,
+  };
   if (judged.outcome.outcome === "stops") return { outcome: judged.outcome, state: withBase(judged.state, kept) };
   if (judged.outcome.outcome === "passed_over") {
     // Nothing in it applies, and it is not asked for its kind's form. A `join` at a `v` that the level table defines takes the invite's name.
-    const invite = body.kind === "join" && Object.hasOwn(LIST_LEVEL_TABLE.join, body.v) ? inviteRefusal(state, signer) : null;
-    return { outcome: { outcome: "passed_over", code: invite ?? judged.outcome.code, loose: judged.outcome.loose }, state: withBase(judged.state, kept) };
+    const invite = body.kind === "join" && Object.hasOwn(LIST_LEVEL_TABLE.join, body.v) ? openInvite(state, signer) : null;
+    // A loose entry is as if it had never been shown. Any other is a signer's, and no `carried` that counted: nobody is carried in after it.
+    return {
+      outcome: { outcome: "passed_over", code: typeof invite === "string" ? invite : judged.outcome.code, loose: judged.outcome.loose },
+      state: withBase(judged.state, { ...kept, carrying: judged.outcome.loose ? state.carrying : false }),
+    };
   }
   // `adds` and `ends` have applied, read or not: the key that comes in is a signer with no name until its kind names it, and the key that goes keeps what it was.
   const signers: { [key: string]: ListSignerRow } = { ...state.signers };
@@ -629,8 +669,11 @@ export async function takeEntry(state: ListState, held: HeldEntry): Promise<{ re
   let pcs = state.pcs;
   const at = ends === undefined ? null : rowOf(state.pc_keys, ends);
   const pc = at === null ? null : rowOf(state.pcs, at);
-  if (at !== null && pc !== null && pc.how === "added" && pc.key === ends && pc.removed === null) pcs = { ...pcs, [at]: { ...pc, removed: seq } };
-  const next = withBase(judged.state, { ...kept, signers, pcs });
+  // So is a PC that joined, where a signer of power `full` made its key a signer afterwards: whoever ends that key means the PC.
+  if (at !== null && pc !== null && pc.key === ends && pc.removed === null) pcs = { ...pcs, [at]: { ...pc, removed: seq } };
+  // The list's own time moves with what a signer of power `full` signed. Nobody is carried in after an entry that is no `carried` that counted.
+  const full_at = judged.outcome.power === "full" ? Math.max(state.full_at, body.issued_at) : state.full_at;
+  const next = withBase(judged.state, { ...kept, full_at, carrying: false, signers, pcs });
   if (judged.outcome.outcome === "cannot_read") return { outcome: { outcome: "cannot_read" }, state: next };
 
   const counts = (after: ListState) => ({ outcome: { outcome: "counts" }, state: after }) as const;
@@ -697,25 +740,29 @@ export async function takeEntry(state: ListState, held: HeldEntry): Promise<{ re
       if (judged.outcome.power !== "full") return noEffect("signer_not_allowed");
       const row = rowOf(state.pcs, kind.endpoint);
       if (row === null || row.removed !== null) return noEffect("already_out");
-      // A PC that a person added goes with its key, by `ends`: put out by its relay key alone, its key would stay a signer.
-      if (row.how === "added") return noEffect("ends_needed");
+      // A PC whose key is a signer goes with its key, by `ends`: put out by its relay key alone, its key would stay a signer.
+      const signs = row.key === null ? null : rowOf(state.signers, row.key);
+      if (row.how === "added" || (signs !== null && signs.ended === null)) return noEffect("ends_needed");
       return counts({ ...next, pcs: { ...pcs, [kind.endpoint]: { ...row, removed: seq } } });
     }
     case "carried": {
       const own = rowOf(state.signers, signer);
       if (own === null || own.seq !== 0) return noEffect("signer_not_allowed");
+      // Only right after entry 0: a `carried` has no card and gives full power, so it is no way in once the list is in use.
+      if (!state.carrying) return noEffect("carried_late");
+      const carrying = { ...next, carrying: true };
       if ("key" in kind) {
         if (used(kind.key)) return noEffect("key_reused");
-        if (!letsIn || came === null) return counts(next);
+        if (!letsIn || came === null) return counts(carrying);
         return counts({
-          ...next,
+          ...carrying,
           signers: { ...signers, [kind.key]: { ...came, as: "device" } },
           devices: { ...state.devices, [kind.key]: { role: kind.role, until: null, enc: null, carried: true } },
         });
       }
       if (rowOf(state.pcs, kind.endpoint) !== null) return noEffect("endpoint_reused");
-      if (!letsIn) return counts(next);
-      return counts({ ...next, pcs: { ...pcs, [kind.endpoint]: { how: "carried", key: null, enc: null, seq, invite: null, removed: null } } });
+      if (!letsIn) return counts(carrying);
+      return counts({ ...carrying, pcs: { ...pcs, [kind.endpoint]: { how: "carried", key: null, enc: null, seq, invite: null, removed: null } } });
     }
     case "card": {
       const device = rowOf(state.signers, signer)?.as === "device" ? rowOf(state.devices, signer) : null;
@@ -742,8 +789,8 @@ function endpointOf(body: EntryBody): string | null {
  * The state cut down to the rows that one entry names: what the account service may load to judge the entry, and
  * takeEntry on it gives the same outcome and the same rows as on the whole state. The rows are those of its
  * `signer`, its `adds`, its `ends` and the key in its `pc`, among the signers, the devices, the invites and the
- * PCs' keys; the PC of its `endpoint` and the PC whose key it ends; and, for an entry that an invite signed, the
- * row of whoever placed that invite.
+ * PCs' keys; the PC of its `endpoint`, with the signer's row of that PC's key, and the PC whose key it ends; and,
+ * for an entry that an invite signed, the row of whoever placed that invite.
  */
 export function rowsNamed(state: ListState, body: EntryBody): ListState {
   const pick = <Row>(rows: { readonly [name: string]: Row }, names: readonly (string | null | undefined)[]): { [name: string]: Row } => {
@@ -756,13 +803,14 @@ export function rowsNamed(state: ListState, body: EntryBody): ListState {
   };
   const keys = [body.signer, body.adds?.key, body.ends, latin1(body.own.find((item) => item.name === "pc")?.value ?? NONE)];
   const signer = rowOf(state.signers, body.signer);
+  const at = endpointOf(body);
   return {
     ...state,
-    signers: pick(state.signers, [...keys, signer !== null && signer.as === "invite" ? signer.by : null]),
+    signers: pick(state.signers, [...keys, signer !== null && signer.as === "invite" ? signer.by : null, at === null ? null : rowOf(state.pcs, at)?.key]),
     devices: pick(state.devices, keys),
     invites: pick(state.invites, keys),
     pc_keys: pick(state.pc_keys, keys),
-    pcs: pick(state.pcs, [endpointOf(body), body.ends === undefined ? null : rowOf(state.pc_keys, body.ends)]),
+    pcs: pick(state.pcs, [at, body.ends === undefined ? null : rowOf(state.pc_keys, body.ends)]),
   };
 }
 
@@ -843,75 +891,124 @@ export interface InviteView extends InviteRow {
 }
 
 /**
- * The devices, the PCs and the invites of a state, those that are out among them (a device's `ended`, a PC's
- * `removed`, an invite's `refusal`), each in the order it came in. A member that is stopped for a replay lists
- * what it held, and lets nobody in meanwhile (admitsDevice).
+ * A key that is a signer and that no kind made a device, a PC or an invite: an entry added it and had no effect of
+ * its kind. It opens nothing, and it signs what its power allows, so a person must be able to see it and end it.
  */
-export function listView(state: ListState): { readonly devices: readonly DeviceView[]; readonly pcs: readonly PcView[]; readonly invites: readonly InviteView[] } {
+export interface NamelessSigner {
+  readonly key: string;
+  readonly power: SignerPower;
+  readonly seq: number;
+  readonly by: string | null;
+}
+
+export interface ListView {
+  /** The member is stopped for a replay: it answers for nobody, and every list below is empty. */
+  readonly stopped: boolean;
+  readonly devices: readonly DeviceView[];
+  readonly pcs: readonly PcView[];
+  readonly invites: readonly InviteView[];
+  /** The signers with no name that are in. */
+  readonly signers: readonly NamelessSigner[];
+}
+
+/**
+ * The devices, the PCs and the invites of a state, those that are out among them (a device's `ended`, a PC's
+ * `removed`, an invite's `refusal`), and the signers with no name that are in, each in the order it came in. A
+ * member that is stopped for a replay answers for nobody: it lists nothing, and says that it is stopped.
+ */
+export function listView(state: ListState): ListView {
+  if (state.needs_replay !== undefined) return { stopped: true, devices: [], pcs: [], invites: [], signers: [] };
   const bySeq = <Row extends { readonly seq: number }>(rows: Row[]): Row[] => rows.sort((a, b) => a.seq - b.seq);
   const devices: DeviceView[] = [];
   const invites: InviteView[] = [];
+  const signers: NamelessSigner[] = [];
   for (const [key, row] of Object.entries(state.signers)) {
     const device = row.as === "device" ? rowOf(state.devices, key) : null;
     if (device !== null) devices.push({ key, power: row.power, seq: row.seq, by: row.by, ended: row.ended, ...device });
     const invite = row.as === "invite" ? rowOf(state.invites, key) : null;
     if (invite !== null) invites.push({ key, seq: row.seq, by: row.by, refusal: inviteRefusal(state, key), ...invite });
+    if (row.as === null && row.ended === null) signers.push({ key, power: row.power, seq: row.seq, by: row.by });
   }
   const pcs = Object.entries(state.pcs).map(([endpoint, row]): PcView =>
     ({ endpoint, ...row, allows: row.how === "added" && row.removed === null && row.key !== null && signerPower(state, row.key) === "full" }));
-  return { devices: bySeq(devices), pcs: bySeq(pcs), invites: bySeq(invites) };
+  return { stopped: false, devices: bySeq(devices), pcs: bySeq(pcs), invites: bySeq(invites), signers: bySeq(signers) };
 }
 
 /**
- * Whether a PC lets the device with this key in at `now` (seconds since 1970, by the PC's own clock), and as
- * what: its role, or null. A device is let in while its key is a signer and, when it has an `until`, before
- * that hour. A member that is stopped for a replay answers for nobody.
+ * The time a caller judges by (seconds since 1970): the latest of its own clock, the time it last saved (null for
+ * none) and the list's own time. So a PC whose clock reads early, after a restart or by somebody's hand, lets no
+ * device in past its `until`, and wraps no key to an invite past its `exp`.
+ */
+export function listClock(state: ListState, now: number, saved: number | null): number {
+  return Math.max(now, saved ?? 0, state.full_at);
+}
+
+/**
+ * Whether a PC lets the device with this key in at `now` (seconds since 1970, by the PC's own clock: listClock),
+ * and as what: its role, or null. A device is let in while its key is a signer and, when it has an `until`,
+ * before that second. No clock that reads before the list's own time is believed. A member that is stopped for a
+ * replay answers for nobody.
  */
 export function admitsDevice(state: ListState, key: string, now: number): ListRole | null {
   if (signerPower(state, key) === null) return null;
   // Only a key that its kind made a device has a row among the devices.
   const device = rowOf(state.devices, key);
-  if (device === null || (device.until !== null && !(now < device.until))) return null;
+  if (device === null || (device.until !== null && !(listClock(state, now, null) < device.until))) return null;
   return device.role;
 }
 
 /**
  * The encryption keys that the key of an epoch is wrapped to at `now` (seconds since 1970, by the caller's own
- * clock), in the order they came in: that of every device that is in, has named one and is not past its `until`;
- * that of every PC that is in and has one; and the own key of every open invite that a PC joins with by itself
- * and that is not past its `exp`. The last lets such a PC, which joins with nobody else awake, open the names,
- * seal its own and wrap the key to itself. Whoever is out is not among them, and neither is an invite or a
- * borrowed browser whose time is over: whoever still holds its key would otherwise read every later name. The
- * clock chooses only whom a key is wrapped to; it is no verdict on any entry, and no member lets anybody in or
- * puts anybody out by it.
+ * clock: listClock), in the order they came in: that of every device that is in, has named one and is not past
+ * its `until`; that of every PC that is in and has one; and the own key of every open invite that a PC joins
+ * with by itself and that is not past its `exp`. The last lets such a PC, which joins with nobody else awake,
+ * open the names, seal its own and wrap the key to itself. Whoever is out is not among them, and neither is an
+ * invite or a borrowed browser whose time is over: whoever still holds its key would otherwise read every later
+ * name. The clock chooses only whom a key is wrapped to; it is no verdict on any entry, and no member lets
+ * anybody in or puts anybody out by it. A member that is stopped for a replay wraps to nobody.
  */
 export function wrapKeys(state: ListState, now: number): string[] {
   const view = listView(state);
+  const clock = listClock(state, now, null);
   const keys = [
-    ...view.devices.filter((row) => row.ended === null && (row.until === null || now < row.until)).map((row) => ({ seq: row.seq, key: row.enc })),
+    ...view.devices.filter((row) => row.ended === null && (row.until === null || clock < row.until)).map((row) => ({ seq: row.seq, key: row.enc })),
     ...view.pcs.filter((row) => row.removed === null).map((row) => ({ seq: row.seq, key: row.enc })),
-    ...view.invites.filter((row) => row.refusal === null && row.auto && now < row.exp).map((row) => ({ seq: row.seq, key: row.key })),
+    ...view.invites.filter((row) => row.refusal === null && row.auto && clock <= row.exp).map((row) => ({ seq: row.seq, key: row.key })),
   ];
   return [...new Set(keys.sort((a, b) => a.seq - b.seq).flatMap(({ key }) => (key === null ? [] : [key])))];
 }
 
 /**
- * The epoch a writer seals an entry's names under, with the commitment to its key, or null when it must seal
- * nothing and write its entry with no names. It is the current epoch, and only when the entry that opened it
- * stands after the last entry that put out a key an epoch's key may have been wrapped to: the `ends` of a
- * device's, a PC's or an invite's key (a revoked invite among them), and the `remove` of a PC by its relay key.
- * Whoever was put out holds the key of every epoch opened before that, so names sealed under one of those are
- * names it reads. Entry 0 is the one entry this is not asked for: it opens epoch 0 itself. No writer decides
- * this for itself; a member that is stopped for a replay seals nothing.
+ * The epoch a writer seals an entry's names under at `now` (seconds since 1970, by its own clock: listClock),
+ * with the commitment to its key, or null when it must seal nothing and write its entry with no names. It is the
+ * current epoch, and only while nobody who may hold its key is out or past its time:
+ *
+ * - the entry that opened it stands after the last entry that put out a device, a PC, or an invite that a PC
+ *   joins with by itself (revoked, or void with whoever placed it), and after the `join` that took such an
+ *   invite's last use: the holder of that line held the key too;
+ * - no device that is in is past its `until`, and no such invite that still has a use is past its `exp`. One of
+ *   those is first put out (`remove`) and the next epoch opened; until then nothing is sealed.
+ *
+ * Whoever is out, or over its time, holds the key of every epoch opened before, so names sealed under one of
+ * those are names it reads. Entry 0 is the one entry this is not asked for: it opens epoch 0 itself. No writer
+ * decides this for itself; a member that is stopped for a replay seals nothing.
  */
-export function sealEpoch(state: ListState): { readonly epoch: number; readonly opens: string } | null {
+export function sealEpoch(state: ListState, now: number): { readonly epoch: number; readonly opens: string } | null {
   if (state.needs_replay !== undefined) return null;
   const current = state.epochs[state.epoch];
   if (current === undefined) return null;
-  const out = [
-    ...Object.values(state.signers).map((row) => (row.as === null ? null : row.ended)),
-    ...Object.values(state.pcs).map((row) => row.removed),
-  ];
+  const clock = listClock(state, now, null);
+  const view = listView(state);
+  const out: (number | null)[] = [...view.devices.map((row) => row.ended), ...view.pcs.map((row) => row.removed)];
+  for (const invite of view.invites) {
+    if (!invite.auto) continue;
+    const row = rowOf(state.signers, invite.key);
+    if (row !== null && row.ended !== null) out.push(row.ended);
+    // Its last use: the place of the last PC that joined with it.
+    else if (invite.joins >= invite.uses) out.push(Math.max(...view.pcs.filter((pc) => pc.invite === invite.key).map((pc) => pc.seq)));
+    else if (clock > invite.exp) return null;
+  }
+  if (view.devices.some((row) => row.ended === null && row.until !== null && !(clock < row.until))) return null;
   return out.some((seq) => seq !== null && seq >= current.seq) ? null : { epoch: state.epoch, opens: current.opens };
 }
 
@@ -922,19 +1019,117 @@ export function holdsPc(state: ListState, endpoint: string): boolean {
   return row !== null && row.removed === null;
 }
 
+/**
+ * What puts the PC at a relay key out, as the entries to place in this order, by a signer of power `full`: the
+ * `remove` that fits how it came in (by its key where that key is a signer, by its relay key otherwise), and,
+ * for a PC that joined with an invite that still lets a PC in, the `remove` of that invite: whoever holds its
+ * line would join again. The writer places the `epoch` entry after them (signListEntries). Empty for a relay key
+ * that names no PC that is in.
+ */
+export function pcRemoval(state: ListState, endpoint: string): ListKind[] {
+  const row = holdsPc(state, endpoint) ? rowOf(state.pcs, endpoint) : null;
+  if (row === null) return [];
+  const signs = row.key === null ? null : rowOf(state.signers, row.key);
+  const kinds: ListKind[] = [row.key !== null && signs !== null && signs.ended === null ? { kind: "remove", ends: row.key } : { kind: "remove", endpoint }];
+  if (row.invite !== null && inviteRefusal(state, row.invite) === null) kinds.push({ kind: "remove", ends: row.invite });
+  return kinds;
+}
+
+/** Who signs an entry: a member's signing key, and its private half. */
+export interface ListSigner {
+  readonly key: string;
+  readonly privateKey: CryptoKey;
+}
+
+/** An entry a member signed: the entry, its one text, and the state the member will hold once the log shows the entry at its place. */
+export interface WrittenEntry {
+  readonly entry: Entry;
+  readonly text: string;
+  /** For building the next entry of one batch. A member's own entry comes into its copy only when the log shows it. */
+  readonly state: ListState;
+}
+
+/** The bytes of a body with what becomes of them on a state, before anybody signs them: an entry is signed only when it counts. */
+async function counted(state: ListState, body: EntryBody): Promise<{ readonly bytes: Uint8Array; readonly state: ListState }> {
+  const bytes = writeBody(body);
+  const held: HeldEntry = { entry: { body: bytes, signature: new Uint8Array(64) }, body: readBody(bytes), hash: entryHash(bytes), list: state.list };
+  const taken = await takeEntry(state, held);
+  if (taken.outcome.outcome !== "counts") {
+    throw new ListWriteError(taken.outcome, `This entry would not count on the writer's own state (${"code" in taken.outcome ? taken.outcome.code : taken.outcome.outcome}), so it is not signed`);
+  }
+  return { bytes, state: taken.state };
+}
+
+/** The entry of a body that counts, signed; refuses a key pair whose halves are not each other's. */
+async function signedBy(body: EntryBody, signer: ListSigner, state: ListState): Promise<WrittenEntry> {
+  const entry = await signEntry(body, signer.privateKey);
+  if (!(await verifySignature(entry.body, entry.signature, signer.key))) throw new ListWriteError(null, "The private key is not that of the signer's key");
+  return { entry, text: entryToText(entry), state };
+}
+
+/**
+ * How a member writes an entry: the entry of this kind, on the member's own state, signed. It stands on the
+ * state's footing, as every entry a member signs does, and it is signed only when it counts there: the entry is
+ * built, taken on the member's own state as every member will take it, and refused (`not_written`, with what
+ * would have become of it) unless it counts. Since an entry names the entry before it, what counts on the
+ * writer's footing counts for every member that takes it. So no member signs an entry that adds a key and has no
+ * effect of its kind, which would leave a signer with no name. A member that is stopped for a replay writes
+ * nothing. Entry 0 is signGenesis's, and a PC's own `join` is joinEntry's.
+ */
+export async function signListEntry(state: ListState, kind: ListKind, signer: ListSigner, issued_at: number): Promise<WrittenEntry> {
+  if (state.needs_replay !== undefined) throw new ListWriteError(null, "A member that is stopped for a replay writes nothing");
+  const body = kindBody({ issued_at, list: state.list, prev: state.footing.hash, seq: state.footing.seq + 1, signer: signer.key }, kind);
+  return await signedBy(body, signer, (await counted(state, body)).state);
+}
+
+/**
+ * Entries that are placed together, each on the one before: a removal and the `epoch` entry after it, say. A step
+ * is a kind, or a function that gives one from the state so far (the `epoch` entry is made from the members that
+ * stay: wrapKeys of that state). All are signed, or none: the first that would not count refuses the whole batch
+ * before anything of it leaves the writer.
+ */
+export async function signListEntries(
+  state: ListState, steps: readonly (ListKind | ((state: ListState) => ListKind | Promise<ListKind>))[], signer: ListSigner, issued_at: number,
+): Promise<{ readonly entries: readonly WrittenEntry[]; readonly state: ListState }> {
+  const entries: WrittenEntry[] = [];
+  let after = state;
+  for (const step of steps) {
+    const written = await signListEntry(after, typeof step === "function" ? await step(after) : step, signer, issued_at);
+    entries.push(written);
+    after = written.state;
+  }
+  return { entries, state: after };
+}
+
+/**
+ * Entry 0 of a new list, signed by its first device: the list id is its hash, which the state names as `list`.
+ * Refuses `entry_invalid` for what is no `genesis` in its form.
+ */
+export async function signGenesis(genesis: Extract<ListKind, { readonly kind: "genesis" }>, signer: ListSigner, issued_at: number, level: number = LIST_LEVEL): Promise<WrittenEntry> {
+  const body = kindBody({ issued_at, list: "", prev: "", seq: 0, signer: signer.key }, genesis);
+  const bytes = writeBody(body);
+  const hash = entryHash(bytes);
+  const state = firstListState({ entry: { body: bytes, signature: new Uint8Array(64) }, body: readBody(bytes), hash, list: hash }, level);
+  return await signedBy(body, signer, state);
+}
+
 const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
  * A saved state, read again by a build of this level: the state when the value has its form and agrees with
  * itself, null for anything else. As the signers' readSignersState, on which it stands: the value comes from the
- * member's own store, and a state that a higher level wrote is read back stopped.
+ * member's own store, and a state that a higher level wrote is read back stopped. It is trusted exactly as far as
+ * that store is: these checks catch a state that was damaged, not one that somebody who can write the store
+ * wrote with care. A member that starts replays the entries it kept (replayList, told this state) and holds what
+ * the replay gives.
  */
 export function readListState(value: unknown, level: number): ListState | null {
   const base = readSignersState(value, level);
   if (base === null || !isRecord(value)) return null;
-  const { signers: savedSigners, devices: savedDevices, pcs: savedPcs, pc_keys: savedKeys, invites: savedInvites, epoch, epochs: savedEpochs } = value;
+  const { account, full_at, carrying, signers: savedSigners, devices: savedDevices, pcs: savedPcs, pc_keys: savedKeys, invites: savedInvites, epoch, epochs: savedEpochs } = value;
   if (!isRecord(savedSigners) || !isRecord(savedDevices) || !isRecord(savedPcs) || !isRecord(savedKeys) || !isRecord(savedInvites) || !Array.isArray(savedEpochs)) return null;
+  if (typeof account !== "string" || !ACCOUNT.test(account) || !isCount(full_at) || typeof carrying !== "boolean") return null;
   const top = base.footing.seq;
   // One row for each epoch, epoch 0 opened by entry 0 and each later one by a later entry than the one before.
   const epochs: EpochRow[] = [];
@@ -968,6 +1163,8 @@ export function readListState(value: unknown, level: number): ListState | null {
     if (signers[key]?.as !== "device" || !isRecord(saved)) return null;
     const { role, until, enc, carried } = saved;
     if ((role !== "drive" && role !== "watch") || !(until === null || isCount(until)) || typeof carried !== "boolean") return null;
+    // Only a `bound` device watches or has an `until`.
+    if (signers[key]?.power === "full" && (role !== "drive" || until !== null)) return null;
     // Only a device that was carried in may be without an encryption key.
     if (enc === null ? !carried : typeof enc !== "string" || !isListKey(enc)) return null;
     devices[key] = { role, until, enc: typeof enc === "string" ? enc : null, carried };
@@ -997,6 +1194,9 @@ export function readListState(value: unknown, level: number): ListState | null {
       if (typeof invite !== "string" || placed === undefined || placed.as !== "invite" || seq <= placed.seq || (placed.ended !== null && seq >= placed.ended)) return null;
       const placer = signers[placed.by ?? ""];
       if (placer !== undefined && placer.ended !== null && seq >= placer.ended) return null;
+      // Where its key was made a signer afterwards and ended, the PC was out by then at the latest.
+      const signs = signers[key];
+      if (signs !== undefined && (signs.as !== null || signs.seq <= seq || (signs.ended !== null && !(removed !== null && removed <= signs.ended)))) return null;
       joined.set(invite, (joined.get(invite) ?? 0) + 1);
     } else {
       return null;
@@ -1027,7 +1227,12 @@ export function readListState(value: unknown, level: number): ListState | null {
   if (rows.filter((row) => row.as === "invite").length !== Object.keys(invites).length) return null;
   if (rows.filter((row) => row.as === "device").length !== Object.keys(devices).length) return null;
   if (rows.filter((row) => row.as === "pc").length !== Object.values(pcs).filter((row) => row.how === "added").length) return null;
-  return withBase(base, { signers, devices, pcs, pc_keys, invites, epoch: epochs.length - 1, epochs });
+  // While somebody may still be carried in, the list holds nothing but what its first signer carried in.
+  const firstKey = Object.keys(signers).find((key) => signers[key]?.seq === 0);
+  if (carrying && (epochs.length !== 1 || Object.keys(invites).length > 0 || rows.some((row) => row.by !== firstKey || row.ended !== null || row.as !== "device")
+    || Object.entries(devices).some(([key, row]) => key !== firstKey && !row.carried)
+    || Object.values(pcs).some((row) => row.how !== "carried" || row.removed !== null))) return null;
+  return withBase(base, { account, full_at, carrying, signers, devices, pcs, pc_keys, invites, epoch: epochs.length - 1, epochs });
 }
 
 /** What the entry's functions refuse as `entry_malformed` is `proof_malformed` here: nothing that is not an entry has a name with `entry` in it. */
@@ -1078,21 +1283,28 @@ export interface JoiningPc {
 
 /**
  * The `join` of a PC that joins by itself with the invite of a line it was given: the entry, signed with the
- * invite's key. The PC hands over its own keys and where the entry stands, and nothing that could have come from
- * anybody else: the card is made here with the PC's own private key (for this list, this relay key and this
- * invite), the body is built here, and the line signs only that. So a PC cannot be made to sign a `join` that
- * somebody else composed, with a key of theirs in it. `sealed` is the PC's names under sealEpoch's epoch, or null.
- * Refuses `entry_invalid` for a line that names no list and for values out of their form.
+ * invite's key, on the state the PC holds of the list it read. The PC hands over its own keys, and nothing that
+ * could have come from anybody else: the card is made here with the PC's own private key (for this list, this
+ * relay key and this invite), the body is built here on the state's footing, and the line signs only that. So a
+ * PC cannot be made to sign a `join` that somebody else composed, with a key of theirs in it. As every entry a
+ * member writes, it is signed only when it counts on that state (`not_written` otherwise: the invite is no longer
+ * open, or the relay key is taken). `sealed` is the PC's names under sealEpoch's epoch, or null. Refuses
+ * `entry_invalid` for a line that names no list or another list than the state's, and for values out of their
+ * form.
  */
 export async function joinEntry(
-  line: Pick<JoinLine, "key" | "list" | "signJoin">, pc: JoiningPc, place: Pick<EntryPlace, "issued_at" | "prev" | "seq">, sealed: Sealed | null,
-): Promise<Entry> {
+  line: Pick<JoinLine, "key" | "list" | "signJoin">, pc: JoiningPc, state: ListState, issued_at: number, sealed: Sealed | null,
+): Promise<WrittenEntry> {
   const { key: invite, list } = line;
   if (list === null) throw new ListKindError("This invite names no list, so there is no list to join by an entry");
+  if (list !== state.list) throw new ListKindError("This invite is for another list than the one that was read");
+  if (state.needs_replay !== undefined) throw new ListWriteError(null, "A member that is stopped for a replay writes nothing");
   const { key, privateKey, enc, endpoint } = pc;
   const card = await signCard({ key, enc, list, endpoint, invite }, privateKey);
-  const { issued_at, prev, seq } = place;
-  return await line.signJoin(kindBody({ issued_at, list, prev, seq, signer: invite }, { kind: "join", endpoint, pc: key, enc, card, sealed }));
+  const body = kindBody({ issued_at, list, prev: state.footing.hash, seq: state.footing.seq + 1, signer: invite }, { kind: "join", endpoint, pc: key, enc, card, sealed });
+  const after = (await counted(state, body)).state;
+  const entry = await line.signJoin(body);
+  return { entry, text: entryToText(entry), state: after };
 }
 
 /**

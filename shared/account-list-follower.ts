@@ -22,11 +22,14 @@ import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { ListEntryError, entryFromText, entryHash, isListHash, readBody, verifySignature, type ListRefusalCode } from "./account-list-entry.ts";
 import { signerPower, type ListPlace } from "./account-list-signers.ts";
 import {
-  LIST_LEVEL, admitsDevice, isListKey, listView, readKind, readListState, replayList, shownList,
+  LIST_LEVEL, admitsDevice, isListKey, listClock, listView, readListState, replayList, shownList,
   type DeviceView, type ListCopy, type ListRole, type ListState, type PcView,
 } from "./account-list.ts";
 
-/** The save's version: a build reads only its own. */
+/**
+ * The save's version: a build reads only its own. The state in a save is the kinds' own (ListState): a build
+ * that changes what a state holds writes a later version, and reads the earlier one by replaying its entries.
+ */
 export const FOLLOWER_SAVE_VERSION = 1;
 /** A save's sum is SHA-256 over these bytes and the save's text without the sum. */
 export const LIST_SAVE_PREFIX = "ovis-list-save/1";
@@ -356,11 +359,13 @@ function changesBetween(before: ListState | null, after: ListState | null): List
 }
 
 /**
- * The hour a member judges by: its own clock, and never less than the latest hour that clock showed before
- * (`seen_at`, saved with the copy). So a clock that was set back lets no device in past its `until`.
+ * The hour a member judges by, the kinds' listClock: its own clock, never less than the latest hour that clock
+ * showed before (`seen_at`, saved with the copy), and never less than the list's own time, the latest hour a
+ * signer of power `full` wrote into an entry that counted. So a clock that was set back lets no device in past
+ * its `until`.
  */
 export function memberClock(copy: FollowerCopy, now: number): number {
-  return Math.max(now, copy.seen_at ?? 0);
+  return copy.state === null ? Math.max(now, copy.seen_at ?? 0) : listClock(copy.state, now, copy.seen_at);
 }
 
 /** The copy with the hour its clock shows now, when that is later than any it showed before. */
@@ -494,8 +499,7 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
       }
       return result(v > LIST_LEVEL ? "needs_newer_client" : "not_my_list");
     }
-    const kind = readKind(body);
-    if (kind === null || kind.kind !== "genesis" || kind.account !== copy.account) return result("not_my_list");
+    if (started.member.state.account !== copy.account) return result("not_my_list");
     if (copy.pin.how === "genesis" && body.signer !== copy.me.key) return result("not_my_list");
     if (copy.pin.how === "migrated" && !copy.pin.admitted.includes(body.signer)) return result("not_my_list");
     member = started.member;
@@ -870,8 +874,7 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
   if (!moved && (member.entries.length !== texts.length || member.entries.some((entry, at) => entry !== texts[at]))) return no("broken");
   // A build of the level that saved holds exactly the saved state. Another level's replay is its own.
   if (told.level === LIST_LEVEL && !moved && canonical(member.state) !== canonical(savedState)) return no("broken");
-  const kind = readKind(body);
-  if (kind === null || kind.kind !== "genesis" || kind.account !== account) return no("broken");
+  if (member.state.account !== account) return no("broken");
   if ((pin.how === "genesis" && body.signer !== self.key) || (pin.how === "migrated" && !pin.admitted.includes(body.signer))) return no("broken");
   const alarm = readAlarm(savedAlarm, member.state);
   if (alarm === undefined) return no("broken");
