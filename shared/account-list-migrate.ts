@@ -40,8 +40,15 @@ export const MIGRATION_RUNNING_SECONDS = 21600;
 export const MIGRATION_KNOWN_SECONDS = 604800;
 /** The most devices and PCs one list carries in: with entry 0, the hand-over and the `epoch` entry they are the one request of its birth. */
 export const MIGRATION_CARRIED_MAX = 64;
+/**
+ * How long a device waits for every PC it knows to answer before it goes by those that did: three days, in
+ * seconds. A PC that is asleep, or whose session the network drops, is no yes meanwhile.
+ */
+export const MIGRATION_ANSWER_SECONDS = 259200;
 /** A naming's signature is over these bytes and the naming's fields. */
 export const LIST_NAMING_PREFIX = "ovis-list-name/1";
+/** A vouch's signature is over these bytes and the vouch's fields. */
+export const LIST_VOUCH_PREFIX = "ovis-list-vouch/1";
 
 const ENDPOINT = /^[0-9a-f]{64}$/;
 const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
@@ -100,14 +107,21 @@ export interface PcAnswer {
 }
 
 /**
- * A PC as a device knows it. `paired`: the person paired this device with that relay key at the PC (a QR or
- * digits), which the account service had no part in. `known`: for how many seconds this device has held
- * end-to-end sessions with that relay key, by its own record, or null for a relay key it has only the service's
- * word for. `says`: the PC's answer, or null for a PC that was not reached or runs an Ovis that cannot answer.
+ * What a device did itself for a PC, by its own record: it `paired` with it at the PC (a QR, a code or digits),
+ * it pressed Add for it (`added`), it added it over `ssh`, or it is that PC's own `window`. `none`: it only
+ * opened a PC the account service's directory named.
+ */
+export type PcHow = "paired" | "added" | "ssh" | "window" | "none";
+
+/**
+ * A PC as a device knows it. `how`: what the device did itself for it (PcHow). `known`: for how many seconds
+ * this device has held end-to-end sessions with that relay key, by its own record, or null for a relay key it has
+ * only the service's word for. `says`: the PC's answer in this run of the app, or null for a PC that was not
+ * reached or runs an Ovis that cannot answer; an answer kept from an earlier run is none.
  */
 export interface KnownPc {
   readonly endpoint: string;
-  readonly paired: boolean;
+  readonly how: PcHow;
   readonly known: number | null;
   readonly says: PcAnswer | null;
   readonly names: ListNames | null;
@@ -132,19 +146,22 @@ export interface MigrationKnown {
  *
  * - `self_unlisted`: the account service does not list this device's own key as one a PC lets in.
  * - `self_removed`: the service, this device, or a PC this device knows holds a removal against its own key.
+ * - `pcs_silent`: a PC this device knows by its own record has not answered yet; `wait` is how many seconds it
+ *   still waits for it (MIGRATION_ANSWER_SECONDS from its first try) before it goes by those that answered.
  * - `no_witness`: no PC that this device knows by its own record has answered for this account.
  * - `self_unwitnessed`: a PC it knows, and that answered, does not let this device's own key in.
  * - `too_new`: this device's key, or one it would carry in, has been let in for less than a day by a PC that
- *   answered; `wait` is how many seconds are left.
+ *   answered, or the service lists a device as one no PC lets in yet and a day has not passed since this
+ *   device's first try; `wait` is how many seconds are left.
  */
-export type NoMigration = "self_unlisted" | "self_removed" | "no_witness" | "self_unwitnessed" | "too_new";
+export type NoMigration = "self_unlisted" | "self_removed" | "pcs_silent" | "no_witness" | "self_unwitnessed" | "too_new";
 
 /**
  * Why a device or a PC is not carried in.
  *
  * - `form`: its key is no key of a list, or its relay key no relay key.
  * - `removed`: the account service lists the key as removed, or this device holds a removal against it.
- * - `not_eligible`: the service lists the key as one no PC lets in now.
+ * - `not_eligible`: the service lists the key as one no PC lets in, and still did a day after this device's first try.
  * - `removed_at_pc`: a PC this device knows holds a removal against the key, whatever the service says.
  * - `unwitnessed`: a PC this device knows, and that answered, does not let the key in.
  * - `unknown_pc`: this device does not know the relay key by its own record.
@@ -167,17 +184,35 @@ export type MigrationStart =
   | { readonly start: false; readonly why: NoMigration; readonly wait: number | null };
 
 /**
- * Whether a device knows a relay key as a PC of the person's by its own record: it was paired with it at the PC,
- * or it has held sessions with that relay key for MIGRATION_KNOWN_SECONDS. The account service's directory alone
- * is no such record, and neither is a PC the service named last week that the device opened once.
+ * Whether a device did something itself for a PC (PcHow). Only such a device signs that PC's `pc` entry, which
+ * makes the PC a signer of power `full`, with no question: never because the directory names the PC, however
+ * long, and never because the PC says which list it follows. A PC nobody has such a record of stays an endpoint
+ * with no key until a person compares the number at it.
  */
-export function ownEvidence(pc: Pick<KnownPc, "paired" | "known">): boolean {
-  return pc.paired === true || (isSpan(pc.known) && pc.known >= MIGRATION_KNOWN_SECONDS);
+export function addedItself(pc: Pick<KnownPc, "how">): boolean {
+  return pc.how === "paired" || pc.how === "added" || pc.how === "ssh" || pc.how === "window";
 }
 
-/** The answers of the PCs a device knows by its own record, for this account. */
-function witnessesOf(pcs: readonly KnownPc[], account: string): PcAnswer[] {
-  return pcs.flatMap((pc) => (ENDPOINT.test(pc.endpoint) && pc.says !== null && pc.says.account === account && ownEvidence(pc) ? [pc.says] : []));
+/**
+ * Whether a device knows a relay key as a PC of the person's by its own record: it did something itself for it
+ * (addedItself), or it has held sessions with that relay key for MIGRATION_KNOWN_SECONDS. The account service's
+ * directory alone is no such record. This is what a PC must be to be asked who is let in, and to be carried in
+ * as an endpoint with no key, which signs nothing.
+ */
+export function ownEvidence(pc: Pick<KnownPc, "how" | "known">): boolean {
+  return addedItself(pc) || (isSpan(pc.known) && pc.known >= MIGRATION_KNOWN_SECONDS);
+}
+
+/** The PCs a device knows by its own record that are of this account or have not answered: those that answered for it, and those that are silent. */
+function witnessesOf(pcs: readonly KnownPc[], account: string): { readonly answered: readonly { readonly endpoint: string; readonly says: PcAnswer }[]; readonly silent: readonly string[] } {
+  const answered: { endpoint: string; says: PcAnswer }[] = [];
+  const silent: string[] = [];
+  for (const pc of pcs) {
+    if (!ENDPOINT.test(pc.endpoint) || !ownEvidence(pc)) continue;
+    if (pc.says === null) silent.push(pc.endpoint);
+    else if (pc.says.account === account) answered.push({ endpoint: pc.endpoint, says: pc.says });
+  }
+  return { answered, silent };
 }
 
 /**
@@ -192,16 +227,23 @@ function witnessesOf(pcs: readonly KnownPc[], account: string): PcAnswer[] {
  * start back (`too_new`): the device asks again later, and nobody presses anything. The device's own key is
  * held to the same.
  *
+ * A PC that does not answer is no yes. While a PC the device knows by its own record is silent, the device starts
+ * nothing (`pcs_silent`); MIGRATION_ANSWER_SECONDS after its first try (`tried`, the seconds since then by its own
+ * record) it goes by those that answered, at least one. A device the service lists as one no PC lets in yet (it
+ * signed in this morning) holds the start back for a day from the first try, and is then left out.
+ *
  * A PC is carried in when the device knows it by its own record, answered or not. Devices come first, in the
  * service's order, then PCs. Where an account has more than MIGRATION_CARRIED_MAX, the devices that a PC saw in
  * use last are kept, and the rest is left out (`over_limit`): a sign-in nobody uses any more is the first to go.
  * A device that was left out asks to be let in as a new device does, and a PC that was left out is added by a
  * `pc` entry.
  */
-export function migrationPlan(known: MigrationKnown): MigrationStart {
+export function migrationPlan(known: MigrationKnown, tried: number): MigrationStart {
   const no = (why: NoMigration, wait: number | null = null): MigrationStart => ({ start: false, why, wait });
+  const since = isSpan(tried) ? tried : 0;
   const removed = new Set(known.removed);
-  const witnesses = witnessesOf(known.pcs, known.account);
+  const asked = witnessesOf(known.pcs, known.account);
+  const witnesses = asked.answered.map(({ says }) => says);
   const removedAtPc = (key: string): boolean => witnesses.some((says) => says.removed.includes(key));
   /** How long until every witness has let the key in for a day: null when one of them does not let it in at all. */
   const waitAtAll = (key: string): number | null => {
@@ -212,6 +254,7 @@ export function migrationPlan(known: MigrationKnown): MigrationStart {
   const self = known.devices.find((device) => device.key === known.self);
   if (!isListKey(known.self) || self === undefined || !self.eligible) return no("self_unlisted");
   if (removed.has(known.self) || removedAtPc(known.self)) return no("self_removed");
+  if (asked.silent.length > 0 && since < MIGRATION_ANSWER_SECONDS) return no("pcs_silent", MIGRATION_ANSWER_SECONDS - since);
   if (witnesses.length === 0) return no("no_witness");
   const selfWait = waitAtAll(known.self);
   if (selfWait === null) return no("self_unwitnessed");
@@ -226,6 +269,8 @@ export function migrationPlan(known: MigrationKnown): MigrationStart {
     named.add(key);
     const left = waitAtAll(key);
     const why: LeftOut | null = !isListKey(key) ? "form" : removed.has(key) ? "removed" : !device.eligible ? "not_eligible" : removedAtPc(key) ? "removed_at_pc" : left === null ? "unwitnessed" : null;
+    // In the service's own wait: it may be let in tomorrow. The start waits for it, a day from the first try at most.
+    if (why === "not_eligible" && since < MIGRATION_WITNESS_SECONDS) { wait = Math.max(wait, MIGRATION_WITNESS_SECONDS - since); continue; }
     if (why !== null) { leftDevices.push({ key, why }); continue; }
     wait = Math.max(wait, left ?? 0);
     carried.push({ key, names: device.names });
@@ -477,49 +522,65 @@ export function devicePlace(state: ListState, keys: { readonly signIn: string; r
  *
  * - `stopped`: this build cannot place an entry of the list.
  * - `run_open`: what it was shown is the beginning of a birth, not a list.
+ * - `carried_off_curve`: the list carries in a key that is no point of the curve; no PC follows such a list.
  * - `not_carried`: the list did not carry this device in (devicePlace says where it stands).
- * - `no_answer`: no PC it knows by its own record has answered for this account yet. It waits, and goes on as
+ * - `no_answer`: no PC it knows by its own record has answered for this account. It waits, and goes on as
  *   before the list.
- * - `other_list`: a PC it knows follows another list of the account.
+ * - `other_list`: a PC it knows follows another list of the account (`pcs` names it). The way out is that PC's:
+ *   it is removed from the account, or reset at the PC; the refusal clears when the PC is gone or agrees.
  * - `first_signer_removed`: a PC it knows holds a removal against the key that started the list, or against the
  *   key that one handed its place on to.
  * - `first_signer_unknown`: a PC it knows, that follows no list yet, does not let the key that started the list
  *   in. The device does not follow the list and says so; it asks to be let in as a new device does.
+ * - `pcs_silent`: every PC that answered agrees, and a PC it knows has not answered yet (`pcs`); `wait` is how
+ *   many seconds it still waits for it.
  * - `first_signer_new`: every PC that answered lets that key in, one of them for less than a day; `wait` is how
  *   many seconds are left.
  */
-export type JoinRefusal = "stopped" | "run_open" | "not_carried" | "no_answer" | "other_list" | "first_signer_removed" | "first_signer_unknown" | "first_signer_new";
+export type JoinRefusal =
+  | "stopped" | "run_open" | "carried_off_curve" | "not_carried" | "no_answer" | "other_list" | "first_signer_removed" | "first_signer_unknown" | "pcs_silent" | "first_signer_new";
 
 export type JoinVerdict =
   | { readonly pin: true }
-  /** `waits`: nothing is wrong so far, and the device only asks again. Otherwise it says so, and never names this list to anybody. */
-  | { readonly pin: false; readonly why: JoinRefusal; readonly waits: boolean; readonly wait: number | null };
+  /** `waits`: nothing is wrong so far, and the device only asks again. Otherwise it says so, and never names this list to anybody. `pcs`: the relay keys of the PCs the refusal is about. */
+  | { readonly pin: false; readonly why: JoinRefusal; readonly waits: boolean; readonly wait: number | null; readonly pcs: readonly string[] };
 
 /**
  * Whether a device follows a list that carried it in and that it did not make. The account service's word that
  * this is the account's list is no reason: the device asks the PCs it knows by its own record, each over a
- * session to that PC's own relay key. EVERY one that answers for this account must agree, and at least one must
- * answer: a PC that follows a list agrees when it is this very list, and a PC that follows none agrees when it
- * has let the key that signed entry 0 in for a day, and holds no removal against it. A list the service started
- * with a key of its own, carrying the person's real keys, is so refused by every device it shows it to, though
- * the PCs let every carried key in.
+ * session to that PC's own relay key, in this run of the app. EVERY one that answers for this account must
+ * agree: a PC that follows a list agrees when it is this very list, and a PC that follows none agrees when it
+ * has let the key that signed entry 0 in for a day and holds no removal against it. A PC that does not answer is
+ * no yes: the device waits for every PC it knows, and goes by those that answered (at least one) only
+ * MIGRATION_ANSWER_SECONDS after its first try (`tried`, the seconds since then by its own record).
+ *
+ * A list the service started with a key of its own, carrying the person's real keys, is so refused by every
+ * device it shows it to, though the PCs let every carried key in. A device that follows a list on the word of a
+ * PC that lied still names it to no other PC with effect: each PC asks who started the list itself (pinVerdict).
  */
-export function joinVerdict(state: ListState, keys: { readonly signIn: string; readonly member: string }, pcs: readonly KnownPc[]): JoinVerdict {
-  const no = (why: JoinRefusal, waits = false, wait: number | null = null): JoinVerdict => ({ pin: false, why, waits, wait });
+export function joinVerdict(state: ListState, keys: { readonly signIn: string; readonly member: string }, pcs: readonly KnownPc[], tried: number): JoinVerdict {
+  const no = (why: JoinRefusal, waits = false, wait: number | null = null, about: readonly string[] = []): JoinVerdict => ({ pin: false, why, waits, wait, pcs: [...about] });
   if (state.needs_replay !== undefined) return no("stopped");
   if (state.carrying) return no("run_open", true);
+  if (listView(state).devices.some((row) => row.carried && !isListKey(row.key))) return no("carried_off_curve");
   const place = devicePlace(state, keys);
   const first = firstSigner(state);
   if (place.at !== "carried" || first === null) return no("not_carried");
-  const witnesses = witnessesOf(pcs, state.account);
-  if (witnesses.length === 0) return no("no_answer", true);
-  if (witnesses.some((says) => says.pinned !== null && says.pinned !== state.list)) return no("other_list");
-  const asked = witnesses.filter((says) => says.pinned === null);
+  const since = isSpan(tried) ? tried : 0;
+  const { answered, silent } = witnessesOf(pcs, state.account);
+  const waiting = silent.length > 0 && since < MIGRATION_ANSWER_SECONDS;
+  if (answered.length === 0) return waiting ? no("pcs_silent", true, MIGRATION_ANSWER_SECONDS - since, silent) : no("no_answer", true);
+  const other = answered.filter(({ says }) => says.pinned !== null && says.pinned !== state.list);
+  if (other.length > 0) return no("other_list", false, null, other.map((pc) => pc.endpoint));
+  const asked = answered.filter(({ says }) => says.pinned === null);
   const heir = heirOf(state, first);
-  if (asked.some((says) => says.removed.includes(first) || (heir !== null && says.removed.includes(heir)))) return no("first_signer_removed");
-  const waits = asked.map((says) => waitFor(says.admits, first));
-  if (waits.some((wait) => wait === null)) return no("first_signer_unknown");
-  const wait = Math.max(0, ...waits.map((one) => one ?? 0));
+  const removed = asked.filter(({ says }) => says.removed.includes(first) || (heir !== null && says.removed.includes(heir)));
+  if (removed.length > 0) return no("first_signer_removed", false, null, removed.map((pc) => pc.endpoint));
+  const waits = asked.map((pc) => ({ endpoint: pc.endpoint, wait: waitFor(pc.says.admits, first) }));
+  const unknown = waits.filter((one) => one.wait === null);
+  if (unknown.length > 0) return no("first_signer_unknown", false, null, unknown.map((one) => one.endpoint));
+  if (waiting) return no("pcs_silent", true, MIGRATION_ANSWER_SECONDS - since, silent);
+  const wait = Math.max(0, ...waits.map((one) => one.wait ?? 0));
   return wait > 0 ? no("first_signer_new", true, wait) : { pin: true };
 }
 
@@ -598,17 +659,117 @@ export async function heldNaming(account: string, endpoint: string, session: str
 }
 
 /**
- * What a PC holds of the devices of its account: `rows`, the device keys it lets in to drive on that account
- * now, each with how long it has by its own two clocks (LetIn), read after a whole read of the account service's
- * snapshot since the PC last started, a key of a pairing made at the PC among them; and `removed`, the keys it
- * holds a removal against (a member's signed removal or block that it applied, or a person's Revoke at this PC).
- * A row that is held back, waits or only watches is not among the rows, and neither is a key the PC let in once
- * and has dropped: what it knew of such a key says nothing of who holds it now.
+ * A vouch: the word of a sign-in key that a member key of a list is its own device's. `device` is the key a
+ * sign-in registered with the account service, which signs; `key` is the member key the same device is in the
+ * list by. It is the hand-over said again by the device's present sign-in: a PC that lets `device` in through the
+ * account, and has for a day, so learns that the member `key` is a device it knows, though it never held the
+ * sign-in key that the member key came from. Anyone may carry it, and the account service may keep it: it says
+ * nothing but what its signature says.
+ */
+export interface ListVouch {
+  readonly account: string;
+  readonly list: string;
+  readonly key: string;
+  readonly device: string;
+}
+
+/** A vouch as it travels: its two keys and the signature of `device`, 86 characters of base64url. The account and the list are the reader's own. */
+export interface SignedVouch {
+  readonly key: string;
+  readonly device: string;
+  readonly signature: string;
+}
+
+/** A vouch's bytes: `ovis-list-vouch/1` and the fields `account`, `device`, `key` and `list`, in the entry's field form. Refuses `entry_invalid` for a value out of its form. */
+export function vouchBytes(vouch: ListVouch): Uint8Array {
+  const { account, list, key, device } = vouch;
+  if (typeof account !== "string" || !ACCOUNT.test(account) || typeof list !== "string" || !isListHash(list) || typeof key !== "string" || !isListKey(key) || typeof device !== "string" || !isListKey(device)) {
+    throw new ListKindError("A vouch names an account, a list, a member key and the sign-in key that signs it");
+  }
+  return writeFieldsUnder(LIST_VOUCH_PREFIX, [
+    { name: "account", value: utf8ToBytes(account) }, { name: "device", value: utf8ToBytes(device) }, { name: "key", value: utf8ToBytes(key) }, { name: "list", value: utf8ToBytes(list) },
+  ]);
+}
+
+/**
+ * The vouch of a device for its own member key, signed with its present sign-in key, or null where there is
+ * nothing to vouch for: a device signs one only for the list it follows, and only while its member key is a
+ * device of that list that is in. It signs none for anybody else's key, and none for a list it was only shown.
+ */
+export async function signVouch(state: ListState, device: Pick<MigratingDevice, "signIn" | "member">): Promise<SignedVouch | null> {
+  if (state.needs_replay !== undefined || !deviceIn(state, device.member.key) || device.signIn.key === device.member.key) return null;
+  const bytes = vouchBytes({ account: state.account, list: state.list, key: device.member.key, device: device.signIn.key });
+  const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, device.signIn.privateKey, new Uint8Array(bytes))));
+  return { key: device.member.key, device: device.signIn.key, signature };
+}
+
+/**
+ * The vouches among those handed over that hold for this account and list: each signed by its own `device` key
+ * over its bytes. One that is out of form, of another list or account, or signed by any other key (the member
+ * key itself among them) is dropped: a member key that names a sign-in key proves nothing about that sign-in.
+ * What a PC makes of them is pinVerdict's to say (`vouched`).
+ */
+export async function heldVouches(account: string, list: string, vouches: readonly SignedVouch[]): Promise<{ readonly key: string; readonly device: string }[]> {
+  const held: { key: string; device: string }[] = [];
+  for (const vouch of [...vouches]) {
+    if (typeof vouch !== "object" || vouch === null) continue;
+    const { key, device, signature } = vouch;
+    const signed = typeof signature === "string" && signature.length === CARD_SIGNATURE_CHARS ? canonicalBase64Url(signature) : null;
+    // A key that vouches for itself says nothing; what is no key is refused with the bytes.
+    if (signed === null || key === device) continue;
+    let bytes: Uint8Array;
+    try {
+      bytes = vouchBytes({ account, list, key, device });
+    } catch (error) {
+      if (error instanceof ListKindError) continue;
+      throw error;
+    }
+    if (await verifySignature(bytes, signed, device)) held.push({ key, device });
+  }
+  return held;
+}
+
+/**
+ * What a PC holds of the devices of its account.
+ *
+ * - `rows`: the device keys it lets in to drive THROUGH THE ACCOUNT now, each with how long it has by its own
+ *   two clocks (LetIn), read after a whole read of the account service's snapshot since the PC last started. A
+ *   row that is held back, waits or only watches is not among them, and neither is a key the PC let in once and
+ *   has dropped. **A pairing made at the PC is no such row**: the PC cannot tell an owner's pairing from a
+ *   guest's.
+ * - `removed`: the keys it holds a removal against (a member's signed removal or block that it applied, or a
+ *   person's Revoke at this PC).
+ * - `vouched`: the vouches it was handed that hold (heldVouches).
  */
 export interface PcWitness {
   readonly account: string;
   readonly rows: readonly LetIn[];
   readonly removed: readonly string[];
+  readonly vouched: readonly { readonly key: string; readonly device: string }[];
+}
+
+/** The keys one device has been in a list by: every key that handed its place on down to `key`, `key` itself, and every key it handed its place on to. */
+function deviceKeys(state: ListState, key: string): string[] {
+  const chain = (from: string): string[] => {
+    const keys = [from];
+    for (let heir = heirOf(state, from); heir !== null && !keys.includes(heir); heir = heirOf(state, heir)) keys.push(heir);
+    return keys;
+  };
+  const all = new Set(chain(key));
+  for (const other of Object.keys(state.signers)) {
+    const keys = chain(other);
+    if (keys.includes(key)) for (const one of keys) all.add(one);
+  }
+  return [...all];
+}
+
+/**
+ * Whether a PC keeps a device out by a removal of its own: it holds one against a key the device has been in the
+ * list by, whichever of them the device is in by now. A PC that follows a list asks this of every key the list
+ * would let in, so a removal it holds is not undone by a hand-over.
+ */
+export function heldOut(state: ListState, removed: readonly string[], key: string): boolean {
+  return deviceKeys(state, key).some((one) => removed.includes(one));
 }
 
 /**
@@ -619,15 +780,24 @@ export interface PcWitness {
  * - `other_list`: the log the PC read is not of the list that was named.
  * - `carried_off_curve`: the list carries in a key that is no point of the curve. No honest device signs one
  *   (signMigration), and a member that saves it among its keys cannot read its own copy back.
- * - `removed`: the PC holds a removal against the key of the session, or against the member key that named the
- *   list. What it put out names nothing to it.
- * - `session_unknown`: the session is signed in with a key the PC does not let in to drive.
+ * - `removed`: the PC holds a removal against the key of the session, against a key the naming device has been in
+ *   the list by, or against a sign-in key that vouches for it. What it put out names nothing to it.
+ * - `session_unknown`: the session is signed in with a key the PC does not let in through the account.
  * - `session_new`: the PC lets that key in, for less than a day by its two clocks; `wait` is how many seconds
  *   are left. It says nothing meanwhile.
- * - `not_member`: the list does not hold the member key as a device of power `full` that is in.
+ * - `not_member`: the list does not hold the naming key as a device of power `full` that is in.
+ * - `session_other_device`: the session's key is not the naming device's own: the list does not show it as that
+ *   device's key or as one handed over to it, and it has not vouched for it. A session carries no other device's
+ *   naming.
+ * - `first_signer_removed`, `first_signer_unknown`, `first_signer_new`: the PC holds a removal against the device
+ *   that started the list; or it does not know that device (it lets in none of its keys, and no key it lets in
+ *   vouches for it); or it has for less than a day (`wait`). A list made by a key this PC never let in is never
+ *   followed here, whoever names it.
  * - `run_open`: what the PC read is the beginning of a birth, not a list.
  */
-export type PinRefusal = "stopped" | "other_account" | "other_list" | "carried_off_curve" | "removed" | "session_unknown" | "session_new" | "not_member" | "run_open";
+export type PinRefusal =
+  | "stopped" | "other_account" | "other_list" | "carried_off_curve" | "removed" | "session_unknown" | "session_new" | "not_member" | "session_other_device"
+  | "first_signer_removed" | "first_signer_unknown" | "first_signer_new" | "run_open";
 
 export type PinVerdict =
   /** The PC follows the list: `admitted` is what its pin names (the follower's `migrated` pin), entry 0's signer and every key that was carried in, in ascending order. */
@@ -640,21 +810,24 @@ export type PinVerdict =
  * session. `state` is what the PC replayed of that list's log, read with its own proof, with nothing pinned yet;
  * `naming` is what heldNaming gave for this very session.
  *
- * It follows when the session is signed in with a key the PC itself has let in for a day, by its own two clocks,
- * and the list holds the member key that named it as a device of power `full` that is in. That is all: a PC
- * that was off, or took this release long after its account moved, follows the next time such a device opens
- * it, with nobody at it and no record of what it once let in. The account service names no list to a PC, and
- * neither does a key the PC dropped, since it opens no session.
+ * A device is KNOWN AT THIS PC when a key the PC has let in through the account for a day, by its own two
+ * clocks, is one the list holds that device by, or one the list shows handed over to its key, or one that
+ * vouches for its key. The PC follows only when both hold:
  *
- * The PC asks nothing of the keys the list was born with. Whether they were the account's is asked where it can
- * be: the first device carried a key only when every PC it knows had let it in for a day (migrationPlan), and
- * every device that follows a list it did not make asked its PCs who started it (joinVerdict). Asked again at
- * each PC, it would stop a PC that was off whenever a carried device's sign-in has changed since, and keep out
- * nothing that the service could not put into that PC's own rows the same day.
+ * 1. the session is signed in with such a key of the naming device itself, and the list holds the naming key as
+ *    a device of power `full` that is in. A session carries no other device's naming;
+ * 2. the device that started the list (entry 0's signer) is known at this PC too.
  *
- * A PC that does not follow goes on as before the list, and nothing here is one-way: it is asked again at the
- * next naming. Only the pin that follows a yes is. A device this PC holds a removal against stays out at this
- * PC after the pin too (a refusal of its own); that is no reason not to follow.
+ * So a list made by a key this PC never let in is never followed here, whoever names it: not on the word of a
+ * device that was fooled into it, and not on the word of the account service. And a PC that was off, or took
+ * this release long after its account moved, follows the next time a device it knows opens it, with nobody at it
+ * and no record of what it once let in: devices whose sign-in has changed since vouch for their keys.
+ *
+ * The PC asks nothing of the other keys the list was born with: that was asked by the first device of the PCs it
+ * knows (migrationPlan). A removal this PC holds against a device that is neither the naming one nor the one
+ * that started the list is no reason not to follow: that device stays out at this PC after the pin (heldOut).
+ * Nothing here is one-way: a PC that does not follow goes on as before the list and is asked again at the next
+ * naming. Only the pin that follows a yes is.
  */
 export function pinVerdict(state: ListState, naming: Naming, witness: PcWitness): PinVerdict {
   const no = (why: PinRefusal, waits = false, wait: number | null = null): PinVerdict => ({ pin: false, why, waits, wait });
@@ -664,11 +837,22 @@ export function pinVerdict(state: ListState, naming: Naming, witness: PcWitness)
   if (first === null || naming.list !== state.list) return no("other_list");
   const carried = listView(state).devices.filter((row) => row.carried).map((row) => row.key);
   if (carried.some((key) => !isListKey(key))) return no("carried_off_curve");
-  if (witness.removed.includes(naming.session) || witness.removed.includes(naming.key)) return no("removed");
+  const removed = (key: string): boolean => witness.removed.includes(key);
+  /** The sign-in keys that vouch for one of these keys. */
+  const vouchers = (keys: readonly string[]): string[] => witness.vouched.filter((vouch) => keys.includes(vouch.key)).map((vouch) => vouch.device);
+  const own = deviceKeys(state, naming.key);
+  if (removed(naming.session) || own.some(removed) || vouchers(own).some(removed)) return no("removed");
   const wait = waitFor(witness.rows, naming.session);
   if (wait === null) return no("session_unknown");
   if (wait > 0) return no("session_new", true, wait);
   if (!deviceIn(state, naming.key) || rowOf(state.signers, naming.key)?.power !== "full") return no("not_member");
+  if (!own.includes(naming.session) && !vouchers(own).includes(naming.session)) return no("session_other_device");
+  const starter = deviceKeys(state, first);
+  const starters = [...starter, ...vouchers(starter)];
+  if (starters.some(removed)) return no("first_signer_removed");
+  const waits = starters.flatMap((key) => { const one = waitFor(witness.rows, key); return one === null ? [] : [one]; });
+  if (waits.length === 0) return no("first_signer_unknown");
+  if (Math.min(...waits) > 0) return no("first_signer_new", true, Math.min(...waits));
   if (state.carrying) return no("run_open", true);
   return { pin: true, admitted: [...new Set([first, ...carried])].sort() };
 }

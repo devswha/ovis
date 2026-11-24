@@ -1,0 +1,131 @@
+{
+  "name": "device-pcs-silent",
+  "keys": {
+    "TEST-ONLY-phone-sign-in": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgf7qZC1PebJ6u6QrpEIUDCX7FZeC1kAMhgDhrsC2HCkahRANCAATu96DWMoI-hc5KmMnacH3uOqkxa6GD6DNtpFChWRFCqAyIeMn1q3TtsRVV6BZnBw0M3BmFOi0OgZ-C1BYmwJqf",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7veg1jKCPoXOSpjJ2nB97jqpMWuhg-gzbaRQoVkRQqgMiHjJ9at07bEVVegWZwcNDNwZhTotDoGfgtQWJsCanw"
+    },
+    "TEST-ONLY-phone-member": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgcmGkDqdvRcpoFOe3ZhDLsOkWCWW1ANiSUro_WeRX7yqhRANCAARxNp2VkkBWk01WXPBN7XRsKJ5Q2ntv1bQuvSWXpC5MGjvrYYzwZJT0HULmQe-zZo06VI-pzGAs8FzhSszyzHHZ",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEcTadlZJAVpNNVlzwTe10bCieUNp7b9W0Lr0ll6QuTBo762GM8GSU9B1C5kHvs2aNOlSPqcxgLPBc4UrM8sxx2Q"
+    },
+    "TEST-ONLY-phone-enc": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgFXWOaBaLm98-YQZowhN3sGOMXkx14CK0IKfaeYn9YhShRANCAATsP0sNFBLzMxNGNWDTcMO6vxVL8GzlXvGnzTWXIos4nIaXc50_DGbN-Iydi_IfK9eMMkZvoMHA0z3nqGAl6aJM",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7D9LDRQS8zMTRjVg03DDur8VS_Bs5V7xp801lyKLOJyGl3OdPwxmzfiMnYvyHyvXjDJGb6DBwNM956hgJemiTA"
+    },
+    "TEST-ONLY-tablet-sign-in": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgxoG8HInmDr_JbsvtE1u7Kr3hnJ3Ma0cpa0chxd-zIb6hRANCAATAQ8N71eJsrd4Ht_TO1ZcAfIF3R3ulgUBHmIxoVb_cIiTtqcv9CZZY7G_8q0BE-2NT3A0ugJYMDnKzBGMRUNMS",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwEPDe9XibK3eB7f0ztWXAHyBd0d7pYFAR5iMaFW_3CIk7anL_QmWWOxv_KtARPtjU9wNLoCWDA5yswRjEVDTEg"
+    },
+    "TEST-ONLY-tablet-member": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgVrlcIzH5xY3komwuDNv0gvk-wYi9V0H0Lp1X4xTL3xahRANCAASMsvaw4RUKJZr6kVAJv4UsaZV8w74jVmKnDe354GTANi4N3pmDXlWOpnow899dUmeRxziuMyX6AuUIVe_IYajS",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjLL2sOEVCiWa-pFQCb-FLGmVfMO-I1Zipw3t-eBkwDYuDd6Zg15VjqZ6MPPfXVJnkcc4rjMl-gLlCFXvyGGo0g"
+    },
+    "TEST-ONLY-tablet-enc": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg30sXIog8ABu5OK5o2YbTsEIyVY9mzxVZkdkCqas3pnOhRANCAASZC9gMQ52ss-CGcM_r7BLPZI6vkhfvwMYsyS0qouqomTuaXLE4ujTQzjkfjMJzGE4fmIDSzxOjmfDuyUpzS8DP",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmQvYDEOdrLPghnDP6-wSz2SOr5IX78DGLMktKqLqqJk7mlyxOLo00M45H4zCcxhOH5iA0s8To5nw7slKc0vAzw"
+    },
+    "TEST-ONLY-laptop-sign-in": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLJUhJ5WaW-OQVS4cczCmRczYXYvdKutgV1scImkfmLyhRANCAAQZdkmG1wKIyal6xVN8LPzpYVn8DBlpWaDdB-Dn_2B9ijswP7Umo_3xILbrpKwxnUANTtoJslxzUGK50yvttcKk",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGXZJhtcCiMmpesVTfCz86WFZ_AwZaVmg3Qfg5_9gfYo7MD-1JqP98SC266SsMZ1ADU7aCbJcc1BiudMr7bXCpA"
+    },
+    "TEST-ONLY-laptop-member": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgxLFoD4dNlTyXgCuaQRE44v-jXx6ZtCkT6nGpbBdYcHKhRANCAASM1fxvbwZY_t0tnTx6a-Ki1-GyoUpYfUqbtkYZ0oRAW9wmTtxMu_qb75vRFDcPjAGSeiPKk91QdiKtiZ8-4m1t",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjNX8b28GWP7dLZ08emviotfhsqFKWH1Km7ZGGdKEQFvcJk7cTLv6m--b0RQ3D4wBknojypPdUHYirYmfPuJtbQ"
+    },
+    "TEST-ONLY-laptop-enc": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBoWM8czq9ioOCjdhb-i90cN32SiL0Fwh7U3_bARWhc2hRANCAASb9yGyDTyqKrAUBDQFLgOMsVoF7p-m39lS1nHEEuVxEz_DfTsIJ9B9IYsDu6TnV9Hw4AyBMU7Grh7YfUL9ezPE",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEm_chsg08qiqwFAQ0BS4DjLFaBe6fpt_ZUtZxxBLlcRM_w307CCfQfSGLA7uk51fR8OAMgTFOxq4e2H1C_XszxA"
+    },
+    "TEST-ONLY-stranger-sign-in": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQglXTO1p8oZJVmIMmtxl5WQ7JKVCftnUqJYvyB6ig4Zn2hRANCAASEiMvFu6eiSMU2MH3DSvRbRstglbbuPhsZXgtDKIorcvcUR-nbPQ58n27UhYehVH_CGe5KKnDPcHM2gipCAxYN",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhIjLxbunokjFNjB9w0r0W0bLYJW27j4bGV4LQyiKK3L3FEfp2z0OfJ9u1IWHoVR_whnuSipwz3BzNoIqQgMWDQ"
+    },
+    "TEST-ONLY-stranger-member": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgSAPv1Wk_arQcL84a8ZPszLNhGllxdc45hif7utDW_TShRANCAATcKMIYIpUGhI9oFAH77g2KtAe-6k2eUh-BWr8wF0GPqGhdOU-28odpupYk8satjnlmC0_lAphVWYhJyId5RQMD",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3CjCGCKVBoSPaBQB--4NirQHvupNnlIfgVq_MBdBj6hoXTlPtvKHabqWJPLGrY55ZgtP5QKYVVmISciHeUUDAw"
+    },
+    "TEST-ONLY-stranger-enc": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQguwnTGP2CAl11_E9Sz5_AQPOYz_7srqV43kK2YqI3gt2hRANCAATwEWFPzAx01IRDzgmzYm_VGTm9-QzITLrQfj8-ixzWkLjnzQ9TXaV-mD3GeOZ6_UaIsMibc4YDcDR7F6Ikm34E",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8BFhT8wMdNSEQ84Js2Jv1Rk5vfkMyEy60H4_Posc1pC4580PU12lfpg9xnjmev1GiLDIm3OGA3A0exeiJJt-BA"
+    },
+    "TEST-ONLY-phone-sign-in-2": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgO1dUEW8bW35vRFR7VznIYs_AXbefqH1XnyDNKP3WqGGhRANCAASCUJQOykfgOefV1EOmGvNxRGPH_HmSvOKLDiObqAfrke2Ne6KMaf6HhrRZKwHNNGZNAGRlGJMM_20CoZ9Z0acq",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEglCUDspH4Dnn1dRDphrzcURjx_x5krziiw4jm6gH65HtjXuijGn-h4a0WSsBzTRmTQBkZRiTDP9tAqGfWdGnKg"
+    },
+    "TEST-ONLY-tablet-sign-in-2": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgMpy-mT3ZfGd2MeIkx_qzxfWQgS4TZWqrudU6_Sr28CehRANCAASfZ0fgPF5tCPQkselCiZTPdiP01_AX2Z-gDjgTov3mHIih49JPO8bI1UvVYJQu0CugogHVwxYx_tAjWlqdfyny",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEn2dH4DxebQj0JLHpQomUz3Yj9NfwF9mfoA44E6L95hyIoePSTzvGyNVL1WCULtAroKIB1cMWMf7QI1panX8p8g"
+    }
+  },
+  "device": {
+    "known": {
+      "account": "TEST-ONLY-account",
+      "self": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7veg1jKCPoXOSpjJ2nB97jqpMWuhg-gzbaRQoVkRQqgMiHjJ9at07bEVVegWZwcNDNwZhTotDoGfgtQWJsCanw",
+      "member": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEcTadlZJAVpNNVlzwTe10bCieUNp7b9W0Lr0ll6QuTBo762GM8GSU9B1C5kHvs2aNOlSPqcxgLPBc4UrM8sxx2Q",
+      "devices": [
+        {
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7veg1jKCPoXOSpjJ2nB97jqpMWuhg-gzbaRQoVkRQqgMiHjJ9at07bEVVegWZwcNDNwZhTotDoGfgtQWJsCanw",
+          "eligible": true,
+          "names": {
+            "label": "Phone",
+            "os": "ios"
+          }
+        },
+        {
+          "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhIjLxbunokjFNjB9w0r0W0bLYJW27j4bGV4LQyiKK3L3FEfp2z0OfJ9u1IWHoVR_whnuSipwz3BzNoIqQgMWDQ",
+          "eligible": true,
+          "names": {
+            "label": "Stranger",
+            "os": "ios"
+          }
+        }
+      ],
+      "removed": [],
+      "pcs": [
+        {
+          "endpoint": "0101010101010101010101010101010101010101010101010101010101010101",
+          "how": "none",
+          "known": 2592000,
+          "says": {
+            "account": "TEST-ONLY-account",
+            "pinned": null,
+            "admits": [
+              {
+                "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7veg1jKCPoXOSpjJ2nB97jqpMWuhg-gzbaRQoVkRQqgMiHjJ9at07bEVVegWZwcNDNwZhTotDoGfgtQWJsCanw",
+                "wall": 2592000,
+                "ran": 2592000
+              },
+              {
+                "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhIjLxbunokjFNjB9w0r0W0bLYJW27j4bGV4LQyiKK3L3FEfp2z0OfJ9u1IWHoVR_whnuSipwz3BzNoIqQgMWDQ",
+                "wall": 2592000,
+                "ran": 2592000
+              }
+            ],
+            "removed": []
+          },
+          "names": {
+            "label": "PC 1",
+            "os": "linux"
+          }
+        },
+        {
+          "endpoint": "0202020202020202020202020202020202020202020202020202020202020202",
+          "how": "none",
+          "known": 2592000,
+          "says": null,
+          "names": {
+            "label": "PC 2",
+            "os": "linux"
+          }
+        }
+      ]
+    },
+    "tried": 3600,
+    "expect": {
+      "start": false,
+      "why": "pcs_silent",
+      "wait": 255600
+    }
+  }
+}
