@@ -661,6 +661,8 @@ export class RelaySession {
 
   /** The key of a session let in by the list over a pairing of this PC's own (DeviceStore.matchListKey): the list's role for it is the session's. */
   private listKey: string | null = null;
+  /** The row of another PC of the account this session is for, on a pinned PC: the list is asked about the relay key that row records. */
+  private listPcRow: string | null = null;
   /** The id such a session signed in under, which its AUTH_OK names: the account id of its key, not the pairing row's. */
   private signedInAs: string | null = null;
 
@@ -671,6 +673,10 @@ export class RelaySession {
   private rowNow(id: string): ReturnType<RequestServices["devices"]["sessionRow"]> {
     const devices = this.options.services.devices;
     const row = devices.sessionRow(id);
+    if (row !== null && this.listPcRow !== null) {
+      const role = devices.vouchedPcRole(this.listPcRow);
+      return role == null ? null : { ...row, role };
+    }
     if (row === null || this.listKey === null) return row;
     const role = devices.listRoleOf(this.listKey);
     return role === null || row.key !== this.listKey ? null : { ...row, role };
@@ -722,7 +728,7 @@ export class RelaySession {
       }
     }
     let device: DeviceMatch | undefined;
-    try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }) }, undefined, this.admitNewDevice)?.device; }
+    try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }), ...(this.intent === "vouched" && this.vouchedEndpoint !== null ? { vouchedPc: this.vouchedEndpoint } : {}) }, undefined, this.admitNewDevice)?.device; }
     catch (error) {
       if (error instanceof PairingRateLimitedError) { this.close("auth_failed"); return; }
       throw error;
@@ -888,15 +894,25 @@ export class RelaySession {
    * sent and never signed with opens nothing under that id, so the row a comparison just made is recorded and the
    * device gets in by a sign-in. From then on the session is the list's (listKey): it ends when the list lets the key
    * in no more. A row under an id of its own is not asked about here: that pairing is the PC's own business.
-   * The one exception is another PC of the account that was just compared (intent `vouched`): the list answered for
-   * its relay key in that same turn (vouchedInList), and it only watches.
+   * Another PC of the account (a row that records the relay key its join proved) is the list's to answer for in its
+   * own way: it is let in, to watch, while the list holds that relay key as a PC that is in, at its comparison and at
+   * every later sign-in, and its session ends when the list removes that PC.
+   * One session is not asked here, because the list answered for it in the same turn: the session of a join into the
+   * list (`listPlace`), which carries the place of the device's own entry and serves nothing else (every call on it
+   * answers `sign_in_required`): the device signs in with its list key afterwards.
    */
   private enter(device: DeviceMatch | null | undefined): void {
     const devices = this.options.services.devices;
     if (!this.mux.active) return;
     if (!device) { this.close("auth_failed"); return; }
-    const governed = devices.listGoverned(device.id, this.options.serverId);
-    if (governed !== null && !(this.intent === "vouched" && !this.keyProven)) {
+    const pcRole = devices.vouchedPcRole(device.id);
+    if (pcRole !== undefined) {
+      if (pcRole === null) { this.close("auth_failed"); return; }
+      this.listPcRow = device.id;
+      device = { ...device, role: pcRole };
+    }
+    const governed = pcRole !== undefined ? null : devices.listGoverned(device.id, this.options.serverId);
+    if (governed !== null && this.listPlace === undefined) {
       const role = this.keyProven ? devices.listRoleOf(governed) : null;
       if (role === null) {
         // a client that knows of lists and came without its key's proof is told to sign in with its list key
@@ -915,8 +931,8 @@ export class RelaySession {
     // a link moves the row to another key: a session signed in with the one it had ends, all but the linking one
     const unlinked = devices.onLinked(device.id, (sessionId) => { if (sessionId !== this.sessionId) this.close("auth_changed"); });
     // a session the list let in ends when the list lets its key in no more, and changes with the role the list gives it
-    const unlisted = this.listKey === null ? () => {} : devices.onListedChange(() => {
-      const role = this.listKey === null ? null : devices.listRoleOf(this.listKey);
+    const unlisted = this.listKey === null && this.listPcRow === null ? () => {} : devices.onListedChange(() => {
+      const role = this.listPcRow !== null ? devices.vouchedPcRole(this.listPcRow) ?? null : this.listKey === null ? null : devices.listRoleOf(this.listKey);
       if (role === null) this.close("auth_revoked");
       else if (this.device && role !== this.device.role) this.close("auth_changed");
     });
