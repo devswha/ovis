@@ -11,7 +11,7 @@ import { newRecordId, pcAddSigningBytes, registerSigningBytes, type AccountRecor
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
-import { genesisBody, hintOf, nowOf, pageOf, wrapsOf, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
+import { claimsOf, genesisBody, hintOf, nowOf, pageOf, wrapsOf, type ListClaim, type PlacedWrap, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
 import type { PcProofFields } from "./pcProof.ts";
 import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
@@ -123,9 +123,12 @@ export const PC_ADD_FRESH_MS = 9 * 60_000;
 /** `key_proof` of an add: a challenge of POST /v1/pcs/challenge and this sign-in's key's signature (raw r then s, base64url). */
 interface PcAddProof { readonly challenge_id: string; readonly signature: string }
 
-/** `retryAfterMs`: the wait the answer's `retry-after` named (a 429's), or null without one. */
+/**
+ * `retryAfterMs`: the wait the answer's `retry-after` named (a 429's), or null without one. `reason`: the one word the
+ * refusal adds to its code, where it has one (an entry that was refused says why), never its message.
+ */
 export class AccountServiceError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null) {
+  constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null, readonly reason: string | null = null) {
     super(message);
     this.name = "AccountServiceError";
   }
@@ -235,14 +238,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** The service's error code only: its message is the service's text, which could echo a token, so it is never kept. */
 export async function failure(response: Response): Promise<AccountServiceError> {
   let code = "http_error";
+  let reason: string | null = null;
   try {
     const body: unknown = await response.json();
     const error = isRecord(body) && isRecord(body.error) ? body.error : null;
     if (typeof error?.code === "string" && /^[a-z_]{1,40}$/.test(error.code)) code = error.code;
+    if (typeof error?.reason === "string" && /^[a-z_]{1,40}$/.test(error.reason)) reason = error.reason;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
-  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")));
+  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")), reason);
 }
 
 /** A `retry-after` in delay-seconds or as an HTTP date, in ms from now; null without one either reads. */
@@ -818,6 +823,43 @@ export class AccountService {
     const wraps = wrapsOf(await this.listCall("GET", `/v2/lists/${list}/wraps?member=${encodeURIComponent(member)}`, undefined, signal));
     if (wraps === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no wraps");
     return wraps;
+  }
+
+  /**
+   * Says that `card.key` is this sign-in's own member key, with the card it made for `list` (`POST
+   * /v2/lists/{list}/claims`): the account service places a `device` entry for a key only while such a claim is at
+   * most ten minutes old, so a member's signature alone lets nobody in. From an own sign-in made in the last ten
+   * minutes, or older with a proof by its registered key (purpose `list-claim`, over the list id and the claimed key).
+   * Claimed again, it is renewed.
+   */
+  async claimListKey(list: string, card: { readonly key: string; readonly enc: string; readonly card: string }, signal?: AbortSignal): Promise<void> {
+    const proved = (): Promise<PcAddProof | null> => this.addProof("list-claim", list, async () => card.key, signal);
+    const send = (proof: PcAddProof | null) => this.proving(proof, () => this.listCall("POST", `/v2/lists/${list}/claims`, proof === null ? card : { ...card, key_proof: proof }, signal));
+    const proof = await proved();
+    try { await send(proof); }
+    catch (error) {
+      // the proof's challenge was spent or ran out on the way: one more, made anew
+      if (proof === null || !(error instanceof AccountServiceError && error.status === 400 && error.code === "challenge_invalid")) throw error;
+      await send(await proved());
+    }
+  }
+
+  /** The claims of the list that still stand (`GET /v2/lists/{list}/claims`): where a device that lets another in finds its card. */
+  async listClaims(list: string, signal?: AbortSignal): Promise<ListClaim[]> {
+    const claims = claimsOf(await this.listCall("GET", `/v2/lists/${list}/claims`, undefined, signal));
+    if (claims === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no claims");
+    return claims;
+  }
+
+  /**
+   * Places entries at the list's head, whole or not at all, with the wraps that go with them (`POST
+   * /v2/lists/{list}/entries`). The answer says nothing a member relies on: its own entry is in its copy only when
+   * the log shows it. A refusal is thrown as the account service's: `409 head_moved` (read and sign again),
+   * `400 entry_refused` with its `reason`, `403 not_claimed`, `429 entry_budget`, `503 list_rebuilding` (the same
+   * request again), `503 list_stopped`.
+   */
+  async placeEntries(list: string, entries: readonly string[], wraps: readonly PlacedWrap[], signal?: AbortSignal): Promise<void> {
+    await this.listCall("POST", `/v2/lists/${list}/entries`, wraps.length === 0 ? { entries } : { entries, wraps }, signal);
   }
 
   /**

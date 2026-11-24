@@ -1,14 +1,19 @@
 /**
  * An approval tells this PC first, which lets the device in here; then this device signs the `add`
  * for the account's other PCs and leaves the PCs it checked itself with this PC as the new device's
- * introduction (lib/account/join.ts).
+ * introduction (lib/account/join.ts). For an account whose signed list this device is in, it signs the
+ * device into the list before that; where the list does not take it, the card says so and offers to try again.
  */
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { accountLabel, type AccountAsker } from "../../shared/account-asker.ts";
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
-import { AdmissionChangedError, admitToAccount, approveJoin, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
+import { AdmissionChangedError, admitWithList, approveJoin, ListAllowError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
+import type { AllowRefusal } from "../lib/account/listAllow.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { accountServiceOf, AccountService, type Admission } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { decideRelayPairing } from "../lib/api.ts";
@@ -31,6 +36,47 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
   return <DeviceApprovals pairings={pairings} />;
 }
 
+/** A device this PC let in that the account's signed list did not take: who it is, why, and what trying again does. */
+interface Stalled { readonly device: string; readonly pc: string; readonly why: AllowRefusal; readonly retry: () => Promise<void> }
+
+/** What the person is told, by why the list did not take the device. */
+function stalledReason(t: ReturnType<typeof useT>, why: AllowRefusal): string {
+  switch (why) {
+    case "not_claimed": return t("Update Ovis on that device and sign in there, then try again.");
+    case "removed": return t("That device was removed from your account. Sign in again on it first.");
+    case "stopped": return t("The account service cannot change the list right now.");
+    case "budget": return t("Too many devices were added just now. Try again in a few minutes.");
+    default: return t("It could not be added to your account. Try again.");
+  }
+}
+
+/** The card for a device that was let in at this PC and not into the account: Try again signs it into the list again; Close leaves it paired with this PC alone. */
+export function ListAllowNotice({ stalled, onClose }: { stalled: Stalled; onClose: () => void }) {
+  const t = useT();
+  const [busy, setBusy] = useState(false);
+  // Back closes it, as Close does, unless a try is under way
+  usePhoneSheetBack(() => { if (busy) return false; onClose(); });
+  const retry = async (): Promise<void> => {
+    setBusy(true);
+    // what the list answers is drawn by whoever owns this card; anything else leaves the card as it is, to try again
+    try { await stalled.retry(); }
+    catch (error) { console.warn("Ovis: the device was not added to the account", error instanceof Error ? error.name : error); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="modal-scrim">
+      <div className="modal account-approval" role="alertdialog" aria-modal="true" aria-label={t("{device} was added to {pc} only", { device: stalled.device, pc: stalled.pc })} data-testid="list-allow-notice" data-why={stalled.why}>
+        <h2 className="account-approval-title">{t("{device} was added to {pc} only", { device: stalled.device, pc: stalled.pc })}</h2>
+        <p className="account-approval-error" role="alert">{stalledReason(t, stalled.why)}</p>
+        <div className="account-approval-actions">
+          <button type="button" className="btn" disabled={busy} onClick={onClose}>{t("Close")}</button>
+          {stalled.why !== "removed" && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void retry()}>{t("Try again")}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest[] }) {
   const t = useT();
   const request = pairings[0];
@@ -41,6 +87,8 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
   const [asker, setAsker] = useState<{ id: string; asker: AccountAsker; admission: Admission | null } | null>(null);
   // read again when the device asked anew with other details after the card was drawn
   const [reads, setReads] = useState(0);
+  // a device this PC let in that the account's list did not take: shown after its request is gone from this PC
+  const [stalled, setStalled] = useState<Stalled | null>(null);
   const checked = restsOnAdmission(request);
   const joiningId = checked ? request!.id : null;
   const joiningKey = request?.key;
@@ -62,8 +110,10 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
     return () => { live = false; };
   }, [joiningId, joiningKey, serverId, reads]);
 
+  const asking = request !== undefined;
   useEffect(() => {
-    if (serverId === null) return;
+    // only while a request is on screen: this card is mounted with none, too
+    if (serverId === null || !asking) return;
     let live = true;
     void (async () => {
       const paired = await indexedDeviceStore.list();
@@ -77,8 +127,9 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
       if (live) setWhere({ pcName: here?.name ?? serverId.slice(0, 8), pcCount: Math.max(count, 1) });
     })();
     return () => { live = false; };
-  }, [serverId]);
+  }, [serverId, asking]);
 
+  if (stalled !== null && request === undefined) return createPortal(<ListAllowNotice stalled={stalled} onClose={() => setStalled(null)} />, document.body);
   if (request === undefined || serverId === null) return null;
 
   const decide = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
@@ -95,11 +146,27 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
       await approveJoin({
         request, digits, through: serverId, service, shown,
         decide: (answer, picked) => decideRelayPairing(request.id, answer, picked),
-        admit: async (admission) => admitToAccount({
-          fetch: (path, init) => transport.fetch(path, init), service, key: await indexedAccountStore.key(), account: session!.account,
-          joining: { key: request.key, label: admission.label }, through: serverId, paired: await indexedDeviceStore.list(),
-          directory: (await service.listPcs()).map((pc) => pc.server_id), store: indexedAccountStore,
-        }),
+        admit: async (admission) => {
+          const admitted = async (): Promise<void> => {
+            await admitWithList(pageAccountList(), {
+              fetch: (path, init) => transport.fetch(path, init), service, key: await indexedAccountStore.key(), account: session!.account,
+              joining: { key: request.key, label: admission.label, os: admission.os }, through: serverId, paired: await indexedDeviceStore.list(),
+              directory: (await service.listPcs()).map((pc) => pc.server_id), store: indexedAccountStore,
+            });
+          };
+          // This PC let the device in already, and its request is gone from here: where the account's list did not take
+          // it, that is said on a card of its own, which can try again.
+          const attempt = async (): Promise<void> => {
+            try {
+              await admitted();
+              setStalled(null);
+            } catch (error) {
+              if (!(error instanceof ListAllowError)) throw error;
+              setStalled({ device: admission.label, pc: where.pcName, why: error.why, retry: attempt });
+            }
+          };
+          await attempt();
+        },
       });
     } catch (error) {
       if (error instanceof UnverifiedJoinError) throw new Error(t("Could not verify this device. It was declined: approve only a device you are signing in yourself."));

@@ -10,7 +10,7 @@ import { FakeAccountService, WEB_REDIRECT, type ListTamper } from "../../../shar
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { fromBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import { askingPc, postPcKeys, type AskingPc } from "./accountList.fixture.ts";
+import { askingPc, postPcKeys, type AskingPc } from "./accountList.test-helpers.ts";
 import { accountList, NO_LIST_SECONDS, OFF_SECONDS, type AccountList, type AccountListView, type GenesisMode } from "./accountList.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { readWraps } from "./listNames.ts";
@@ -439,14 +439,15 @@ describe("two that start a list at once", () => {
     const [won, lost] = a.status.at === "following" ? [a, b] : [b, a];
     const loser = a.status.at === "following" ? second : first;
     expect(following(won)).toMatchObject({ list: list.id, standing: "in", trouble: null });
-    expect(lost).toEqual({ account: ACCOUNT, status: { at: "not_in", list: list.id, why: "not_mine" }, reached: true, devices: [], pcs: [] });
+    expect(lost).toEqual({ account: ACCOUNT, status: { at: "not_in", list: list.id, why: "not_mine", claim: "claimed" }, reached: true, devices: [], pcs: [] });
     expect(list.entries).toHaveLength(1);
     // it keeps nothing of a list it is not in, and asks for no more of it than entry 0, once
     expect(await loser.lists.get("copy", ACCOUNT)).toBeUndefined();
     const before = loser.sent.length;
     now += NO_LIST_SECONDS * 1000;
-    expect((await loser.list.sync()).status).toEqual({ at: "not_in", list: list.id, why: "not_mine" });
-    expect(loser.sent.slice(before).map((each) => `${each.method} ${each.path}`)).toEqual(["GET /v2/lists/mine"]);
+    expect((await loser.list.sync()).status).toEqual({ at: "not_in", list: list.id, why: "not_mine", claim: "claimed" });
+    // it asks which list again, and keeps its claim of its own key standing for whoever lets it in
+    expect(loser.sent.slice(before).map((each) => `${each.method} ${each.path}`)).toEqual(["GET /v2/lists/mine", `POST /v2/lists/${list.id}/claims`]);
     expect(asked(loser, "POST /v2/lists")).toBe(1);
     expect(asked(loser, `GET /v2/lists/${list.id}/log`)).toBe(1);
     expect(held().id).toBe(list.id);
@@ -495,7 +496,7 @@ describe("two that start a list at once", () => {
     await second.list.sync();
     expect(await second.lists.get("genesis", ACCOUNT)).toBeDefined();
     await first.list.sync();
-    expect((await second.list.sync()).status).toEqual({ at: "not_in", list: held().id, why: "not_mine" });
+    expect((await second.list.sync()).status).toEqual({ at: "not_in", list: held().id, why: "not_mine", claim: "claimed" });
     expect(await second.lists.get("genesis", ACCOUNT)).toBeUndefined();
   });
 });
@@ -699,7 +700,7 @@ describe("after a reload", () => {
     await phone.store.clear((kept) => kept.account === session.account);
     const again = reloaded(phone);
     const view = await again.list.sync();
-    expect(view.status).toEqual({ at: "not_in", list: held().id, why: "not_mine" });
+    expect(view.status).toEqual({ at: "not_in", list: held().id, why: "not_mine", claim: "claimed" });
     expect(await phone.lists.get("copy", ACCOUNT)).toBeUndefined();
     expect(asked(again, "POST /v2/lists")).toBe(0);
   });
@@ -878,7 +879,7 @@ describe("an account service that lies", () => {
     // It was not shown that list's entry 0, so it does not take the list for another's: it asks again
     const fresh = reloaded({ ...phone, lists: memoryListStore() });
     fresh.wire.answer = lie;
-    expect(await fresh.list.sync()).toEqual({ account: ACCOUNT, status: { at: "not_in", list: mine, why: "unread" }, reached: true, devices: [], pcs: [] });
+    expect(await fresh.list.sync()).toEqual({ account: ACCOUNT, status: { at: "not_in", list: mine, why: "unread", claim: "unclaimed" }, reached: true, devices: [], pcs: [] });
     expect(await fresh.lists.get("copy", ACCOUNT)).toBeUndefined();
     fresh.wire.answer = null;
     now += NO_LIST_SECONDS * 1000;
@@ -956,7 +957,7 @@ describe("an account service that lies", () => {
     const mine = held().id;
     const again = reloaded(phone);
     again.wire.answer = (request) => new URL(request.url).pathname === `/v2/lists/${mine}/log` ? Response.json({ list: mine, after: null, entries: [], head: { seq: 0, hash: mine }, more: true }) : null;
-    expect((await again.list.sync()).status).toEqual({ at: "not_in", list: mine, why: "unread" });
+    expect((await again.list.sync()).status).toEqual({ at: "not_in", list: mine, why: "unread", claim: "unclaimed" });
     expect(await phone.lists.get("genesis", ACCOUNT)).toBeDefined();
     expect(again.list.due(true)).toBe(now + NO_LIST_SECONDS * 1000);
     again.wire.answer = null;
@@ -977,7 +978,7 @@ describe("an account service that lies", () => {
       if (pathname === "/v2/lists/mine") return Response.json({ list, head: { seq: 0, hash: list } });
       return pathname === `/v2/lists/${list}/log` ? Response.json({ list, after: null, entries: [text], head: { seq: 0, hash: list }, more: false }) : null;
     };
-    expect(await phone.list.sync()).toEqual({ account: ACCOUNT, status: { at: "not_in", list, why: "needs_newer_client" }, reached: true, devices: [], pcs: [] });
+    expect(await phone.list.sync()).toEqual({ account: ACCOUNT, status: { at: "not_in", list, why: "needs_newer_client", claim: "unclaimed" }, reached: true, devices: [], pcs: [] });
     expect(await phone.lists.get("copy", ACCOUNT)).toBeUndefined();
   });
 
@@ -986,7 +987,7 @@ describe("an account service that lies", () => {
     const stranger = await device({ genesis: "always" });
     await stranger.list.sync();
     const view = await phone.list.sync();
-    expect(view).toEqual({ account: ACCOUNT, status: { at: "not_in", list: held().id, why: "not_mine" }, reached: true, devices: [], pcs: [] });
+    expect(view).toEqual({ account: ACCOUNT, status: { at: "not_in", list: held().id, why: "not_mine", claim: "claimed" }, reached: true, devices: [], pcs: [] });
     expect(await phone.lists.get("copy", ACCOUNT)).toBeUndefined();
     expect(phone.list.holdsPc("ab".repeat(32))).toBe(false);
   });

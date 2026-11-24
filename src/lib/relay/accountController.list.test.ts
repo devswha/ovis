@@ -5,11 +5,24 @@ import { memoryAccountStore, newKey, type AccountSession, type AccountStore } fr
 import { createAccountController } from "./accountController.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
+import type { RelayTransport } from "./transport.ts";
 
 const SERVICE = "https://account.ovis.sh";
 const OFF: AccountListView = { account: null, status: { at: "off" }, reached: true, devices: [], pcs: [] };
 const row = (id: string): DirectoryPc => ({ server_id: id, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: null, relay: null, new_until: null, admitted_at: null, admitted_before_you: false });
 const session = (account: string): AccountSession => ({ service: SERVICE, account, provider: "github", access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: `sign-in-${account}`, signed_in_at: Date.now() });
+/** The waits of the code under test, run one at a time by the test: no clock passes. */
+function useFakeWaits() {
+  const real = globalThis.setTimeout;
+  const pending: (() => void)[] = [];
+  globalThis.setTimeout = ((run: () => void, ms?: number) => {
+    if (ms === undefined || ms < 1000) return real(run, ms);
+    pending.push(run);
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  return { next: async (): Promise<void> => { pending.shift()?.(); }, restore: (): void => { globalThis.setTimeout = real; } };
+}
+
 const empty: ShellDeviceStore = {
   get: async () => undefined, list: async () => [],
   remove: async () => {}, removeRow: async () => false,
@@ -30,6 +43,11 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
     shadow: async (account, directory, opens) => { calls.push(`shadow ${account} ${directory.map((pc) => pc.server_id).join(",")} opens:${[...opens ?? []].join(",")}`); return null; },
     dropNames: async (account) => { calls.push(`dropNames ${account}`); },
     forget: async (account) => { calls.push(`forget ${account}`); },
+    adopt: async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq}`); return OFF; },
+    writer: () => null,
+    holdsEntry: () => false,
+    gossip: () => null,
+    pageAfter: () => null,
   };
   return { list, calls, heard };
 }
@@ -116,6 +134,44 @@ describe("the hosted shell and the account's signed list", () => {
     expect(without.state).toEqual(drawn!);
     expect(without.directory).toEqual(withList.directory);
     expect(asked).toEqual(sent);
+  });
+
+  it("asks the PC a member just let it in at for its place in the list, and takes the first one it is handed", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    const waiting: AccountListView = { account: "acct-one", status: { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" }, reached: true, devices: [], pcs: [] };
+    let view = waiting;
+    list.view = () => view;
+    list.adopt = async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq} ${offer.hash}`); view = OFF; return OFF; };
+    const account = controller(list);
+    const asked: string[] = [];
+    const answers: unknown[] = [{ pcs: [] }, { pcs: [], list: { id: "5c".repeat(32), seq: 4, hash: "ab".repeat(32) } }];
+    const opened = { server: { features: [] }, fetch: async (path: string) => { asked.push(path); return Response.json(answers.shift() ?? { pcs: [] }); }, close() {} } as unknown as RelayTransport;
+    const timers = useFakeWaits();
+    try {
+      await account.enroll(opened, "a1".repeat(16), true, true);
+      await settle();
+      expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
+      await timers.next();
+      await settle();
+    } finally { timers.restore(); }
+    expect(asked).toEqual(["/api/account/introduction", "/api/account/introduction"]);
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${"5c".repeat(32)} 4 ${"ab".repeat(32)}`]);
+  });
+
+  it("asks a PC for no place where the device does not wait to be let into a list, or the pairing was made with a code", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    const account = controller(list);
+    const asked: string[] = [];
+    const opened = { server: { features: [] }, fetch: async (path: string) => { asked.push(path); return Response.json({ pcs: [], list: { id: "5c".repeat(32), seq: 4, hash: "ab".repeat(32) } }); }, close() {} } as unknown as RelayTransport;
+    // it follows no list and waits for none
+    await account.enroll(opened, "a1".repeat(16), true, true);
+    // it waits, and the pairing is not one a member's approval made
+    list.view = () => ({ account: "acct-one", status: { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" }, reached: true, devices: [], pcs: [] });
+    await account.enroll(opened, "a1".repeat(16), true, false);
+    await settle();
+    expect([asked, calls.filter((call) => call.startsWith("adopt"))]).toEqual([[], []]);
   });
 
   it("follows no list where a test gives its own account store or fetch and no list", async () => {

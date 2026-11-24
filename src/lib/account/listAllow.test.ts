@@ -1,0 +1,282 @@
+import { describe, expect, it } from "bun:test";
+import { kindBody, listView, readKind, signListEntry, type ListKind } from "../../../shared/account-list.ts";
+import { entryFromText, entryHash, entryToText, readBody, signEntry } from "../../../shared/account-list-entry.ts";
+import type { AccountListView } from "./accountList.ts";
+import { askingPc, listWorld, postPcKeys, type WorldDevice } from "./accountList.test-helpers.ts";
+import { ALLOW_RESENDS, ALLOW_TRIES, allowDevice, type AllowOutcome } from "./listAllow.ts";
+import { deviceListKeys } from "./listKeys.ts";
+import { memoryAccountStore } from "./store.ts";
+
+type World = ReturnType<typeof listWorld>;
+
+const following = (view: AccountListView) => {
+  if (view.status.at !== "following") throw new Error(`the device is ${view.status.at}`);
+  return view.status;
+};
+const allowed = (outcome: AllowOutcome) => {
+  if (!outcome.allowed) throw new Error(`the device was not let in: ${outcome.why}`);
+  return outcome.offer;
+};
+const routes = (from: WorldDevice): string[] => from.sent.map((each) => each.route);
+const placements = (from: WorldDevice) => from.sent.filter((each) => each.route.endsWith("/entries"));
+const kinds = (texts: readonly string[]): string[] => texts.map((text) => readBody(entryFromText(text).body).kind);
+const noWait = { wait: async () => {} };
+
+/** An account whose first device started its list, and a second device that signed in and waits to be let in. */
+async function twoDevices(w: World = listWorld(), skew = 0): Promise<{ w: World; first: WorldDevice; second: WorldDevice; newcomer: { key: string; label: string; os: "android" } }> {
+  const first = await w.device({ label: "Dana's phone", skew });
+  expect(following(await first.list.sync()).standing).toBe("in");
+  const second = await w.device({ label: "Dana's tablet" });
+  expect((await second.list.sync()).status).toEqual({ at: "not_in", list: w.held().id, why: "not_mine", claim: "claimed" });
+  return { w, first, second, newcomer: { key: (await second.keys()).key, label: "Dana's tablet", os: "android" } };
+}
+
+describe("a device that is in the list lets another in", () => {
+  it("signs a device entry for the key that claimed itself, and the newcomer follows the list from the place it is handed", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    const list = w.held();
+    expect(offer).toEqual({ list: list.id, seq: 1, hash: list.head.hash });
+    // the entry is the first device's own, a `device` of the newcomer's key with its card, and the service's rules took it
+    const body = readBody(entryFromText(list.entries[1]!).body);
+    expect([body.signer, body.kind, body.adds]).toEqual([(await first.keys()).key, "device", { key: newcomer.key, power: "full" }]);
+    expect(listView(list.state).devices.map((row) => [row.key, row.power, row.role, row.until])).toEqual([[(await first.keys()).key, "full", "drive", null], [newcomer.key, "full", "drive", null]]);
+    // one request, and the epoch key wrapped to the newcomer with it
+    expect(placements(first)).toHaveLength(1);
+    expect((placements(first)[0]!.body!.wraps as { member: string; epoch: number }[]).map((wrap) => [wrap.member, wrap.epoch])).toEqual([[(await second.keys()).enc.key, 0]]);
+    // the newcomer follows nothing on the service's word: only the place a member handed it makes it follow
+    expect((await second.list.sync()).status.at).toBe("not_in");
+    const view = await second.list.adopt(offer);
+    expect(following(view)).toMatchObject({ list: list.id, standing: "in", head: 1, trouble: null });
+    expect(view.devices.map((row) => [row.self, row.name])).toEqual([[false, { label: "Dana's phone", os: "ios" }], [true, { label: "Dana's tablet", os: "android" }]]);
+    expect(await second.lists.get("offer", w.account)).toBeUndefined();
+    // and the device that let it in sees it by its name too
+    expect((await first.list.sync()).devices.map((row) => row.name?.label)).toEqual(["Dana's phone", "Dana's tablet"]);
+  });
+
+  it("tells the account service nothing that names the newcomer", async () => {
+    const { first, newcomer } = await twoDevices();
+    allowed(await allowDevice(first.list, newcomer, noWait));
+    expect(JSON.stringify(first.sent)).not.toContain("tablet");
+  });
+
+  it("lets the newcomer let a third device in: it is a member like the first", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    await second.list.adopt(allowed(await allowDevice(first.list, newcomer, noWait)));
+    const third = await w.device({ label: "Laptop" });
+    await third.list.sync();
+    const offer = allowed(await allowDevice(second.list, { key: (await third.keys()).key, label: "Laptop", os: "android" }, noWait));
+    expect(following(await third.list.adopt(offer))).toMatchObject({ standing: "in", head: 2 });
+    expect((await first.list.sync()).devices).toHaveLength(3);
+  });
+
+  it("answers the same for a key the list already holds, and signs nothing more", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    expect(allowed(await allowDevice(first.list, newcomer, noWait))).toEqual(offer);
+    expect([placements(first).length, w.held().entries.length]).toEqual([1, 2]);
+    expect(following(await second.list.adopt(offer)).standing).toBe("in");
+  });
+});
+
+describe("a device that may not let anybody in", () => {
+  it("signs nothing where it follows no list, or is in none", async () => {
+    const w = listWorld();
+    const alone = await w.device({ genesis: "never" });
+    const stranger = await deviceListKeys(memoryAccountStore());
+    expect(await allowDevice(alone.list, { key: stranger.key, label: "x", os: null }, noWait)).toEqual({ allowed: false, why: "no_list", retryAfterMs: null });
+    const { first, second } = await twoDevices(listWorld());
+    // the one that waits to be let in lets nobody in
+    expect(await allowDevice(second.list, { key: (await first.keys()).key, label: "x", os: null }, noWait)).toMatchObject({ allowed: false, why: "no_list" });
+    expect(routes(second).filter((route) => route.endsWith("/entries"))).toEqual([]);
+  });
+
+  it("signs nothing for a key no sign-in of the account claimed: the account service's second lock is not asked to fail", async () => {
+    const { w, first } = await twoDevices();
+    const stranger = await deviceListKeys(memoryAccountStore());
+    expect(await allowDevice(first.list, { key: stranger.key, label: "Stranger", os: null }, noWait)).toEqual({ allowed: false, why: "not_claimed", retryAfterMs: null });
+    expect([placements(first), w.held().entries.length]).toEqual([[], 1]);
+  });
+
+  it("signs nothing for a card the account service hands over that is not that key's", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const other = await deviceListKeys(memoryAccountStore());
+    const list = w.held().id;
+    // the service shows the newcomer's key with another device's encryption key: whoever held that key would read every name
+    first.wire.answer = async (request) => new URL(request.url).pathname === `/v2/lists/${list}/claims` && request.method === "GET"
+      ? Response.json({ claims: [{ key: newcomer.key, enc: other.enc.key, card: (await second.service.listClaims(list))[0]!.card, until: 1 }] }) : null;
+    expect(await allowDevice(first.list, newcomer, noWait)).toMatchObject({ allowed: false, why: "refused" });
+    expect([placements(first), w.held().entries.length]).toEqual([[], 1]);
+  });
+
+  it("never brings back a key the list put out", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    await second.list.adopt(allowed(await allowDevice(first.list, newcomer, noWait)));
+    const keys = await first.keys();
+    const removal = await signListEntry(w.held().state, { kind: "remove", ends: newcomer.key }, { key: keys.key, privateKey: keys.signs }, Math.floor(w.clock.now / 1000));
+    await first.service.placeEntries(w.held().id, [removal.text], []);
+    expect(await allowDevice(first.list, newcomer, noWait)).toEqual({ allowed: false, why: "removed", retryAfterMs: null });
+    expect(w.held().entries).toHaveLength(3);
+  });
+});
+
+describe("a list that moves, or a service that is busy, under an Allow", () => {
+  it("reads and signs again when the head moved under it, and the newcomer is let in once", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const keys = await first.keys();
+    let raced = false;
+    first.wire.answer = async (request) => {
+      if (raced || request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries")) return null;
+      raced = true;
+      // another page of this device adds a PC first: the head is no longer the one the entry was signed on
+      const pc = await askingPc();
+      const card = await postPcKeys(w.fake.fetch, w.origin, first.session.access_token, pc, w.held().id);
+      const added = await signListEntry(w.held().state, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card, sealed: null }, { key: keys.key, privateKey: keys.signs }, Math.floor(w.clock.now / 1000));
+      const placed = await w.fake.fetch(`${w.origin}/v2/lists/${w.held().id}/entries`, { method: "POST", headers: { authorization: `Bearer ${first.session.access_token}`, "content-type": "application/json" }, body: JSON.stringify({ entries: [added.text] }) });
+      expect(placed.status).toBe(200);
+      return null;
+    };
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    expect([offer.seq, placements(first).length, kinds(w.held().entries)]).toEqual([2, 2, ["genesis", "pc", "device"]]);
+    expect(following(await second.list.adopt(offer))).toMatchObject({ standing: "in", head: 2 });
+  });
+
+  it("gives up after its tries where the head keeps moving, and says so", async () => {
+    const { w, first, newcomer } = await twoDevices();
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    expect(await allowDevice(first.list, newcomer, noWait)).toEqual({ allowed: false, why: "busy", retryAfterMs: null });
+    expect([placements(first).length, w.held().entries.length]).toEqual([ALLOW_TRIES, 1]);
+  });
+
+  it("sends the same request again while the service rebuilds the list, the same signatures, and is let in when it is done", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    w.fake.tamperList(w.held().id, { rebuilding: true });
+    const waits: number[] = [];
+    let sends = 0;
+    const outcome = await allowDevice(first.list, newcomer, { wait: async (ms) => { waits.push(ms); sends += 1; if (sends === 1) w.fake.untamperList(w.held().id); } });
+    const sent = placements(first);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.body).toEqual(sent[0]!.body);
+    expect(waits).toEqual([1000]);
+    expect(following(await second.list.adopt(allowed(outcome))).standing).toBe("in");
+  });
+
+  it("gives up on a service that keeps rebuilding, and on one that cannot change the list, with nobody let in", async () => {
+    const { w, first, newcomer } = await twoDevices();
+    w.fake.tamperList(w.held().id, { rebuilding: true });
+    expect(await allowDevice(first.list, newcomer, noWait)).toMatchObject({ allowed: false, why: "busy" });
+    expect(placements(first)).toHaveLength(ALLOW_RESENDS);
+    w.fake.untamperList(w.held().id);
+    w.fake.tamperList(w.held().id, { stopped: true });
+    expect(await allowDevice(first.list, newcomer, noWait)).toEqual({ allowed: false, why: "stopped", retryAfterMs: null });
+    expect(w.held().entries).toHaveLength(1);
+  });
+
+  it("does not take the account service's answer for the newcomer being in: an answer with nothing placed lets nobody in", async () => {
+    const { w, first, newcomer } = await twoDevices();
+    first.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ list: w.held().id, head: { seq: 1, hash: "ab".repeat(32) }, placed: 1, now: 1 }) : null;
+    expect(await allowDevice(first.list, newcomer, noWait)).toEqual({ allowed: false, why: "busy", retryAfterMs: null });
+    expect(w.held().entries).toHaveLength(1);
+  });
+});
+
+describe("an invite whose time is over, still in the list", () => {
+  /** the first device placed an invite that a PC joins with by itself, and nobody used it before its time ran out */
+  async function withStaleInvite(skew = 0) {
+    const made = await twoDevices(listWorld(), skew);
+    const { w, first } = made;
+    const keys = await first.keys();
+    const invite = await deviceListKeys(memoryAccountStore());
+    const at = Math.floor(w.clock.now / 1000);
+    const placed = await signListEntry(w.held().state, { kind: "invite", key: invite.key, exp: at + 900, uses: 1, auto: true, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+    await first.service.placeEntries(w.held().id, [placed.text], []);
+    w.clock.now += 16 * 60_000;
+    return { ...made, invite: invite.key };
+  }
+
+  it("is put out, and the next epoch opened, in the same request as the newcomer, whose name is sealed under the new epoch", async () => {
+    const { w, first, second, newcomer, invite } = await withStaleInvite();
+    // the second device signed in sixteen minutes ago: its claim is made again before anybody lets it in
+    await second.list.sync();
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    const list = w.held();
+    expect(kinds(list.entries)).toEqual(["genesis", "invite", "remove", "epoch", "device"]);
+    expect(placements(first).at(-1)!.body!.entries).toHaveLength(3);
+    expect(readBody(entryFromText(list.entries[2]!).body).ends).toBe(invite);
+    const device = readKind(readBody(entryFromText(list.entries[4]!).body)) as Extract<ListKind, { kind: "device" }>;
+    expect([list.state.epoch, device.sealed?.epoch]).toEqual([1, 1]);
+    // the new key is wrapped to the two devices that are in, and not to the invite
+    const wraps = placements(first).at(-1)!.body!.wraps as { member: string; epoch: number }[];
+    expect(wraps.map((wrap) => [wrap.member, wrap.epoch]).sort()).toEqual([[(await first.keys()).enc.key, 1], [(await second.keys()).enc.key, 1]].sort());
+    // both read every name, the first device's from the epoch before through the list's own link
+    const view = await second.list.adopt(offer);
+    expect(view.devices.map((row) => row.name?.label)).toEqual(["Dana's phone", "Dana's tablet"]);
+    expect((await first.list.sync()).devices.map((row) => row.name?.label)).toEqual(["Dana's phone", "Dana's tablet"]);
+  });
+
+  it("is judged by the account service's clock where this device's runs behind it: no newcomer is written without a name", async () => {
+    // this device's clock is twenty minutes behind the service's, so by its own the invite would still have time
+    const { w, first, second, newcomer } = await withStaleInvite(-20 * 60_000);
+    await second.list.sync();
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    expect(kinds(w.held().entries).slice(2)).toEqual(["remove", "epoch", "device"]);
+    expect(placements(first).filter((each) => (each.body!.entries as unknown[]).length === 3)).toHaveLength(1);
+    expect((await second.list.adopt(offer)).devices.at(-1)!.name).toEqual({ label: "Dana's tablet", os: "android" });
+  });
+});
+
+describe("a newcomer that is handed a place", () => {
+  it("follows nothing while the log does not reach that place, and nothing when another entry stands there", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    const list = w.held().id;
+    // the service withholds the entry that lets it in
+    w.fake.tamperList(list, { withholdAfter: 0, reader: { token: second.session.access_token } });
+    expect((await second.list.adopt(offer)).status.at).toBe("not_in");
+    expect([await second.lists.get("copy", w.account), await second.lists.get("offer", w.account)]).toEqual([undefined, { v: 1, ...offer }]);
+    // it shows it once it stops, and the device follows from its own kept offer, with nothing handed again
+    w.fake.untamperList(list);
+    w.clock.now += 300_000;
+    expect(following(await second.list.sync())).toMatchObject({ standing: "in", head: 1 });
+  });
+
+  it("follows no list of another account, though a place in it is handed over and the service serves its log", async () => {
+    const { w, second } = await twoDevices();
+    const other = listWorld("acct_stranger", w.clock.now);
+    const stranger = await other.device({ label: "Stranger" });
+    await stranger.list.sync();
+    const theirs = other.held();
+    second.wire.answer = (request) => new URL(request.url).pathname === `/v2/lists/${theirs.id}/log`
+      ? Response.json({ list: theirs.id, after: null, entries: theirs.entries, head: theirs.head, more: false }) : null;
+    const view = await second.list.adopt({ list: theirs.id, seq: 1, hash: "ab".repeat(32) });
+    expect(view.status.at).toBe("not_in");
+    expect(second.sent.map((each) => each.route)).toContain(`GET /v2/lists/${theirs.id}/log`);
+    expect(await second.lists.get("copy", w.account)).toBeUndefined();
+  });
+
+  it("takes no place at all once it follows a list: a pin is one-way", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    await second.list.adopt(allowed(await allowDevice(first.list, newcomer, noWait)));
+    const before = await second.lists.get("copy", w.account);
+    const view = await second.list.adopt({ list: "cd".repeat(32), seq: 3, hash: "ef".repeat(32) });
+    expect(following(view).list).toBe(w.held().id);
+    expect([await second.lists.get("copy", w.account), await second.lists.get("offer", w.account)]).toEqual([before, undefined]);
+  });
+
+  it("is not let in by an entry no member signed, though the service shows it with the newcomer's own card", async () => {
+    const { w, second } = await twoDevices();
+    const list = w.held();
+    const stranger = await deviceListKeys(memoryAccountStore());
+    const mine = await second.keys();
+    const claim = (await second.service.listClaims(list.id)).find((each) => each.key === mine.key)!;
+    const body = kindBody({ issued_at: Math.floor(w.clock.now / 1000), list: list.id, prev: list.head.hash, seq: 1, signer: stranger.key },
+      { kind: "device", key: mine.key, power: "full", role: "drive", until: null, enc: mine.enc.key, card: claim.card, sealed: null, rotates: false });
+    const forged = entryToText(await signEntry(body, stranger.signs));
+    w.fake.tamperList(list.id, { inject: [forged] });
+    const hash = entryHash(entryFromText(forged).body);
+    const view = await second.list.adopt({ list: list.id, seq: 1, hash });
+    expect(view.status.at).toBe("not_in");
+    expect(await second.lists.get("copy", w.account)).toBeUndefined();
+  });
+});

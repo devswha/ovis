@@ -14,7 +14,8 @@ import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
 import type { AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
-import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { AccountPcError, enrollOnPc, keepRemovals, listOffer, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { setPageAccountList } from "../account/pageList.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import type { LeaveOutcome } from "../account/hostedSignIn.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -94,6 +95,24 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       linkedPcs: async (id) => (await store.list()).filter((device) => device.account === id).length,
     });
   const followed = lists === null ? null : followAccountList(lists);
+  // the page's own list is the one a card that lets a device in signs with (account/pageList.ts)
+  if (mount.accountList === undefined && lists !== null) setPageAccountList(lists);
+  /**
+   * A device that waits to be let into its account's list, just let in at a PC by a member's approval: the member
+   * hands its place in the list over that PC, with its introduction (account/join.ts). The device asks the PC for it
+   * for a while, whatever becomes of its enrollment there, and takes the first one: the list is then followed only
+   * if the log shows this device let in up to that very place (accountList.ts, adopt).
+   */
+  const awaitListOffer = async (opened: RelayTransport, signal: AbortSignal): Promise<void> => {
+    if (lists === null || lists.view().status.at !== "not_in") return;
+    const deadline = Date.now() + INTRODUCTION_WAIT_MS;
+    while (!signal.aborted && lists.view().status.at === "not_in") {
+      const offer = await listOffer((path, init) => opened.fetch(path, init)).catch(() => null);
+      if (offer !== null) { await lists.adopt(offer); return; }
+      if (Date.now() >= deadline) return;
+      await wait(INTRODUCTION_POLL_MS, signal);
+    }
+  };
   const forgotten = new Map<string, number>();
   const running = new Map<Promise<unknown>, string>();
   // the cancels of the enrollments running now, by PC: a Forget or a leave also ends what each has out (a request to
@@ -606,6 +625,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     stops.set(serverId, mine);
     const signal = options.signal === undefined ? stop.signal : AbortSignal.any([options.signal, stop.signal]);
     const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled, signal });
+    if (introducible) void awaitListOffer(opened, signal).catch((error: unknown) => { if (!signal.aborted) console.warn("Ovis: no place in the account's list was handed over", error instanceof Error ? error.name : error); });
     void done.finally(() => { mine.delete(stop); if (mine.size === 0 && stops.get(serverId) === mine) stops.delete(serverId); }).catch(() => {});
     // a link the PC refused leaves the session to whoever says why (shell.tsx), rather than opening the app over it
     void done.then(settled, (error: unknown) => { if (refusalOf(error) === null) settled(); });
