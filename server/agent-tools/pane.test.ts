@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { HARNESS_CONTRACT, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { lineCall } from "../line-call.ts";
 import * as herdr from "../herdr/client.ts";
 import { AcpChildren } from "../acp/children.ts";
 import { AgentToolHub } from "./hub.ts";
 import { useAgentToolHub } from "./launch.ts";
 import { handleAgentPanesRequest } from "./pane-routes.ts";
-import type { PaneTerminal } from "./pane-proof.ts";
+import { procLink, stillIn, type PaneTerminal } from "./pane-proof.ts";
 
 const CLI = join(import.meta.dir, "../../scripts/plugin-agent.ts");
 const START: HarnessToolSetting = { level: "start", depth: 1, harnesses: ["opencode"] };
@@ -46,15 +47,22 @@ async function outside(words: readonly string[]) {
   const caller = Bun.spawn(callerArgv(words), { stdout: "pipe", stderr: "inherit", env: callerEnv() });
   return { code: await caller.exited, reply: JSON.parse(await new Response(caller.stdout).text()) as Record<string, unknown> };
 }
+const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 const code = (reply: Record<string, unknown>) => (reply["error"] as { code?: string } | undefined)?.code;
 
 describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started", () => {
   it("asks the owner once, and does nothing until he allows the pane", async () => {
-    const both = await inPane("t7", ["/bin/sh", "-c", `${callerArgv(["ls", "--json"]).map(w => `'${w.replaceAll("'", "'\\''")}'`).join(" ")} & ${callerArgv(["ls", "--json"]).map(w => `'${w.replaceAll("'", "'\\''")}'`).join(" ")}; wait`], { raw: true });
-    expect(both.lines.map(code)).toEqual(["approval_required", "approval_required"]);
-    expect((await inPane("t7", ["ls", "--json"])).code).toBe(1);
-    expect(hub.grants.view().pending.map(p => p.pane)).toEqual(["t7"]);
-    expect((await inPane("t7", ["ls", "--json"])).reply).toMatchObject({ error: { code: "approval_required" } });
+    const shell = await holdPane("t7");
+    try {
+      const line = callerArgv(["ls", "--json"]).map(quote).join(" ");
+      expect((await shell.run(`${line} & ${line}; wait`, 2)).map(code)).toEqual(["approval_required", "approval_required"]);
+      const card = hub.grants.view().pending;
+      expect(card.map(p => p.pane)).toEqual(["t7"]);
+      expect(code(await shell.call(["ls", "--json"]))).toBe("approval_required");
+      expect(hub.grants.view().pending).toEqual(card);
+      expect(existsSync(join(state, "agent-tools", "pane-runs.json"))).toBe(false);
+    } finally { await shell.close(); }
+    expect((await inPane("t8", ["ls", "--json"])).code).toBe(1);
   });
 
   it("after the owner allows it, every later process of the pane calls as that pane's one run", async () => {
@@ -65,7 +73,37 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
       expect(hub.grants.view().allowed.map(p => p.pane)).toEqual(["t7"]);
+      // one run for the pane, charged for both calls: its children, keys and limit are the pane's, not each process's
+      const runs = JSON.parse(readFileSync(join(state, "agent-tools", "pane-runs.json"), "utf8")) as { run: { self: string; harness: string }; calls: number[] }[];
+      expect(runs.map(r => [r.run.self, r.run.harness, r.calls.length])).toEqual([["t7", "hc-pane", 2]]);
     } finally { await shell.close(); }
+  });
+
+  it("refuses a card that Ovis's own launch in the pane has since taken over", async () => {
+    expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("approval_required");
+    hub.runs.reserve().bind({ self: "t7", root: "0123456789abcdef", depth: 0, started_by: null, harness: "omo" });
+    expect(await hub.answerPane(hub.grants.view().pending[0]!.id, true)).toBe("gone");
+    expect(hub.grants.view().allowed).toEqual([]);
+  });
+
+  it("turning back to look-only forgets every grant even when a revoke fails", async () => {
+    await allowWhileRunning("t7");
+    await allowWhileRunning("t8");
+    const revoke = spyOn(hub.runs, "revoke").mockImplementationOnce(() => { throw new Error("disk full"); });
+    setting = { ...START, level: "view" };
+    expect(() => hub.settingsChanged()).toThrow("disk full");
+    revoke.mockRestore();
+    expect(hub.grants.view()).toEqual({ pending: [], allowed: [] });
+    setting = START;
+    expect(code((await inPane("t8", ["ls", "--json"])).reply)).toBe("approval_required");
+  });
+
+  it("a pane registry that cannot be written does not stop a token run", async () => {
+    const key = hub.runs.reserve();
+    key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "omo" });
+    mkdirSync(join(state, "agent-tools", "pane-runs.json"));
+    const reply = await lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token: readFileSync(key.tokenFile, "utf8"), verb: "scope", args: {} }, 2000);
+    expect(reply).toMatchObject({ kind: "scope" });
   });
 
   it("a card answered after its pane closed grants nothing", async () => {
@@ -174,13 +212,16 @@ async function holdPane(address: string, hint?: string) {
       buffered += new TextDecoder().decode(value);
     }
   };
-  const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+  const run = async (text: string, count: number) => {
+    shell.stdin.write(`${text}\n`);
+    await shell.stdin.flush();
+    const out: Record<string, unknown>[] = [];
+    while (out.length < count) out.push(JSON.parse(await line()) as Record<string, unknown>);
+    return out;
+  };
   return {
-    call: async (words: readonly string[]) => {
-      shell.stdin.write(`${callerArgv(words).map(quote).join(" ")}\n`);
-      await shell.stdin.flush();
-      return JSON.parse(await line()) as Record<string, unknown>;
-    },
+    run,
+    call: async (words: readonly string[]) => (await run(callerArgv(words).map(quote).join(" "), 1))[0]!,
     close: async () => { await shell.stdin.end(); await shell.exited; },
   };
 }
@@ -193,3 +234,13 @@ async function allowWhileRunning(address: string) {
     return { reply: await shell.call(["ls", "--json"]) };
   } finally { await shell.close(); }
 }
+
+describe.skipIf(process.platform !== "linux")("a call's caller stays a process of its pane", () => {
+  it("is in the pane while the pane's root, born when proved, is among its parents, and out once it is not", () => {
+    const parent = procLink(process.ppid)!;
+    const peer = { pid: process.pid, alive: () => true, close: () => {} };
+    expect(stillIn(peer, { pane: "t1", created_ms: 1, root: parent.pid, birth: parent.birth })).toBe(true);
+    expect(stillIn(peer, { pane: "t1", created_ms: 1, root: parent.pid, birth: "another-birth" })).toBe(false);
+    expect(stillIn({ ...peer, alive: () => false }, { pane: "t1", created_ms: 1, root: parent.pid, birth: parent.birth })).toBe(false);
+  });
+});

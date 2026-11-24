@@ -99,7 +99,6 @@ export interface PaneTerminal {
 export interface PaneReader {
   list(): Promise<readonly PaneTerminal[]>;
   get(address: string): Promise<PaneTerminal | null>;
-  read?: (pid: number) => ProcLink | null;
 }
 /** A live pane on this PC's own herdr-core: `t7`, never another machine's `lab/t7`. */
 export const localPane = (t: PaneTerminal): t is PaneTerminal & { pid: number } => t.state === "live" && /^[A-Za-z0-9_-]+$/.test(t.address) && typeof t.pid === "number" && t.pid > 0;
@@ -109,11 +108,11 @@ export const localPane = (t: PaneTerminal): t is PaneTerminal & { pid: number } 
  * same in hc's answer for that pane alone, with no hop of the chain changed meanwhile and the peer still the process
  * that connected. A hint (the caller's HC_TERMINAL_ID) must agree; it never chooses. Anything else proves nothing.
  */
-export async function provePane(peer: Peer, hint: string | undefined, hc: PaneReader): Promise<{ key: PaneKey; terminal: PaneTerminal } | null> {
-  const read = hc.read ?? procLink;
-  const chain = ancestry(peer.pid, read);
+export async function provePane(peer: Peer, hint: string | undefined, hc: PaneReader): Promise<{ key: PaneKey; terminal: PaneTerminal; live: readonly PaneTerminal[] } | null> {
+  const chain = ancestry(peer.pid);
   if (!chain || !peer.alive()) return null;
-  const roots = (await hc.list()).filter(localPane);
+  const live = await hc.list();
+  const roots = live.filter(localPane);
   // every live local pane counts, so a pane nested in another's tree is ambiguous rather than the outer one
   const matches = roots.filter(t => chain.some(link => link.pid === t.pid));
   if (matches.length !== 1) return null;
@@ -122,8 +121,13 @@ export async function provePane(peer: Peer, hint: string | undefined, hc: PaneRe
   const root = chain.find(link => link.pid === pane.pid)!;
   const again = await hc.get(pane.address);
   if (!again || !localPane(again) || again.pid !== pane.pid || again.created_ms !== pane.created_ms) return null;
-  const now = ancestry(peer.pid, read);
+  const now = ancestry(peer.pid);
   if (!now || now.length !== chain.length || now.some((link, i) => link.pid !== chain[i]!.pid || link.birth !== chain[i]!.birth || link.parent !== chain[i]!.parent)) return null;
   if (!peer.alive()) return null;
-  return { key: { pane: pane.address, created_ms: pane.created_ms, root: root.pid, birth: root.birth }, terminal: again };
+  return { key: { pane: pane.address, created_ms: pane.created_ms, root: root.pid, birth: root.birth }, terminal: again, live };
+}
+
+/** Whether the peer is still a process of the pane: its root, with the same birth, is still among its parents. */
+export function stillIn(peer: Peer, key: PaneKey): boolean {
+  return peer.alive() && !!ancestry(peer.pid)?.some(link => link.pid === key.root && link.birth === key.birth);
 }

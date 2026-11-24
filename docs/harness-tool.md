@@ -90,8 +90,9 @@ The shell command never tries the server's ordinary HTTP credential.
 ### From a pane hc started
 
 A pane opened outside Ovis (`hc run omo`, a lane another tool started) has no token. With neither
-variable set, `ovis agent` calls `<state folder>/agent-tools/hub.sock` (`OVIS_STATE_DIR`, else the
-default one) with no token, only while **Let agents call other agents** is on (Linux only for now):
+variable set, `ovis agent` calls `<state folder>/agent-tools/hub.sock` (`OVIS_STATE_DIR` from the
+environment or Ovis's settings file, else the default one) with no token, only while **Let agents call
+other agents** is on (Linux only for now):
 
 1. The server asks the kernel which process connected (`SO_PEERCRED`) and pins it (`SO_PEERPIDFD`,
    so a pid reused after it exits is not that process), walks its parents through `/proc`, and asks
@@ -113,7 +114,9 @@ are `GET /api/agent-tools/panes` (`{pending, allowed}`, also pushed as `agent-to
 machine events), `POST /api/agent-tools/panes/answer {id, decision: "allow"|"deny"}` and
 `POST /api/agent-tools/panes/remove {id}`; a watching device, the open LAN or a Portal visitor gets
 403. This attributes a call to a pane; it is not a sandbox against the OS account: a same-user
-debugger, or a process of the pane relaying for another program, is outside it.
+debugger, or a process of the pane relaying for another program, is outside it. The card asks the
+owner, but on an install where this PC's loopback is the owner (no token or lock), any local
+program can answer it, as it can already type into any pane through `POST /api/pane/input`.
 
 A driving device can cancel a tool child's turn with `POST /api/pane/turn/cancel {"pane_id":"t12"}`.
 This leaves the child alive but holds it against new agent input. The same device route group

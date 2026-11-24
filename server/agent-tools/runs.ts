@@ -76,10 +76,12 @@ export class RunStore {
       }
     }
   }
-  private save(): void {
-    writePrivate(join(this.dir, "runs.json"), JSON.stringify([...this.entries.values()]));
-    writePrivate(join(this.dir, "pane-runs.json"), JSON.stringify([...this.panes.values()]));
+  /** Each registry is written alone, so a pane registry that cannot be written never fails a token run, nor the reverse. */
+  private save(which: "tokens" | "panes" = "tokens"): void {
+    if (which === "panes") writePrivate(join(this.dir, "pane-runs.json"), JSON.stringify([...this.panes.values()]));
+    else writePrivate(join(this.dir, "runs.json"), JSON.stringify([...this.entries.values()]));
   }
+  private saveFor(id: string): void { this.save(this.panes.has(id) ? "panes" : "tokens"); }
   private row(id: string): PaneSaved | undefined { return this.entries.get(id) ?? this.panes.get(id); }
   private put(id: string, row: PaneSaved): void {
     if (this.panes.has(id)) this.panes.set(id, row); else this.entries.set(id, row as Saved);
@@ -89,10 +91,16 @@ export class RunStore {
     const id = randomBytes(8).toString("hex");
     const run: Run = { id, self, depth: 0, started_by: null, root: id, harness: "hc-pane", created_ms: Date.now() };
     this.panes.set(id, { run });
-    try { this.save(); } catch (error) { this.panes.delete(id); throw error; }
+    try { this.save("panes"); } catch (error) { this.panes.delete(id); throw error; }
     return run;
   }
   paneRun(id: string): Run | null { return this.panes.get(id)?.run ?? null; }
+  /** Drops the pane runs no allowed pane holds (a stop between writing the run and the owner's word). */
+  keepPaneRuns(held: ReadonlySet<string>): void {
+    const orphans = [...this.panes.keys()].filter(id => !held.has(id));
+    for (const id of orphans) this.panes.delete(id);
+    if (orphans.length > 0) this.save("panes");
+  }
   /** Whether Ovis launched this pane's program with a token of its own: such a pane is never also a tokenless one. */
   tokenManaged(self: string): boolean { return [...this.entries.values()].some(({ run }) => run.self === self); }
   reserve(depth = 0, ceiling?: string) {
@@ -142,7 +150,7 @@ export class RunStore {
     const row = this.row(id);
     if (!row?.starts?.some(s => s.run === failed)) return;
     this.put(id, { ...row, starts: row.starts.filter(s => s.run !== failed) });
-    this.save();
+    this.saveFor(id);
   }
   takeCall(id: string, now: number): boolean {
     const row = this.row(id);
@@ -150,21 +158,22 @@ export class RunStore {
     const calls = (row.calls ?? []).filter(at => at > now - 60_000);
     const max = HARNESS_LIMITS.calls_per_minute;
     this.put(id, { ...row, calls: [...calls, now].slice(-max) });
-    this.save();
+    this.saveFor(id);
     return calls.length < max;
   }
   rememberStart(id: string, key: string, child: string): void {
     const row = this.row(id);
     if (!row) throw new Error("Agent tool run has ended.");
     this.put(id, { ...row, starts: [...row.starts ?? [], { key, run: child }] });
-    this.save();
+    this.saveFor(id);
   }
   revoke(id: string): void {
     if (!idPattern.test(id)) return;
     this.pending.delete(id);
-    if (this.entries.delete(id) || this.panes.delete(id)) this.save();
     rmSync(join(this.dir, "tokens", `${id}.token`), { force: true });
     for (const end of [".json", ".js"]) rmSync(join(this.dir, "mcp", `${id}${end}`), { force: true });
+    if (this.entries.delete(id)) this.save("tokens");
+    else if (this.panes.delete(id)) this.save("panes");
   }
   forgetTerminal(self: string, keep?: string): void {
     for (const { run } of [...this.entries.values(), ...this.panes.values()]) if (run.self === self && run.id !== keep) this.revoke(run.id);
@@ -195,7 +204,8 @@ export class RunStore {
     this.pending.clear();
     this.entries.clear();
     this.panes.clear();
-    this.save();
     for (const dir of ["tokens", "mcp"]) rmSync(join(this.dir, dir), { recursive: true, force: true });
+    this.save("tokens");
+    this.save("panes");
   }
 }

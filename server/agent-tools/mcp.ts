@@ -20,7 +20,8 @@ export async function callHarness(door: ToolDoor, verb: string, args: unknown) {
  */
 export async function callAsPane(socket: string, verb: string, args: unknown, hint: string | undefined) {
   const uid = process.getuid?.();
-  const dir = lstatSync(dirname(socket), { throwIfNoEntry: false }), end = lstatSync(socket, { throwIfNoEntry: false });
+  const look = (path: string) => { try { return lstatSync(path, { throwIfNoEntry: false }); } catch { return undefined; } };
+  const dir = look(dirname(socket)), end = look(socket);
   if (!dir?.isDirectory() || dir.uid !== uid || (dir.mode & 0o077) !== 0 || !end?.isSocket() || end.uid !== uid) return refuse("unavailable", "Ovis is not running on this PC, or its agent tools are off.");
   return hubCall(socket, { principal: "pane", ...(hint && /^[A-Za-z0-9_-]{1,64}$/.test(hint) ? { pane_hint: hint } : {}) }, verb, args);
 }

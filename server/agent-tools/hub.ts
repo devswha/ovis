@@ -15,7 +15,7 @@ import { validArgs } from "./guards.ts";
 import { ChildTurns, childRef, childState } from "./turns.ts";
 import { HarnessView, type ViewOptions } from "./view.ts";
 import { PaneGrants } from "./pane-grants.ts";
-import { provePane, socketPeer, type Peer, type PaneReader } from "./pane-proof.ts";
+import { provePane, socketPeer, stillIn, type PaneReader } from "./pane-proof.ts";
 
 interface Options extends ViewOptions {
   readonly acp: AcpChildren;
@@ -23,9 +23,8 @@ interface Options extends ViewOptions {
   readonly setting: () => HarnessToolSetting;
   readonly now?: () => number;
   readonly resolve?: (kind: string) => HarnessCommand | null;
-  /** this PC's herdr-core panes and the caller's process facts; tests give their own */
+  /** this PC's herdr-core panes; tests give their own */
   readonly panes?: PaneReader;
-  readonly peer?: (socket: Socket) => Peer | null;
 }
 const PANE_CALL_FIELDS = new Set(["contract", "id", "principal", "pane_hint", "verb", "args"]);
 const hcPanes: PaneReader = {
@@ -82,7 +81,9 @@ export class AgentToolHub {
   async answerPane(id: string, allow: boolean): Promise<"ok" | "gone"> {
     const pane = this.grants.view().pending.find(p => p.id === id)?.pane;
     const live = pane ? await (this.options.panes ?? hcPanes).get(pane) : null;
-    return this.setting.level === "start" ? this.grants.answer(id, allow, live) : "gone";
+    // a pane Ovis launched since (its own token) or an ACP child is never also a tokenless one
+    const taken = !pane || !!this.options.acp.forPane(pane) || this.runs.tokenManaged(pane) || !!live?.labels["ovis.acp"] || !!live?.labels["ovis.run"];
+    return this.setting.level === "start" ? this.grants.answer(id, allow, taken ? null : live) : "gone";
   }
   listen(): void {
     if (this.server) return;
@@ -138,12 +139,14 @@ export class AgentToolHub {
     if (this.setting.level === "off") return refuse("tools_off", "Agent tools are off.");
     if (this.setting.level !== "start") return refuse("not_granted", "Let agents call other agents is off in Ovis.");
     const began = this.now();
-    const peer = (this.options.peer ?? socketPeer)(socket);
+    const peer = socketPeer(socket);
     if (!peer) return refuse("not_granted", "This process could not be traced to a pane.");
     try {
       const proof = await provePane(peer, hint, this.options.panes ?? hcPanes);
       if (!proof) return refuse("not_granted", "This process is not in one of this PC's herdr-core panes.");
       const { key, terminal } = proof;
+      // the panes hc lists now: cards and grants of panes that closed unseen free their places before this one is counted
+      this.grants.reconcile(proof.live);
       if (this.options.acp.forPane(key.pane) || terminal.labels["ovis.acp"] || terminal.labels["ovis.run"] || this.runs.tokenManaged(key.pane)) return refuse("not_granted", "Ovis started this pane's agent with a tool of its own.");
       if (signal.aborted || this.closed || this.setting.level !== "start") return refuse("not_granted", "The grant changed.");
       const word = this.grants.decide(key, paneLabel(terminal, key.pane));
@@ -151,7 +154,8 @@ export class AgentToolHub {
         : word.state === "denied" ? refuse("approval_denied", "The person did not allow this pane.") : refuse("rate_limited", "Too many panes are waiting for an answer.");
       const run = this.runs.paneRun(word.run);
       if (!run) return refuse("not_granted", "This pane's grant has ended.");
-      const auth = () => !signal.aborted && !this.closed && this.setting.level === "start" && peer.alive() && this.grants.allows(key, run.id);
+      // checked again at every step of the call: still a process of that pane, and the pane still allowed
+      const auth = () => !signal.aborted && !this.closed && this.setting.level === "start" && stillIn(peer, key) && this.grants.allows(key, run.id);
       return await this.act(run, auth, () => refuse("not_granted", "This pane's grant has ended."), verb, args, signal, began);
     } finally { peer.close(); }
   }
