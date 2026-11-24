@@ -24,6 +24,9 @@ import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
 import { readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
 import { ApprovalHub } from "./approvals/hub.ts";
+import { AgentToolHub } from "./agent-tools/hub.ts";
+import { useAgentToolHub } from "./agent-tools/launch.ts";
+import { harnessToolSetting } from "../shared/harness-tool.ts";
 
 import { claudeApprovals } from "./approvals/claude.ts";
 import { CodexServers } from "./approvals/codex.ts";
@@ -67,8 +70,9 @@ import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
 import { listPinOnDisk, listRemovalOnDisk, PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
-import { bringSiblingList, ListFollow } from "./account/list-follow.ts";
+import { ListFollow } from "./account/list-follow.ts";
 import { LIST_REMOVED } from "./account/pc-binding.ts";
+import { ADMISSION_FILE } from "./account/admission-order.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
 import { AccountWitness } from "./account/witness.ts";
 import type { Readmission } from "./account/readmission.ts";
@@ -328,11 +332,14 @@ export function createServer(
   // behind the rows it numbered, the start is blocked as a merge that could not be made blocks it, and writes nothing
   // to either folder (no merge, fold, repair or legacy pass) until the damage is repaired (S19, S29)
   const damage = (dir: string) => checkedOrder(dir).strict;
-  const blocked = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
+  const damaged = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
+  // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
+  if (pcAccount !== null && sibling && damaged === null) pcAccount.takeSibling(sibling);
+  // A folder whose other folder holds a pin it does not hold itself is closed by that look (takeSibling), before
+  // anything is merged: as with damage, this start then writes nothing to either folder
+  const blocked = damaged ?? pcAccount?.strict ?? null;
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
-  // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling, (pin) => bringSiblingList(stateDir, sibling, pin));
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
   const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
@@ -451,7 +458,12 @@ export function createServer(
     },
     mayAdmit: (key) => { const account = devices.account(); return account !== null && devices.admitsFromList(key, account) && !accountMailbox.listHeld(key); },
     // while the rows still stand, so their sessions end as `auth_changed` and each app signs in again by itself
-    repinned: () => { for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id); },
+    repinned: () => {
+      for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id);
+      // and the sessions of this PC's own rows under an account's id: a member's add before the pin, a join by digits
+      const serverId = serverIdNow();
+      if (serverId !== null) devices.closeListGovernedSessions(serverId);
+    },
     removed: (key, removal) => {
       const account = devices.account();
       if (account !== null) devices.removeAccountKey(key, account, { id: removal.id, issuedAt: new Date(removal.at * 1000).toISOString() });
@@ -460,8 +472,10 @@ export function createServer(
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
     ...(options.accountListMemberWaitMs === undefined ? {} : { memberWaitMs: options.accountListMemberWaitMs }),
-    // a folder closed because its other folder's pin could not be taken with its keys and copy opens by itself once they can
-    retry: () => { if (pcAccount.retrySibling()) console.info("[account] this PC's list keys and its copy of the list could be read beside its pin: it follows its list again"); },
+    denied: (key) => { devices.closeKeySessions(key); },
+    // what another Ovis server on this folder wrote to the PC's place in its account since this one read it (a pin, a
+    // clear) is taken in at each look at the clock, so this server decides by it within seconds
+    retry: () => { pcAccount.refresh(); },
   });
   devices.attachList(accountList);
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });
@@ -490,7 +504,10 @@ export function createServer(
   // the agents this server drives over ACP run under keepers in this PC's own herdr-core; the ones an earlier run
   // started are taken up again, as their keepers outlive the server
   const acp = coreAcp();
-  void acp?.restore().catch((error: unknown) => console.warn(`acp: could not take up the earlier run's children: ${error instanceof Error ? error.message : String(error)}`));
+  const acpReady = acp?.restore().then(() => true, (error: unknown) => {
+    console.warn(`acp: could not take up the earlier run's children: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  });
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
   const stopPinBridge = capabilities().pins ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   try {
@@ -587,7 +604,8 @@ export function createServer(
   // the credential it registered as its token: that server applies its own rows, so it gets every snapshot whole.
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
-  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  let agentTools: AgentToolHub | null = null;
+  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {
@@ -721,6 +739,33 @@ export function createServer(
     ? new KeyProofPairings({ pending: pendingRedemptions, seams: devices }) : undefined;
   devices.onKeyRemoved((key, cause) => pendingRedemptions?.dropKey(key, cause));
   const askScreen = localConfirms && keyProofPairings ? (entry: PendingRedemption) => askScreenForKey(localConfirms, keyProofPairings, entry) : undefined;
+  // A pin this server learns of, whoever wrote it (this server, or another Ovis on this folder whose write it read):
+  // every session open under an account's id ends as one whose row changed, and its next sign-in gets the list's answer
+  let pinSeen = pcAccount?.binding()?.list;
+  const stopPinWatch = pcAccount?.onBindingChange(() => {
+    const pin = pcAccount.binding()?.list;
+    if (pin !== undefined && pin !== pinSeen) {
+      for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id);
+      const serverId = serverIdNow();
+      if (serverId !== null) devices.closeListGovernedSessions(serverId);
+    }
+    pinSeen = pin;
+  });
+  // A server started with Step 2 off follows no list. Another Ovis on this folder may pin the PC meanwhile: this one
+  // looks at the file every few seconds (it reads it only when it changed) and then closes its account part
+  let pinFile: string | null = null;
+  const pinWatch = pcAccount !== null ? null : () => {
+    let stamp: string | null = null;
+    try { const { mtimeMs, size } = statSync(join(stateDir, ADMISSION_FILE)); stamp = `${mtimeMs} ${size}`; } catch { return; }
+    if (stamp === pinFile) return;
+    pinFile = stamp;
+    const serverId = serverIdNow();
+    if (serverId !== null && listPinOnDisk(stateDir)) {
+      devices.closeAccountPart("This PC is pinned to its account's signed list, and this Ovis was started with Step 2 turned off, so it follows no list: it lets no device in through the account. Start Ovis on this PC again.", serverId);
+    }
+  };
+  const pinTimer = pinWatch === null ? null : setInterval(pinWatch, 5_000);
+  pinTimer?.unref?.();
   const stopBindingWatch = pcAccount?.onBindingChange(() => {
     for (const entry of localConfirms?.pending() ?? []) {
       if (entry.action.kind !== "unlock") localConfirms?.withdraw(entry.id);
@@ -772,6 +817,9 @@ export function createServer(
     ? (readmission?: Readmission) => snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
       // the read's commit turn: the account rows take its list, idle rows expire (T54), and the wait after a start ends
       commitList: (snapshot) => {
+        // an admission by the account: what another Ovis server on this folder wrote to the PC's place in its account
+        // (a pin, a clear) is taken in first, so a snapshot adds nobody to a PC that server pinned a moment ago
+        pcAccount.refresh();
         accountCatchUp.commitList(snapshot, readmission);
         const removed = new Set(snapshot.removed.map((row) => row.key));
         accountList?.shadowSnapshot(snapshot.devices.flatMap((row) => row.eligible && !removed.has(row.key) ? [row.key] : []));
@@ -793,7 +841,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, pinWatch, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
@@ -867,6 +915,23 @@ export function createServer(
   const releaseCommandHistory = holdCommandHistory();
   core.start();
 
+  // No deferred listener from a failed HTTP/LAN bind may replace a running server's hub.
+  if (acp && process.platform !== "win32" && hcMachine() === null) {
+    try {
+      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
+      const hub = agentTools;
+      void acpReady?.then(async restored => {
+        if (!restored) throw new Error("ACP restore incomplete.");
+        const terminals = await hub.reconcileLaunches();
+        if (agentTools !== hub) return;
+        hub.runs.reconcile(terminals, pane => acp.forPane(pane)?.id);
+        hub.listen();
+        useAgentToolHub(hub);
+      }).catch(() => { hub.close(); if (agentTools === hub) agentTools = null; });
+      preferences.subscribe(() => agentTools?.settingsChanged());
+    } catch { console.warn("Agent tools unavailable for this state directory."); }
+  }
+
   return {
     context: socketContext(server),
     port: server.port ?? 0,
@@ -908,11 +973,14 @@ export function createServer(
       codexServers.stop();
       approvals.stop();
       acp?.close();
+      useAgentToolHub(null); agentTools?.close(); agentTools = null;
       agentDetector.close();
       server.stop(true);
       ipv6?.stop(true);
       ownerListener?.stop(true);
       stopBindingWatch?.();
+      stopPinWatch?.();
+      if (pinTimer !== null) clearInterval(pinTimer);
       confirmListener?.stop();
       recoverySocket?.stop();
       desktopOwner?.stop();
