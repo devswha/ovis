@@ -452,6 +452,7 @@ describe("demo transport", () => {
   const DEMO_404: Record<string, string> = {
     "/api/pane/turn/cancel": "only a live ACP keeper has a turn a person can cancel",
     "/api/pane/turn/release": "only a live ACP keeper can be handed back",
+    "/api/pane/turn/cancel-children": "only a pane that started live ACP keepers has children a person can stop",
     "/api/worktree/create-checked": "Only the terminal screen sends checkout mutations bound to a herdr-core identity.",
     "/api/worktree/remove-checked": "Only the terminal screen sends checkout mutations bound to a herdr-core identity.",
     "/api/account/confirm": "a PC-local screen confirmation (the PC's own confirm page); a browser over the demo never answers one",
@@ -467,6 +468,7 @@ describe("demo transport", () => {
     "/api/account/list/add": "a PC in no account is added to an account that keeps a signed list: asked by `ovis add` on the PC, and the demo's PC is in its account",
     "/api/account/list/add/confirm": "the person at the PC says the adding device shows the same number: asked by `ovis add` on the PC",
     "/api/account/list/add/cancel": "the person at the PC says the numbers differ: asked by `ovis add` on the PC",
+    "/api/account/list/allow/cancel": "the person at a PC pinned to its account's list gives up an entry it signed for a device it has since held back: the demo's PC signs none",
     "/api/account/list/join": "`ovis join` with an invite's line that names the account's list: the CLI on the PC alone",
     "/api/account/list/join/prepare": "`ovis join` with an auto invite: the CLI on the PC alone",
     "/api/account/list/join/body": "`ovis join` with an auto invite: the CLI on the PC alone",

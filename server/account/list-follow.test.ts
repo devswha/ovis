@@ -4,7 +4,7 @@
  * a real account wrote; the clock, the binding and the disk are the test's.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -788,6 +788,62 @@ describe("an entry this PC signed and does not know to be placed", () => {
     writeFileSync(kept, "{ not an entry", { mode: 0o600 });
     expect(await pc.list.allowDevice(phone, true)).toEqual({ refused: "not_written", detail: "kept_unreadable" });
     expect(sent).toEqual([]);
+    expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+  });
+
+  test("that the PC cannot read holds its Allows only at the head where it found it so: once its verified head moved past that, the file goes and the PC signs again, and meanwhile its status says why", async () => {
+    const { pc, phone, sent, kept } = await twoAsked();
+    writeFileSync(kept, "{ not an entry", { mode: 0o600 });
+    expect(await pc.list.allowDevice(phone, true)).toEqual({ refused: "not_written", detail: "kept_unreadable" });
+    expect(pc.list.status().reason).toContain(ACCOUNT_LIST_ALLOW_FILE);
+    expect(pc.list.summary()?.reason).toContain(ACCOUNT_LIST_ALLOW_FILE);
+    // asked again at the same head: still nothing, and the file stays for a person to look at
+    expect(await pc.list.allowDevice(phone, true)).toEqual({ refused: "not_written", detail: "kept_unreadable" });
+    expect(existsSync(kept)).toBe(true);
+    expect(sent).toEqual([]);
+    // a member writes: the list moves on past the head at which the file was found unreadable
+    await pc.account.addDevice(await listMember());
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    expect(sent).toHaveLength(1);
+    expect(existsSync(kept)).toBe(false);
+    expect(pc.list.status().reason).toBeNull();
+  });
+
+  test("of a device this PC has come to hold back stops holding other Allows at its head ten minutes after it was kept", async () => {
+    const { pc, phone, tablet, sent, state, kept } = await twoAsked();
+    state.away = true;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    sent.length = 0;
+    state.away = false;
+    pc.deps.mayAdmit = (key) => key !== phone.key;
+    expect(await pc.list.allowDevice(tablet, true)).toEqual({ refused: "not_written", detail: "place_kept" });
+    expect(pc.list.status().reason).toContain("ten minutes");
+    // kept ten minutes ago and more: it is not sent, and no longer holds the place for another device
+    const then = new Date(Date.now() - 10 * 60_000 - 1_000);
+    utimesSync(kept, then, then);
+    expect(await pc.list.allowDevice(tablet, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    const held = pc.service.accountList(ACCOUNT)!;
+    expect(held.state.signers[phone.key]).toBeUndefined();
+    expect(held.state.signers[tablet.key]).toBeDefined();
+    expect(pc.list.status().reason).toBeNull();
+  });
+
+  test("of a device this PC has come to hold back gives its place up at once when the person at the PC cancels it, and no other is cancelled so", async () => {
+    const { pc, phone, tablet, sent, state, kept } = await twoAsked();
+    state.away = true;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    sent.length = 0;
+    state.away = false;
+    // the phone's entry is kept, and the PC still lets the phone in: nothing cancels it
+    expect(pc.list.cancelKept(phone.key)).toBe(false);
+    expect(existsSync(kept)).toBe(true);
+    pc.deps.mayAdmit = (key) => key !== phone.key;
+    expect(await pc.list.allowDevice(tablet, true)).toEqual({ refused: "not_written", detail: "place_kept" });
+    // only the entry of the device held back, named by its key
+    expect(pc.list.cancelKept(tablet.key)).toBe(false);
+    expect(pc.list.cancelKept(phone.key)).toBe(true);
+    expect(existsSync(kept)).toBe(false);
+    expect(await pc.list.allowDevice(tablet, true)).toMatchObject({ allowed: { id: pc.account.id } });
     expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
   });
 

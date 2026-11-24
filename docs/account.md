@@ -1978,7 +1978,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   /api/relay/joins` marks such a join `list`, and `ovis approve` then says that the approval was
   received, not that the device is let in: it is in once its entry is in the list. On a PC whose
   Ovis is behind the list the join is marked `list_behind` too, and `ovis approve` says that the
-  device was not let in and that Ovis on this PC needs an update.
+  device was not let in and that Ovis on this PC needs an update. On a PC that joined by an invite,
+  which signs for nobody, it is marked `list_not_signer`, and `ovis approve` says that the device was
+  not let in and to allow it on another device of the account.
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.
@@ -2025,6 +2027,15 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   entry that cannot be kept is not sent. Any other refusal ends it at once, and the kept request
   with it, since the service itself said that it placed nothing: a budget, a service that changes
   the list for nobody (`list_stopped`), a key this PC itself keeps out.
+- **A kept request that goes wrong heals by itself.** A file that does not read signs nobody new in
+  (`not_written`, `kept_unreadable`) while this PC's copy stands at the head at which it found the
+  file so; once its verified head moved past that, the place whatever it held was signed for is
+  taken, and the file goes. A kept request of a device this PC has since come to hold back is never
+  sent, and holds its place from another device's Allow (`place_kept`) for ten minutes from when it
+  was kept, or until the person at this PC gives it up (`POST /api/account/list/allow/cancel`
+  `{ "key" }`, this PC's own window and CLI alone; `{ "cancelled" }`). Meanwhile `reason` of `GET
+  /api/account/list` and the `list` of `GET /api/account/status` (so `ovis status --json`) say
+  why this PC lets no new device in.
 - **A join a member device allows** is let in only when an entry of the list lets the device in:
   the PC signs nothing on a member's approval. The member signs only after the new device
   confirmed its digits, so a device that gives up before that is nobody's member: a waiting join

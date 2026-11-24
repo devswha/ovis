@@ -663,12 +663,16 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
   test("a PC joins by itself only with an invite made for one PC, and never with one a person adds a PC with", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
-    for (const [options, code] of [[{ auto: true, uses: 2 }, "invite_uses"], [{ auto: false }, "invite_plain"]] as const) {
-      const invite = await account.invite(options);
-      const line = await readJoinLine(invite.line, { service: "https://account.test", followsLists: true });
-      const refused = await made.post("/api/account/list/join/prepare", { account: ACCOUNT, list: account.id, invite: line.key });
-      expect([refused.status, refused.body.error?.code]).toEqual([409, code]);
-    }
+    const plain = await readJoinLine((await account.invite({ auto: false })).line, { service: "https://account.test", followsLists: true });
+    const asPlain = await made.post("/api/account/list/join/prepare", { account: ACCOUNT, list: account.id, invite: plain.key });
+    expect([asPlain.status, asPlain.body.error?.code]).toEqual([409, "invite_plain"]);
+    // An auto invite that lets two PCs in, signed by a member. The account service places none (`uses_one`), so it is
+    // shown to this PC beside the log, as a service that lies would: the PC refuses it all the same
+    const many = await listMember();
+    const text = await account.sign({ kind: "invite", key: many.key, exp: Math.floor(Date.now() / 1000) + 15 * 60, uses: 2, auto: true, sealed: null }, account.first, account.place);
+    made.pc.account.tamperList(account.id, { inject: [text] });
+    const asMany = await made.post("/api/account/list/join/prepare", { account: ACCOUNT, list: account.id, invite: many.key });
+    expect([asMany.status, asMany.body.error?.code]).toEqual([409, "invite_uses"]);
     const unknown = await listMember();
     const refused = await made.post("/api/account/list/join/prepare", { account: ACCOUNT, list: account.id, invite: unknown.key });
     expect([refused.status, refused.body.error?.code]).toEqual([409, "invite_unknown"]);
@@ -704,7 +708,7 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
   test("the join routes are this PC's own window's alone, and name the account this PC was set up for", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
-    for (const path of ["/api/account/list/join", "/api/account/list/join/prepare", "/api/account/list/join/body", "/api/account/list/join/place"]) {
+    for (const path of ["/api/account/list/join", "/api/account/list/join/prepare", "/api/account/list/join/body", "/api/account/list/join/place", "/api/account/list/allow/cancel"]) {
       const base = `http://127.0.0.1:${made.pc.app.port}`;
       const answer = await fetch(`${base}${path}`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-herdr-machine": "1", "x-forwarded-for": "100.64.0.9", ...own }, body: JSON.stringify({ account: ACCOUNT, list: account.id }) });
       expect(answer.status).toBe(403);
