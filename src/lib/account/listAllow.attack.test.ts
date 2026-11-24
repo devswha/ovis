@@ -218,11 +218,10 @@ describe("an account with no list is approved at once, as before lists", () => {
       fetch: pc.fetch, service: member.service, key: await member.store.key(), account: session.account,
       joining: { key: (await newcomer.store.key()).public_spki, label: "Tablet", os: null }, through: "a1".repeat(16), paired: [], directory: [], wait: async () => {},
     });
-    await new Promise((resolve) => { setTimeout(resolve, 200); });
-    // as before lists: the whole of it went to the PC at once, and none of it waited for an answer about lists
+    // as before lists: the whole of it goes to the PC, and ends, while the answer about lists is still held back
+    await done;
     const before = [...pc.sent];
     release();
-    await done;
     expect(pc.sent).toEqual(["/api/account/introduce", "/api/account/records"]);
     expect(before).toEqual(["/api/account/introduce", "/api/account/records"]);
   });
