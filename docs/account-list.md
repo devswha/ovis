@@ -1359,6 +1359,36 @@ the list holds for it, the account key, and no longer by the key a sign-in regis
 - **A list key the PC refuses** (`auth_failed`) means the device is not in that PC's list: the
   join again, and no word of a removal.
 
+### Joining through a pinned PC
+
+A new device that asks to join its account through a pinned PC is let in by an entry of the list,
+never by a pairing of that PC's own ([A PC allows a device into the
+list](account.md#a-pc-allows-a-device-into-the-list)). The app's half is in
+`shared/relay-channel.ts` (`listCard`, `listPlace`) and `src/lib/relay/shell.tsx`.
+
+- **The device brings its card.** A device that waits to be let into its account's list, its
+  claim of its key standing, offers `account-list-allow-1` with a join of the account. To a PC
+  that selects it, and to no other, its `PAIR_REQUEST` carries `list_enc` and `list_card`.
+- **It stops early at another list.** The PC's `PAIR_CHALLENGE` names the list it follows. Where
+  that is not the list the card is for, the attempt ends before any digits are shown.
+- **It is handed its place.** The `AUTH_OK` of a join the PC allowed names the list and the place
+  of the entry that let the device in. The device takes a place only from a PC that took its
+  card, and only in the list the card names; it follows the list from there by its own read of
+  the log ([The place handed over](#letting-a-device-in)). No pairing is saved: that session
+  serves nothing else, so the app closes it and opens the PC anew with the key the list holds.
+- **When no entry lets it in**, the PC ends the join `auth_failed` and names the cause, which the
+  app says in words of its own: no sign-in of the account claimed the key (sign in again on this
+  device), the entry could not be placed in time (ask again), a device of the account approved
+  and no entry reached the PC, Ovis on the PC is older than the list (update it, or approve on
+  another device), or anything else.
+- **A member that approves on such a PC signs first.** The PC signs nothing on a member's
+  approval and lets the device in only by an entry, so on a PC that selected `account-list-1`
+  for its session the member signs the device's entry and hands the PC the page before it
+  approves; where the list does not take the device, nothing is approved and the card says why.
+  On any other PC the approval comes first, and the entry once the PC holds the device's row.
+  The entry is then signed before the new device confirmed its digits: one that cancels after
+  that is in the list, and **Remove** puts it out.
+
 ### Which list it follows
 
 Never the one the account service names, on that word alone. A device follows a list only when
