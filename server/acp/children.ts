@@ -7,7 +7,7 @@
  * ever touched.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HcMethods } from "../herdr-core/hc-api.generated.ts";
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
@@ -110,20 +110,23 @@ function sessionOpens(client: KeeperClient, ms: number): Promise<"open" | "exite
 }
 
 /**
- * Removes the ROOT of a keeper that may still be ending: it removes its own socket meanwhile, and Bun's recursive rmSync,
+ * Removes the ROOT of a keeper that may still be ending. It removes its own socket meanwhile, and Bun's recursive rmSync,
  * when an entry goes while it walks the folder, stops without an error and leaves the folder and the entries after it.
- * Each entry is removed on its own (one gone already is fine), then the folder; anything left after that throws.
+ * So ROOT is moved aside first: the keeper names its files by ROOT's path, so from then on it neither removes nor
+ * writes anything in what is removed. A move takes a symlink itself, not what it points to. Where the folder cannot be
+ * moved (Windows, while the keeper holds its files), it is removed in place, as before.
  */
 function removeRoot(root: string): void {
-  let names: string[];
+  const gone = `${root}.gone`;
+  rmSync(gone, { recursive: true, force: true });
   try {
-    names = readdirSync(root);
+    renameSync(root, gone);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
+    rmSync(root, { recursive: true, force: true });
+    return;
   }
-  for (const name of names) rmSync(join(root, name), { recursive: true, force: true });
-  rmdirSync(root);
+  rmSync(gone, { recursive: true, force: true });
 }
 
 function owned(path: string, kind: "directory" | "file"): boolean {

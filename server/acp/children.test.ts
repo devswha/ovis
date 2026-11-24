@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -132,6 +132,18 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(existsSync(child.root)).toBe(false);
     expect(children.forPane(child.terminal)).toBeUndefined();
     expect(await program.exited).toBe(0);
+  });
+
+  it("stops a child whose ROOT was swapped for a symlink: the link goes, what it points to stays", async () => {
+    setUp();
+    const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir });
+    const elsewhere = join(dir, "..", "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "kept"), "");
+    renameSync(child.root, join(dir, "..", "moved"));
+    symlinkSync(elsewhere, child.root, "dir");
+    await children.stop(child.id);
+    expect({ root: lstatSync(child.root, { throwIfNoEntry: false }), elsewhere: readdirSync(elsewhere) }).toEqual({ root: undefined, elsewhere: ["kept"] });
   });
 
   it("can retry stopping a child when the core refuses the first kill", async () => {
