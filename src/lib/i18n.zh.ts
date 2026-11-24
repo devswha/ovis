@@ -106,6 +106,7 @@ const BASE: Record<string, string> = {
   "The account service did not answer. Try again to check.": "账户服务没有响应。请重试以确认。",
   "This device's clock looks wrong. Check its date and time, then try again.": "此设备的时钟似乎不正确。请检查日期和时间后重试。",
   "This device cannot change your account's list right now.": "现在无法从此设备更改账户名单。",
+  "Update Ovis on this device, then try again.": "请先更新此设备上的 Ovis，然后重试。",
   "Too many devices were added. Try again tomorrow.": "添加的设备过多。请明天再试。",
   "Not known yet: is {device} in your account?": "尚不清楚：{device} 是否已加入你的账户？",
   "Too many devices were added just now. Try again in a few minutes.": "刚才添加的设备太多。请过几分钟再试。",

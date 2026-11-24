@@ -47,6 +47,8 @@ describe("a device a PC let in that the account's list did not take", () => {
   it("says that the clock looks wrong, that this device cannot change the list, and how long a budget lasts", () => {
     expect(render("clock")).toContain("This device&#x27;s clock looks wrong. Check its date and time, then try again.");
     expect(render("blocked")).toContain("This device cannot change your account&#x27;s list right now.");
+    // a device that is behind signs nobody in until it is updated
+    expect(render("behind")).toContain("Update Ovis on this device, then try again.");
     expect(render("budget", 20 * 3600_000)).toContain("Too many devices were added. Try again tomorrow.");
     expect(render("budget", 5 * 60_000)).toContain("Too many devices were added just now. Try again in a few minutes.");
   });

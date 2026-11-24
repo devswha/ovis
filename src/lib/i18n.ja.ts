@@ -104,6 +104,7 @@ const BASE: Record<string, string> = {
   "The account service did not answer. Try again to check.": "アカウントサービスが応答しませんでした。もう一度試して確認してください。",
   "This device's clock looks wrong. Check its date and time, then try again.": "この端末の時計がずれているようです。日付と時刻を確認して、もう一度お試しください。",
   "This device cannot change your account's list right now.": "今はこの端末からアカウントの名簿を変更できません。",
+  "Update Ovis on this device, then try again.": "この端末の Ovis を更新してから、もう一度お試しください。",
   "Too many devices were added. Try again tomorrow.": "追加した端末が多すぎます。明日もう一度お試しください。",
   "Not known yet: is {device} in your account?": "まだ分かりません: {device} はアカウントに追加されましたか?",
   "Too many devices were added just now. Try again in a few minutes.": "デバイスの追加が短時間に多すぎます。数分後にもう一度お試しください。",

@@ -1129,6 +1129,10 @@ nothing and is never signed: a service that said "tomorrow" could otherwise make
 removal that nothing undoes. Where the service refuses a request for its time or its epoch, the
 device signs nothing else and says that its clock looks wrong.
 
+**A device that is behind.** Once a member of a later level has written, this build lets nobody in
+on what it holds (the kinds refuse the entry, `behind`): the request is not sent, and the device
+says to update Ovis on it. It still removes.
+
 It gives up, and says why, where the service holds no claim of that key, where the list put that
 key out before (a key that is out never comes back), where the list took as many additions as it
 takes for now (with the wait the service named), where the service cannot change the list, and

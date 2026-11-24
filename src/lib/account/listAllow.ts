@@ -8,12 +8,12 @@
  * copy shows the entry at its place, and that place is what the newcomer is handed.
  */
 import type { AccountOs } from "../../../shared/account-asker.ts";
-import { namesFields, sealEpoch, type ListKind, type ListNames, type ListState, type Sealed } from "../../../shared/account-list.ts";
+import { lapsedRemovals, namesFields, sealEpoch, type ListKind, type ListNames, type ListState, type Sealed } from "../../../shared/account-list.ts";
 import { sealFields, wrapEpochKey, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import type { AccountList, ListOffer, ListWriter } from "./accountList.ts";
 import type { ListClaim } from "./listAnswers.ts";
 import { listNames } from "./listGenesis.ts";
-import { WRITE_RESENDS, WRITE_TRIES, overTime, placeOf, signedOn, signedWithEpoch, writeToList, type WriteRefusal, type Written } from "./listWrite.ts";
+import { WRITE_RESENDS, WRITE_TRIES, placeOf, signedOn, signedWithEpoch, writeToList, type WriteRefusal, type Written } from "./listWrite.ts";
 
 /** The device a person is letting in: the key it showed the PC it asked, and the name and system it gave the account service. */
 export interface Newcomer {
@@ -52,7 +52,7 @@ async function written(writer: ListWriter, claim: ListClaim, names: ListNames | 
     const wrap = await wrapEpochKey({ list, epoch: current, member: claim.enc });
     return signedOn(writer, [device(await seal(state, current, where.opens))], wrap === null ? [] : [{ epoch: current.epoch, member: claim.enc, wrap: wrapToText(wrap) }]);
   }
-  return signedWithEpoch(writer, current, overTime(state, clock).map((key): ListKind => ({ kind: "remove", ends: key })),
+  return signedWithEpoch(writer, current, lapsedRemovals(state, clock),
     (next) => [async (after) => device(await seal(after, next.epoch, next.commitment))]);
 }
 

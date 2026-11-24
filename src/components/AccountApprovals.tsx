@@ -46,6 +46,7 @@ function stalledReason(t: ReturnType<typeof useT>, why: AllowRefusal, retryAfter
     case "unknown": return t("The account service did not answer. Try again to check.");
     case "clock": return t("This device's clock looks wrong. Check its date and time, then try again.");
     case "blocked": return t("This device cannot change your account's list right now.");
+    case "behind": return t("Update Ovis on this device, then try again.");
     case "not_claimed": return t("Update Ovis on that device and sign in there, then try again.");
     case "removed": return t("That device was removed from your account. Sign in again on it first.");
     case "stopped": return t("The account service cannot change the list right now.");

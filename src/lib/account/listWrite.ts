@@ -6,7 +6,7 @@
  * The account service's answer to the placement is trusted for nothing: the entries are placed once this device's own
  * copy shows the last of them at its place.
  */
-import { ListWriteError, listView, signListEntries, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
+import { ListWriteError, signListEntries, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
 import { nextEpoch, wrapEpochKeyFor, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList, ListWriter } from "./accountList.ts";
@@ -31,8 +31,10 @@ import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableErro
  * - `unknown`: the request went out, no answer came, and the list could not be read since: whether the entries were
  *   placed is not known yet.
  * - `changed`: the account or the list is no longer the one the write was begun for (WriteOptions.expect): nothing was signed.
+ * - `behind`: a member of a later level wrote, and this build signs nobody in on what it holds until it is updated
+ *   (it still signs a removal, and the epoch after one).
  */
-export type WriteRefusal = "no_list" | "blocked" | "clock" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "unknown" | "changed";
+export type WriteRefusal = "no_list" | "blocked" | "clock" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "unknown" | "changed" | "behind";
 
 /** The most entries one request places (the account service takes no more). */
 export const WRITE_ENTRIES_MAX = 16;
@@ -65,19 +67,6 @@ export type WriteOutcome<Why extends string> =
   | { readonly written: false; readonly why: WriteRefusal | Why; readonly retryAfterMs: number | null };
 
 export const placeOf = (state: ListState): ListPlace => ({ seq: state.footing.seq, hash: state.footing.hash });
-
-/**
- * The keys whose time is over while they still hold the current epoch's key, by the clock the writer judges by: an
- * invite that a PC joins with by itself, past its `exp` with a use left, and a device that is in past its `until`.
- * While one of them is in, the kinds seal no name (sealEpoch).
- */
-export function overTime(state: ListState, clock: number): string[] {
-  const view = listView(state);
-  return [
-    ...view.invites.filter((row) => row.auto && state.signers[row.key]?.ended === null && row.joins < row.uses && clock > row.exp).map((row) => row.key),
-    ...view.devices.filter((row) => row.ended === null && row.until !== null && !(clock < row.until)).map((row) => row.key),
-  ];
-}
 
 /** A step of a request: a kind, or one made from the state the steps before it leave. */
 export type Step = ListKind | ((state: ListState) => ListKind | Promise<ListKind>);
@@ -159,7 +148,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
     } catch (error) {
       if (error instanceof SignedOutError) throw error;
       // an entry this device would not count is not signed: a card that is not that key's, most of all
-      if (error instanceof ListWriteError) return refused("refused");
+      if (error instanceof ListWriteError) return refused(error.reason === "behind" ? "behind" : "refused");
       if (unanswered(error) || refusalOf(error) !== null) return refused("unreached");
       throw error;
     }
