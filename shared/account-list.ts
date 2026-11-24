@@ -20,13 +20,12 @@ import {
   ListEntryError, entryFromText, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readFieldsUnder, verifySignature, writeFieldsUnder,
   type EntryBody, type HeldEntry, type ListField, type ListRefusalCode, type SignerPower,
 } from "./account-list-entry.ts";
-import { oneSpelling } from "./account-list-join.ts";
 import { ACCOUNT_LABEL_MAX } from "./account-records.ts";
 import {
   firstSignersState, judgeEntry, readSignersState, replayEntries, shownEntries, signerPower,
   type PassedOverCode, type ShownAnswer, type ShownResult, type SignerRow, type SignersState,
 } from "./account-list-signers.ts";
-import { toBase64Url } from "./relay-pair-sas.ts";
+import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 
 /** The level of this build: it reads every form of levels 1 to this. */
 export const LIST_LEVEL = 1;
@@ -278,6 +277,13 @@ const OTHER_SPACE = /[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\uf
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 const NONE = new Uint8Array();
+
+/** The bytes a base64url text spells when it is their one spelling (no padding); null for anything else. */
+function oneSpelling(text: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) return null;
+  const bytes = fromBase64Url(text);
+  return toBase64Url(bytes) === text ? bytes : null;
+}
 
 /** A key in its one spelling whose point is on the curve: what an encryption key and a PC's key must be to be of any use. */
 export function isListKey(text: string): boolean {
@@ -857,7 +863,8 @@ export function listView(state: ListState): { readonly devices: readonly DeviceV
  * that hour. A member that is stopped for a replay answers for nobody.
  */
 export function admitsDevice(state: ListState, key: string, now: number): ListRole | null {
-  if (signerPower(state, key) === null || rowOf(state.signers, key)?.as !== "device") return null;
+  if (signerPower(state, key) === null) return null;
+  // Only a key that its kind made a device has a row among the devices.
   const device = rowOf(state.devices, key);
   if (device === null || (device.until !== null && !(now < device.until))) return null;
   return device.role;
@@ -957,8 +964,10 @@ export function readListState(value: unknown, level: number): ListState | null {
       if (invite !== null || row === undefined || row.as !== "pc" || row.seq !== seq || row.ended !== removed) return null;
     } else if (how === "joined") {
       const placed = typeof invite === "string" ? signers[invite] : undefined;
-      // It joined after its invite was placed, while that invite's key was a signer.
+      // It joined after its invite was placed, while that invite's key was a signer and whoever placed it was one.
       if (typeof invite !== "string" || placed === undefined || placed.as !== "invite" || seq <= placed.seq || (placed.ended !== null && seq >= placed.ended)) return null;
+      const placer = signers[placed.by ?? ""];
+      if (placer !== undefined && placer.ended !== null && seq >= placer.ended) return null;
       joined.set(invite, (joined.get(invite) ?? 0) + 1);
     } else {
       return null;

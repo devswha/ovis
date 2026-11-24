@@ -951,17 +951,18 @@ describe("going back, on the signers' shownEntries", () => {
 
   test("a member that is behind stops at an entry it cannot place, keeps the stop, and answers for nobody until it replays", async () => {
     // A level above 1 that the list needs, then an entry of that level by a key that has no row: a later kind may have let that key in.
-    const { links, state } = await play([[owner, device(phone)], [owner, later()]]);
-    const entry = await next(at(links, 2), stranger, later());
+    const { links, state } = await play([[owner, device(phone)], [owner, pc(desk, 1)], [owner, later()]]);
+    const entry = await next(at(links, 3), stranger, later());
     const member = { entries: links.map((item) => item.text), state };
-    const shown = await shownList(member, { after: 2, entries: [entry.text], head: { seq: 3, hash: entry.held.hash } });
-    expect([shown.stopped, shown.stuck, shown.took, shown.member.state.needs_replay]).toEqual([{ seq: 3, code: "needs_replay" }, true, [], { seq: 3, hash: entry.held.hash }]);
-    expect([admitsDevice(shown.member.state, owner.key, T0), admitsDevice(state, owner.key, T0), holdsPc(shown.member.state, E(1))]).toEqual([null, "drive", false]);
+    const shown = await shownList(member, { after: 3, entries: [entry.text], head: { seq: 4, hash: entry.held.hash } });
+    expect([shown.stopped, shown.stuck, shown.took, shown.member.state.needs_replay]).toEqual([{ seq: 4, code: "needs_replay" }, true, [], { seq: 4, hash: entry.held.hash }]);
+    expect([admitsDevice(state, owner.key, T0), holdsPc(state, E(1)), listView(state).pcs.map((row) => row.allows)]).toEqual(["drive", true, [true]]);
+    expect([admitsDevice(shown.member.state, owner.key, T0), holdsPc(shown.member.state, E(1)), listView(shown.member.state).pcs.map((row) => row.allows)]).toEqual([null, false, [false]]);
     expect(said((await takeEntry(state, entry.held)).outcome)).toBe("stops needs_replay");
     // The stop is saved and read again with the state.
     expect(readListState(JSON.parse(JSON.stringify(shown.member.state)), 1)).toEqual(shown.member.state);
     const replayed = await replayList(shown.member.entries, 1, { saved: shown.member.state });
-    expect([replayed.stuck, replayed.stopped, replayed.member?.state]).toEqual([true, { seq: 3, code: "needs_replay" }, shown.member.state]);
+    expect([replayed.stuck, replayed.stopped, replayed.member?.state]).toEqual([true, { seq: 4, code: "needs_replay" }, shown.member.state]);
   });
 });
 
@@ -1054,6 +1055,14 @@ describe("a saved state: plain data that can be stored and loaded", () => {
     ];
     for (const [name, change] of changes) expect({ name, state: await changed(change) }).toEqual({ name, state: null });
     expect(await changed(() => undefined)).toEqual(await saved());
+  });
+
+  test("a PC joined while whoever placed its invite was a signer: a row that says it joined after that is no state", async () => {
+    const { state } = await play([[owner, device(phone)], [phone, invite(pool)], [pool, join(1)], [owner, remove(phone)]]);
+    const value = JSON.parse(JSON.stringify(state)) as Loose;
+    expect(readListState(value, 1)).toEqual(state);
+    row(value, "pcs", E(1)).seq = 4;
+    expect(readListState(value, 1)).toBeNull();
   });
 
   test("behind: while it is behind it lets nobody new in, so no named row stands at or past that place", async () => {
