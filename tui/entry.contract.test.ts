@@ -92,7 +92,7 @@ printf '%s\\n' "$*" > '${startLog}'
 exit 3
 `, { mode: 0o700 });
       const run = entryPty(command(), entryEnv(folder, standIn), 80, 24);
-      await run.until("[Y/n]");
+      await run.until("[Y/n] ");
       expect(await run.stty()).toMatchObject(COOKED);
       run.type("n\r");
       const end = await run.ended;

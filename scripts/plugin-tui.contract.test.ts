@@ -24,13 +24,15 @@ const FILE_ONLY = ["CANARY_GENERIC", "DOTENV_SECRET", "OVIS_TOKEN", "LOCAL_ONLY"
 const PLUGIN = join(ROOT, "scripts", "plugin.ts");
 
 const cores: IsolatedCore[] = [];
+const scratches: string[] = [];
 let built = "";
 let ending: Promise<void> | undefined;
-/** One teardown, whoever asks: the ptys, every core and the built binaries are each tried, and what failed is thrown after the last. */
+/** One teardown, whoever asks: the ptys, every core, the built binaries and the scratch homes are each tried, and what failed is thrown after the last. */
 const teardown = () => (ending ??= cleanUpAll([
   stopAllPtyRuns,
   ...coreStops(cores.splice(0)),
   () => { if (built) rmSync(built, { recursive: true, force: true }); },
+  () => { for (const root of scratches.splice(0)) rmSync(root, { recursive: true, force: true }); },
 ]));
 afterAll(teardown, CASE_MS);
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => { void teardown().catch(() => undefined).finally(() => process.exit(128 + 15)); });
@@ -102,7 +104,7 @@ exec '${HC}' "$@"
 }
 
 /** `command` started in the project folder on a pty that answers the screen's probe as a terminal does. */
-function launch(at: Scene, command: string): PtyRun {
+function launch(at: Pick<Scene, "project" | "env">, command: string): PtyRun {
   let tail = "";
   const run: PtyRun = runOnPty({
     command: ["sh", "-c", `cd '${at.project}' && exec ${command}`], env: at.env, cols: 100, rows: 30, deadlineMs: CASE_MS - 10_000,
@@ -156,7 +158,8 @@ async function startsACore(command: string, at = scene(), fallback = false): Pro
   cores.push(core);
   const run = launch(at, command);
   try {
-    await run.until("[Y/n]", "the question");
+    // the space after the question: what was typed up to it is thrown away, a line typed from there on is the answer
+    await run.until("[Y/n] ", "the question");
     run.type("y\r");
     await run.until(FIRST_FRAME_END, "the first frame");
     // a fresh core has no workspace: the screen opens the first one in the folder `ovis tui` was typed in, named after it
@@ -259,7 +262,7 @@ else process.exit(await (await import(${JSON.stringify(join(ROOT, "scripts", "pl
     try {
       // typed at once, while the launcher is still starting: they wait in the terminal for whoever reads first
       run.type("y\r\r");
-      await run.until("[Y/n]", "the question");
+      await run.until("[Y/n] ", "the question");
       // a start the early keys answered would have recorded `server start` by now: the stand-in runs at once
       for (const deadline = Date.now() + 2_000; Date.now() < deadline && !existsSync(at.record); ) await Bun.sleep(25);
       expect(existsSync(at.record)).toBe(false);
@@ -271,6 +274,86 @@ else process.exit(await (await import(${JSON.stringify(join(ROOT, "scripts", "pl
     } finally {
       await run.stop();
       await core.adopt();
+    }
+  }, CASE_MS);
+});
+
+/**
+ * A scratch home with no core, whose settings name an hc that only records that `server start` ran and then fails:
+ * a case here asks whether a core would have been started, so none ever runs.
+ */
+function noCore(): Pick<Scene, "project" | "env" | "record"> & { root: string } {
+  const root = mkdtempSync(join(process.env["TMPDIR"] ?? tmpdir(), "ovis-tui-ask-"));
+  scratches.push(root);
+  for (const sub of ["home", "run", "settings", "project"]) mkdirSync(join(root, sub));
+  const record = join(root, "hc-started");
+  const standIn = join(root, "hc");
+  writeFileSync(standIn, `#!/bin/sh\ncase "$1" in\n  --version) echo 'hc 0.1.18' ;;\n  server) : > '${record}'; exit 7 ;;\n  *) exit 9 ;;\nesac\n`);
+  chmodSync(standIn, 0o755);
+  writeFileSync(join(root, "settings", "env"), `OVIS_HC_BIN=${standIn}\n`);
+  return {
+    root, record, project: join(root, "project"),
+    env: {
+      PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: join(root, "home"), TERM: "xterm-256color", TMPDIR: root, XDG_RUNTIME_DIR: join(root, "run"),
+      HC_SOCKET: join(root, "run", "none.sock"), HERDR_TEST_SESSION: `plugin-tui-${process.pid}`,
+      PORT: "1", HERDR_PLUGIN_CONFIG_DIR: join(root, "settings"), HERDR_PLUGIN_STATE_DIR: join(root, "plugin-state"),
+    },
+  };
+}
+
+describe.skipIf(process.platform !== "linux")("ovis tui takes only a line sent after its question for an answer", () => {
+  it("a space the end of the input cuts short (Space, Ctrl+D, Ctrl+D) is no line: nothing starts", async () => {
+    const at = noCore();
+    const run = launch(at, `bun '${PLUGIN}' tui`);
+    try {
+      await run.until("[Y/n] ", "the question");
+      // the first Ctrl+D hands the reader the space without a newline, the second ends the input
+      run.type(" \x04\x04");
+      await run.exited;
+      expect(existsSync(at.record)).toBe(false);
+      expect(run.output()).toContain("ovis tui: no_core: ");
+    } finally {
+      await run.stop();
+    }
+  }, CASE_MS);
+
+  it("an Enter that arrives after the launcher threw the typed keys away and before its question is no answer: nothing starts", async () => {
+    const at = noCore();
+    // The launcher itself, with one thing added to its first discard: once it is done, it says so and stays until a line
+    // waits in the terminal, as a key that arrives in that moment would. No person can aim at it; a held key can hit it.
+    const driver = join(at.root, "gap.ts");
+    writeFileSync(driver, `import { FFIType } from "bun:ffi";
+import { callerEnv, kernelEnv, launchTui, systemParts } from ${JSON.stringify(join(ROOT, "scripts", "plugin-tui.ts"))};
+import { openLibc } from ${JSON.stringify(join(ROOT, "tui", "host", "libc.ts"))};
+const caller = callerEnv({ kernel: kernelEnv, env: process.env, cwd: process.cwd() });
+const parts = systemParts(caller, caller.HOME ?? "/");
+const libc = openLibc({ poll: { args: [FFIType.ptr, FFIType.u64, FFIType.i32], returns: FFIType.i32 } });
+if (libc === null) throw new Error("no C library to wait for the terminal's input with");
+let first = true;
+process.exit(await launchTui([], { ...parts, discard: () => {
+  const done = parts.discard();
+  if (first) {
+    first = false;
+    process.stderr.write("DISCARDED " + done + "\\n");
+    // struct pollfd { int fd = 0; short events = POLLIN; short revents; }: readable once a whole line waits
+    const stdin = new Uint8Array(8);
+    new DataView(stdin.buffer).setInt16(4, 1, true);
+    libc.symbols.poll(stdin, 1, ${CASE_MS});
+  }
+  return done;
+} }));
+`);
+    const run = launch(at, `bun '${driver}'`);
+    try {
+      await run.until("DISCARDED true", "the launcher's first discard");
+      run.type("\r");
+      await run.until("[Y/n] ", "the question");
+      run.type("n\r");
+      await run.exited;
+      expect(existsSync(at.record)).toBe(false);
+      expect(run.output()).toContain("ovis tui: no_core: ");
+    } finally {
+      await run.stop();
     }
   }, CASE_MS);
 });

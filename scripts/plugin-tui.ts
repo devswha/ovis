@@ -81,7 +81,12 @@ export function callerEnv(from: { kernel: () => string | null; env: Env; cwd: st
 
 export const WINDOWS_MESSAGE = "ovis tui: the terminal client runs on Linux and macOS only.\n";
 
-const QUESTION = "herdr-core is not running. Start it? [Y/n] ";
+/**
+ * The question, and the space that follows it once what was typed up to the question is thrown away: from that space
+ * on, a line that is typed is an answer.
+ */
+const QUESTION = "herdr-core is not running. Start it? [Y/n]";
+const ANSWER_FROM_HERE = " ";
 
 /** How long a core `hc server start` started has to answer a connect, and how often one is tried meanwhile. */
 const CORE_WAIT_MS = 30_000;
@@ -199,10 +204,12 @@ export interface LaunchParts {
   findHc(env: Record<string, string>, selector: Env): Promise<string | null>;
   /** `hc server start` in `env`: its exit code, and what it said on stderr */
   startCore(hc: string, env: Record<string, string>): Promise<{ code: number; err: string }>;
-  /** throws away what was typed and not read yet; false where it cannot (nothing is asked then) */
+  /** throws away what was typed and not read yet; false where it cannot (no answer is read then) */
   discard(): boolean;
-  /** the question at the terminal, in cooked mode: the line typed, or null at the end of the input */
-  ask(question: string): Promise<string | null>;
+  /** writes `text` to the terminal; false where it could not */
+  show(text: string): boolean;
+  /** a line typed at the terminal in cooked mode and sent with Enter; null at the end of the input, text before it or not */
+  line(): string | null;
   run(command: readonly string[], options: { env: Record<string, string>; cwd: string }): Screen;
   /** a hold file for one screen; null where none can be made */
   holdFile(): HoldFile | null;
@@ -239,10 +246,11 @@ export async function launchTui(argv: readonly string[], parts: LaunchParts): Pr
       return EXIT_FAILED;
     };
     if (!parts.isTty) return refused();
-    // what was typed before the question is no answer to it: an Enter typed ahead would start a core unread. Where it
-    // cannot be thrown away, a line read after the question may be that Enter, so nothing is asked and nothing started
-    if (!parts.discard()) return refused();
-    if (!saidYes(await parts.ask(QUESTION))) return refused();
+    // Only a line typed after the question is an answer to it: an Enter typed ahead would start a core unread. What was
+    // typed is thrown away before the question, so that nothing is asked where that cannot be done, and again once the
+    // question is written, for a key that came in between. Where either fails, no answer is read and nothing started.
+    if (!parts.discard() || !parts.show(QUESTION) || !parts.discard() || !parts.show(ANSWER_FROM_HERE)) return refused();
+    if (!saidYes(parts.line())) return refused();
     // hc is looked for, asked its version and started in one environment: the caller's without Ovis's own names
     const launch = coreLaunchEnv(chosen);
     const hc = await parts.findHc(launch, hcSelector(parts.caller, parts.settings));
@@ -331,14 +339,19 @@ function systemTerminal(): TerminalSettings {
   };
 }
 
-/** A line typed at the terminal in cooked mode, read straight from fd 0 so no reader stays to take the screen's keys. */
-function readLine(): string | null {
+/**
+ * A line typed at the terminal in cooked mode, read a byte at a time straight from fd 0 so no reader stays to take
+ * the screen's keys. Only a line its newline ended is one: text the end of the input cut short (Ctrl+D after it, then
+ * Ctrl+D again) was never sent, and is no line. (Exported, with `read`, for its table test; the terminal's own side
+ * of it runs in scripts/plugin-tui.contract.test.ts.)
+ */
+export function readLine(read: (one: Buffer) => number = (one) => readSync(0, one, 0, 1, null)): string | null {
   const bytes: number[] = [];
   const one = Buffer.alloc(1);
   for (;;) {
-    let read = 0;
-    try { read = readSync(0, one, 0, 1, null); } catch { return null; }
-    if (read === 0) return bytes.length === 0 ? null : Buffer.from(bytes).toString("utf8");
+    let got = 0;
+    try { got = read(one); } catch { return null; }
+    if (got === 0) return null;
     if (one[0] === 0x0a) return Buffer.from(bytes).toString("utf8");
     bytes.push(one[0]!);
   }
@@ -394,10 +407,10 @@ export function systemParts(caller: Env, home: string): LaunchParts {
       return { code, err };
     },
     discard: discardTyped,
-    ask: async (question) => {
-      try { writeSync(1, question); } catch { return null; }
-      return readLine();
+    show: (text) => {
+      try { writeSync(1, text); return true; } catch { return false; }
     },
+    line: () => readLine(),
     run: (command, options) => {
       const child = Bun.spawn([...command], { env: options.env, cwd: options.cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
       return { exited: child.exited.then((code) => ({ code: child.signalCode === null ? code : null, signal: child.signalCode as NodeJS.Signals | null })), kill: (signal) => child.kill(signal) };

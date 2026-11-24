@@ -6,7 +6,7 @@ import { ENTRIES } from "../server/entries.ts";
 import { type Held, LEAVE, LEAVE_ALL } from "../tui/host/guard.ts";
 import * as libc from "./libc.ts";
 import { importClosure, read } from "./source-scan.ts";
-import { answersWithin, callerEnv, launchTui, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
+import { answersWithin, callerEnv, launchTui, readLine, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
 
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
@@ -31,7 +31,7 @@ const HOME = "/nonexistent-home";
 type End = { code: number | null; signal: NodeJS.Signals | null };
 
 interface Fake {
-  /** what the launcher did, in order: probe, ask, find, start, answers, run, kill, on and off */
+  /** what the launcher did, in order: probe, discard, show (the question, then the space after it), line, find, start, answers, run, kill, on and off */
   readonly calls: string[];
   /** each stderr line's stable code */
   readonly codes: () => string[];
@@ -48,12 +48,13 @@ interface Fake {
 }
 
 /**
- * The launcher's parts as data: `probes` answer the connects in turn (the last one again after that), `answer` is the
- * line typed at the question, `hc` what the finder finds, `started` the exit of `hc server start`, `answers` whether the
- * core that was started answers in time, `end` the screen's exit, `held` what the screen's hold file says when it ended
- * (null: no hold file could be made).
+ * The launcher's parts as data: `probes` answer the connects in turn (the last one again after that), `flushed` says
+ * for each discard in turn whether it could be done (true after those), `answer` is the line typed at the question,
+ * `hc` what the finder finds, `started` the exit of `hc server start`, `answers` whether the core that was started
+ * answers in time, `end` the screen's exit, `held` what the screen's hold file says when it ended (null: no hold file
+ * could be made).
  */
-function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; answers?: boolean; end?: End | Promise<End>; held?: Held | null; over?: Partial<LaunchParts> } = {}): Fake {
+function fake(options: { flushed?: boolean[]; probes?: Probe[]; answer?: string | null; hc?: string | null; started?: number; answers?: boolean; end?: End | Promise<End>; held?: Held | null; over?: Partial<LaunchParts> } = {}): Fake {
   const calls: string[] = [];
   const said: string[] = [];
   const runs: Fake["runs"] = [];
@@ -62,6 +63,7 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
   const handlers = new Map<string, () => void>();
   const finds: Fake["finds"] = [];
   const probes = [...options.probes ?? [{ kind: "core" } as const]];
+  const flushed = [...options.flushed ?? []];
   let unheld = 0;
   const parts: LaunchParts = {
     platform: "linux",
@@ -89,10 +91,14 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
     },
     discard: () => {
       calls.push("discard");
-      return options.flushed ?? true;
+      return flushed.shift() ?? true;
     },
-    ask: async () => {
-      calls.push("ask");
+    show: (text) => {
+      calls.push(text === " " ? "show space" : "show question");
+      return true;
+    },
+    line: () => {
+      calls.push("line");
       return options.answer === undefined ? "" : options.answer;
     },
     run: (command, run) => {
@@ -117,8 +123,10 @@ function fake(options: { flushed?: boolean; probes?: Probe[]; answer?: string | 
 /** the launcher's work, without its signal listeners */
 const work = (calls: string[]) => calls.filter((call) => !/^(on|off) /.test(call));
 const RAN = ["probe /scratch/hc.sock", "run screen"];
+/** the question: what was typed is thrown away before it and again once it is written, then the space, then the line */
+const ASKED = ["probe /scratch/hc.sock", "discard", "show question", "discard", "show space", "line"];
 /** up to the start of a core, and the 30 s it has to answer */
-const START = ["probe /scratch/hc.sock", "discard", "ask", "find", "start /bin/hc", "answers /scratch/hc.sock within 30000"];
+const START = [...ASKED, "find", "start /bin/hc", "answers /scratch/hc.sock within 30000"];
 const STARTED = [...START, "run screen"];
 const none: Probe = { kind: "none" };
 const core: Probe = { kind: "core" };
@@ -133,15 +141,16 @@ describe("the launch decision table", () => {
     ["no core, y", { probes: [none], answer: "y" }, [], 0, STARTED, []],
     ["no core, Yes with blanks", { probes: [none], answer: " Yes " }, [], 0, STARTED, []],
     ["a core that was started and does not answer in time: no screen", { probes: [none], answers: false }, [], 1, START, ["no_answer"]],
-    ["an Enter typed ahead that cannot be thrown away is no yes: nothing asked, found or started, the start command", { probes: [none], flushed: false, answer: "" }, [], 1, ["probe /scratch/hc.sock", "discard"], ["no_core"]],
-    ["no core, n: the start command, nothing started", { probes: [none], answer: "n" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
-    ["no core, no", { probes: [none], answer: "no" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
-    ["no core, any other answer", { probes: [none], answer: "maybe" }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
-    ["no core, the input ended", { probes: [none], answer: null }, [], 1, ["probe /scratch/hc.sock", "discard", "ask"], ["no_core"]],
+    ["an Enter typed ahead that cannot be thrown away is no yes: nothing asked, found or started, the start command", { probes: [none], flushed: [false], answer: "" }, [], 1, ["probe /scratch/hc.sock", "discard"], ["no_core"]],
+    ["an Enter that came while the question was written and cannot be thrown away is no yes either: no line is read", { probes: [none], flushed: [true, false], answer: "" }, [], 1, ASKED.slice(0, 4), ["no_core"]],
+    ["no core, n: the start command, nothing started", { probes: [none], answer: "n" }, [], 1, ASKED, ["no_core"]],
+    ["no core, no", { probes: [none], answer: "no" }, [], 1, ASKED, ["no_core"]],
+    ["no core, any other answer", { probes: [none], answer: "maybe" }, [], 1, ASKED, ["no_core"]],
+    ["no core, the input ended", { probes: [none], answer: null }, [], 1, ASKED, ["no_core"]],
     ["not a terminal, no core: the start command, nothing asked", { probes: [none], over: { isTty: false } }, [], 1, ["probe /scratch/hc.sock"], ["no_core"]],
     ["not a terminal, a core: no screen", { over: { isTty: false } }, [], 1, ["probe /scratch/hc.sock"], ["not_a_terminal"]],
-    ["no hc program: one line, nothing started", { probes: [none], hc: null }, [], 1, ["probe /scratch/hc.sock", "discard", "ask", "find"], ["no_hc"]],
-    ["hc server start fails: no screen", { probes: [none], started: 3 }, [], 1, ["probe /scratch/hc.sock", "discard", "ask", "find", "start /bin/hc"], ["start_failed"]],
+    ["no hc program: one line, nothing started", { probes: [none], hc: null }, [], 1, [...ASKED, "find"], ["no_hc"]],
+    ["hc server start fails: no screen", { probes: [none], started: 3 }, [], 1, [...ASKED, "find", "start /bin/hc"], ["start_failed"]],
     ["a connect that fails otherwise: nothing asked or started", { probes: [{ kind: "failed", code: "closed", reason: "EACCES" }] }, [], 1, ["probe /scratch/hc.sock"], ["closed"]],
     ["-h goes to the screen's entry as it is, nothing probed, at a terminal or not", { over: { isTty: false } }, ["-h"], 0, ["run screen -h"], []],
     ["-V and a wrong argument too", {}, ["-V", "--bad"], 0, ["run screen -V --bad"], []],
@@ -153,6 +162,27 @@ describe("the launch decision table", () => {
     expect(work(run.calls)).toEqual(calls);
     expect(run.codes()).toEqual(codes);
     if (options?.over?.platform === "win32") expect(run.said).toEqual([WINDOWS_MESSAGE]);
+  });
+
+  it.each([
+    ["a line sent with Enter", "y\n", "y"],
+    ["an empty line: Enter alone", "\n", ""],
+    ["only the first of two lines", "n\nyes\n", "n"],
+    ["the end of the input with nothing typed", "", null],
+    ["a space the end of the input cut short: it was never sent", " ", null],
+    ["a y the end of the input cut short", "y", null],
+  ])("reads as an answer only a line its newline ended: %s", (_, typed, line) => {
+    const bytes = Buffer.from(typed);
+    let at = 0;
+    expect(readLine((one) => {
+      if (at === bytes.length) return 0;
+      one[0] = bytes[at++]!;
+      return 1;
+    })).toBe(line);
+  });
+
+  it("reads no line from a terminal that cannot be read", () => {
+    expect(readLine(() => { throw Object.assign(new Error("EIO"), { code: "EIO" }); })).toBeNull();
   });
 
   it("asks a core that was just started again until it answers", async () => {
@@ -572,7 +602,7 @@ for (const path of ["kernel", "fallback"]) {
   const caller = callerEnv({ kernel: () => kernel, env: process.env, cwd: process.cwd() });
   if (path === "kernel" && caller.DOUBLE !== "fromshell") throw new Error("kernel snapshot lost the shell's DOUBLE");
   const code = await launchTui([], {
-    ...systemParts(caller, caller.HOME), isTty: true, probe: async () => ({ kind: "none" }), answers: async () => true, discard: () => true, ask: async () => "y",
+    ...systemParts(caller, caller.HOME), isTty: true, probe: async () => ({ kind: "none" }), answers: async () => true, discard: () => true, show: () => true, line: () => "y",
     screen: { command: [process.execPath, "--no-env-file", ${JSON.stringify(recorder)}], cwd: out, file: null },
     terminal: { save: () => null, restore() {}, write() {} }, on: () => () => {},
   });
