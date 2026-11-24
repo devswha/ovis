@@ -105,6 +105,8 @@ printf '%s\\n' "$listing"
 `, { mode: 0o755 });
     const hung = sh(`if rust_host_runs ${host}; then echo RUNS; else echo REFUSED; fi`, { PATH: `${tools}:${process.env["PATH"]}` });
     expect(hung.out).toContain("REFUSED");
+    // the listing came while the host had written its pid: the gap was reached, not passed over by a slow setup
+    expect(existsSync(done)).toBe(true);
     expect(Bun.spawnSync(["pgrep", "-f", tag]).stdout.toString().trim()).toBe("");
   });
 
