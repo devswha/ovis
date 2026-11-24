@@ -249,8 +249,8 @@ describe("a session keeps the list compared", () => {
   it("asks nothing of a PC that follows no list, and nothing at all for an account with no list", async () => {
     const { w, first } = await account();
     const unpinned = await memoryPc(w, w.held().entries, { followsList: false });
+    // an exchange makes its first call before keepListGossip returns, and a trigger before the call that moved the head returns: none was made
     const stop = keepListGossip(sessionOf(unpinned), { list: () => first.list });
-    await new Promise((resolve) => setTimeout(resolve, 20));
     stop();
     expect(unpinned.calls).toEqual([]);
     // a device of an account with no list holds none: no request, whatever the PC says it follows
@@ -261,7 +261,6 @@ describe("a session keeps the list compared", () => {
     const pinned = await memoryPc(w, w.held().entries);
     const other = keepListGossip(sessionOf(pinned), { list: () => device.list });
     const none = keepListGossip(sessionOf(pinned), { list: () => null });
-    await new Promise((resolve) => setTimeout(resolve, 20));
     other();
     none();
     expect(pinned.calls).toEqual([]);
@@ -287,7 +286,6 @@ describe("a session keeps the list compared", () => {
     // stopped: a head that moves after it asks nothing
     const made = pc.calls.length;
     await removeListPc(first.list, desk.endpoint, noWait);
-    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(pc.calls.length).toBe(made);
   });
 
@@ -309,7 +307,6 @@ describe("a session keeps the list compared", () => {
       expect(timers[0]!.at).toBe(60_000);
       // nothing is asked before then, however the copy moves
       await removeDevice(first, (await second.keys()).key);
-      await new Promise((resolve) => setTimeout(resolve, 20));
       expect(pc.calls.length).toBe(1);
       pc.limit = null;
       clock = 60_000;
