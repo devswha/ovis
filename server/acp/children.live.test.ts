@@ -50,14 +50,17 @@ describe.skipIf(!bin || !keeperBuilt)("AcpChildren against a real hc", () => {
   it("runs the agent under its parent, brings its permission request to a card's answer, and leaves no process behind once stopped", async () => {
     const children = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD });
     const parent = (await hc.call("terminal.run", { argv: ["sleep", "600"], no_parent: true })).address;
-    const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir, parentPane: parent });
+    const child = await children.start({ harness: "codex", argv: [FAKE_AGENT], cwd: dir, parentPane: parent });
     expect((await hc.call("terminal.get", { terminal: child.terminal })).parent).toBe(parent);
     expect(children.forPane(child.terminal)).toBe(child);
 
     const adapter = await startHerdrCoreAdapter(hc, join(dir, "adapter.sock"), undefined, { acp: children });
     const pane = async () => (await sessionSnapshot(adapter.socketPath)).panes.find(({ pane_id }) => pane_id === child.terminal);
     try {
-      expect(await pane()).toMatchObject({ agent: "fake", agent_status: "idle", parent_pane_id: parent });
+      const snapshot = await sessionSnapshot(adapter.socketPath);
+      const childPane = snapshot.panes.find(candidate => candidate.pane_id === child.terminal);
+      expect(childPane).toMatchObject({ agent: "codex", agent_status: "idle", parent_pane_id: parent, label: "Codex" });
+      expect(snapshot.tabs.find(tab => tab.tab_id === childPane?.tab_id)?.label).toBe("Codex");
       const { client } = child;
       const turn = client.request("session/prompt", { sessionId: client.session, prompt: [{ type: "text", text: "ask" }] });
       await until(client, "the permission request", () => client.pending().length === 1);
@@ -88,10 +91,14 @@ describe.skipIf(!bin || !keeperBuilt)("AcpChildren against a real hc", () => {
 
   it("drops the agent identity when it exits but its keeper terminal is still live", async () => {
     const children = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD });
-    const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir });
+    const child = await children.start({ harness: "fake", name: "Review helper", argv: [FAKE_AGENT], cwd: dir });
     const adapter = await startHerdrCoreAdapter(hc, join(dir, "exit.sock"), undefined, { acp: children });
     try {
       const { client } = child;
+      const shown = await sessionSnapshot(adapter.socketPath);
+      const pane = shown.panes.find(pane => pane.pane_id === child.terminal);
+      expect(pane?.label).toBe("Review helper");
+      expect(shown.tabs.find(tab => tab.tab_id === pane?.tab_id)?.label).toBe("Review helper");
       await client.request("session/prompt", { sessionId: client.session, prompt: [{ type: "text", text: "answer-and-quit" }] });
       await until(client, "agent exit", () => client.agentGone);
       expect((await sessionSnapshot(adapter.socketPath)).panes.find(pane => pane.pane_id === child.terminal)).toMatchObject({ agent: null, agent_status: "unknown" });

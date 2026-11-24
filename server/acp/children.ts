@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HcMethods } from "../herdr-core/hc-api.generated.ts";
+import { PANE_NAME_LABEL, TAB_NAME_LABEL } from "../herdr-core/snapshot.ts";
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { KeeperClient } from "./client.ts";
@@ -170,12 +171,13 @@ export class AcpChildren {
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
       "--", ...start.argv,
     ];
+    const displayName = start.name?.trim();
     let terminal: string;
     try {
       ({ address: terminal } = await this.hc().call("terminal.run", {
         argv, cwd: start.cwd,
         ...(start.parentPane === undefined ? { no_parent: true } : { parent: start.parentPane }),
-        labels: { [LABEL]: id },
+        labels: { [LABEL]: id, ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
         ...(start.env === undefined ? {} : { env: start.env }),
       }));
     } catch (error) {

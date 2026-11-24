@@ -12,6 +12,7 @@ import { jobProcessesBelow } from "../foreground-job.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, OVIS_LAYOUT_DOC, type PaneDirection } from "./layout-doc.ts";
 import { paneSession } from "../agent-identity.ts";
+import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
 import { agentInfoOf, agentOfStatus, agyPlanReview, type CoreHost, coreHost, type FirstTurn, opencodeRecords, type SessionOf, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, processInfoOf, runsCommandString, SPACE_LABEL, TAB_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import { type CoreChange, coreModel, type SessionNote } from "./core-model.ts";
 import { EVENT_LINE_BYTES, openEventStream } from "./event-stream.ts";
@@ -560,7 +561,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
         forgetTurns(new Set(terminals.map((terminal) => terminal.address)));
         return terminals.map(terminal => {
           const child = acpChildOf(terminal, options.acp);
-          return child ? { ...terminal, acp: { agent: child.client.agentGone ? null : child.harness, status: child.client.status, plan: child.client.history.plan } } : terminal;
+          if (!child) return terminal;
+          const name = terminal.name && terminal.name !== terminal.address ? terminal.name : AGENT_CATALOG.find(entry => entry.id === child.harness)?.name ?? child.harness;
+          return { ...terminal, name, acp: { agent: child.client.agentGone ? null : child.harness, status: child.client.status, plan: child.client.history.plan } };
         });
       },
     });
