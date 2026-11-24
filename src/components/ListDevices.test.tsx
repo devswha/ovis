@@ -12,7 +12,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { ListDevices, showsListDevices } = await import("./ListDevices.tsx");
+const { ListDevices, showsListDevices, useNotMe } = await import("./ListDevices.tsx");
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 const kinds = (texts: readonly string[]): string[] => texts.map((text) => readBody(entryFromText(text).body).kind);
@@ -250,6 +250,31 @@ describe("Manage account's devices from the account's signed list", () => {
     await confirm(root, "Remove");
     expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
     expect(listView(w.held().state).devices.find((row) => row.key === next)?.ended).not.toBeNull();
+  });
+
+  it("Not me from elsewhere on the page (useNotMe, for the move's notice) asks Remove's question with everything ticked, and puts the device out", async () => {
+    const { w, first, second, third } = await withAdditions();
+    await first.list.sync();
+    let ask: ((key: string, name: string) => void) | null = null;
+    function Host() {
+      const { notMe, dialog } = useNotMe(first.list);
+      ask = notMe;
+      return createElement("div", null, dialog);
+    }
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, { children: createElement(Host) }), {
+        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    const root = renderer!.root;
+    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+    await act(async () => { ask!((await second.keys()).key, "Lost phone"); });
+    expect(textOf(dialog(root))).toContain("Remove Lost phone from your account?");
+    expect(boxes(root).map((node) => node.props.checked)).toEqual([true, true]);
+    await confirm(root, "Remove");
+    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+    const out = listView(w.held().state).devices.filter((row) => row.ended !== null).map((row) => row.key);
+    expect(out).toEqual(expect.arrayContaining([(await second.keys()).key, (await third.keys()).key]));
   });
 
   it("offers no Remove to a device that may not remove anybody", async () => {

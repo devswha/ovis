@@ -4,7 +4,7 @@
  * the list holds with no name. A device of power `full` removes any of them, and with it what came in through it
  * where the person ticks it; the removal is the list's, so the key never comes back.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { listView } from "../../shared/account-list.ts";
 import type { AccountList, AccountListView, ListedDevice } from "../lib/account/accountList.ts";
@@ -175,6 +175,22 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
       )}
     </ConfirmDialog>
   );
+}
+
+/**
+ * Not me on a device from anywhere a page draws one (the move's notice, ListMoveNotice's `notMeDevice`): `notMe(key,
+ * name)` asks Remove's question for that key with every item ticked, as the new-device notice's Not me does; `dialog`
+ * is drawn where the caller draws it. Nothing is asked on a device that may remove nobody.
+ */
+export function useNotMe(list: AccountList | null = pageAccountList()): { readonly notMe: (key: string, name: string) => void; readonly dialog: ReactNode } {
+  const view = useListView(list);
+  const [asked, setAsked] = useState<{ readonly key: string; readonly name: string } | null>(null);
+  const notMe = useCallback((key: string, name: string): void => setAsked({ key, name }), []);
+  const close = (): void => setAsked(null);
+  const dialog = asked !== null && list !== null && view !== null && list.writer() !== null
+    ? <RemoveDialog list={list} view={view} removing={asked.key} name={asked.name} ticked onClose={close} onRemoved={close} />
+    : null;
+  return { notMe, dialog };
 }
 
 /**
