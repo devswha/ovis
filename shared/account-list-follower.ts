@@ -23,7 +23,7 @@ import { ListEntryError, entryFromText, entryHash, isListHash, isListKeyEncoding
 import { signerPower, type ListPlace } from "./account-list-signers.ts";
 import {
   LIST_LEVEL, admitsDevice, isListKey, listClock, listView, replayList, shownList,
-  type DeviceView, type ListCopy, type ListRole, type ListState, type PcView,
+  type DeviceView, type ListCopy, type ListRole, type ListState, type PcView, type TakenListEntry,
 } from "./account-list.ts";
 
 /**
@@ -135,6 +135,19 @@ export interface FollowerCopy {
  */
 export type Standing = "waiting" | "in" | "out" | "stopped";
 
+/**
+ * Another history than the member's own, as far as a read has been shown it: the place where the two part
+ * (`parts`), its entries from there on (`texts`), the signer of each of them that a member signed (`signed`),
+ * and, once it had to be replayed, the other history as a list of its own up to the last of them (`alt`). A
+ * read holds it between two pages; it is never saved.
+ */
+export interface OtherSoFar {
+  readonly parts: number;
+  readonly texts: readonly string[];
+  readonly signed: readonly { readonly seq: number; readonly signer: string }[];
+  readonly alt: ListCopy | null;
+}
+
 /** A request for a part of the log: what to ask, and what one read has done so far. Made by startRead and by each page; never saved. */
 export interface FollowRead {
   readonly source: ListSource;
@@ -145,8 +158,8 @@ export interface FollowRead {
   readonly back: boolean;
   /** How many more requests this read may make after this one (READ_PAGES_MAX in all), whatever its pages say. */
   readonly left: number;
-  /** Entries of another history than the member's own, from the place where the two part, that the page before ended inside: the next page is judged with them (takePage). Empty otherwise. */
-  readonly carry: readonly string[];
+  /** Another history than the member's own that the page before ended inside: the next page is judged with it (takePage). Null otherwise. */
+  readonly carry: OtherSoFar | null;
   /**
    * What this read has learnt of where the source's history parts from the member's own: every entry up to
    * `common` is the same in both, and by `parted` they have parted (null while nothing says they have). The read
@@ -342,6 +355,12 @@ export function pinList(held: FollowerCopy | null, given: { readonly account: st
   return { pinned: true, copy: { account, list, me: self, pin: read, entries: [], state: null, stop: null, read_at: null, seen_at: null, alarm: null } };
 }
 
+/** Whether entry 0's signer is one the member's pin takes: its own key for a list it started, a key it had let in for a PC that was in the account before the list, anybody's otherwise. */
+function pinSigner(copy: Pick<FollowerCopy, "pin" | "me">, signer: string): boolean {
+  const { pin, me } = copy;
+  return pin.how === "genesis" ? signer === me.key : pin.how !== "migrated" || pin.admitted.includes(signer);
+}
+
 /** Whether the list shows what the member's pin asks for (ListPin). */
 function pinMet(copy: FollowerCopy): boolean {
   const { state, pin, me } = copy;
@@ -420,8 +439,9 @@ export function memberClock(copy: FollowerCopy, now: number): number {
  * past its `until`), and decides on the copy this gives: with the account service away no page comes, and
  * without this a clock that was set back would count again for less than it once showed. Over a restart the
  * member holds the hour of its last save and no later one, so it saves the copy this gives before it acts on
- * a decision that turned on the clock. A decision itself never counts the clock for less than the copy holds
- * (memberClock), so a caller that forgets this is refused more, never let in more.
+ * a decision that turned on the clock. A decision never counts the clock for less than the copy it is handed
+ * holds (memberClock), and no more than that: an hour that was read and not noted here, or noted and the copy
+ * not kept, is lost, and a clock set back after it lets a device in again past its `until`.
  */
 export function withClock(copy: FollowerCopy, now: number): FollowerCopy {
   if (!isCount(now)) throw new RangeError("The hour is seconds since 1970, a whole number");
@@ -430,21 +450,14 @@ export function withClock(copy: FollowerCopy, now: number): FollowerCopy {
 
 /** The request that begins a read, from the account service or from a peer: the entries after the member's head, or from entry 0 for a member that holds none. */
 export function startRead(copy: FollowerCopy, source: ListSource): FollowRead {
-  return { source, list: copy.list, after: copy.entries.length === 0 ? null : copy.entries.length - 1, back: false, left: READ_PAGES_MAX - 1, carry: [], common: 0, parted: null };
+  return { source, list: copy.list, after: copy.entries.length === 0 ? null : copy.entries.length - 1, back: false, left: READ_PAGES_MAX - 1, carry: null, common: 0, parted: null };
 }
 
-/** What a page showed of another history than the member's own, when the kinds' taking stopped on one (otherHistory). `parts` is the place where the two part. */
-type OtherHistory =
-  /** Every shown entry is the member's own. */
-  | { readonly found: "none" }
-  /** The first shown entry follows an entry the member does not hold: the two part before the page. */
-  | { readonly found: "deeper" }
-  /** Nothing shown proves that a member signed another history. */
-  | { readonly found: "unproven"; readonly parts: number }
-  /** One writer's entries that did not get their place, while that writer went on in the member's own history. `open`: the page ended inside them, and what follows them is not shown yet. */
-  | { readonly found: "attempt"; readonly parts: number; readonly run: readonly string[]; readonly open: boolean }
-  /** A member signed another history, and it is no attempt that its writer left behind. `by` signed the first entry of it that a member signed. */
-  | { readonly found: "fork"; readonly parts: number; readonly by: string };
+/** What was shown of another history than the member's own: nothing (`none`), an entry that follows one the member does not hold (`deeper`: the two part before the page), or the other history so far (`so`) with what it comes to. */
+type OtherJudged =
+  | { readonly found: "none" | "deeper" }
+  /** `whole`: every entry of the page was taken into it, so the page may have ended inside it. */
+  | { readonly found: "unproven" | "attempt" | "fork"; readonly so: OtherSoFar; readonly whole: boolean };
 
 /** Whether `key` was a signer where the entry at `seq` stands in the member's own history: its row came in before that place and was not ended before it. No row is ever deleted. */
 function signerAt(state: ListState, key: string, seq: number): boolean {
@@ -462,13 +475,15 @@ function wentOn(mine: ListCopy, key: string, from: number): boolean {
 }
 
 /**
- * What a page showed of another history than the member's own, when the kinds' taking stopped on one.
+ * What a page showed of another history than the member's own, when the kinds' taking stopped on one; and, for
+ * a read that is in the middle of one (`so`), what the next page adds to it.
  *
- * The two part at the first shown entry that is not the member's entry at its place. A member signed the other
- * history when one of the shown entries from there on is by a key that was a signer where the two part, and
- * holds: it continues the member's own entry before that place through the shown entries before it, and its
- * signature is its signer's. A loose entry counts for nothing, so what the account service or a stranger signs
- * proves nothing, and neither does a key's name on an entry it did not sign.
+ * The two part at the first shown entry that is not the member's entry at its place. From there the other
+ * history is its entries as far as each is an entry and continues the one before it: what stands before the
+ * first that does not proves what it proves. A member signed the other history when one of them is by a key
+ * that was a signer there and its signature is its signer's. A loose entry counts for nothing, so what the
+ * account service or a stranger signs proves nothing, and neither does a key's name on an entry it did not
+ * sign.
  *
  * Not every such history is a fork. A member signs twice at one place honestly: its entries did not get their
  * place (another member's got it first, or the answer was lost), and it signed them again on the new head. The
@@ -480,29 +495,35 @@ function wentOn(mine: ListCopy, key: string, from: number): boolean {
  * signer than one post holds, a signer that never signed again in the member's history, or entries that stand
  * on a loose one.
  *
- * What costs little is checked first, and only a history that a member did sign is replayed: the member's own
- * history up to the place, with the shown entries from it on, as a list of its own (replayList), which says
- * which of them are loose. An attempt whose entries are all its signer's is told without a replay. A replay
- * ends the read it is made in (takePage), so a read replays the member's history at most once.
+ * What costs little is done first. Until a member's entry is found, each entry that names a key which was a
+ * signer where the two part has its signature checked, and no other: loose entries change nothing, so that key
+ * is a signer there in the other history too. Entries after it that name the same signer are taken by that
+ * name: at most they make an attempt of what is none worth an alarm. Only when another key is named after it,
+ * or more of its entries than one post holds, is the other history replayed as a list of its own, the member's
+ * own history up to the place and the other one's entries from it (replayList), which says exactly which of
+ * them a member signed. That is done once: the read keeps the replayed list (`so.alt`) and takes each further
+ * page into it as into any list (shownList). So a read checks the member's own history again at most once.
  */
-async function otherHistory(list: string, mine: ListCopy, after: number, shown: readonly string[]): Promise<OtherHistory> {
-  let parts: number | null = null;
-  for (const [index, text] of shown.entries()) {
-    const seq = after + 1 + index;
-    const hash = hashOf(text);
-    if (hash === null) return { found: "unproven", parts: seq };
-    if (seq < mine.entries.length && hash === hashOf(mine.entries[seq])) continue;
-    parts = seq;
-    break;
+async function otherHistory(list: string, mine: ListCopy, so: OtherSoFar | null, after: number, shown: readonly string[]): Promise<OtherJudged> {
+  let from = shown;
+  let parts = so?.parts ?? 0;
+  if (so === null) {
+    let found: number | null = null;
+    for (const [index, text] of shown.entries()) {
+      const seq = after + 1 + index;
+      const hash = hashOf(text);
+      if (hash !== null && seq < mine.entries.length && hash === hashOf(mine.entries[seq])) continue;
+      found = seq;
+      break;
+    }
+    if (found === null) return { found: "none" };
+    parts = found;
+    from = shown.slice(parts - after - 1);
   }
-  if (parts === null) return { found: "none" };
-  const unproven: OtherHistory = { found: "unproven", parts };
-  // The shown entries from that place on, as far as each is an entry and continues the one before it: what stands before the first that does not proves what it proves.
-  const from = shown.slice(parts - after - 1);
-  const rest: string[] = [];
-  const bodies: EntryBody[] = [];
-  const entries: Entry[] = [];
-  let before = hashOf(mine.entries[parts - 1]);
+  const begun: OtherSoFar = so ?? { parts, texts: [], signed: [], alt: null };
+  // The entries that go on from where the other history stands, each continuing the one before it.
+  const fresh: { readonly text: string; readonly entry: Entry; readonly body: EntryBody }[] = [];
+  let before = begun.texts.length === 0 ? hashOf(mine.entries[parts - 1]) : hashOf(begun.texts[begun.texts.length - 1]);
   for (const text of from) {
     let entry: Entry;
     let body: EntryBody;
@@ -513,31 +534,57 @@ async function otherHistory(list: string, mine: ListCopy, after: number, shown: 
       if (!(error instanceof ListEntryError)) throw error;
       break;
     }
-    if (body.list !== list || body.seq !== parts + rest.length || body.prev !== before) {
+    if (body.list !== list || body.seq !== parts + begun.texts.length + fresh.length || body.prev !== before) {
       // The very first one follows an entry the member does not hold: the two part before this page.
-      if (rest.length === 0 && body.list === list && body.seq === parts && parts === after + 1 && parts > 1) return { found: "deeper" };
+      if (so === null && fresh.length === 0 && body.list === list && body.seq === parts && parts === after + 1 && parts > 1) return { found: "deeper" };
       break;
     }
-    rest.push(text);
-    bodies.push(body);
-    entries.push(entry);
+    fresh.push({ text, entry, body });
     before = entryHash(entry.body);
   }
-  if (rest.length === 0 || parts > mine.state.footing.seq) return unproven;
-  const first = bodies.findIndex((body) => signerAt(mine.state, body.signer, parts));
-  const [entry, body] = [entries[first], bodies[first]];
-  if (entry === undefined || body === undefined || !(await verifySignature(entry.body, entry.signature, body.signer))) return unproven;
-  const signer = body.signer;
-  const attempt = (signed: readonly string[]): boolean => signed.length <= ATTEMPT_ENTRIES_MAX && signed.every((key) => key === signer) && wentOn(mine, signer, parts);
-  // Every shown entry is that signer's, from the very place: an attempt, told without a replay. The page may have ended inside it.
-  if (first === 0 && attempt(bodies.map((item) => item.signer))) return { found: "attempt", parts, run: rest, open: rest.length === from.length };
-  const replayed = await replayList([...mine.entries.slice(0, parts), ...rest], LIST_LEVEL, { saved: null, given: list });
-  if (replayed.member === null) return unproven;
-  const signed = replayed.took.slice(parts).filter(({ outcome }) => !(outcome.outcome === "passed_over" && outcome.loose));
+  // Above the footing nothing is another history: what stands there is loose, and gives way.
+  if (parts < 1 || parts > mine.state.footing.seq) return { found: "unproven", so: begun, whole: false };
+
+  let texts = [...begun.texts, ...fresh.map((item) => item.text)];
+  let signed = [...begun.signed];
+  let { alt } = begun;
+  let whole = fresh.length === from.length && fresh.length > 0;
+  let replay = false;
+  if (alt === null) {
+    for (const { entry, body } of fresh) {
+      const [led] = signed;
+      if (led === undefined) {
+        if (signerAt(mine.state, body.signer, parts) && (await verifySignature(entry.body, entry.signature, body.signer))) signed.push({ seq: body.seq, signer: body.signer });
+      } else if (led.seq === parts && body.signer === led.signer && signed.length < ATTEMPT_ENTRIES_MAX) {
+        signed.push({ seq: body.seq, signer: body.signer });
+      } else if (led.seq === parts) {
+        replay = true;
+        break;
+      }
+    }
+  }
+  const taken = (took: readonly TakenListEntry[]): { readonly seq: number; readonly signer: string }[] =>
+    took.filter(({ outcome }) => !(outcome.outcome === "passed_over" && outcome.loose)).map(({ held }) => ({ seq: held.body.seq, signer: held.body.signer }));
+  if (replay) {
+    const replayed = await replayList([...mine.entries.slice(0, parts), ...texts], LIST_LEVEL, { saved: null, given: list });
+    if (replayed.member === null || replayed.member.entries.length < parts) return { found: "unproven", so: begun, whole: false };
+    alt = replayed.member;
+    whole = whole && alt.entries.length === parts + texts.length;
+    texts = alt.entries.slice(parts);
+    signed = taken(replayed.took.slice(parts));
+  } else if (alt !== null && fresh.length > 0) {
+    const top = alt.entries.length - 1;
+    const more = await shownList(alt, { after: top, entries: fresh.map((item) => item.text), head: { seq: top + fresh.length, hash: before ?? "" } });
+    alt = more.member;
+    whole = whole && alt.entries.length === parts + texts.length;
+    texts = alt.entries.slice(parts);
+    signed = [...signed, ...taken(more.took)];
+  }
+  const next: OtherSoFar = { parts, texts, signed, alt };
   const [led] = signed;
-  if (led === undefined) return unproven;
-  if (led.held.body.seq === parts && attempt(signed.map(({ held }) => held.body.signer))) return { found: "attempt", parts, run: rest, open: false };
-  return { found: "fork", parts, by: led.held.body.signer };
+  if (led === undefined) return { found: "unproven", so: next, whole };
+  const attempt = led.seq === parts && signed.length <= ATTEMPT_ENTRIES_MAX && signed.every((item) => item.signer === led.signer) && wentOn(mine, led.signer, parts);
+  return { found: attempt ? "attempt" : "fork", so: next, whole };
 }
 
 /**
@@ -586,10 +633,10 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
   if (read.list !== copy.list) throw new RangeError("The read is of another list than the copy");
   if (!isCount(now)) throw new RangeError("The hour is seconds since 1970, a whole number");
   const { source } = read;
-  if (!isCount(read.left) || !Array.isArray(read.carry) || !read.carry.every((text) => typeof text === "string") || !isCount(read.common) || !(read.parted === null || isCount(read.parted))) {
+  if (!isCount(read.left) || !(read.carry === null || isRecord(read.carry)) || !isCount(read.common) || !(read.parted === null || isCount(read.parted))) {
     throw new RangeError("A read is one that startRead or a page gave");
   }
-  const asks = (after: number, back: boolean, carry: readonly string[] = [], common: number = read.common, parted: number | null = read.parted): FollowRead =>
+  const asks = (after: number, back: boolean, carry: OtherSoFar | null = null, common: number = read.common, parted: number | null = read.parted): FollowRead =>
     ({ source, list: copy.list, after, back, left: read.left - 1, carry, common, parted });
   const result = (verdict: FollowVerdict, next: FollowerCopy = copy, rest: Partial<Pick<PageResult, "code" | "at" | "read">> = {}): PageResult => {
     const held = withClock(next, now);
@@ -610,12 +657,23 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
   if (echoed !== undefined && echoed !== read.after) return refused("page_form");
   let after = read.after;
   if (!(after === null || isCount(after))) throw new RangeError("A read follows a place, or begins at entry 0");
-  // Entries of another history that the page before ended inside stand before this page's: the two are judged as one page from the place where they began.
-  if (read.carry.length > 0 && after !== null && copy.state !== null) {
-    shown = [...read.carry, ...shown];
-    after = Math.max(0, after - read.carry.length);
-  }
   const top = copy.entries.length - 1;
+  /** What another history comes to once it is judged: an alarm, a post its writer left behind, or nothing proven; and the request for what follows it, where the page ended inside it and the source says more follows. */
+  const settled = (judged: Extract<OtherJudged, { readonly so: OtherSoFar }>, held: FollowerCopy, state: ListState): PageResult | null => {
+    const { so, found } = judged;
+    if (found === "fork") {
+      const alarm: ListAlarm = held.alarm ?? { code: "fork", source, seq: so.parts, by: so.signed[0]?.signer ?? "", at: now, devices: inDevices(state).sort(), pcs: inPcs(state).sort() };
+      return result("fork", { ...held, alarm }, { at: so.parts });
+    }
+    const last = so.parts + so.texts.length - 1;
+    if (judged.whole && head.seq > last) return result("stuck", held, { at: so.parts, read: asks(last, read.back, so) });
+    return found === "attempt" ? refused("chain_broken", so.parts, held) : null;
+  };
+  // A page that goes on with another history the page before ended inside: it is judged with what was shown of it, and nothing of it is the member's.
+  if (read.carry !== null && copy.state !== null && after !== null) {
+    const judged = await otherHistory(copy.list, { entries: copy.entries, state: copy.state }, read.carry, after, shown);
+    return ("so" in judged ? settled(judged, copy, copy.state) : null) ?? result("stuck", copy, { at: read.carry.parts });
+  }
   // A page for a place the member no longer holds shows it nothing.
   if (after !== null && after > top) return result("withheld");
 
@@ -632,18 +690,11 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
       if (code === "list_mismatch") return result("not_my_list");
       if (code !== "entry_invalid" && code !== "needs_replay") return refused(code, 0);
       // An entry 0 with the list id of the pin that this build cannot read as a genesis: a later level's, or no list a member follows.
-      let v = 0;
-      try {
-        v = readBody(entryFromText(first).body).v;
-      } catch (error) {
-        if (!(error instanceof ListEntryError)) throw error;
-      }
-      // It holds as entry 0 of the pinned list (its form, its hash, its signature): the member keeps its text and stops there, as at any entry its build cannot place.
-      return v > LIST_LEVEL ? result("needs_newer_client", { ...copy, stop: first }) : result("not_my_list");
+      // It holds as entry 0 of the pinned list (its form, its hash, its signature). Signed by whom the pin asks for, the member keeps its text and stops there, as at any entry its build cannot place.
+      const unread = readBody(entryFromText(first).body);
+      return unread.v > LIST_LEVEL && pinSigner(copy, unread.signer) ? result("needs_newer_client", { ...copy, stop: first }) : result("not_my_list");
     }
-    if (started.member.state.account !== copy.account) return result("not_my_list");
-    if (copy.pin.how === "genesis" && body.signer !== copy.me.key) return result("not_my_list");
-    if (copy.pin.how === "migrated" && !copy.pin.admitted.includes(body.signer)) return result("not_my_list");
+    if (started.member.state.account !== copy.account || !pinSigner(copy, body.signer)) return result("not_my_list");
     member = started.member;
     after = 0;
     shown = rest;
@@ -698,15 +749,11 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
   const cursor = after + shown.length;
   const onward = asks(Math.min(cursor, reached), read.back);
   if (took.stuck) {
-    const other = await otherHistory(copy.list, took.member, after, shown);
-    if (other.found === "fork") {
-      if (next.alarm === null) next = { ...next, alarm: { code: "fork", source, seq: other.parts, by: other.by, at: now, devices: inDevices(state).sort(), pcs: inPcs(state).sort() } };
-      return result("fork", next, { at: other.parts });
-    }
-    if (other.found === "attempt") {
-      // The page ended inside what one member posted, and the source says more follows: what follows decides, so it is asked for and judged with these.
-      if (other.open && showed && head.seq > cursor) return result("stuck", next, { at: other.parts, read: asks(cursor, read.back, other.run) });
-      return refused("chain_broken", other.parts, next);
+    const other = await otherHistory(copy.list, took.member, null, after, shown);
+    if ("so" in other) {
+      // Where the page ended inside the other history and the source says more follows, what follows decides: it is asked for and judged with this.
+      const done = settled(other, next, state);
+      if (done !== null) return done;
     }
     // The page does not show the place where the two part. What it does say narrows it: every entry it showed is the member's own, so they part after those;
     // its head is not the member's entry at that place, so they have parted by there; its first entry follows one the member does not hold, so they parted before it.
@@ -727,7 +774,7 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
     }
     // Every entry shown is the member's own, the head is not, and nothing says yet by where they parted: the place lies further on.
     if (under === null && parted === null && other.found === "none" && showed && cursor < head.seq) return result("more", next, { read: onward });
-    return result("stuck", next, { at: took.stopped?.seq ?? null, read: under === null ? null : asks(under, read.back, [], common, parted) });
+    return result("stuck", next, { at: took.stopped?.seq ?? null, read: under === null ? null : asks(under, read.back, null, common, parted) });
   }
   if (took.stopped !== null) return refused(took.stopped.code as PageRefusal, took.stopped.seq, next);
   if (parted !== null) return result("stuck", next, { at: parted });
@@ -739,7 +786,7 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
   // A read that looks for where two histories part, shown only the member's own entries: they part after those, and it looks half way on.
   if (read.parted !== null && showed && Math.max(read.common, cursor) < read.parted) {
     const common = Math.max(read.common, cursor);
-    return result("more", next, { read: asks(Math.floor((common + read.parted - 1) / 2), read.back, [], common, read.parted) });
+    return result("more", next, { read: asks(Math.floor((common + read.parted - 1) / 2), read.back, null, common, read.parted) });
   }
   // A head that lies before the entries the page shows is no head of theirs: what held is taken, and the page says nothing of where the source stands.
   if (shown.length > 0 && head.seq < cursor) return refused("page_form", head.seq, next);
@@ -1060,6 +1107,7 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
     // Entry 0 holds and this build reads it as no genesis: a member that stopped there stays stopped, and for any other it is a later build's save.
     if (replayed.stopped?.code !== "entry_invalid") return no("broken");
     if (texts.length > 0 || stop === null) return refused;
+    if (!pinSigner({ pin, me: self }, readBody(entryFromText(stop).body).signer)) return no("broken");
     const stopped: FollowerCopy = { ...held, entries: [], state: null, stop };
     return { read: true, copy: stopped, rebuilt: writeSave(stopped) !== text };
   }
@@ -1074,7 +1122,7 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
   // A device that was allowed holds at the place of the head it was handed only that very entry, as when it took its pages.
   if (pin.how === "allowed" && member.entries.length > pin.seq && hashOf(member.entries[pin.seq]) !== pin.hash) return no("broken");
   if (state.account !== account) return no("broken");
-  if ((pin.how === "genesis" && first.signer !== self.key) || (pin.how === "migrated" && !pin.admitted.includes(first.signer))) return no("broken");
+  if (!pinSigner({ pin, me: self }, first.signer)) return no("broken");
   const copy: FollowerCopy = { ...held, entries: member.entries, state, stop: state.needs_replay === undefined ? null : stop };
   return { read: true, copy, rebuilt: writeSave(copy) !== text };
 }

@@ -594,8 +594,8 @@ describe("two members and a service that shows them two things", () => {
     expect([verdict(long, { list: OTHER.list, place: null }), verdict(long, null), verdict(long, { list: OTHER.list, place: gossipHead(long).place })]).toEqual(["not_my_list", "not_my_list", "not_my_list"]);
     // Only a verdict that asks carries a request: for what follows the member's head, or for the very entry the other stands at.
     expect(compareHeads(long, gossipHead(short)).read).toBeNull();
-    expect(compareHeads(short, gossipHead(long)).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: [], common: 0, parted: null });
-    expect(compareHeads(long, { list: BASE.list, place: { seq: 3, hash: "ab".repeat(32) } }).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: [], common: 0, parted: null });
+    expect(compareHeads(short, gossipHead(long)).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: null, common: 0, parted: null });
+    expect(compareHeads(long, { list: BASE.list, place: { seq: 3, hash: "ab".repeat(32) } }).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: null, common: 0, parted: null });
     expect([compareHeads(long, { list: BASE.list, place: { seq: 0, hash: "ab".repeat(32) } }).read, compareHeads(long, { list: BASE.list, place: "x" } as unknown as ReturnType<typeof gossipHead>).read]).toEqual([null, null]);
   });
 
@@ -853,7 +853,7 @@ describe("entries that a member signed and left behind", () => {
     // It shows the entry with a head far past it: the member asks for what follows, is shown nothing, and that is the end of it.
     const far = { seq: 90, hash: "ab".repeat(32) };
     const asked = await takePage(pc, { ...startRead(pc, "service"), after: 4 }, { ...pageOf(lost, 4), head: far }, NOW);
-    expect([asked.verdict, asked.read?.after, asked.read?.carry, asked.copy]).toEqual(["stuck", 5, [at(lost.texts, 5)], pc]);
+    expect([asked.verdict, asked.read?.after, asked.read?.carry?.texts, asked.copy]).toEqual(["stuck", 5, [at(lost.texts, 5)], pc]);
     const nothing = await takePage(asked.copy, asked.read ?? startRead(pc, "service"), { entries: [], head: far }, NOW);
     expect([nothing.verdict, nothing.code, nothing.read, nothing.copy]).toEqual(["refused", "chain_broken", null, pc]);
     // The tower's name on an entry after it, signed by the service's own key.
@@ -861,6 +861,29 @@ describe("entries that a member signed and left behind", () => {
     const forged = `${at((await add(real, tower, epochOf(0))).texts, 7).split(".")[0]}.${at((await add(real, mallory, epochOf(0))).texts, 7).split(".")[1]}`;
     const taken = await takePage(pc, { ...startRead(pc, "service"), after: 4 }, { list: log.list, after: 4, entries: [at(lost.texts, 5), at(real.texts, 6), forged], head: { seq: 7, hash: "ab".repeat(32) } }, NOW);
     expect([taken.verdict, taken.code, taken.copy]).toEqual(["refused", "chain_broken", pc]);
+  });
+
+  test("entries that no signer signed, before or between, change nothing of this, wherever the pages were cut", async () => {
+    const { lost, log } = await raced;
+    const pc = await followed(log, PC(desk, 1), { how: "added" });
+    const cases: readonly (readonly [string, Log, FollowVerdict, string | null])[] = [
+      // The owner's entry that lost its place, a stranger's on it, and then another member's: somebody lives there.
+      ["a member's entry after a stranger's after it", await grow(lost, [[mallory, epochOf(1)], [phone, epochOf(1)]]), "fork", "owner"],
+      // A stranger's entry at the place, and a member's on it: no member signs on what no signer signed.
+      ["a member's entry on a stranger's", await grow(BASE, [[mallory, epochOf(0)], [owner, epochOf(0)]]), "fork", "owner"],
+      ["a member's entry on three of a stranger's", await grow(BASE, [[mallory, epochOf(0)], [eve, epochOf(0)], [mallory, epochOf(0)], [phone, epochOf(0)]]), "fork", "phone"],
+      // Nothing but the owner's entry and strangers' after it, to the head: what the owner left behind.
+      ["strangers' entries after it and nothing else", await grow(lost, [[mallory, epochOf(1)], [eve, epochOf(1)], [mallory, epochOf(1)]]), "refused", null],
+      // Strangers' entries alone: nothing a member signed.
+      ["strangers' entries alone", await grow(BASE, [[mallory, epochOf(0)], [eve, epochOf(0)], [mallory, epochOf(0)]]), "stuck", null],
+    ];
+    for (const [name, other, verdict, by] of cases) {
+      for (const limit of [1, 2, 3, PAGE_ENTRIES_MAX]) {
+        const read = await reads(pc, shows(other, limit));
+        expect({ name, limit, last: lastOf(read), by: read.copy.alarm === null ? null : who(read.copy.alarm.by), at: read.copy.alarm?.seq ?? null, entries: read.copy.entries })
+          .toEqual({ name, limit, last: verdict, by, at: by === null ? null : 5, entries: log.texts });
+      }
+    }
   });
 
   test("the member that was shown such an entry as the list is the one with the alarm, when it meets one that holds the list", async () => {
@@ -1162,6 +1185,12 @@ describe("from the second read of the follower", () => {
       const again = await takePage(copy, startRead(copy, "service"), pageOf(first, null), NOW);
       expect([again.verdict, again.copy]).toEqual(["needs_newer_client", copy]);
     }
+    // Signed by another key than the pin asks for, it is not this member's list: nothing is kept, and it goes on asking.
+    const others = pinned(first, DEVICE(phone), { how: "genesis" });
+    const notMine = await takePage(others, startRead(others, "service"), pageOf(first, null), NOW);
+    expect([notMine.verdict, notMine.copy.stop, standing(notMine.copy), followStep(notMine.copy, NOW, { event: "doorbell" })]).toEqual(["not_my_list", null, "waiting", { do: "read" }]);
+    const migrated = pinned(first, PC(desk, 1), { how: "migrated", admitted: [phone.key] });
+    expect((await takePage(migrated, startRead(migrated, "service"), pageOf(first, null), NOW)).verdict).toBe("not_my_list");
     // An entry that is not the pinned list's entry 0 is no stop a save may hold, and a member that holds entries has none before them.
     const sum = (body: string) => bytesToHex(sha256(utf8ToBytes(`${LIST_SAVE_PREFIX}${body}`)));
     const ordered = (value: unknown): string => (Array.isArray(value) ? `[${value.map(ordered).join(",")}]` : typeof value === "object" && value !== null
@@ -1173,6 +1202,8 @@ describe("from the second read of the follower", () => {
       return ordered({ ...save, sum: sum(ordered(save)) });
     };
     expect(await readSave(withStop(writeSave(taken.copy), at(BASE.texts, 0)))).toEqual({ read: false, why: "broken" });
+    // Nor one that another key signed than the pin asks for.
+    expect(await readSave(withStop(writeSave(others), at(first.texts, 0)))).toEqual({ read: false, why: "broken" });
     // A build that reads the entry: here a pin for a list whose entry 0 this build reads, saved as stopped at it by a build that did not.
     const readable = pinned(BASE, DEVICE(owner), { how: "genesis" });
     const on = await readSave(withStop(writeSave(readable), at(BASE.texts, 0)));

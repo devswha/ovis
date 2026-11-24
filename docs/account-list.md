@@ -620,11 +620,13 @@ before the member acts on it:
 - Entry 0 must be a `genesis` with the pinned list id and the member's own account, signed by whom
   the pin asks for. An entry 0 of another list, of another account or by another signer is
   `not_my_list`. One that is no entry at all, or whose signature does not verify, is `refused` like
-  any entry that does not hold, and a `genesis` of a level the build cannot read is
-  `needs_newer_client`. In each case nothing of it is kept.
+  any entry that does not hold: in each of these cases nothing of it is kept. A `genesis` of a level
+  the build cannot read, signed by whom the pin asks for, is `needs_newer_client`, and of that one
+  the member keeps the text (below).
 - Before it is in, a member lets nobody in and shows no PC, though it holds entries.
 - A member whose entry 0 only a later level reads keeps that entry's text and stops there, as at
-  any entry its build cannot place: it reads no more until an update.
+  any entry its build cannot place: it reads no more until an update. The text is saved with its
+  pin (`stop`), so that the build that reads it goes on from it.
 - A device that was allowed takes, at the place of the head it was handed, no other entry: a log
   with another entry there is not the list it was let into.
 - A PC that was `migrated` never widens, all or nothing. A list whose first signer it never let in
@@ -729,9 +731,18 @@ of the list from there on, and gets the alarm when it is shown the list.
 **What a person does.** The alarm does not go away by anything the log or the service says. On each
 member that has it, a person resets the list there and pins again: a device is allowed again from
 a device or PC of the account, and a PC is added again at the PC. A member that was reset reads the
-list from entry 0 and holds whatever history it is then shown and can check. If the devices and
-PCs the person then sees in the account are not the ones they expect, they remove what they do not
-know from a device they trust, before they reset the others.
+list from entry 0 and holds whatever version it is then shown and can check, which need not be the
+one the person's other devices hold. So they go one member at a time:
+
+1. Reset one member, and look at the devices and PCs it shows afterwards.
+2. If one of them is not theirs, it has to go out of the version THAT member holds. A removal
+   signed on another version does nothing there. So they remove it at that member itself where it
+   may sign (a device, or a PC that a person added), or from a device that shows the very same
+   devices and PCs.
+3. They check that it is gone at that member before they reset the next one.
+4. If it does not go, or two of their members still show different devices and PCs, they stop: the
+   members are still on two versions, and resetting more of them only moves more of them onto a
+   version they have not checked.
 
 ### Two members meet
 
@@ -763,8 +774,9 @@ copy is. A service that is away or withholds takes out no device the PC holds.
   hour when it starts and whenever it reads its clock to decide (`withClock`), and decides on the
   copy that gives. A clock that was set back then lets no device in past its `until`. Over a restart
   a PC holds the hour of its last save and no later one, so it saves that copy before it acts on a
-  decision that turned on the clock. A decision never counts the clock for less than the copy
-  holds, so a PC that forgets to note the hour refuses more, never less.
+  decision that turned on the clock. A decision never counts the clock for less than the copy it
+  is handed holds, and no more than that: an hour that was read and not noted, or noted and not
+  kept, is lost, and a clock set back after it lets the device in again.
 - **A PC is a member** when its signing key belongs to a relay key that is in.
 - **A device shows** the PCs that are in. The account service's directory only says how to reach
   them.
