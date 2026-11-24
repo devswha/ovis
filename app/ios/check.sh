@@ -8,7 +8,9 @@ set -e
 ios=$(cd "$(dirname "$0")" && pwd)
 for package in OvisHomeCore OvisSshCore OvisPushCore; do
   echo "== swift test: $package"
-  (cd "$ios/$package" && swift test 2>&1 | tail -3)
+  out=$(cd "$ios/$package" && swift test 2>&1) || { echo "$out" | tail -40; echo "error: $package's tests failed"; exit 1; }
+  # XCTest's own count: the line after it is Swift Testing's, which finds none here
+  echo "$out" | grep -E 'Executed [0-9]+ tests' | tail -1
 done
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
