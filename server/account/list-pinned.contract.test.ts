@@ -596,6 +596,34 @@ describe("a removal the PC has seen is final", () => {
     expect((await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: { seq: "1" } } })).status).toBe(400);
   });
 
+  test("a device asks the PC for its own entries after a place it names, as any member answers a read, and gets nothing of another list", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const entries = pc.service.accountList(ACCOUNT)!.entries;
+    const heads = (body: unknown) => ask(member, "/api/account/list/head", { method: "POST", body });
+    // where both stand at one entry, the PC still answers the read the device asks for: its entries after that place
+    expect((await heads({ list: pc.account.id, place: head, asks: { list: pc.account.id, after: 0 } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: 0, entries: entries.slice(1, head.seq + 1), head } });
+    // from entry 0, and over the page the device's own place would have given
+    expect((await heads({ list: pc.account.id, place: { seq: 0, hash: pc.account.id }, asks: { list: pc.account.id, after: null } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: null, entries: entries.slice(0, head.seq + 1), head } });
+    // the PC still asks a device that stands further for what it lacks, beside what it answers
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: head.seq });
+    await pc.account.addDevice(await listMember());
+    expect((await heads({ list: pc.account.id, place: pc.account.place, asks: { list: pc.account.id, after: head.seq } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: head.seq, entries: [], head }, asks: { list: pc.account.id, after: head.seq } });
+    // a read of another list, or a head of another list, is answered with the PC's own head and nothing else
+    expect((await heads({ list: pc.account.id, place: head, asks: { list: "ef".repeat(32), after: 0 } })).body).toEqual({ list: pc.account.id, place: head });
+    expect((await heads({ list: "ef".repeat(32), place: null, asks: { list: pc.account.id, after: 0 } })).body).toEqual({ list: pc.account.id, place: head });
+    // and a read out of form is refused, as a head out of form is
+    for (const asks of [{ list: pc.account.id, after: -1 }, { list: pc.account.id }, { list: 7, after: 0 }, "all"]) {
+      expect((await heads({ list: pc.account.id, place: head, asks })).status).toBe(400);
+    }
+    expect((await heads({ list: pc.account.id, place: head, asks: null })).body).toEqual({ list: pc.account.id, place: head });
+  });
+
   test("one session makes thirty of these calls a minute, and no more", async () => {
     const pc = await pinnedPc();
     const member = await relayConnection(pc.fixture, { serverId: pc.serverId });

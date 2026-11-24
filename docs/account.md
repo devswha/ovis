@@ -597,14 +597,18 @@ entry for the PC's own key, at this call or at a later read. 400 `invalid_list`;
 `list_removed` for an account whose list removed this PC; 503 `unavailable` when the PC's copy or
 its keys cannot be read or written.
 
-`POST /api/account/list/head` `{ "list", "place" }`: a device tells this PC where it stands in the
+`POST /api/account/list/head` `{ "list", "place", "asks"? }`: a device tells this PC where it stands in the
 account's signed list (`place` is the last entry a member signed in its copy, `{ "seq", "hash" }`, or
 `null` before it read any), and reads where the PC stands: `{ "list", "place", "page"?, "asks"? }`.
 `page` is there when the device stands at an earlier place of the PC's own history: the PC's
-entries after that place, 256 at most, as `{ "list", "after", "entries", "head" }`. `asks` is there
-when the device stands further, or at another entry: `{ "list", "after" }`, the place the PC wants
-the device's entries after. For another list than the PC's: the PC's own `list` and `place` and
-nothing else. `POST /api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands
+entries after that place, 256 at most, as `{ "list", "after", "entries", "head" }`. A device that
+wants the PC's entries after another place sends that read as `asks`, `{ "list", "after" }` (`after`
+null for entry 0): where the PC holds another entry at a place the device holds, or while it looks
+for where two histories part. The PC then answers that read in `page`, whatever its own comparison
+gives, as any member answers a read: its own entries up to its last signed one, with or without an
+alarm. `asks` in the answer is there when the device stands further, or at another entry:
+`{ "list", "after" }`, the place the PC wants the device's entries after. For another list than the
+PC's, in `list` or in the device's `asks`: the PC's own `list` and `place` and nothing else. `POST /api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands
 the PC entries, 256 at most, with the head they lead to; the PC takes them as it takes the account
 service's pages, each entry on its own signature, and answers `{ "verdict", "asks"?, "list",
 "place" }`: what came of them (`caught_up`, `more`, `asks_after` for an entry kept beside the list

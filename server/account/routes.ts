@@ -110,8 +110,17 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (pathname === "/api/account/list/head") {
       // where the device stands: its list and the last entry a member signed in its copy, or null before it read any
       const theirs = body.place === null ? null : placeOf(body.place);
-      if (typeof body.list !== "string" || !isListHash(body.list) || (body.place !== null && theirs === null)) return fail("invalid_head", "Send the list's id and the place the device stands at", 400);
-      return reply(list.peerHeads({ list: body.list, place: theirs }, session) ?? own);
+      // and, where it wants them, this PC's own entries after a place it names (its own read: a place where the two
+      // differ, or the search for where they part): a list id and a place, or null for entry 0
+      const { asks } = body as { asks?: unknown };
+      const read = typeof asks === "object" && asks !== null ? asks as { list?: unknown; after?: unknown } : null;
+      const wanted = asks === undefined || asks === null ? null
+        : read !== null && typeof read.list === "string" && isListHash(read.list) && (read.after === null || (typeof read.after === "number" && Number.isSafeInteger(read.after) && read.after >= 0))
+          ? { list: read.list, after: read.after } : undefined;
+      if (typeof body.list !== "string" || !isListHash(body.list) || (body.place !== null && theirs === null) || wanted === undefined) {
+        return fail("invalid_head", "Send the list's id and the place the device stands at", 400);
+      }
+      return reply(list.peerHeads({ list: body.list, place: theirs }, session, wanted) ?? own);
     }
     const { entries, after } = body as { entries?: unknown; after?: unknown };
     const head = placeOf(body.head);

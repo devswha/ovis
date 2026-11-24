@@ -1470,25 +1470,31 @@ export class ListFollow implements ListAuthority {
   /**
    * Where this PC stands against where a device says it stands (POST /api/account/list/head): the PC's own head; the
    * entries after the device's place when the device stands at an earlier place of the PC's own history (`page`); and
-   * the place the PC asks the device for when the device stands further, or at another entry (`asks`). For another
-   * list than the PC's: its own head and nothing else. Null while it follows no list a person named.
+   * the place the PC asks the device for when the device stands further, or at another entry (`asks`). `wanted`: the
+   * read the device asks for itself (where it sees the two differ, or looks for where they part); the PC answers it
+   * with its own entries after that place, as any member answers a read, in place of the page its own comparison
+   * would give. For another list than the PC's: its own head and nothing else. Null while it follows no list a person
+   * named.
    */
-  peerHeads(theirs: ListHead, session?: string): { readonly list: string; readonly place: ListHead["place"]; readonly page?: ListPage; readonly asks?: PeerAsk } | null {
+  peerHeads(theirs: ListHead, session?: string, wanted: PeerAsk | null = null): { readonly list: string; readonly place: ListHead["place"]; readonly page?: ListPage; readonly asks?: PeerAsk } | null {
     const own = this.peerHead();
     const copy = this.copy;
     if (own === null || copy === null) return null;
     const compared = compareHeads(copy, theirs);
+    if (compared.verdict === "not_my_list") return own;
+    const served = wanted !== null && wanted.list === copy.list ? servePage(copy, wanted, PEER_PAGE_MAX) : null;
     if (compared.verdict === "ahead") {
-      const page = servePage(copy, { list: copy.list, after: theirs.place?.seq ?? null }, PEER_PAGE_MAX);
+      const page = served ?? servePage(copy, { list: copy.list, after: theirs.place?.seq ?? null }, PEER_PAGE_MAX);
       return page === null ? own : { ...own, page };
     }
-    if (compared.read === null) return own;
+    const answered = served === null ? own : { ...own, page: served };
+    if (compared.read === null) return answered;
     if (session !== undefined) {
       this.peerReads.delete(session);
       this.peerReads.set(session, compared.read);
       while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
     }
-    return { ...own, asks: { list: compared.read.list, after: compared.read.after } };
+    return { ...answered, asks: { list: compared.read.list, after: compared.read.after } };
   }
 
   /** Whether `session` may make one more call of the two (PEER_CALLS_PER_MINUTE): each costs signature checks. Charged before its body is read. */
