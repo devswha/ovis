@@ -433,5 +433,18 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
       tab().props.onPointerUp({ pointerId: 3, clientX: 40, clientY: 120 });
     });
     expect(moved).toEqual([]);
+
+    // In-strip mouse drag-to-reorder still works when splitDrag is already false (e.g. below 769px).
+    await drawForDrag(TUI, { splitDrag: false });
+    await act(async () => {
+      tab().props.onPointerDown({ pointerType: "mouse", button: 0, ctrlKey: false, isPrimary: true, pointerId: 4, clientX: 40, clientY: 5, preventDefault() {}, currentTarget: captureTarget });
+    });
+    await act(async () => {
+      tab().props.onPointerMove({ pointerId: 4, clientX: 80, clientY: 5 });
+    });
+    expect(renderer!.root.findAll((el) => typeof el.props.className === "string" && el.props.className.includes("is-dragging"))).toHaveLength(1);
+    await act(async () => {
+      tab().props.onPointerUp({ pointerId: 4, clientX: 80, clientY: 5 });
+    });
   });
 });

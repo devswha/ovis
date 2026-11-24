@@ -188,6 +188,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   };
   // a watching device moves no tab (the server refuses it read_only): the order is fixed for it as for the Herdr app's
   const reorderable = arrange && closable;
+  const externalDragActive = useRef(false);
   const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, fixed: !reorderable,
     failed: (reason) => setError(t("Move failed: {reason}", { reason: said(reason) })),
     stale: () => setError(t("Tab order did not refresh. Try again.")),
@@ -196,6 +197,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
         const tab = tabs.find((entry) => entry.tab_id === tabId);
         const pane = tab ? paneFor(tab) : undefined;
         if (!tab || !pane) return;
+        externalDragActive.current = true;
         paneDrag.start(
           { machineId, paneId: pane.pane_id },
           {
@@ -204,7 +206,10 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
           },
         );
       },
-      move: paneDrag.move, back: paneDrag.back, drop: paneDrag.drop, cancel: paneDrag.cancel,
+      move: paneDrag.move,
+      back: paneDrag.back,
+      drop: (x, y) => { externalDragActive.current = false; paneDrag.drop(x, y); },
+      cancel: () => { externalDragActive.current = false; paneDrag.cancel(); },
     } : undefined,
   });
   const draggedTabId = reorder.drag?.tabId ?? null;
@@ -213,11 +218,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (draggedTabId !== null) paneDrag.refresh();
   }, [draggedTabId, draggedWorkspaceTargets]);
   useLayoutEffect(() => {
-    if (!splitDrag && draggedTabId !== null) {
+    if (!splitDrag && externalDragActive.current) {
+      externalDragActive.current = false;
       reorder.cancelDrag();
       paneDrag.cancel();
     }
-  }, [splitDrag, draggedTabId]);
+  }, [splitDrag]);
   const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
   const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
   // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
