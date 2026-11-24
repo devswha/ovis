@@ -7,8 +7,8 @@
       "epoch": 4,
       "key": "46aba7fe34f5c5d000d0bb9effd5d83c914cf131e830c345e2d98552109d746a"
     },
-    "commitment": "1705c769453816f0e1ed14075fc264ab6d561ddfbbe27da554404172698f610e",
-    "bytes": "AbZH0bPahDcX7UGXxBv3JnRiunbsb66RYa205Nv6crzDcFfykJuAZpZyjXYcPl7A8_XB54HqsujuxAXBrQ"
+    "commitment": "4de551e69206ec86ea5280802708a895b74a94708fbf35fabad124cbcc3c50d8",
+    "bytes": "AaUTbD7PdXFrhyaI3XunY9Q6RIYCtzyRuH3RmY-CvNKrfYo_xKnD5itcjKVGWtRI_YTwC4yw_7M0zPPjgQ"
   },
   "expect": {
     "why": "refused"

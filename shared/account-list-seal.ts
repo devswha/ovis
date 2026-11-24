@@ -21,7 +21,7 @@ export const LIST_SEAL_TAG = "ovis-list-seal/1";
 export const LIST_SEALED_PREFIX = "ovis-list-sealed/1";
 /** The HKDF info of the key that encrypts the epoch key before, and the start of a link's additional data. */
 export const LIST_EPOCH_LINK_TAG = "ovis-list-epoch-link/1";
-/** The commitment to an epoch key is SHA-256 over these bytes, the epoch and the key. */
+/** The commitment to an epoch key is SHA-256 over these bytes, the list id, the epoch and the key. */
 export const LIST_EPOCH_KEY_TAG = "ovis-list-epoch-key/1";
 export const LIST_SEAL_VERSION = 1;
 export const LIST_EPOCH_KEY_BYTES = 32;
@@ -65,7 +65,8 @@ export const LIST_STORED_KEY_TEXT_LENGTH = 184;
  * - `missing`: nothing was given (no wrap, no link, no key, no sealed field);
  * - `form`: the bytes, or what they are opened for, have not the form (a length, a version, a point off the curve, a plaintext that is no fields);
  * - `refused`: in form, but it does not open with this key for this place (another member's wrap, another list, seq or epoch, a changed byte);
- * - `other_key`: it opens, to a key that is not the one the list commits to for that epoch;
+ * - `other_key`: it opens, to a key that is not the one the list commits to for that epoch. Callers say so besides hiding
+ *   the name: a wrap comes from the account service, so a wrong key in one is a sign of tampering;
  * - `bound`: the walk back opened as many links as it may;
  * - `unavailable`: the runtime could not do it (no WebCrypto on a page on plain http); a fault of the place, not of the bytes.
  */
@@ -280,14 +281,19 @@ export function newEpochKey(epoch: number): EpochKey {
 }
 
 /**
- * The commitment to an epoch's key, as a hash. The entry that opens the epoch carries it in clear,
- * under a member's signature; a key from a wrap or a link is taken only when it gives this hash.
- * Without it the service, which can wrap any key to a member, could hand a new member a key of
- * its own and read what that member seals.
+ * The commitment to an epoch's key, as a hash: SHA-256 over its own tag, the list id, the epoch and
+ * the key. The entry that opens the epoch carries it in clear, under a member's signature; a key
+ * from a wrap or a link is taken only when it gives this hash. Without it the service, which can
+ * wrap any key to a member, could hand a new member a key of its own and read what that member
+ * seals. Epoch 0 is committed to in entry 0, whose hash is the list id: no list id exists yet, so
+ * 32 zero bytes stand for it, and what binds that commitment to its list is the entry it stands
+ * in. `list` is not read for epoch 0.
  */
-export function epochKeyCommitment(epoch: EpochKey): string {
+export function epochKeyCommitment(given: { readonly list: string; readonly epoch: EpochKey }): string {
+  const { list, epoch } = given;
   if (!isEpochKey(epoch)) refuse("argument", "An epoch key is an epoch number and 32 bytes");
-  return bytesToHex(sha256(concatBytes(EPOCH_KEY_TAG, u64(epoch.epoch), epoch.key)));
+  if (epoch.epoch !== 0 && !isListHash(list)) refuse("argument", "list is a list id: 64 of 0-9a-f");
+  return bytesToHex(sha256(concatBytes(EPOCH_KEY_TAG, epoch.epoch === 0 ? ENTRY_0_LIST : hexToBytes(list), u64(epoch.epoch), epoch.key)));
 }
 
 /**
@@ -339,7 +345,7 @@ export async function openWrap(given: {
     const key = await decrypt(subtle, cipher.key, cipher.iv, null, wrap.subarray(1 + POINT_BYTES));
     if (key === null) return closed("refused");
     const opened: EpochKey = { epoch, key };
-    return epochKeyCommitment(opened) === commitment ? { open: true, value: opened } : closed("other_key");
+    return epochKeyCommitment({ list, epoch: opened }) === commitment ? { open: true, value: opened } : closed("other_key");
   });
 }
 
@@ -384,7 +390,7 @@ export async function openLink(given: {
     const key = await decrypt(subtle, cipher, link.subarray(1, 1 + NONCE_BYTES), linkData(list, from.epoch), link.subarray(1 + NONCE_BYTES));
     if (key === null) return closed("refused");
     const before: EpochKey = { epoch: from.epoch - 1, key };
-    return epochKeyCommitment(before) === commitment ? { open: true, value: before } : closed("other_key");
+    return epochKeyCommitment({ list, epoch: before }) === commitment ? { open: true, value: before } : closed("other_key");
   });
 }
 
@@ -477,5 +483,5 @@ export async function nextEpoch(given: { readonly list: string; readonly current
   const current: EpochKey = { epoch: given.current.epoch, key: new Uint8Array(given.current.key) };
   const epoch = newEpochKey(current.epoch + 1);
   const link = await linkEpochs({ list: given.list, opened: epoch, previous: current });
-  return { epoch, commitment: epochKeyCommitment(epoch), link, ...(await wrapEpochKeyFor({ list: given.list, epoch, members: given.members })) };
+  return { epoch, commitment: epochKeyCommitment({ list: given.list, epoch }), link, ...(await wrapEpochKeyFor({ list: given.list, epoch, members: given.members })) };
 }

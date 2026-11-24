@@ -7,8 +7,8 @@
       "epoch": 3,
       "key": "46aba7fe34f5c5d000d0bb9effd5d83c914cf131e830c345e2d98552109d746a"
     },
-    "commitment": "98428950800ab84939a3c19f0926ba971489ce5ecb2a03bc8b60adb8ae978cc4",
-    "bytes": "ATeCVjBM9YE22JMoTLpplhlO1vYbfv3HzcnBnrtpPV9eDj2ykZX2eM5LyeqjTyf0R9k7B7rtZp91F9cbYA"
+    "commitment": "c97cdd297b4dea464b9d4fa01ae82a2a7b8155f8e2896d33881914d51b1d98a9",
+    "bytes": "AVP_KhNkbXH9LbD6gTEWRn63j9MxzQ8xG1T3vrKlr_nZc5TFCP-TQhnfV9jivq4PjWoix_7nyYzQNZg-eA"
   },
   "expect": {
     "key": "2fa00c28d4ee2a5999e129d3cf60c3f4c8f5af081d6da74f92a4cc6c67e66bb0"

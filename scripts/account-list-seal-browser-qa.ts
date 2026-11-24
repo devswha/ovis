@@ -90,7 +90,7 @@ try {
     const handed = {
       list: LIST, pc: pc.key,
       wrap: wrapToText(removal.wraps[0]?.wrap ?? new Uint8Array(0)), link: toBase64Url(removal.link),
-      commitments: [epochKeyCommitment(first), removal.commitment],
+      commitments: [epochKeyCommitment({ list: LIST, epoch: first }), removal.commitment],
       genesis: toBase64Url(await sealFields({ place: { list: "", seq: 0 }, epoch: first, fields })),
       later: toBase64Url(await sealFields({ place: { list: LIST, seq: 4 }, epoch: removal.epoch, fields })),
     };

@@ -57,8 +57,8 @@ const reference = {
   sub(epochKey: Uint8Array, tag: string): Uint8Array {
     return hkdf(sha256, epochKey, new Uint8Array(32), utf8ToBytes(tag), 32);
   },
-  commitment(epoch: number, key: Uint8Array): string {
-    return bytesToHex(sha256(concatBytes(utf8ToBytes("ovis-list-epoch-key/1"), u64(epoch), key)));
+  commitment(list: string, epoch: number, key: Uint8Array): string {
+    return bytesToHex(sha256(concatBytes(utf8ToBytes("ovis-list-epoch-key/1"), epoch === 0 ? new Uint8Array(32) : hexToBytes(list), u64(epoch), key)));
   },
   onCurve(point: Uint8Array): boolean {
     try {
@@ -88,7 +88,7 @@ const reference = {
     } catch {
       return { why: "refused" };
     }
-    return reference.commitment(epoch, key) === commitment ? { key: bytesToHex(key) } : { why: "other_key" };
+    return reference.commitment(list, epoch, key) === commitment ? { key: bytesToHex(key) } : { why: "other_key" };
   },
   linkData(list: string, epoch: number): Uint8Array {
     return concatBytes(utf8ToBytes("ovis-list-epoch-link/1"), hexToBytes(list), u64(epoch));
@@ -105,7 +105,7 @@ const reference = {
     } catch {
       return { why: "refused" };
     }
-    return reference.commitment(from.epoch - 1, key) === commitment ? { key: bytesToHex(key) } : { why: "other_key" };
+    return reference.commitment(list, from.epoch - 1, key) === commitment ? { key: bytesToHex(key) } : { why: "other_key" };
   },
   sealedData(list: string, seq: number, epoch: number): Uint8Array {
     return concatBytes(utf8ToBytes("ovis-list-seal/1"), list === "" ? new Uint8Array(32) : hexToBytes(list), u64(seq), u64(epoch));
@@ -148,11 +148,12 @@ describe("the vectors of seal/", () => {
   const WRAPS = [
     "wrap", "wrap-epoch-15-digits", "wrap-made-elsewhere", "wrap-other-member", "wrap-other-list", "wrap-other-epoch", "wrap-byte-changed", "wrap-tag-changed",
     "wrap-other-point", "wrap-point-off-curve", "wrap-version-2", "wrap-version-0", "wrap-short", "wrap-trailing-byte", "wrap-text-padded",
-    "wrap-text-second-spelling", "wrap-text-empty", "wrap-of-another-key",
+    "wrap-text-second-spelling", "wrap-text-empty", "wrap-of-another-key", "wrap-epoch-0", "wrap-epoch-0-commitment-with-list", "wrap-commitment-other-list",
+    "wrap-commitment-other-epoch",
   ];
   const LINKS = [
     "link", "link-made-elsewhere", "link-to-epoch-0", "link-other-list", "link-other-epoch", "link-other-from-key", "link-byte-changed", "link-nonce-changed",
-    "link-version-2", "link-short", "link-trailing-byte", "link-of-another-key", "link-from-epoch-0",
+    "link-version-2", "link-short", "link-trailing-byte", "link-of-another-key", "link-commitment-other-list", "link-from-epoch-0",
   ];
   const SEALED = [
     "sealed", "sealed-made-elsewhere", "sealed-entry-0", "sealed-no-fields", "sealed-utf8", "sealed-seq-15-digits", "sealed-other-seq", "sealed-other-list",
@@ -204,7 +205,7 @@ describe("a member's encryption key", () => {
     expect(pc.key).toBe(made.key);
     expect(pc.privateKey.extractable).toBe(false);
     const epoch = newEpochKey(0);
-    const opened = await openWrap({ list: LIST, epoch: 0, commitment: epochKeyCommitment(epoch), wrap: await wrapEpochKey({ list: LIST, epoch, member: made.key }), member: pc });
+    const opened = await openWrap({ list: LIST, epoch: 0, commitment: epochKeyCommitment({ list: LIST, epoch }), wrap: await wrapEpochKey({ list: LIST, epoch, member: made.key }), member: pc });
     expect(opened).toEqual({ open: true, value: epoch });
   });
 
@@ -223,7 +224,7 @@ describe("a member's encryption key", () => {
     expect(member.key).toBe(pair.spki);
     const epoch = newEpochKey(2);
     const wrap = await wrapEpochKey({ list: LIST, epoch, member: pair.spki });
-    expect(await openWrap({ list: LIST, epoch: 2, commitment: epochKeyCommitment(epoch), wrap, member })).toEqual({ open: true, value: epoch });
+    expect(await openWrap({ list: LIST, epoch: 2, commitment: epochKeyCommitment({ list: LIST, epoch }), wrap, member })).toEqual({ open: true, value: epoch });
   });
 
   test("a stored key that is not in its one form, or whose point is not its own, is refused without a byte of it in the message", async () => {
@@ -260,7 +261,7 @@ describe("a member's encryption key", () => {
 
 describe("a wrap", () => {
   const epoch = newEpochKey(4);
-  const commitment = epochKeyCommitment(epoch);
+  const commitment = epochKeyCommitment({ list: LIST, epoch });
 
   test("opens for the member it was made for, to the key the list commits to", async () => {
     const wrap = await wrapEpochKey({ list: LIST, epoch, member: alice.key });
@@ -278,7 +279,7 @@ describe("a wrap", () => {
   test("it does not open for another list or another epoch", async () => {
     const wrap = await wrapEpochKey({ list: LIST, epoch, member: alice.key });
     expect(await openWrap({ list: OTHER_LIST, epoch: 4, commitment, wrap, member: alice })).toEqual({ open: false, why: "refused" });
-    expect(await openWrap({ list: LIST, epoch: 5, commitment: epochKeyCommitment({ epoch: 5, key: epoch.key }), wrap, member: alice })).toEqual({ open: false, why: "refused" });
+    expect(await openWrap({ list: LIST, epoch: 5, commitment: epochKeyCommitment({ list: LIST, epoch: { epoch: 5, key: epoch.key } }), wrap, member: alice })).toEqual({ open: false, why: "refused" });
   });
 
   test("no single changed bit opens", async () => {
@@ -301,13 +302,39 @@ describe("a wrap", () => {
     const services = newEpochKey(4);
     const wrap = await wrapEpochKey({ list: LIST, epoch: services, member: alice.key });
     expect(await openWrap({ list: LIST, epoch: 4, commitment, wrap, member: alice })).toEqual({ open: false, why: "other_key" });
-    expect(await openWrap({ list: LIST, epoch: 4, commitment: epochKeyCommitment(services), wrap, member: alice })).toEqual({ open: true, value: services });
+    expect(await openWrap({ list: LIST, epoch: 4, commitment: epochKeyCommitment({ list: LIST, epoch: services }), wrap, member: alice })).toEqual({ open: true, value: services });
   });
 
-  test("the commitment is of the epoch and the key: the same key in another epoch commits otherwise", () => {
-    expect(epochKeyCommitment(epoch)).toBe(reference.commitment(4, epoch.key));
-    expect(epochKeyCommitment({ epoch: 5, key: epoch.key })).not.toBe(commitment);
-    expect(epochKeyCommitment(newEpochKey(4))).not.toBe(commitment);
+  test("the commitment is of the list, the epoch and the key: the same key in another list or epoch commits otherwise", () => {
+    expect(epochKeyCommitment({ list: LIST, epoch })).toBe(reference.commitment(LIST, 4, epoch.key));
+    expect(epochKeyCommitment({ list: LIST, epoch })).toBe(bytesToHex(sha256(concatBytes(utf8ToBytes("ovis-list-epoch-key/1"), hexToBytes(LIST), u64(4), epoch.key))));
+    expect(epochKeyCommitment({ list: LIST, epoch: { epoch: 5, key: epoch.key } })).not.toBe(commitment);
+    expect(epochKeyCommitment({ list: OTHER_LIST, epoch })).not.toBe(commitment);
+    expect(epochKeyCommitment({ list: LIST, epoch: newEpochKey(4) })).not.toBe(commitment);
+    for (const list of ["", "5C".repeat(32), "5c".repeat(31), undefined as never]) expect(() => epochKeyCommitment({ list, epoch })).toThrow(ListSealError);
+    expect(() => epochKeyCommitment({ list: LIST, epoch: { epoch: 4, key: new Uint8Array(31) } })).toThrow(ListSealError);
+  });
+
+  test("a wrap of the right key does not pass a commitment made for another list or another epoch", async () => {
+    const wrap = await wrapEpochKey({ list: LIST, epoch, member: alice.key });
+    expect(await openWrap({ list: LIST, epoch: 4, commitment: epochKeyCommitment({ list: OTHER_LIST, epoch }), wrap, member: alice })).toEqual({ open: false, why: "other_key" });
+    expect(await openWrap({ list: LIST, epoch: 4, commitment: epochKeyCommitment({ list: LIST, epoch: { epoch: 5, key: epoch.key } }), wrap, member: alice })).toEqual({ open: false, why: "other_key" });
+  });
+
+  test("epoch 0 is committed to before the list has an id: 32 zero bytes stand for it, whatever list is named", async () => {
+    const first = newEpochKey(0);
+    const atGenesis = epochKeyCommitment({ list: "", epoch: first });
+    expect(atGenesis).toBe(bytesToHex(sha256(concatBytes(utf8ToBytes("ovis-list-epoch-key/1"), new Uint8Array(32), u64(0), first.key))));
+    expect(epochKeyCommitment({ list: LIST, epoch: first })).toBe(atGenesis);
+    expect(epochKeyCommitment({ list: OTHER_LIST, epoch: first })).toBe(atGenesis);
+    const wrap = await wrapEpochKey({ list: LIST, epoch: first, member: alice.key });
+    expect(await openWrap({ list: LIST, epoch: 0, commitment: atGenesis, wrap, member: alice })).toEqual({ open: true, value: first });
+    const withList = bytesToHex(sha256(concatBytes(utf8ToBytes("ovis-list-epoch-key/1"), hexToBytes(LIST), u64(0), first.key)));
+    expect(await openWrap({ list: LIST, epoch: 0, commitment: withList, wrap, member: alice })).toEqual({ open: false, why: "other_key" });
+    const next = await nextEpoch({ list: LIST, current: first, members: [] });
+    expect(next.commitment).toBe(epochKeyCommitment({ list: LIST, epoch: next.epoch }));
+    expect(next.commitment).toBe(reference.commitment(LIST, 1, next.epoch.key));
+    expect(await openLink({ list: LIST, from: next.epoch, link: next.link, commitment: atGenesis })).toEqual({ open: true, value: first });
   });
 
   test("two wraps of one key for one member share no ephemeral point and no ciphertext", async () => {
@@ -368,7 +395,7 @@ describe("a wrap", () => {
 describe("the chain of epochs", () => {
   async function chain(length: number): Promise<{ keys: EpochKey[]; openings: Map<number, EpochOpening> }> {
     const keys = [newEpochKey(0)];
-    const openings = new Map<number, EpochOpening>([[0, { commitment: epochKeyCommitment(keys[0] as EpochKey) }]]);
+    const openings = new Map<number, EpochOpening>([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: keys[0] as EpochKey }) }]]);
     for (let epoch = 1; epoch < length; epoch += 1) {
       const next = await nextEpoch({ list: LIST, current: keys[epoch - 1] as EpochKey, members: [] });
       keys.push(next.epoch);
@@ -382,20 +409,20 @@ describe("the chain of epochs", () => {
     const opened = newEpochKey(7);
     const link = await linkEpochs({ list: LIST, opened, previous: before });
     expect(link.length).toBe(LIST_EPOCH_LINK_BYTES);
-    expect(await openLink({ list: LIST, from: opened, link, commitment: epochKeyCommitment(before) })).toEqual({ open: true, value: before });
-    expect(reference.openLink(LIST, opened, epochKeyCommitment(before), link)).toEqual({ key: bytesToHex(before.key) });
-    expect(await openLink({ list: LIST, from: opened, link: reference.link(LIST, opened, before.key), commitment: epochKeyCommitment(before) })).toEqual({ open: true, value: before });
+    expect(await openLink({ list: LIST, from: opened, link, commitment: epochKeyCommitment({ list: LIST, epoch: before }) })).toEqual({ open: true, value: before });
+    expect(reference.openLink(LIST, opened, epochKeyCommitment({ list: LIST, epoch: before }), link)).toEqual({ key: bytesToHex(before.key) });
+    expect(await openLink({ list: LIST, from: opened, link: reference.link(LIST, opened, before.key), commitment: epochKeyCommitment({ list: LIST, epoch: before }) })).toEqual({ open: true, value: before });
   });
 
   test("a link does not open for another list, another epoch or another key, and no single changed bit opens", async () => {
     const before = newEpochKey(6);
     const opened = newEpochKey(7);
-    const commitment = epochKeyCommitment(before);
+    const commitment = epochKeyCommitment({ list: LIST, epoch: before });
     const link = await linkEpochs({ list: LIST, opened, previous: before });
     expect(await openLink({ list: OTHER_LIST, from: opened, link, commitment })).toEqual({ open: false, why: "refused" });
-    expect(await openLink({ list: LIST, from: { epoch: 8, key: opened.key }, link, commitment: epochKeyCommitment({ epoch: 7, key: before.key }) })).toEqual({ open: false, why: "refused" });
+    expect(await openLink({ list: LIST, from: { epoch: 8, key: opened.key }, link, commitment: epochKeyCommitment({ list: LIST, epoch: { epoch: 7, key: before.key } }) })).toEqual({ open: false, why: "refused" });
     expect(await openLink({ list: LIST, from: newEpochKey(7), link, commitment })).toEqual({ open: false, why: "refused" });
-    expect(await openLink({ list: LIST, from: opened, link, commitment: epochKeyCommitment(newEpochKey(6)) })).toEqual({ open: false, why: "other_key" });
+    expect(await openLink({ list: LIST, from: opened, link, commitment: epochKeyCommitment({ list: LIST, epoch: newEpochKey(6) }) })).toEqual({ open: false, why: "other_key" });
     const verdicts = new Set<string>();
     for (let bit = 0; bit < link.length * 8; bit += 1) verdicts.add(why(await openLink({ list: LIST, from: opened, link: flipped(link, bit), commitment })));
     expect([...verdicts].sort()).toEqual(["form", "refused"]);
@@ -411,7 +438,7 @@ describe("the chain of epochs", () => {
     ];
     for (const given of bad) expect(await refusal(() => linkEpochs(given))).toBeInstanceOf(ListSealError);
     const key = newEpochKey(0);
-    expect(await openLink({ list: LIST, from: key, link: new Uint8Array(61), commitment: epochKeyCommitment(key) })).toEqual({ open: false, why: "form" });
+    expect(await openLink({ list: LIST, from: key, link: new Uint8Array(61), commitment: epochKeyCommitment({ list: LIST, epoch: key }) })).toEqual({ open: false, why: "form" });
   });
 
   test("walking back from the current key yields every earlier key", async () => {
@@ -461,7 +488,7 @@ describe("the chain of epochs", () => {
     expect(await walkBack({ list: LIST, from, openings: without(3, { commitment: three.commitment, link: null }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "missing" } });
     expect(await walkBack({ list: LIST, from, openings: without(3, { commitment: three.commitment, link: flipped(three.link as Uint8Array, 200) }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "refused" } });
     expect(await walkBack({ list: LIST, from, openings: without(3, { commitment: three.commitment, link: openings.get(4)?.link ?? null }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "refused" } });
-    expect(await walkBack({ list: LIST, from, openings: without(2, { commitment: epochKeyCommitment(newEpochKey(2)), link: two.link ?? null }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "other_key" } });
+    expect(await walkBack({ list: LIST, from, openings: without(2, { commitment: epochKeyCommitment({ list: LIST, epoch: newEpochKey(2) }), link: two.link ?? null }) })).toEqual({ keys: reached, stopped: { epoch: 2, why: "other_key" } });
     expect(await walkBack({ list: OTHER_LIST, from, openings })).toEqual({ keys: [from], stopped: { epoch: 4, why: "refused" } });
     expect(await walkBack({ list: LIST, from, to: 9, openings })).toEqual({ keys: [from], stopped: { epoch: 9, why: "missing" } });
     expect(await walkBack({ list: LIST, from: { epoch: 5, key: new Uint8Array(3) }, openings })).toEqual({ keys: [], stopped: { epoch: 0, why: "form" } });
@@ -565,32 +592,32 @@ describe("a removal and an addition", () => {
     const next = await nextEpoch({ list: LIST, current: first, members: [alice.key, bob.key] });
     const after = await sealFields({ place: { list: LIST, seq: 6 }, epoch: next.epoch, fields: [text("label", "New laptop")] });
     expect(next.epoch.epoch).toBe(1);
-    expect(next.commitment).toBe(epochKeyCommitment(next.epoch));
+    expect(next.commitment).toBe(epochKeyCommitment({ list: LIST, epoch: next.epoch }));
     expect(next.wraps.map((wrap) => wrap.member)).toEqual([alice.key, bob.key]);
     expect(next.unwrapped).toEqual([]);
 
     const carolsWrap = before.wraps.find((wrap) => wrap.member === carol.key)?.wrap;
-    const carolsKey = await openWrap({ list: LIST, epoch: 0, commitment: epochKeyCommitment(first), wrap: carolsWrap, member: carol });
+    const carolsKey = await openWrap({ list: LIST, epoch: 0, commitment: epochKeyCommitment({ list: LIST, epoch: first }), wrap: carolsWrap, member: carol });
     if (!carolsKey.open) throw new Error("Carol's wrap did not open");
     expect((await openSealed({ place: { list: LIST, seq: 5 }, epoch: carolsKey.value, sealed: removal })).open).toBe(true);
     expect(await openSealed({ place: { list: LIST, seq: 6 }, epoch: carolsKey.value, sealed: after })).toEqual({ open: false, why: "refused" });
     expect(await openSealed({ place: { list: LIST, seq: 6 }, epoch: { epoch: 1, key: carolsKey.value.key }, sealed: after })).toEqual({ open: false, why: "refused" });
     for (const { wrap } of next.wraps) expect(await openWrap({ list: LIST, epoch: 1, commitment: next.commitment, wrap, member: carol })).toEqual({ open: false, why: "refused" });
     expect(await openWrap({ list: LIST, epoch: 1, commitment: next.commitment, wrap: carolsWrap, member: carol })).toEqual({ open: false, why: "refused" });
-    expect(await openLink({ list: LIST, from: { epoch: 1, key: carolsKey.value.key }, link: next.link, commitment: epochKeyCommitment(first) })).toEqual({ open: false, why: "refused" });
+    expect(await openLink({ list: LIST, from: { epoch: 1, key: carolsKey.value.key }, link: next.link, commitment: epochKeyCommitment({ list: LIST, epoch: first }) })).toEqual({ open: false, why: "refused" });
 
     for (const [index, member] of [alice, bob].entries()) {
       const opened = await openWrap({ list: LIST, epoch: 1, commitment: next.commitment, wrap: next.wraps[index]?.wrap, member });
       if (!opened.open) throw new Error("a member that stayed has no key");
       expect((await openSealed({ place: { list: LIST, seq: 6 }, epoch: opened.value, sealed: after })).open).toBe(true);
-      const walk = await walkBack({ list: LIST, from: opened.value, openings: new Map([[0, { commitment: epochKeyCommitment(first) }], [1, { commitment: next.commitment, link: next.link }]]) });
+      const walk = await walkBack({ list: LIST, from: opened.value, openings: new Map([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: first }) }], [1, { commitment: next.commitment, link: next.link }]]) });
       expect(walk).toEqual({ keys: [next.epoch, first], stopped: null });
     }
   });
 
   test("a member added later is given the current key and reads the whole history", async () => {
     const keys = [newEpochKey(0)];
-    const openings = new Map<number, EpochOpening>([[0, { commitment: epochKeyCommitment(keys[0] as EpochKey) }]]);
+    const openings = new Map<number, EpochOpening>([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: keys[0] as EpochKey }) }]]);
     const sealed: Uint8Array[] = [await sealFields({ place: { list: "", seq: 0 }, epoch: keys[0] as EpochKey, fields: [text("label", "entry 0")] })];
     for (let seq = 1; seq <= 6; seq += 1) {
       const current = keys.at(-1) as EpochKey;
@@ -621,7 +648,7 @@ describe("a removal and an addition", () => {
 describe("what cannot be opened is a result, never a throw", () => {
   test("nothing given is `missing`", async () => {
     const epoch = newEpochKey(1);
-    const commitment = epochKeyCommitment(epoch);
+    const commitment = epochKeyCommitment({ list: LIST, epoch });
     for (const nothing of [null, undefined]) {
       expect(await openWrap({ list: LIST, epoch: 1, commitment, wrap: nothing, member: alice })).toEqual({ open: false, why: "missing" });
       expect(await openLink({ list: LIST, from: epoch, link: nothing, commitment })).toEqual({ open: false, why: "missing" });
@@ -632,7 +659,7 @@ describe("what cannot be opened is a result, never a throw", () => {
 
   test("junk of every kind is closed, whatever is handed over", async () => {
     const epoch = newEpochKey(1);
-    const commitment = epochKeyCommitment(epoch);
+    const commitment = epochKeyCommitment({ list: LIST, epoch });
     const wrap = await wrapEpochKey({ list: LIST, epoch, member: alice.key });
     const junk: unknown[] = [new Uint8Array(0), new Uint8Array(113), new Uint8Array(61), crypto.getRandomValues(new Uint8Array(113)), crypto.getRandomValues(new Uint8Array(300)), "text", 7, {}, [], Number.NaN];
     for (const value of junk) {
@@ -658,12 +685,12 @@ describe("what cannot be opened is a result, never a throw", () => {
     const signing = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
     const key = toBase64Url(new Uint8Array(await crypto.subtle.exportKey("spki", signing.publicKey)));
     const wrap = await wrapEpochKey({ list: LIST, epoch, member: key });
-    expect(await openWrap({ list: LIST, epoch: 1, commitment: epochKeyCommitment(epoch), wrap, member: { key, privateKey: signing.privateKey } })).toEqual({ open: false, why: "unavailable" });
+    expect(await openWrap({ list: LIST, epoch: 1, commitment: epochKeyCommitment({ list: LIST, epoch }), wrap, member: { key, privateKey: signing.privateKey } })).toEqual({ open: false, why: "unavailable" });
   });
 
   test("a runtime whose WebCrypto fails says `unavailable` when opening, and throws when making", async () => {
     const epoch = newEpochKey(1);
-    const commitment = epochKeyCommitment(epoch);
+    const commitment = epochKeyCommitment({ list: LIST, epoch });
     const wrap = await wrapEpochKey({ list: LIST, epoch, member: alice.key });
     const sealed = await sealFields({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES });
     const before = newEpochKey(0);
@@ -673,8 +700,8 @@ describe("what cannot be opened is a result, never a throw", () => {
     try {
       expect(await openWrap({ list: LIST, epoch: 1, commitment, wrap, member: alice })).toEqual({ open: false, why: "unavailable" });
       expect(await openSealed({ place: { list: LIST, seq: 1 }, epoch, sealed })).toEqual({ open: false, why: "unavailable" });
-      expect(await openLink({ list: LIST, from: epoch, link, commitment: epochKeyCommitment(before) })).toEqual({ open: false, why: "unavailable" });
-      expect(await walkBack({ list: LIST, from: epoch, openings: new Map([[0, { commitment: epochKeyCommitment(before) }], [1, { commitment, link }]]) })).toEqual({ keys: [epoch], stopped: { epoch: 0, why: "unavailable" } });
+      expect(await openLink({ list: LIST, from: epoch, link, commitment: epochKeyCommitment({ list: LIST, epoch: before }) })).toEqual({ open: false, why: "unavailable" });
+      expect(await walkBack({ list: LIST, from: epoch, openings: new Map([[0, { commitment: epochKeyCommitment({ list: LIST, epoch: before }) }], [1, { commitment, link }]]) })).toEqual({ keys: [epoch], stopped: { epoch: 0, why: "unavailable" } });
       expect(await refusal(() => sealFields({ place: { list: LIST, seq: 1 }, epoch, fields: NAMES }))).toBe(fault);
       expect(await refusal(() => wrapEpochKey({ list: LIST, epoch, member: alice.key }))).toBe(fault);
     } finally {
@@ -719,7 +746,7 @@ describe("what is handed over is read once", () => {
     const wrap = await wrapping;
     if (wrap === null) throw new Error("no wrap");
     const wrapHanded = new Uint8Array(wrap);
-    const opening = openWrap({ list: LIST, epoch: 3, commitment: epochKeyCommitment(kept), wrap: wrapHanded, member: alice });
+    const opening = openWrap({ list: LIST, epoch: 3, commitment: epochKeyCommitment({ list: LIST, epoch: kept }), wrap: wrapHanded, member: alice });
     wrapHanded.fill(0);
     expect(await opening).toEqual({ open: true, value: kept });
   });

@@ -136,11 +136,16 @@ GCM(key, nonce, data, text) = AES-256-GCM, a 12-byte nonce: the ciphertext, then
 - An **epoch key** is 32 random bytes. Epochs count from 0: entry 0 opens epoch 0, and after a
   member is removed an entry opens the next. An entry with a `sealed` field says in clear which
   epoch it is sealed under.
-- The **commitment** to an epoch key is `SHA-256("ovis-list-epoch-key/1" || number(epoch) || key)`,
-  as a hash. The entry that opens an epoch carries it in clear, under its signature. A member
-  takes an epoch key, from a wrap or from a link, only when it gives the commitment the list holds
-  for that epoch. Without this the service, which can wrap any key to any member, could hand a new
-  member a key of its own and read what that member seals.
+- The **commitment** to an epoch key is
+  `SHA-256("ovis-list-epoch-key/1" || id(list) || number(epoch) || key)`, as a hash. The entry that
+  opens an epoch carries it in clear, under its signature. A member takes an epoch key, from a
+  wrap or from a link, only when it gives the commitment the list holds for that epoch. Without
+  this the service, which can wrap any key to any member, could hand a new member a key of its own
+  and read what that member seals.
+- The commitment to the key of epoch 0 stands in entry 0, whose hash is the list id, so no list id
+  can be part of it: there `id(list)` is 32 zero bytes, and the commitment binds its own tag, the
+  epoch number 0 and the key. What binds it to its list is entry 0 itself: the list id is the hash
+  of the body that carries it. Every later commitment binds the list id too.
 
 ### A wrap
 
@@ -185,8 +190,11 @@ plaintext = "ovis-list-sealed/1" field field ...
   A sealed field is the plaintext and 29 bytes, and at most 8192 bytes.
 - The nonce is 12 random bytes. It is never made from `seq`: a member whose entry n lost its place
   signs another entry n, with other fields, and a nonce made from `seq` would come twice under one
-  key. A list holds far fewer entries than the 2^32 after which random nonces under one key stop
-  being safe.
+  key.
+- The bound of one epoch key: among n fields sealed under it, the chance that two nonces are equal
+  is under n² / 2^97, and it stays under 2^-32 up to 2^32 fields. The account service takes at
+  most 16384 entries into one list; were each of them sealed under one key, and sealed again a
+  thousand times over, the chance would be under 2^-49.
 - The epoch key never encrypts by itself: fields and links each use a key of their own made from it.
 - A member seals only under the key of the list's current epoch. One that does not hold that key
   seals nothing: under an earlier key, a member already removed would read the names.
@@ -211,7 +219,7 @@ or PC is then shown without its name:
 | `missing` | no wrap, link, key or sealed field was given |
 | `form` | a wrong length, another first byte, a point not on the curve, a plaintext that is no fields, a place that is none (a list id with seq 0, none with a later seq) |
 | `refused` | in form, but the tag does not hold: another member's wrap, another list, seq or epoch, another key, a changed byte |
-| `other_key` | a wrap or a link that opens, to a key that is not the one the list commits to |
+| `other_key` | a wrap or a link that opens, to a key that is not the one the list commits to. The name is hidden like any other, and the member also says so: a wrap comes from the account service, so a wrong key in one is a sign of tampering, where the other codes may be a lost or a stale wrap |
 | `bound` | the walk back opened as many links as one walk may |
 | `unavailable` | the runtime could not do it (no WebCrypto on a page on plain http): a fault of the place, not a verdict on the bytes |
 
