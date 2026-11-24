@@ -169,6 +169,28 @@ test("a phone that offers the feature gets it, and pairs once its digits match a
   expect(f.app.context.services.relay.approvals.list()).toEqual([]);
 });
 
+test("on a pinned PC, a comparison approved for a key the list does not hold records the pairing and opens no session by it", async () => {
+  const f = fixture();
+  const { devices, relay } = f.app.context.services;
+  // the PC follows its account's list, and the list holds no device under this key
+  const followed = spyOn(devices, "listFollowed").mockReturnValue(true);
+  const role = spyOn(devices, "listRoleOf").mockReturnValue(null);
+  try {
+    const { p } = await direct(f);
+    await p.hello();
+    const waiting = prompts(f, (list) => list.length === 1);
+    const digits = await compare(p);
+    const [request] = await waiting;
+    expect(request?.digits).toBe(digits);
+    expect(relay.approvals.decide(request!.id, true)).toBe(true);
+    const before = devices.list(null).length;
+    await confirm(p);
+    // no AUTH_OK: the row is the account's id for the key, which the list alone answers for
+    expect(await sessionError(p)).toBe("auth_failed");
+    expect(devices.list(null).length).toBe(before + 1);
+  } finally { followed.mockRestore(); role.mockRestore(); }
+});
+
 test("an approved comparison leaves a pairing code that is still showing usable", async () => {
   const f = fixture();
   const code = f.app.context.services.devices.startPairing();

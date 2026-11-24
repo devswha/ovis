@@ -165,6 +165,28 @@ describe("R1 (D): a key the list holds, that a member's v1 add brought in before
   });
 });
 
+describe("a session open under the account's id for a key, at the moment the PC pins", () => {
+  test("ends with auth_changed, and its next sign-in gets the list's answer: nothing for a key the list does not hold, the list's role for one it does", async () => {
+    const pc = await listedPc();
+    const [outside, tablet] = [await listMember(), await listMember()];
+    expect((await v1Add(pc, outside, "Outside"))[0]).toMatchObject({ outcome: "applied" });
+    expect((await v1Add(pc, tablet, "Tablet"))[0]).toMatchObject({ outcome: "applied" });
+    // the list holds the tablet to watch, and does not hold the other
+    await pc.account.addDevice(tablet, { role: "watch", power: "bound" });
+    const links = [await relayConnection(pc.fixture, { serverId: pc.serverId }), await relayConnection(pc.fixture, { serverId: pc.serverId })];
+    expect(await links[0]!.auth(pc.idOf(outside))).toMatchObject({ role: "drive" });
+    expect(await links[1]!.auth(pc.idOf(tablet))).toMatchObject({ role: "drive" });
+    await pc.list.wantList(pc.account.id);
+    await pc.account.addPostedPc(pc.endpoint);
+    await pc.pull();
+    expect(pc.list.status().pinned).toBe(true);
+    for (const link of links) expect(await bounded(link.serverError.then(String), 2000).catch(() => "still open")).toBe("auth_changed");
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    expect(await pc.signsIn(pc.idOf(outside))).toBeNull();
+    expect(await pc.signsIn(pc.idOf(tablet))).toBe("watch");
+  });
+});
+
 describe("R2 (C/G): a read that the account service answers slowly holds back nothing the PC has verified", () => {
   test("a removal a member hands over is applied while a service read hangs", async () => {
     const pc = await pinnedPc();

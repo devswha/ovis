@@ -434,7 +434,12 @@ export function createServer(
       store.expire();
     },
     // while the rows still stand, so their sessions end as `auth_changed` and each app signs in again by itself
-    repinned: () => { for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id); },
+    repinned: () => {
+      for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id);
+      // and the sessions of this PC's own rows under an account's id: a member's add before the pin, a join by digits
+      const serverId = serverIdNow();
+      if (serverId !== null) devices.closeListGovernedSessions(serverId);
+    },
     removed: (key, removal) => {
       const account = devices.account();
       if (account !== null) devices.removeAccountKey(key, account, { id: removal.id, issuedAt: new Date(removal.at * 1000).toISOString() });

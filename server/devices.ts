@@ -2356,6 +2356,16 @@ export class DeviceStore {
     return key !== undefined && accountDeviceId(serverId, key) === id ? key : null;
   }
 
+  /**
+   * The PC pinned its list: every session open under the account's id for a key (listGoverned) ends as one whose row
+   * changed under it (`auth_changed`), whoever wrote the row, so its next sign-in gets the list's answer.
+   */
+  closeListGovernedSessions(serverId: string): void {
+    for (const row of [...this.devices]) {
+      if (row.relay_public_key !== undefined && accountDeviceId(serverId, row.relay_public_key) === row.id) this.closeAccountSessions(row.id);
+    }
+  }
+
   /** The role the list this PC is pinned to gives `key` now; null when it lets the key in as nothing, and on a PC that follows no list. */
   listRoleOf(key: string): DeviceRole | null {
     return this.listFollowed() ? this.signedList?.role(key) ?? null : null;
