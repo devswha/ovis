@@ -101,6 +101,7 @@ const BASE: Record<string, string> = {
   "Add a new device?": "要添加新设备吗？",
   "{device} was added to {pc} only": "{device} 只添加到了 {pc}",
   "{device} is not in your account": "{device} 不在你的账户中",
+  "{device} was added to your account's list": "{device} 已添加到你的账户名单",
   "Update Ovis on that device and sign in there, then try again.": "请在那台设备上更新 Ovis 并登录，然后重试。",
   "That device was removed from your account. Sign in again on it first.": "那台设备已从账户中移除。请先在那台设备上重新登录。",
   "The account service cannot change the list right now.": "账户服务目前无法更改列表。",

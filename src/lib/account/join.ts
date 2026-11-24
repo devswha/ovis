@@ -308,9 +308,13 @@ export async function admitToAccount(options: {
     const placed = options.allow === undefined && options.place !== undefined ? { list: { id: options.place.list, seq: options.place.seq, hash: options.place.hash } } : {};
     try { await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs: options.allow === undefined ? pcs : [], ...placed }); break; }
     catch (error) {
+      // X lets devices in by the list: it keeps no row a member added, and takes an introduction only from a device of its
+      // own. The list holds the device already, so neither a refusal nor a request that failed holds the `add` back
+      if (options.inList === true) {
+        console.warn("Ovis: the PC that let the device in by the list took no introduction", error instanceof AccountPcError ? error.code : error instanceof Error ? error.name : error);
+        break;
+      }
       if (!(error instanceof AccountPcError)) throw error;
-      // X lets devices in by the list: it keeps no row a member added, and takes an introduction only from a device of its own
-      if (options.inList === true) break;
       // no row for that key on X yet: the new device has not confirmed its digits
       if (error.code !== "introduction_unknown_key") throw error;
       if (now() > deadline) throw error;
@@ -328,10 +332,13 @@ export async function admitToAccount(options: {
     v: 1, kind: "add", account: options.account, key: options.joining.key, label: options.joining.label, role: "drive",
     issued_at: new Date(now()).toISOString(), id: newRecordId(), signer: options.key.public_spki,
   }, options.key.private_key);
+  options.holds?.();
   // X keeps it on the row it made, so a client enrolling a later PC finds it there (docs/account.md, "PC API")
   try { await post(options.fetch, "/api/account/records", { records: [add] }); } catch (error) {
     console.warn("Ovis: the PC that let the device in did not keep its add", error instanceof Error ? error.name : error);
   }
+  // and once more before it goes to the account's other PCs: a removal read while X took it stops it here
+  options.holds?.();
   const others = options.directory.filter((serverId) => serverId !== options.through);
   if (!options.store) {
     for (let start = 0; start < others.length; start += 32) await options.service.postRecord(others.slice(start, start + 32), add);
@@ -349,7 +356,8 @@ export async function admitToAccount(options: {
 
 /** A member let a device in on a PC, and the account's signed list did not take it: `why` says what the list or the account service answered. */
 export class ListAllowError extends Error {
-  constructor(readonly why: AllowRefusal, readonly retryAfterMs: number | null) {
+  /** `placed`: the list took the device before this was found, and what stopped is what was to follow its entry. */
+  constructor(readonly why: AllowRefusal, readonly retryAfterMs: number | null, readonly placed = false) {
     super(`The device was not let into the account's list (${why})`);
     this.name = "ListAllowError";
   }
@@ -386,7 +394,11 @@ export async function admitWithList(list: AccountList | null, options: Omit<Para
   // no answer of the account service's about lists, and nothing that fails there holds it back.
   const drawn = list?.view();
   const follows = list !== null && ((drawn !== undefined && drawn.account === options.account && holdsList(drawn)) || await list.follows(options.account).catch(() => false));
-  if (list === null || !follows) return admitToAccount(options);
+  if (list === null || !follows) {
+    // a Try again of an approval that began with a list never takes the way from before lists: its list is gone from here
+    if (options.scope?.list !== undefined) throw new ListAllowError("changed", null);
+    return admitToAccount(options);
+  }
   // The approval belongs to the account it was begun under. A page whose list is another account's by now (a sign-in
   // changed in another tab) signs nothing: neither into that list, nor by the way of an account with no list.
   const view = await list.sync();
@@ -394,13 +406,12 @@ export async function admitWithList(list: AccountList | null, options: Omit<Para
   // what stops this device from writing is said before anything goes to the PC
   const began = beganOn(list, view, options.scope);
   // bound from this read on, before the wait for the PC's row: a key another tab puts on this device meanwhile signs nothing
-  if (options.scope !== undefined) {
-    options.scope.list ??= began.list;
-    options.scope.key ??= began.signer;
-  }
+  const scope: AllowScope = options.scope ?? { account: options.account };
+  scope.list ??= began.list;
+  scope.key ??= began.signer;
   let offer: ListOffer | null = null;
   const add = await admitToAccount({ ...options, allow: async () => {
-    offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.scope === undefined ? {} : { scope: options.scope }), ...(options.wait === undefined ? {} : { wait: options.wait }) });
+    offer = await allowIntoList(list, options.joining, { account: options.account, scope, ...(options.wait === undefined ? {} : { wait: options.wait }) });
     // an account that turns out to have no list for this device to write (it lost its copy meanwhile) admits nobody the old way from here
     if (offer === null) throw new ListAllowError("blocked", null);
     return offer;
@@ -441,9 +452,10 @@ function beganOn(list: AccountList, view: AccountListView, scope?: AllowScope): 
 function holdsStill(list: AccountList, began: Began, key: string, signer: string): void {
   const view = list.view();
   const writer = list.writer();
+  // asked only once the list took the device: what stops here is what was to follow its entry
   if (view.account !== began.account || view.status.at !== "following" || view.status.list !== began.list || signer !== began.signer
-    || (writer !== null && (writer.list !== began.list || writer.keys.key !== began.signer))) throw new ListAllowError("changed", null);
-  if (writer === null) throw new ListAllowError("blocked", null);
+    || (writer !== null && (writer.list !== began.list || writer.keys.key !== began.signer))) throw new ListAllowError("changed", null, true);
+  if (writer === null) throw new ListAllowError("blocked", null, true);
   if (!view.devices.some((device) => device.key === key)) throw new ListAllowError("removed", null);
 }
 
@@ -511,9 +523,10 @@ export async function approveForAccount(options: {
   paired: () => Promise<readonly RelayDevice[]>; directory: () => Promise<readonly string[]>; store?: AccountStore;
   /**
    * `pairedAtPc`: X let the device in by a pairing of its own, so it is in at X whatever the list says; false on a PC
-   * that lets devices in by the list alone, where it is in nowhere that the list does not hold it.
+   * that lets devices in by the list alone, where it is in nowhere that the list does not hold it. `placed`: the list
+   * took the device, and what stopped is what was to follow its entry (the introduction, the `add`).
    */
-  onStalled: (stalled: { label: string; why: AllowRefusal; retryAfterMs: number | null; pairedAtPc: boolean; retry: () => Promise<void> } | null) => void | Promise<void>;
+  onStalled: (stalled: { label: string; why: AllowRefusal; retryAfterMs: number | null; pairedAtPc: boolean; placed: boolean; retry: () => Promise<void> } | null) => void | Promise<void>;
   wait?: (ms: number) => Promise<void>; now?: () => number;
 }): Promise<void> {
   const { request, pc } = options;
@@ -559,7 +572,7 @@ export async function approveForAccount(options: {
           // anything else failed after the list took the device (the introduction, the account's other PCs): the
           // card, which says that the list did not take it, goes, and the failure is the caller's to say
           if (!(error instanceof ListAllowError)) { await options.onStalled(null); throw error; }
-          await options.onStalled({ label: admission.label, why: error.why, retryAfterMs: error.retryAfterMs, pairedAtPc: !pinned, retry: attempt });
+          await options.onStalled({ label: admission.label, why: error.why, retryAfterMs: error.retryAfterMs, pairedAtPc: !pinned, placed: error.placed, retry: attempt });
         }
       };
       await attempt();

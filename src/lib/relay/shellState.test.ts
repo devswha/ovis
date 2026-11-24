@@ -297,6 +297,8 @@ describe("a link without a code that the PC refused before any digits", () => {
     }
     // any other word of the PC's is a decline, as before
     expect(failureOf(new MuxProtocolError("auth_failed", "list_something_new"), compared)).toBe("pair-declined");
+    // a word that names something every object has is no cause either
+    for (const word of ["constructor", "toString", "__proto__", "hasOwnProperty"]) expect(failureOf(new MuxProtocolError("auth_failed", word), compared)).toBe("pair-declined");
     // and a PC that follows another list than this device's account's, before any digits
     expect(failureOf(new ListMismatchError(), { code: false, paired: false, codeless: true })).toBe("list-other");
     expect(failureOf(new MuxProtocolError("timeout", "no approval in time"), compared)).toBe("pair-unanswered");

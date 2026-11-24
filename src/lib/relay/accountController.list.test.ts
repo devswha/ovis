@@ -542,6 +542,27 @@ describe("the hosted shell and the account's signed list", () => {
     expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${LIST} 4 for acct-one`]);
   });
 
+  it("says the PC may open with the list key only where the account the page shows after the place was taken is the card's", async () => {
+    await signIn("acct-one");
+    const LIST = "5c".repeat(32);
+    const { list } = recordingList();
+    const waits: AccountListView = { account: "acct-one", reached: true, status: { at: "not_in", list: LIST, why: "not_mine", claim: "claimed" }, devices: [], pcs: [] };
+    list.view = () => waits;
+    list.sync = async () => waits;
+    let elsewhere = false;
+    // another tab signs in to another account while the place is taken
+    list.adopt = async () => { if (elsewhere) await signIn("acct-two"); return OFF; };
+    const account = controller(list);
+    const offer = { v: 1 as const, server_id: "a1".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+    expect((await account.prepare(offer, new AbortController().signal)).listCard).toMatchObject({ list: LIST });
+    const place = { id: LIST, seq: 4, hash: "ab".repeat(32) };
+    // the answer is the view's the read put up, which `listKey` gives its key for: the shell opens the PC with no other
+    expect([await account.takePlace(place), account.signedInAs?.account]).toEqual([true, "acct-one"]);
+    elsewhere = true;
+    const opens = await account.takePlace(place);
+    expect([opens, opens === (account.signedInAs?.account === "acct-one")]).toEqual([false, true]);
+  });
+
   it("keeps no place a PC handed for a list no card of this page was made for: never under whichever account is signed in", async () => {
     await signIn("acct-one");
     const { list, calls } = recordingList();

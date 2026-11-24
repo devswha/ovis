@@ -5,7 +5,7 @@ import type { AccountListView } from "./accountList.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "./accountList.test-helpers.ts";
 import { ALLOW_RESENDS, allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys } from "./listKeys.ts";
-import { memoryAccountStore } from "./store.ts";
+import { memoryAccountStore, newKey, type AccountKey } from "./store.ts";
 
 type World = ReturnType<typeof listWorld>;
 
@@ -86,6 +86,17 @@ describe("a device that is in the list lets another in", () => {
     await stranger.store.set("session", undefined);
     await stranger.list.adopt(offer, w.account);
     expect(await stranger.lists.get("offer", "acct_other")).toBeUndefined();
+  });
+
+  it("claims again for a new key of this device within the time a claim for its old key is kept", async () => {
+    const { second } = await twoDevices();
+    const claims = () => routes(second).filter((route) => route.startsWith("POST") && route.endsWith("/claims")).length;
+    expect(claims()).toBe(1);
+    // another page left the account and signed in again: the store all pages share holds a new account key
+    const renewed = await newKey();
+    (second.store as { key: () => Promise<AccountKey> }).key = async () => renewed;
+    await second.list.sync();
+    expect(claims()).toBe(2);
   });
 
   it("answers the same for a key the list already holds, and signs nothing more", async () => {

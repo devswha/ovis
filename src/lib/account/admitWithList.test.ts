@@ -16,7 +16,7 @@ const noWait = async (): Promise<void> => {};
 const passes = (w: { clock: { now: number } }) => async (ms: number): Promise<void> => { w.clock.now += ms; };
 
 /** PC X as an approval meets it: it records what it is sent, and answers the introduction, the records and the list's two calls. */
-function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknown) => Response | Promise<Response>; introduce?: (body: Record<string, unknown>) => Response | Promise<Response> } = {}) {
+function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknown) => Response | Promise<Response>; introduce?: (body: Record<string, unknown>) => Response | Promise<Response>; records?: () => Response | Promise<Response> } = {}) {
   const sent: { path: string; body: Record<string, unknown> }[] = [];
   const fetch: PcFetch = async (path, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -24,6 +24,7 @@ function pcX(answers: { head?: (body: unknown) => Response; page?: (body: unknow
     if (path === "/api/account/list/head") return answers.head?.(body) ?? Response.json({ error: { code: "not_found" } }, { status: 404 });
     if (path === "/api/account/list/page") return answers.page?.(body) ?? Response.json({ error: { code: "not_found" } }, { status: 404 });
     if (path === "/api/account/introduce" && answers.introduce !== undefined) return answers.introduce(body);
+    if (path === "/api/account/records" && answers.records !== undefined) return answers.records();
     return new Response(null, { status: 204 });
   };
   return { sent, fetch, paths: () => sent.map((each) => each.path) };
@@ -218,13 +219,15 @@ describe("an approval on a card, from the press to what is left to say", () => {
     const ways: boolean[] = [];
     const retries: (() => Promise<void>)[] = [];
     const order: string[] = [];
-    const approve = (pc: ReturnType<typeof pcX>, followsList: boolean, told: { list?: true; confirmed?: true } = {}, list: typeof member.list | null = member.list) => approveForAccount({
+    /** for each card: whether the list placed the device before the approval stopped */
+    const placed: boolean[] = [];
+    const approve = (pc: ReturnType<typeof pcX>, followsList: boolean, told: { list?: true; confirmed?: true } = {}, list: typeof member.list | null = member.list, others: readonly string[] = []) => approveForAccount({
       request: { ...request, ...told }, digits: "222222", through: X, service: member.service, account: w.account, key: member.store.key(), list,
       pc: { fetch: async (path, init) => { order.push(path); return pc.fetch(path, init); }, followsList },
-      decide: async (decision) => { order.push(decision); }, paired: async () => [], directory: async () => [X], wait: passes(w), now: () => w.clock.now,
-      onStalled: (stalled) => { said.push(stalled === null ? null : stalled.why); if (stalled !== null) { retries.push(stalled.retry); ways.push(stalled.pairedAtPc); } },
+      decide: async (decision) => { order.push(decision); }, paired: async () => [], directory: async () => [X, ...others], wait: passes(w), now: () => w.clock.now,
+      onStalled: (stalled) => { said.push(stalled === null ? null : stalled.why); if (stalled !== null) { retries.push(stalled.retry); ways.push(stalled.pairedAtPc); placed.push(stalled.placed); } },
     });
-    return { w, member, X, key, order, said, ways, retries, approve };
+    return { w, member, X, key, order, said, ways, placed, retries, approve };
   }
 
   /** A PC that lets devices in by the list, as an approval meets it: it takes the page, and keeps no row a member added. */
@@ -355,6 +358,89 @@ describe("an approval on a card, from the press to what is left to say", () => {
     const entries = w.held().entries.length;
     await retries[0]!();
     expect([said, w.held().entries.length, w.held().state.signers[key]]).toEqual([["unreached", "changed"], entries, undefined]);
+  });
+
+  /** Another PC of the account, which the account service lists: one the `add` for the account's other PCs goes to. */
+  const anotherPc = async (member: WorldDevice): Promise<string> => {
+    const relay = generateKeyPair().publicKey;
+    const Y = deriveServerId(relay);
+    await member.service.putPc(Y, { label: "Studio", public_key: Array.from(relay, (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.test" });
+    return Y;
+  };
+
+  it("on such a PC, sends the add for the account's other PCs also where the introduction's request itself failed", async () => {
+    const { w, member, said, order, approve } = await rang();
+    const list = w.held();
+    const pc = pcX({
+      head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }), page: () => Response.json({ verdict: "caught_up", list: list.id, place: w.held().head }),
+      introduce: () => { throw new TypeError("Failed to fetch"); },
+    });
+    await approve(pc, true, { list: true, confirmed: true }, member.list, [await anotherPc(member)]);
+    expect([order.slice(-2), said]).toEqual([["/api/account/introduce", "/api/account/records"], [null]]);
+    expect(member.sent.filter((each) => each.route === "POST /v1/records")).toHaveLength(1);
+  });
+
+  it("sends no add to the account's other PCs for a device its own copy shows put out while the PC took the add", async () => {
+    const { w, member, key, said, approve } = await rang();
+    const pc = pinnedPc(w);
+    const records = pcX({ records: async () => { await putOut(member, key); return Response.json({ results: [] }); } });
+    const both: ReturnType<typeof pcX> = { ...pc, fetch: async (path, init) => (path === "/api/account/records" ? records : pc).fetch(path, init) };
+    await approve(both, true, { list: true, confirmed: true }, member.list, [await anotherPc(member)]);
+    expect([member.sent.filter((each) => each.route === "POST /v1/records"), said]).toEqual([[], [null, "removed"]]);
+  });
+
+  it("on such a PC, says the device was placed in the list where only the add for the other PCs stopped, for a member key replaced meanwhile", async () => {
+    const { w, member, key, said, placed, approve } = await rang();
+    let current = member.list;
+    const page = new Proxy({} as AccountList, { get: (_target, name) => { const value = Reflect.get(current, name) as unknown; return typeof value === "function" ? value.bind(current) : value; } });
+    const other = await w.device({ label: "Laptop" });
+    await other.list.sync();
+    const allowed = await allowDevice(member.list, { key: (await other.keys()).key, label: "Laptop", os: null }, { wait: noWait });
+    if (!allowed.allowed) throw new Error(`The laptop was not let in: ${allowed.why}`);
+    await other.list.adopt(allowed.offer);
+    // the entry is placed under this device's key; while the PC takes the page, another tab puts the laptop's key here
+    const list = w.held();
+    const pc = pcX({ head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }), page: () => { current = other.list; return Response.json({ verdict: "caught_up", list: list.id, place: w.held().head }); } });
+    await approve(pc, true, { list: true, confirmed: true }, page);
+    expect([w.held().state.signers[key] !== undefined, said, placed]).toEqual([true, [null, "changed"], [true]]);
+  });
+
+  it("does not take the way from before lists on a Try again of an approval that began with a list", async () => {
+    const { member, said, order, retries, approve } = await rang();
+    let current = member.list;
+    const page = new Proxy({} as AccountList, { get: (_target, name) => { const value = Reflect.get(current, name) as unknown; return typeof value === "function" ? value.bind(current) : value; } });
+    member.wire.answer = (request) => request.method === "GET" && new URL(request.url).pathname.endsWith("/claims") ? Response.json({ error: { code: "unavailable", message: "x" } }, { status: 503 }) : null;
+    await approve(pcX(), false, {}, page);
+    expect(said).toEqual(["unreached"]);
+    member.wire.answer = null;
+    // the page's copy of the list is gone meanwhile: a device that holds none of this account's
+    current = (await listWorld("acct_none").device()).list;
+    await retries[0]!();
+    expect([said, order.filter((path) => path === "/api/account/records")]).toEqual([["unreached", "changed"], []]);
+  });
+
+  it("binds an approval to the member key of its first read where its caller keeps no scope", async () => {
+    const { w, member, key } = await rang();
+    let current = member.list;
+    const page = new Proxy({} as AccountList, { get: (_target, name) => { const value = Reflect.get(current, name) as unknown; return typeof value === "function" ? value.bind(current) : value; } });
+    const other = await w.device({ label: "Laptop" });
+    await other.list.sync();
+    const laptop = (await other.keys()).key;
+    const allowed = await allowDevice(member.list, { key: laptop, label: "Laptop", os: null }, { wait: noWait });
+    if (!allowed.allowed) throw new Error(`The laptop was not let in: ${allowed.why}`);
+    await other.list.adopt(allowed.offer);
+    let asked = 0;
+    const pc = pcX({ introduce: async () => {
+      asked += 1;
+      if (asked > 1) return new Response(null, { status: 204 });
+      current = other.list;
+      return Response.json({ error: { code: "introduction_unknown_key", message: "x" } }, { status: 404 });
+    } });
+    const session = (await member.store.get("session"))!;
+    const refused = await admitWithList(page, {
+      fetch: pc.fetch, service: member.service, key: await member.store.key(), account: session.account, joining: { key, label: "Tablet", os: "android" }, through: THROUGH, paired: [], directory: [], wait: passes(w), now: () => w.clock.now,
+    }).catch((error: unknown) => error);
+    expect([refused instanceof ListAllowError ? refused.why : refused, w.held().state.signers[key]]).toEqual(["changed", undefined]);
   });
 
   it("on any other PC: the approval first, then the entry once the PC holds the device's row, and a card where the list did not take it", async () => {
