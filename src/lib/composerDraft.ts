@@ -35,6 +35,7 @@ export class ComposerDraftStore {
   private unsaved = new Set<string>();
   private agentOnly = new Set<string>();
   private pending = new Map<string, { sent: string; edited: boolean }>();
+  private commands = new Map<string, { message: string; id: string }>();
   private listeners = new Set<() => void>();
   private own = new Set<string>();
   private expiries = new Map<string, unknown>();
@@ -79,6 +80,7 @@ export class ComposerDraftStore {
     this.adoptMark(key, text);
     if (text === this.saved.get(key) && sending === draft.sending) return;
     if (text !== this.saved.get(key)) {
+      this.commands.delete(key);
       const pending = this.pending.get(key);
       if (pending && !(text ?? "").startsWith(pending.sent)) pending.edited = true;
       this.saved.set(key, text);
@@ -89,6 +91,7 @@ export class ComposerDraftStore {
   set(key: string, value: string | ((previous: string) => string)): void {
     const draft = this.read(key);
     const text = typeof value === "string" ? value : value(draft.text);
+    if (text !== draft.text) this.commands.delete(key);
     // cleared and retyped while on its way, a draft can end up starting with the sent text
     // again: once it stopped extending it, the whole of it is the user's own
     const pending = this.pending.get(key);
@@ -148,6 +151,15 @@ export class ComposerDraftStore {
     return this.read(key).text === sent && this.begin(key, sent);
   }
   sendOf(key: string): number | undefined { return this.sends.get(key)?.id; }
+  /** Only a claimed composer draft, never a terminal line or a saved queue action. */
+  commandKey(key: string, message: string): string | undefined {
+    if (!this.pending.has(key)) return undefined;
+    const prior = this.commands.get(key);
+    if (prior?.message === message) return prior.id;
+    const id = crypto.randomUUID();
+    this.commands.set(key, { message, id });
+    return id;
+  }
   end(key: string, send?: number): void {
     if (send !== undefined && this.sends.get(key)?.id !== send) return;
     this.sends.delete(key);
@@ -186,6 +198,7 @@ export class ComposerDraftStore {
       if (pane?.machineId !== machineId) continue;
       if (this.unsaved.has(key)) lifetimes.keep(machineId, pane.paneId, "message", draft.text, false, this.isAgentOnly(key));
       this.drafts.delete(key);
+      this.commands.delete(key);
       this.saved.delete(key);
       this.unsaved.delete(key);
       this.agentOnly.delete(key);
@@ -202,6 +215,7 @@ export class ComposerDraftStore {
   settle(key: string, sent: string, send: number | undefined): { text: string; edited: boolean } | null;
   settle(key: string, sent: string, send?: number): { text: string; edited: boolean } | null {
     if (send !== undefined && this.sends.get(key)?.id !== send) return null;
+    this.commands.delete(key);
     this.refresh(key);
     const current = this.read(key).text;
     const editedMeanwhile = this.pending.get(key)?.edited === true;

@@ -39,6 +39,7 @@ import { isShellAgentKind, SHELL_AGENTS } from "../shell-agent.ts";
 import { capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, piRecordText, type PiDeliveryAnchor, type PiReceiptReservation } from "../pi-delivery.ts";
 import { isPiProcess, piTranscriptPath, piUnwrittenHeaderId } from "../pi.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
+import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
 import { interruptCodexSteering } from "../codex-steering.ts";
 import type { OmoStatus } from "../omo-status.ts";
 import { heldOmoProcess } from "../omo.ts";
@@ -205,6 +206,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   // Presentation only, bound to both the authenticated device and an opaque browser
   // correlator. Retaining a receipt never retains permission to send input.
   const PI_RESUME_MS = 10 * 60 * 1000, PI_RESUME_LIMIT = 1024;
+  // A command receipt holds neither text nor its old socket/lease. Queue text comes
+  // from the matching retry; only the existing held-copy receipts prove it sendable.
+  type CommandReceipt = { hash: string; at: number; pending?: Pick<PendingMessage, "id" | "created_at" | "request_id" | "agent_only"> };
+  const commands = new Map<string, CommandReceipt>();
+  const submitting = new Set<string>();
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
   const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
   /**
@@ -225,6 +231,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     return id ? JSON.stringify([client.data.deviceId ?? null, id]) : undefined;
   };
   const prunePi = (): void => {
+    for (const [key, receipt] of commands) {
+      if (elapsed() - receipt.at < PI_RESUME_MS) break;
+      commands.delete(key);
+    }
     const cutoff = Date.now() - PI_RESUME_MS;
     while (piCompleted.length && (piCompleted[0]!.at < cutoff || piCompleted.length > PI_RESUME_LIMIT)) piCompleted.shift();
     // A sent or uncertain one stays its whole window (their number is bounded by the
@@ -1353,17 +1363,30 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
 
   const pendingFrames = {
     async submit(client: Client, message: Frame<"submit">): Promise<void> {
-      const result = (ok: boolean, code?: string, text?: string, accepted?: PendingMessage, draft?: string | null, box?: string | null, typedNow = false, sendingAt?: string) => send(client, {
-        type: "submit-result", id: message.id, pane_id: message.pane_id, ok, ...(accepted ? { pending: accepted } : {}), ...(typedNow ? { typed_now: true as const } : {}), ...(code ? { code, message: text } : {}),
-        ...(ok && sendingAt ? { sending_at: sendingAt } : {}),
-        ...(draft ? { draft } : {}), ...(!draft && typeof box === "string" ? { box } : {}),
-      });
+      let claim: { key: string; hash: string } | undefined;
+      const result = (ok: boolean, code?: string, text?: string, accepted?: PendingMessage, draft?: string | null, box?: string | null, typedNow = false, sendingAt?: string) => {
+        if (ok && claim) {
+          if (commands.size >= PI_RESUME_LIMIT) commands.delete(commands.keys().next().value!);
+          const pending = accepted && { id: accepted.id, created_at: accepted.created_at, request_id: accepted.request_id, agent_only: accepted.agent_only };
+          commands.set(claim.key, { hash: claim.hash, at: elapsed(), pending });
+        }
+        send(client, {
+          type: "submit-result", id: message.id, pane_id: message.pane_id, ok, ...(accepted ? { pending: accepted } : {}), ...(typedNow ? { typed_now: true as const } : {}), ...(code ? { code, message: text } : {}),
+          ...(ok && sendingAt ? { sending_at: sendingAt } : {}),
+          ...(draft ? { draft } : {}), ...(!draft && typeof box === "string" ? { box } : {}),
+        });
+      };
       if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string" || !message.pane_id
         || typeof message.text !== "string" || typeof message.payload !== "string") {
         send(client, { type: "error", code: "invalid_submit", message: "id must be an integer, pane_id, text and payload strings" });
         return;
       }
       const waits = message.delivery === "queue" || message.delivery === "hold";
+      if (message.command_key !== undefined && (typeof message.command_key !== "string" || !RECEIPT_RESUME_ID.test(message.command_key)
+        || message.typed === true || message.resend_id !== undefined)) {
+        result(false, "invalid_delivery", "Use a command key only for a chat draft, as a UUID");
+        return;
+      }
       if ((message.delivery !== undefined && message.delivery !== "immediate" && !waits)
         || (waits && message.typed !== undefined && message.typed !== false)) {
         result(false, "invalid_delivery", "Use immediate delivery, or queue or hold a chat message");
@@ -1412,6 +1435,29 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       }
       const arrivedAt = Date.now();
       try {
+        // An authenticated machine bridge has already scoped the correlator to its
+        // downstream principal (RelayReceiptIds); a bare unpaired socket has not.
+        const scope = message.command_key && (client.data.deviceId || client.data.bridge) && resumeKey(client, message.pane_id);
+        if (scope) {
+          authorizeSocket(client);
+          const key = JSON.stringify([scope, message.pane_id, message.command_key]);
+          const hash = new Bun.CryptoHasher("sha256").update(message.text).digest("hex");
+          const receipt = commands.get(key);
+          if (receipt && elapsed() - receipt.at < PI_RESUME_MS) {
+            if (receipt.hash !== hash) throw new HerdrError("invalid_submit_id", "This command key belongs to another draft");
+            const copy = receipt.pending;
+            const settled = copy && completed.some((item) => item.id === copy.id && item.key === scope && item.paneId === message.pane_id &&
+              (item.outcome === "sent" || item.outcome === "discarded"));
+            send(client, { type: "submit-result", pane_id: message.pane_id, id: message.id, ok: true, replayed: true,
+              ...(copy && !settled ? { pending: { ...copy, text: pendingText(message.text), state: "queued" } } : {}) });
+            return;
+          }
+          if (receipt) commands.delete(key);
+          if (submitting.has(key)) throw new HerdrError("pending_busy", "This draft is already being submitted");
+          if (submitting.size >= PI_RESUME_LIMIT) throw new HerdrError("pending_limit", "Too many drafts are being submitted");
+          submitting.add(key);
+          claim = { key, hash };
+        }
         const child = message.typed === true ? undefined : options.acp?.forPane(message.pane_id);
         if (child && (message.clear_draft !== undefined || message.send_anyway)) throw new HerdrError("pending_target_changed", "The terminal draft no longer belongs to this session");
         if (waits || (child && !message.resend_id)) {
@@ -1591,6 +1637,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         const fault = pendingFault(error, options.herdrFailure);
         result(false, fault.code, fault.message, undefined, error instanceof InputDraftError ? error.draft : null,
           error instanceof InputDraftError && error.identity && error.box !== null ? shownInputBox(error.box) : null);
+      } finally {
+        if (claim) submitting.delete(claim.key);
       }
       return;
     },

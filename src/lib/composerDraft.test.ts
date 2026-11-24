@@ -13,6 +13,27 @@ function fixture() {
   const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
   return { data, store: new ComposerDraftStore(() => storage) };
 }
+it("keeps the command key for a manual retry, not for edited or acknowledged drafts", () => {
+  const { store } = fixture(), key = "pane", text = "echo once";
+  const claim = () => {
+    expect(store.claim(key, text)).toBe(true);
+    const id = store.commandKey(key, text);
+    expect(id).toBeString();
+    store.end(key);
+    return id;
+  };
+  store.set(key, text);
+  const first = claim();
+  expect(claim()).toBe(first);
+  store.set(key, "echo edited");
+  store.set(key, text);
+  const edited = claim();
+  expect(edited).not.toBe(first);
+  store.settle(key, text);
+  store.set(key, text);
+  expect(claim()).not.toBe(edited);
+});
+
 it("does not edit another tab's saved held copy without authoritative withdrawal", async () => {
   const data = new Map<string, string>();
   const storage = paneLifetimes.paneStorage;

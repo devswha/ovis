@@ -176,7 +176,7 @@ function clocks(wall: () => number, run: () => number = wall): { mockRestore: ()
   return { mockRestore: () => { date.mockRestore(); elapsed.mockRestore(); } };
 }
 
-function heldCopyBridge(submit: () => Promise<void> = async () => {}) {
+function heldCopyBridge(submit: (text: string) => Promise<void> = async () => {}, sight: () => TerminalSighting = () => { throw new Error("a receipt replay takes no input lease"); }) {
   const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
   const tab = (...panes: string[]): Client => {
     const output: ServerMessage[] = [];
@@ -189,8 +189,8 @@ function heldCopyBridge(submit: () => Promise<void> = async () => {}) {
   const typed: string[] = [];
   const delivery = createPendingDelivery({
     options: {}, clients, attachments: new Map(), serialize: (pane, task) => { const run = (turns.get(pane) ?? Promise.resolve()).then(task); turns.set(pane, run.then(() => {}, () => {})); return run; }, lastTyped: new Map(),
-    sight: () => { throw new Error("a receipt replay takes no input lease"); },
-    submitText: async (pane: string) => { await submit(); typed.push(pane); },
+    sight,
+    submitText: async (pane: string, text: string) => { await submit(text); typed.push(pane); },
     authorizeSocket: () => {},
     clientSnapshot: async () => ({ panes: ["p", "q"].map((pane) => ({ pane_id: pane, terminal_id: pane, agent: "codex", agent_status: "idle" })) }) as SessionSnapshot,
     omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
@@ -212,6 +212,58 @@ function heldCopyBridge(submit: () => Promise<void> = async () => {}) {
     },
   };
 }
+
+it.each(["same draft", "bridge", "edited draft", "legacy frame", "different device", "different browser", "different pane", "no device", "no correlator", "expired"] as const)(
+  "answers a lost submit reply without repeating the command: %s", async (scenario) => {
+    const typed: string[] = [];
+    let now = 0;
+    const clock = spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      const bridge = heldCopyBridge(async (text) => { typed.push(text); });
+      const first = bridge.tab(), command = crypto.randomUUID();
+      const submit = (to: Client, id: number, text: string, key: string, pane = "p") => bridge.delivery.pendingFrames.submit(to, {
+        type: "submit", pane_id: pane, id, text, payload: text, ...(scenario === "legacy frame" ? {} : { command_key: key }),
+      });
+      first.send = () => 1; // drop the result after the server writes it
+      if (scenario === "bridge" || scenario === "no device") delete first.data.deviceId;
+      if (scenario === "bridge") first.data.bridge = true;
+      if (scenario === "no correlator") first.data.attached.set("p", { keepSize: false });
+      await submit(first, 1, "echo once", command);
+      bridge.clients.delete(first);
+      bridge.delivery.closeConnection(first);
+      const next = bridge.tab("p", "q");
+      if (scenario === "bridge" || scenario === "no device") delete next.data.deviceId;
+      if (scenario === "bridge") next.data.bridge = true;
+      if (scenario === "no correlator") next.data.attached.set("p", { keepSize: false });
+      if (scenario === "different device") next.data.deviceId = "another-device";
+      if (scenario === "different browser") next.data.attached.set("p", { keepSize: false, receiptResumeId: crypto.randomUUID() });
+      if (scenario === "expired") now += 10 * 60_000 + 1;
+      const text = scenario === "edited draft" ? "echo edited" : "echo once";
+      await submit(next, 2, text, scenario === "edited draft" ? crypto.randomUUID() : command, scenario === "different pane" ? "q" : "p");
+      expect(typed).toEqual(scenario === "same draft" || scenario === "bridge" ? ["echo once"] : ["echo once", text]);
+      expect(bridge.answer(next, 2)).toMatchObject({ ok: true });
+    } finally { clock.mockRestore(); }
+  });
+
+it("replays a held draft's acceptance, not its input or its lease, when the retry asks for immediate delivery", async () => {
+  const screen = spyOn(herdr, "paneRead").mockResolvedValue({ format: "text", source: "detection", pane_id: "p", tab_id: "t", workspace_id: "w", revision: 1, text: "", truncated: false });
+  try {
+    const bridge = heldCopyBridge(undefined, () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: () => { throw new Error("unexpected write"); } }));
+    const first = bridge.tab();
+    first.send = () => 1;
+    const frame = { type: "submit" as const, command_key: crypto.randomUUID(), pane_id: "p", text: "for later", payload: "for later" };
+    await bridge.delivery.pendingFrames.submit(first, { ...frame, id: 1, delivery: "hold" });
+    const [accepted] = bridge.delivery.pending.list(first, "p");
+    expect(accepted).toMatchObject({ text: "for later", state: "held" });
+    bridge.clients.delete(first);
+    bridge.delivery.closeConnection(first);
+    const next = bridge.tab();
+    await bridge.delivery.pendingFrames.submit(next, { ...frame, id: 2 });
+    expect(bridge.typed).toEqual([]);
+    expect(bridge.delivery.pending.list(next, "p")).toEqual([]);
+    expect(bridge.answer(next, 2)).toMatchObject({ ok: true, replayed: true, pending: { id: accepted!.id, text: frame.text } });
+  } finally { screen.mockRestore(); }
+});
 
 it("carries a pane's receipts to its new ID when herdr moves it: the sent one still stops a second tab, a held one still proves a reload", async () => {
   let now = Date.now();
