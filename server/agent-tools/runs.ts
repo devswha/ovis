@@ -13,6 +13,8 @@ export interface Run {
   readonly root: string;
   readonly harness: string;
   readonly created_ms: number;
+  /** Server-verified permission contract, not a harness mode name. Absent for TUI launches. */
+  readonly ceiling?: string;
 }
 interface Saved { readonly run: Run; readonly hash: string; readonly starts?: readonly { key: string; run: string }[]; readonly calls?: readonly number[]; readonly foreground?: { pid: number; birth: string } }
 const idPattern = /^[a-f0-9]{16}$/;
@@ -48,7 +50,7 @@ function saved(value: unknown): value is Saved {
 
 export class RunStore {
   private readonly entries = new Map<string, Saved>();
-  private readonly pending = new Map<string, { depth: number; hash: string }>();
+  private readonly pending = new Map<string, { depth: number; hash: string; ceiling?: string }>();
   constructor(readonly dir: string) {
     privateDir(dir);
     const file = join(dir, "runs.json");
@@ -61,7 +63,7 @@ export class RunStore {
     }
   }
   private save(): void { writePrivate(join(this.dir, "runs.json"), JSON.stringify([...this.entries.values()])); }
-  reserve(depth = 0) {
+  reserve(depth = 0, ceiling?: string) {
     const id = randomBytes(8).toString("hex");
     const dir = join(this.dir, "tokens");
     privateDir(dir);
@@ -69,7 +71,7 @@ export class RunStore {
     const token = `ovr1.${id}.${randomBytes(32).toString("base64url")}`;
     const hash = digest(token).toString("hex");
     writePrivate(tokenFile, token);
-    this.pending.set(id, { depth, hash });
+    this.pending.set(id, { depth, hash, ceiling });
     return { id, tokenFile, cancel: () => this.revoke(id),
       bind: (claims: Omit<Run, "id" | "created_ms">): Run => {
         if (!this.pending.delete(id)) throw new Error("Agent tool reservation has been revoked.");
@@ -84,10 +86,10 @@ export class RunStore {
     const row = id ? this.entries.get(id) : undefined;
     return row && timingSafeEqual(digest(token), Buffer.from(row.hash, "hex")) ? row.run : null;
   }
-  discoveryDepth(token: string): number | undefined {
+  discovery(token: string) {
     const id = token.split(".")[1];
     const entry = id ? this.pending.get(id) : undefined;
-    return entry && timingSafeEqual(digest(token), Buffer.from(entry.hash, "hex")) ? entry.depth : undefined;
+    return entry && timingSafeEqual(digest(token), Buffer.from(entry.hash, "hex")) ? entry : undefined;
   }
   ancestors(run: Run): string[] {
     const chain: string[] = [];

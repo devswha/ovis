@@ -1,4 +1,5 @@
 import type { AcpChild, AcpChildren } from "../acp/children.ts";
+import { KeeperRequestError } from "../acp/client.ts";
 import type { Ledger, ToolChild } from "./ledger.ts";
 import { HARNESS_LIMITS, answer, refuse } from "../../shared/harness-tool.ts";
 import type { SessionRef, SessionState, Untrusted } from "../../shared/harness-contract.generated.ts";
@@ -39,7 +40,7 @@ export class ChildTurns {
     this.watches.set(child, child.client.onChange(change));
     change();
   }
-  async send(child: AcpChild, row: ToolChild, args: Record<string, unknown>) {
+  async send(child: AcpChild, row: ToolChild, args: Record<string, unknown>, expectedMode: string) {
     const key = typeof args.key === "string" ? args.key : null;
     const accepted = (n: number, duplicate: boolean) => answer("accepted", { session: row.terminal, accepted: true, turn_id: `${row.id}.${n}`, key, duplicate });
     if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this child.");
@@ -56,8 +57,11 @@ export class ChildTurns {
     row.turns.push(turn);
     this.ledger.save();
     this.ledger.audit(row, "send", n);
-    try { await child.client.submit(String(args.task), true); }
-    catch { return refuse(child.client.terminalReady ? "taken_over" : "unavailable", "Delivery could not be confirmed. Do not repeat without checking."); }
+    try { await child.client.submit(String(args.task), expectedMode); }
+    catch (error) {
+      if (error instanceof KeeperRequestError && error.code === -32004) return refuse("not_granted", "Child permission mode changed.");
+      return refuse(child.client.terminalReady ? "taken_over" : "unavailable", "Delivery could not be confirmed. Do not repeat without checking.");
+    }
     turn.seq = child.client.turnSequence;
     this.ledger.save();
     this.forget(child); this.watch(child);

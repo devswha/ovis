@@ -16,7 +16,7 @@ beforeEach(() => {
   setting = HARNESS_TOOL_DEFAULT;
   hub = new AgentToolHub({ dir, setting: () => setting, acp: new AcpChildren(join(dir, "acp")) });
   const key = hub.runs.reserve();
-  key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "claude" });
+  key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "fixture", ceiling: "fixture/ask-v1" });
   token = readFileSync(key.tokenFile, "utf8");
   hub.listen();
 });

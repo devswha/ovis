@@ -6,7 +6,12 @@ const adapters = {
   claude: { command: "claude-agent-acp", version: "0.110.0", pathVar: "CLAUDE_CODE_EXECUTABLE" },
   codex: { command: "codex-acp", version: "2.10.0", pathVar: "CODEX_PATH" },
 } as const;
-export interface HarnessCommand { readonly argv: readonly string[]; readonly env?: Record<string, string> }
+export interface HarnessCommand {
+  readonly argv: readonly string[]; readonly env?: Record<string, string>;
+  /** Only a launch recipe with a proven permission profile may supply this. ACP's free-form
+   * currentModeId alone proves nothing across harnesses or local user settings. */
+  readonly ceiling?: { readonly profile: string; readonly mode: string };
+}
 export function resolveHarness(kind: string): HarnessCommand | null {
   switch (kind) {
     case "gjc": case "opencode": case "agy": {

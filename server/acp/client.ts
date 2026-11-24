@@ -114,9 +114,9 @@ export class KeeperClient {
     return this.requests.request(method, params, signal);
   }
 
-  async submit(text: string, tool = false): Promise<void> {
+  async submit(text: string, expectedMode?: string): Promise<void> {
     if (!this.session || (this.status !== "idle" && this.status !== "done")) throw new KeeperDisconnected();
-    await this.requests.submit(this.session, text, tool);
+    await this.requests.submit(this.session, text, expectedMode);
   }
 
   async hold(sessionId: string): Promise<number> {

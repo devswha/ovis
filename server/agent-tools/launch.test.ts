@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { AcpChildren } from "../acp/children.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { HARNESS_SKILL } from "../../shared/harness-skill.ts";
-import { TOOL_SCHEMAS, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { TOOL_SCHEMAS, VIEW_VERBS, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { AgentToolHub } from "./hub.ts";
 import { forgetLocalRun, launchHarnessTool, useAgentToolHub } from "./launch.ts";
 import { mcpMessage } from "./mcp.ts";
@@ -30,7 +30,7 @@ it.skipIf(process.platform === "win32")("one launch config holds both relays; no
       const door = { socket: launch.socket, tokenFile: launch.tokenFile };
       expect(await mcpMessage(door, { method: "initialize", id: 1 })).toMatchObject({result:{ instructions: HARNESS_SKILL }});
       const tools = await mcpMessage(door, { method: "tools/list", id: 2 });
-      expect(tools).toMatchObject({ result: { tools: Object.entries(TOOL_SCHEMAS).map(([v, schema]) => ({ name: `agent_${v}`, inputSchema: schema })) } });
+      expect(tools).toMatchObject({ result: { tools: VIEW_VERBS.map(v => ({ name: `agent_${v}`, inputSchema: TOOL_SCHEMAS[v] })) } });
       expect(JSON.stringify(tools)).not.toContain(token);
       forgetLocalRun("t1");
       expect(hub.runs.verify(token)).toBeNull();

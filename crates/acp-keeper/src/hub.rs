@@ -633,6 +633,15 @@ impl Hub {
                         self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"held by a person"}}));
                         return;
                     }
+                    let expected = msg.remove("expectedMode");
+                    if self.model.modes.is_none()
+                        || self.routes.values().any(|r| r.change.is_some())
+                        || expected.as_ref().and_then(Value::as_str) != self.model.modes.as_ref().map(|m| m.current.as_str())
+                    {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32004,"message":"permission ceiling not proven"}}));
+                        return;
+                    }
                     msg.insert("method".into(), json!("session/prompt"));
                 }
                 self.next += 1;
