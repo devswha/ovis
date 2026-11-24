@@ -534,7 +534,12 @@ export class ListFollow implements ListAuthority {
     const no = (refused: AllowRefusal, detail: string | null = null): AllowOutcome => ({ refused, detail });
     return this.enqueue(async () => {
       this.allowing = device.key;
-      try { return await this.allow(device, sign, no); } finally { this.allowing = null; }
+      try {
+        const outcome = await this.allow(device, sign, no);
+        // let in by a person's decision: its row waits no join hold, also one a read made a moment before the decision
+        if ("allowed" in outcome) this.settle();
+        return outcome;
+      } finally { this.allowing = null; }
     });
   }
 

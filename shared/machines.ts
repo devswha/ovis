@@ -454,6 +454,8 @@ export interface OwnJoinRequest {
   asked_at: string;
   left_ms: number;
   digits?: string;
+  /** The join is let in by the account's signed list: an approval here is received at once, and the device is in only once its entry is in the list. */
+  list?: true;
 }
 /**
  * A phone asking to pair through the relay by comparing digits (docs/relay.md): the six digits its

@@ -290,6 +290,8 @@ export class AccountDeviceStore implements AccountRowSource {
       const existing = this.file.devices.find((row) => row.key === entry.key);
       if (existing) {
         if (sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        // a person has just let this very key in: a row a read made for it a moment before waits no longer either
+        else if (existing.state === "hold" && settled(entry.key)) this.goLive(existing.id);
         continue;
       }
       // This new key needs a slot. A later proved replacement in the same list does not.

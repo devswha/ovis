@@ -298,6 +298,10 @@ export class RelaySession {
 
   get verifying(): boolean { return this.state === "verifying"; }
 
+  /** A join both sides confirmed waits for its entry in the account's list (allowIntoList): up to LIST_ALLOW_MS, which the carrier's own deadline must leave it. */
+  get placing(): boolean { return this.placingList && this.state !== "closed"; }
+  private placingList = false;
+
   /** a pairing under way, a key proof and its wait for the PC's screen too: the relay link keeps it past its setup deadline */
   get pairing(): boolean { return this.state === "pair-commit" || this.state === "pair-wait" || this.state === "key-proof" || this.state === "key-wait"; }
 
@@ -595,7 +599,7 @@ export class RelaySession {
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
           // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
           // marked vouched, so that app shows who is asking and checks the admission, as for an account join
-          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin });
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin, list: this.listCard !== undefined });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
@@ -738,9 +742,11 @@ export class RelaySession {
     // while the relay refuses new sessions no join makes a device: nothing is signed, and nothing is answered from here on
     if (!this.admitNewDevice()) { this.endPairing(true); return; }
     this.mux.extendSetup(LIST_ALLOW_MS);
+    this.placingList = true;
     // the PC signs only where a person at this PC decided: its own window, or the digits typed at its local command.
     // A member's approval, and one from another browser that drives this PC, sign nothing here
     const outcome = list ? await list.allowDevice({ key: sas.publicKey, enc: card.enc, card: card.card, label: sas.label }, sas.approvedBy === undefined && sas.approvedOwn === true) : { refused: "not_pinned" as const, detail: null };
+    this.placingList = false;
     if (!this.mux.active || this.sas !== sas || sas.ended) return;
     // the service's refusal, or its silence, is no failed pairing of this device's: it counts against nobody
     this.endPairing(true);

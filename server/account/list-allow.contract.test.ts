@@ -115,14 +115,14 @@ async function join(made: Bound, device: ListMember, options: { card?: { enc: st
   return { link, next, digits, features: welcome.payload.features, list: challenge.payload.list };
 }
 
-async function ownJoin(made: Bound): Promise<{ id: string; digits?: string }> {
+async function ownJoin(made: Bound): Promise<{ id: string; digits?: string; list?: boolean }> {
   const approvals = made.services.relay.approvals;
   const found = deferred<void>();
   const stop = approvals.subscribe(() => { if (approvals.ownJoins().length > 0) found.resolve(); });
   if (approvals.ownJoins().length > 0) found.resolve();
   await bounded(found.promise).finally(stop);
   const base = `http://127.0.0.1:${made.pc.app.port}`;
-  const listed = await (await fetch(`${base}/api/relay/joins`, { headers: own })).json() as { joins: { id: string; digits?: string }[] };
+  const listed = await (await fetch(`${base}/api/relay/joins`, { headers: own })).json() as { joins: { id: string; digits?: string; list?: boolean }[] };
   return listed.joins[0]!;
 }
 
@@ -136,6 +136,8 @@ async function allowed(made: Bound, device: ListMember, card: { enc: string; car
   const asked = await join(made, device, { card });
   const waiting = await ownJoin(made);
   expect(waiting.digits).toBe(asked.digits);
+  // the PC's own window and `ovis approve` are told that the list lets this join in
+  expect(waiting.list).toBe(true);
   expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
   asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
   return { ...asked, answer: await asked.next(FrameType.AUTH_OK) };
@@ -451,8 +453,18 @@ describe("what the PC does when the entry does not go in", () => {
       if (at.length === 1) return Response.json({ error: { code: "list_rebuilding", message: "reading the list again" } }, { status: 503, headers: { "retry-after": "2" } });
       return await forward();
     };
-    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    const waiting = await ownJoin(made);
+    expect(asked.link.session.placing).toBe(false);
+    expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+    asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    // while the entry waits to be placed the session says so, which is what keeps its carrier open past the sign-in grace
+    const deadline = Date.now() + 10_000;
+    while (at.length === 0) { if (Date.now() > deadline) throw new Error("Nothing was placed"); await Bun.sleep(10); }
+    expect(asked.link.session.placing).toBe(true);
+    const answer = await asked.next(FrameType.AUTH_OK);
     expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    expect(asked.link.session.placing).toBe(false);
     expect(at).toHaveLength(2);
     expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(1_900);
   });
@@ -651,6 +663,20 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
     asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
     expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_not_claimed" } });
+  });
+
+  test("a device a person at this PC allows waits no join hold, also when a read let it in a moment before", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    // another member places the same device, and a pull makes its row here, in its hold, just before the Allow
+    await made.account.addDevice(phone);
+    await made.pull();
+    expect(made.services.accountRows!.rows().find((row) => row.key === phone.key)).toMatchObject({ state: "hold" });
+    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    expect(made.services.accountRows!.rows().find((row) => row.key === phone.key)).toMatchObject({ state: "live" });
+    expect(entriesPlaced(made)).toBe(0);
   });
 
   test("a member's approval signs nothing here: the PC waits a few seconds for the member's entry, and lets the device in by it", async () => {

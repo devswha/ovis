@@ -2043,6 +2043,17 @@ describe("ovis link, on the PC itself", () => {
     const asks = (label: string) => `${label} asks to open this PC (from Ovis account acct_1, asked at ${at}). Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `;
     const after = (text: string) => text.slice(text.indexOf(WATCH));
 
+    it("says only that the approval was received where the account's signed list lets the device in", async () => {
+      const run = await pressing({
+        pressAfter: 2,
+        joins: (reads) => reads < 3 ? [] : [{ ...first("f1", "Pixel", "482913"), list: true }],
+        watch: (said, answer) => { if (said.endsWith(asks("Pixel"))) answer("482913"); },
+      });
+      expect(run.code).toBe(0);
+      expect(after(run.text)).toContain(`${asks("Pixel")}The approval of Pixel was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n`);
+      expect(after(run.text)).not.toContain("is let in");
+    });
+
     it("asks about the first join that comes by its device, shows none of its digits, and lets it in with the six typed here", async () => {
       const run = await pressing({
         pressAfter: 2,
@@ -4076,6 +4087,16 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
       for (const said of out) expect(said).not.toMatch(/482|913/);
       expect(sent).toEqual([{ id: "f1", digits: "482913" }]);
       expect(out.at(-1)).toBe("Pixel is let in; it opens this PC in a moment.\n");
+    });
+
+    it("says only that the approval was received for a join the account's signed list lets in: the device is in once its entry is", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("The approval of Pixel was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n");
+      expect(out.join("")).not.toContain("is let in");
     });
 
     it("says so when the digits are wrong, which ends that join, and how to try again; Enter by itself skips the next and sends nothing", async () => {
