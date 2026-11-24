@@ -217,6 +217,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const comparable = (): boolean => shownFor !== undefined && listedFor?.epoch === generation && accountView?.kind === "signed-in" && accountView.pcs !== null;
     if (lists === null || !comparable()) return;
     const [epoch, account] = [generation, shownFor!.account];
+    // nothing to compare where this device is in no list of the account: its pairings are not read for it
+    const listed = lists.view();
+    if (listed.account !== account || listed.status.at !== "following" || listed.status.standing !== "in") return;
     const devices = await store.list().catch(() => null);
     // the sign-in ended, or another took its place, while the pairings were read: its rows are not this comparison's
     if (devices === null || epoch !== generation || !comparable() || shownFor!.account !== account || accountView?.kind !== "signed-in" || accountView.pcs === null) return;

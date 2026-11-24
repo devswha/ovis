@@ -910,6 +910,7 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
 | `genesis` | an entry 0 that this device signed and has not yet found in its copy, to send again as it is |
 | `shadow` | what the copy and the directory differed in |
 | `asked` | when the account service last said that it keeps no list for the account |
+| `dropped` | the ids of the entries 0 this device signed and gave up for good |
 
 - **No key is in it.** An epoch key is never stored: each page opens the wraps again with the
   device's encryption key and holds the keys in memory. So what is kept is text and numbers, and a
@@ -937,7 +938,8 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
   the device is still a member with the key it has: a later sign-in takes up where this one stood,
   and asks the account service for the wraps again. A read that ends after another sign-in was
   stored, or none, shows nothing of the account it began with.
-- Leaving the account and deleting it forget everything kept for it.
+- Leaving the account and deleting it forget everything kept for it, and end the read under way
+  for it rather than wait for it: that read writes and shows nothing after.
 
 ### Starting the list
 
@@ -954,16 +956,20 @@ It does so by itself only when all of these hold, asked in this order at each re
 2. the device has saved no copy for the account, not even one that does not read;
 3. the sign-in is new: made at most nine minutes ago, by the device's clock. A device that signed
    an entry 0 while its sign-in was new, and has not seen it placed, is not asked this again;
-4. the key this sign-in registered with the account service is the first in the account's order:
+4. what the page stores lasts: it runs inside the app, or the browser already says that it keeps
+   this site's data (`navigator.storage.persisted()`; the browser is never asked to, which prompts
+   in some). A list whose one member lost its keys lets nobody in, so a browser tab whose data may
+   be cleared waits for another device to start the list, and the account goes on without one;
+5. the key this sign-in registered with the account service is the first in the account's order:
    no device registered a key for the account before it;
-5. the device holds no pairing that is linked to the account;
-6. the sign-in is an app's own (`GET /v1/session`);
-7. the account's directory lists no PC, confirmed or not.
+6. the device holds no pairing that is linked to the account;
+7. the sign-in is an app's own (`GET /v1/session`);
+8. the account's directory lists no PC, confirmed or not.
 
 So a list starts by itself for a new account whose first device is this one, and for no account
 that was in use: such an account has devices and PCs that entry 0 could not account for, and
 bringing them into a list is not built yet. Setting `localStorage["ovis-account-list-genesis"]` to
-`always` in the app's page starts a list whatever 3, 4, 5 and 7 say (who was in the account is then
+`always` in the app's page starts a list whatever 3, 4, 5, 6 and 8 say (who was in the account is then
 not in the list), and `never` starts none; both are for testing.
 
 - **A genesis is kept before it is sent, and sent again as it is.** A lost answer or a closed page
@@ -973,10 +979,15 @@ not in the list), and `never` starts none; both are for testing.
   once the account service asks for one. Two tabs take turns, so one of them signs
   it and the other finds it; in a browser without Web Locks both may sign one, and the account
   service takes one of the two.
-- **Entry 0 is dated by the device's clock, and no later than the account service's**, which the
-  answer to `GET /v2/lists/mine` carries: the service takes no entry dated more than ten minutes
-  ahead of its own clock. A genesis that the service refuses as an entry was not placed and never
-  will be as it is, so the device forgets it and signs another at its next read.
+- **Entry 0 is dated by the device's own clock**, whatever the account service says the time is: a
+  member signs no time on the service's word. The service takes no entry dated more than ten
+  minutes ahead of its own clock, and where it refuses entry 0 for that the device says that its
+  clock looks wrong (`clock`).
+- **An entry 0 that is given up is given up for good.** One that the service refuses as an entry
+  was not placed and never will be as it is, and one that lost to another device's is not the
+  account's. The device forgets it, writes its id down (`dropped`), signs another at its next read
+  where it still may, and never follows the list of an entry it gave up, whoever names it later
+  and after a reload too.
 - **One list per account.** Of two devices that start at once the account service takes one
   (`409 list_exists` for the other). The other device reads entry 0 of the list the service then
   names, sees that it is not signed with its own key, and follows none of it: it is in no list
@@ -1068,8 +1079,22 @@ It reads:
 - by the clock and by the app coming to the front, never twice within five seconds, whatever
   answers. A read that a part of the app asks for itself (a sign-in that was just read) begins at
   once, and one asked for while another is under way begins when that one ends;
-- one read at a time for an account among the tabs of a browser, and a read's requests end after
-  30 seconds.
+- one read at a time for an account among the tabs of a browser. Each request ends after 30
+  seconds, each page of the log with 30 seconds of its own, and a round asks for no further page
+  once it has read for 30 seconds.
+
+**Every page is saved as it is taken**, before the next is asked for. A round that ends early (a
+page that does not come, the 30 seconds, the follower's 128 pages) keeps what it took, and the
+next round goes on from there, five seconds later while the app is in front. So a device that is
+n entries behind has the list after at most n / 256 rounds that each got one page, whatever is cut
+in between. A round whose first page does not come counts as one that did not reach the service.
+
+**A save never goes over a newer one.** The copy is written only over the very text this page
+read, in one IndexedDB transaction; where another page saved meanwhile, nothing is written and the
+round reads what is saved now and takes its pages again, three times at most. That holds in a
+browser without Web Locks too, and it is what keeps an alarm one page saved from being written
+over by another. The time of the last full read and the floor of the clock are saved with every
+round that reached the service, so a page loaded again knows both.
 
 An account service that is away, slow, or off its switch again leaves the copy as it is: the
 device shows what it saved, and says that it did not reach the service.

@@ -46,7 +46,7 @@ interface Device {
   keys(): Promise<DeviceListKeys>;
 }
 
-function wired(store: AccountStore, lists: ListStore, sent: Sent[], wire: Wire, options: { genesis: GenesisMode; linked: number; label: string }): AccountList {
+function wired(store: AccountStore, lists: ListStore, sent: Sent[], wire: Wire, options: { genesis: GenesisMode; linked: number; label: string; durable?: boolean }): AccountList {
   const fetch = async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init);
     const url = new URL(request.url);
@@ -69,13 +69,13 @@ function wired(store: AccountStore, lists: ListStore, sent: Sent[], wire: Wire, 
   const service = new AccountService({ store, fetch, lock: memoryLock(), now: () => now });
   return accountList({
     service, accountStore: store, listStore: lists, lock: memoryListLock(), now: () => now,
-    names: () => ({ label: options.label, os: "ios" }), linkedPcs: async () => options.linked, genesis: () => options.genesis,
+    names: () => ({ label: options.label, os: "ios" }), linkedPcs: async () => options.linked, genesis: () => options.genesis, durable: async () => options.durable !== false,
   });
 }
 
-async function device(given: { genesis?: GenesisMode; register?: boolean; linked?: number; label?: string; code?: boolean; account?: string } = {}): Promise<Device> {
+async function device(given: { genesis?: GenesisMode; register?: boolean; linked?: number; label?: string; code?: boolean; account?: string; durable?: boolean } = {}): Promise<Device> {
   const account = given.account ?? ACCOUNT;
-  const options = { genesis: given.genesis ?? "first-device", linked: given.linked ?? 0, label: given.label ?? "Dana's phone" };
+  const options = { genesis: given.genesis ?? "first-device", linked: given.linked ?? 0, label: given.label ?? "Dana's phone", ...(given.durable === undefined ? {} : { durable: given.durable }) };
   const store = memoryAccountStore();
   const lists = memoryListStore();
   let session: AccountSession;
@@ -218,6 +218,24 @@ describe("an account the service keeps no list for", () => {
     const again = reloaded(phone);
     await again.list.sync();
     expect(again.sent).toEqual([]);
+  });
+
+  it("is asked again where the time it kept of that answer is ahead of the clock, and keeps no such answer of a sign-in that could not be refreshed", async () => {
+    fake.listAccounts = "";
+    const phone = await device();
+    await phone.list.sync();
+    // the clock was set back since: the day cannot be counted from a time that has not come
+    now -= 2 * 60 * MINUTE;
+    const again = reloaded(phone);
+    await again.list.sync();
+    expect(asked(again, "GET /v2/lists/mine")).toBe(1);
+    // an access token that ran out, and a refresh that the service answers 404: no word on lists at all
+    const stale = await device({ account: "acct_stale" });
+    await stale.store.set("session", { ...(await stale.store.get("session"))!, expires_at: now - 1000 });
+    stale.wire.answer = (request) => new URL(request.url).pathname === "/v1/token" ? Response.json({ error: { code: "not_found", message: "x" } }, { status: 404 }) : null;
+    const view = await stale.list.sync().catch(() => null);
+    expect(await stale.lists.get("asked", "acct_stale")).toBeUndefined();
+    expect(view === null || view.reached === false).toBe(true);
   });
 
   it("is asked once a day at most, however often the app starts and whichever page asks", async () => {
@@ -383,6 +401,30 @@ describe("the first device of an account with nobody in it", () => {
     await none(registered, "has_pcs");
   });
 
+  it("starts none where what the page stores may be cleared at any time: another device starts it", async () => {
+    const tab = await device({ durable: false });
+    expect((await tab.list.sync()).status).toEqual({ at: "none", why: "storage" });
+    expect([asked(tab, "POST /v2/lists"), await tab.lists.get("genesis", ACCOUNT), fake.accountList(ACCOUNT)]).toEqual([0, undefined, null]);
+    // the developer's switch starts one all the same
+    const forced = await device({ account: "acct_forced", durable: false, genesis: "always" });
+    fake.listAccounts = "*";
+    expect(following(await forced.list.sync()).standing).toBe("in");
+  });
+
+  it("starts none for a sign-in whose registered key is another sign-in's or another account's, or whose time is ahead of the clock", async () => {
+    const other = await device({ account: "acct_gate_a" });
+    fake.listAccounts = "*";
+    const kept = (await other.store.get("signin_key"))!;
+    await other.store.set("signin_key", { ...kept, sign_in_id: "an-earlier-sign-in" });
+    expect((await other.list.sync()).status).toEqual({ at: "none", why: "not_first_device" });
+    const another = await device({ account: "acct_gate_b" });
+    await another.store.set("signin_key", { ...(await another.store.get("signin_key"))!, account: "acct_someone_else" });
+    expect((await another.list.sync()).status).toEqual({ at: "none", why: "not_first_device" });
+    const ahead = await device({ account: "acct_gate_c" });
+    await ahead.store.set("session", { ...(await ahead.store.get("session"))!, signed_in_at: now + 60 * MINUTE });
+    expect((await ahead.list.sync()).status).toEqual({ at: "none", why: "not_new" });
+  });
+
   it("starts one all the same where the developer's switch says so", async () => {
     await device();
     const second = await device({ genesis: "always", linked: 2 });
@@ -408,34 +450,77 @@ describe("the first device of an account with nobody in it", () => {
     expect(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, new Uint8Array(fromBase64Url(proof.signature)), bytes)).toBe(true);
   });
 
-  it("dates entry 0 by its own clock, and no later than the account service's where the device's runs ahead", async () => {
+  it("dates entry 0 by its own clock, whatever the account service says the time is, and says so where the service refuses that time", async () => {
     fake.listAccounts = "*";
-    const dated = async (off: number, account: string): Promise<number> => {
+    const here = Math.floor(now / 1000);
+    const started = async (off: number, account: string) => {
       serviceOff = off;
       const from = await device({ account });
-      expect(following(await from.list.sync()).standing).toBe("in");
-      return readBody(entryFromText(held(account).entries[0]!).body).issued_at;
+      return { from, view: await from.list.sync() };
     };
-    const here = Math.floor(now / 1000);
-    expect(await dated(0, "acct_on_time")).toBe(here);
-    // the service's clock a day behind this device's: its time, which it will take
-    expect(await dated(-24 * 60 * MINUTE, "acct_ahead")).toBe(here - 24 * 60 * 60);
-    // and an hour ahead of it: the device's own
-    expect(await dated(60 * MINUTE, "acct_behind")).toBe(here);
+    expect(following((await started(0, "acct_on_time")).view).standing).toBe("in");
+    expect(readBody(entryFromText(held("acct_on_time").entries[0]!).body).issued_at).toBe(here);
+    // the service's clock an hour ahead: the device signs its own time, never the service's
+    expect(following((await started(60 * MINUTE, "acct_behind")).view).standing).toBe("in");
+    expect(readBody(entryFromText(held("acct_behind").entries[0]!).body).issued_at).toBe(here);
+    // the service's clock a day behind: it takes no entry dated that far ahead of it, and the device signs no other time for it
+    const { from, view } = await started(-24 * 60 * MINUTE, "acct_ahead");
+    expect(view.status).toEqual({ at: "none", why: "clock" });
+    expect(fake.accountList("acct_ahead")).toBeNull();
+    expect(readBody(entryFromText(from.sent.find((each) => each.path === "/v2/lists")!.body!.entry as string).body).issued_at).toBe(here);
   });
 
   it("signs another genesis after the account service refused the first as an entry, which it then never placed", async () => {
     const phone = await device();
     phone.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname === "/v2/lists"
-      ? Response.json({ error: { code: "entry_refused", message: "x", index: 0, outcome: "service", reason: "issued_at_ahead" }, now: 1 }, { status: 400 }) : null;
+      ? Response.json({ error: { code: "entry_refused", message: "x", index: 0, outcome: "service", reason: "entry_invalid" }, now: 1 }, { status: 400 }) : null;
     expect((await phone.list.sync()).status).toEqual({ at: "none", why: "refused" });
     expect([await phone.lists.get("genesis", ACCOUNT), fake.accountList(ACCOUNT)]).toEqual([undefined, null]);
-    const first = phone.sent.find((each) => each.path === "/v2/lists")!.body!.entry;
+    const first = phone.sent.find((each) => each.path === "/v2/lists")!.body!.entry as string;
+    // given up for good: its id is written down
+    expect(await phone.lists.get("dropped", ACCOUNT)).toEqual({ v: 1, lists: [entryHash(entryFromText(first).body)] });
     phone.wire.answer = null;
     now += NO_LIST_SECONDS * 1000;
     expect(following(await phone.list.sync()).standing).toBe("in");
     expect(held().entries).toHaveLength(1);
     expect(held().entries[0]).not.toBe(first);
+  });
+
+  it("keeps its entry 0 and counts the round as not reached where the account service is busy or fails, and makes the proof again where its challenge ran out", async () => {
+    const phone = await device();
+    const answers = [new Response("busy", { status: 429 }), new Response("down", { status: 503 })];
+    phone.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname === "/v2/lists" ? answers.shift() ?? null : null;
+    for (let tries = 0; tries < 2; tries += 1) {
+      const view = await phone.list.sync();
+      expect([view.reached, await phone.lists.get("dropped", ACCOUNT)]).toEqual([false, undefined]);
+      expect(await phone.lists.get("genesis", ACCOUNT)).toBeDefined();
+      now += 6 * 3600_000;
+    }
+    // by now the sign-in is old: the entry goes with a proof, and a proof whose challenge was spent on the way is made once more
+    let spent = false;
+    phone.wire.answer = (request) => {
+      if (spent || request.method !== "POST" || new URL(request.url).pathname !== "/v2/lists") return null;
+      spent = true;
+      return Response.json({ error: { code: "challenge_invalid", message: "x" } }, { status: 400 });
+    };
+    const before = challenges.length;
+    expect(following(await phone.list.sync()).standing).toBe("in");
+    expect([challenges.length - before, held().entries.length]).toEqual([2, 1]);
+  });
+
+  it("sends no entry 0 that was kept under a key the device no longer has", async () => {
+    for (const field of ["key", "enc"] as const) {
+      const account = `acct_kept_${field}`;
+      fake.listAccounts = "*";
+      const phone = await device({ account });
+      phone.wire.dropRequestOf = "POST /v2/lists";
+      await phone.list.sync();
+      const kept = await phone.lists.get("genesis", account) as { entry: string } & Record<string, unknown>;
+      await phone.lists.set("genesis", account, { ...kept, [field]: `${kept[field] as string}x` });
+      expect(following(await phone.list.sync()).standing).toBe("in");
+      // what was sent is another entry 0, signed now
+      expect(held(account).entries[0]).not.toBe(kept.entry);
+    }
   });
 
   it("is told so, and starts nothing, when its sign-in is old and has no key to prove", async () => {
@@ -533,6 +618,37 @@ describe("two that start a list at once", () => {
   });
 });
 
+describe("a device that gave up the entry 0 it signed", () => {
+  it("never follows the list of that entry, whoever names it later and after a reload too", async () => {
+    const first = await device();
+    const second = await device({ genesis: "always" });
+    const [a] = await Promise.all([first.list.sync(), second.list.sync()]);
+    const loser = a.status.at === "following" ? second : first;
+    const real = held().id;
+    expect((await loser.list.sync()).status).toEqual({ at: "not_in", list: real, why: "not_mine" });
+    const mine = loser.sent.find((each) => each.method === "POST" && each.path === "/v2/lists")!.body!.entry as string;
+    const id = entryHash(entryFromText(mine).body);
+    expect(id).not.toBe(real);
+    expect([await loser.lists.get("genesis", ACCOUNT), await loser.lists.get("dropped", ACCOUNT)]).toEqual([undefined, { v: 1, lists: [id] }]);
+    // a lying service names the entry 0 it was sent and refused, and serves it
+    const lie: Wire["answer"] = (request) => {
+      const path = new URL(request.url).pathname;
+      const at = Math.floor(now / 1000);
+      if (path === "/v2/lists/mine") return Response.json({ list: id, head: { seq: 0, hash: id }, now: at });
+      if (path === `/v2/lists/${id}/log`) return Response.json({ list: id, after: null, entries: [mine], head: { seq: 0, hash: id }, more: false, now: at });
+      return null;
+    };
+    const page = reloaded(loser, "always");
+    page.wire.answer = lie;
+    expect((await page.list.sync()).status).toEqual({ at: "not_in", list: id, why: "not_mine" });
+    expect([await loser.lists.get("copy", ACCOUNT), asked(page, `GET /v2/lists/${id}/log`)]).toEqual([undefined, 0]);
+    // the honest service again: the device waits to be let into the account's one list, as before
+    page.wire.answer = null;
+    now += NO_LIST_SECONDS * 1000;
+    expect((await page.list.sync()).status).toEqual({ at: "not_in", list: real, why: "not_mine" });
+  });
+});
+
 describe("catching up", () => {
   it("takes what the log shows after its own head: a PC that came in, by its relay key and its sealed name, and one that went", async () => {
     const phone = await device();
@@ -618,19 +734,31 @@ describe("catching up", () => {
     expect(asked(phone, "GET /v2/lists/mine")).toBe(2);
   });
 
-  it("writes its copy only when the list moved, not at every read", async () => {
+  it("saves its copy when the list moved and once for each round that reached the account service, and never when it was not reached", async () => {
     const phone = await device();
-    const writes: string[] = [];
-    const set = phone.lists.set.bind(phone.lists);
-    phone.lists.set = (record, account, value) => { writes.push(record); return set(record, account, value); };
+    let writes = 0;
+    const swap = phone.lists.swap.bind(phone.lists);
+    phone.lists.swap = async (record, account, expected, value) => { const swapped = await swap(record, account, expected, value); if (record === "copy" && swapped) writes += 1; return swapped; };
+    const savedAt = async () => { const { read_at, seen_at } = JSON.parse(await phone.lists.get("copy", ACCOUNT) as string) as { read_at: number; seen_at: number }; return [read_at, seen_at]; };
     await phone.list.sync();
-    expect(writes.filter((record) => record === "copy")).toHaveLength(1);
+    expect(writes).toBe(1);
+    // each round that reached the service moves the time of the last full read and the floor of the clock: both are saved
     for (let round = 0; round < 3; round += 1) { now += 30_000; await phone.list.sync(); }
-    expect(writes.filter((record) => record === "copy")).toHaveLength(1);
-    await addPc(phone, "Desk");
+    expect([writes, await savedAt()]).toEqual([4, [Math.floor(now / 1000), Math.floor(now / 1000)]]);
+    // a round that did not reach it writes nothing
+    phone.wire.down = true;
     now += 30_000;
     await phone.list.sync();
-    expect(writes.filter((record) => record === "copy")).toHaveLength(2);
+    expect(writes).toBe(4);
+    phone.wire.down = false;
+    await addPc(phone, "Desk");
+    now += 5 * MINUTE;
+    await phone.list.sync();
+    expect(writes).toBe(5);
+    // after a reload with the service away, the view says when the list was last read in full
+    const again = reloaded(phone);
+    again.wire.down = true;
+    expect(following(await again.list.sync()).read_at).toBe(Math.floor(now / 1000));
   });
 
   it("tells who listens of each view that differs, and of none that does not", async () => {
@@ -753,6 +881,107 @@ describe("a device whose account key was made anew under a page that stays open"
   });
 });
 
+describe("a device that is far behind", () => {
+  it("keeps every page it took when a later one does not come, and goes on from there at its next round", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    for (const label of ["One", "Two", "Three", "Four", "Five"]) await addPc(phone, label);
+    // each page one entry, as a slow link or a long list makes many pages, and every third request for the log is lost
+    tamper({ pages: [1, 2, 3, 4] });
+    let logs = 0;
+    phone.wire.answer = (request) => {
+      if (new URL(request.url).pathname.endsWith("/log") && ++logs % 3 === 0) throw new DOMException("timed out", "TimeoutError");
+      return null;
+    };
+    const heads: number[] = [];
+    for (let round = 0; round < 3 && heads.at(-1) !== 5; round += 1) {
+      now += 30_000;
+      const view = await phone.list.sync();
+      const saved = JSON.parse(await phone.lists.get("copy", ACCOUNT) as string) as { entries: string[] };
+      // what is shown is what is saved, and a round that took pages is due again at once
+      expect(following(view).head).toBe(saved.entries.length - 1);
+      heads.push(following(view).head);
+      if (following(view).head < 5) expect(phone.list.due(true)).toBe(now);
+    }
+    expect(heads).toEqual([2, 4, 5]);
+    expect(phone.list.view().pcs.map((pc) => pc.name?.label)).toEqual(["One", "Two", "Three", "Four", "Five"]);
+  });
+
+  it("counts a round whose first page did not come as one that did not reach the account service", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await addPc(phone, "Desk");
+    phone.wire.answer = (request) => { if (new URL(request.url).pathname.endsWith("/log")) throw new DOMException("timed out", "TimeoutError"); return null; };
+    now += 30_000;
+    const view = await phone.list.sync();
+    expect([view.reached, following(view).head]).toEqual([false, 0]);
+    expect(phone.list.due(true)).toBe((Math.floor(now / 1000) + UNREACHED_SECONDS[0]!) * 1000);
+  });
+
+  it("counts a request that timed out as a round that did not reach the account service, and throws nothing", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    phone.wire.answer = () => { throw new DOMException("timed out", "TimeoutError"); };
+    now += 30_000;
+    const view = await phone.list.sync();
+    expect([view.reached, following(view).standing]).toEqual([false, "in"]);
+  });
+});
+
+describe("two pages of a browser with no Web Locks", () => {
+  it("never save one copy over a newer one: the second page reads what the first saved, the alarm with it", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await addPc(phone, "Desk");
+    await phone.list.sync();
+    const keys = await phone.keys();
+    const list = held();
+    const fork = await signed(keys, () => ({ kind: "carried", endpoint: newPc().endpoint, sealed: null }), { ...list, head: { seq: 0, hash: list.id } });
+    // each page has a lock of its own, as where the browser has none
+    const a = reloaded(phone);
+    const b = reloaded(phone);
+    // page B reads the saved copy, then its first request waits until page A is done
+    const gate = Promise.withResolvers<void>();
+    const waiting = Promise.withResolvers<void>();
+    b.wire.answer = ((request: Request) => new URL(request.url).pathname === "/v2/lists/mine"
+      ? (waiting.resolve(), gate.promise.then(() => { b.wire.answer = null; return fake.fetch(request); })) : null) as unknown as Wire["answer"];
+    now += 30_000;
+    const later = b.list.sync();
+    await waiting.promise;
+    // page A is shown a fork that a member signed, and saves the alarm with its copy
+    tamper({ fork: [fork] });
+    expect(following(await a.list.sync()).trouble).toBe("fork");
+    // the service shows page B the honest log, one entry on: B does not write the copy it loaded before A's save
+    fake.untamperList(held().id);
+    await addPc(phone, "Laptop");
+    gate.resolve();
+    expect(following(await later).trouble).toBe("fork");
+    expect(JSON.parse(await phone.lists.get("copy", ACCOUNT) as string).alarm).not.toBeNull();
+    const c = reloaded(phone);
+    c.wire.down = true;
+    expect(following(await c.list.sync()).trouble).toBe("fork");
+  });
+});
+
+describe("a leave or a deletion of the account", () => {
+  it("ends the round under way instead of waiting for it, and that round writes and shows nothing after", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    await addPc(phone, "Desk");
+    // the round's request for the log gets no answer until it is given up
+    const hung = Promise.withResolvers<void>();
+    phone.wire.answer = ((request: Request) => new URL(request.url).pathname.endsWith("/log")
+      ? new Promise<Response>((_, reject) => { hung.resolve(); request.signal.addEventListener("abort", () => reject(request.signal.reason as Error)); }) : null) as unknown as Wire["answer"];
+    now += 30_000;
+    const round = phone.list.sync();
+    await hung.promise;
+    await Promise.race([phone.list.forget(ACCOUNT), new Promise((_, reject) => setTimeout(() => reject(new Error("the forget waited for the round")), 2_000))]);
+    await round;
+    for (const record of LIST_RECORDS) expect(await phone.lists.get(record, ACCOUNT)).toBeUndefined();
+    expect(phone.list.view()).toEqual({ account: null, status: { at: "off" }, reached: true, devices: [], pcs: [] });
+  });
+});
+
 describe("a sign-in that changes under a round", () => {
   it("publishes nothing of the account the round began with", async () => {
     const phone = await device();
@@ -861,6 +1090,19 @@ describe("an account service that lies", () => {
     const reset = await phone.list.sync();
     expect(following(reset)).toMatchObject({ head: 3, trouble: null });
     expect(reset.pcs.map((row) => row.endpoint)).toEqual([onward.endpoint]);
+  });
+
+  it("keeps the alarm of another history with its copy: a page loaded again still says so, with the account service away", async () => {
+    const { phone } = await follower();
+    const keys = await phone.keys();
+    const list = held();
+    const fork = await signed(keys, () => ({ kind: "carried", endpoint: newPc().endpoint, sealed: null }), { ...list, head: { seq: 0, hash: list.id } });
+    tamper({ fork: [fork] });
+    now += 30_000;
+    expect(following(await phone.list.sync()).trouble).toBe("fork");
+    const again = reloaded(phone);
+    again.wire.down = true;
+    expect(following(await again.list.sync()).trouble).toBe("fork");
   });
 
   it("is caught showing another history that nobody signed under what the device holds", async () => {

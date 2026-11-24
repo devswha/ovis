@@ -123,9 +123,12 @@ export const PC_ADD_FRESH_MS = 9 * 60_000;
 /** `key_proof` of an add: a challenge of POST /v1/pcs/challenge and this sign-in's key's signature (raw r then s, base64url). */
 interface PcAddProof { readonly challenge_id: string; readonly signature: string }
 
-/** `retryAfterMs`: the wait the answer's `retry-after` named (a 429's), or null without one. */
+/**
+ * `retryAfterMs`: the wait the answer's `retry-after` named (a 429's), or null without one. `reason`: the one word the
+ * refusal adds to its code, where it has one (an entry that was refused says why), never its message.
+ */
 export class AccountServiceError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null) {
+  constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null, readonly reason: string | null = null) {
     super(message);
     this.name = "AccountServiceError";
   }
@@ -235,14 +238,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** The service's error code only: its message is the service's text, which could echo a token, so it is never kept. */
 export async function failure(response: Response): Promise<AccountServiceError> {
   let code = "http_error";
+  let reason: string | null = null;
   try {
     const body: unknown = await response.json();
     const error = isRecord(body) && isRecord(body.error) ? body.error : null;
     if (typeof error?.code === "string" && /^[a-z_]{1,40}$/.test(error.code)) code = error.code;
+    if (typeof error?.reason === "string" && /^[a-z_]{1,40}$/.test(error.reason)) reason = error.reason;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
-  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")));
+  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")), reason);
 }
 
 /** A `retry-after` in delay-seconds or as an HTTP date, in ms from now; null without one either reads. */

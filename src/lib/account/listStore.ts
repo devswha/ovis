@@ -1,8 +1,8 @@
 /**
  * What this device keeps of its accounts' signed lists (docs/account-list.md, "On a device"), by account: its
  * verified copy of the list, the wraps of the epoch keys it was given, a genesis it signed and has not seen placed,
- * what its copy and the account service's answers differed in, and when the account service last said that it
- * keeps no list for the account. In an IndexedDB database of its own,
+ * what its copy and the account service's answers differed in, when the account service last said that it
+ * keeps no list for the account, and the entries 0 it signed and gave up. In an IndexedDB database of its own,
  * `ovis-account-list`: `ovis-account` (store.ts) stays at its one version, which a page of an older build still
  * opens, and a copy can grow to megabytes beside records that are read on every request.
  *
@@ -12,15 +12,24 @@
  * Every record is read back as `unknown`: whoever owns it reads it strictly and reports what is not in its form.
  */
 
-export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked"] as const;
+export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked", "dropped"] as const;
 export type ListRecord = (typeof LIST_RECORDS)[number];
 
 /** Each call is one transaction. */
 export interface ListStore {
   get(record: ListRecord, account: string): Promise<unknown>;
   set(record: ListRecord, account: string, value: unknown): Promise<void>;
-  /** Forgets everything kept for the account, in one transaction. */
-  drop(account: string): Promise<void>;
+  /**
+   * Writes `value` only where what is stored is still `expected` (a text, or undefined for nothing), read and written
+   * in the one transaction; false, with nothing written, where another page wrote meanwhile. This is what keeps one
+   * page's save from going over another's, with Web Locks or without them.
+   */
+  swap(record: ListRecord, account: string, expected: string | undefined, value: string): Promise<boolean>;
+  /**
+   * Forgets everything kept for the account, in one transaction. `copy`: only where the stored copy is still that
+   * text, so what goes is what the caller read; false, with nothing forgotten, where it is another.
+   */
+  drop(account: string, copy?: string): Promise<boolean>;
 }
 
 /** Runs `work` alone among this origin's pages for one account's list (Web Locks), where the browser has them. */
@@ -51,7 +60,16 @@ export function memoryListStore(): ListStore {
       if (value === undefined) records.delete(nameOf(record, account));
       else records.set(nameOf(record, account), structuredClone(value));
     },
-    async drop(account) { for (const record of LIST_RECORDS) records.delete(nameOf(record, account)); },
+    async swap(record, account, expected, value) {
+      if (records.get(nameOf(record, account)) !== expected) return false;
+      records.set(nameOf(record, account), value);
+      return true;
+    },
+    async drop(account, copy) {
+      if (copy !== undefined && records.get(nameOf("copy", account)) !== copy) return false;
+      for (const record of LIST_RECORDS) records.delete(nameOf(record, account));
+      return true;
+    },
   };
 }
 
@@ -93,10 +111,28 @@ export const indexedListStore: ListStore = {
       return () => undefined;
     });
   },
-  drop(account) {
+  swap(record, account, expected, value) {
     return transact("readwrite", (store) => {
-      for (const record of LIST_RECORDS) store.delete(nameOf(record, account));
-      return () => undefined;
+      let swapped = false;
+      const held = store.get(nameOf(record, account));
+      held.onsuccess = () => {
+        if (held.result !== expected) return;
+        store.put(value, nameOf(record, account));
+        swapped = true;
+      };
+      return () => swapped;
+    });
+  },
+  drop(account, copy) {
+    return transact("readwrite", (store) => {
+      let dropped = false;
+      const forget = (): void => { for (const record of LIST_RECORDS) store.delete(nameOf(record, account)); dropped = true; };
+      if (copy === undefined) forget();
+      else {
+        const held = store.get(nameOf("copy", account));
+        held.onsuccess = () => { if (held.result === copy) forget(); };
+      }
+      return () => dropped;
     });
   },
 };

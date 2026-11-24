@@ -25,6 +25,7 @@ import { namesAt, openEpochs, readWraps, wrapsRecord, type OpenedEpochs } from "
 import type { ListHint, ListWrap } from "./listAnswers.ts";
 import { indexedListStore, listLock, type ListLock, type ListStore } from "./listStore.ts";
 import { keepShadow, shadowOf, type ShadowRecord } from "./listShadow.ts";
+import { inMacApp, inNativeApp } from "../nativeApp.ts";
 import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, PC_ADD_FRESH_MS, sameSignIn, SignedOutError, type AccountService, type DirectoryPc } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
@@ -50,9 +51,12 @@ export type ListTrouble = "fork" | "stuck" | "other_list" | "refused" | "unsigne
  * - `has_pcs`: the account lists a PC, or this device holds a pairing linked to the account.
  * - `not_own_sign_in`, `frozen`, `session_not_fresh`: the account service takes no list from this sign-in.
  * - `refused`: the account service refused the entry itself.
+ * - `clock`: it refused the entry for its time: this device's clock looks wrong.
+ * - `storage`: what this page stores may be cleared by the browser at any time, and a list whose one member lost
+ *   its keys lets nobody in: another device starts it.
  * - `switched_off`: this page was told to start none.
  */
-export type NoGenesis = "not_new" | "not_first_device" | "has_pcs" | "not_own_sign_in" | "frozen" | "session_not_fresh" | "refused" | "switched_off";
+export type NoGenesis = "not_new" | "not_first_device" | "has_pcs" | "not_own_sign_in" | "frozen" | "session_not_fresh" | "refused" | "clock" | "storage" | "switched_off";
 
 /** What a device that holds no copy is at. */
 type Without =
@@ -137,6 +141,17 @@ export interface AccountListOptions {
   /** How many of the PCs this device saved are linked to the account. */
   readonly linkedPcs?: (account: string) => Promise<number>;
   readonly genesis?: () => GenesisMode;
+  /** Whether what this page stores lasts (storageLasts): a device starts a list by itself only where it does. */
+  readonly durable?: () => Promise<boolean>;
+}
+
+/**
+ * Whether what this page stores lasts: inside the app, or where the browser already says that it keeps this site's
+ * data. The browser is never asked to keep it (that prompts in some): a tab whose data may go waits for another device.
+ */
+export async function storageLasts(): Promise<boolean> {
+  if (inNativeApp() || inMacApp()) return true;
+  try { return await globalThis.navigator?.storage?.persisted?.() === true; } catch { return false; }
 }
 
 /** A device asks again this often, in seconds, while the account has no list or it is in none. */
@@ -151,8 +166,23 @@ export const OFF_SECONDS = 24 * 60 * 60;
  * service: a service that is away or has no such routes is not asked every five minutes for good.
  */
 export const UNREACHED_SECONDS: readonly number[] = [300, 900, 3600, 6 * 3600];
-/** A round's requests end after this long: it holds the lock that another tab's round waits for. */
+/** A request of a round ends after this long. Each page of the log has this long of its own. */
 const ROUND_MS = 30_000;
+/**
+ * A round asks for no further page of the log once it has read for this long: it holds the lock that another tab's
+ * round waits for. Every page it took by then is saved, and the next round goes on from there.
+ */
+const READ_MS = 30_000;
+/** How often one round loads the copy again after another page saved one under it. */
+const SAVE_TRIES = 3;
+
+/** Another page saved the account's copy while this one worked on the copy it had read: this one's is not written. */
+class StaleCopyError extends Error {
+  constructor() {
+    super("Another page saved the list meanwhile");
+    this.name = "StaleCopyError";
+  }
+}
 
 const RECORD_VERSION = 1;
 const OFF: AccountListView = { account: null, status: { at: "off" }, reached: true, devices: [], pcs: [] };
@@ -176,6 +206,11 @@ function hashOf(text: string | undefined): string | null {
 /** When the account service said that it keeps no list for the account, in seconds, as this device kept it; null for no such record. */
 function readOff(value: unknown): number | null {
   return isRecord(value) && value.v === RECORD_VERSION && typeof value.off_at === "number" && Number.isSafeInteger(value.off_at) && value.off_at >= 0 ? value.off_at : null;
+}
+
+/** The ids of the entries 0 this device signed and gave up for good: the account has another list, or the account service refused them. */
+function readDropped(value: unknown): string[] {
+  return isRecord(value) && value.v === RECORD_VERSION && Array.isArray(value.lists) ? value.lists.filter((list): list is string => typeof list === "string" && isListHash(list)) : [];
 }
 
 function readPending(value: unknown, keys: DeviceListKeys): PendingGenesis | null {
@@ -209,13 +244,13 @@ const WORST: readonly ListTrouble[] = ["fork", "stuck", "other_list", "refused",
 const worst = (troubles: readonly (ListTrouble | null)[]): ListTrouble | null => WORST.find((trouble) => troubles.includes(trouble)) ?? null;
 
 /**
- * Whether two copies of one list hold the same entries, stop and alarm: they then differ in nothing but when they were
- * last read in full. Each entry names the one before it by its hash, so the same last entry at the same place is
- * the same history, and the state is what the entries give.
+ * Whether two copies of one list are the same save: the same entries, stop and alarm, last read in full at the same
+ * time, under the same floor of the clock. Each entry names the one before it by its hash, so the same last entry at
+ * the same place is the same history, and the state is what the entries give.
  */
-function sameHistory(a: FollowerCopy, b: FollowerCopy): boolean {
+function sameSave(a: FollowerCopy, b: FollowerCopy): boolean {
   return a.list === b.list && a.entries.length === b.entries.length && a.entries.at(-1) === b.entries.at(-1) && a.stop === b.stop
-    && (a.state === null) === (b.state === null) && JSON.stringify(a.alarm) === JSON.stringify(b.alarm);
+    && (a.state === null) === (b.state === null) && JSON.stringify(a.alarm) === JSON.stringify(b.alarm) && a.read_at === b.read_at && a.seen_at === b.seen_at;
 }
 
 /** One account's list in this page's memory. */
@@ -230,11 +265,19 @@ interface Held {
   readonly without: Without;
   /** The round that gave this did not get the device's own log read: it counts as one that did not reach the account service. */
   readonly unread?: true;
+  /** The round that gave this took pages of the log and left some: the next one goes on at once. */
+  readonly behind?: true;
 }
 
-/** The members of one saved copy with their names as far as they opened: they change only with the copy or with the wraps this device holds. */
+/**
+ * What a copy holds, whatever the hour it was saved at: its list, how many entries, the last one, its stop and its
+ * alarm. The names and the wraps go by this, not by the saved text, which changes with every round's times.
+ */
+const historyOf = (copy: FollowerCopy): string => JSON.stringify([copy.list, copy.entries.length, copy.entries.at(-1) ?? null, copy.stop, copy.alarm]);
+
+/** The members of one history (historyOf) with their names as far as they opened: they change only with the entries or with the wraps this device holds. */
 interface Named {
-  readonly saved: string | null;
+  readonly history: string;
   /** The current epoch's key opened: there is no wrap left to ask for. */
   readonly complete: boolean;
   readonly devices: readonly ListedDevice[];
@@ -288,9 +331,15 @@ export function accountList(options: AccountListOptions): AccountList {
   /** The account whose wraps, at the last time they were asked for, held a key that is not the list's. */
   let wrongKey: string | null = null;
   /** The copy the wraps were last asked for, and when: they are asked for again for another copy, or after NO_LIST_SECONDS. */
-  let wrapsAsked: { readonly saved: string | null; readonly at: number } | null = null;
+  let wrapsAsked: { readonly history: string; readonly at: number } | null = null;
   let shown: AccountListView = OFF;
   let askedAt: number | null = null;
+  /** The account the pacing below is counted for. */
+  let pacedFor: string | null = null;
+  /** The last round took pages of the log and left some: the next one is due at once. */
+  let behind = false;
+  /** The round under way and what ends it. */
+  let roundStop: { readonly account: string; readonly stop: AbortController } | null = null;
   /** Rounds in a row that did not reach the account service. */
   let misses = 0;
   /** When the account service last said that it keeps no list for the account in view, in seconds; null otherwise. */
@@ -317,7 +366,8 @@ export function accountList(options: AccountListOptions): AccountList {
     if (!read.read) return read.why;
     // saved under another account key: this device has a new one since, and is another member
     if (read.copy.me.key !== keys.key || read.copy.me.endpoint !== null) {
-      await store.drop(account);
+      // what goes is the very copy that was read: one another page saved since, under the key of now, stays
+      if (!await store.drop(account, saved)) throw new StaleCopyError();
       return fresh;
     }
     if (read.copy.account !== account) return "broken";
@@ -325,17 +375,23 @@ export function accountList(options: AccountListOptions): AccountList {
     // written again as this build writes it, once
     const text = read.rebuilt ? writeSave(read.copy) : saved;
     if (read.rebuilt) {
-      await store.set("copy", account, text);
+      if (!await store.swap("copy", account, saved, text)) throw new StaleCopyError();
       console.info("Ovis: the account's list was read again from its entries, and saved as this build saves it");
     }
     return { ...fresh, copy: read.copy, saved: text };
   };
 
-  /** Saves a copy that changed in more than the time of its last full read, which a device has no use for after a reload. */
-  const save = async (before: Held, copy: FollowerCopy): Promise<string> => {
-    if (before.copy !== null && before.saved !== null && sameHistory(before.copy, copy)) return before.saved;
+  /**
+   * Saves a copy that differs from the one this page read: in its entries, its stop or its alarm, or in the time of
+   * its last full read and the floor of its clock, which move with every round that reached the account service. It
+   * is written only over the very text this page read (`before`): where another page saved meanwhile, nothing is
+   * written and the round reads again (StaleCopyError), so no page's save goes over a newer one, or over an alarm.
+   */
+  const save = async (before: { readonly copy: FollowerCopy | null; readonly saved: string | null }, copy: FollowerCopy): Promise<string> => {
+    if (before.copy !== null && before.saved !== null && sameSave(before.copy, copy)) return before.saved;
     const text = writeSave(copy);
-    await store.set("copy", copy.account, text);
+    if (text === before.saved) return text;
+    if (!await store.swap("copy", copy.account, before.saved ?? undefined, text)) throw new StaleCopyError();
     return text;
   };
 
@@ -346,6 +402,7 @@ export function accountList(options: AccountListOptions): AccountList {
     if (mode === "first-device") {
       const age = session.signed_in_at === undefined ? Number.NaN : now() - session.signed_in_at;
       if (!signed && !(age >= 0 && age <= PC_ADD_FRESH_MS)) return "not_new";
+      if (!signed && !await (options.durable ?? storageLasts)()) return "storage";
       const kept = await accountStore.get("signin_key");
       if (kept === undefined || kept.account !== session.account || kept.sign_in_id !== session.sign_in_id || kept.no !== 1) return "not_first_device";
       if (await (options.linkedPcs?.(session.account) ?? Promise.resolve(0)) > 0) return "has_pcs";
@@ -356,19 +413,28 @@ export function accountList(options: AccountListOptions): AccountList {
   };
 
   /**
+   * Gives up an entry 0 this device signed, for good: it is kept no more to send, and its id is written down, so the
+   * device never follows that list, whoever names it later and whatever page of the app is asked.
+   */
+  const giveUp = async (account: string, list: string): Promise<void> => {
+    const dropped = readDropped(await store.get("dropped", account));
+    if (!dropped.includes(list)) await store.set("dropped", account, { v: RECORD_VERSION, lists: [...dropped, list] });
+    await store.set("genesis", account, undefined);
+  };
+
+  /**
    * Starts the account's list. The genesis is kept before it is sent, and sent again as it is until this device's
    * saved copy holds it or the account turns out to have another list: a lost answer or a closed page makes no
    * second one.
    */
-  const start = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, serviceNow: number | null, signal: AbortSignal): Promise<"placed" | "exists" | NoGenesis> => {
+  const start = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, signal: AbortSignal): Promise<"placed" | "exists" | NoGenesis> => {
     let pending = readPending(await store.get("genesis", session.account), keys);
     const refused = await mayStart(bound, session, pending !== null, signal);
     if (refused !== null) return refused;
     if (pending === null) {
-      // The account service takes no entry dated ahead of its own clock by more than ten minutes, and the list's own
-      // time never goes back: entry 0 is dated by this device's clock, and no later than the service's where it said it.
-      const dated = serviceNow === null ? now() : Math.min(now(), serviceNow * 1000);
-      pending = { key: keys.key, ...await makeGenesis({ account: session.account, keys, names: options.names?.() ?? null, now: dated }) };
+      // Entry 0 is dated by this device's own clock, whatever the account service says the time is: a member signs
+      // no time on the service's word. A service that refuses the entry for its time says so (`clock`).
+      pending = { key: keys.key, ...await makeGenesis({ account: session.account, keys, names: options.names?.() ?? null, now: now() }) };
       await store.set("genesis", session.account, { v: RECORD_VERSION, ...pending });
     }
     try {
@@ -378,9 +444,10 @@ export function accountList(options: AccountListOptions): AccountList {
       if (said === null || said.status === 429 || said.status >= 500) throw error;
       if (said.status === 403 && said.code === "own_sign_in_required") return "not_own_sign_in";
       if (said.status === 403 && (said.code === "frozen" || said.code === "session_not_fresh")) return said.code;
-      // the entry itself was refused, so it was not placed and never will be as it is: the next try signs another
-      if (said.status === 400) await store.set("genesis", session.account, undefined);
-      return "refused";
+      // the entry itself was refused, so it was not placed and never will be as it is: the device gives it up for
+      // good, and the next try signs another
+      if (said.status === 400) await giveUp(session.account, pending.list);
+      return said.status === 400 && said.reason === "issued_at_ahead" ? "clock" : "refused";
     }
   };
 
@@ -389,7 +456,7 @@ export function accountList(options: AccountListOptions): AccountList {
    * among them, from the wraps the account service holds for it. A wrap is kept only when it opens to the key the list
    * commits to; one that opens to another key is the account service's doing, and is said (`wrong_key`).
    */
-  const epochsOf = async (copy: FollowerCopy, state: ListState, saved: string | null, keys: DeviceListKeys, ask: Asking | null): Promise<OpenedEpochs> => {
+  const epochsOf = async (copy: FollowerCopy, state: ListState, history: string, keys: DeviceListKeys, ask: Asking | null): Promise<OpenedEpochs> => {
     const kept = readWraps(await store.get("wraps", copy.account), copy.list, keys.enc.key);
     const opened = await openEpochs(state, kept, keys.enc);
     if (opened.keys.has(state.epoch)) {
@@ -397,9 +464,9 @@ export function accountList(options: AccountListOptions): AccountList {
       return opened;
     }
     const at = seconds();
-    const due = wrapsAsked === null || wrapsAsked.saved !== saved || at < wrapsAsked.at || at - wrapsAsked.at >= NO_LIST_SECONDS;
+    const due = wrapsAsked === null || wrapsAsked.history !== history || at < wrapsAsked.at || at - wrapsAsked.at >= NO_LIST_SECONDS;
     if (ask === null || !due) return opened;
-    wrapsAsked = { saved, at };
+    wrapsAsked = { history, at };
     let shown: readonly ListWrap[];
     try {
       shown = await ask.bound.listWraps(copy.list, keys.enc.key, ask.signal);
@@ -431,8 +498,9 @@ export function accountList(options: AccountListOptions): AccountList {
       trouble: worst([copy.alarm === null ? null : "fork", next.trouble, unsigned ? "unsigned" : null, wrongKey === account ? "wrong_key" : null]),
     });
     if (stands !== "in") return { account, status: follows(), reached, devices: [], pcs: [] };
-    if (named === null || named.saved !== next.saved || (!named.complete && ask !== null)) {
-      const opened = await epochsOf(copy, state, next.saved, keys, ask);
+    const history = historyOf(copy);
+    if (named === null || named.history !== history || (!named.complete && ask !== null)) {
+      const opened = await epochsOf(copy, state, history, keys, ask);
       const nameAt = (seq: number): Promise<ListNames | null> => namesAt(copy.list, copy.entries, seq, opened.keys);
       const devices: ListedDevice[] = [];
       for (const row of shownDevices(copy)) {
@@ -442,34 +510,51 @@ export function accountList(options: AccountListOptions): AccountList {
       for (const row of shownPcs(copy)) {
         pcs.push({ endpoint: row.endpoint, server_id: deriveServerId(hexToBytes(row.endpoint)), how: row.how, allows: row.allows, name: await nameAt(row.seq) });
       }
-      named = { saved: next.saved, complete: opened.keys.has(state.epoch), devices, pcs };
+      named = { history, complete: opened.keys.has(state.epoch), devices, pcs };
     }
     return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs };
   };
 
-  /** Reads the log after the copy's own head until the read is over: the follower ends a read after READ_PAGES_MAX pages, and what is left waits for the next round. */
-  const read = async (bound: AccountService, from: FollowerCopy, signal: AbortSignal): Promise<{ copy: FollowerCopy; verdict: FollowVerdict }> => {
+  /**
+   * Reads the log after the copy's own head. Every page is saved as it is taken, before the next is asked for, and has
+   * its own time to answer. The read ends when the log is read, after READ_PAGES_MAX pages (the follower's bound),
+   * after READ_MS, or at a page that did not come (`cut`): what was taken until then is kept, and the next round goes
+   * on from there. So a device that is n entries behind gets there in at most n / 256 rounds that each got one page.
+   */
+  const read = async (bound: AccountService, from: FollowerCopy, before: { readonly copy: FollowerCopy | null; readonly saved: string | null }, stopped: AbortSignal): Promise<{ copy: FollowerCopy; saved: string; verdict: FollowVerdict; cut: boolean; more: boolean }> => {
     let copy = from;
+    // a new copy is saved before its first page is asked for: that is the pin. One that was saved before is written
+    // with the first page that comes
+    let at: { copy: FollowerCopy | null; saved: string | null } = before.saved === null ? { copy, saved: await save(before, copy) } : before;
     let verdict: FollowVerdict = "withheld";
     let next: FollowRead | null = startRead(copy, "service");
-    for (let pages = 0; next !== null && pages < READ_PAGES_MAX; pages += 1) {
-      const page = await bound.listLog(copy.list, next.after, signal);
+    const began = performance.now();
+    for (let pages = 0; next !== null && pages < READ_PAGES_MAX && performance.now() - began < READ_MS; pages += 1) {
+      let page: Awaited<ReturnType<AccountService["listLog"]>>;
+      try {
+        page = await bound.listLog(copy.list, next.after, AbortSignal.any([stopped, AbortSignal.timeout(ROUND_MS)]));
+      } catch (error) {
+        if (stopped.aborted || !unreached(error)) throw error;
+        return { copy, saved: at.saved ?? await save(at, copy), verdict, cut: true, more: true };
+      }
       const took = await takePage(copy, next, { list: page.list, after: page.after, entries: page.entries, head: page.head }, seconds());
+      stopped.throwIfAborted();
+      at = { copy: took.copy, saved: await save(at, took.copy) };
       ({ copy, verdict } = took);
       next = took.read;
     }
-    return { copy, verdict };
+    return { copy, saved: at.saved ?? await save(at, copy), verdict, cut: false, more: next !== null };
   };
 
   /** What a round does with the list the account service names (`named`: null for none); `loaded` is what this device saved. */
-  const follow = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, loaded: Held, told: ListHint | null, serviceNow: number | null, signal: AbortSignal): Promise<Held> => {
+  const follow = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, loaded: Held, told: ListHint | null, signal: AbortSignal, stopped: AbortSignal): Promise<Held> => {
     const { account } = session;
     let hint = told;
     let copy = loaded.copy;
     const fresh = copy === null;
     if (copy === null) {
       if (hint === null) {
-        const started = await start(bound, session, keys, serviceNow, signal);
+        const started = await start(bound, session, keys, signal);
         if (started !== "placed" && started !== "exists") return { ...loaded, without: { at: "none", why: started } };
         const after = await bound.accountList(signal);
         const named = after === "off" ? null : after.hint;
@@ -478,6 +563,8 @@ export function accountList(options: AccountListOptions): AccountList {
       }
       // a list that is not this device's own is not read again while the account service names it
       if (loaded.without.at === "not_in" && loaded.without.why === "not_mine" && loaded.without.list === hint.list) return loaded;
+      // nor is a list whose entry 0 this device signed and gave up: it follows that one never, whoever names it
+      if (readDropped(await store.get("dropped", account)).includes(hint.list)) return { ...loaded, without: { at: "not_in", list: hint.list, why: "not_mine" } };
       const me: FollowerSelf = { key: keys.key, endpoint: null };
       const pinned = pinList(null, { account, list: hint.list, me, pin: { how: "genesis" } });
       if (!pinned.pinned) throw new RangeError("This account or this device's key cannot follow a list");
@@ -491,7 +578,7 @@ export function accountList(options: AccountListOptions): AccountList {
         const shown = page.list === hint.list && hashOf(page.entries[0]) === hint.list;
         const why = !shown ? "unread" : began.verdict === "needs_newer_client" ? "needs_newer_client" : began.verdict === "not_my_list" ? "not_mine" : "unread";
         // the account has a list that is not the one this device signed: its own will never be the account's
-        if (why === "not_mine" && pending !== null && pending.list !== hint.list) await store.set("genesis", account, undefined);
+        if (why === "not_mine" && pending !== null && pending.list !== hint.list) await giveUp(account, pending.list);
         return { ...loaded, without: { at: "not_in", list: hint.list, why } };
       }
       ({ copy } = began);
@@ -506,20 +593,21 @@ export function accountList(options: AccountListOptions): AccountList {
     // rule). Either way the device reads its own list at its own pace: a removal must still reach it.
     const other = heard.verdict === "not_my_list";
     let unread = false;
-    if (heard.verdict === "read") ({ copy, verdict } = await read(bound, copy, signal));
-    else if (other || heard.verdict === "none") {
-      try {
-        ({ copy, verdict } = await read(bound, copy, signal));
-      } catch (error) {
-        if (!unreached(error)) throw error;
-        // what was said of another list stands, and the round counts as one that did not reach the account service
-        unread = true;
-      }
-    }
-    const saved = await save(loaded, copy);
+    let behind = false;
+    let saved: string;
+    if (heard.verdict === "read" || other || heard.verdict === "none") {
+      const had = copy.entries.length;
+      const got = await read(bound, copy, loaded, stopped);
+      ({ copy, saved } = got);
+      // a page that did not come: what was said before stands. With pages taken before it, the next round goes on
+      // at once; with none, the round counts as one that did not reach the account service
+      behind = got.more && copy.entries.length > had;
+      unread = got.cut && !behind;
+      if (!got.cut || behind) ({ verdict } = got);
+    } else saved = await save(loaded, copy);
     // the genesis is in the saved copy now, and its wrap with the others: what was kept to send it again goes
     if (fresh) await store.set("genesis", account, undefined);
-    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}) };
+    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}) };
   };
 
   const round = async (): Promise<AccountListView> => {
@@ -534,8 +622,43 @@ export function accountList(options: AccountListOptions): AccountList {
     }
     const bound = service.forSignIn(session);
     const { account } = session;
-    return lock(account, async () => {
-      const signal = AbortSignal.timeout(ROUND_MS);
+    // how often the account service is asked is counted for one account: another one's sign-in starts anew
+    if (pacedFor !== account) {
+      pacedFor = account;
+      misses = 0;
+      offAt = null;
+      behind = false;
+    }
+    // a leave or a deletion of the account ends the round under way (forget): nothing of it is written or shown after
+    const stop = new AbortController();
+    roundStop = { account, stop };
+    try {
+      return await lock(account, async () => {
+        for (let tries = 1; ; tries += 1) {
+          try {
+            stop.signal.throwIfAborted();
+            return await once(session, bound, stop.signal);
+          } catch (error) {
+            if (stop.signal.aborted) return shown;
+            // another page saved the copy under this round: it loads what is saved now and takes its pages again
+            if (!(error instanceof StaleCopyError)) throw error;
+            if (tries >= SAVE_TRIES) {
+              misses += 1;
+              return shown;
+            }
+          }
+        }
+      });
+    } finally {
+      if (roundStop?.stop === stop) roundStop = null;
+    }
+  };
+
+  /** One round's work on the copy as it is saved now, under the account's lock. */
+  const once = async (session: AccountSession, bound: AccountService, stopped: AbortSignal): Promise<AccountListView> => {
+    const { account } = session;
+    {
+      const signal = AbortSignal.any([stopped, AbortSignal.timeout(ROUND_MS)]);
       const saved = await store.get("copy", account);
       const off = (at: number): AccountListView => {
         held = null;
@@ -550,13 +673,11 @@ export function accountList(options: AccountListOptions): AccountList {
       if (told !== null && told <= at && at - told < OFF_SECONDS) return off(told);
       offAt = null;
       let hint: ListHint | null | "off" | undefined;
-      let serviceNow: number | null = null;
       try {
         const answer = await bound.accountList(signal);
-        if (answer === "off") hint = "off";
-        else ({ hint, now: serviceNow } = answer);
+        hint = answer === "off" ? "off" : answer.hint;
       } catch (error) {
-        if (!unreached(error)) throw error;
+        if (stopped.aborted || !unreached(error)) throw error;
       }
       // an account the service keeps no list for, on a device that follows none: no key is made, and one record is
       // kept, the time of that answer
@@ -582,15 +703,18 @@ export function accountList(options: AccountListOptions): AccountList {
       let reached = hint !== undefined && hint !== "off";
       if (hint !== undefined && hint !== "off") {
         try {
-          next = await follow(bound, session, keys, loaded, hint, serviceNow, signal);
+          next = await follow(bound, session, keys, loaded, hint, signal, stopped);
           if (next.unread === true) reached = false;
         } catch (error) {
-          if (!unreached(error)) throw error;
+          if (stopped.aborted || !unreached(error)) throw error;
           // what this device saved stands as it is
           reached = false;
         }
       }
-      const view = await viewOf(next, keys, reached ? { bound, signal } : null);
+      stopped.throwIfAborted();
+      // the wraps are asked for with a time of their own: the pages before them may have used up the round's
+      const view = await viewOf(next, keys, reached ? { bound, signal: AbortSignal.any([stopped, AbortSignal.timeout(ROUND_MS)]) } : null);
+      stopped.throwIfAborted();
       // another page stored another sign-in, or none, while this round ran: nothing of the account it began with is shown
       const still = await service.session();
       if (still === undefined || !sameSignIn(still, session)) {
@@ -599,9 +723,10 @@ export function accountList(options: AccountListOptions): AccountList {
         return publish(OFF);
       }
       misses = reached ? 0 : misses + 1;
+      behind = next.behind === true;
       held = next;
       return publish(view);
-    });
+    }
   };
 
   const sync = (): Promise<AccountListView> => {
@@ -644,6 +769,8 @@ export function accountList(options: AccountListOptions): AccountList {
       if (offAt !== null) return (offAt + OFF_SECONDS) * 1000;
       // it was not reached: a longer wait after each round in a row that was not
       if (misses > 0) return ((askedAt ?? seconds()) + (UNREACHED_SECONDS[Math.min(misses, UNREACHED_SECONDS.length) - 1] ?? NO_LIST_SECONDS)) * 1000;
+      // pages of the log are left to take: at once (the follower of the timer keeps rounds five seconds apart)
+      if (behind) return now();
       if (status.at !== "following" || held?.copy == null) return ((askedAt ?? seconds()) + NO_LIST_SECONDS) * 1000;
       const step = followStep(held.copy, seconds(), { event: "tick", asked_at: askedAt, busy: true });
       return step.do === "read" ? now() : step.do === "wait" && step.until !== null ? step.until * 1000 : null;
@@ -667,6 +794,8 @@ export function accountList(options: AccountListOptions): AccountList {
       }
     },
     async forget(account) {
+      // the round under way for the account ends here, rather than be waited for: it holds the account's lock
+      if (roundStop?.account === account) roundStop.stop.abort(new DOMException("The account's list is forgotten", "AbortError"));
       await lock(account, () => store.drop(account));
       if (held?.account === account) held = null;
       if (wrongKey === account) wrongKey = null;

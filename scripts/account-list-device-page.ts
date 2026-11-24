@@ -13,7 +13,7 @@ import { AccountService } from "../src/lib/account/service.ts";
 import { indexedAccountStore, newKey, type AccountSession } from "../src/lib/account/store.ts";
 
 const service = new AccountService({ store: indexedAccountStore });
-const list = accountList({ service, accountStore: indexedAccountStore, names: () => ({ label: "QA phone", os: "android" }), genesis: () => "first-device" });
+const list = accountList({ service, accountStore: indexedAccountStore, names: () => ({ label: "QA phone", os: "android" }), genesis: () => "first-device", durable: async () => true });
 
 /** Stores a sign-in as the app does after one, with the key that sign-in registers with the account service; answers that key. */
 export async function signIn(session: AccountSession): Promise<string> {
