@@ -734,9 +734,11 @@ export class AccountMailbox {
         return;
       }
     } catch (error) {
-      // On a PC pinned to its list the list says the PC is in, not the listing: a refusal of the receipt drops the
-      // receipt, and nothing else (confirmCompletion clears no binding but one on the service's word)
-      const refusedOnList = devices.listFollowed() && error instanceof AccountServiceRefusal && error.status >= 400 && error.status < 500;
+      // On a PC pinned to its list the list says the PC is in, not the listing: a final refusal of the receipt drops the
+      // receipt, and nothing else (confirmCompletion clears no binding but one on the service's word). A 429, a lapsed
+      // proof (401), a request that timed out and a 5xx are no word on the receipt: it is sent again after the next pull
+      const final = error instanceof AccountServiceRefusal && error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 408 && error.status !== 429;
+      const refusedOnList = devices.listFollowed() && final;
       if (!listingChanged(error) && !refusedOnList) {
         console.warn(`[account] the account service did not take this PC's completed add yet: ${error instanceof Error ? error.message : String(error)}`);
         return;

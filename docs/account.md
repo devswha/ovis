@@ -614,10 +614,14 @@ service's pages, each entry on its own signature, and answers `{ "verdict", "ask
 "place" }`: what came of them (`caught_up`, `more`, `asks_after` for an entry kept beside the list
 that no member signed, `refused`, `stuck`, `fork`), the place it wants next from that device when
 it needs an earlier one, and where it stands then. Any signed-in device may call both, one that
-only watches and one in its join hold too; nothing is taken on its word. One session makes 30 of
-these calls a minute (429 `rate_limited`, `retry-after`), counted by a clock that only moves forward
-and charged before the body is read; a session's count is never dropped to make room for another,
-so a session past the 64 that are counted waits its minute. 503 `not_saved`: the entries were
+only watches and one in its join hold too; nothing is taken on its word. One device makes 30 of
+these calls a minute (429 `rate_limited`, `retry-after`), counted under the key the PC let it in by,
+whatever sessions it opens (this PC's own window and its direct clients share one count), by a clock
+that only moves forward, and charged before the body is read; no caller is refused because others
+called. A page whose first entry follows no entry this PC holds, and that this PC did not ask that
+device for, is refused before any of it is checked (409 `not_continued`): ask where it stands first.
+On a PC that follows no list a person named, both answer every caller as before this list (403
+`read_only` to a device that only watches, `account_route_denied` to an account row). 503 `not_saved`: the entries were
 verified and acted on, and the PC could not save them; hand them again later. 404 `not_found` on a
 PC that follows no list a person named; 409 `not_my_list` for a page of another list; 400
 `invalid_head`, `invalid_page`.
@@ -631,8 +635,10 @@ code made for the account) names the account's signed list in the place of its l
 `list_removed`, 503 `account_unavailable` with `retry-after`), and 409 `other_adder`, 400
 `invalid_list`, 404 on a PC that follows no list. A naming is the row's from the moment it arrives:
 another list named by the same row meanwhile, or after, is refused 409 `pairing_ended` and spends
-none of the row's tries; the same naming asked again waits for the first one's answer. A row that
-named a list sends no `link` after it (409 `list_named`): it is added by that list or not at all.
+none of the row's tries; the same naming asked again waits for the first one's answer, and is
+answered from the PC's last read of the list for 5 seconds (one read at the account service per
+pairing in that time). A row that named a list sends no `link` after it (409 `list_named`): it is
+added by that list or not at all.
 
 `POST /api/account/list/add` `{ "account" }`: a person at this PC adds it to an account that keeps a
 signed list ([A PC is added to the list](#a-pc-is-added-to-the-list)). This PC's own window and CLI
@@ -1833,7 +1839,11 @@ would be as good as the account's.
   holds.
 - After the yes the PC shows no further number, and reads the list until its entry is there. The
   ten minutes and a No are asked again at the binding's write itself: a read of the list that was
-  out when either came binds nothing.
+  out when either came binds nothing, and a poll that was out answers no commitment. An add whose
+  PC is in by then (its first copy reached the disk late) ends `added`, not `timeout`.
+- A PC that comes into its account another way while its add runs (a device's `link`) is pinned by
+  the add on the same rules: only the entry the confirmed adder signed counts, and nothing of the
+  add is kept as a want once it ended. `ovis add` toward an account with no list makes no list keys.
 - Two Ovis servers on one state folder that join at once: the binding the file holds when the
   second writes stands. The second goes by that binding and the copy the first saved, writes
   nothing over it, and says it joined only once that copy shows the PC in.
@@ -1880,8 +1890,9 @@ number is compared. The line never leaves `ovis join`: not to this PC's server, 
   that names is the one its own mailbox pull names, never an admission: an account with a list takes
   none. What it owes is on disk from the join on (`account-completion.json`, until a pull names the
   listing, then as the receipt), so a PC that stops before its first pull sends it after its next
-  start; a binding that ended meanwhile owes nothing. Nothing waits for it, and a refusal of it only
-  drops it: the list says the PC is in, not the listing.
+  start; a binding that ended meanwhile owes nothing. Nothing waits for it. Only a final refusal of
+  it drops it, and nothing else: the list says the PC is in, not the listing. A 429, a lapsed proof
+  (401), a timeout or a 5xx keep it for the next pull.
 - A PC that joined by itself is in the list and signs for nothing: it lets no device in
   ([A PC allows a device into the list](#a-pc-allows-a-device-into-the-list)).
 - A line that names no list adds a PC nowhere in an account that keeps one (`list_add`): the
@@ -1941,7 +1952,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   /api/relay/joins` marks such a join `list`, and `ovis approve` then says that the approval was
   received, not that the device is let in: it is in once its entry is in the list. On a PC whose
   Ovis is behind the list the join is marked `list_behind` too, and `ovis approve` says that the
-  device was not let in and that Ovis on this PC needs an update.
+  device was not let in and that Ovis on this PC needs an update. On a PC that joined by an invite,
+  which signs for nobody, it is marked `list_not_signer`, and `ovis approve` says that the device was
+  not let in and to allow it on another device of the account.
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.
@@ -1988,6 +2001,15 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   entry that cannot be kept is not sent. Any other refusal ends it at once, and the kept request
   with it, since the service itself said that it placed nothing: a budget, a service that changes
   the list for nobody (`list_stopped`), a key this PC itself keeps out.
+- **A kept request that goes wrong heals by itself.** A file that does not read signs nobody new in
+  (`not_written`, `kept_unreadable`) while this PC's copy stands at the head at which it found the
+  file so; once its verified head moved past that, the place whatever it held was signed for is
+  taken, and the file goes. A kept request of a device this PC has since come to hold back is never
+  sent, and holds its place from another device's Allow (`place_kept`) for ten minutes from when it
+  was kept, or until the person at this PC gives it up (`POST /api/account/list/allow/cancel`
+  `{ "key" }`, this PC's own window and CLI alone; `{ "cancelled" }`). Meanwhile `reason` of `GET
+  /api/account/list` and the `list` of `GET /api/account/status` (so `ovis status --json`) say
+  why this PC lets no new device in.
 - **A join a member device allows** is let in only when an entry of the list lets the device in:
   the PC signs nothing on a member's approval. The member signs only after the new device
   confirmed its digits, so a device that gives up before that is nobody's member: a waiting join

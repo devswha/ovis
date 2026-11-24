@@ -22,6 +22,16 @@ const LINK_STATUS: Record<LinkRefusal, number> = {
   replacement_needs_app: 409, list_followed: 409, list_removed: 409, list_named: 409,
 };
 
+/**
+ * How long the last read of the list answers a row that asks again where its naming stands (POST /api/account/list/named):
+ * one read at the account service per pairing in this time. Well under the row's own PAIRING_LINK_MS (30 s, from its
+ * pairing on), so the entry that adds the PC is still read while the row that named the list waits.
+ */
+export const NAMED_READ_MS = 5_000;
+
+/** The last read of the list for each row that named it, by device store: asked again within NAMED_READ_MS, it is the answer. */
+const namedReads = new WeakMap<object, Map<string, { readonly at: number; readonly outcome: Promise<JoinOutcome> }>>();
+
 /** The id of one add by the list (ListAdd), as its starter names it. */
 const RUN_ID = /^[0-9a-f]{16}$/;
 
@@ -94,8 +104,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     const list = context.services.accountList;
     const own = list?.peerHead() ?? null;
     if (list === null || own === null) return fail("not_found", "This PC follows no list", 404);
-    // each call may cost signature checks: 30 a minute for one session, charged before its body is read
-    const session = peer.kind === "relay" ? peer.sessionId ?? peer.device.id : "direct";
+    // Each call may cost signature checks: 30 a minute for one caller, charged before its body is read. A caller is the
+    // key the PC let the session in by (a device's sessions share its count), or this PC's own window and direct clients
+    const session = peer.kind === "relay" ? `key ${peer.key}` : "direct";
     if (!list.peerBudget(session)) {
       const limited = fail("rate_limited", "Too many calls; try again in a minute", 429);
       limited.headers.set("retry-after", "60");
@@ -133,6 +144,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (taken === null) return fail("not_found", "This PC follows no list", 404);
     // Verified and acted on, and not on disk: the device is not told the page was taken, and hands it again later
     if (taken.verdict === "not_saved") return fail("not_saved", "This PC could not save the entries it was handed; hand them again later.", 503);
+    // a page nobody asked for whose first entry follows no entry this PC holds: no signature of it was checked
+    if (taken.verdict === "unasked") return fail("not_continued", "Those entries do not follow this PC's copy of the list. Ask where it stands first (POST /api/account/list/head).", 409);
     return reply({ verdict: taken.verdict, ...(taken.asks ? { asks: taken.asks } : {}), ...list.peerHead() });
   }
   const ownLink = waiting !== null && (pathname === "/api/account/link" || pathname === "/api/account/list/named") && request.method === "POST";
@@ -255,6 +268,15 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (add === null) return fail("not_found", "This PC follows no list", 404);
       if (body.run !== undefined && (typeof body.run !== "string" || !RUN_ID.test(body.run))) return fail("invalid_run", "Name the run by its id", 400);
       return reply(noted(await add.cancel(body.run)));
+    }
+    case "/api/account/list/allow/cancel": {
+      setRequestRoute(pathname);
+      // the person at this PC gives up an entry it signed for a device it has since held back (dispatch.ts ownWindow):
+      // that entry is never sent, and the next Allow may take its place now
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      if (typeof body.key !== "string" || !isAccountKeyEncoding(body.key)) return fail("invalid_key", "Name the device by its key", 400);
+      return reply({ cancelled: list.cancelKept(body.key) });
     }
     case "/api/account/list/join":
     case "/api/account/list/join/prepare":
@@ -394,7 +416,21 @@ export async function handleAccountRequest(request: Request, pathname: string, c
         if (named.retryAfter !== undefined) refused.headers.set("retry-after", String(named.retryAfter));
         return refused;
       }
-      const joined = await list.joinList({ account, list: id, by: peer.key });
+      // Each read of the list costs this PC a read at the account service with its own proof: a row that asks again
+      // where its naming stands is answered from the last read for NAMED_READ_MS, one read at a time
+      const reads = namedReads.get(devices) ?? new Map<string, { readonly at: number; readonly outcome: Promise<JoinOutcome> }>();
+      namedReads.set(devices, reads);
+      const now = devices.waitClock().now();
+      const last = again ? reads.get(peer.device.id) : undefined;
+      let reading = last !== undefined && now - last.at >= 0 && now - last.at < NAMED_READ_MS ? last.outcome : null;
+      if (reading === null) {
+        const asked = list.joinList({ account, list: id, by: peer.key });
+        reading = asked;
+        reads.set(peer.device.id, { at: now, outcome: asked });
+        // a read that failed answers nobody after it
+        asked.catch(() => { if (reads.get(peer.device.id)?.outcome === asked) reads.delete(peer.device.id); });
+      }
+      const joined = await reading;
       if ("joined" in joined) {
         context.services.accountMailbox.joinedByList();
         return reply({ state: "added", account });
