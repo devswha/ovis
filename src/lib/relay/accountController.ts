@@ -241,32 +241,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     await lists.shadow(here.account, directory, opens).catch((error: unknown) => console.warn("Ovis: the account's list was not compared", error instanceof Error ? error.name : error));
   };
   lists?.subscribe(() => { void compareList(); });
-  // a device of power `full` ends what is over its time as it reads (account/listLeave.ts)
-  if (lists !== null) tidyOnRead(lists);
-  /** What this device signs its own removal with: any power may end its own key. */
-  const ownWriter = () => lists?.writer() ?? null;
-  /** The account whose list this device is putting itself out of now: its own removal is no news to it. */
-  let leavingList: string | null = null;
-  /**
-   * The list shows this device out of the account it is signed in to: another member removed it. It forgets its key,
-   * its sign-in and the list (account/listLeave.ts): it comes back only as a new device that a member allows.
-   */
-  const removedHere = async (gone: string): Promise<void> => {
-    if (lists === null || leavingList === gone) return;
-    const session = await account.session().catch(() => undefined);
-    if (session === undefined || session.account !== gone) { await lists.forget(gone); return; }
-    invalidate();
-    await account.forSignIn(session).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
-    await forgetMembership(accountStore, lists, session);
-    followed?.poke();
-    accountView = { kind: "signed-out", error: null, notice: t("This device was removed from your account. To use it again, sign in and allow it from another device.") };
-    await changed();
-  };
-  if (lists !== null) watchRemoval(lists, (gone) => { void removedHere(gone).catch((error: unknown) => console.warn("Ovis: a removed device did not forget its account", error instanceof Error ? error.name : error)); });
-  /** What a sign-out or a leave says when the list did not take this device's own removal. */
-  const leaveFailure = (outcome: Exclude<RemoveOutcome, { removed: true }>): string => outcome.why === "stopped"
-    ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.")
-    : t("This device signed out, but your account still lists it. Remove it from another device.");
   /** A sign-in to `account` ended on this device: as its PCs' names go (dropKnownPcs), so does what opens the names in its list. */
   const forgetNames = (account: string | undefined): void => {
     if (account === undefined) return;
@@ -309,6 +283,32 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     else if (!wanted && refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
   };
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void refresh(); armRefresh(); });
+  // a device of power `full` ends what is over its time as it reads (account/listLeave.ts)
+  if (lists !== null) tidyOnRead(lists);
+  /** What this device signs its own removal with: any power may end its own key. */
+  const ownWriter = () => lists?.writer() ?? null;
+  /** The account whose list this device is putting itself out of now: its own removal is no news to it. */
+  let leavingList: string | null = null;
+  /**
+   * The list shows this device out of the account it is signed in to: another member removed it. It forgets its key,
+   * its sign-in and the list (account/listLeave.ts): it comes back only as a new device that a member allows.
+   */
+  const removedHere = async (gone: string): Promise<void> => {
+    if (lists === null || leavingList === gone) return;
+    const session = await account.session().catch(() => undefined);
+    if (session === undefined || session.account !== gone) { await lists.forget(gone); return; }
+    invalidate();
+    await account.forSignIn(session).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
+    await forgetMembership(accountStore, lists, session);
+    followed?.poke();
+    accountView = { kind: "signed-out", error: null, notice: t("This device was removed from your account. To use it again, sign in and allow it from another device.") };
+    await changed();
+  };
+  if (lists !== null) watchRemoval(lists, (gone) => { void removedHere(gone).catch((error: unknown) => console.warn("Ovis: a removed device did not forget its account", error instanceof Error ? error.name : error)); });
+  /** What a sign-out or a leave says when the list did not take this device's own removal. */
+  const leaveFailure = (outcome: Exclude<RemoveOutcome, { removed: true }>): string => outcome.why === "stopped"
+    ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.")
+    : t("This device signed out, but your account still lists it. Remove it from another device.");
   const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); };
   const signOut = (): void => {
     // the sign-in the person ended, read before anything waits: one made meanwhile stays (service.ts, forSignIn)

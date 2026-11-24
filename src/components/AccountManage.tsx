@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
-import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
 import { AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
 import { fetchDevices } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { loadRelayShell } from "../lib/relay.ts";
 import { indexedDeviceStore } from "../lib/relay/device.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
