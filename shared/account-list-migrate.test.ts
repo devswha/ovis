@@ -7,8 +7,8 @@ import {
 } from "./account-list.ts";
 import { epochKeyCommitment, newEpochKey, nextEpoch, openSealed, sealFields, type EpochKey } from "./account-list-seal.ts";
 import {
-  LIST_NAMING_PREFIX, LIST_VOUCH_PREFIX, MIGRATION_ANSWER_SECONDS, MIGRATION_CARRIED_MAX, MIGRATION_KNOWN_SECONDS, MIGRATION_RUNNING_SECONDS, MIGRATION_WITNESS_SECONDS, MigrationError, addedItself, devicePlace,
-  heirOf, heldNaming, heldOut, heldVouches, joinVerdict, migrationPlan, namingBytes, ownEvidence, pinVerdict, rekeys, signMigration, signNaming, signRotation, signVouch, standsFor, standsFor as heldBy, vouchBytes,
+  LIST_LINK_PREFIX, LIST_NAMING_PREFIX, MIGRATION_ANSWER_SECONDS, MIGRATION_CARRIED_MAX, MIGRATION_KNOWN_SECONDS, MIGRATION_RUNNING_SECONDS, MIGRATION_WITNESS_SECONDS, MigrationError, addedItself, devicePlace,
+  heirOf, heldNaming, heldOut, heldVouches, joinVerdict, migrationPlan, namingBytes, ownEvidence, pinVerdict, rekeys, signMigration, signNaming, signRotation, signVouch, standsFor, standsFor as heldBy, linkBytes,
   type JoinRefusal, type JoinVerdict, type KnownDevice, type KnownPc, type LetIn, type MigratingDevice, type MigrationKnown, type MigrationPlan, type MigrationSeals, type MigrationStart, type Naming,
   type PcAnswer, type PcHow, type PcWitness, type PinRefusal, type PinVerdict, type SignedNaming, type SignedVouch,
 } from "./account-list-migrate.ts";
@@ -439,18 +439,24 @@ describe("a device names its list to a PC inside its session", () => {
     const vouch = await signVouch(made.state, now);
     if (vouch === null) throw new Error("no vouch");
     expect(vouch).toMatchObject({ key: phone.member.key, device: now.signIn.key });
-    expect(new TextDecoder().decode(vouchBytes({ account: ACCOUNT, list: made.list, key: vouch.key, device: vouch.device })).startsWith(LIST_VOUCH_PREFIX)).toBe(true);
+    // The statement is the account's link, byte for byte: its tag, then each value after its length in four bytes.
+    const part = (text: string) => [0, 0, 0, text.length, ...new TextEncoder().encode(text)];
+    expect([...linkBytes({ account: ACCOUNT, list: made.list, key: vouch.key, device: vouch.device })])
+      .toEqual([...new TextEncoder().encode(LIST_LINK_PREFIX), ...part(ACCOUNT), ...part(made.list), ...part(vouch.key), ...part(vouch.device)]);
+    expect([LIST_LINK_PREFIX, Object.keys(vouch).sort(), Object.keys(vouch.link).sort()]).toEqual(["ovis-list-link/1", ["device", "key", "link"], ["device", "member"]]);
     expect(await heldVouches(ACCOUNT, made.list, [vouch])).toEqual([{ key: phone.member.key, device: now.signIn.key }]);
     // Of another list or account, with a changed signature, out of form, or a key vouching for itself: none holds, and nothing throws.
     const other = await migrated(tablet, plan([phone]));
-    const changed = { ...vouch, signature: `${vouch.signature.startsWith("A") ? "B" : "A"}${vouch.signature.slice(1)}` };
-    const self = toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, now.signIn.privateKey, new Uint8Array(vouchBytes({ account: ACCOUNT, list: made.list, key: now.signIn.key, device: tablet.signIn.key }).slice()))));
-    const junk = [null, "vouch", 5, changed, { ...vouch, signature: vouch.signature.slice(1) }, { ...vouch, signature: 5 }, { ...vouch, key: "no-key" }, { ...vouch, key: 5 }, { ...vouch, device: offCurve }, { ...vouch, device: {} },
-      { key: now.signIn.key, device: now.signIn.key, signature: self }] as unknown as SignedVouch[];
+    const flip = (text: string) => `${text.startsWith("A") ? "B" : "A"}${text.slice(1)}`;
+    const changed = { ...vouch, link: { ...vouch.link, device: flip(vouch.link.device) } };
+    const self = toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, now.signIn.privateKey, new Uint8Array(linkBytes({ account: ACCOUNT, list: made.list, key: now.signIn.key, device: tablet.signIn.key }).slice()))));
+    const junk = [null, "vouch", 5, changed, { ...vouch, link: { ...vouch.link, member: flip(vouch.link.member) } }, { ...vouch, link: { ...vouch.link, device: vouch.link.device.slice(1) } }, { ...vouch, link: { ...vouch.link, device: 5 } },
+      { ...vouch, link: null }, { ...vouch, link: vouch.link.device }, { ...vouch, key: "no-key" }, { ...vouch, key: 5 }, { ...vouch, device: offCurve }, { ...vouch, device: {} },
+      { key: now.signIn.key, device: now.signIn.key, link: { member: self, device: self } }] as unknown as SignedVouch[];
     expect([await heldVouches(ACCOUNT, other.list, [vouch]), await heldVouches("TEST-ONLY-other", made.list, [vouch]), await heldVouches(ACCOUNT, made.list, junk), await heldVouches(ACCOUNT, made.list, [...junk, vouch])])
       .toEqual([[], [], [], [{ key: phone.member.key, device: now.signIn.key }]]);
     for (const change of [{ account: "" }, { account: 5 }, { list: "00" }, { list: 7 }, { key: offCurve }, { key: 1 }, { device: offCurve }, { device: null }]) {
-      expect(() => vouchBytes({ account: ACCOUNT, list: made.list, key: vouch.key, device: vouch.device, ...change } as Parameters<typeof vouchBytes>[0])).toThrow();
+      expect(() => linkBytes({ account: ACCOUNT, list: made.list, key: vouch.key, device: vouch.device, ...change } as Parameters<typeof linkBytes>[0])).toThrow();
     }
     // The other way round is no vouch: a member key that names a sign-in key says nothing about that sign-in.
     const forged = await signVouch(made.state, { signIn: { key: tablet.signIn.key, privateKey: phone.member.privateKey }, member: phone.member });
@@ -755,12 +761,13 @@ describe("a vouch is the word of both keys", () => {
   test("a sign-in key this PC put out cannot hang its removal on somebody else's member key", async () => {
     const made = await migrated(phone, plan([tablet]));
     // The stranger's sign-in key is one this PC holds a removal against. Alone, it signs that the phone's member key is its own.
-    const bytes = vouchBytes({ account: ACCOUNT, list: made.list, key: phone.member.key, device: stranger.signIn.key });
+    const bytes = linkBytes({ account: ACCOUNT, list: made.list, key: phone.member.key, device: stranger.signIn.key });
     const alone = toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, stranger.signIn.privateKey, new Uint8Array(bytes))));
     const forged = [
-      { key: phone.member.key, device: stranger.signIn.key, signature: alone },
-      { key: phone.member.key, device: stranger.signIn.key, signature: alone, agreed: alone },
-      { key: phone.member.key, device: stranger.signIn.key, signature: alone, agreed: 5 },
+      { key: phone.member.key, device: stranger.signIn.key, link: { device: alone } },
+      { key: phone.member.key, device: stranger.signIn.key, link: { device: alone, member: alone } },
+      { key: phone.member.key, device: stranger.signIn.key, link: { device: alone, member: 5 } },
+      { key: phone.member.key, device: stranger.signIn.key, link: alone },
     ] as unknown as SignedVouch[];
     const vouched = await heldVouches(ACCOUNT, made.list, forged);
     expect(vouched).toEqual([]);
@@ -773,8 +780,9 @@ describe("a vouch is the word of both keys", () => {
     const now = await signedInAgain(phone);
     const own = await signVouch(made.state, now);
     if (own === null) throw new Error("no vouch");
-    expect([own.signature === own.agreed, (await heldVouches(ACCOUNT, made.list, [own])).length, (await heldVouches(ACCOUNT, made.list, [{ ...own, agreed: own.signature }])).length,
-      (await heldVouches(ACCOUNT, made.list, [{ ...own, signature: own.agreed }])).length]).toEqual([false, 1, 0, 0]);
+    const [both, onlyDevice, onlyMember] = [own, { ...own, link: { device: own.link.device, member: own.link.device } }, { ...own, link: { device: own.link.member, member: own.link.member } }];
+    expect([own.link.device === own.link.member, (await heldVouches(ACCOUNT, made.list, [both])).length, (await heldVouches(ACCOUNT, made.list, [onlyDevice])).length, (await heldVouches(ACCOUNT, made.list, [onlyMember])).length])
+      .toEqual([false, 1, 0, 0]);
   });
 });
 

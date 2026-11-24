@@ -1300,26 +1300,28 @@ Then it hands its place to its member key (`signRotation`): one `device` entry s
 sign-in key. `standsFor` gives, for a key, the key the same device is in by now, and `rekeys` the
 rows that moved between two states: a PC moves such a row instead of announcing a new device.
 
-### A vouch (`ovis-list-vouch/1`)
+### A vouch: the link (`ovis-list-link/1`), with both signatures
 
 A PC lets a device in by the key its present sign-in registered, and the list holds the device by
-its member key. A device whose sign-in has changed since the move joins the two with a **vouch**,
-the sign-in key's own word:
+its member key. A device whose sign-in has changed since the move joins the two with its **link**,
+one statement with two signatures:
 
 ```
-bytes     = writeFieldsUnder("ovis-list-vouch/1", [account, device, key, list])     named fields, as a body's
-signature = ECDSA P-256 / SHA-256 by `device`, r || s, 86 base64url characters
-agreed    = the same, by `key`, over the same bytes
-travels as { "key", "device", "signature", "agreed" }
+bytes  = "ovis-list-link/1" || len(account) || account || len(list) || list || len(key) || key || len(device) || device
+         len(x) = the byte length of x in 4 bytes, big-endian; each value as UTF-8
+member = ECDSA P-256 / SHA-256 by `key`, r || s, 86 base64url characters
+device = the same, by `device`, over the same bytes
+handed to a PC as { "key", "device", "link": { "member", "device" } }
 ```
 
 `device` is the registered sign-in key; `key` is the member key the same device is in the list by.
-It is the word of both: the sign-in key says the member key is its device's, and the member key
-agrees. A device signs one only for its own member key while that key is in (`signVouch`), anyone
-may carry it, and `heldVouches` keeps those in which both signatures hold. Either alone proves
-nothing: any key can name a sign-in key that is not its own, and a sign-in key that names a member
-key could otherwise hang a removal a PC holds against it on that member (`heldOut`), so a device
-the PC put out would put any other out, the one that started the list among them.
+It is the statement the account service keeps to know which sign-in is which member, and to a PC
+it is a vouch: the sign-in key says the member key is its device's, and the member key agrees. A
+device signs one only for its own member key while that key is in (`signVouch`), anyone may carry
+it, and `heldVouches` keeps those in which both signatures hold. Either alone proves nothing: any
+key can name a sign-in key that is not its own, and a sign-in key that names a member key could
+otherwise hang a removal a PC holds against it on that member (`heldOut`), so a device the PC put
+out would put any other out, the one that started the list among them.
 
 ### Naming the list to a PC (`ovis-list-name/1`)
 

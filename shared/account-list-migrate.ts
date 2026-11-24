@@ -47,8 +47,8 @@ export const MIGRATION_CARRIED_MAX = 64;
 export const MIGRATION_ANSWER_SECONDS = 259200;
 /** A naming's signature is over these bytes and the naming's fields. */
 export const LIST_NAMING_PREFIX = "ovis-list-name/1";
-/** A vouch's signature is over these bytes and the vouch's fields. */
-export const LIST_VOUCH_PREFIX = "ovis-list-vouch/1";
+/** A link's two signatures are over these bytes and the link's four values. */
+export const LIST_LINK_PREFIX = "ovis-list-link/1";
 
 const ENDPOINT = /^[0-9a-f]{64}$/;
 const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
@@ -676,80 +676,99 @@ export async function heldNaming(account: string, endpoint: string, session: str
 }
 
 /**
- * A vouch: the word of a sign-in key that a member key of a list is its own device's. `device` is the key a
- * sign-in registered with the account service, which signs; `key` is the member key the same device is in the
- * list by. It is the hand-over said again by the device's present sign-in: a PC that lets `device` in through the
- * account, and has for a day, so learns that the member `key` is a device it knows, though it never held the
- * sign-in key that the member key came from. Anyone may carry it, and the account service may keep it: it says
- * nothing but what its signatures say.
+ * A link: the statement that a member key of a list and a key that a sign-in registered with the account service
+ * are one device's. `key` is the member key the device is in the list by, `device` the registered sign-in key.
+ * It is ONE statement with TWO signatures, the member key's and the sign-in key's, over the same bytes, and it
+ * serves two readers:
  *
- * It is the word of BOTH keys, over the same bytes: the sign-in key says the member key is its device's, and the
- * member key agrees. A PC also holds a removal against a device by the sign-in key that vouches for it (heldOut),
- * and a sign-in key alone must not be able to hang its own removal on somebody else's member key: a device this
- * PC put out would so put any other out, the device that started the list among them.
+ * - the account service, which so learns which sign-in is which member (and that the caller holds the sign-in
+ *   key itself, which a copied token does not);
+ * - a PC, to which it is a **vouch**: a PC that lets `device` in through the account, and has for a day, learns
+ *   that the member `key` is a device it knows, though it never held the sign-in key the member key came from.
+ *
+ * Either signature alone proves nothing. A member key that names a sign-in key says nothing about that sign-in.
+ * And a sign-in key that names a member key says nothing about that member: a PC also holds a removal against a
+ * device by the sign-in key that vouches for it (heldOut), so a sign-in key the PC put out could otherwise hang
+ * its removal on anybody's member key, the device that started the list among them. Anyone may carry a link,
+ * and the account service keeps it: it says nothing but what its signatures say.
  */
-export interface ListVouch {
+export interface ListLink {
   readonly account: string;
   readonly list: string;
   readonly key: string;
   readonly device: string;
 }
 
-/** A vouch as it travels: its two keys, the signature of `device` and the signature of `key` (`agreed`) over the same bytes, each 86 characters of base64url. The account and the list are the reader's own. */
+/** A link's two signatures as they travel: `member` by the member key and `device` by the registered sign-in key, each 86 characters of base64url. */
+export interface LinkSignatures {
+  readonly member: string;
+  readonly device: string;
+}
+
+/** A link as it is handed to a PC: its two keys and its two signatures. The account and the list are the reader's own. */
 export interface SignedVouch {
   readonly key: string;
   readonly device: string;
-  readonly signature: string;
-  readonly agreed: string;
-}
-
-/** A vouch's bytes: `ovis-list-vouch/1` and the fields `account`, `device`, `key` and `list`, in the entry's field form. Refuses `entry_invalid` for a value out of its form. */
-export function vouchBytes(vouch: ListVouch): Uint8Array {
-  const { account, list, key, device } = vouch;
-  if (typeof account !== "string" || !ACCOUNT.test(account) || typeof list !== "string" || !isListHash(list) || typeof key !== "string" || !isListKey(key) || typeof device !== "string" || !isListKey(device)) {
-    throw new ListKindError("A vouch names an account, a list, a member key and the sign-in key that signs it");
-  }
-  return writeFieldsUnder(LIST_VOUCH_PREFIX, [
-    { name: "account", value: utf8ToBytes(account) }, { name: "device", value: utf8ToBytes(device) }, { name: "key", value: utf8ToBytes(key) }, { name: "list", value: utf8ToBytes(list) },
-  ]);
+  readonly link: LinkSignatures;
 }
 
 /**
- * The vouch of a device for its own member key, signed with its present sign-in key, or null where there is
- * nothing to vouch for: a device signs one only for the list it follows, and only while its member key is a
- * device of that list that is in. It signs none for anybody else's key, and none for a list it was only shown.
+ * A link's bytes: `ovis-list-link/1`, then the account, the list id, the member key and the registered sign-in
+ * key, each as UTF-8 after its byte length in four bytes, big-endian. It is the account service's own form for
+ * this statement, which both signatures are over. Refuses `entry_invalid` for a value out of its form.
+ */
+export function linkBytes(link: ListLink): Uint8Array {
+  const { account, list, key, device } = link;
+  if (typeof account !== "string" || !ACCOUNT.test(account) || typeof list !== "string" || !isListHash(list) || typeof key !== "string" || !isListKey(key) || typeof device !== "string" || !isListKey(device)) {
+    throw new ListKindError("A link names an account, a list, a member key and the key a sign-in registered");
+  }
+  const parts = [account, list, key, device].map((text) => utf8ToBytes(text));
+  const bytes = new Uint8Array(parts.reduce((sum, part) => sum + 4 + part.length, LIST_LINK_PREFIX.length));
+  bytes.set(utf8ToBytes(LIST_LINK_PREFIX), 0);
+  let at = LIST_LINK_PREFIX.length;
+  for (const part of parts) {
+    new DataView(bytes.buffer).setUint32(at, part.length);
+    bytes.set(part, at + 4);
+    at += 4 + part.length;
+  }
+  return bytes;
+}
+
+/**
+ * The link of a device's present sign-in key to its own member key, signed with both, or null where there is
+ * nothing to say: a device signs one only for the list it follows, and only while its member key is a device of
+ * that list that is in. It signs none for anybody else's key, none for a list it was only shown, and none where
+ * the two keys are one (a key that has not handed over is in the list by itself).
  */
 export async function signVouch(state: ListState, device: Pick<MigratingDevice, "signIn" | "member">): Promise<SignedVouch | null> {
   if (state.needs_replay !== undefined || !deviceIn(state, device.member.key) || device.signIn.key === device.member.key) return null;
-  const bytes = vouchBytes({ account: state.account, list: state.list, key: device.member.key, device: device.signIn.key });
+  const bytes = linkBytes({ account: state.account, list: state.list, key: device.member.key, device: device.signIn.key });
   const by = async (key: CryptoKey): Promise<string> => toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, key, new Uint8Array(bytes))));
-  return { key: device.member.key, device: device.signIn.key, signature: await by(device.signIn.privateKey), agreed: await by(device.member.privateKey) };
+  return { key: device.member.key, device: device.signIn.key, link: { member: await by(device.member.privateKey), device: await by(device.signIn.privateKey) } };
 }
 
 /**
- * The vouches among those handed over that hold for this account and list: each signed by its own `device` key
- * and agreed by its own member `key`, over its bytes. One that is out of form, of another list or account, or
- * that lacks either signature is dropped: a member key that names a sign-in key proves nothing about that
- * sign-in, and a sign-in key that names a member key proves nothing about that member. What a PC makes of them
- * is pinVerdict's to say (`vouched`).
+ * The links among those handed to a PC that hold for this account and list: each signed by its own `device` key
+ * and by its own member `key`, over its bytes. One that is out of form, of another list or account, or that
+ * lacks either signature is dropped. What a PC makes of them is pinVerdict's to say (`vouched`).
  */
 export async function heldVouches(account: string, list: string, vouches: readonly SignedVouch[]): Promise<{ readonly key: string; readonly device: string }[]> {
   const held: { key: string; device: string }[] = [];
+  const read = (text: unknown): Uint8Array | null => (typeof text === "string" && text.length === CARD_SIGNATURE_CHARS ? canonicalBase64Url(text) : null);
   for (const vouch of [...vouches]) {
-    if (typeof vouch !== "object" || vouch === null) continue;
-    const { key, device, signature, agreed } = vouch;
-    const read = (text: unknown): Uint8Array | null => (typeof text === "string" && text.length === CARD_SIGNATURE_CHARS ? canonicalBase64Url(text) : null);
-    const [signed, member] = [read(signature), read(agreed)];
+    if (typeof vouch !== "object" || vouch === null || typeof vouch.link !== "object" || vouch.link === null) continue;
+    const { key, device } = vouch;
+    const [member, signIn] = [read(vouch.link.member), read(vouch.link.device)];
     // A key that vouches for itself says nothing; what is no key is refused with the bytes.
-    if (signed === null || member === null || key === device) continue;
+    if (member === null || signIn === null || key === device) continue;
     let bytes: Uint8Array;
     try {
-      bytes = vouchBytes({ account, list, key, device });
+      bytes = linkBytes({ account, list, key, device });
     } catch (error) {
       if (error instanceof ListKindError) continue;
       throw error;
     }
-    if ((await verifySignature(bytes, signed, device)) && (await verifySignature(bytes, member, key))) held.push({ key, device });
+    if ((await verifySignature(bytes, signIn, device)) && (await verifySignature(bytes, member, key))) held.push({ key, device });
   }
   return held;
 }
