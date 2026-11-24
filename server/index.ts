@@ -469,6 +469,10 @@ export function createServer(
     },
     mayAdmit: (key) => { const account = devices.account(); return account !== null && devices.admitsFromList(key, account) && !accountMailbox.listHeld(key); },
     holdsRemoval: (key) => devices.holdsRemoval(key),
+    witness: () => {
+      const held = accountWitness?.admits() ?? null;
+      return held === null ? null : { account: held.account, rows: held.admits, removed: [...new Set([...devices.removalKeys(), ...accountHolds.list()])], scale: accountWitness?.scale ?? 1 };
+    },
     // while the rows still stand, so their sessions end as `auth_changed` and each app signs in again by itself
     repinned: () => {
       for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id);

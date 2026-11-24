@@ -1,5 +1,6 @@
 import { canonicalBase64Url, isListHash } from "../../shared/account-list-entry.ts";
 import type { Sealed } from "../../shared/account-list.ts";
+import type { SignedNaming, SignedVouch } from "../../shared/account-list-migrate.ts";
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
 import { toBase64Url } from "../../shared/relay-pair-sas.ts";
@@ -28,6 +29,9 @@ const RUN_ID = /^[0-9a-f]{16}$/;
 /** The most entries a member hands this PC in one call (POST /api/account/list/page), and the longest text of one. */
 const LIST_PEER_PAGE_MAX = 256;
 const LIST_PEER_ENTRY_CHARS = 16_384;
+
+/** The most vouches a device hands this PC with one naming (POST /api/account/list/name). */
+const LIST_NAMING_VOUCHES_MAX = 16;
 
 /** What `ovis join` is told where this PC joins no list (POST /api/account/list/join…), by the refusal's name. */
 const JOIN_REFUSALS: Readonly<Record<string, string>> = {
@@ -372,6 +376,21 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (list === null) return fail("introduction_invalid", "Name the list by its id and the place of the device's entry", 400);
       context.services.accountIntroductions.set(body.key, pcs, devices.listFollowed() ? undefined : list);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+    }
+    case "/api/account/list/name": {
+      setRequestRoute(pathname);
+      // A device of this PC's account names the account's signed list in its own session, signed in with its key
+      // (docs/account-list.md, "An account that was in use"): the PC follows it only on what it holds itself (V4-1)
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      if (peer.kind !== "relay" || peer.key === "") return fail("session_required", "Name the list from the device's own session", 403);
+      const { naming, vouches = [] } = body as { naming?: unknown; vouches?: unknown };
+      if (typeof naming !== "object" || naming === null || Array.isArray(naming) || !Array.isArray(vouches) || vouches.length > LIST_NAMING_VOUCHES_MAX) {
+        return fail("invalid_naming", `Send the naming, and at most ${LIST_NAMING_VOUCHES_MAX} vouches`, 400);
+      }
+      if (devices.account() === null) return fail("not_in_account", "This PC is in no account", 409);
+      const outcome = await list.nameList({ session: peer.key, naming: naming as SignedNaming, vouches: vouches as SignedVouch[] });
+      return reply(outcome);
     }
     case "/api/account/list/named": {
       setRequestRoute(pathname);

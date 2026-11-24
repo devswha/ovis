@@ -4,19 +4,21 @@
  * with the rows of that list once it follows it.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { ACCOUNT_LIST_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { bounded, relayAccountFixture, relayConnection, relayDevice, relayFixture, TestClock } from "../relay/test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
-import { ACCOUNT_LIST_OWED_FILE } from "./list-follow.ts";
+import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE } from "./list-follow.ts";
+import { ACCOUNT_LIST_VOUCHES_FILE } from "./list-vouches.ts";
 import { MIGRATE_TIME_SCALE_ENV } from "./migrate-time.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
-import { asSignIn, birthPlan, migratingDevice, MigratedList, type MigratingPhone } from "./migrate.test-helpers.ts";
+import { asSignIn, birthPlan, migratingDevice, MigratedList, signedInAgain, type MigratingPhone } from "./migrate.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -80,7 +82,9 @@ async function accountInUse() {
     return await link.auth(asSignIn(serverId, device, which)).then((ok) => ok.role, () => null);
   };
   const rowOf = (key: string) => services.accountRows!.rows().find((row) => row.key === key) ?? null;
-  return { time, service, fixture, member, serverId, services, endpoint, phone, tablet, witness, run, list, pull, signsIn, rowOf };
+  /** The PC looks at its clock, and does what that brings. */
+  const settle = async () => { list.tick(); await list.settled(); };
+  return { time, service, fixture, member, serverId, services, endpoint, phone, tablet, witness, run, list, pull, signsIn, rowOf, settle };
 }
 
 describe("what a PC tells a device of its account before the account moves", () => {
@@ -150,6 +154,154 @@ describe("what a PC tells a device of its account before the account moves", () 
     const base = `http://127.0.0.1:${fixture.app.port}`;
     const answer = await fetch(`${base}/api/account/list/witness`, { headers: { origin: base } });
     expect([answer.status, ((await answer.json()) as { error: { code: string } }).error.code]).toEqual([409, "not_in_account"]);
+  });
+});
+
+/** A session of `device` signed in with one of its keys: what it says over it, and what it is told. */
+async function sessionOf(pc: Awaited<ReturnType<typeof accountInUse>>, device: MigratingPhone, which: "signIn" | "member" = "signIn") {
+  const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+  await link.auth(asSignIn(pc.serverId, device, which));
+  return link;
+}
+
+type NameAnswer = { pinned: true; list: string } | { pinned: false; why: string; wait: number | null };
+async function names(link: Awaited<ReturnType<typeof relayConnection>>, body: unknown): Promise<NameAnswer> {
+  const answer = await ask(link, "/api/account/list/name", { method: "POST", body });
+  expect(answer.status).toBe(200);
+  return answer.body as NameAnswer;
+}
+
+describe("a PC that follows no list, and a device of its account names one in its session", () => {
+  test("the device that started the list names it in a session this PC has let in for a day: the PC follows it, and its rows are the list's", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    expect(pc.list.status().pinned).toBe(false);
+    const phone = await sessionOf(pc, pc.phone);
+    const answer = await names(phone, { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) });
+    expect(answer).toEqual({ pinned: true, list: born.id });
+    // the pin follows once the answer is out: it ends every session of the account's rows, this one among them
+    await pc.settle();
+    expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in", list: born.id });
+    // the session it named the list in was one of the rows the snapshot made: it ends, and the phone comes back by its account key
+    expect(await bounded(phone.serverError, 2000)).toBe("auth_changed");
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    expect(pc.services.accountRows!.rows().map((row) => row.key).sort()).toEqual([pc.phone.member.key, pc.tablet.signIn.key].sort());
+    expect(await pc.signsIn(pc.phone, "member")).toBe("drive");
+    expect(await pc.signsIn(pc.phone)).toBeNull();
+    expect(await pc.signsIn(pc.tablet)).toBe("drive");
+    // a device that asks where it stands is told the list this PC follows: the copy is the list's, pinned by how it came
+    const copy = JSON.parse(readFileSync(join(pc.fixture.stateDir, ACCOUNT_LIST_FILE), "utf8")) as { want: string; save: string };
+    expect(copy.want).toBe(born.id);
+    // naming it again tells the same
+    const again = await sessionOf(pc, pc.phone, "member");
+    expect(await names(again, { naming: await born.naming(pc.phone, pc.phone.member.key, pc.endpoint) })).toEqual({ pinned: true, list: born.id });
+  });
+
+  test("its WELCOME says the list it follows to a client that knows of lists, and nothing to one that does not; a PC that follows none says nothing new", async () => {
+    const pc = await accountInUse();
+    /** Every WELCOME a session is sent after its HELLO offers `features`: the provisional one, and the final one when there is one. */
+    const welcomes = async (features: readonly string[]) => {
+      const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+      const seen: Record<string, unknown>[] = [];
+      link.onFrame = (frame) => { if (frame.type === FrameType.WELCOME) seen.push(frame.payload as unknown as Record<string, unknown>); };
+      const first = await link.hello(features) as unknown as Record<string, unknown>;
+      await link.flush();
+      return [first, ...seen];
+    };
+    // as on main: the provisional WELCOME alone, with the same members and no feature of lists
+    const before = await welcomes([ACCOUNT_LIST_FEATURE]);
+    expect(before.map((welcome) => Object.keys(welcome).sort())).toEqual([["features", "limits", "min_supported_client", "nonce", "protocol", "provisional", "relay_protocol", "server_version", "version"]]);
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    const phone = await sessionOf(pc, pc.phone);
+    expect(await names(phone, { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) })).toMatchObject({ pinned: true });
+    await pc.settle();
+    const knows = await welcomes([ACCOUNT_LIST_FEATURE]);
+    expect(knows.at(-1)).toMatchObject({ features: [ACCOUNT_LIST_FEATURE], list: born.id });
+    expect(knows.at(-1)).not.toHaveProperty("provisional");
+    expect((await welcomes([])).some((welcome) => "list" in welcome)).toBe(false);
+  });
+
+  test("a session this PC let in an hour ago names nothing yet, and says how long it waits; after a day it does", async () => {
+    const pc = await accountInUse();
+    const laptop = await migratingDevice("Laptop");
+    pc.service.registerDevice(ACCOUNT, laptop.signIn.key, "Laptop");
+    await pc.run(60_000);
+    pc.time.advance(JOIN_HOLD_MS);
+    expect(pc.services.accountRows!.access(accountDeviceId(pc.serverId, laptop.signIn.key))).toEqual({ ok: true });
+    await pc.run(60 * 60_000);
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet, laptop]), pc.time.seconds);
+    await pc.pull();
+    const link = await sessionOf(pc, laptop);
+    const body = { naming: await born.naming(laptop, laptop.signIn.key, pc.endpoint, "signIn") };
+    const waiting = await names(link, body);
+    expect(waiting).toMatchObject({ pinned: false, why: "session_new" });
+    expect((waiting as { wait: number }).wait).toBeGreaterThan(80_000);
+    expect(pc.list.status().pinned).toBe(false);
+    await pc.run(DAY_MS);
+    expect(await names(await sessionOf(pc, laptop), body)).toEqual({ pinned: true, list: born.id });
+    await pc.settle();
+    expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in" });
+  });
+
+  test("a list started by a key this PC never let in is followed on nobody's word: not on a carried device's, and not in a pairing's session", async () => {
+    const pc = await accountInUse();
+    const stranger = await migratingDevice("Stranger");
+    const born = await MigratedList.born(pc.service, ACCOUNT, stranger, birthPlan([pc.phone, pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    // the phone was carried in and named it, fooled: the PC does not know who started it
+    const phone = await sessionOf(pc, pc.phone);
+    expect(await names(phone, { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint, "signIn") })).toEqual({ pinned: false, why: "first_signer_unknown", wait: null });
+    // a naming said in a pairing's session: a pairing made at this PC is known here by nothing
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.member);
+    expect(await names(member, { naming: await born.naming(pc.phone, pc.member.publicKey, pc.endpoint, "signIn") })).toEqual({ pinned: false, why: "session_unknown", wait: null });
+    // a session of another device of the account carries no naming of the phone's (a borrowed browser's, say)
+    expect(await names(await sessionOf(pc, pc.tablet), { naming: await born.naming(pc.phone, pc.tablet.signIn.key, pc.endpoint, "signIn") })).toEqual({ pinned: false, why: "session_other_device", wait: null });
+    // and a naming said for another session or another PC holds nowhere
+    expect(await names(await sessionOf(pc, pc.tablet), { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint, "signIn") })).toEqual({ pinned: false, why: "naming_invalid", wait: null });
+    expect(await names(await sessionOf(pc, pc.phone), { naming: await born.naming(pc.phone, pc.phone.signIn.key, "ab".repeat(32), "signIn") })).toEqual({ pinned: false, why: "naming_invalid", wait: null });
+    expect(pc.list.status().pinned).toBe(false);
+    expect(await pc.signsIn(pc.phone)).toBe("drive");
+  });
+
+  test("a device that signed in again names the list by its vouch, which the PC keeps for the next session", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    // the phone signs in again: its old sign-in ends, and the PC lets the new key in from now on
+    const again = await signedInAgain(pc.phone);
+    pc.service.registerDevice(ACCOUNT, again.signIn.key, "Phone");
+    pc.service.removeDevice(ACCOUNT, pc.phone.signIn.key);
+    await pc.run(60_000);
+    pc.time.advance(JOIN_HOLD_MS);
+    expect(pc.services.accountRows!.access(accountDeviceId(pc.serverId, again.signIn.key))).toEqual({ ok: true });
+    expect(pc.rowOf(pc.phone.signIn.key)).toBeNull();
+    const naming = () => born.naming(again, again.signIn.key, pc.endpoint);
+    // with its vouch the session is the phone's, but this PC has let that key in for a minute only
+    expect(await names(await sessionOf(pc, again), { naming: await naming(), vouches: [await born.vouch(again)] })).toMatchObject({ pinned: false, why: "session_new" });
+    expect(existsSync(join(pc.fixture.stateDir, ACCOUNT_LIST_VOUCHES_FILE))).toBe(true);
+    await pc.run(DAY_MS);
+    // a day later the PC holds the vouch it was handed, and follows
+    expect(await names(await sessionOf(pc, again), { naming: await naming() })).toEqual({ pinned: true, list: born.id });
+    await pc.settle();
+    expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in" });
+  });
+
+  test("what the route takes: at most 16 vouches, only from a device's own session", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    const phone = await sessionOf(pc, pc.phone);
+    const naming = await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint);
+    const many = await ask(phone, "/api/account/list/name", { method: "POST", body: { naming, vouches: Array.from({ length: 17 }, () => ({ key: "k", device: "d", link: { member: "m", device: "d" } })) } });
+    expect(many.status).toBe(400);
+    expect((await ask(phone, "/api/account/list/name", { method: "POST", body: { vouches: [] } })).status).toBe(400);
+    const base = `http://127.0.0.1:${pc.fixture.app.port}`;
+    const local = await fetch(`${base}/api/account/list/name`, { method: "POST", headers: { origin: base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ naming }) });
+    expect(local.status).toBe(403);
+    expect(pc.list.status().pinned).toBe(false);
   });
 });
 

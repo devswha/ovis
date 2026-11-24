@@ -31,7 +31,7 @@ import {
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
 import { inviteRefusal, isListLabel, joinEntry, listClock, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
-import { heirOf, heldOut, standsFor } from "../../shared/account-list-migrate.ts";
+import { heirOf, heldNaming, heldOut, heldVouches, pinVerdict, standsFor, type LetIn, type PinRefusal, type SignedNaming, type SignedVouch } from "../../shared/account-list-migrate.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -42,6 +42,7 @@ import { verifyRelayProof } from "../relay/auth-proof.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { ListCommit } from "./account-device-state.ts";
 import { ListKeysError, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
+import { ACCOUNT_LIST_VOUCHES_FILE, ListVouches } from "./list-vouches.ts";
 import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
 import type { ListBound } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
@@ -240,6 +241,21 @@ export type JoinOutcome = { readonly joined: ListStatus } | { readonly waiting: 
 
 export type WantRefusal = "invalid_list" | "not_in_account" | "pinned" | "removed" | "unavailable";
 
+/**
+ * Why a PC does not follow the list a device named in its session (nameList): pinVerdict's refusals, and
+ * `naming_invalid` (the naming is not that key's for this PC, this account and this very session), `named_here` (a
+ * person at this PC named another list), `not_read` (the PC could not read that list to its head from the account
+ * service just now), `lists_full` (this PC keeps vouches for as many lists as it may), `unavailable` (its keys, its
+ * record or its files cannot be used).
+ */
+export type NameRefusal = PinRefusal | "naming_invalid" | "named_here" | "not_read" | "lists_full" | "unavailable";
+/** `wait`: how many seconds until the PC may follow, by its own clock, where it only waits; null otherwise. */
+export type NameOutcome = { readonly pinned: true; readonly list: string } | { readonly pinned: false; readonly why: NameRefusal; readonly wait: number | null };
+/** How often a PC reads the log of one list a device names to it, at most. */
+export const NAMED_READ_MS = 30_000;
+/** How long after its answer to a naming the PC pins the list: the answer is out by then, and the session it went back over ends. */
+const NAMED_PIN_DELAY_MS = 250;
+
 /** What the device store asks of the list (DeviceStore.attachList). Every answer is read from memory, with no wait. */
 export interface ListAuthority {
   /** Whether this PC lets its account's devices in by its signed list. */
@@ -297,6 +313,12 @@ export interface ListFollowDeps {
   commit?(list: ListCommit, readmission: Readmission | undefined, unheld: (key: string) => boolean): void;
   /** Whether this PC's own guards let the key in as a device of its list: a key it removed or holds back stays out. */
   mayAdmit?(key: string): boolean;
+  /**
+   * What this PC holds of its account's devices as a device names a list to it (witness.ts): the keys its account's
+   * rows let in to drive now and for how long (already multiplied by `scale`), and the keys it holds a removal against.
+   * Null when it cannot say.
+   */
+  witness?(): { readonly account: string; readonly rows: readonly LetIn[]; readonly removed: readonly string[]; readonly scale: number } | null;
   /**
    * Whether this PC holds a removal of its own against `key`: a person's Revoke here, a signed removal or block it
    * applied. A pinned PC keeps the device of such a key out by whichever key the list holds it by (heldOut).
@@ -377,6 +399,8 @@ export class ListFollow implements ListAuthority {
   private candidate: { readonly account: string; readonly copy: FollowerCopy } | null = null;
   /** The PC has just joined by its list: the devices the list holds come in with no join hold, as at any pin. */
   private freshPin = false;
+  /** A device named a list this PC follows from now on, and the pin waits for the next settle: the answer goes out first. */
+  private pinDue = false;
   /** The `join` of this PC whose body it built and handed to the holder of an invite's line to sign: only that one is placed. */
   /** The reads this PC asked devices for over their sessions, by session: the page that answers one is its continuation. */
   private readonly peerReads = new Map<string, FollowRead>();
@@ -413,13 +437,20 @@ export class ListFollow implements ListAuthority {
    * that a `carried` entry named, and that never handed its place on, in only while the snapshot names it too.
    */
   private snapshotNames: ReadonlySet<string> | null = null;
+  /** The vouches devices handed this PC with their namings, per list (list-vouches.ts). */
+  private readonly vouches: ListVouches;
+  /** The last read of each list a device named here, by the clock that only moves forward: one a NAMED_READ_MS. */
+  private readonly namedReads = new Map<string, { readonly at: number; readonly copy: FollowerCopy | null }>();
   private readonly differences = new Set<string>();
   private readonly ids = new WeakMap<FollowerCopy, Map<string, string>>();
   private turn: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
 
-  constructor(private readonly deps: ListFollowDeps) { this.path = join(deps.stateDir, ACCOUNT_LIST_FILE); }
+  constructor(private readonly deps: ListFollowDeps) {
+    this.path = join(deps.stateDir, ACCOUNT_LIST_FILE);
+    this.vouches = new ListVouches(deps.stateDir);
+  }
 
   /** Reads the saved copy and, on a pinned PC, gives its rows to the store; then looks at the clock every LIST_TICK_MS. */
   start(): void {
@@ -519,8 +550,15 @@ export class ListFollow implements ListAuthority {
   }
 
   /** The vouches this PC holds for the list `list` that hold: a sign-in key's word, with the member key's, that the two are one device's. */
-  private vouchedFor(_list: string): readonly { readonly key: string; readonly device: string }[] {
-    return [];
+  private vouchedFor(list: string): readonly { readonly key: string; readonly device: string }[] {
+    const scope = this.bound();
+    return scope === null ? [] : this.vouches.of({ serverId: scope.serverId, bindId: scope.bindId }, list);
+  }
+
+  /** The list this PC is pinned to, or null: what its WELCOME tells a client that knows of lists. */
+  pinnedList(): string | null {
+    const scope = this.sync();
+    return scope !== null && this.pinned() ? scope.list : null;
   }
 
   /**
@@ -830,6 +868,98 @@ export class ListFollow implements ListAuthority {
   }
 
   /**
+   * A device of this PC's account names its list in its own session (POST /api/account/list/name): a PC that was in
+   * its account before the account had a list follows that list only so (docs/account-list.md, "An account that was in
+   * use"). `session` is the key the session signed in with (AUTH), `naming` what the device signed for this PC, this
+   * account and that very key, `vouches` the links it hands with it. The PC reads that list's log with its own proof,
+   * into a copy it does not decide by, and asks pinVerdict with what it holds of its account's devices: the session's
+   * key is one it has let in through the account for a day and is the naming device's own, and the device that started
+   * the list is known here too. On a yes it pins the list as one it follows by how it came (`migrated`), and lets its
+   * account's devices in by it alone from then on. Nothing else here makes it pin, and a no changes nothing: the PC goes
+   * on as before and is asked again at the next naming. The vouches that hold are kept for that list.
+   */
+  nameList(given: { readonly session: string; readonly naming: SignedNaming; readonly vouches: readonly SignedVouch[] }): Promise<NameOutcome> {
+    return this.enqueue(async (): Promise<NameOutcome> => {
+      const no = (why: NameRefusal, wait: number | null = null): NameOutcome => ({ pinned: false, why, wait });
+      const scope = this.bound();
+      if (scope === null) return no("unavailable");
+      await this.ready;
+      if (this.isPinned && scope.list !== null) return { pinned: true, list: scope.list };
+      if (this.problem !== null || this.removedFrom(scope.account)) return no("unavailable");
+      const naming = await heldNaming(scope.account, scope.endpoint, given.session, given.naming);
+      if (naming === null) return no("naming_invalid");
+      if (this.want !== null && this.want !== naming.list) return no("named_here");
+      const keys = await this.keysOf(scope);
+      if (keys === null || !this.live(scope)) return no("unavailable");
+      const read = await this.namedRead(scope, keys, naming.list);
+      if (!this.live(scope)) return no("unavailable");
+      const state = read?.state ?? null;
+      if (read === null || state === null) return no("not_read");
+      const witness = this.deps.witness?.() ?? null;
+      if (witness === null || witness.account !== scope.account) return no("unavailable");
+      // the vouches of a list of this account are kept, whatever comes of this naming: the next one may need them
+      if (state.account === scope.account) {
+        const held = await heldVouches(scope.account, naming.list, given.vouches);
+        let kept: "kept" | "full";
+        try { kept = this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, naming.list, held); } catch { return no("unavailable"); }
+        if (kept === "full") return no("lists_full");
+      }
+      const vouched = this.vouchedFor(naming.list);
+      const holds = this.deps.holdsRemoval;
+      const removed = [...new Set([...witness.removed, ...[...Object.keys(state.signers), ...vouched.map((vouch) => vouch.device), naming.session].filter((key) => holds?.(key) === true)])];
+      const verdict = pinVerdict(state, naming, { account: scope.account, rows: witness.rows, removed, vouched });
+      // a wait is told in seconds of this PC's own clock: on a staging run the record's durations were multiplied
+      if (!verdict.pin) return no(verdict.why, verdict.wait === null ? null : Math.ceil(verdict.wait / Math.max(1, witness.scale)));
+      const first = pinList(null, { account: scope.account, list: naming.list, me: { key: keys.key, endpoint: scope.endpoint }, pin: { how: "migrated", admitted: verdict.admitted } });
+      if (!first.pinned) return no("unavailable");
+      const copy = await copied(first.copy, read, this.seconds());
+      if (standing(copy) !== "in" || !this.live(scope) || this.isPinned) return no("not_read");
+      const before = { want: this.want, copy: this.copy, wantedAt: this.wantedAt };
+      this.want = naming.list;
+      this.wantedAt = this.deps.now();
+      this.copy = copy;
+      if (!this.persist(scope)) {
+        ({ want: this.want, copy: this.copy, wantedAt: this.wantedAt } = before);
+        return no("unavailable");
+      }
+      // The copy that stands in the list and the list it is for are on disk, so the pin follows at the next settle,
+      // after a restart too. Not in this turn: a pin ends every session of the account's rows (`auth_changed`), and the
+      // session this answer goes back over is one of them. So it is made once the answer is out
+      this.pinDue = true;
+      const due = setTimeout(() => { if (this.pinDue && !this.stopped) void this.enqueue(async () => { await this.ready; this.settle(); }); }, NAMED_PIN_DELAY_MS);
+      due.unref?.();
+      // the PC follows this list: what it kept for any other goes
+      try { this.vouches.keepOnly({ serverId: scope.serverId, bindId: scope.bindId }, naming.list); } catch { /* kept beside it, and never read */ }
+      return { pinned: true, list: naming.list };
+    });
+  }
+
+  /**
+   * The list `list` read to its head with this PC's own proof, into a copy this PC does not decide by: the shadow it
+   * holds of that list read on, or a new one. At most one read a list each NAMED_READ_MS; null when no read reached the
+   * head the account service shows.
+   */
+  private async namedRead(scope: Bound, keys: PcListKeys, list: string): Promise<FollowerCopy | null> {
+    const now = this.deps.mono?.() ?? performance.now();
+    const last = this.namedReads.get(list);
+    if (last !== undefined && now - last.at >= 0 && now - last.at < NAMED_READ_MS) return last.copy;
+    let base = !this.isPinned && this.copy?.list === list && this.copy.me.key === keys.key && this.copy.me.endpoint === scope.endpoint ? this.copy : null;
+    if (base === null) {
+      const first = pinList(null, { account: scope.account, list, me: { key: keys.key, endpoint: scope.endpoint }, pin: { how: "added" } });
+      if (!first.pinned) return null;
+      base = first.copy;
+    }
+    // what the account service answers this read, and nothing older, says whether it reached the head
+    this.lastVerdict = null;
+    const copy = await this.readInto(base);
+    const whole = this.lastVerdict === "caught_up" ? copy : null;
+    this.namedReads.delete(list);
+    this.namedReads.set(list, { at: now, copy: whole });
+    while (this.namedReads.size > VOUCH_READS_MAX) this.namedReads.delete(this.namedReads.keys().next().value!);
+    return whole;
+  }
+
+  /**
    * A PC joins an account by the account's signed list, which a person at this PC confirmed: the number compared with
    * the phone that adds it, or the line of an invite. The PC reads that list with its own proof and joins only when the
    * list holds an entry that adds its own key at its own relay key, and, where `by` names a key, when that key signed
@@ -1134,7 +1264,7 @@ export class ListFollow implements ListAuthority {
     // a copy the disk did not take is offered to it again
     if (this.unsaved) void this.enqueue(() => { const bound = this.bound(); if (this.stopped) return; if (bound !== null && this.unsaved && this.copy !== null) this.unsaved = !this.persist(bound); this.settleOwed(); });
     else this.settleOwed();
-    if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); this.settleOwed(); });
+    if ((this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) || this.pinDue) void this.enqueue(async () => { await this.ready; this.settle(); this.settleOwed(); });
     // any PC that holds a list reads it by its own clock, one that only shadows too: a mailbox that names no list, or
     // does not answer, hides no entry. A PC whose account never had a list holds no copy and asks nothing
     const copy = this.copy;
@@ -1702,6 +1832,9 @@ export class ListFollow implements ListAuthority {
 
   /** The binding the copy belonged to is gone (Revoke all, a reset relay identity, a removal): so is the pin. */
   private endBinding(bindId: string | null): void {
+    // the vouches were the binding's: a PC that left its account keeps none
+    if (bindId === null) this.vouches.forget();
+    this.namedReads.clear();
     this.bindId = bindId;
     this.want = null;
     this.copy = null;
@@ -1711,6 +1844,7 @@ export class ListFollow implements ListAuthority {
     this.ready = Promise.resolve();
     this.differences.clear();
     this.snapshotNames = null;
+    this.pinDue = false;
     this.lastVerdict = this.error = null;
     this.keysState = null;
     // the keys go with the relay identity, not with the binding: a PC that joins an account by its list has read them
@@ -2013,6 +2147,7 @@ export class ListFollow implements ListAuthority {
       pinning = true;
       try { this.deps.repinned?.(); } catch { /* the commit below ends what is left of them */ }
     }
+    this.pinDue = false;
     // an alarm is kept with the pin, on disk: a copy that is lost and read again must not lift it. One the binding's
     // file did not take is offered to it again at the next tick, whatever becomes of the rows below
     let alarmKept = true;
@@ -2155,6 +2290,22 @@ function newlyOut(before: FollowerCopy | null, after: FollowerCopy): { readonly 
     row.as === "device" && row.ended !== null && heirOf(state, key) === null && !(Object.hasOwn(was, key) && was[key]!.ended !== null) ? [{ key, seq: row.ended }] : []);
 }
 
+/** The most lists whose last read a PC keeps for namings. */
+const VOUCH_READS_MAX = 4;
+
+/** `target`, which has read nothing, with every entry of `source` taken into it page by page, as a member's pages are: the entries prove themselves. */
+async function copied(target: FollowerCopy, source: FollowerCopy, now: number): Promise<FollowerCopy> {
+  let copy = target;
+  for (let read: FollowRead | null = startRead(copy, "peer"); read !== null;) {
+    const page = servePage(source, { list: read.list, after: read.after }, PEER_PAGE_MAX);
+    if (page === null) break;
+    const result = await takePage(copy, read, page, now);
+    copy = result.copy;
+    read = result.verdict === "more" || result.verdict === "asks_after" ? result.read : null;
+  }
+  return copy;
+}
+
 /** The keys a `carried` entry named that are in by themselves: they never handed their place on. */
 function carriedAlone(state: ListState): string[] {
   return Object.entries(state.devices).flatMap(([key, device]) => (device.carried && standsFor(state, key) === key ? [key] : []));
@@ -2188,7 +2339,7 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */
 export function forgetList(stateDir: string): void {
-  for (const file of [ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, ACCOUNT_LIST_ALLOW_FILE]) {
+  for (const file of [ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, ACCOUNT_LIST_ALLOW_FILE, ACCOUNT_LIST_VOUCHES_FILE]) {
     try { rmSync(join(stateDir, file), { force: true }); }
     catch (error) { console.error(`[account] ${file} could not be removed: ${(error as NodeJS.ErrnoException).code ?? "unknown error"}`); }
   }
