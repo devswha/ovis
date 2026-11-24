@@ -157,4 +157,29 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     expect(opened[0]!.options.accountOpensAll).toBe(true);
     expect(await (opened[0]!.options.store as ShellDeviceStore).get(pc.serverId)).toMatchObject({ public_spki: signedIn });
   });
+
+  it("a carried device whose hand-over is not placed yet signs in to a PC of its list with its sign-in key, the key the list holds for it (R-E)", async () => {
+    const signedIn = await signIn("acct-carried");
+    const pc = pcKeys();
+    const list = "5c".repeat(32);
+    const row = (key: string, self: boolean) => ({ key, self, power: "full" as const, role: "drive" as const, until: null, carried: true, name: null });
+    let selfKey = signedIn;
+    const following = (): AccountListView => ({
+      account: "acct-carried", reached: true, status: { at: "following", list, standing: "in", head: 4, read_at: 1, trouble: null },
+      devices: [row(selfKey, true)], pcs: [{ endpoint: pc.endpoint, server_id: pc.serverId, how: "carried", allows: false, name: null, seq: 2, by: null, new_until: null, new_at: null } as never],
+    });
+    const { list: held } = listIn(following);
+    const account = controller(held, empty);
+    await account.refresh(true);
+    await settle();
+    expect(account.listKey?.public_spki).toBe(signedIn);
+    expect(account.listHolds(pc.serverId)).toBe(true);
+    expect(account.listSays(pc.serverId)).toBe("holds");
+    // after its hand-over, the key the list holds for it is its account key
+    selfKey = (await accountStore.key()).public_spki;
+    expect(account.listKey?.public_spki).toBe(selfKey);
+    // and a key the list holds for no device of its own opens nothing by the list
+    selfKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5lhuexKpDRsxAK4WTOjTQTjBurzk0iGngvCpNGetUiwtppuB-SgVWvMwkHCQe6FNPoAzLJZntcFyjzv0sk82Bg";
+    expect(account.listKey).toBeNull();
+  });
 });

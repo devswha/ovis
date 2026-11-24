@@ -837,13 +837,16 @@ export function accountList(options: AccountListOptions): AccountList {
     if (named === null || named.history !== history || (!named.complete && ask !== null)) {
       const opened = await epochsOf(copy, state, history, keys, ask);
       const nameAt = (seq: number): Promise<ListNames | null> => namesAt(copy.list, copy.entries, seq, opened.keys);
+      // the row of this device's own: the key that stands where it came in (a carried device's sign-in key until its
+      // hand-over is placed, its account key after), and its account key otherwise
+      const selfKey = standsFor(state, copy.me.key) ?? keys.key;
       const devices: ListedDevice[] = [];
       for (const row of shownDevices(copy)) {
-        devices.push({ key: row.key, self: row.key === keys.key, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq) });
+        devices.push({ key: row.key, self: row.key === selfKey, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq) });
       }
       const pcs: ListedPc[] = [];
       // a PC that came in after this device did, by another's signature, is new to it from when it first held the entry
-      const own = shownDevices(copy).find((row) => row.key === keys.key)?.seq ?? null;
+      const own = shownDevices(copy).find((row) => row.key === selfKey)?.seq ?? null;
       const seen = readSeen(await store.get("seen", account), copy.list);
       const news: Record<string, readonly [number, number]> = {};
       for (const row of shownPcs(copy)) {

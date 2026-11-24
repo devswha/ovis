@@ -350,3 +350,21 @@ describe("the one-time notice of the move", () => {
     expect(await laptop.device.list.notice!(world.account)).not.toBeNull();
   });
 });
+
+describe("a carried device before its hand-over is placed", () => {
+  test("is in its list by its sign-in key: that is the row of its own (R-E), whatever key it goes on with later", async () => {
+    const { laptop, world } = await moved();
+    // the hand-over does not get through yet: the account service is busy
+    laptop.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ error: { code: "list_rebuilding", message: "x" } }, { status: 503, headers: { "retry-after": "1" } }) : null;
+    const view = await laptop.device.list.sync();
+    expect(view.status).toMatchObject({ at: "following", standing: "in" });
+    expect(view.devices.filter((row) => row.self).map((row) => row.key)).toEqual([laptop.signIn]);
+    // once it is placed, the row of its own is its account key's
+    laptop.device.wire.answer = null;
+    await laptop.device.list.sync();
+    const after = await laptop.device.list.sync({ read: true });
+    expect(after.devices.filter((row) => row.self).map((row) => row.key)).toEqual([laptop.member]);
+    void world;
+  });
+});

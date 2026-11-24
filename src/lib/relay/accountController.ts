@@ -1129,17 +1129,24 @@ export function createAccountController(mount: RelayShellMount, view: {
   /** The providers the service named, an empty list included; the build's only when it gave no answer to read. */
   const listedNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.listed);
   /**
-   * The key the account's signed list holds for this device, the account key, while the device follows the list of the
-   * account in view and is in it; null otherwise. Read with each directory read, which reads the key anyway.
+   * The key the account's signed list holds for this device, while the device follows the list of the account in view
+   * and is in it; null otherwise: its account key, or, for a device the move of an account onto its list carried in
+   * whose hand-over is not placed yet, the key of this sign-in, which the list holds it by until then (R-E). Read with
+   * each directory read, which reads the keys anyway.
    */
   let memberKey: AccountKey | null = null;
+  /** The key the list's row of this device's own is (the view's `self`) among this device's two keys; null for neither. */
+  const heldKey = (view: ReturnType<NonNullable<typeof lists>["view"]>): AccountKey | null => {
+    const own = view.devices.find((device) => device.self)?.key;
+    const signIn = listedFor?.openKey?.key ?? null;
+    return own === undefined ? null : memberKey !== null && own === memberKey.public_spki ? memberKey : signIn !== null && own === signIn.public_spki ? signIn : null;
+  };
   const listKey = (): AccountKey | null => {
     const view = lists?.view();
     // only for the sign-in in view, as the key of the sign-in is given (openKey): from the moment a sign-out begins
     // there is none, whatever the list's own view still shows until the account service has answered
     if (accountView?.kind !== "signed-in" || listedFor?.epoch !== generation) return null;
-    return view !== undefined && view.status.at === "following" && view.status.standing === "in" && shownFor !== undefined && view.account === shownFor.account
-      && memberKey !== null && view.devices.some((device) => device.self && device.key === memberKey!.public_spki) ? memberKey : null;
+    return view !== undefined && view.status.at === "following" && view.status.standing === "in" && shownFor !== undefined && view.account === shownFor.account ? heldKey(view) : null;
   };
   /** Whether the account's signed list, as this device holds it, holds the PC with this id. */
   const listHolds = (serverId: string): boolean => listKey() !== null && (lists?.view().pcs.some((pc) => pc.server_id === serverId) ?? false);
@@ -1153,7 +1160,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (read === undefined || shownFor === undefined || read.account !== shownFor.account || read.status.at !== "following" || read.status.trouble !== null) return "unknown";
     if (read.status.standing === "out") return "device-out";
     if (read.status.standing !== "in") return "unknown";
-    if (memberKey === null || !read.devices.some((device) => device.self && device.key === memberKey!.public_spki)) return "device-out";
+    if (heldKey(read) === null) return "device-out";
     return read.pcs.some((pc) => pc.server_id === serverId) ? "holds" : "pc-out";
   };
   /**
