@@ -372,8 +372,10 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     expect(text()).toContain(`New PC added to your account: ${LABEL}`);
     expect(buttons()).toContain("I didn't add this");
     expect(buttons()).not.toContain("Add");
-    // the person added it on this device: its own record of its PCs says so, by the relay key the listing gave
-    expect(readSeenPcs(ACCOUNT).pcs[Buffer.from(key).toString("hex")]).toEqual({ how: "added" });
+    // One press, with no number compared and no QR code scanned, proves nothing about whose PC it is: the account
+    // service could have listed a PC of its own at that moment. This device's record of its PCs keeps nothing of it.
+    await settle();
+    expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
   });
 
   it("keeps the new-PC card closed under the service's admission time, not this device's clock", async () => {

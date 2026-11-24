@@ -258,13 +258,13 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
     running();
     await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay, ...listingOs(), ...proof }, undefined, undefined, { prove: true });
   }
-  // The person adds this PC from this page: kept in this device's own record of its PCs, by the relay key of the PC's
-  // own pairing link. On the PC's own address the page is that PC's own window; from anywhere else it is an add.
+  // The person adds this PC from its own window (the page is on the PC's own address): kept in this device's own
+  // record of its PCs, by the relay key of the PC's own pairing link. From any other page the add is one press with
+  // no number compared, which proves nothing about whose PC it is, and nothing is kept of it.
   // It only records: a link whose key does not read, or storage that is not there, changes nothing of the add.
-  if (session) {
+  if (session && typeof location !== "undefined" && isLoopbackHost(location.hostname)) {
     try {
-      const own = typeof location !== "undefined" && isLoopbackHost(location.hostname);
-      void noteAct(session.account, Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), own ? "window" : "added").catch(() => undefined);
+      void noteAct(session.account, Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), "window").catch(() => undefined);
     } catch { /* nothing is kept of this add */ }
   }
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
