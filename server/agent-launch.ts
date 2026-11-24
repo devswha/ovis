@@ -184,6 +184,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
             ...(tool ? { toolDoor: { socket: tool.socket, tokenFile: tool.tokenFile } } : {}),
             timeoutMs: 60_000,
           });
+          await tool?.confirmed();
           break;
         } catch (error) {
           if (!(error instanceof HerdrError)) throw error;

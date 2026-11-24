@@ -15,11 +15,15 @@ it("a reserved run is nobody; after bind its depth survives restart, and revocat
     reservation.bind({ self: "t1", harness: "claude", started_by: null, root: reservation.id, depth: 0 });
     const child = store.reserve();
     child.bind({ self: "t2", harness: "gjc", started_by: reservation.id, root: reservation.id, depth: 1 });
+    store.rememberForeground(reservation.id, process.pid);
     const childToken = readFileSync(child.tokenFile, "utf8");
     const restored = new RunStore(dir);
     expect(restored.verify(childToken)).toMatchObject({ self: "t2", depth: 1 });
     expect(readFileSync(join(dir, "runs.json"), "utf8")).not.toContain(childToken);
-    restored.forgetTerminal("t1");
+    restored.reconcile([
+      { address: "t1", state: "live", labels: {}, foreground: { pid: process.ppid, argv: ["claude", "--mcp-config", join(dir, "mcp", `${reservation.id}.json`)] } },
+      { address: "t2", state: "live", labels: { "ovis.run": child.id, "ovis.acp": "keeper" } },
+    ], address => address === "t2" ? "keeper" : undefined);
     expect(restored.verify(token)).toBeNull();
     expect(restored.verify(childToken)).not.toBeNull();
     restored.revokeAll();

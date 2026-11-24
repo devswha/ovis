@@ -544,11 +544,13 @@ export function createServer(
     try {
       agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
       const hub = agentTools;
-      void acpReady?.then(() => {
+      void acpReady?.then(async () => {
+        const { terminals } = await coreConnection().call("terminal.list", {});
         if (agentTools !== hub) return;
+        hub.runs.reconcile(terminals, pane => acp.forPane(pane)?.id);
         try { hub.listen(); useAgentToolHub(hub); }
         catch { hub.close(); agentTools = null; }
-      });
+      }).catch(() => { hub.close(); if (agentTools === hub) agentTools = null; });
       preferences.subscribe(() => agentTools?.settingsChanged());
     } catch { console.warn("Agent tools unavailable for this state directory."); }
   }

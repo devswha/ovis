@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeStateDocument } from "../state-document.ts";
+import { readProcessBirth } from "../process-owner.ts";
 
 export interface Run {
   readonly id: string;
@@ -12,9 +13,14 @@ export interface Run {
   readonly harness: string;
   readonly created_ms: number;
 }
-interface Saved { readonly run: Run; readonly hash: string; readonly starts?: readonly { key: string; run: string }[] }
+interface Saved { readonly run: Run; readonly hash: string; readonly starts?: readonly { key: string; run: string }[]; readonly foreground?: { pid: number; birth: string } }
 const idPattern = /^[a-f0-9]{16}$/;
 const digest = (token: string) => createHash("sha256").update(token).digest();
+export interface LiveToolTerminal {
+  address: string; state: string; labels: Record<string, string>;
+  foreground?: { pid?: number; argv: readonly string[] } | null;
+  parent?: string | null;
+}
 
 export function privateDir(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -103,6 +109,28 @@ export class RunStore {
   }
   forgetTerminal(self: string): void {
     for (const { run } of this.entries.values()) if (run.self === self) this.revoke(run.id);
+  }
+  rememberForeground(id: string, pid: number): void {
+    const row = this.entries.get(id), reading = readProcessBirth(pid);
+    if (row && reading.state === "identified") {
+      this.entries.set(id, { ...row, foreground: { pid, birth: reading.birth.value } });
+      this.save();
+    }
+  }
+  reconcile(terminals: readonly LiveToolTerminal[], keeper: (address: string) => string | undefined): void {
+    const live = new Map(terminals.filter(t => t.state === "live").map(t => [t.address, t]));
+    for (const { run, foreground } of this.entries.values()) {
+      const t = live.get(run.self);
+      const config = join(this.dir, "mcp", `${run.id}.json`);
+      const argv = t?.foreground?.argv ?? [];
+      const id = keeper(run.self);
+      const birth = foreground && t?.foreground?.pid === foreground.pid ? readProcessBirth(foreground.pid) : null;
+      const verified = run.started_by === null
+        ? birth?.state === "identified" && birth.birth.value === foreground?.birth && argv.some((word, i) => (word === "--mcp-config" && argv[i + 1] === config) || (word === "--additional-mcp-config" && argv[i + 1] === `@${config}`)
+          || (word.startsWith("mcp_servers.ovis-agent.args=") && argv[i - 1] === "-c" && word.includes(`'${join(this.dir, "tokens", `${run.id}.token`)}'`)))
+        : !!id && t?.labels["ovis.acp"] === id && t.labels["ovis.run"] === run.id;
+      if (!verified) this.revoke(run.id);
+    }
   }
   revokeAll(): void {
     this.pending.clear();

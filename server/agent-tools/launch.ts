@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { browserToolChoices, browserToolCommand, isBrowserToolAgent, mcpLaunchArgs, mcpLaunchConfig, withBrowserToolArgs } from "../../shared/browser-tools.ts";
-import { hcMachine } from "../herdr-core/runtime.ts";
+import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import type { AgentToolHub } from "./hub.ts";
 import { privateDir, writePrivate } from "./runs.ts";
@@ -28,6 +28,13 @@ export function launchHarnessTool(pane: string, kind: string, options: { args?: 
       writePrivate(file, mcpLaunchConfig(kind, tools));
     }
     r.bind({ self: pane, depth: 0, started_by: null, root: r.id, harness: kind });
-    return { args: withBrowserToolArgs(options.args ?? [], mcpLaunchArgs(kind, tools, file)), cancel: r.cancel, socket: hub.address, tokenFile: r.tokenFile };
+    const runs = hub.runs;
+    const confirmed = async () => {
+      // Lack of proof costs only recovery of this credential after restart.
+      const terminal = await coreConnection().call("terminal.get", { terminal: pane }).catch(() => null);
+      const pid = terminal?.foreground?.pid;
+      if (pid && pid !== terminal?.pid) runs.rememberForeground(r.id, pid);
+    };
+    return { args: withBrowserToolArgs(options.args ?? [], mcpLaunchArgs(kind, tools, file)), cancel: r.cancel, socket: hub.address, tokenFile: r.tokenFile, confirmed };
   } catch (error) { r.cancel(); throw error; }
 }
