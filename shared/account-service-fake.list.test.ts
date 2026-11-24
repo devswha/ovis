@@ -56,8 +56,8 @@ const deviceOf = async (key: Key, list: string, rotates = false, card?: string):
   ({ kind: "device", key: key.key, power: "full", role: "drive", until: null, enc: key.enc, card: card ?? await cardOf(key, list), sealed: sealed(), rotates });
 const pcOf = async (key: Key, list: string, endpoint: string): Promise<ListKind> => ({ kind: "pc", key: key.key, endpoint, enc: key.enc, card: await cardOf(key, list, endpoint), sealed: sealed() });
 const inviteOf = (key: Key, exp: number, auto = true, uses = 2, names: Sealed | null = sealed()): ListKind => ({ kind: "invite", key: key.key, exp, uses, auto, sealed: names });
-const joinOf = async (key: Key, list: string, endpoint: string, invite: Key): Promise<ListKind> =>
-  ({ kind: "join", endpoint, pc: key.key, enc: key.enc, card: await cardOf(key, list, endpoint, invite.key), sealed: sealed() });
+const joinOf = async (key: Key, list: string, endpoint: string, invite: Key, names: Sealed | null = sealed()): Promise<ListKind> =>
+  ({ kind: "join", endpoint, pc: key.key, enc: key.enc, card: await cardOf(key, list, endpoint, invite.key), sealed: names });
 const removeOf = (key: Key): ListKind => ({ kind: "remove", ends: key.key });
 const epochOf = (epoch: number): ListKind => ({ kind: "epoch", epoch, opens: OPENS(epoch + 1), link: new Uint8Array(61) });
 
@@ -447,6 +447,9 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(await refusedAt([[w.owner, await deviceOf(phone, list, false, await cardOf(stranger, list))]])).toEqual(["400 entry_refused", 0, "no_effect", "card_invalid"]);
       // carrying members in has no second lock yet: the service places no carried entry
       expect(await refusedAt([[w.owner, { kind: "carried", key: phone.key, role: "drive", sealed: sealed() }]])).toEqual(["400 entry_refused", 0, "service", "carried_not_open"]);
+      // once the list is in use, every member refuses a carried entry itself
+      expect(await refusedAt([[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, { kind: "carried", key: phone.key, role: "drive", sealed: sealed() }]]))
+        .toEqual(["400 entry_refused", 1, "no_effect", "carried_late"]);
       // a kind of a level above the service's: cannot_read
       const raised: EntryBody = { issued_at: w.seconds(), kind: "later_kind", list, prev: head.hash, seq: 1, signer: w.owner.key, v: 2, own: [] };
       const later = await w.place(list, [entryToText(await signEntry(raised, w.owner.pair.privateKey))]);
@@ -492,15 +495,28 @@ describe("the fake account service's list routes (Part D)", () => {
       expect([refusal(refused), refused.body.error?.reason]).toEqual(["400 entry_refused", "issued_at_ahead"]);
       expect((await w.place(list, (await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 900)]], w.seconds() + 300)).texts)).status).toBe(200);
       const after = w.service.accountList(ACCOUNT)!.head;
+      // the list's own time is now the invite above's issued_at, 300 s ahead: this invite's exp lies after it
       const pool = await newKey();
-      const invited = await chain(list, after, [[w.owner, inviteOf(pool, w.seconds() + 60)]], w.seconds());
+      const invited = await chain(list, after, [[w.owner, inviteOf(pool, w.seconds() + 400)]], w.seconds());
       expect((await w.place(list, invited.texts)).status).toBe(200);
       const pc = machine();
+      await listPc(w, pc, w.service.issueToken(ACCOUNT, { device: true }));
       const pcKey = await newKey();
-      const joined = await chain(list, invited.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool)]], w.seconds());
-      w.tick(61_000);
+      const named = await chain(list, invited.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool)]], w.seconds());
+      const joined = await chain(list, invited.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool, null)]], w.seconds());
+      // past exp by the service's clock alone: an open invite over its time stops all sealing (sealEpoch), which is judged
+      // first, so a join with names is epoch_stale; without names it reaches the service's own invite_expired
+      w.tick(401_000);
+      const stale = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: named.texts });
+      expect([refusal(stale), stale.body.error?.reason]).toEqual(["400 entry_refused", "epoch_stale"]);
       const late = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts });
       expect([refusal(late), late.body.error?.index]).toEqual(["409 invite_expired", 0]);
+      // once an entry of a full signer dated after exp is in, every member refuses the join itself
+      const dated = await chain(list, invited.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds());
+      expect((await w.place(list, dated.texts)).status).toBe(200);
+      const joinedLate = await chain(list, dated.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool, null)]], w.seconds());
+      const byMembers = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joinedLate.texts });
+      expect([refusal(byMembers), byMembers.body.error?.outcome, byMembers.body.error?.reason]).toEqual(["400 entry_refused", "no_effect", "invite_expired"]);
     });
 
     test("size and budget: from removalsOnlyFrom only remove and epoch, from closedFrom nothing, and additions are 60 in any ten minutes", async () => {
@@ -799,6 +815,63 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await pull(w, pc)).list).toEqual({ id: list, head });
       expect((await pull(w, asking)).list).toBeNull();
       expect("list" in await pull(w, pc, false)).toBe(false);
+    });
+  });
+
+  describe("the account service review's reproducing cases (PR 73) the fake refuses too", () => {
+    test("R5: a batch whose second entry the service refuses stores nothing, not its wraps, and the first's claim stays; an entry that counts only after the one before it is placed with it", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      expect((await w.claim(list, phone, w.service.issueToken(ACCOUNT))).status).toBe(200);
+      const first = await sign(w.owner, { seq: head.seq + 1, list, prev: head.hash }, await deviceOf(phone, list), w.seconds());
+      const second = await sign(w.owner, { seq: first.head.seq + 1, list, prev: first.head.hash }, inviteOf(await newKey(), w.seconds() + 4000), w.seconds() + 3600);
+      const answer = await w.place(list, [first.text, second.text], [{ epoch: 0, member: phone.enc, wrap: WRAP(2) }]);
+      expect([refusal(answer), answer.body.error?.index, answer.body.error?.reason]).toEqual(["400 entry_refused", 1, "issued_at_ahead"]);
+      const held = w.service.accountList(ACCOUNT)!;
+      expect([held.entries.length, held.wraps.length, held.claims.length]).toEqual([1, 1, 1]);
+      const gone = await newKey();
+      await w.claim(list, gone);
+      const addGone = await chain(list, head, [[w.owner, await deviceOf(gone, list)]], w.seconds());
+      expect((await w.place(list, addGone.texts)).status).toBe(200);
+      const together = await chain(list, addGone.head, [[w.owner, removeOf(gone)], [w.owner, epochOf(0)], [w.owner, { ...(await deviceOf(phone, list)), sealed: sealed(1) } as ListKind]], w.seconds());
+      expect((await w.place(list, together.texts)).status).toBe(200);
+    });
+
+    test("R10: a PC listed in account X posts to account Y's list, and Y's member signs its pc: refused both ways; X reads nothing of Y", async () => {
+      const w = await world();
+      await w.start();
+      const yToken = w.service.issueToken("acct_2");
+      const yOwner = await newKey();
+      const yGenesis = await sign(yOwner, { seq: 0, list: "", prev: "" }, genesisOf(yOwner, "acct_2"), w.seconds());
+      const y = (await w.call("POST", "/v2/lists", { entry: yGenesis.text }, yToken)).body.list as string;
+      const x = w.service.accountList(ACCOUNT)!.id;
+      const pc = machine();
+      await listPc(w, pc);
+      const who = await newKey();
+      const postTo = async (list: string) => pcCall(w, pc, "/v2/pc/list/keys", { list, key: who.key, enc: who.enc, card: await cardOf(who, list, pc.endpoint) });
+      expect(refusal(await postTo(y))).toBe("404 not_found");
+      expect((await postTo(x)).status).toBe(200);
+      const inY = await chain(y, yGenesis.head, [[yOwner, await pcOf(who, y, pc.endpoint)]], w.seconds());
+      expect(refusal(await w.place(y, inY.texts, undefined, yToken))).toBe("403 not_posted");
+      expect(refusal(await w.log(y))).toBe("404 not_found");
+      expect(refusal(await w.call("GET", `/v2/lists/${y}/claims`, undefined, w.token))).toBe("404 not_found");
+    });
+
+    test("R12: a second genesis from a sign-in older than ten minutes answers 409 list_exists, not 403", async () => {
+      const w = await world();
+      await w.start();
+      const old = w.service.issueToken(ACCOUNT);
+      w.tick(30 * MINUTE);
+      const again = await sign(w.owner, { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: again.text }, old))).toBe("409 list_exists");
+    });
+
+    test("R13: an unlisted PC posting a card that does not hold sees the unknown route", async () => {
+      const w = await world();
+      const { list } = await w.start();
+      const who = await newKey();
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list/keys", { list, key: who.key, enc: who.enc, card: "A".repeat(86) }))).toBe("404 not_found");
     });
   });
 

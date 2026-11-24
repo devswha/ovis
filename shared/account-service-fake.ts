@@ -9,14 +9,14 @@ import {
   type AccountRecord, type BlockRecord, type DeviceLiftRecord, type PcAddPurpose, type SafetyRecord,
 } from "./account-records.ts";
 import { ACCOUNT_SNAPSHOT_V, SNAPSHOT_GONE, type AccountSnapshotPage, type SnapshotFreezeLine } from "./account-snapshot.ts";
-import { ListEntryError, canonicalBase64Url, entryFromText, entryHash, entryHolds, entryToText, firstState, isListHash, isListKeyEncoding, readBody, verifySignature, type Entry, type EntryBody, type HeldEntry } from "./account-list-entry.ts";
+import { ListEntryError, canonicalBase64Url, entryFromText, entryHash, entryHolds, entryToText, firstState, isListHash, readBody, verifySignature, type Entry, type EntryBody, type HeldEntry } from "./account-list-entry.ts";
 import { CARD_SIGNATURE_CHARS, ListKindError, cardHolds, firstListState, holdsPc, isListKey, readKind, sealEpoch, takeEntry, wrapKeys, type ListState } from "./account-list.ts";
 import { signerPower, type ListPlace } from "./account-list-signers.ts";
 import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.ts";
 import { isWssOrigin } from "./relay-offer.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
-import { isListPoint } from "./account-list-entry.ts";
+import { isListKeyEncoding, isListPoint } from "./account-list-entry.ts";
 import { verifyInviteRedeem } from "./account-list-invite.ts";
 
 export const CHALLENGE_TTL_MS = 60_000;
@@ -1895,9 +1895,9 @@ export class FakeAccountService {
         const reason = "code" in taken.outcome ? taken.outcome.code : null;
         return this.refusedAt(index, taken.outcome.outcome === "counts" ? "no_effect" : taken.outcome.outcome, reason, "A member would not count this entry");
       }
-      // the writers' rule (the library's sealEpoch): names are sealed only under an epoch opened after the last entry that put
-      // a member out; under an older one, whoever was put out still reads them
-      if ("sealed" in kind && kind.sealed !== null && sealEpoch(state, Math.floor(this.now() / 1000)) === null) {
+      // the writers' rule (the library's sealEpoch, at the service's clock): names are sealed only under an epoch opened after
+      // the last entry that put a member out, and while nobody in is over its time; else whoever is out still reads them
+      if ("sealed" in kind && kind.sealed !== null && sealEpoch(state, nowS) === null) {
         return this.refusedAt(index, "service", "epoch_stale", "Names are sealed only under an epoch opened after the last removal: open the next epoch, or write this entry without names");
       }
       // carrying members in from before the list has no second lock yet, so the service places none
