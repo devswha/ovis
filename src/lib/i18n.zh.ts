@@ -118,6 +118,7 @@ const BASE: Record<string, string> = {
   "Pair this PC?": "要配对此电脑吗？",
   "This PC could not be verified.": "无法验证此电脑。",
   "Check the number, then approve": "核对数字后再批准",
+  "First press “The numbers match” on {device}": "请先在 {device} 上点按“数字一致”",
   "Through {pc} · joins your {n} PCs": "经由 {pc} · 将加入你的 {n} 台 PC",
   "Pick the number on {device}": "选择 {device} 上显示的数字",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "仅在你刚刚亲自发起时才批准。如果不是你发起的，请拒绝。",

@@ -1417,13 +1417,21 @@ list](account.md#a-pc-allows-a-device-into-the-list)). The app's half is in
   device), the entry could not be placed in time (ask again), a device of the account approved
   and no entry reached the PC, Ovis on the PC is older than the list (update it, or approve on
   another device), or anything else.
-- **A member that approves on such a PC signs first.** The PC signs nothing on a member's
-  approval and lets the device in only by an entry, so on a PC that selected `account-list-1`
-  for its session the member signs the device's entry and hands the PC the page before it
-  approves; where the list does not take the device, nothing is approved and the card says why.
-  On any other PC the approval comes first, and the entry once the PC holds the device's row.
-  The entry is then signed before the new device confirmed its digits: one that cancels after
-  that is in the list, and **Remove** puts it out.
+- **A member that approves on such a PC signs only for a device that confirmed.** The PC signs
+  nothing on a member's approval and lets the device in only by an entry, which the approver
+  signs. So for a join the PC marks `list` (or on a session for which it selected
+  `account-list-1`), the card holds **Approve** until the PC says that the new device's person
+  pressed **The numbers match** there (`confirmed`), and says so: **First press “The numbers
+  match” on {device}**. A device that gives up before that is nobody's member. Nothing is
+  approved either where the approver cannot write its list, and the card says why. Then the
+  approval, and right after it the device's entry: signed, placed, and handed to the PC as a
+  page where the PC takes one from this session; where it takes none it reads the entry from the
+  account service, which it asks every three seconds for half a minute from the approval. Where
+  the list does not take the device after the approval, the request is gone from the PC: a card
+  says why, and **Try again** signs it in; a device the PC turned away meanwhile (`list_not_in`)
+  asks again. The introduction is tried once and whatever such a PC refuses it for holds back
+  nothing: the `add` for the account's other PCs goes out as ever. On any other PC the approval
+  comes first, and the entry once the PC holds the device's row.
 
 ### Which list it follows
 

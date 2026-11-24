@@ -65,6 +65,10 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide,
     if (asker === undefined) setPicked(null);
   }
 
+  // a join into the account's list: its approver signs the device's entry, and only for a device whose person said
+  // that the numbers match there (docs/account.md, "A PC allows a device into the list"), so Approve waits for that
+  const unconfirmed = request.list === true && request.intent === "account" && request.vouched !== true && request.confirmed !== true;
+
   const decide = async (decision: "approve" | "decline"): Promise<void> => {
     setBusy(true);
     setError(null);
@@ -103,11 +107,12 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide,
               className="account-approval-choice" disabled={busy || asker === undefined} onClick={() => setPicked(choice)}>{grouped(choice)}</button>
           ))}
         </div>
+        {unconfirmed && <p className="account-approval-hint" role="status">{t("First press “The numbers match” on {device}", { device: request.label })}</p>}
         </>}
         {error !== null && <p className="account-approval-error" role="alert">{error}</p>}
         <div className="account-approval-actions">
           <button ref={deny} type="button" className="btn" disabled={busy} onClick={() => void decide("decline")}>{t("Deny")}</button>
-          {request.vouched ? vouchedName && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void decide("approve")}>{t("Allow")}</button> : <button type="button" className="btn btn-primary" disabled={busy || picked === null || asker === undefined} onClick={() => void decide("approve")}>{t("Approve")}</button>}
+          {request.vouched ? vouchedName && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void decide("approve")}>{t("Allow")}</button> : <button type="button" className="btn btn-primary" disabled={busy || picked === null || asker === undefined || unconfirmed} onClick={() => void decide("approve")}>{t("Approve")}</button>}
         </div>
         <p className="account-approval-note">{t("Approve only if you started this yourself just now. Didn't ask for it? Deny it.")}</p>
       </div>

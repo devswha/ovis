@@ -114,6 +114,7 @@ const BASE: Record<string, string> = {
   "Pair this PC?": "이 PC를 연결할까요?",
   "This PC could not be verified.": "이 PC를 확인할 수 없어요.",
   "Check the number, then approve": "숫자를 확인한 뒤 승인하세요",
+  "First press “The numbers match” on {device}": "먼저 {device}에서 “숫자가 같습니다”를 누르세요",
   "Through {pc} · joins your {n} PCs": "{pc}에서 온 요청 · PC {n}대에 추가됩니다",
   "Pick the number on {device}": "{device} 화면의 숫자를 고르세요",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "방금 직접 시작한 요청일 때만 승인하세요. 요청한 적이 없다면 거절하세요.",

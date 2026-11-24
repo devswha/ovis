@@ -9,7 +9,7 @@ import { createPortal } from "react-dom";
 
 import { accountLabel, type AccountAsker } from "../../shared/account-asker.ts";
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
-import { AdmissionChangedError, approveForAccount, ListAllowError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
+import { AdmissionChangedError, approveForAccount, ListAllowError, NotConfirmedError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { LIST_WRITE_WAITING_EVENT, resendWaiting } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
@@ -184,6 +184,10 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
 
   if (request === undefined || serverId === null) return null;
 
+  const known = asker?.id === request.id ? asker : null;
+  // an account join shows the name the device gave the account service; a request for this PC only has no admission
+  const deviceName = known?.admission?.label ?? (accountLabel(request.label) || t("Device"));
+
   const decide = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
     if (decision === "decline" || digits === undefined) { await decideRelayPairing(request.id, "decline"); return; }
     const service = new AccountService({ store: indexedAccountStore });
@@ -198,7 +202,7 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
       await approveForAccount({
         request, digits, through: serverId, service, shown,
         decide: (answer, picked) => decideRelayPairing(request.id, answer, picked),
-        // a PC that selected the list for this session lets devices in by it alone: the entry is signed before the approval
+        // a PC that selected the list for this session lets devices in by it alone: the entry is signed right after the approval
         pc: { fetch: (path, init) => transport.fetch(path, init), followsList: transport.followsList === true },
         account: session!.account, key: indexedAccountStore.key(), list: pageAccountList(), store: indexedAccountStore,
         paired: () => indexedDeviceStore.list(), directory: async () => (await service.listPcs()).map((pc) => pc.server_id),
@@ -214,8 +218,10 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
       });
     } catch (error) {
       if (error instanceof UnverifiedJoinError) throw new Error(t("Could not verify this device. It was declined: approve only a device you are signing in yourself."));
-      // this PC lets devices in by the account's list alone, and the list did not take the device: nothing was approved
+      // this PC lets devices in by the account's list alone, and this device cannot write that list: nothing was approved
       if (error instanceof ListAllowError) throw new Error(stalledReason(t, error.why, error.retryAfterMs));
+      // nor where the new device's person has not said yet that the numbers match
+      if (error instanceof NotConfirmedError) throw new Error(t("First press “The numbers match” on {device}", { device: deviceName }));
       if (error instanceof AdmissionChangedError) {
         // Approve waits again until the new details are read (and the card's pick is cleared with them)
         setAsker(null);
@@ -226,9 +232,7 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
     }
   };
 
-  const known = asker?.id === request.id ? asker : null;
-  // an account join shows the name the device gave the account service; a request for this PC only has no admission
-  const shown = { ...request, label: known?.admission?.label ?? (accountLabel(request.label) || t("Device")) };
+  const shown = { ...request, label: deviceName };
   return <AccountApprovalPrompt key={request.id} request={shown} pcName={where.pcName} pcCount={where.pcCount}
     asker={checked ? known?.asker : null} onDecide={decide} />;
 }

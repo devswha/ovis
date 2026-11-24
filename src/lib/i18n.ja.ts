@@ -116,6 +116,7 @@ const BASE: Record<string, string> = {
   "Pair this PC?": "このPCをペアリングしますか？",
   "This PC could not be verified.": "このPCを確認できませんでした。",
   "Check the number, then approve": "番号を確かめてから承認してください",
+  "First press “The numbers match” on {device}": "先に {device} で「数字が一致しています」を押してください",
   "Through {pc} · joins your {n} PCs": "{pc} 経由 · {n} 台の PC に参加します",
   "Pick the number on {device}": "{device} に表示されている数字を選んでください",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "今ご自身で始めた場合だけ承認してください。心当たりがなければ拒否してください。",

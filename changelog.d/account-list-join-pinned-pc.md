@@ -3,3 +3,5 @@
   list is let in by an entry of that list: it brings its card with the join, is handed its place
   in the list, and opens the PC with the key the list holds for it. When the list does not take
   it, the screen says why (sign in again on this device, ask again, update Ovis on the PC).
+- On such a PC, the card on which a device of your account approves the new device holds
+  **Approve** until the new device says that the numbers match, and says what to press there.
