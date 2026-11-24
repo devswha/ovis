@@ -165,7 +165,7 @@ export interface ServerInstance {
   alertsSettled: () => Promise<void>;
   warmAgentCatalog: () => void;
   queueFirstMessage: (paneId: string, text: string, kind: string, requester?: string | null, launchedPid?: number | null) => Promise<PendingMessage>;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 export function createServer(
@@ -519,13 +519,12 @@ export function createServer(
   // the credential it registered as its token: that server applies its own rows, so it gets every snapshot whole.
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
-  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => { void seen.moved(LOCAL_MACHINE, from, to, renumber).catch((error) => console.warn("seen: could not carry local reads:", error)); }, paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {
     if (event.type !== "machine-message" || event.machine_id === LOCAL_MACHINE || event.message.type !== "pane-moved") return;
-    try { seen.moved(event.machine_id, event.message.from, event.message.to); }
-    catch (error) { console.warn(`seen: could not carry the reads of ${event.message.from} to ${event.message.to}:`, error); }
+    void seen.moved(event.machine_id, event.message.from, event.message.to).catch((error) => console.warn("seen: could not carry remote reads:", error));
   });
   // on herdr-core a finish read here is read in the Herdr app and its other clients too: only the
   // pane's finish now, so a read told late never marks a turn that ended since as seen.
@@ -843,6 +842,7 @@ export function createServer(
       releaseFilePool();
       releaseCommandHistory();
       requestLog.close();
+      return seen.close();
     },
   };
 }
@@ -988,11 +988,11 @@ export async function serve(): Promise<void> {
     if (stopping) return;
     stopping = true;
     telemetry.stop();
-    instance.stop();
+    const seenDrained = instance.stop();
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from
     // its relay, and the pipes it logs to must outlive it
     // herdr-core's adapter answers what the stopping server still asks meanwhile
-    void Promise.all([Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(() => {
+    void Promise.all([seenDrained, Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(() => {
       herdrCore?.stop();
       process.exit(0);
     });

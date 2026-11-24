@@ -1,7 +1,9 @@
 import { join } from "node:path";
 import { MAX_SEEN, MAX_SEEN_BYTES, mergeSeen, seenFinishBody, seenFinishKey, seenPresentationOf, type SeenFinish, type SeenPresentation } from "../shared/seen.ts";
 import { badRequest, jsonResponse } from "./http.ts";
-import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
+import { damagedCopy, readStateDocument } from "./state-document.ts";
+
+import { persistSeen } from "./seen-persistence.ts";
 
 export class SeenStore {
   private readonly finishes = new Map<string, SeenFinish>();
@@ -9,12 +11,15 @@ export class SeenStore {
   private readonly listeners = new Set<(finish: SeenFinish, presented?: SeenPresentation) => void>();
   private readonly presentations = new Set<(finish: SeenFinish) => void>();
   private unsettled = true;
+  private tail: Promise<void> = Promise.resolve();
+  private pending = 0;
+  private closed = false;
 
   /**
    * `ended`: whether this server knows a PC's finish epoch has ended. A record of any other epoch is
    * kept, the one a PC's snapshot names now or not: a late read can name a run that is over (#2206).
    */
-  constructor(stateDir: string, private readonly ended: (pc: string, epoch: string) => boolean = () => false) {
+  constructor(stateDir: string, private readonly ended: (pc: string, epoch: string) => boolean = () => false, private readonly persist = persistSeen) {
     this.path = join(stateDir, "seen.json");
     try {
       const disk = this.readDisk();
@@ -44,14 +49,32 @@ export class SeenStore {
     return [...this.finishes.values()].filter((finish) => !this.over(finish));
   }
 
-  record(finish: SeenFinish, presented?: SeenPresentation): SeenFinish {
-    if (this.over(finish)) return finish;
-    const kept = this.keep(finish, presented);
-    if (presented === "new") for (const listener of [...this.presentations]) listener(finish);
-    return kept;
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.closed) return Promise.reject(new Error("Seen store is closed"));
+    if (this.pending >= MAX_SEEN) return Promise.reject(new Error("Seen writer queue is full; retry the acknowledgement"));
+    this.pending++;
+    const result = this.tail.then(operation);
+    this.tail = result.then(() => { this.pending--; }, () => { this.pending--; });
+    return result;
   }
 
-  private keep(finish: SeenFinish, presented: SeenPresentation | undefined): SeenFinish {
+  flush(): Promise<void> { return this.tail; }
+
+  close(): Promise<void> {
+    this.closed = true;
+    return this.flush();
+  }
+
+  record(finish: SeenFinish, presented?: SeenPresentation): Promise<SeenFinish> {
+    return this.enqueue(async () => {
+      if (this.over(finish)) return finish;
+      const kept = await this.keep(finish, presented);
+      if (presented === "new") for (const listener of [...this.presentations]) listener(finish);
+      return kept;
+    });
+  }
+
+  private async keep(finish: SeenFinish, presented: SeenPresentation | undefined): Promise<SeenFinish> {
     let base = this.finishes;
     let keepDamaged = false;
     if (this.unsettled) {
@@ -71,7 +94,7 @@ export class SeenStore {
       if (finishes.size <= MAX_SEEN) break;
       finishes.delete(old);
     }
-    writeStateDocument(this.path, `${JSON.stringify([...finishes.values()])}\n`, keepDamaged);
+    await this.persist(this.path, `${JSON.stringify([...finishes.values()])}\n`, keepDamaged);
     this.unsettled = false;
     this.finishes.clear();
     for (const [k, v] of finishes) this.finishes.set(k, v);
@@ -84,12 +107,14 @@ export class SeenStore {
    * each finish under the number the server counts it by there (`renumber`, server/finishes.ts moved), and every
    * browser is told.
    */
-  moved(pc: string, from: string, to: string, renumber: (id: number) => number = (id) => id): void {
-    if (from === to) return;
-    for (const finish of this.list()) {
-      if (finish.pc !== pc || finish.pane !== from) continue;
-      this.keep({ ...finish, pane: to, id: renumber(finish.id) }, undefined);
-    }
+  moved(pc: string, from: string, to: string, renumber: (id: number) => number = (id) => id): Promise<void> {
+    return this.enqueue(async () => {
+      if (from === to) return;
+      for (const finish of this.list()) {
+        if (finish.pc !== pc || finish.pane !== from) continue;
+        await this.keep({ ...finish, pane: to, id: renumber(finish.id) }, undefined);
+      }
+    });
   }
 
   subscribe(listener: (finish: SeenFinish, presented?: SeenPresentation) => void): () => void {
@@ -136,6 +161,6 @@ export async function handleSeenRequest(request: Request, store: SeenStore): Pro
   try { raw = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
   const finish = seenFinishBody(raw);
   if (finish === null) return badRequest("invalid_body", "Send { pc, epoch, pane: string, id: positive integer, answer?: string }");
-  try { return reply(store.record(finish, seenPresentationOf(raw))); }
+  try { return reply(await store.record(finish, seenPresentationOf(raw))); }
   catch (error) { return reply({ error: { code: "seen_unwritable", message: error instanceof Error ? error.message : String(error) } }, 500); }
 }
