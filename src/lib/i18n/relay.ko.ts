@@ -185,6 +185,7 @@ export const RELAY_KO: Record<string, string> = {
   "More ways to open {name}": "{name} 다른 방법으로 열기",
   "This device was removed from your account. To use it again, sign in and allow it from another device.": "이 기기는 계정에서 빠졌어요. 다시 쓰려면 로그인하고 다른 기기에서 허용하세요.",
   "This device signed out, but your account still lists it. Remove it from another device.": "로그아웃했지만 계정 목록에는 이 기기가 아직 있어요. 다른 기기에서 빼세요.",
+  "This device signed out, but it could not read what it keeps of your account's list, so your account may still list it.": "이 기기는 로그아웃했지만 저장된 계정 명단을 읽지 못해서, 계정에 아직 이 기기가 남아 있을 수 있어요.",
   "No device was signed out: the other devices could not be removed from your account. Try again.": "다른 기기를 계정에서 빼지 못해 아무 기기도 로그아웃하지 않았어요. 다시 시도하세요.",
   "{done} of {total} other devices left your account; the others did not. Try again.": "다른 기기 {total}대 중 {done}대만 계정에서 빠졌어요. 다시 시도하세요.",
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "확인한 뒤에 {names} 기기가 계정에 들어왔어요. 아무도 로그아웃하지 않았으니 다시 확인하세요.",

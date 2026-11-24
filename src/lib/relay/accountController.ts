@@ -368,6 +368,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       .finally(() => {
         void Promise.all([ending, left]).then(async ([session, out]) => {
           if (out === null || session === undefined || lists === null) { forgetNames(session?.account); return; }
+          // its own store did not say whether it keeps the account's list: it forgets nothing it cannot see, and says so
+          if (!out.removed && out.why === "unread") {
+            if (epoch === generation) { accountView = { kind: "signed-out", error: t("This device signed out, but it could not read what it keeps of your account's list, so your account may still list it.") }; await changed(); }
+            return;
+          }
           // a member signs out for good: the key it was a member with goes, whatever the list took
           await forgetMembership(accountStore, lists, session, member);
           if (!out.removed && epoch === generation) { accountView = { kind: "signed-out", error: leaveFailure(out) }; await changed(); }
@@ -663,7 +668,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
         // back from a sign-in again for Sign out every device: the list is read again first, and a device that came in while
         // the browser was away (the question named none still in) keeps everybody signed in, to be asked about
-        else if (pending?.sign_out_everywhere === session.account && (lists === null || (await removeOthers(lists, session.account, []).catch(() => null))?.removed !== false) && await signedOutEverywhere(session).then(() => true, (error: unknown) => {
+        else if (pending?.sign_out_everywhere === session.account && (lists === null || (await removeOthers(lists, session.account, []).catch((error: unknown): RemoveOutcome => {
+          // a removal that failed is no word that nobody else is in: nobody is signed out
+          console.warn("Ovis: the other devices were not put out of the account's list", error instanceof Error ? error.name : error);
+          return { removed: false, why: "unread", retryAfterMs: null, placed: 0 };
+        }))?.removed !== false) && await signedOutEverywhere(session).then(() => true, (error: unknown) => {
           // still signed in, with a fresh sign-in now: pressing again in Manage account goes through
           console.warn("Ovis: every device was not signed out after the sign-in again", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
           return false;

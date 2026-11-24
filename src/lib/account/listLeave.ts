@@ -19,15 +19,20 @@ export function inList(view: AccountListView, account: string): boolean {
 /**
  * The view of `account`'s list that a sign-out or a leave goes by. A page that has not read its list yet, but whose
  * store keeps a copy of that account's list, reads it first (the lead's X6): such a device goes by its copy whether or
- * not the account service answers, and never takes the path of a device in no list.
+ * not the account service answers, and never takes the path of a device in no list. Null only where the store says
+ * it keeps no copy; `unread` where the store did not answer, or the copy it keeps could not be read.
  */
-async function viewFor(list: AccountList, account: string): Promise<AccountListView | null> {
+async function viewFor(list: AccountList, account: string): Promise<AccountListView | null | "unread"> {
   const view = list.view();
   if (view.account === account && view.status.at === "following") return view;
-  if (!await list.follows(account).catch(() => false)) return null;
+  let follows: boolean;
+  try { follows = await list.follows(account); } catch { return "unread"; }
+  if (!follows) return null;
   const read = await list.sync().catch(() => list.view());
-  return read.account === account ? read : null;
+  return read.account === account ? read : "unread";
 }
+
+const UNREAD: RemoveOutcome = { removed: false, why: "unread", retryAfterMs: null, placed: 0 };
 
 /**
  * A device that signs out of `account`, or leaves it, puts itself out of the account's list while its sign-in still
@@ -37,7 +42,7 @@ async function viewFor(list: AccountList, account: string): Promise<AccountListV
  */
 export async function leaveList(list: AccountList, account: string, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
   const view = await viewFor(list, account);
-  if (view === null) return null;
+  if (view === null || view === "unread") return view === null ? null : UNREAD;
   if (view.status.at === "following" && view.status.standing === "out") return { removed: true };
   const scope = scopeOf(view);
   if (scope === null) return { removed: false, why: "no_list", retryAfterMs: null, placed: 0 };
@@ -57,7 +62,7 @@ export function otherDevices(view: AccountListView, account: string): string[] {
  */
 export async function removeOthers(list: AccountList, account: string, confirmed: readonly string[], options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<RemoveOutcome | null> {
   const view = await viewFor(list, account);
-  if (view === null) return null;
+  if (view === null || view === "unread") return view === null ? null : UNREAD;
   const scope = scopeOf(view);
   if (scope === null) return { removed: false, why: "no_list", retryAfterMs: null, placed: 0 };
   return removeOtherDevices(list, scope, confirmed, options);

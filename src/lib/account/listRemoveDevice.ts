@@ -82,12 +82,13 @@ export function scopeOf(view: AccountListView): WriteScope | null {
 
 /**
  * Why nothing, or not everything, was put out: the write loop's reasons (listWrite.ts, WriteRefusal), or `changed`:
- * another sign-in, another list or another key stood in the write's place by its next read. `placed`: how many of
- * the members asked for went in parts that were placed before the refusal.
+ * another sign-in, another list or another key stood in the write's place by its next read; `unread`: this device's
+ * own store did not answer whether it keeps a copy of the account's list, which is no word that it keeps none (the
+ * lead's X6). `placed`: how many of the members asked for went in parts that were placed before the refusal.
  */
 export type RemoveOutcome =
   | { readonly removed: true }
-  | { readonly removed: false; readonly why: WriteRefusal | "changed" | "unconfirmed"; readonly retryAfterMs: number | null; readonly placed: number; readonly unconfirmed?: readonly string[] };
+  | { readonly removed: false; readonly why: WriteRefusal | "changed" | "unconfirmed" | "unread"; readonly retryAfterMs: number | null; readonly placed: number; readonly unconfirmed?: readonly string[] };
 
 /** The most entries one request carries (the account service's bound). */
 export const BATCH_ENTRIES_MAX = 16;

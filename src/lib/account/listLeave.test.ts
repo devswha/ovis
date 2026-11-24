@@ -4,7 +4,7 @@ import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { allowDevice } from "./listAllow.ts";
 import { deviceListKeys } from "./listKeys.ts";
-import { forgetMembership, inList, leaveList, tidyOnRead, watchRemoval } from "./listLeave.ts";
+import { forgetMembership, inList, leaveList, removeOthers, tidyOnRead, watchRemoval } from "./listLeave.ts";
 import { removeFromList } from "./listRemoveDevice.ts";
 import { accountList } from "./accountList.ts";
 import { memoryListLock } from "./listStore.ts";
@@ -204,5 +204,15 @@ describe("what the second Codex read of P13 found about leaving", () => {
     expect(await second.lists.get("copy", w.account)).toBe(saved);
     await second.list.forget(w.account, departing);
     expect(await second.lists.get("copy", w.account)).toBeUndefined();
+  });
+
+  it("M3: a page whose own store cannot be read takes no path of a device in no list: nothing is signed, and it says it could not read", async () => {
+    const { w, second } = await twoDevices();
+    const page = accountList({ service: second.service, accountStore: second.store, listStore: second.lists, lock: memoryListLock(), now: () => w.clock.now });
+    const unread = { ...page, follows: async () => { throw new DOMException("The store did not open", "UnknownError"); } };
+    const before = w.held().entries.length;
+    expect(await leaveList(unread, w.account, noWait)).toMatchObject({ removed: false, why: "unread" });
+    expect(await removeOthers(unread, w.account, [], noWait)).toMatchObject({ removed: false, why: "unread" });
+    expect(w.held().entries).toHaveLength(before);
   });
 });

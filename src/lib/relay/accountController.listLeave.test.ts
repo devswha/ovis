@@ -51,8 +51,8 @@ describe("the hosted shell and a device's place in its account's signed list", (
   /** The account service ended this device's sign-in: its directory answers 401 (a linked device the list put out). */
   let directoryEnded = false;
   beforeEach(() => { asked = []; directoryEnded = false; });
-  /** The shell of `device`'s page: its account store and its list; the directory the shell reads is empty. */
-  const shellOf = (device: WorldDevice) => createAccountController({
+  /** The shell of `device`'s page: its account store and its list (`list`: another page's view of it); the directory the shell reads is empty. */
+  const shellOf = (device: WorldDevice, list = device.list) => createAccountController({
     container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore: device.store, accountService: device.session.service,
     accountFetch: async (input, init) => {
       const request = new Request(input, init);
@@ -63,7 +63,7 @@ describe("the hosted shell and a device's place in its account's signed list", (
       return Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
     },
     renderApp: () => ({ render() {}, unmount() {} }),
-    accountList: device.list,
+    accountList: list,
   }, { active: () => true, changed: async () => {}, outdated: () => new Set() });
 
   it("a device in the list puts itself out at sign-out, then forgets its account key, its encryption key and its copy", async () => {
@@ -216,6 +216,31 @@ describe("the hosted shell and a device's place in its account's signed list", (
     asked = [];
     expect(await shell.signOutEverywhere()).toBe("15 of 16 other devices left your account, then Newcomer came in since you asked. Ask again to go on.");
     expect(asked).not.toContain("POST /v1/signout/all");
+  });
+
+  it("M3: a sign-out on a page that cannot read its own list store forgets nothing it cannot see, and says so", async () => {
+    const { w, second } = await twoDevices();
+    const page = accountList({ service: second.service, accountStore: second.store, listStore: second.lists, lock: memoryListLock(), now: () => w.clock.now });
+    const unread = { ...page, follows: async (): Promise<boolean> => { throw new DOMException("The store did not open", "UnknownError"); } };
+    const shell = shellOf(second, unread);
+    const own = (await second.keys()).key;
+    shell.signOut();
+    await until(() => shell.state?.kind === "signed-out" && shell.state.error !== null);
+    expect(shell.state).toEqual({ kind: "signed-out", error: "This device signed out, but it could not read what it keeps of your account's list, so your account may still list it." });
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
+    expect((await second.keys()).key).toBe(own);
+    expect(await second.lists.get("copy", w.account)).toBeDefined();
+  });
+
+  it("M3: sign out every device does not go on where this device cannot read its own list store", async () => {
+    const { w, first } = await twoDevices();
+    const unread = { ...first.list, view: () => ({ ...first.list.view(), account: null, status: { at: "off" as const } }), follows: async (): Promise<boolean> => { throw new DOMException("The store did not open", "UnknownError"); } };
+    const shell = shellOf(first, unread);
+    await shell.refresh(true);
+    asked = [];
+    expect(await shell.signOutEverywhere()).toBe("No device was signed out: the other devices could not be removed from your account. Try again.");
+    expect(asked).not.toContain("POST /v1/signout/all");
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 
   it("Codex 6: a leave whose own removal counted finishes on this device when the account service ended its sign-in with it", async () => {
