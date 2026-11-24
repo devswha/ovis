@@ -132,7 +132,7 @@ describe("the new-device notice of an account with a signed list", () => {
     expect(notices(root)).toEqual([]);
   });
 
-  it("Not me asks Remove's question with everything the device added ticked, each can be left out, and says it is out", async () => {
+  it("Not me asks Remove's question with its switch on and everything the device added ticked, and says it is out", async () => {
     const { w, phone, tablet, root } = await looked();
     const stranger = await letIn(w, tablet, "Unknown laptop");
     await letIn(w, stranger, "Second stranger");
@@ -145,8 +145,9 @@ describe("the new-device notice of an account with a signed list", () => {
     expect(notices(root)).toEqual(["Unknown laptop was allowed into your account by Dana's tablet.", "Second stranger was allowed into your account by Unknown laptop."]);
     await act(async () => { root.findAll((node) => node.type === "button" && textOf(node) === "Not me")[0]!.props.onClick(); });
     expect(textOf(dialog(root))).toContain("Remove Unknown laptop from your account?");
-    const boxes = () => dialog(root).find((node) => node.props["data-testid"] === "came-in-through").findAll((node) => node.type === "input");
-    expect(boxes().map((node) => node.props.checked)).toEqual([true, true]);
+    const through = () => dialog(root).find((node) => node.props["data-testid"] === "came-in-through");
+    const boxes = () => through().findAll((node) => node.type === "input");
+    expect([through().find((node) => node.props.role === "switch").props["aria-checked"], boxes().map((node) => node.props.checked)]).toEqual([true, [true, true]]);
     expect(dialog(root).findAll((node) => node.props["data-testid"] === "pcs-added-again").map(textOf)).toEqual(["These PCs will need to be added again."]);
     await act(async () => { dialog(root).find((node) => node.type === "button" && textOf(node) === "Remove").props.onClick(); });
     await waitFor(() => root.findAll((node) => node.props["data-testid"] === "list-device-notice-removed").length > 0);

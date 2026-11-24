@@ -13,6 +13,7 @@ import { cameInThrough, removeFromList, type Arrival, type RemoveOutcome } from 
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import { Toggle } from "./SettingsControls.tsx";
 
 /** The page's list as it shows now, kept current. */
 export function useListView(list: AccountList | null): AccountListView | null {
@@ -91,7 +92,7 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
           confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave(); setAsked(null); }} />
       )}
       {asked !== null && asked !== "self" && (
-        <RemoveDialog list={list} view={view} removing={keyOf(asked)} name={nameOf(asked)} ticked={false}
+        <RemoveDialog list={list} view={view} removing={keyOf(asked)} name={nameOf(asked)} also={false}
           onClose={() => setAsked(null)} onRemoved={(name) => { setAsked(null); setNote(t("{name} was removed from your account.", { name })); }} />
       )}
     </section>
@@ -99,17 +100,18 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
 }
 
 /**
- * Remove's question. The key goes for good; what came in through it is listed by name below, each to tick: a lost
- * phone may have let in the person's own PCs, a stolen one the thief's devices. `ticked`: whether every item is
- * ticked at first, as for Not me on a device the person does not know, whose additions are suspect; each can be
- * left out either way. Invites it placed go void by themselves and are not named.
+ * Remove's question (Doriterm's rule: a plain removal by default, a compromised one on request). The key goes for
+ * good; one switch also removes what came in through it, each listed by name, ticked, and each can be left out. With
+ * nothing that came in through it, there is no switch. `also`: whether the switch is on at first, as for Not me on
+ * a device the person does not know, whose additions are suspect. Invites it placed go void by themselves and are
+ * not named.
  */
-export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRemoved }: {
+export function RemoveDialog({ list, view, removing, name, also, onClose, onRemoved }: {
   readonly list: AccountList;
   readonly view: AccountListView;
   readonly removing: string;
   readonly name: string;
-  readonly ticked: boolean;
+  readonly also: boolean;
   readonly onClose: () => void;
   readonly onRemoved: (name: string) => void;
 }) {
@@ -119,8 +121,9 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
     const writer = list.writer();
     return writer === null ? [] : cameInThrough(writer.state, removing, writer.keys.key);
   });
-  const [chosen, setChosen] = useState<ReadonlySet<number>>(() => new Set(ticked ? arrivals.map((_, index) => index) : []));
-  const picked = arrivals.filter((_, index) => chosen.has(index));
+  const [withThem, setWithThem] = useState(also && arrivals.length > 0);
+  const [left, setLeft] = useState<ReadonlySet<number>>(new Set());
+  const picked = withThem ? arrivals.filter((_, index) => !left.has(index)) : [];
   const remove = async (): Promise<void> => {
     const outcome = await removeFromList(list, {
       keys: [removing, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))],
@@ -132,23 +135,26 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
     if (!outcome.removed) throw new Error(failureOf(t, outcome, name));
     onRemoved(name);
   };
+  const switchLabel = t("If {name} was stolen, also remove what it added ({n})", { name, n: String(arrivals.length) });
   return (
     <ConfirmDialog title={t("Remove {name} from your account?|device", { name })}
       body={t("{name} loses access to every PC of your account for good. To use it again, sign in on it and allow it from another device.", { name })}
       confirmLabel={t("Remove")} onClose={onClose} onConfirm={remove}>
       {arrivals.length > 0 && (
-        <fieldset className="account-manage-through" data-testid="came-in-through">
-          <legend className="settings-description">{t("Came in through {name}:", { name })}</legend>
-          {arrivals.map((arrival, index) => (
+        <div className="account-manage-through" data-testid="came-in-through">
+          <div className="account-manage-also">
+            <Toggle checked={withThem} label={switchLabel} onChange={setWithThem} />
+            <span className="settings-label" aria-hidden="true">{switchLabel}</span>
+          </div>
+          {withThem && arrivals.map((arrival, index) => (
             <label key={arrival.kind === "pc" ? arrival.endpoint : arrival.key} className="account-manage-through-row">
-              <input type="checkbox" checked={chosen.has(index)}
-                onChange={() => setChosen((now) => { const next = new Set(now); if (!next.delete(index)) next.add(index); return next; })} />
+              <input type="checkbox" checked={!left.has(index)}
+                onChange={() => setLeft((now) => { const next = new Set(now); if (!next.delete(index)) next.add(index); return next; })} />
               <span className="settings-label">{arrivalNameOf(t, view, arrival)}</span>
             </label>
           ))}
-          <p className="settings-hint">{t("If {name} was stolen, tick what you did not add yourself.", { name })}</p>
           {picked.some((arrival) => arrival.kind === "pc") && <p className="settings-hint" data-testid="pcs-added-again">{t("These PCs will need to be added again.")}</p>}
-        </fieldset>
+        </div>
       )}
     </ConfirmDialog>
   );
