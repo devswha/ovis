@@ -7,7 +7,7 @@
  *
  * Each binary has its own crate tree, assets, manifest and record, and installs on its own: one that cannot be installed
  * never keeps the other out. Both are published beside each other, in the release and in the beta prerelease named
- * after the PTY host's crate tree. What follows says "host"; the keeper is checked the same way.
+ * after both crate trees. What follows says "host"; the keeper is checked the same way.
  *
  * Linux assets are static (musl), so they run on any distribution; the macOS one is universal
  * (arm64 and x86_64) and ad-hoc signed. `install` runs at every herdr plugin install, every update
@@ -15,7 +15,7 @@
  * package.json's version, only when that release was built from this checkout's crate sources
  * (their git tree), checks its SHA-256 against the release's manifest and that it runs here, and
  * moves it into place in one rename. A checkout whose crate sources no release was built from (a beta
- * build of main, .github/workflows/beta.yml) takes the host of the `pty-sidecar-<crate tree>` prerelease
+ * build of main, .github/workflows/beta.yml) takes the host of the `pty-sidecar-<host tree>-<keeper tree>` prerelease
  * the beta workflow publishes for those sources instead, checked the same way. Without one, it says
  * why and exits 0: the server then runs the Node sidecar where the PC has Node, or mirrors its panes, and runs no ACP keeper. `--strict` exits 1 instead.
  */
@@ -205,12 +205,19 @@ export async function install(options: { releases?: string; target?: string; pla
       const version = packageVersion();
       const local = { ...options, part };
       result = await attempt(sources.tree, target, local, { base: `${releases}/v${version}`, name: `release v${version}`, version });
-      // the beta prerelease is named after the PTY host's crate tree, and carries the keeper built beside it
-      const host = part === PTY_HOST ? sources : crateTree(root, PTY_HOST.crate);
-      if (!result.ok && result.elsewhere && "tree" in host) {
-        const built = await attempt(sources.tree, target, local,
-          { base: `${releases}/${TREE_RELEASE}${host.tree}`, name: `prerelease ${TREE_RELEASE}${host.tree.slice(0, 12)}` });
-        result = built.ok || !built.elsewhere ? built : { ok: false, message: `${result.message}, and ${built.message}` };
+      if (!result.ok && result.elsewhere) {
+        const host = part === PTY_HOST ? sources : crateTree(root, PTY_HOST.crate);
+        const keeper = part === ACP_KEEPER ? sources : crateTree(root, ACP_KEEPER.crate);
+        if ("tree" in host) {
+          const legacy = `${TREE_RELEASE}${host.tree}`;
+          const tags = "tree" in keeper ? [`${legacy}-${keeper.tree}`, legacy] : [legacy];
+          for (const tag of tags) {
+            const built = await attempt(sources.tree, target, local,
+              { base: `${releases}/${tag}`, name: `prerelease ${tag.slice(0, TREE_RELEASE.length + 12)}` });
+            result = built.ok || !built.elsewhere ? built : { ok: false, message: `${result.message}, and ${built.message}` };
+            if (!built.elsewhere) break;
+          }
+        }
       }
     }
   } catch (error) {

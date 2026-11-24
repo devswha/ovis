@@ -60,8 +60,8 @@ test("beta rebuilds both binaries until the prerelease carries the current keepe
   }
   gh() {
     case "$3:$5" in
-      v1:ovis-pty-sidecar.json) echo '{"crate":"host"}';;
-      pty-sidecar-host:ovis-acp-keeper.json) [ "$KEEPER" != missing ] && printf '{"crate":"%s"}' "$KEEPER";;
+      pty-sidecar-host-keeper:ovis-pty-sidecar.json) echo '{"crate":"host"}';;
+      pty-sidecar-host-keeper:ovis-acp-keeper.json) [ "$KEEPER" != missing ] && printf '{"crate":"%s"}' "$KEEPER";;
       *) return 1;;
     esac
   }

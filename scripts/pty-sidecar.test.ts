@@ -184,10 +184,11 @@ describe("install", () => {
       expect((await install({ releases, target: keeperTarget(), platform: "linux-x64", part: ACP_KEEPER })).message).toContain("other crates/acp-keeper sources");
     });
 
-    it("takes the keeper built beside the host from the prerelease named after the PTY host's crate tree", async () => {
+    it("takes the keeper from the prerelease for both crate trees when the old host-only tag has another keeper", async () => {
       files.clear();
       keeper(`/v${version}`, KEEPER, { crate: "0".repeat(40) });
-      keeper(`/${TREE_RELEASE}${tree}`, KEEPER, { version: "0.0.1" });
+      keeper(`/${TREE_RELEASE}${tree}`, KEEPER, { crate: "1".repeat(40) });
+      keeper(`/${TREE_RELEASE}${tree}-${keeperTree}`, KEEPER, { version: "0.0.1" });
       const path = keeperTarget();
       expect(await install({ releases, target: path, platform: "linux-x64", part: ACP_KEEPER })).toEqual({ ok: true, message: expect.stringContaining(`prerelease ${TREE_RELEASE}${tree.slice(0, 12)}`) });
       expect(readFileSync(path, "utf8")).toBe(KEEPER);
