@@ -35,6 +35,10 @@ export interface AcpStart {
   name?: string;
   /** `_meta` of the keeper's `session/new` (the Claude adapter takes its model and settings this way) */
   sessionMeta?: unknown;
+  /** `configOptions` of the keeper's `session/new`, set before the agent answers it */
+  configOptions?: readonly unknown[];
+  /** environment variables, each naming a file of that name in the child's private ROOT */
+  privateFiles?: Record<string, string>;
   /** the terminal's environment over the core's */
   env?: Record<string, string>;
   runId?: string;
@@ -190,6 +194,7 @@ export class AcpChildren {
       bin, root, "--cwd", start.cwd, "--name", start.name ?? start.harness,
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
       ...(start.mcpServers === undefined ? [] : ["--mcp-servers", JSON.stringify(start.mcpServers)]),
+      ...(start.configOptions === undefined ? [] : ["--config-options", JSON.stringify(start.configOptions)]),
       ...(start.announceSubagents ? ["--announce-subagents"] : []),
       ...(start.askEveryTime ? ["--ask-every-time"] : []),
       "--", ...start.argv,
@@ -201,7 +206,7 @@ export class AcpChildren {
         argv, cwd: start.cwd,
         ...(start.parentPane === undefined ? { no_parent: true } : { parent: start.parentPane }),
         labels: { [LABEL]: id, ...(start.runId ? { "ovis.run": start.runId } : {}), ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
-        ...(start.askEveryTime ? { env: { ...start.env, OPENCODE_DB: join(root, "opencode.db") } } : start.env === undefined ? {} : { env: start.env }),
+        ...(start.env === undefined && start.privateFiles === undefined ? {} : { env: { ...start.env, ...Object.fromEntries(Object.entries(start.privateFiles ?? {}).map(([name, file]) => [name, join(root, file)])) } }),
       }));
     } catch (error) {
       const live = await this.liveTerminals().catch((lookupError: unknown) => {
@@ -250,13 +255,15 @@ export class AcpChildren {
     this.children.set(child.id, child);
     let state = child.client.status;
     let plan = child.client.history.plan;
+    let hold = child.client.holdGeneration;
     for (const listener of this.listeners) listener(child);
     // a keeper that ended by itself (Ctrl+Q in its pane, its terminal closed) takes its child along
     const off = child.client.onChange(() => {
       if (this.children.get(child.id) !== child) return;
-      if (state !== child.client.status || plan !== child.client.history.plan || child.client.keeperGone) {
+      if (state !== child.client.status || plan !== child.client.history.plan || hold !== child.client.holdGeneration || child.client.keeperGone) {
         state = child.client.status;
         plan = child.client.history.plan;
+        hold = child.client.holdGeneration;
         for (const listener of this.listeners) listener(child);
       }
       if (!child.client.keeperGone) return;
@@ -271,6 +278,12 @@ export class AcpChildren {
   forPane(paneId: string): AcpChild | undefined {
     for (const child of this.children.values()) if (child.terminal === paneId) return child;
     return undefined;
+  }
+
+  /** This server's children whose keeper's terminal hc runs under `parentPane`. */
+  async childrenOf(parentPane: string): Promise<AcpChild[]> {
+    const under = (await this.terminals()).filter(terminal => terminal.state === "live" && terminal.parent === parentPane);
+    return [...this.children.values()].filter(child => under.some(terminal => terminal.address === child.terminal && terminal.labels[LABEL] === child.id));
   }
 
   cancelTurn(id: string): void {

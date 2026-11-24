@@ -19,7 +19,7 @@
  *   service's word adds nobody and takes the PC out of nothing. The pin is one-way: it ends only with the binding it
  *   belongs to (Revoke all, a reset relay identity), or with an entry of the list that removes this PC.
  */
-import { linkSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { linkSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { verifyLineProof } from "../../shared/account-list-invite.ts";
@@ -95,6 +95,12 @@ export const DIFFERENCES_MAX = 1000;
 export const LIST_ALLOW_TRIES = 4;
 /** How often keeping a signed entry begins again because another Ovis on the folder wrote or removed one meanwhile. */
 const ALLOW_KEEP_TRIES = 3;
+/**
+ * How long an entry this PC signed for a device it has since come to hold back keeps the place it was signed for from
+ * another device's Allow: it is never sent, and after this long (from when it was kept, the file's own time) it is
+ * dropped. The bound the app's writer keeps a signed request by.
+ */
+export const LIST_KEPT_HELD_MS = 10 * 60_000;
 /** The longest a device waits for the PC to place the entry that lets it in: the session's setup is kept open that long. */
 export const LIST_ALLOW_MS = 90_000;
 /** How long it waits before it sends the same Allow again to a service that is busy with the list. */
@@ -379,6 +385,10 @@ export class ListFollow implements ListAuthority {
   /** When each session called the two session routes, in the last minute. */
   private readonly peerCalls = new Map<string, number[]>();
   private pendingJoin: { readonly account: string; readonly list: string; readonly invite: string; readonly body: Uint8Array } | null = null;
+  /** The list and head at which the kept entry's file (ACCOUNT_LIST_ALLOW_FILE) was found unreadable: nothing is signed until the copy is past it. */
+  private allowUnread: { readonly list: string; readonly seq: number } | null = null;
+  /** The kept entry is one of a device this PC has come to hold back, and holds its place from other devices for now (LIST_KEPT_HELD_MS). */
+  private keptHeld = false;
   /** The proof of the invite's line this PC was named its list with (joinByLine): posted with its keys while it waits for that list. */
   private lineProof: { readonly account: string; readonly card: LineCard; readonly invite: string; readonly proof: string } | null = null;
   /** The device that is being let in through this PC right now: its row comes in with no join hold. */
@@ -533,22 +543,53 @@ export class ListFollow implements ListAuthority {
   private keptAllow(scope: Bound, copy: FollowerCopy): KeptAllow | "unread" | null {
     const kept = this.allowOnDisk(scope);
     const footing = copy.state?.footing;
-    if (kept === null || kept === "unread" || footing === undefined) return kept;
+    if (kept === "unread") {
+      if (footing === undefined) return kept;
+      // Not known what it held: nothing is signed while the copy stands at the head at which it was found so. Once the
+      // verified head moved past that, the place anything in it was signed for is taken, and the file goes
+      const found = this.allowUnread;
+      if (found === null || found.list !== copy.list) { this.allowUnread = { list: copy.list, seq: footing.seq }; return kept; }
+      if (footing.seq <= found.seq) return kept;
+      this.dropAllow();
+      return null;
+    }
+    this.allowUnread = null;
+    if (kept === null || footing === undefined) { if (kept === null) this.keptHeld = false; return kept; }
     if (kept.list === copy.list && (kept.seq > footing.seq || (kept.seq === footing.seq && kept.onHead === footing.hash))) return kept;
     this.dropAllow();
     return null;
+  }
+
+  /**
+   * A person at this PC gives up the entry it signed and keeps for `key`, a device it has since come to hold back
+   * (POST /api/account/list/allow/cancel): that entry is never sent, and the place it held goes to the next Allow at
+   * once instead of after LIST_KEPT_HELD_MS. Nothing for an entry of any other device, or of one it still lets in.
+   * Answers whether one was given up.
+   */
+  cancelKept(key: string): boolean {
+    const scope = this.bound();
+    if (this.stopped || scope === null || !this.isPinned) return false;
+    const kept = this.allowOnDisk(scope);
+    if (kept === null || kept === "unread" || kept.key !== key || this.deps.mayAdmit?.(key) !== false) return false;
+    this.dropAllow();
+    return true;
+  }
+
+  /** How long ago the entry this PC keeps (ACCOUNT_LIST_ALLOW_FILE) was kept, by the file's own time, which is never written over; 0 when not known. */
+  private keptFor(): number {
+    try { return Math.max(0, Date.now() - statSync(this.allowPath).mtimeMs); } catch { return 0; }
   }
 
   private allowOnDisk(scope: Bound): KeptAllow | "unread" | null {
     let value: unknown;
     try { value = JSON.parse(readFileSync(this.allowPath, "utf8")); } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      this.error = `${ACCOUNT_LIST_ALLOW_FILE} cannot be read: this PC signs nobody into the list until that file is removed`;
+      this.error = `${ACCOUNT_LIST_ALLOW_FILE} cannot be read: this PC signs nobody new into the list until the list moves on`;
       return "unread";
     }
     const file = parseAllow(value);
     if (file === null) {
-      this.error = `${ACCOUNT_LIST_ALLOW_FILE} cannot be read: this PC signs nobody into the list until that file is removed`;
+      this.error = `${ACCOUNT_LIST_ALLOW_FILE} cannot be read: this PC signs nobody new into the list until the list moves on`;
       return "unread";
     }
     // another relay identity's, or another binding's: its head is not one this binding signs on
@@ -595,6 +636,8 @@ export class ListFollow implements ListAuthority {
   }
 
   private dropAllow(): void {
+    this.allowUnread = null;
+    this.keptHeld = false;
     try { rmSync(this.allowPath, { force: true }); } catch { /* read again at the next look, and dropped once the copy is past its head */ }
   }
 
@@ -752,6 +795,8 @@ export class ListFollow implements ListAuthority {
     const stands = standing(copy);
     if (stands === "stopped") return "A device of your account wrote something into its list that this Ovis is too old to read, so this PC lets no device of your account in. Update Ovis on this PC.";
     if (stands === "waiting") return "This PC is reading your account's list again from its start, and lets no device of your account in until that read shows this PC in the list.";
+    if (this.allowUnread !== null) return `This PC cannot read its record of an entry it signed (${ACCOUNT_LIST_ALLOW_FILE}), so it lets no new device into your account's list until the list has moved on. It then removes that file by itself.`;
+    if (this.keptHeld) return "This PC signed a device into your account's list that it has since held back. That entry is not sent, and for up to ten minutes after it was signed this PC lets no other new device in at its place, unless you cancel that entry on this PC.";
     return null;
   }
 
@@ -1330,8 +1375,16 @@ export class ListFollow implements ListAuthority {
           const cannot = keys.key !== now.me.key ? "unavailable" : cannotAllow(now);
           if (cannot !== null) return no(cannot);
           if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
-          return this.deps.mayAdmit?.(sent.key) === false ? no("not_written", "place_kept") : null;
+          if (this.deps.mayAdmit?.(sent.key) !== false) return null;
+          this.keptHeld = true;
+          return no("not_written", "place_kept");
         };
+        // the kept entry of a device this PC has come to hold back is never sent; past its time it gives the place up
+        if (!own && this.deps.mayAdmit?.(sent.key) === false && this.keptFor() >= LIST_KEPT_HELD_MS) {
+          this.dropAllow();
+          request = null;
+          continue;
+        }
         const early = stopped();
         if (early !== null) return early;
         // the copy moved while the entry was prepared: it is looked at again, and the entry is signed on the head it has now
@@ -1697,6 +1750,8 @@ export class ListFollow implements ListAuthority {
     this.candidate = null;
     this.pendingJoin = null;
     this.lineProof = null;
+    this.allowUnread = null;
+    this.keptHeld = false;
     this.ready = Promise.resolve();
     this.differences.clear();
     this.lastVerdict = this.error = null;
