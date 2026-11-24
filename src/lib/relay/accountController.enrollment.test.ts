@@ -213,7 +213,10 @@ describe("account enrollment ownership", () => {
         const opened = await run.open();
         const fetch = opened.fetch.bind(opened);
         opened.fetch = async (path: string) => { asked.push(path); return fetch(path); };
-        expect(await run.controller.enroll(opened, run.original.server_id, false)).toMatchObject({ state: "complete" });
+        const said = await run.controller.enroll(opened, run.original.server_id, false);
+        // a device that still waits to be let into the list says nothing of the account: "In your account" is for one its own copy shows in
+        if (list === "waiting") expect(said).toBe("local");
+        else expect(said).toMatchObject({ state: "complete" });
         expect({ puts: run.putPcs, links: run.links(), enrolled: asked.includes("/api/account/enroll") }).toEqual({ puts: [], links: 0, enrolled: false });
         expect(await rowSays(run)).not.toContain("incomplete");
         // the pairing is what it was
