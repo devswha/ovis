@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -76,6 +76,32 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(runs()[0]).toMatchObject({ no_parent: true });
     expect(runs()[0]).not.toHaveProperty("parent");
   });
+
+  for (const lookup of ["available", "unavailable"]) {
+    it(`reconciles a lost launch reply with terminal lookup ${lookup}`, async () => {
+      setUp();
+      fake.onStart = () => {};
+      const unrelated = fake.spawn({ argv: ["example"], labels: { "ovis.acp": "unrelated" } }).address;
+      const lost = new Error("launch reply lost");
+      const flaky: AcpHc = { call: async (method, params) => {
+        if (method === "terminal.list" && lookup === "unavailable") throw new Error("core offline");
+        const reply = await hc.call(method, params);
+        if (method === "terminal.run") throw lost;
+        return reply;
+      } };
+      children = new AcpChildren(dir, { hc: flaky, keeperBin: () => KEEPER_BUILD });
+      expect(await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir }).catch((error: unknown) => error)).toBe(lost);
+      expect(fake.terminal(unrelated).state).toBe("live");
+      if (lookup === "available") {
+        expect(kills()).toHaveLength(1);
+        expect(readdirSync(dir)).toEqual([]);
+      } else {
+        expect(kills()).toEqual([]);
+        const [id] = readdirSync(dir);
+        expect(id && existsSync(join(dir, id, "child.json"))).toBe(true);
+      }
+    });
+  }
 
   it("fails to start an agent that never answers initialize: its terminal is killed and its ROOT removed", async () => {
     setUp();

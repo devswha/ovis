@@ -162,7 +162,6 @@ export class AcpChildren {
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
       "--", ...start.argv,
     ];
-    const socket = socketAppears(root, this.options.socketMs ?? SOCKET_MS);
     let terminal: string;
     try {
       ({ address: terminal } = await this.hc().call("terminal.run", {
@@ -172,8 +171,15 @@ export class AcpChildren {
         ...(start.env === undefined ? {} : { env: start.env }),
       }));
     } catch (error) {
-      void socket.catch(() => undefined);
-      rmSync(root, { recursive: true, force: true });
+      const live = await this.liveTerminals().catch((lookupError: unknown) => {
+        console.warn(`acp: keeping ${root} after terminal lookup failed: ${lookupError instanceof Error ? lookupError.message : String(lookupError)}`);
+        return null;
+      });
+      if (live !== null) {
+        const address = live.get(id);
+        if (address !== undefined) await this.end(address, root);
+        else rmSync(root, { recursive: true, force: true });
+      }
       throw error;
     }
     const failed = async (reason: AcpStartFailed["reason"], message: string, client?: KeeperClient): Promise<never> => {
@@ -181,12 +187,20 @@ export class AcpChildren {
       await this.end(terminal, root);
       throw new AcpStartFailed(reason, message);
     };
-    if (!(await socket)) return failed("no_socket", "the ACP keeper did not open its socket");
+    if (!(await socketAppears(root, this.options.socketMs ?? SOCKET_MS))) return failed("no_socket", "the ACP keeper did not open its socket");
     const client = new KeeperClient(root);
     const opened = await sessionOpens(client, this.options.sessionMs ?? SESSION_MS);
     if (opened === "late") return failed("no_session", "the agent did not open a session (no answer to initialize or session/new)", client);
     if (opened === "exited") return failed("agent_exited", "the agent ended before its session opened", client);
     return this.add({ id, harness: start.harness, root, terminal, client });
+  }
+
+  private async liveTerminals(): Promise<Map<string, string>> {
+    const { terminals } = await this.hc().call("terminal.list", {});
+    return new Map(terminals.flatMap((terminal) => {
+      const id = terminal.labels[LABEL];
+      return id !== undefined && terminal.state === "live" ? [[id, terminal.address] as const] : [];
+    }));
   }
 
   private add(child: AcpChild): AcpChild {
@@ -236,11 +250,7 @@ export class AcpChildren {
    */
   async restore(): Promise<void> {
     if (this.refusal() !== null || !owned(this.dir, "directory")) return;
-    const { terminals } = await this.hc().call("terminal.list", {});
-    const live = new Map(terminals.flatMap((terminal) => {
-      const id = terminal.labels[LABEL];
-      return id !== undefined && terminal.state === "live" ? [[id, terminal.address] as const] : [];
-    }));
+    const live = await this.liveTerminals();
     for (const id of readdirSync(this.dir)) {
       const root = join(this.dir, id);
       if (!/^[a-f0-9]{12}$/.test(id)) continue;
