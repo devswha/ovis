@@ -501,6 +501,63 @@ describe("a binding pinned to the account's signed list", () => {
     expect(mine.strict).toContain(sibling);
   });
 
+  test("a file that is there and cannot be read under the lock aborts the write: the pin another server wrote is not written over", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const stale = PcAccountState.open(dir);
+    const path = join(dir, ADMISSION_FILE);
+    const disk = JSON.parse(readFileSync(path, "utf8")) as { gen: number; binding: object };
+    const pinned = JSON.stringify({ ...disk, v: 2, gen: disk.gen + 1, binding: { ...disk.binding, list: LIST } });
+    writeFileSync(path, pinned);
+    // the disk gives an error for one read
+    const failing = spyOn(bindingFs, "readFileSync").mockImplementation(() => { throw Object.assign(new Error("i/o error"), { code: "EIO" }); });
+    try { expect(() => stale.admit("pc", "code", null, Date.now())).toThrow(); } finally { failing.mockRestore(); }
+    expect(readFileSync(path, "utf8")).toBe(pinned);
+    // and a file that does not parse is no missing file either
+    writeFileSync(path, "{");
+    expect(() => stale.admit("pc", "code", null, Date.now())).toThrow();
+    expect(readFileSync(path, "utf8")).toBe("{");
+    // the write goes through once the file reads again, and keeps the pin
+    writeFileSync(path, pinned);
+    stale.admit("pc", "code", null, Date.now());
+    expect(PcAccountState.open(dir).binding()).toMatchObject({ list: LIST });
+  });
+
+  test("a lock that cannot be made ends the write with an error: nothing is written without the lock", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const pc = PcAccountState.open(dir);
+    const before = readFileSync(join(dir, ADMISSION_FILE), "utf8");
+    const refused = spyOn(bindingFs, "openSync").mockImplementation(() => { throw Object.assign(new Error("no access"), { code: "EACCES" }); });
+    try { expect(() => pc.admit("pc", "code", null, Date.now())).toThrow("cannot be locked"); } finally { refused.mockRestore(); }
+    expect(readFileSync(join(dir, ADMISSION_FILE), "utf8")).toBe(before);
+  });
+
+  test("looking at the file again costs no read while it has not changed, and tells nobody of a change that is neither the binding nor the pin", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const mine = PcAccountState.open(dir);
+    let told = 0;
+    mine.onBindingChange(() => { told++; });
+    const reads = spyOn(bindingFs, "readFileSync");
+    try {
+      mine.refresh();
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(0);
+      // another server on this folder records the listing its binding stands on: a pending approval here must stand
+      const path = join(dir, ADMISSION_FILE);
+      const disk = JSON.parse(readFileSync(path, "utf8")) as { binding: object };
+      reads.mockClear();
+      writeFileSync(path, JSON.stringify({ ...disk, binding: { ...disk.binding, listing_id: "1".repeat(32) } }));
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(mine.binding()).toMatchObject({ listing_id: "1".repeat(32) });
+      expect(told).toBe(0);
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally { reads.mockRestore(); }
+  });
+
   test("a stale lock that cannot be deleted ends the write with an error after its wait, and hangs nothing", async () => {
     const dir = stateDir();
     await linked(store(dir));

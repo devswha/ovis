@@ -172,9 +172,9 @@ function withFileLock<T>(path: string, work: () => T): T {
   const deadline = performance.now() + LOCK_WAIT_MS;
   let held = false;
   for (;;) {
-    try { closeSync(openSync(lock, "wx", 0o600)); held = true; break; } catch (error) {
-      // a folder that takes no lock file takes no write either: the write below says so
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") break;
+    try { closeSync(bindingFs.openSync(lock, "wx", 0o600)); held = true; break; } catch (error) {
+      // nothing is written without the lock: a folder that takes no lock file ends the write with an error
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new Error(`${path} cannot be locked (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
       let age = Number.POSITIVE_INFINITY;
       try { age = wallNow() - statSync(lock).mtimeMs; } catch { /* gone meanwhile: taken at the next turn */ }
       // a lock left by a server that ended while it wrote is taken over. One that cannot be deleted is waited for
@@ -187,18 +187,31 @@ function withFileLock<T>(path: string, work: () => T): T {
   try { return work(); } finally { if (held) { try { bindingFs.unlinkSync(lock); } catch { /* already gone */ } } }
 }
 
-/** What the lock is deleted with: one place, so a test can make a lock that will not go. */
-export const bindingFs = { unlinkSync };
+/** What the lock is made and deleted with and the file read with: one place, so a test can make a lock that will not go and a read that fails. */
+export const bindingFs = { openSync, unlinkSync, readFileSync };
 
-/** The document a file holds now, or null: no file, or one that does not read as this PC's account state. */
+/**
+ * The document a file holds now; null only when there is no file. A file that is there and cannot be read, or does
+ * not read as this PC's account state, throws: it is never taken for no document, since a write made on that word
+ * would replace whatever the file holds (a pin another server wrote) with what this server remembers.
+ */
 function docOnDisk(path: string): PcDoc | null {
-  try {
-    const parsed = parseDoc(JSON.parse(readFileSync(path, "utf8")));
-    if (typeof parsed === "string") return null;
-    const { counterOnly: _counterOnly, ...doc } = parsed;
-    return doc;
-  } catch { return null; }
+  let text: string;
+  try { text = bindingFs.readFileSync(path, "utf8"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`${path} cannot be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
+  }
+  let parsed: ReturnType<typeof parseDoc>;
+  try { parsed = parseDoc(JSON.parse(text)); } catch { throw new Error(`${path} is not JSON`); }
+  if (typeof parsed === "string") throw new Error(`${path} cannot be trusted: ${parsed}`);
+  const { counterOnly: _counterOnly, ...doc } = parsed;
+  return doc;
 }
+
+/** What tells one state of a file from the next without reading it. */
+const stamp = (path: string): string | null => {
+  try { const { mtimeMs, size, ino } = statSync(path); return `${mtimeMs} ${size} ${ino}`; } catch { return null; }
+};
 
 const standingIn = (doc: PcDoc): AccountBinding | null => {
   const { binding } = doc;
@@ -322,6 +335,8 @@ export class PcAccountState {
     state.fresh = false;
     state.upgradingFrom = false;
     state.siblingBinding = null;
+    // what the file is as this handle reads it: looking again costs nothing until it changes (refresh)
+    state.seen = stamp(state.path);
     let text: string;
     try { text = readFileSync(state.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") state.problem = `Cannot read ${state.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
@@ -677,6 +692,7 @@ export class PcAccountState {
       const doc = reconciled(this.doc, next, docOnDisk(this.path), this.path);
       writePrivateState(this.path, onDisk(doc));
       this.doc = doc;
+      this.seen = stamp(this.path);
     });
     if (before !== committedId(this.doc.binding) || pinned !== this.doc.binding?.list) for (const listener of this.bindingListeners) listener();
   }
@@ -690,12 +706,21 @@ export class PcAccountState {
    */
   refresh(): void {
     if (this.problem !== null || this.fresh) return;
-    const disk = docOnDisk(this.path);
+    // nothing is read while the file is the one this server last read or wrote
+    const now = stamp(this.path);
+    if (now === null || now === this.seen) return;
+    let disk: PcDoc | null;
+    try { disk = docOnDisk(this.path); } catch { return; }
+    this.seen = now;
     if (disk === null) return;
-    const doc = reconciled(this.doc, this.doc, disk, this.path);
-    if (JSON.stringify(doc) === JSON.stringify(this.doc)) return;
-    const changed = JSON.stringify(doc.binding) !== JSON.stringify(this.doc.binding);
+    let doc: PcDoc;
+    try { doc = reconciled(this.doc, this.doc, disk, this.path); } catch { return; }
+    // told as a write of this server's own is: for another binding, or a pin, and for nothing else the file holds
+    const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
+    const changed = committedId(doc.binding) !== committedId(this.doc.binding) || doc.binding?.list !== this.doc.binding?.list;
     this.doc = doc;
     if (changed) for (const listener of this.bindingListeners) listener();
   }
+  /** The file as this server last read or wrote it (stamp); null before either. */
+  private seen: string | null = null;
 }
