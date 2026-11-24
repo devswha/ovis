@@ -195,4 +195,8 @@ export const RELAY_ZH: Record<string, string> = {
   "{name} could not add it. Ask to join again.": "{name} 无法添加它。请再次请求加入。",
   "{name} belongs to another account's list": "{name} 属于另一个账户的名单",
   "{name} follows a list that is not your account's. Sign in to the same account on {name} and on this device, then try again.": "{name} 遵循的名单不是你账户的。请在 {name} 和此设备上登录同一账户，然后重试。",
+  "{name} was removed from your account": "{name} 已从你的账户中移除",
+  "It can come back only as a new PC. On {name}, open Settings → Devices and PCs and press Reset relay identity, then add it to your account again.": "它只能作为新 PC 重新加入。请在 {name} 上打开 设置 → 设备和电脑，点击“重置中继身份”，然后重新添加到你的账户。",
+  "This device's time in your account is over": "此设备在账户中的使用时间已结束",
+  "It was added for a limited time. To go on, add it again from a device of your account.": "此设备只被添加了一段时间。要继续使用，请从账户的其他设备重新添加。",
 };

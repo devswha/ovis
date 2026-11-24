@@ -195,4 +195,8 @@ export const RELAY_KO: Record<string, string> = {
   "{name} could not add it. Ask to join again.": "{name} PC가 추가하지 못했어요. 다시 참여를 요청하세요.",
   "{name} belongs to another account's list": "{name} PC는 다른 계정의 명단에 있어요",
   "{name} follows a list that is not your account's. Sign in to the same account on {name} and on this device, then try again.": "{name} PC가 따르는 명단은 내 계정의 것이 아니에요. {name} PC와 이 기기에서 같은 계정으로 로그인한 뒤 다시 시도하세요.",
+  "{name} was removed from your account": "{name} PC가 계정에서 제거됐어요",
+  "It can come back only as a new PC. On {name}, open Settings → Devices and PCs and press Reset relay identity, then add it to your account again.": "새 PC로만 다시 추가할 수 있어요. {name} PC에서 설정 → 기기와 PC를 열고 릴레이 신원 재설정을 누른 뒤 계정에 다시 추가하세요.",
+  "This device's time in your account is over": "이 기기의 계정 사용 시간이 끝났어요",
+  "It was added for a limited time. To go on, add it again from a device of your account.": "정해진 시간 동안만 추가된 기기예요. 계속 쓰려면 계정의 다른 기기에서 다시 추가하세요.",
 };

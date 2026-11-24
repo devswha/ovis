@@ -42,7 +42,13 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
    * this device follows its account's signed list and is in it (`in: false`: the account service keeps a list for the
    * account and this device follows none); `holds`: whether that list holds the PC. `read`: what a read of the list then finds.
    */
-  listed?: { holds: boolean; in?: boolean; read?: () => void; /** not in the list, and its claim of its key for it stands: it waits to be let in */ waits?: boolean; adopted?: (offer: { list: string; seq: number; hash: string }) => void };
+  listed?: {
+    holds: boolean; in?: boolean; read?: () => void;
+    /** not in the list, and its claim of its key for it stands: it waits to be let in */
+    waits?: boolean; adopted?: (offer: { list: string; seq: number; hash: string }) => void;
+    /** until when the list holds this device, in seconds; absent: for good */
+    until?: () => number | null;
+  };
   newUntil?: string | null; label?: string;
   /**
    * The page as a phone's browser runs it: the join sheet holds a history entry (sheetHistory.ts), and a link this page
@@ -104,7 +110,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const listReads: number[] = [];
   const listView = (): AccountListView => listed?.in === false ? { account: "acct_1", reached: true, status: listed.waits === true ? { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" } : { at: "off" }, devices: [], pcs: [] } : ({
     account: "acct_1", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 1, read_at: 1, trouble: null },
-    devices: [{ key: memberKey, self: true, power: "full", role: "drive", until: null, carried: false, name: null }],
+    devices: [{ key: memberKey, self: true, power: listed?.until === undefined ? "full" : "bound", role: "drive", until: listed?.until?.() ?? null, carried: false, name: null }],
     pcs: listed?.holds ? [{ endpoint: entry.public_key, server_id: serverId, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 1, by: memberKey, new_at: null }] : [],
   });
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
@@ -894,4 +900,22 @@ it("a join through a PC pinned to the list brings this device's card, takes the 
   expect(opens).toEqual([{ how: "other", intent: "account", list: LIST }, { how: "list", intent: undefined, list: undefined }]);
   expect(adopted).toEqual([{ list: LIST, seq: 3, hash: place.hash }]);
   expect(run.apps()).toBe(1);
+});
+
+it("a device whose own time in the list is over is told that, when the PC ends its session: nobody removed it, and nothing is forgotten", async () => {
+  const fatal: ((error: Error) => void)[] = [];
+  let until = Math.floor(Date.now() / 1000) + 3600;
+  const run = await accountPc({ listed: { holds: true, until: () => until }, open: async (offer, options) => {
+    if (options?.onFatal) fatal.push(options.onFatal);
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  // the hour is over by this device's own copy of the list, and the PC closes the session at that second
+  until = Math.floor(Date.now() / 1000) - 1;
+  fatal[0]!(new MuxProtocolError("auth_revoked", ""));
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-time-over" });
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+  expect(run.navigations).toEqual([]);
 });

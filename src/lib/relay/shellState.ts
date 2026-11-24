@@ -64,6 +64,10 @@ export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable
   | "new-key-unvouched"
   /** the PC refused this device's first link: its code ended or ran out, the code is for another account, or the account service did not vouch for this device */
   | "link-required" | "account-mismatch" | "unverified-device"
+  /** the PC refused this device's link because the account's signed list removed the PC: it comes back only as a new PC */
+  | "list-removed"
+  /** this device was in its account's signed list for a limited time, which is over: the PC ended its session for that, and nobody removed it */
+  | "list-time-over"
   /** the PC could not ask the account service whether it is still in the account, or left the account and must be added to it again */
   | "account-unreachable" | "account-readd"
   /**

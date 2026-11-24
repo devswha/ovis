@@ -195,4 +195,8 @@ export const RELAY_JA: Record<string, string> = {
   "{name} could not add it. Ask to join again.": "{name} は追加できませんでした。もう一度参加をリクエストしてください。",
   "{name} belongs to another account's list": "{name} は別のアカウントの名簿に入っています",
   "{name} follows a list that is not your account's. Sign in to the same account on {name} and on this device, then try again.": "{name} が従っている名簿はあなたのアカウントのものではありません。{name} とこの端末で同じアカウントにサインインしてから、もう一度お試しください。",
+  "{name} was removed from your account": "{name} はアカウントから削除されました",
+  "It can come back only as a new PC. On {name}, open Settings → Devices and PCs and press Reset relay identity, then add it to your account again.": "新しい PC としてのみ戻せます。{name} で 設定 → デバイスと PC を開いて「リレー ID をリセット」を押し、アカウントにもう一度追加してください。",
+  "This device's time in your account is over": "この端末のアカウント利用時間が終了しました",
+  "It was added for a limited time. To go on, add it again from a device of your account.": "一定の時間だけ追加された端末です。続けるには、アカウントの別の端末からもう一度追加してください。",
 };
