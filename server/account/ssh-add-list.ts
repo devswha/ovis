@@ -52,6 +52,9 @@ const CANNOT_ADD: Readonly<Record<AllowRefusal, string>> = {
 /** What stops this PC from signing anyone, as against what stopped this one entry. */
 const CANNOT_SIGN: ReadonlySet<AllowRefusal> = new Set(["not_pinned", "not_signer", "alarm", "stopped", "behind", "unavailable"]);
 
+/** The pause between two takes after the entry is placed: inside a loop bounded by its tries. */
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 const refuse = (code: string, message: string, status: number): { readonly refused: SshListRefusal } => ({ refused: { code, message, status } });
 
 function notAdded(outcome: Extract<AllowOutcome, { refused: AllowRefusal }>): { readonly refused: SshListRefusal } {
@@ -78,14 +81,13 @@ export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken 
     await deps.end();
     return notAdded(added);
   }
-  const wait = deps.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const wait = deps.wait ?? pause;
   const tries = deps.tries ?? AFTER_PLACED_TRIES;
   // the entry is in this PC's own copy: that PC reads it at its next take
-  for (let tried = 1; ; tried++) {
+  for (let tried = 1; tried <= tries; tried++) {
+    if (tried > 1) await wait(AFTER_PLACED_WAIT_MS);
     taken = await deps.take(named);
     if (!("waiting" in taken)) return taken;
-    if (tried >= tries) break;
-    await wait(AFTER_PLACED_WAIT_MS);
   }
   await deps.end();
   return refuse("take_unanswered", "That PC is in your account's list, and has not read it yet. Connect to it again to finish.", 409);
