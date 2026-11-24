@@ -11,8 +11,34 @@ import { PendingInputs } from "../../server/pending-input.ts";
 function fixture() {
   const data = new Map<string, string>();
   const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
-  return { data, store: new ComposerDraftStore(() => storage) };
+  return { data, storage, store: new ComposerDraftStore(() => storage) };
 }
+it("can claim and key a draft on HTTP without crypto.randomUUID", () => {
+  const { store } = fixture();
+  store.set("p", "continue");
+  expect(store.claim("p", "continue")).toBe(true);
+  const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+  Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+  try { expect(store.commandKey("p", "continue")).toMatch(/^[a-f0-9-]{36}$/); }
+  finally {
+    if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+    else Reflect.deleteProperty(crypto, "randomUUID");
+  }
+});
+
+it("recognizes an identical draft replaced by another tab before storage events run", () => {
+  const { storage, store } = fixture(), other = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue");
+  expect(store.claim(key, "continue")).toBe(true);
+  const sent = store.commandKey(key, "continue");
+  store.end(key);
+  other.set(key, "");
+  other.set(key, "continue");
+  expect(store.claim(key, "continue")).toBe(true);
+  expect(store.commandKey(key, "continue")).not.toBe(sent);
+});
+
 it("keeps the command key for a manual retry, not for edited or acknowledged drafts", () => {
   const { store } = fixture(), key = "pane", text = "echo once";
   const claim = () => {

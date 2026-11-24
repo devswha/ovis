@@ -352,7 +352,9 @@ export class HerdrSocket {
     this.reconnectTimer = null;
     const transport = getTransport();
     this.watchRoute(transport);
-    const socket = transport.openSocket(this.url);
+    const target = new URL(this.url);
+    target.searchParams.set("receipt_resume_id", receiptResumeId());
+    const socket = transport.openSocket(target.href);
     const epoch = ++this.connectionEpoch;
     const started = Date.now();
     this.socket = socket;

@@ -502,6 +502,7 @@ it("never replays a queued submit after disconnecting, including before its capa
     expect(submissions(socket).length).toBe(known ? 1 : 0);
     if (known) {
       const first = submissions(socket)[0]!;
+      expect(reconnect.sent.find((frame) => frame.type === "attach")).toMatchObject({ receipt_resume_id: new URL(socket.url).searchParams.get("receipt_resume_id") });
       expect(first.command_key).toBe(key);
       const next = reconnect.nextSubmission(), retry = press(), frame = await next;
       expect(frame).toMatchObject({ command_key: key });

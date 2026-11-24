@@ -208,7 +208,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const PI_RESUME_MS = 10 * 60 * 1000, PI_RESUME_LIMIT = 1024;
   // A command receipt holds neither text nor its old socket/lease. Queue text comes
   // from the matching retry; only the existing held-copy receipts prove it sendable.
-  type CommandReceipt = { hash: string; at: number; pending?: Pick<PendingMessage, "id" | "created_at" | "request_id" | "agent_only"> };
+  type CommandReceipt = { hash: string; at: number; fault?: { code: string; message?: string };
+    pending?: Pick<PendingMessage, "id" | "created_at" | "request_id" | "agent_only" | "state"> };
   const commands = new Map<string, CommandReceipt>();
   const submitting = new Set<string>();
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
@@ -226,8 +227,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    */
   const endedPanes = new Map<string, number>();
   const receiptKeys = new WeakMap<Client, Map<string, string>>();
-  const resumeKey = (client: Client, paneId: string): string | undefined => {
-    const id = client.data.attached.get(paneId)?.receiptResumeId;
+  const resumeKey = (client: Client, paneId: string, id = client.data.attached.get(paneId)?.receiptResumeId): string | undefined => {
     return id ? JSON.stringify([client.data.deviceId ?? null, id]) : undefined;
   };
   const prunePi = (): void => {
@@ -1365,10 +1365,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     async submit(client: Client, message: Frame<"submit">): Promise<void> {
       let claim: { key: string; hash: string } | undefined;
       const result = (ok: boolean, code?: string, text?: string, accepted?: PendingMessage, draft?: string | null, box?: string | null, typedNow = false, sendingAt?: string) => {
-        if (ok && claim) {
+        const fault = !ok && code && !submitNotTyped(code) ? { code, message: text } : undefined;
+        if ((ok || fault) && claim) {
           if (commands.size >= PI_RESUME_LIMIT) commands.delete(commands.keys().next().value!);
-          const pending = accepted && { id: accepted.id, created_at: accepted.created_at, request_id: accepted.request_id, agent_only: accepted.agent_only };
-          commands.set(claim.key, { hash: claim.hash, at: elapsed(), pending });
+          const pending = accepted && { id: accepted.id, created_at: accepted.created_at, request_id: accepted.request_id, agent_only: accepted.agent_only,
+            state: message.delivery === "hold" ? "held" as const : "queued" as const };
+          commands.set(claim.key, { hash: claim.hash, at: elapsed(), pending, fault });
         }
         send(client, {
           type: "submit-result", id: message.id, pane_id: message.pane_id, ok, ...(accepted ? { pending: accepted } : {}), ...(typedNow ? { typed_now: true as const } : {}), ...(code ? { code, message: text } : {}),
@@ -1437,7 +1439,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       try {
         // An authenticated machine bridge has already scoped the correlator to its
         // downstream principal (RelayReceiptIds); a bare unpaired socket has not.
-        const scope = message.command_key && (client.data.deviceId || client.data.bridge) && resumeKey(client, message.pane_id);
+        const scopedCommand = message.command_key && (client.data.deviceId || client.data.bridge || client.data.managedReceipts);
+        const scope = scopedCommand && resumeKey(client, message.pane_id, client.data.commandBrowser);
+        if (scopedCommand && !scope && !client.data.attached.has(message.pane_id)) {
+          throw new HerdrError("input_not_ready", "The pane is not attached yet; nothing was typed");
+        }
         if (scope) {
           authorizeSocket(client);
           const key = JSON.stringify([scope, message.pane_id, message.command_key]);
@@ -1445,11 +1451,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           const receipt = commands.get(key);
           if (receipt && elapsed() - receipt.at < PI_RESUME_MS) {
             if (receipt.hash !== hash) throw new HerdrError("invalid_submit_id", "This command key belongs to another draft");
+            if (receipt.fault) { result(false, receipt.fault.code, receipt.fault.message); return; }
             const copy = receipt.pending;
-            const settled = copy && completed.some((item) => item.id === copy.id && item.key === scope && item.paneId === message.pane_id &&
-              (item.outcome === "sent" || item.outcome === "discarded"));
+            const disposition = copy && completed.find((item) => item.id === copy.id && item.key === scope && item.paneId === message.pane_id)?.outcome;
+            const settled = disposition === "sent" || disposition === "discarded";
+            const held = copy?.state === "held" && (disposition === "held" || pending.get(client, message.pane_id, copy.id)?.message.state === "held");
             send(client, { type: "submit-result", pane_id: message.pane_id, id: message.id, ok: true, replayed: true,
-              ...(copy && !settled ? { pending: { ...copy, text: pendingText(message.text), state: "queued" } } : {}) });
+              ...(copy && !settled ? { pending: { ...copy, text: pendingText(message.text), state: held ? "held" : "queued" } } : {}) });
             return;
           }
           if (receipt) commands.delete(key);

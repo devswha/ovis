@@ -1308,8 +1308,9 @@ export type ClientMessage =
    * agent_not_ready, typing nothing, when no agent is in front of the pane as it would type it; a queued or held
    * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery.
    * `command_key`: UUID of a draft send, kept across manual retries until edited or acknowledged.
-   * A recent acceptance from this pane, device and browser answers `replayed` without typing or
-   * queuing again. A replayed pending item is a saved copy, not a lease on the original queue. */
+   * The WebSocket upgrade's optional `receipt_resume_id` identifies the browser even before attach.
+   * A recent acceptance for this pane, device and browser answers `replayed`; an uncertain result
+   * repeats its refusal. Neither writes again. A replayed pending item is a copy, not a lease. */
   | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true; command_key?: string }
   /** `withdrawal_only`: Edit's discard may withdraw only queued/held input; uncertain text stays
    * with its owner and returns pending_uncertain, rather than being dismissed. Older servers ignore

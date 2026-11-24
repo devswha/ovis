@@ -1,4 +1,5 @@
-import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
+import { COMMAND_PREFIX, paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
+import { newReceiptId } from "./receiptResume.ts";
 
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 interface Draft { text: string; sending: boolean }
@@ -35,7 +36,7 @@ export class ComposerDraftStore {
   private unsaved = new Set<string>();
   private agentOnly = new Set<string>();
   private pending = new Map<string, { sent: string; edited: boolean }>();
-  private commands = new Map<string, { message: string; id: string }>();
+  private commands = new Map<string, { message: string; id: string; shared: boolean }>();
   private listeners = new Set<() => void>();
   private own = new Set<string>();
   private expiries = new Map<string, unknown>();
@@ -91,7 +92,10 @@ export class ComposerDraftStore {
   set(key: string, value: string | ((previous: string) => string)): void {
     const draft = this.read(key);
     const text = typeof value === "string" ? value : value(draft.text);
-    if (text !== draft.text) this.commands.delete(key);
+    if (text !== draft.text) {
+      this.commands.delete(key);
+      try { this.storage().removeItem(COMMAND_PREFIX + key); } catch {}
+    }
     // cleared and retyped while on its way, a draft can end up starting with the sent text
     // again: once it stopped extending it, the whole of it is the user's own
     const pending = this.pending.get(key);
@@ -155,9 +159,17 @@ export class ComposerDraftStore {
   commandKey(key: string, message: string): string | undefined {
     if (!this.pending.has(key)) return undefined;
     const prior = this.commands.get(key);
-    if (prior?.message === message) return prior.id;
-    const id = crypto.randomUUID();
-    this.commands.set(key, { message, id });
+    if (prior?.message === message) {
+      // Read at Send, not at storage-event delivery: another tab can already
+      // have cleared and retyped the same words, invalidating this exact draft.
+      if (!prior.shared) return prior.id;
+      try { if (this.storage().getItem(COMMAND_PREFIX + key) === prior.id) return prior.id; }
+      catch { return prior.id; }
+    }
+    const id = newReceiptId();
+    let shared = false;
+    try { this.storage().setItem(COMMAND_PREFIX + key, id); shared = true; } catch {}
+    this.commands.set(key, { message, id, shared });
     return id;
   }
   end(key: string, send?: number): void {
@@ -216,6 +228,7 @@ export class ComposerDraftStore {
   settle(key: string, sent: string, send?: number): { text: string; edited: boolean } | null {
     if (send !== undefined && this.sends.get(key)?.id !== send) return null;
     this.commands.delete(key);
+    try { this.storage().removeItem(COMMAND_PREFIX + key); } catch {}
     this.refresh(key);
     const current = this.read(key).text;
     const editedMeanwhile = this.pending.get(key)?.edited === true;

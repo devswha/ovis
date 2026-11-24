@@ -261,8 +261,62 @@ it("replays a held draft's acceptance, not its input or its lease, when the retr
     await bridge.delivery.pendingFrames.submit(next, { ...frame, id: 2 });
     expect(bridge.typed).toEqual([]);
     expect(bridge.delivery.pending.list(next, "p")).toEqual([]);
-    expect(bridge.answer(next, 2)).toMatchObject({ ok: true, replayed: true, pending: { id: accepted!.id, text: frame.text } });
+    expect(bridge.answer(next, 2)).toMatchObject({ ok: true, replayed: true, pending: { id: accepted!.id, text: frame.text, state: "held" } });
   } finally { screen.mockRestore(); }
+});
+
+it("replays the uncertain result after a queued draft was pasted but lost its connection before Enter", async () => {
+  const bridge = heldCopyBridge(undefined, () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: () => {} }));
+  const first = bridge.tab(), writes: string[] = [];
+  const screen = spyOn(herdr, "paneRead").mockResolvedValue({ format: "text", source: "detection", pane_id: "p", tab_id: "t", workspace_id: "w", revision: 1, text: "› ", truncated: false });
+  const paste = spyOn(herdr, "paneSendText").mockImplementation(async () => {
+    writes.push("paste");
+    bridge.clients.delete(first);
+  });
+  const enter = spyOn(herdr, "paneSendKeys").mockImplementation(async () => { writes.push("Enter"); });
+  try {
+    const frame = { type: "submit" as const, command_key: crypto.randomUUID(), pane_id: "p", text: "continue", payload: "continue", delivery: "queue" as const };
+    await bridge.delivery.pendingFrames.submit(first, { ...frame, id: 1 });
+    expect(bridge.answer(first, 1)).toMatchObject({ ok: false, code: "submit_changed" });
+    bridge.delivery.closeConnection(first);
+    const next = bridge.tab();
+    await bridge.delivery.pendingFrames.submit(next, { ...frame, id: 2 });
+    expect(writes).toEqual(["paste"]);
+    expect(bridge.answer(next, 2)).toMatchObject({ ok: false, code: "submit_changed" });
+  } finally { screen.mockRestore(); paste.mockRestore(); enter.mockRestore(); }
+});
+
+it.each(["before attach", "managed bridge"])("deduplicates two explicit sends %s", async (scenario) => {
+  const bridge = heldCopyBridge(), first = bridge.tab(), next = bridge.tab();
+  const browser = first.data.attached.get("p")!.receiptResumeId!;
+  for (const owner of [first, next]) {
+    if (scenario === "before attach") {
+      owner.data.commandBrowser = browser;
+      owner.data.attached.clear();
+    } else {
+      delete owner.data.deviceId;
+      owner.data.managedReceipts = true;
+    }
+  }
+  const frame = { type: "submit" as const, command_key: crypto.randomUUID(), pane_id: "p", text: "continue", payload: "continue" };
+  await bridge.delivery.pendingFrames.submit(first, { ...frame, id: 1 });
+  bridge.clients.delete(first);
+  bridge.delivery.closeConnection(first);
+  await bridge.delivery.pendingFrames.submit(next, { ...frame, id: 2 });
+  expect(bridge.typed).toEqual(["p"]);
+  expect(bridge.answer(next, 2)).toMatchObject({ ok: true, replayed: true });
+});
+
+it("does not execute an unscoped pre-attach command on an older gateway", async () => {
+  const bridge = heldCopyBridge(), client = bridge.tab();
+  client.data.attached.clear();
+  const frame = { type: "submit" as const, command_key: crypto.randomUUID(), pane_id: "p", text: "continue", payload: "continue" };
+  await bridge.delivery.pendingFrames.submit(client, { ...frame, id: 1 });
+  expect(bridge.answer(client, 1)).toMatchObject({ ok: false, code: "input_not_ready" });
+  expect(bridge.typed).toEqual([]);
+  client.data.attached.set("p", { keepSize: false, receiptResumeId: crypto.randomUUID() });
+  await bridge.delivery.pendingFrames.submit(client, { ...frame, id: 2 });
+  expect(bridge.typed).toEqual(["p"]);
 });
 
 it("carries a pane's receipts to its new ID when herdr moves it: the sent one still stops a second tab, a held one still proves a reload", async () => {
