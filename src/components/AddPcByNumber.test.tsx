@@ -33,6 +33,10 @@ const press = async (label: string): Promise<void> => {
   await settle();
 };
 const text = (): string => textOf(renderer!.root.find((node) => node.props["data-testid"] === "add-pc-number"));
+/** Settles once `holds`, looking every 10 ms for two seconds at most: a wait for the PC runs on the real clock. */
+const until = async (holds: () => boolean): Promise<void> => {
+  for (let looks = 0; looks < 200 && !holds(); looks++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+};
 const digitsShown = (): string => textOf(renderer!.root.findByProps({ className: "relay-shell-digits" })).replaceAll(" ", "");
 
 beforeEach(() => {
@@ -71,7 +75,7 @@ afterEach(async () => {
  * This device is in its account's list, and a PC the account lists already (an own sign-in listed it, before the
  * account had a list) posted its keys and its card for that list.
  */
-async function listedPc(): Promise<{ pc: AskingPc; play: ReturnType<typeof pcComparing>; list: AccountList; post: PostedPc; admits: () => number; held: () => NonNullable<ReturnType<FakeAccountService["accountList"]>> }> {
+async function listedPc(): Promise<{ pc: AskingPc; play: ReturnType<typeof pcComparing>; list: AccountList; post: PostedPc; admits: () => number; opened: () => number; held: () => NonNullable<ReturnType<FakeAccountService["accountList"]>> }> {
   const start = await beginSignIn("github", { store, service: ORIGIN, redirectUri: WEB_REDIRECT });
   const returned = signInReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").hash);
   if (returned === null) throw new Error("no sign-in came back");
@@ -81,9 +85,12 @@ async function listedPc(): Promise<{ pc: AskingPc; play: ReturnType<typeof pcCom
   await store.set("signin_key", { account: ACCOUNT, sign_in_id: session.sign_in_id!, key: made, no: fake.registerSessionKey(session.access_token, made.public_spki, "Phone") });
   const pc = await askingPc();
   let play: ReturnType<typeof pcComparing> | undefined;
+  // every comparison this device opened: an attempt with no reveal
+  let opened = 0;
   // the PC answers as soon as the account service holds this device's commitment
   const service = new AccountService({ store, lock: memoryLock(), fetch: async (input: Request | string | URL, init?: RequestInit) => {
     const request = new Request(input, init);
+    if (request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt") && (await request.clone().json() as { reveal?: string }).reveal === undefined) opened++;
     const answer = await fake.fetch(request.clone());
     if (request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt")) await play?.answer();
     return answer;
@@ -95,10 +102,10 @@ async function listedPc(): Promise<{ pc: AskingPc; play: ReturnType<typeof pcCom
   play = pcComparing({ fake, origin: ORIGIN } as unknown as Parameters<typeof pcComparing>[0], pc, held().id);
   const post = (await postedPcs(list)).find((each) => each.server_id === pc.server_id);
   if (post === undefined) throw new Error("the PC's post was not read");
-  return { pc, play, list, post, held, admits: () => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length };
+  return { pc, play, list, post, held, opened: () => opened, admits: () => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length };
 }
 
-async function mount(list: AccountList, post: PostedPc, more: { waitMs?: number } = {}): Promise<{ closed: () => number; added: () => number }> {
+async function mount(list: AccountList, post: PostedPc, more: { waitMs?: number; now?: () => number } = {}): Promise<{ closed: () => number; added: () => number }> {
   let closed = 0, added = 0;
   await act(async () => {
     renderer = create(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post, name: "Desk", onClose: () => { closed++; }, onAdded: () => { added++; }, ...more }) }));
@@ -142,13 +149,41 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     const { play, list, post, held } = await listedPc();
     const answer = play.answer;
     play.answer = async () => false;
-    await mount(list, post, { waitMs: 0 });
+    await mount(list, post, { waitMs: 100 });
+    await until(() => text().includes("The PC did not answer"));
     expect(text()).toContain("The PC did not answer. Start again on the PC.");
     expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
     expect(buttons()).toEqual(["Close", "Try again"]);
     play.answer = answer;
     await press("Try again");
+    await until(() => renderer!.root.findAllByProps({ className: "relay-shell-digits" }).length > 0);
     expect(await play.digits()).toBe(digitsShown());
     expect(held().entries.length).toBe(1);
+  });
+
+  it("asks for three numbers at most: after the third, no Try again", async () => {
+    const { play, list, post, held, opened } = await listedPc();
+    play.answer = async () => false;
+    await mount(list, post, { waitMs: 100 });
+    for (let more = 0; more < 2; more++) {
+      await until(() => buttons().includes("Try again"));
+      expect(buttons()).toEqual(["Close", "Try again"]);
+      await press("Try again");
+    }
+    await until(() => text().includes("Too many tries"));
+    expect(text()).toContain("Too many tries for this PC. Start again on the PC in a few minutes.");
+    expect(buttons()).toEqual(["Close"]);
+    expect([opened(), held().entries.length]).toEqual([3, 1]);
+  });
+
+  it("adds nothing at a press after the number ran out, whatever the timer did not draw yet", async () => {
+    const { list, post, held } = await listedPc();
+    let clock = Date.now();
+    await mount(list, post, { now: () => clock });
+    expect(buttons()).toEqual(["Not the same", "Add"]);
+    clock += 121_000;
+    await press("Add");
+    expect(text()).toContain("That number ran out. Press Add for a new one.");
+    expect([held().entries.length, readSeenPcs(ACCOUNT).pcs]).toEqual([1, {}]);
   });
 });

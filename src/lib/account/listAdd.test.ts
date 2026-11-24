@@ -107,6 +107,40 @@ describe("the number for a PC that asks to be added", () => {
     expect(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play))).toEqual({ shown: false, why: "spent" });
   });
 
+  it("ends at its deadline where the account service holds the commitment and never answers it", async () => {
+    const { phone } = await asking();
+    const [post] = await postedPcs(phone.list);
+    phone.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt") ? new Promise<Response>(() => {}) : null;
+    expect(await numberWith(phone.list, post!, { waitMs: 50 })).toEqual({ shown: false, why: "silent" });
+  });
+
+  it("ends at its deadline where a read of the posts never answers", async () => {
+    const { phone } = await asking();
+    const [post] = await postedPcs(phone.list);
+    phone.wire.answer = (request) => request.method === "GET" && new URL(request.url).pathname.endsWith("/posts") ? new Promise<Response>(() => {}) : null;
+    expect(await numberWith(phone.list, post!, { waitMs: 50 })).toEqual({ shown: false, why: "silent" });
+  });
+
+  it("is not shown from an answer that came after its deadline, and times its two minutes from before the PC could have answered", async () => {
+    /** a device whose every read of the posts after the first takes `slow` ms by its own clock to come back */
+    const slowly = async (slow: number) => {
+      const { w, phone, play } = await asking();
+      const [post] = await postedPcs(phone.list);
+      let clock = 0;
+      let reads = 0;
+      phone.wire.answer = async (request) => {
+        if (request.method !== "GET" || !new URL(request.url).pathname.endsWith("/posts")) return null;
+        if (reads++ > 0) clock += slow;
+        return w.fake.fetch(request);
+      };
+      return numberWith(phone.list, post!, { wait: async () => { clock += 1_500; await play.answer(); }, now: () => clock });
+    };
+    // the PC's nonce was not there at the first read, sent at 0, and was at the next: it can have been put there right after 0
+    expect(shown(await slowly(20_000)).until).toBe(120_000);
+    // the same, where the late read came back past the thirty seconds the device waits: no number at all
+    expect(await slowly(40_000)).toEqual({ shown: false, why: "silent" });
+  });
+
   it("can be given up while it waits for the PC", async () => {
     const { phone } = await asking();
     const [post] = await postedPcs(phone.list);
@@ -143,6 +177,18 @@ describe("Add, beside the number", () => {
     expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => { throw new AccountServiceError(403, "session_not_fresh", "x"); } }))
       .toEqual({ added: false, why: "admit", code: "session_not_fresh", retryAfterMs: null });
     expect(w.held().entries.length).toBe(before);
+  });
+
+  it("signs nothing, and admits nothing, where this device holds another member key than the one the number was worked out with", async () => {
+    const { w, phone, play } = await asking();
+    const number = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));
+    expect(number.member).toBe((await phone.keys()).key);
+    const before = w.held().entries.length;
+    const admitted: string[] = [];
+    expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => { admitted.push("admitted"); }, member: "another-key" })).toMatchObject({ added: false, why: "changed" });
+    // and an account other than the one the card was shown for is refused before the admission too
+    expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => { admitted.push("admitted"); }, expect: { account: "acct_another", list: number.post.list } })).toMatchObject({ added: false, why: "changed" });
+    expect([admitted, w.held().entries.length]).toEqual([[], before]);
   });
 
   it("signs nothing for another account or list than the one the card was shown for", async () => {

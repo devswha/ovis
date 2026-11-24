@@ -1,7 +1,8 @@
 import { Monitor } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ACCOUNT_OS_NAMES, accountLabel, placeName, type AccountAsker } from "../../shared/account-asker.ts";
-import { addPostedPc, numberWith, postedPcs, type AddNumber, type AddPcOutcome, type NumberRefusal } from "../lib/account/listAdd.ts";
+import { addPostedPc, NUMBER_TRIES, numberWith, postedPcs, type AddNumber, type AddPcOutcome, type NumberRefusal } from "../lib/account/listAdd.ts";
+import { holdsList } from "../lib/account/listWrite.ts";
 import { listNames } from "../lib/account/listGenesis.ts";
 import { pageListReading } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
@@ -10,7 +11,7 @@ import { noteAct } from "../lib/account/seenPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
-import { useT } from "../lib/i18n.ts";
+import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { NewPcNotice } from "./NewPcNotices.tsx";
 import { addRefusal, numberRefusal, refusal, type Problem } from "./pcAddRefusals.ts";
@@ -64,6 +65,9 @@ function askerLine(asker: AccountAsker | undefined, language: string): string | 
   const parts = [asker.os === null ? null : ACCOUNT_OS_NAMES[asker.os], placeName(language, asker)].filter((part) => part !== null);
   return parts.length === 0 ? null : parts.join(" · ");
 }
+
+/** What the card says when its number ran out: a new one at Add, while the card has tries left. */
+const numberEnded = (t: Translate, tries: number): Problem => ({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("That number ran out. Press Add for a new one."), signInAgain: false });
 
 /** No number came for a PC that asks to be added (listAdd.ts). */
 class NumberError extends Error {
@@ -184,14 +188,17 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   // On an account with a signed list, for a PC that posted its keys for it: the number both screens show, worked out
   // with the PC (listAdd.ts). The person confirms it at the PC first; the Add beside it then signs the PC into the list.
   const [number, setNumber] = useState<AddNumber | null>(null);
+  // the numbers this card asked for: NUMBER_TRIES at most, Not the same and a number that ran out included
+  const [tries, setTries] = useState(0);
+  const spent = tries >= NUMBER_TRIES && number === null;
   const numberEnd = useRef<AbortController | null>(null);
   useEffect(() => () => numberEnd.current?.abort(new DOMException("The card closed", "AbortError")), []);
   useEffect(() => {
     if (number === null) return;
     // the PC takes a yes for a number only so long: after that the card asks for a new one
-    const timer = setTimeout(() => { setNumber(null); setProblem({ text: t("That number ran out. Press Add for a new one."), signInAgain: false }); }, Math.max(0, number.until - Date.now()));
+    const timer = setTimeout(() => { setNumber(null); setProblem(numberEnded(t, tries)); }, Math.max(0, number.until - now()));
     return () => clearTimeout(timer);
-  }, [number, t]);
+  }, [number, t, tries, now]);
   const removal = usePcRemoval(service, () => {
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
     onRemoved();
@@ -223,14 +230,21 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   // the ten minutes are checked again at the press: a page left open never adds an old listing
   const add = (): Promise<void> => act(async () => {
     if (!youngAt(now())) { setYoung(false); return; }
-    // the account has a list and this device is in it: a PC that posted for the list is added by the number
-    const list = pageListReading(session.account) === "in" ? pageAccountList() : null;
+    // the account has a list and this device holds it: a PC that posted for the list is added by the number, and
+    // nothing else (no admission of the directory's alone, whatever became of the post or of this device's standing)
+    const view = pageAccountList()?.view();
+    const known = view != null && view.account === session.account && holdsList(view);
+    const list = known && pageListReading(session.account) === "in" ? pageAccountList() : null;
+    if (known && (list === null || list.writer() === null)) throw new AddRefused({ added: false, why: "blocked", retryAfterMs: null });
     const post = list === null ? undefined : (await postedPcs(list)).find((each) => each.server_id === pc.server_id);
+    if (known && post === undefined) throw new NumberError("gone");
     if (list !== null && post !== undefined) {
+      if (tries >= NUMBER_TRIES) throw new NumberError("spent");
+      setTries((count) => count + 1);
       numberEnd.current?.abort(new DOMException("Another number was asked for", "AbortError"));
       const end = new AbortController();
       numberEnd.current = end;
-      const outcome = await numberWith(list, post, { signal: end.signal, ...(numberWaitMs === undefined ? {} : { waitMs: numberWaitMs }) });
+      const outcome = await numberWith(list, post, { signal: end.signal, now, ...(numberWaitMs === undefined ? {} : { waitMs: numberWaitMs }) });
       if (!outcome.shown) throw new NumberError(outcome.why);
       setNumber(outcome.number);
       return;
@@ -263,15 +277,19 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     const at = admitted.admitted_at ?? (await directory.listPcs().catch(() => [])).find((each) => each.server_id === pc.server_id)?.admitted_at ?? null;
     const { unconfirmed: _unconfirmed, asking: _asking, asking_until: _until, ...listed } = pc;
     onConfirmed({ ...listed, new_until: admitted.new_until, admitted_at: at });
-  }, (error) => error instanceof NumberError ? { text: numberRefusal(t, error.why), signInAgain: false } : refusal(t, error));
+  }, (error) => error instanceof NumberError ? { text: numberRefusal(t, error.why), signInAgain: false } : error instanceof AddRefused ? addRefusal(t, error.outcome) : refusal(t, error));
   /** Add, beside the number: the account admits the PC, and this device signs it into the list with the card the number came from. */
   const addByNumber = (shown: AddNumber): Promise<void> => act(async () => {
     const list = pageAccountList();
     if (list === null) return;
+    // the number lives so long: a press after it adds nothing, whatever the timer did not draw yet
+    if (now() >= shown.until) { setNumber(null); setProblem(numberEnded(t, tries)); return; }
     const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
-      expect: { account: session.account, list: shown.post.list },
+      expect: { account: session.account, list: shown.post.list }, member: shown.member,
       admit: async () => { await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
     });
+    // the service's own window for the listing ended: nothing was admitted, and the request is started again on the PC
+    if (!outcome.added && outcome.why === "admit" && outcome.code === "listing_expired") { setNumber(null); setToldExpired(true); setYoung(false); return; }
     if (!outcome.added) throw new AddRefused(outcome);
     // The person pressed Add where a number was compared on both screens: kept in this device's own record of its PCs,
     // by the relay key the number was worked out for. It only records: storage that is not there changes nothing.
@@ -283,7 +301,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   const notTheSame = (): void => {
     numberEnd.current?.abort(new DOMException("The numbers were not the same", "AbortError"));
     setNumber(null);
-    setProblem({ text: t("The numbers did not match. This PC was not added."), signInAgain: false });
+    setProblem({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("The numbers did not match. This PC was not added."), signInAgain: false });
   };
   const remove = (): Promise<void> => act(async () => { await removal.remove(session, pc.server_id, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
     () => ({ text: t("The PC could not be removed. Try again."), signInAgain: false }));
@@ -323,7 +341,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
           </>
         ) : young ? (
           <>
-            <button type="button" className="btn" disabled={busy} onClick={add}>{t("Add|account pc")}</button>
+            {!spent && <button type="button" className="btn" disabled={busy} onClick={add}>{t("Add|account pc")}</button>}
             <button type="button" className="btn" disabled={busy} onClick={remove}>{t("No|account pc")}</button>
           </>
         ) : <button type="button" className="btn" disabled={busy} onClick={remove}>{ranOut ? t("No|account pc") : t("Remove from my account")}</button>}

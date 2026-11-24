@@ -61,12 +61,22 @@ export type NumberRefusal = "no_list" | "gone" | "spent" | "silent" | "unreached
 export interface AddNumber {
   readonly post: PostedPc;
   readonly digits: string;
-  /** Until when the PC takes a yes for this number, in ms by this device's clock. */
+  /**
+   * Until when this device takes a press of Add for this number, in ms by its clock: two minutes from the earliest the
+   * PC can have answered (the last read that did not show its answer yet), never from when its answer came here.
+   */
   readonly until: number;
+  /** The member key the comparison was made with: the PC takes an entry signed by it alone, so Add signs with it or not at all. */
+  readonly member: string;
 }
 
 export type NumberOutcome = { readonly shown: true; readonly number: AddNumber } | { readonly shown: false; readonly why: NumberRefusal };
 
+/**
+ * How many numbers one card asks for a PC, on this device: a try that ran out, was not the same or got no answer counts.
+ * The account service keeps its own, larger count; this one is the phone's, so a card left open asks the PC no more.
+ */
+export const NUMBER_TRIES = 3;
 /** A number lives this long from the PC's answer. */
 export const NUMBER_MS = 120_000;
 /** How long this device waits for the PC's answer to its commitment: the PC asks the account service every few seconds. */
@@ -81,6 +91,19 @@ const pause = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((
   const timer = setTimeout(resolve, ms);
   signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason as Error); }, { once: true });
 });
+
+/**
+ * `work` with `ms` to answer, by its own timer: a request that does not end with its signal is given up all the same,
+ * and the call rejects as one that got no answer in time.
+ */
+function within<T>(ms: number, signal: AbortSignal | undefined, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const stop = new AbortController();
+  const over = new DOMException("The account service did not answer in time", "TimeoutError");
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => { reject(over); stop.abort(over); }, Math.max(0, ms));
+    work(signal === undefined ? stop.signal : AbortSignal.any([signal, stop.signal])).then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
 
 const refusalOf = (error: unknown): AccountServiceError | null => (error instanceof AccountServiceError && !(error instanceof AccountRefreshError) ? error : null);
 const unanswered = (error: unknown): boolean => error instanceof AccountServiceUnreachableError || error instanceof AccountRefreshError
@@ -102,38 +125,59 @@ export async function numberWith(list: AccountList, post: PostedPc, options: { r
   const binding = cardBinding(cardOf(post));
   const mine = randomPairNonce();
   const message = { key: post.key, adder, commitment: toBase64Url(pairCommitment(binding, adder, mine)) };
+  // One deadline for the whole wait: every request of it ends by then, answered or not, and an answer that comes after
+  // it counts for nothing
+  const deadline = now() + (options.waitMs ?? NUMBER_WAIT_MS);
   const refused = (error: unknown): NumberOutcome => {
     if (error instanceof SignedOutError || options.signal?.aborted === true) throw error;
     const said = refusalOf(error);
-    if (said === null) { if (unanswered(error)) return { shown: false, why: "unreached" }; throw error; }
+    if (said === null) {
+      if (error instanceof DOMException && error.name === "TimeoutError" && now() >= deadline) return { shown: false, why: "silent" };
+      if (unanswered(error)) return { shown: false, why: "unreached" };
+      throw error;
+    }
     return { shown: false, why: said.status === 409 && said.code === "post_changed" ? "gone" : said.status === 429 ? "spent" : "unreached" };
   };
-  try { await writer.service.listAttempt(writer.list, post.endpoint, message, options.signal); } catch (error) { return refused(error); }
+  /** One request of the wait, ended at the deadline: `late` where it ended past it, whatever it answered. */
+  const timed = async <T>(work: (signal: AbortSignal) => Promise<T>): Promise<T | "late"> => {
+    if (now() >= deadline) return "late";
+    const answer = await within(deadline - now(), options.signal, work);
+    return now() > deadline ? "late" : answer;
+  };
+  // the earliest the PC can have answered this commitment: it cannot before it was sent, nor before a read that did not show its answer
+  let earliest = now();
+  try { if (await timed((signal) => writer.service.listAttempt(writer.list, post.endpoint, message, signal)) === "late") return { shown: false, why: "silent" }; } catch (error) { return refused(error); }
   // the PC's nonce, for this very commitment, read from the posts until it is there
   let theirs: Uint8Array | null = null;
-  const deadline = now() + (options.waitMs ?? NUMBER_WAIT_MS);
   while (theirs === null) {
-    let posts: readonly ListPost[];
-    try { posts = await writer.service.listPosts(writer.list, options.signal); } catch (error) { return refused(error); }
+    const sent = now();
+    let posts: readonly ListPost[] | "late";
+    try { posts = await timed((signal) => writer.service.listPosts(writer.list, signal)); } catch (error) { return refused(error); }
+    if (posts === "late") return { shown: false, why: "silent" };
     const seen = posts.find((each) => each.endpoint === post.endpoint);
     if (seen === undefined || seen.key !== post.key || seen.enc !== post.enc || seen.card !== post.card) return { shown: false, why: "gone" };
     // another attempt took this one's place (another device of the account asked for a number too): this one is over
     if (seen.attempt === null || seen.attempt.adder !== adder || seen.attempt.commitment !== message.commitment) return { shown: false, why: "gone" };
     if (seen.attempt.nonce !== null) { theirs = fromBase64Url(seen.attempt.nonce); break; }
+    earliest = sent;
     if (now() >= deadline) return { shown: false, why: "silent" };
-    await wait(NUMBER_POLL_MS, options.signal);
+    await wait(Math.min(NUMBER_POLL_MS, deadline - now()), options.signal);
   }
-  const answered = now();
+  const until = earliest + NUMBER_MS;
   const reveal = toBase64Url(mine);
   for (let sends = 1; ; sends += 1) {
-    try { await writer.service.listAttempt(writer.list, post.endpoint, { ...message, reveal }, options.signal); break; } catch (error) {
+    // the reveal, too, goes only while the number lives
+    if (now() >= until) return { shown: false, why: "silent" };
+    try { await within(until - now(), options.signal, (signal) => writer.service.listAttempt(writer.list, post.endpoint, { ...message, reveal }, signal)); break; } catch (error) {
       const said = refusalOf(error);
       // the service has not stored the PC's answer where this request landed yet: once more, a moment later
       if (said !== null && said.status === 409 && said.code === "attempt_changed" && sends < REVEAL_SENDS) { await wait(NUMBER_POLL_MS, options.signal); continue; }
+      if (said === null && error instanceof DOMException && error.name === "TimeoutError" && options.signal?.aborted !== true) return { shown: false, why: "silent" };
       return said !== null && said.status === 409 ? { shown: false, why: "gone" } : refused(error);
     }
   }
-  return { shown: true, number: { post, digits: pairDigits(binding, adder, mine, theirs), until: answered + NUMBER_MS } };
+  if (now() >= until) return { shown: false, why: "silent" };
+  return { shown: true, number: { post, digits: pairDigits(binding, adder, mine, theirs), until, member: adder } };
 }
 
 /** Why a PC was not added: what stops any write (listWrite.ts), or the account service did not admit the PC (`admit`, with its code). */
