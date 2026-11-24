@@ -1,4 +1,15 @@
 /* the one-time notice of the move onto the account's list: one row for each device and PC it brought in */
+.list-move-first {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.list-move-first .account-approval-lead {
+  flex: 1;
+  min-width: 0;
+}
+
 .list-move-rows {
   display: flex;
   flex-direction: column;

@@ -114,10 +114,20 @@ export function ListMoveNotice({ list = pageAccountList(), removePc, notMeDevice
     }
   };
   const title = t("Your account now keeps its own list");
+  // the device that made the list, when it is another
+  const maker = notice.first.self ? null : notice.first.key;
   const card = (
     <div className="modal account-approval list-move-notice" role="dialog" aria-modal="true" aria-label={title} data-testid="list-move-notice">
       <h2 className="account-approval-title">{title}</h2>
-      <p className="account-approval-lead">{notice.first.self ? t("This device made your account's list.") : t("{device} made your account's list.", { device: deviceName(notice.first.name) })}</p>
+      {maker === null || notMeDevice === undefined
+        ? <p className="account-approval-lead">{notice.first.self ? t("This device made your account's list.") : t("{device} made your account's list.", { device: deviceName(notice.first.name) })}</p>
+        : (
+          // in a birth someone else made, they are its first signer: Not me answers them as it does a device they brought in (R-G)
+          <div className="list-move-first">
+            <p className="account-approval-lead">{t("{device} made your account's list.", { device: deviceName(notice.first.name) })}</p>
+            <NotMeButton sending={false} onPress={() => notMeDevice(maker, deviceName(notice.first.name))} />
+          </div>
+        )}
       {notice.devices.length + notice.pcs.length > 0 && <>
         <p className="account-approval-hint">{t("It brought these in. Press Not me on one you do not know.")}</p>
         <ul className="list-move-rows">

@@ -65,12 +65,6 @@ public class HerdrShellPlugin extends Plugin {
     }
 
     /**
-     * A PC's own page says which PC it is: `server_id`, its relay ID as its own /api/health gave it to that page, and
-     * `name`. Kept only for the saved PC the app shows when the page loaded now is on that PC's own address
-     * (Home.identifiedKey), so a page speaks for its own PC alone, never for another saved one; My PCs then lists that PC
-     * once with the relay row of the same ID.
-     */
-    /**
      * The application id this build was made as. The client turns the waits of a move onto the account's signed list
      * down only in the QA twin (sh.ovis.app.previewqa; src/lib/account/listMigrate.ts migrationScale), never elsewhere.
      */
@@ -81,6 +75,12 @@ public class HerdrShellPlugin extends Plugin {
         call.resolve(answer);
     }
 
+    /**
+     * A PC's own page says which PC it is: `server_id`, its relay ID as its own /api/health gave it to that page, and
+     * `name`. Kept only for the saved PC the app shows when the page loaded now is on that PC's own address
+     * (Home.identifiedKey), so a page speaks for its own PC alone, never for another saved one; My PCs then lists that PC
+     * once with the relay row of the same ID.
+     */
     @PluginMethod
     public void identify(PluginCall call) {
         String key = Home.identifiedKey(loadedUrl(), PCStore.current(getContext()), BuildConfig.APP_ORIGIN);

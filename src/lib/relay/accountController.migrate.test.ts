@@ -81,6 +81,8 @@ describe("the shell's sessions and the move of an account onto its list", () => 
   it("a device that follows its moved list names it, with its vouch, to a PC that follows none", async () => {
     const signedIn = await signIn("acct-named");
     const pc = pcKeys();
+    const at = Math.floor(Date.now() / 1000) - 40 * DAY;
+    globalThis.localStorage.setItem("ovis:seen-pcs:acct-named", JSON.stringify({ v: 1, account: "acct-named", pcs: { [pc.endpoint]: { since: at, last: at, how: "paired" } } }));
     const following = (): AccountListView => ({ account: "acct-named", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
     let named: unknown = null;
     const { list } = listIn(following, async (given) => { named = given; return { naming: { list: "5c".repeat(32), key: "member", signature: "s".repeat(86) }, vouches: [] }; });
@@ -93,6 +95,31 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     const pinned = sessionOf({ key: signedIn, pinned: true });
     await account.sessionOpened(pinned.opened, pc.offerKey);
     expect(pinned.asked).toEqual([]);
+  });
+
+  it("a PC neither the account's directory nor this device's own record knows is named nothing and asked nothing (review U1)", async () => {
+    const signedIn = await signIn("acct-stranger");
+    const pc = pcKeys();
+    const LIST = "5c".repeat(32);
+    let named = 0;
+    for (const status of [{ at: "following" as const, list: LIST, standing: "in" as const, head: 4, read_at: 1, trouble: null }, { at: "none" as const, why: "moving" as const, move: { why: "pcs_silent" as const, wait: 60, asks: [] } }]) {
+      const { list } = listIn(() => ({ account: "acct-stranger", reached: true, status, devices: [], pcs: [] }), async () => { named += 1; return { naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }; });
+      const account = controller(list, empty);
+      const one = sessionOf({ key: signedIn, answers: { "GET /api/account/list/witness": { account: "acct-other", pinned: null, admits: [], removed: [] } } });
+      await account.sessionOpened(one.opened, pc.offerKey);
+      expect(one.asked).toEqual([]);
+    }
+    expect(named).toBe(0);
+    // the same PC, once the account's directory lists it, is named the list
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const { list } = listIn(() => ({ account: "acct-stranger", reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] }), async () => { named += 1; return { naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }; });
+    const account = controller(list, empty, undefined, [row]);
+    await account.refresh(true);
+    await settle();
+    const listed = sessionOf({ key: signedIn });
+    await account.sessionOpened(listed.opened, pc.offerKey);
+    expect(named).toBe(1);
+    expect(listed.asked.map((one) => `${one.method} ${one.path}`)).toEqual(["POST /api/account/list/name"]);
   });
 
   it("a device in no moved list, and one with no list, says nothing to any PC", async () => {
@@ -224,5 +251,70 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     await settle();
     expect(asking.asked.map((one) => one.path)).toEqual(["/api/account/list/witness"]);
     expect(pageAnswers.get("acct-again", pc.endpoint)).toEqual(fresh);
+  });
+
+  /** A device with a PC it paired with in its record, a pairing saved for it, and what the background asks open. */
+  const pairedPc = async (account: string) => {
+    const pc = pcKeys();
+    const at = Math.floor(Date.now() / 1000) - 40 * DAY;
+    globalThis.localStorage.setItem(`ovis:seen-pcs:${account}`, JSON.stringify({ v: 1, account, pcs: { [pc.endpoint]: { since: at, last: at, how: "paired" } } }));
+    const paired = { server_id: pc.serverId, device_id: "dev-1", private_key: (await newKey()).private_key, public_spki: "spki", label: "Phone", server_public_key: pc.offerKey, relay: "wss://relay.test" } as RelayDevice;
+    const store: ShellDeviceStore = { ...empty, get: async (id) => (id === pc.serverId ? paired : undefined), list: async () => [paired] };
+    return { pc, store };
+  };
+
+  it("an account that waits on no PC opens no session to any in the background, whatever its PCs (review R02)", async () => {
+    await signIn("acct-still");
+    const { store } = await pairedPc("acct-still");
+    const opened: unknown[] = [];
+    for (const status of [{ at: "off" as const }, { at: "none" as const, why: "not_new" as const }, { at: "following" as const, list: "5c".repeat(32), standing: "in" as const, head: 4, read_at: 1, trouble: null }, { at: "none" as const, why: "moving" as const, move: { why: "sending" as const, wait: null, asks: [] } }]) {
+      const { list, tell } = listIn(() => ({ account: "acct-still", reached: true, status, devices: [], pcs: [] }));
+      const account = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({}).opened; });
+      await account.refresh(true);
+      await settle();
+      tell();
+      await settle();
+    }
+    expect(opened).toEqual([]);
+  });
+
+  it("a PC asked again for why the device waits is asked once in ten minutes at most (review R04)", async () => {
+    await signIn("acct-paced");
+    const { pc, store } = await pairedPc("acct-paced");
+    const opened: unknown[] = [];
+    const said = { account: "acct-paced", pinned: null, admits: [], removed: [] };
+    const waiting = (): AccountListView => ({ account: "acct-paced", reached: true, status: { at: "none", why: "moving", move: { why: "too_new", wait: 600, asks: [] } }, devices: [], pcs: [] });
+    const { list, tell } = listIn(waiting);
+    const account = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ answers: { "GET /api/account/list/witness": said } }).opened; });
+    await account.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toHaveLength(1);
+    expect(pageAnswers.get("acct-paced", pc.endpoint)).toEqual(said);
+  });
+
+  it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
+    await signIn("acct-check");
+    const one = pcKeys();
+    const two = pcKeys();
+    const at = Math.floor(Date.now() / 1000) - 40 * DAY;
+    globalThis.localStorage.setItem("ovis:seen-pcs:acct-check", JSON.stringify({ v: 1, account: "acct-check", pcs: { [one.endpoint]: { since: at, last: at, how: "paired" }, [two.endpoint]: { since: at, last: at, how: "paired" } } }));
+    const pairing = (pc: ReturnType<typeof pcKeys>) => ({ server_id: pc.serverId, device_id: "dev-1", private_key: null, public_spki: "spki", label: "Phone", server_public_key: pc.offerKey, relay: "wss://relay.test" }) as unknown as RelayDevice;
+    const pairings = [pairing(one), pairing(two)];
+    const store: ShellDeviceStore = { ...empty, get: async (id) => pairings.find((row) => row.server_id === id), list: async () => pairings };
+    pageAnswers.set("acct-check", one.endpoint, { account: "acct-check", pinned: "5c".repeat(32), admits: [], removed: [] });
+    pageAnswers.set("acct-check", two.endpoint, { account: "acct-check", pinned: null, admits: [], removed: [] });
+    const opened: { server_public_key: string }[] = [];
+    const following = (): AccountListView => ({ account: "acct-check", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 4, read_at: 1, trouble: null, asks: [two.endpoint] }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following);
+    const account = controller(list, store, async (offer) => { opened.push(offer as never); return sessionOf({}).opened; });
+    await account.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened.map((offer) => offer.server_public_key)).toEqual([two.offerKey]);
   });
 });

@@ -1021,10 +1021,11 @@ export function accountList(options: AccountListOptions): AccountList {
   /**
    * Sends a birth this device kept, as it is (X5): placed (201, or `409 list_exists` naming this very list); the account
    * has another list (`409 list_exists` naming another), so this one is given up for good; or not known yet (no answer,
-   * a 429, a 5xx, a 401, a success other than the 201, a refusal that names nothing), and it is sent again as it is at
-   * the next round, which first asks the account service which list the account has. A refusal that is final lets it
-   * go, in the same write as the refusal; the next plan comes no sooner than MOVE_AGAIN_SECONDS later, without the key
-   * or the PC a `403 not_carried` named (rulings-migrate-3.md, its addendum on GET /v1/devices).
+   * a 429, a 5xx, a 401, a success other than the 201, a refusal that names nothing, a refusal of the caller rather than
+   * of the birth), and it is sent again as it is at the next round, which first asks the account service which list the
+   * account has. The birth's own final refusal (a 400 or a 413 of its body, a `403 not_carried`) lets it go, in the same
+   * write as the refusal; the next plan comes no sooner than MOVE_AGAIN_SECONDS later, without the key or the PC a
+   * `403 not_carried` named (rulings-migrate-3.md, its addendum on GET /v1/devices).
    */
   const sendBirth = async (bound: AccountService, account: string, birth: KeptBirth, signal: AbortSignal): Promise<"placed" | "other" | MoveState> => {
     const sending: MoveState = { why: "sending", wait: null, asks: [] };
@@ -1045,14 +1046,16 @@ export function accountList(options: AccountListOptions): AccountList {
         await giveUp(account, birth.list);
         return "other";
       }
-      if (said.status < 400 || said.status === 401 || said.status === 429 || said.status >= 500 || said.code === "http_error") return sending;
-      const about = said.status === 403 && said.code === "not_carried" ? notCarriedAt(birth, said.index) : null;
+      const notCarried = said.status === 403 && said.code === "not_carried";
+      // a refusal of the caller (a frozen or borrowed sign-in, a route the service hides, ...) is no answer about the birth
+      if (!notCarried && said.status !== 400 && said.status !== 413) return sending;
+      const about = notCarried ? notCarriedAt(birth, said.index) : null;
+      // its list id is not given up: no other birth can ever have it
       await retireBirth(account, birth, {
         at: seconds(),
         keys: [...birth.skip.keys, ...about !== null && "key" in about ? [about.key] : []],
         endpoints: [...birth.skip.endpoints, ...about !== null && "endpoint" in about ? [about.endpoint] : []],
       });
-      await giveUp(account, birth.list);
       return { why: "refused", wait: MOVE_AGAIN_SECONDS, asks: [] };
     }
   };
@@ -1240,7 +1243,7 @@ export function accountList(options: AccountListOptions): AccountList {
 
   /**
    * A carried device that follows its list checks it against what the PCs it knows say in this run (V4-6): a doubt
-   * when one says against it, and which PCs it still asks (those silent when it joined, for three days after the join).
+   * when one says against it, and which PCs it still asks (those that have not agreed, for three days after the join).
    * A PC that agrees is kept among those that did. Undefined for any other copy, or where the join was not kept.
    */
   const checkJoined = async (account: string, copy: FollowerCopy): Promise<Held["check"]> => {
@@ -1254,7 +1257,9 @@ export function accountList(options: AccountListOptions): AccountList {
     const agreed = [...new Set([...joined.agreed, ...pcs.filter((pc) => pc.says !== null && pc.says.account === account && ownEvidence(pc) && pcAgrees(state, pc.says)).map((pc) => pc.endpoint)])];
     if (agreed.length !== joined.agreed.length) await store.set("joined", account, joinedRecord({ ...joined, agreed }));
     const open = scaled(joined.at, at, scale) < MIGRATION_ANSWER_SECONDS;
-    const asks = open ? pcs.filter((pc) => pc.says === null && ownEvidence(pc) && !agreed.includes(pc.endpoint)).map((pc) => pc.endpoint) : [];
+    // a PC that has not agreed yet, silent or with an answer that waits (the key that started the list let in for less
+    // than a day), is asked again; one that answered for another account is no PC of it
+    const asks = open ? pcs.filter((pc) => (pc.says === null || pc.says.account === account) && ownEvidence(pc) && !agreed.includes(pc.endpoint)).map((pc) => pc.endpoint) : [];
     return { doubt: listDoubt(state, pcs, agreed), asks };
   };
 
@@ -1365,17 +1370,21 @@ export function accountList(options: AccountListOptions): AccountList {
     if (fresh) await store.set("genesis", account, undefined);
     // and the place a member handed over, only now that the copy it led to is saved: a save that failed keeps the place
     if (handed) await store.set("offer", account, undefined);
+    const kept = born ?? readBirth(await store.get("birth", account));
+    // a birth kept for another list than the verified one this device follows can never be the account's: it is let go
+    if (kept !== null && kept.list !== copy.list && copy.state !== null) await retireBirth(account, kept, null);
     // a move whose whole birth the copy holds: the birth is let go, the try ended, and the notice waits for the person
-    const finished = born ?? (copy.pin.how === "genesis" ? readBirth(await store.get("birth", account)) : null);
+    const finished = born ?? (copy.pin.how === "genesis" ? kept : null);
     if (finished !== null && finished.list === copy.list && copy.state !== null && holdsBirth(copy, finished)) {
       await keepNotice(account, copy.state, finished.signIn);
       await retireBirth(account, finished, null);
       await tryEnded(account);
     }
     if (fresh && carriedFrom !== null && copy.state !== null) await keepNotice(account, copy.state, carriedFrom);
-    // a carried device that follows its list hands its place on to its member key, and checks the list against its PCs
-    if (copy.pin.how === "carried" && copy.state !== null) await handOver(bound, session, keys, copy, signal);
+    // a carried device that follows its list checks it against its PCs, and hands its place on to its member key only
+    // while none of them says against it
     const check = await checkJoined(account, copy);
+    if (copy.pin.how === "carried" && copy.state !== null && (check?.doubt ?? null) === null) await handOver(bound, session, keys, copy, signal);
     return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}), ...(check === undefined ? {} : { check }) };
   };
 
@@ -1710,9 +1719,11 @@ export function accountList(options: AccountListOptions): AccountList {
     async notice(account) {
       const notice = readNotice(await store.get("notice", account));
       const copy = held?.account === account ? held.copy : null;
-      const self = ctx?.account === account ? ctx.keys.key : null;
-      if (notice === null || notice.seen || copy === null || copy.state === null || copy.list !== notice.list || self === null || shown.account !== account) return null;
+      const own = ctx?.account === account ? ctx.keys.key : null;
+      if (notice === null || notice.seen || copy === null || copy.state === null || copy.list !== notice.list || own === null || shown.account !== account) return null;
       const { state } = copy;
+      // this device, by the key the list holds it by now, its account key and the sign-in key it was carried in by
+      const self = new Set([own, copy.me.key, standsFor(state, copy.me.key)]);
       // a device is named as the list names the key it stands by now, else by the name the birth sealed for the key it
       // was carried in by: its hand-over carries no name of its own
       const opened = named !== null && named.history === historyOf(copy) ? named.keys : new Map<number, EpochKey>();
@@ -1725,10 +1736,10 @@ export function accountList(options: AccountListOptions): AccountList {
       const devices: { key: string; name: ListNames | null }[] = [];
       for (const key of notice.devices) {
         const now = standsFor(state, key);
-        if (now !== null && now !== self) devices.push({ key: now, name: await nameOf(now, key) });
+        if (now !== null && !self.has(now)) devices.push({ key: now, name: await nameOf(now, key) });
       }
       const pcs = notice.pcs.flatMap((endpoint) => { const row = shown.pcs.find((pc) => pc.endpoint === endpoint); return row === undefined ? [] : [{ endpoint, name: row.name }]; });
-      return { list: notice.list, first: { self: first === self, key: first, name: first === null ? null : await nameOf(first, notice.first) }, devices, pcs };
+      return { list: notice.list, first: { self: first !== null && self.has(first), key: first, name: first === null ? null : await nameOf(first, notice.first) }, devices, pcs };
     },
     async noticeSeen(account, list) {
       await lock(account, async () => {

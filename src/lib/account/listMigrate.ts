@@ -14,7 +14,7 @@
  *   or refused it for good: a refusal that is final lets the device plan again, never sooner than an hour later, and
  *   without the key or the PC a `403 not_carried` named (MoveRefusal).
  */
-import { heirOf, linkBytes, ownEvidence, type KnownPc, type LetIn, type MigrationSeals, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
+import { heirOf, linkBytes, MIGRATION_RUNNING_SECONDS, MIGRATION_WITNESS_SECONDS, ownEvidence, type KnownPc, type LetIn, type MigrationSeals, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
 import { isListHash, isListKeyEncoding } from "../../../shared/account-list-entry.ts";
 import { namesFields, type ListNames, type ListState } from "../../../shared/account-list.ts";
 import { epochKeyCommitment, LIST_WRAP_TEXT_LENGTH, newEpochKey, nextEpoch, sealFields, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
@@ -384,12 +384,13 @@ export function waitsOnPcs(status: AccountListView["status"]): boolean {
 /**
  * Whether where the device stands turns on what PCs that already answered said, so that each such answer is asked for
  * again, not only the PCs that never answered: a start that waits on a key let in for less than a day, a join that
- * waits or refused, a doubt on the list a carried device follows. An answer kept from earlier says nothing of now.
+ * waits or refused, a doubt on the list a carried device follows, or a PC that has not agreed with it yet. An answer
+ * kept from earlier says nothing of now.
  */
 export function asksAgain(status: AccountListView["status"]): boolean {
   return (status.at === "none" && status.why === "moving" && status.move?.why !== "sending" && status.move?.why !== "paused" && status.move?.why !== "pcs_silent")
     || (status.at === "not_in" && (status.why === "carried" || status.refused !== undefined))
-    || (status.at === "following" && status.doubt !== undefined);
+    || (status.at === "following" && (status.doubt !== undefined || (status.asks?.length ?? 0) > 0));
 }
 
 /**
@@ -435,13 +436,13 @@ export async function onPcSession(given: {
 }
 
 /**
- * The keys this device itself holds a block or a removal against (R-F), which it never carries into a list: a Not me's
- * blocks it keeps until the account service confirms them, the removals PCs showed it, and the `remove`s it signed
- * itself, of `account` alone. A block the service confirmed is the service's word from then on, and every PC that
- * applied it says so in its answer.
+ * The keys this device itself holds a block or a removal against (R-F), which it never carries into a list: every key a
+ * Not me of it blocked, sent or not and whatever the service answered, the removals PCs showed it, and the `remove`s it
+ * signed itself, of `account` alone.
  */
 export async function ownRemovals(store: Pick<AccountStore, "get">, account: string): Promise<string[]> {
-  const blocks = Object.values((await store.get("unsent_blocks")) ?? {}).filter((kept) => kept.account === account).flatMap((kept) => kept.records.map((record) => record.target));
+  const unsent = Object.values((await store.get("unsent_blocks")) ?? {}).filter((kept) => kept.account === account).flatMap((kept) => kept.records.map((record) => record.target));
+  const blocks = [...unsent, ...(await store.get("own_blocks"))?.[account] ?? []];
   const removals = Object.values((await store.get("removals")) ?? {}).filter((record) => record.account === account).map((record) => record.key);
   // what this device's own Remove signed (join.ts rememberDevice), whether or not it has reached a PC yet
   const signed = Object.values((await store.get("devices")) ?? {}).filter((record) => record.kind === "remove" && record.account === account).map((record) => record.key);
@@ -464,13 +465,18 @@ export interface ListDoubt {
 }
 
 /**
- * Whether a PC's answer agrees with the list a device follows: it follows that very list, or it follows none, lets the
- * device that started the list in by one of its keys and holds no removal against any of them.
+ * Whether a PC's answer agrees with the list a device follows: it follows that very list, or it follows none, has let
+ * the device that started the list in by one of its keys for a day by both its counters, as joinVerdict asks of a
+ * witness (a key named twice counts by its shorter stretch), and holds no removal against any of them.
  */
 export function pcAgrees(state: ListState, says: PcAnswer): boolean {
   const starter = starterKeys(state);
   if (says.pinned !== null) return says.pinned === state.list;
-  return !starter.some((key) => says.removed.includes(key)) && says.admits.some((row) => starter.includes(row.key));
+  const day = (key: string): boolean => {
+    const rows = says.admits.filter((row) => row.key === key);
+    return rows.length > 0 && rows.every((row) => row.wall >= MIGRATION_WITNESS_SECONDS && row.ran >= MIGRATION_RUNNING_SECONDS);
+  };
+  return !starter.some((key) => says.removed.includes(key)) && starter.some(day);
 }
 
 /**

@@ -343,6 +343,10 @@ export function createAccountController(mount: RelayShellMount, view: {
     const kept = await accountStore.get("signin_key").catch(() => undefined);
     const signIn = kept !== undefined && kept.account === session.account && kept.sign_in_id === session.sign_in_id ? kept.key.public_spki : null;
     const endpoint = Array.from(importPublicKey(serverPublicKey), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    // only a PC of the account: one its directory lists, or one this device's own record knows it by (ownEvidence)
+    const listed = shownFor?.account === session.account && directory.some((pc) => pc.public_key === endpoint);
+    const known = pcsToAsk({ account: session.account, record: readSeenPcs(session.account), answers: pageAnswers, now: Math.floor(Date.now() / 1000), scale: pageScale(), again: true });
+    if (!listed && !known.includes(endpoint)) return;
     const fetch = (path: string, init?: RequestInit): Promise<Response> => opened.fetch(path, init);
     await onPcSession({
       list: lists, answers: pageAnswers, account: session.account, fetch, endpoint,
@@ -373,8 +377,11 @@ export function createAccountController(mount: RelayShellMount, view: {
     try {
       const now = Date.now();
       const record = readSeenPcs(session.account);
-      const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(listed.status) })
-        .filter((endpoint) => now - (askedPcs.get(endpoint) ?? -Infinity) >= ASK_AGAIN_MS);
+      // a carried device that follows its list without a doubt on it asks only the PCs that have not agreed with it yet
+      const { status } = listed;
+      const only = status.at === "following" && status.doubt === undefined ? status.asks ?? [] : null;
+      const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(status) })
+        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= ASK_AGAIN_MS);
       if (due.length === 0) return;
       const saved = await store.list();
       const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");

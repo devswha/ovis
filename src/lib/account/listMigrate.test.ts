@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, MIGRATION_KNOWN_SECONDS, type PcAnswer } from "../../../shared/account-list-migrate.ts";
+import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, MIGRATION_KNOWN_SECONDS, type KnownPc, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
 import { listView } from "../../../shared/account-list.ts";
 import { askingPc, listWorld, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
 import { accountList } from "./accountList.ts";
 import { keysForCarriedPc } from "./listCarriedPc.ts";
 import { memoryListLock, type ListStore } from "./listStore.ts";
 import { newKey } from "./store.ts";
-import { MOVE_AGAIN_SECONDS, pcAnswers, readBirth, readNotice, type PcAnswers } from "./listMigrate.ts";
+import { joinedRecord, listDoubt, MOVE_AGAIN_SECONDS, pcAgrees, pcAnswers, readBirth, readJoined, readNotice, type PcAnswers } from "./listMigrate.ts";
 import type { SeenPcs } from "./seenPcs.ts";
 
 const DAY = 86400;
@@ -427,6 +427,29 @@ describe("a device that followed a list its PCs turn out not to know (V4-6)", ()
     expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", doubt: { why: "other_list", pcs: [pc.endpoint] } });
   });
 
+  test("while a PC it knows says against its list, it hands its place on to no member key; once none does, it does (review U2)", async () => {
+    const moving = movingWorld();
+    const setting = await inUse(moving, { silent: true });
+    const { laptop, phone, world } = setting;
+    const silent = setting.silent!;
+    phone.record(phone.kept()!.pcs, moving.seconds() - MIGRATION_ANSWER_SECONDS);
+    await phone.device.list.sync();
+    laptop.record(laptop.kept()!.pcs, moving.seconds() - MIGRATION_ANSWER_SECONDS);
+    // the join's hand-over gets no answer: it is kept, to be sent again
+    const handOvers = () => laptop.device.sent.filter((one) => one.route === `POST /v2/lists/${world.held().id}/entries`).length;
+    laptop.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ error: { code: "unavailable", message: "x" } }, { status: 503 }) : null;
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    laptop.device.wire.answer = null;
+    const tried = handOvers();
+    laptop.answers.set(world.account, silent.endpoint, moving.answer([]));
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", doubt: { why: "first_signer_unknown" } });
+    expect(handOvers()).toBe(tried);
+    laptop.answers.set(world.account, silent.endpoint, moving.answer([{ key: phone.signIn }]));
+    expect((await laptop.device.list.sync()).status).not.toHaveProperty("doubt");
+    expect(handOvers()).toBeGreaterThan(tried);
+  });
+
   test("a device that started the list, or was let in by an Allow, is asked nothing of this", async () => {
     const { phone } = await joinedOnOnePc();
     const view = await phone.device.list.sync();
@@ -635,5 +658,99 @@ describe("naming by the key the list holds now (astra-migapp 8)", () => {
     const { phone, pc, world } = await moved();
     expect(await phone.device.list.naming!({ account: "acct_other", session: phone.signIn, endpoint: pc.endpoint, signIn: phone.signIn })).toBeNull();
     expect(await phone.device.list.naming!({ account: world.account, session: phone.signIn, endpoint: pc.endpoint, signIn: phone.signIn })).not.toBeNull();
+  });
+});
+
+/** Guards the independent review's mutants left standing (review-migrate-app.md, "Mutants"), each pinned. */
+describe("the guards of a carried device's check, its asks and its sign-in", () => {
+  const E = (n: number) => n.toString(16).padStart(2, "0").repeat(32);
+  const known = (n: number, says: PcAnswer | null, how: PcHow = "paired", seen: number | null = null): KnownPc => ({ endpoint: E(n), how, known: seen, says, names: null });
+
+  test("listDoubt counts only the account's own PCs this device knows, spares one that agreed, and knows the starter by its heir too (M18 to M22)", async () => {
+    const { phone, world, answer } = await moved();
+    const { state } = world.held();
+    const other = "ab".repeat(32);
+    // an answer for another account, and one of a PC this device's own record does not vouch for, say nothing
+    expect(listDoubt(state, [known(1, answer([], { account: "acct_else", pinned: other }))], [])).toBeNull();
+    expect(listDoubt(state, [known(1, answer([], { pinned: other }), "none", 60)], [])).toBeNull();
+    expect(listDoubt(state, [known(1, answer([], { pinned: other }))], [])).toEqual({ why: "other_list", pcs: [E(1)] });
+    // a PC that agreed is no doubt for letting no key of the starter in now
+    expect(listDoubt(state, [known(2, answer([]))], [E(2)])).toBeNull();
+    expect(listDoubt(state, [known(2, answer([]))], [])).toEqual({ why: "first_signer_unknown", pcs: [E(2)] });
+    // the member key the starter handed its place on to is the starter too
+    expect(listDoubt(state, [known(3, answer([{ key: phone.member }]))], [])).toBeNull();
+    expect(listDoubt(state, [known(3, answer([{ key: phone.member }], { removed: [phone.member] }))], [])).toEqual({ why: "first_signer_removed", pcs: [E(3)] });
+  });
+
+  test("pcAgrees asks a day by both counters of the starter's key, its shorter stretch where it is named twice (review L3)", async () => {
+    const { phone, world, answer } = await moved();
+    const { state } = world.held();
+    expect(pcAgrees(state, answer([{ key: phone.member }]))).toBe(true);
+    expect(pcAgrees(state, answer([{ key: phone.signIn }]))).toBe(true);
+    expect(pcAgrees(state, answer([{ key: phone.member, wall: 60, ran: 60 }]))).toBe(false);
+    expect(pcAgrees(state, answer([{ key: phone.member, wall: DAY, ran: 60 }]))).toBe(false);
+    expect(pcAgrees(state, answer([{ key: phone.member, wall: 60, ran: DAY }]))).toBe(false);
+    expect(pcAgrees(state, answer([{ key: phone.member }, { key: phone.member, wall: 60, ran: 60 }]))).toBe(false);
+    expect(pcAgrees(state, answer([{ key: phone.member }], { removed: [phone.signIn] }))).toBe(false);
+    expect(pcAgrees(state, answer([], { pinned: state.list }))).toBe(true);
+    expect(pcAgrees(state, answer([{ key: phone.member }], { pinned: "ab".repeat(32) }))).toBe(false);
+  });
+
+  test("a carried device asks the PCs that have not agreed for three days after its join, and remembers the ones that did (A24, A25)", async () => {
+    const moving = movingWorld();
+    const setting = await inUse(moving, { silent: true });
+    const { laptop, phone, world } = setting;
+    const silent = setting.silent!;
+    phone.record(phone.kept()!.pcs, moving.seconds() - MIGRATION_ANSWER_SECONDS);
+    await phone.device.list.sync();
+    laptop.record(laptop.kept()!.pcs, moving.seconds() - MIGRATION_ANSWER_SECONDS);
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", asks: [silent.endpoint] });
+    // it agrees once; what it says later of the starter (it lets no key of it in) is no doubt from a PC that agreed
+    laptop.answers.set(world.account, silent.endpoint, moving.answer([{ key: phone.signIn }]));
+    expect((await laptop.device.list.sync()).status).not.toHaveProperty("asks");
+    laptop.answers.set(world.account, silent.endpoint, moving.answer([]));
+    expect((await laptop.device.list.sync()).status).not.toHaveProperty("doubt");
+    // another device, joined the same way, whose PC stays silent: asked for three days, then no more (the join is
+    // moved back rather than the clock, which the account service's sign-in would not outlive)
+    const late = await inUse(movingWorld(), { silent: true });
+    late.phone.record(late.phone.kept()!.pcs, late.seconds() - MIGRATION_ANSWER_SECONDS);
+    await late.phone.device.list.sync();
+    late.laptop.record(late.laptop.kept()!.pcs, late.seconds() - MIGRATION_ANSWER_SECONDS);
+    expect((await late.laptop.device.list.sync()).status).toMatchObject({ asks: [late.silent!.endpoint] });
+    const joined = readJoined(await late.laptop.device.lists.get("joined" as never, late.world.account))!;
+    await late.laptop.device.lists.set("joined" as never, late.world.account, joinedRecord({ ...joined, at: joined.at - MIGRATION_ANSWER_SECONDS - 60 }));
+    expect((await late.laptop.device.list.sync()).status).not.toHaveProperty("asks");
+  });
+
+  test("a start that waits asks only the PCs its own record vouches for, not one it was only shown, for less than a week (M08)", async () => {
+    const moving = movingWorld();
+    const { phone, silent } = await inUse(moving, { silent: true });
+    const shown = await askingPc();
+    phone.record({ ...phone.kept()!.pcs, [shown.endpoint]: { since: moving.seconds() - 60, last: moving.seconds() - 60, how: "none" } });
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "pcs_silent", asks: [silent!.endpoint] } });
+  });
+
+  test("only a session signed in with this sign-in's key vouches for the account key (A28)", async () => {
+    const { phone, pc, world } = await moved();
+    const said = await phone.device.list.naming!({ account: world.account, session: phone.member, endpoint: pc.endpoint, signIn: phone.signIn });
+    expect(said).not.toBeNull();
+    expect(said!.vouches).toEqual([]);
+  });
+
+  test("a sign-in key the account service has not confirmed signs no birth (A35)", async () => {
+    const { phone, birthsSent } = await inUse();
+    const kept = (await phone.device.store.get("signin_key"))!;
+    await phone.device.store.set("signin_key", { ...kept, no: null });
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "self_unlisted" } });
+    expect(birthsSent(phone.device)).toEqual([]);
+  });
+
+  test("the keys of a carried PC are signed only for the account the device follows (C06)", async () => {
+    const { phone, pc, world } = await moved();
+    let asked = 0;
+    const fetch = async (): Promise<Response> => { asked += 1; return Response.json({ error: { code: "not_found" } }, { status: 404 }); };
+    expect(await keysForCarriedPc({ list: phone.device.list, fetch, account: "acct_other", endpoint: pc.endpoint, record: phone.kept()!, names: null })).toBe("blocked");
+    expect(asked).toBe(0);
+    expect(listView(world.held().state).pcs.find((one) => one.endpoint === pc.endpoint)?.key).toBeNull();
   });
 });
