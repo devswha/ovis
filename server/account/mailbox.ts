@@ -275,6 +275,8 @@ export class AccountMailbox {
   private completion: CompletionScope | null;
   /** The completion this PC owes for a join by its list, before a pull named its listing (listJoined); on disk in the receipt's file. */
   private listOwed: ListOwed | null;
+  /** Whether listOwed is on disk: one the disk did not take at the join is written again at each pull until it is. */
+  private owedOnDisk = true;
 
   private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number; readonly seq: number } | null = null;
   /** What the pull under way read from its mailbox of this PC's listing in its account; undefined when it failed, or no link bound the PC. */
@@ -546,7 +548,7 @@ export class AccountMailbox {
   listJoined(account: string, bindId: string): void {
     this.listOwed = { account, list_bind_id: bindId };
     this.completion = null;
-    this.writeCompletionFile(this.listOwed);
+    this.owedOnDisk = this.writeCompletionFile(this.listOwed);
   }
 
   /** A join by the list was answered: the pull that turns what it owes into its receipt starts now. It never throws. */
@@ -692,12 +694,18 @@ export class AccountMailbox {
   private keepCompletion(scope: CompletionScope): void {
     this.completion = scope;
     this.listOwed = null;
+    this.owedOnDisk = true;
     this.writeCompletionFile(scope);
   }
 
-  private writeCompletionFile(value: CompletionScope | ListOwed | null): void {
+  /** False when the disk did not take it. */
+  private writeCompletionFile(value: CompletionScope | ListOwed | null): boolean {
     try { if (this.options.completionPath) writePrivateState(this.options.completionPath, value); }
-    catch (error) { console.error(`[account] the completion receipt could not be kept: ${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) {
+      console.error(`[account] the completion receipt could not be kept: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+    return true;
   }
 
   private async confirmCompletion(identity: RelayIdentity, scope: CompletionScope) {
@@ -718,6 +726,9 @@ export class AccountMailbox {
       // the binding that joined by its list is gone (Revoke all, its removal): nothing of it is owed any more
       this.listOwed = null;
       if (this.completion === null) this.writeCompletionFile(null);
+    } else if (owed !== null && !this.owedOnDisk) {
+      // the disk did not take it at the join: offered to it again, so a stop after this pull still sends it
+      this.owedOnDisk = this.writeCompletionFile(owed);
     }
     const scope = this.completion;
     const identity = this.options.identity();

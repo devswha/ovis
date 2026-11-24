@@ -2006,10 +2006,10 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   file so; once its verified head moved past that, the place whatever it held was signed for is
   taken, and the file goes. A kept request of a device this PC has since come to hold back is never
   sent, and holds its place from another device's Allow (`place_kept`) for ten minutes from when it
-  was kept, or until the person at this PC gives it up (`POST /api/account/list/allow/cancel`
-  `{ "key" }`, this PC's own window and CLI alone; `{ "cancelled" }`). Meanwhile `reason` of `GET
-  /api/account/list` and the `list` of `GET /api/account/status` (so `ovis status --json`) say
-  why this PC lets no new device in.
+  was kept, or until the person at this PC declines a join of that device (its own window's
+  Decline). Meanwhile `reason` of `GET /api/account/list` and the `list` of `GET
+  /api/account/status` (so `ovis status --json`) say why this PC lets no new device in: for a
+  kept entry, that an Allow waits behind an earlier one, and until when.
 - **A join a member device allows** is let in only when an entry of the list lets the device in:
   the PC signs nothing on a member's approval. The member signs only after the new device
   confirmed its digits, so a device that gives up before that is nobody's member: a waiting join
