@@ -534,9 +534,11 @@ export class RelaySession {
         }
         this.options.services.devices.assertRelayPairing(this.path);
         this.state = "pair-commit";
-        // a card counts only where the PC said it takes one; anywhere else the join is today's, and the members are ignored
-        if (this.listAllow && this.intent === "account" && frame.payload.list_enc !== undefined && frame.payload.list_card !== undefined) {
-          this.listCard = { enc: frame.payload.list_enc, card: frame.payload.list_card };
+        // a card counts only where the PC said it takes one; anywhere else the join is today's, and the members are
+        // ignored, whatever form they have
+        if (this.listAllow && this.intent === "account") {
+          if (frame.payload.list_malformed === true) { this.close("protocol_error"); return; }
+          if (frame.payload.list_enc !== undefined && frame.payload.list_card !== undefined) this.listCard = { enc: frame.payload.list_enc, card: frame.payload.list_card };
         }
         this.sas = {
           label: frame.payload.label, publicKey: frame.payload.public_key, commitment: fromBase64Url(frame.payload.commitment),

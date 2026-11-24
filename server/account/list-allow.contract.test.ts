@@ -69,7 +69,9 @@ async function allowingPc() {
 type Bound = Awaited<ReturnType<typeof boundPc>>;
 
 /** The new device's join: its admission, then PAIR_REQUEST with the account intent, with its card where it says so. */
-async function join(made: Bound, device: ListMember, options: { card?: { enc: string; card: string }; features?: readonly string[] } = {}) {
+async function join(made: Bound, device: ListMember, options: { card?: { enc: string; card: string }; features?: readonly string[];
+  /** members written into the PAIR_REQUEST as they are, past the encoder: what an app of another build might send */
+  raw?: Record<string, unknown> } = {}) {
   await vouchFor(made.pc, ACCOUNT, { keys: device.keys, spki: device.key });
   const link = await relayConnection(made.pc, { serverId: made.serverId });
   const frames: MuxFrame[] = [];
@@ -84,6 +86,17 @@ async function join(made: Bound, device: ListMember, options: { card?: { enc: st
       await bounded(arrived.promise, 30_000);
     }
   };
+  if (options.raw !== undefined) {
+    const { raw } = options;
+    link.transformClientFrame = (bytes) => {
+      if (bytes[1] !== FrameType.PAIR_REQUEST) return bytes;
+      const payload = new TextEncoder().encode(JSON.stringify({ ...JSON.parse(new TextDecoder().decode(bytes.subarray(8))) as object, ...raw }));
+      const frame = new Uint8Array(8 + payload.length);
+      frame.set(bytes.subarray(0, 8));
+      frame.set(payload, 8);
+      return frame;
+    };
+  }
   await link.hello(options.features ?? [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT, ACCOUNT_LIST_ALLOW]);
   // the answer to this HELLO, not the WELCOME with no feature that rides ahead of it
   const welcome = await next(FrameType.WELCOME);
@@ -323,6 +336,28 @@ describe("what the PC does when the entry does not go in", () => {
 });
 
 describe("a PC that cannot sign for a list lets a device in as before", () => {
+  test("a PC that follows no list takes a PAIR_REQUEST whose list members are out of their form as it always did", async () => {
+    // an app that sends the extension to a PC with no list must still pair there, whatever it sent
+    for (const raw of [{ list_enc: "x" }, { list_card: "A".repeat(86) }, { list_enc: 7, list_card: "short" }]) {
+      const made = await boundPc();
+      const phone = await listMember();
+      const asked = await join(made, phone, { raw });
+      expect(asked.features).not.toContain(ACCOUNT_LIST_ALLOW);
+      const waiting = await ownJoin(made);
+      expect(waiting.digits).toBe(asked.digits);
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect((await asked.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
+      expect(made.pc.devices.hasKey(phone.key)).toBe(true);
+    }
+  });
+
+  test("a PC that takes a card refuses one that is out of its form", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    await expect(join(made, phone, { raw: { list_enc: phone.enc } })).rejects.toThrow("protocol_error");
+  });
+
   test("a PC that follows no list does not take a card: the join makes its own pairing, and no list is named", async () => {
     const made = await boundPc();
     const phone = await listMember();
