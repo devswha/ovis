@@ -598,6 +598,14 @@ export class ListFollow implements ListAuthority {
     return keys === null ? null : { serverId: scope.serverId, endpoint: scope.endpoint, keys };
   }
 
+  /** This PC's two public keys and its card for `list`, as a member that adds it signs them into a `pc` entry; null when its keys cannot be used. */
+  async cardFor(list: string): Promise<{ readonly key: string; readonly enc: string; readonly card: string } | null> {
+    const own = await this.own();
+    if (own === null || !isListHash(list)) return null;
+    const { key, enc, privateKey } = own.keys;
+    return { key, enc, card: await signCard({ key, enc, list, endpoint: own.endpoint, invite: null }, privateKey) };
+  }
+
   /** The clock: a read that is due, a device whose time has passed, rows that still wait for what the list says. */
   tick(): void {
     if (this.stopped) return;

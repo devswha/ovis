@@ -599,6 +599,15 @@ both, one that only watches and one in its join hold too; nothing is taken on it
 `not_found` on a PC that follows no list a person named; 409 `not_my_list` for a page of another
 list; 400 `invalid_page`.
 
+`POST /api/account/list/named` `{ "account", "list" }`: a device that waits to link (it paired with a
+code made for the account) names the account's signed list in the place of its link
+([A device that scans the PC's QR code](#a-device-that-scans-the-pcs-qr-code)). `{ "state":
+"waiting", "standing", "key", "enc", "card" }` with the PC's card for that list, or `{ "state":
+"added", "account" }` once the PC joined by an entry that device's key signed. Refused as a link is
+(403 `link_required`, 409 `account_mismatch`, 403 `unverified_device`, 409 `pairing_ended`, 409
+`list_removed`, 503 `account_unavailable` with `retry-after`), and 409 `other_adder`, 400
+`invalid_list`, 404 on a PC that follows no list.
+
 `POST /api/account/list/add` `{ "account" }`: a person at this PC adds it to an account that keeps a
 signed list ([A PC is added to the list](#a-pc-is-added-to-the-list)). This PC's own window and CLI
 alone (403 `owner_only` otherwise), for the account named for this PC (409 `account_mismatch`), on a
@@ -1494,12 +1503,15 @@ still do is said under [what the service still can](#what-the-account-service-st
 
 A PC pins a list when both of these hold, and never on the account service's word:
 
-1. **A person at this PC named the list.** There are three ways, each from this PC's own window or
-   CLI alone:
+1. **A person at this PC named the list.** There are four ways, each begun at this PC's own window
+   or CLI:
    - a number this PC and the device that adds it both show, which the person says are the same
      ([A PC is added to the list](#a-pc-is-added-to-the-list));
    - the line of an invite, which names the list, given to `ovis join` after the person confirmed
      the account ([A PC joins the list with an invite](#a-pc-joins-the-list-with-an-invite));
+   - the QR code this PC showed, scanned by a device of the account, which names the list over the
+     pairing that code made ([A device that scans the PC's QR
+     code](#a-device-that-scans-the-pcs-qr-code));
    - the list's id (`POST /api/account/list/pin` `{ "list" }`), on a PC already in the account.
    Nothing is pinned by naming it. Until the PC is pinned, naming another list replaces the first.
 2. **That list holds an entry that adds this PC's own signing key at its own relay key**: a `pc`
@@ -1512,8 +1524,9 @@ press and an add over SSH are refused `list_add`: the account service's admissio
 it. Whether an account keeps a list is asked of the account service, so a service that says it
 keeps none still has a PC added in one press, to follow the snapshot as before; the account's
 devices then hold no entry for that PC. A device that pairs with the PC itself (a QR code, digits
-approved at the PC) and links it into its account still does so as before, with no pin: naming the
-list over that pairing is not built yet.
+approved at the PC) and sends its `link` still brings the PC into its account as before, with no
+pin; a device that follows its account's list names the list over that pairing instead
+([A device that scans the PC's QR code](#a-device-that-scans-the-pcs-qr-code)).
 
 **These ways ship with the app that signs in with its list key, in one release.** The apps released
 before open a PC through the account with the key of their sign-in, which a pinned PC lets in no
@@ -1653,6 +1666,30 @@ number is compared. The line never leaves `ovis join`: not to this PC's server, 
   on an Ovis that follows none.
 - A list that moved between the PC's body and its placement is read again, and the join built and
   signed again.
+
+#### A device that scans the PC's QR code
+
+`ovis add --qr` shows a QR code that carries a code made for the account. A device that scans it
+pairs with the PC over a channel that code keys, which the account service is no part of. So no
+number is compared: what the device says over that pairing is the device's own word, and the card
+the PC answers with is the PC's own.
+
+- The device sends `POST /api/account/list/named` `{ "account", "list" }` in the place of its
+  `link`. Every rule of a link holds for it: the code was made for that account, the PC is in no
+  account, and the account service vouches for the device's key
+  ([The account's word](#the-accounts-word)). A device that fails one is turned away as its link
+  would be. So scanning the code brings a PC nowhere that a link would not.
+- The PC answers `{ "state": "waiting", "key", "enc", "card" }`, its card for that list, and posts
+  the same card to the account service. The device checks the card, signs the `pc` entry with the
+  key it paired with, and places it.
+- The device calls again. The PC reads the list and joins when the list holds its entry **and the
+  key that paired signed it**: `{ "state": "added" }`. An entry another key signed is refused
+  `other_adder`. The PC writes no member for the pairing: its devices are the list's.
+- A device names one list. A second list from the same pairing is refused `pairing_ended`. It makes
+  five calls at most, as it may send five links.
+- Whoever can read the PC's QR code, and is a device the account service vouches for, can add the
+  PC to a list that names that account. That is what the QR code is: keep it to yourself, as
+  before.
 
 #### A PC allows a device into the list
 

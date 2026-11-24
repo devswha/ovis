@@ -330,6 +330,46 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   return { waits, expected, vouching: (waits || arrival.pinned !== null) && expected !== null };
 }
 
+/** The lists a row that waits to link has named, by device store: a row names one list, and is asked about once. */
+const namedLists = new WeakMap<DeviceStore, Map<string, { readonly account: string; readonly list: string; readonly key: string }>>();
+
+/**
+ * A device that paired with this PC by a code made for a PC in no account names its account's signed list, in place of
+ * a link (docs/account.md, "A device that scans the PC's QR code names the list"): the pairing by that code is a
+ * channel the account service is no part of, so what the device says in it is the device's own word. Every rule of a
+ * link holds for it, and the account service's word on the device's key, so it brings the PC nowhere a link would
+ * not. A row names one list. Nothing is written: the PC then joins by that list, or not at all (ListFollow.joinList).
+ */
+export async function listNamedBy(store: DeviceStore, named: { readonly account: string; readonly list: string }, session: { deviceId: string; sessionKey: string }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ ok: true } | LinkRefused> {
+  const { deviceId, sessionKey } = session;
+  const link = { account: named.account } as LinkRecord;
+  let looked = look(store, link, deviceId, arrival, rules);
+  if ("refused" in looked) return looked;
+  // only a PC in no account, and only a device that waits to link under a code made for that account
+  if (store.account() !== null || !looked.waits || looked.expected === null) return { refused: "link_required" };
+  if (store.isTombstoned(sessionKey)) return { refused: "tombstoned" };
+  const rows = namedLists.get(store) ?? new Map<string, { readonly account: string; readonly list: string; readonly key: string }>();
+  namedLists.set(store, rows);
+  const before = rows.get(deviceId);
+  if (before !== undefined) return before.account === named.account && before.list === named.list && before.key === sessionKey ? { ok: true } : { refused: "pairing_ended", message: "This device named another list for this PC already. Scan the PC's QR code again." };
+  store.noteLink(deviceId, "asked");
+  const word = rules.vouch ? await rules.vouch(looked.expected, sessionKey, true) : { vouched: false };
+  // whatever happened meanwhile (the row's time, the code's end) is read again now
+  looked = look(store, link, deviceId, arrival, rules);
+  if ("refused" in looked) return looked;
+  if (store.account() !== null || !looked.waits) return { refused: "link_required" };
+  if ("unavailable" in word) {
+    store.noteLink(deviceId, "service_unreachable");
+    return { refused: "account_unavailable", message: SERVICE_UNAVAILABLE, retryAfter: word.retryAfter };
+  }
+  if (!word.vouched) {
+    store.turnAway(deviceId, "unverified");
+    return { refused: "unverified_device", message: UNVERIFIED_DEVICE };
+  }
+  rows.set(deviceId, { account: named.account, list: named.list, key: sessionKey });
+  return { ok: true };
+}
+
 /**
  * A `link` from the device `deviceId` over its own session to the PC `serverId`. It needs no
  * member: the session is its authority, which is how a PC gets its first one.

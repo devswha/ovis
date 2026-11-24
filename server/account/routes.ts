@@ -13,7 +13,7 @@ import { AccountAddError } from "../machines.ts";
 import { ListAddAway, type AddState } from "./list-add.ts";
 import type { JoinOutcome } from "./list-follow.ts";
 import { noteListAdd, notePressAsk, pressOnce, waitingForAdd } from "./one-press.ts";
-import { applyAccountRecords, applyEnrollment, applyLink, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
+import { applyAccountRecords, applyEnrollment, applyLink, listNamedBy, LIST_REMOVED_FROM, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
   record_invalid: 400, signature_invalid: 400, account_mismatch: 409, signer_not_member: 403,
@@ -96,7 +96,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     const verdict = await list.takeFromPeer({ list: own.list, after, entries: entries as string[], head: { seq: place.seq, hash: place.hash } });
     return verdict === null ? fail("not_found", "This PC follows no list", 404) : reply({ verdict, ...list.peerHead() });
   }
-  const ownLink = waiting !== null && pathname === "/api/account/link" && request.method === "POST";
+  const ownLink = waiting !== null && (pathname === "/api/account/link" || pathname === "/api/account/list/named") && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);
   if (pathname === "/api/account/status" && request.method === "GET") {
     setRequestRoute(pathname);
@@ -303,6 +303,38 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (!pcs) return fail("introduction_invalid", "List at most 32 PCs, each with a server_id its key derives", 400);
       context.services.accountIntroductions.set(body.key, pcs);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+    }
+    case "/api/account/list/named": {
+      setRequestRoute(pathname);
+      // A device that scanned this PC's QR code names its account's signed list over the pairing that code made, in
+      // the place of its link: every rule of a link holds for it (listNamedBy). The PC then joins by that list alone,
+      // once the list holds its entry signed by that device's key; this call writes no member
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      if (peer.kind !== "relay") return fail("link_not_owner", "Name the list from the device's own connection through the relay", 403);
+      const { account, list: id } = body;
+      if (typeof account !== "string" || typeof id !== "string" || !isListHash(id)) return fail("invalid_list", "Name the account and its list", 400);
+      const arrival = devices.linkArrived(peer.device.id, peer.device.provisional === true);
+      if (arrival === null) return fail("link_required", "The list was not named: link_required", LINK_STATUS.link_required);
+      const named = await listNamedBy(devices, { account, list: id }, { deviceId: peer.device.id, sessionKey: peer.key }, arrival, {
+        setUpFor: () => context.services.relay.savedRelayAccount(),
+        vouch: (of, key, firstLink) => context.services.accountMailbox.vouch(of, key, firstLink),
+      });
+      if ("refused" in named) {
+        const refused = fail(named.refused, named.message ?? `The list was not named: ${named.refused}`, LINK_STATUS[named.refused]);
+        if (named.retryAfter !== undefined) refused.headers.set("retry-after", String(named.retryAfter));
+        return refused;
+      }
+      const joined = await list.joinList({ account, list: id, by: peer.key });
+      if ("joined" in joined) {
+        await context.services.accountMailbox.joinedByList(account);
+        return reply({ state: "added", account });
+      }
+      if ("refused" in joined) return fail(joined.refused === "removed" ? "list_removed" : joined.refused, JOIN_REFUSALS[joined.refused] ?? `This PC could not join the account's list (${joined.refused}).`, joined.refused === "unavailable" ? 503 : 409);
+      // its card, handed over this very pairing: what the device signs into the entry that adds this PC
+      const card = await list.cardFor(id);
+      if (card === null) return fail("unavailable", JOIN_REFUSALS.unavailable!, 503);
+      return reply({ state: "waiting", standing: joined.waiting, ...card });
     }
     case "/api/account/link": {
       setRequestRoute(pathname);

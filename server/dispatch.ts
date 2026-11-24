@@ -441,7 +441,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a device that waits to link (it paired with a code made for a PC in no account) has the role with the fewest
   // rights, and sends one mutation: its own link, which makes it a device (server/account/routes.ts). Its relay
   // session refuses it every other call but the read of its own account status (server/relay/session.ts)
-  const ownLink = relayPeer?.provisional === true && request.method === "POST" && pathname === "/api/account/link";
+  const ownLink = relayPeer?.provisional === true && request.method === "POST" && (pathname === "/api/account/link" || pathname === "/api/account/list/named");
   // a member tells this PC where its account's signed list stands and hands it entries it lacks: entries prove
   // themselves, so a device that only watches may carry them too (server/account/routes.ts)
   const listGossip = request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page");

@@ -11,11 +11,11 @@ import { join } from "node:path";
 import { entryToText, readBody } from "../../shared/account-list-entry.ts";
 import { readJoinLine, type JoinLine } from "../../shared/account-list-join.ts";
 import { openWrap, wrapEpochKey, wrapFromText, wrapToText } from "../../shared/account-list-seal.ts";
-import { inviteRefusal, joinEntry } from "../../shared/account-list.ts";
+import { cardHolds, inviteRefusal, joinEntry } from "../../shared/account-list.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { fromBase64Url } from "../../shared/relay-pair-sas.ts";
-import { listMember, TestList } from "./list.test-helpers.ts";
-import { pairingPc, type Body, type Pc } from "./pairing.test-helpers.ts";
+import { listMember, TestList, type ListMember } from "./list.test-helpers.ts";
+import { ask, ended, pairingPc, signedInWith, vouchFor, type Body, type Pc } from "./pairing.test-helpers.ts";
 
 const ACCOUNT = "acct_1";
 const OTHER = "acct_2";
@@ -377,6 +377,97 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
     }
     const other = await made.post("/api/account/list/join", { account: OTHER, list: account.id });
     expect([other.status, other.body.error?.code]).toEqual([409, "account_mismatch"]);
+  });
+});
+
+describe("a device that scans the PC's QR code names the list over that pairing, in the place of its link", () => {
+  /** The device of the account that scans: it pairs with the code made for the account, and its account vouches for its key. */
+  async function scanned(made: Listed, device: ListMember, options: { vouch?: boolean; account?: string } = {}) {
+    const code = made.pc.devices.startAccountPairing(options.account ?? ACCOUNT).code;
+    const key = { keys: device.keys, spki: device.key };
+    if (options.vouch !== false) await vouchFor(made.pc, options.account ?? ACCOUNT, key);
+    const paired = await signedInWith(made.pc, code, key, { serverId: made.serverId });
+    return { ...paired, names: (list: string, account = ACCOUNT) => ask(paired.session, "/api/account/list/named", { method: "POST", body: { account, list } }) };
+  }
+
+  test("the PC hands its card over the pairing, the device signs it in, and the PC joins by that list, pinned", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const phone = await scanned(made, account.first);
+    const waiting = await phone.names(account.id);
+    expect([waiting.status, waiting.body.state]).toEqual([200, "waiting"]);
+    // the card came over the pairing the QR code made, and is this PC's own for that list
+    const { key, enc, card } = waiting.body as unknown as { key: string; enc: string; card: string };
+    expect(await cardHolds({ key, enc, list: account.id, endpoint: made.endpoint, invite: null }, card)).toBe(true);
+    expect(made.pc.account.accountList(ACCOUNT)!.posts.map((post) => [post.endpoint, post.key])).toEqual([[made.endpoint, key]]);
+    expect(made.pc.devices.account()).toBeNull();
+    await made.admit();
+    await account.addPostedPc(made.endpoint);
+    expect((await phone.names(account.id)).body).toEqual({ state: "added", account: ACCOUNT });
+    expect(made.binding()).toMatchObject({ account: ACCOUNT, list: account.id });
+    expect(made.binding()).not.toHaveProperty("service");
+    expect(made.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
+    // no member was written by the pairing: the devices are the list's
+    expect(made.pc.stored()).toEqual([]);
+    expect(made.services.accountRows!.rows().map((row) => row.key)).toEqual([account.first.key]);
+  });
+
+  test("an entry another key signed joins nothing: the PC is added by the device that scanned it", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const other = await listMember();
+    await account.addDevice(other);
+    const phone = await scanned(made, account.first);
+    await phone.names(account.id);
+    await made.admit();
+    await account.addPostedPc(made.endpoint, other);
+    const refused = await phone.names(account.id);
+    expect([refused.status, refused.body.error?.code]).toEqual([409, "other_adder"]);
+    expect(made.pc.devices.account()).toBeNull();
+  });
+
+  test("a device its account does not vouch for names nothing, and goes", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const phone = await scanned(made, account.first, { vouch: false });
+    const refused = await phone.names(account.id);
+    expect([refused.status, refused.body.error?.code]).toEqual([403, "unverified_device"]);
+    // turned away, as a link its account does not vouch for is: its session ends
+    expect(await ended(phone.session)).toBe("auth_revoked");
+    expect(made.pc.account.accountList(ACCOUNT)!.posts).toEqual([]);
+    expect(made.pc.devices.account()).toBeNull();
+  });
+
+  test("a list of another account, another account than the code's, and a second list from one device are refused", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const theirs = await TestList.start(made.pc.account, OTHER);
+    const phone = await scanned(made, account.first);
+    // the code was made for ACCOUNT: a device that names another account is turned away as its link would be
+    const other = await scanned(await listedPc(), account.first);
+    const mismatch = await other.names(theirs.id, OTHER);
+    expect([mismatch.status, mismatch.body.error?.code]).toEqual([409, "account_mismatch"]);
+    // a list that is not ACCOUNT's own, named as if it were: nothing of it is taken
+    expect((await phone.names(theirs.id)).body.state).toBe("waiting");
+    await made.listIn(OTHER);
+    await made.admit(OTHER);
+    await theirs.addPostedPc(made.endpoint).catch(() => undefined);
+    expect((await phone.names(theirs.id)).body.state).not.toBe("added");
+    const second = await phone.names(account.id);
+    expect([second.status, second.body.error?.code]).toEqual([409, "pairing_ended"]);
+    expect(made.pc.devices.account()).toBeNull();
+    expect(made.binding()).toBeNull();
+  });
+
+  test("only a device that waits to link names a list: a device this PC already holds does not", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    // paired with a code of this PC's own, as `ovis pair` makes one
+    const { code } = made.pc.devices.startPairing();
+    const paired = await signedInWith(made.pc, code, undefined, { serverId: made.serverId });
+    const refused = await ask(paired.session, "/api/account/list/named", { method: "POST", body: { account: ACCOUNT, list: account.id } });
+    expect(refused.status).toBe(403);
+    expect(made.pc.devices.account()).toBeNull();
   });
 });
 
