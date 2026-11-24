@@ -209,8 +209,13 @@ describe("the Android build", () => {
     expect(gradle).toContain('getProperty("appShell", "bundled") != "hosted"');
     expect(gradle).toContain('buildConfigField "boolean", "SHELL_BUNDLED", "${shellBundled}"');
     expect(gradle).toContain(`main.assets.srcDirs += ['../../${SHELL_ASSETS}']`);
-    expect(gradle).toContain("task.name ==~ /(assemble|bundle|install|package|sign)Release(Bundle)?/");
-    expect(gradle).toContain('android.defaultConfig.applicationId == "sh.ovis.app"');
+    expect(gradle).toContain('(task.name ==~ /(assemble|bundle|install|package|sign)Release(Bundle)?/ && android.defaultConfig.applicationId == "sh.ovis.app")');
+    // every app bundle, of any build type, and no other task: an .aab is what Google Play takes
+    const bundles = /task\.name ==~ \/(.+?)\/ \|\|/.exec(gradle)?.[1];
+    expect(bundles).toBe("bundle([A-Z][a-z]*)?|(package|sign)[A-Z][a-z]*Bundle");
+    const appBundle = new RegExp(`^(?:${bundles})$`);
+    for (const task of ["bundle", "bundleDebug", "bundleRelease", "bundlePreview", "packageDebugBundle", "signDebugBundle", "packageReleaseBundle", "signReleaseBundle"]) expect(appBundle.test(task)).toBe(true);
+    for (const task of ["assembleDebug", "installDebug", "packageDebug", "bundleDebugResources", "bundleDebugClassesToRuntimeJar", "bundleReleaseClassesToCompileJar", "testDebugUnitTest"]) expect(appBundle.test(task)).toBe(false);
   });
 
   it("packages the store app only with a release's verified, whole shell, and only with readable policies", () => {
