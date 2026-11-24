@@ -33,7 +33,6 @@ import { answerHint } from "../lib/promptAnswer.ts";
 import { composerDrafts } from "../lib/composerDraft.ts";
 import { appendQuote, formatTerminalQuote } from "../lib/terminalQuote.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
-import { fetchBridgeHealth } from "../lib/api.ts";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { labelledAgent } from "../../shared/supported-agents.ts";
@@ -364,16 +363,7 @@ export function PaneTerminal({
   const endedRef = useRef(false);
   const modifyOtherKeysRef = useRef(0);
   const [observing, setObserving] = useState(role === "observe");
-  const [authWatching, setAuthWatching] = useState(() => role === "observe" || isDemoWatch());
-  useEffect(() => {
-    if (role === "observe" || isDemoWatch()) { setAuthWatching(true); return; }
-    let live = true;
-    fetchBridgeHealth().then((health) => {
-      if (live && health?.auth?.role === "watch") setAuthWatching(true);
-    }, () => {});
-    return () => { live = false; };
-  }, [role]);
-  const viewOnly = observing || role === "observe" || authWatching;
+  const viewOnly = observing || role === "observe" || deviceWatching || isDemoWatch();
   // `unchecked`: the PC types the answer without reading its screen first (useTerminalMount showSecret)
   const [secret, setSecret] = useState<{ pane: string; prompt: string; unchecked: boolean } | null>(null);
   const secretRef = useRef<string | null>(null);
@@ -440,6 +430,9 @@ export function PaneTerminal({
     return () => { for (const action of actions) window.removeEventListener(action, acted, true); };
   }, [waitingOnGrace]);
   const onPeekRef = useRef(onPeek); onPeekRef.current = onPeek;
+  // App hands a new function on each of its renders, and it renders on every pane's event: read through
+  // a ref, the chat's callback keeps its identity, so the conversation is not drawn again for another pane
+  const onOpenTerminalRef = useRef(onOpenTerminal); onOpenTerminalRef.current = onOpenTerminal;
   const onEndPeekRef = useRef(onEndPeek); onEndPeekRef.current = onEndPeek;
   const knownOutcomesRef = useRef<{ pane: string; ids: readonly string[] } | null>(null);
   const onChatOutcomes = useCallback((pane: string, ids: readonly string[]) => { knownOutcomesRef.current = { pane, ids }; }, []);
@@ -481,9 +474,9 @@ export function PaneTerminal({
   }, []);
   const peekOutcome = useCallback((text: string) => {
     const open = onPeekRef.current;
-    if (open === undefined || heldRef.current || unsupportedRef.current || text === "") { onOpenTerminal?.(); return; }
+    if (open === undefined || heldRef.current || unsupportedRef.current || text === "") { onOpenTerminalRef.current?.(); return; }
     open({ command: outcomeCommand(text), text: null, knownOutcomeIds: null, auto: false, watch: null, inputRowSeen: inputRowNow() === "ready" });
-  }, [onOpenTerminal, inputRowNow]);
+  }, [inputRowNow]);
   const setDraft = useCallback((value: InputDraft | ((previous: InputDraft) => InputDraft)) => {
     const owner = paneRef.current ? paneStorageId(machineId, paneRef.current) : null;
     setDraftState((previous) => ({ owner, value: typeof value === "function" ? value(previous.owner === owner ? previous.value : EMPTY_DRAFT) : value }));
@@ -1255,7 +1248,7 @@ export function PaneTerminal({
         isBusy={(id) => pendingMessages.isBusy(queueOwner, id)}
         onSendNow={(id) => actOnPending(id, "steer")}
         onEdit={(id) => actOnPending(id, "edit")}
-        onDiscard={(id) => actOnPending(id, "discard")}
+        onDiscard={(id, displayOnly) => actOnPending(id, displayOnly ? "dismiss" : "discard")}
       />}
       {presented && paneId !== null && chatMounted && <div className="prompt-dock" ref={setPromptDock} aria-live="polite" inert={peek !== null || undefined} />}
       {presented && paneId !== null && chatMounted && !secretActive && !observing && !ended && (

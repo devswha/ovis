@@ -176,18 +176,54 @@ To repeat it:
 
 What is there:
 
-- `app/web`: the app's own pages. `index.html` opens on the account's sign-in (the buttons the
-  account service names at `/v1/providers`; a press opens the hosted app on that sign-in,
-  `#sign-in=<provider>`), with Start without signing in below it. That and a build with
-  `OVIS_APP_ACCOUNT=0` lead to Add a PC: Scan a QR code, Enter an address (Tailscale or Wi-Fi),
-  SSH (only in an app that announces the `OvisSsh` plugin), and the PCs opened before. The address `demo` opens the bundled demo, which has no button
-  of its own: the store review notes (app/store) send reviewers there. `error.html` is shown when a PC cannot be
-  reached or answers with an HTTP error (a 502 from `tailscale serve` while Ovis is stopped), with the
-  reason, Try again and Change PC. Both are in English and Korean: an element's
-  `data-ko` attribute holds its Korean text, put in when the phone's first language is Korean
-  (`localize()` in `shell.js`; `error.html` carries its own copy, as it stands alone on Android).
-  The iOS app lists `ko` in `CFBundleLocalizations`, without which its web view reports English
-  to every page, the client included.
+- `app/web`: the app's own pages, in the hosted Connect a PC screen's look (the Codex theme's colours, light or dark as
+  the phone is, and the hosted page's type, radii, buttons and rows: `shell.css` copies the values from `src/styles.css`
+  and `src/components/RelayShell.css` / `RelayAddPc.css` and names each source; `pretendard.css`, which
+  `build-web.ts` writes, points the hosted typeface at the font files the bundled demo already carries). `index.html`
+  holds two layouts and `connect.js` takes one by the build (`APP_HOME` in `shell.js`):
+  - In a hosted-home build (the default) the page is no first screen: it stands in when home does not load and takes
+    what only the app can do (see [The first screen](#the-first-screen)). It is one column of what works with no
+    internet. As the fallback it says "Can't connect to the internet" with Try again (`goHome`), the sheep dimmed;
+    then Connect by address, one field that takes any PC's address as the Tailscale tab's field and Add by address did
+    (the public-http warning, `demo` for the bundled demo, and on Android, while Tailscale is off and a Tailscale
+    address is typed or listed, one line with Open Tailscale); Scan a QR code (a Tailscale QR or a PC's QR still opens
+    on a home network); Connect over SSH, a row whose field takes `user@host` and opens the SSH setup (only in an app
+    that announces `OvisSsh`); the PCs an SSH PC knows; and every PC this phone saved, relay scopes (by name, else the
+    start of the id), Tailscale, plain addresses and SSH, in one list, each opening as before, with Forget, and Manage
+    on an SSH PC. No sign-in and no relay tab: both need the internet and the hosted page. Opened to manage an SSH PC
+    (Change PC where one did not open) it opens that PC's Manage (the one last opened, else the only SSH PC), with
+    "‹ Back" to home.
+  - In a bundled-home build (`OVIS_APP_HOME=bundled`, or `OVIS_APP_ACCOUNT=0`) it is the first screen, Connect a PC with
+    the desktop's Add a connection tabs in its order, picked without a history entry (the phone's Back leaves the app):
+    Ovis relay (the default; the sign-ins the account service names at `/v1/providers`, a press opens the hosted app
+    on that sign-in, `#sign-in=<provider>`, and Scan the QR on the PC's screen), Tailscale (the PCs this phone opened
+    at a Tailscale address, with Connect, a Tailscale address and Scan a QR code; on Android, while no interface holds
+    a Tailscale address, one line and Open Tailscale alone) and SSH (SSH's `user@host` first, which opens the SSH setup
+    filled in, only in an app that announces the `OvisSsh` plugin; Add by address, a text link to a field for a PC's
+    https address; then the PCs added over SSH, and those opened before at any other address, each with Forget, an SSH
+    PC with Manage, and one saved unreadable with Forget alone). The relay and Tailscale tabs list their own PCs opened
+    before. A build with `OVIS_APP_ACCOUNT=0` has no relay tab and opens on Tailscale.
+
+  In both, the PC a page was opened from to choose another is marked In use now, and "‹ <PC>" goes back to it. The
+  address `demo` opens the bundled demo, which has no button of its own: the store review notes (app/store) send
+  reviewers there. `error.html` is shown when a PC cannot be reached or answers with an HTTP error (a 502 from
+  `tailscale serve` while Ovis is stopped), with the reason, Try again and Change PC, in the same look; it stands alone
+  on Android, so `build-web.ts` puts `shell.css` and the sheep into it. When the phone's own connection failed, as its
+  platform says (Android's WebView error `net::ERR_INTERNET_DISCONNECTED`, the iPhone's `NSURLErrorNotConnectedToInternet`,
+  passed as the failure's kind `offline`, `Home.failureKind`), it says "Can't connect to the internet" with Try again and
+  Change PC, and nothing about the PC. A raw `net::ERR_…` is never shown: the common ones are said in words, any other
+  as "could not be opened". A failure of the hosted app itself (the current PC is its origin, `app` in the page's state)
+  is "Can't reach Ovis", never "this PC". Every page sets its `theme-color` to its own
+  colour, light or dark (`barsFor` in `shell.js`, copied into `error.html`), which both apps' bars follow; a PC still
+  opens on the dark one until its page gives its own. The native parts around them take the same colours, light or dark
+  as the phone is: the covers ("Opening…", Try again, Change PC: `MainActivity.showOpening` with `res/values*/colors.xml`,
+  `HerdrBridgeViewController.showOpening`), the web view before a page paints (Android's window background,
+  iOS's `instanceDescriptor().backgroundColor`), Android 12's launch screen and the SSH setup screen
+  (`SshSetupActivity`, `SshSetupView`). The iOS launch image (`Splash.imageset`) is unchanged. Both are in English and Korean, the Korean in 해요체 and in the
+  hosted page's words for the same things: an element's `data-ko` attribute holds its Korean text, put in when the
+  phone's first language is Korean (`localize()` in `shell.js`; `error.html` carries its own copy, as it stands alone
+  on Android). The iOS app lists `ko` in `CFBundleLocalizations`, without which its web view reports English to every
+  page, the client included.
 - A PC joins the list of PCs only once a page of it has loaded, so an address that never
   answered, or answered with an HTTP error, is not kept.
 - On Android an address typed, scanned or picked from the list is first asked whether it is Ovis
@@ -206,7 +242,10 @@ What is there:
   as is an offer that names another PC than its path. The app opens the link as the WebView's
   first page, like any PC (the offer stays in the fragment through
   `instanceDescriptor().serverURL` on iOS, a 2026-10-30 Simulator spike, and through the start
-  path on Android), and the hosted shell pairs from there. Every relay PC shares that origin, so
+  path on Android), and the hosted shell pairs from there. The QR code of a PC already in an
+  account, `https://app.ovis.sh/s/<server_id>/#sign-in=<provider>`, opens the same way with its
+  fragment kept: the hosted shell signs in with that provider (the app's own sheet), then joins
+  the PC as a device of the account. Every relay PC shares that origin, so
   the app saves it by its scope (`https://app.ovis.sh/s/<server_id>/`) and labels it with the
   offer's `name`; a PC opened at its own address is still saved by its origin, and lists saved
   before keep their entries as they are. The allowed host (iOS) and the bridge's origin
@@ -217,7 +256,14 @@ What is there:
   `ScopePath.swift` on iOS; on a Mac, `swiftc app/ios/App/App/ScopePath.swift
   app/ios/ScopePathCheck/main.swift -o /tmp/check && /tmp/check` runs its checks).
   `error.html` says when the relay could not be reached. A test build points at another shell
-  with `OVIS_APP_URL=https://<host> bun run build:web`.
+  with `OVIS_APP_URL=https://<host> bun run build:web`. The native code then takes that origin
+  from the same run (`app/scripts/hosted-origin.ts`): Android's `BuildConfig.APP_ORIGIN` and iOS's
+  `OvisAppOrigin` (Info.plist), each `https://app.ovis.sh` otherwise; its host may hold only
+  letters, digits, dots and hyphens. A build whose copied pages name another origin than that
+  fails, so `bun run build:web` for one platform cannot leave the other packaging mismatched pages:
+  Gradle's `checkHostedOrigin` before any asset merge, and the App target's "Check the hosted
+  origin" phase (`app/ios/check-hosted-origin.sh`). Android's verified app link stays on
+  `app.ovis.sh`.
 - Both apps allow plain http to any host, as Android cannot limit cleartext to address ranges.
   Before opening plain http to an address outside a tailnet, a home network and the phone (one not
   in the list of PCs yet), the connect screen warns that the pairing code and everything typed
@@ -264,6 +310,18 @@ What is there:
   patch of WebKit's private content view: its web view is a `WKWebView` subclass whose
   `inputAccessoryView` is nil, which WebKit asks for since iOS 13. The client has its own key bar,
   and a page cannot remove WebKit's.
+- On iOS the status bar's icons follow the page, as the bars do on Android (see
+  [The Android app](#the-android-app)): a document-start script tells the app the page's
+  `<meta name="theme-color">`, once the document is read and whenever it changes, and
+  `HerdrBridgeViewController` shows dark icons on a light colour and light ones on a dark colour, at
+  the luminance Android draws the line at (`Bars` in `app/ios/OvisHomeCore`, `swift test` there). A
+  page with no readable colour (anything but `#rrggbb`) keeps the app's own light icons, the
+  `SystemBars` style of `capacitor.config.json`. While a native cover is over the page, the cover's
+  own colour decides. A new document starts with nothing said: until it has read its colour, the
+  web view's own background colour decides, which is what shows before a page paints; a load
+  that has not replaced the page yet changes nothing. Before this the icons were light on every PC
+  and on the hosted app whatever the theme, so white on white in a light one; only the app's own
+  pages set them, through `SystemBars`.
 - In the client, `src/lib/nativeApp.ts` notices the app through `window.Capacitor`, as the app
   injects it; the browser build carries no Capacitor code. Inside the app:
   - Settings → Phone & devices has a Change PC row, and so does the pairing screen (a PC that
@@ -274,8 +332,9 @@ What is there:
   already named Ovis, so the store listing can say "Ovis for herdr". The project owns `ovis.sh`,
   so the bundle ID and Android application ID are `sh.ovis.app`.
 - The icon is a cream sheep with closed eyes on a navy tile (`#2E3A59`), cut from the Figma
-  logo drafts; `app/assets/ovis-sheep.png` is the sheep alone. The connect screen shows the
-  logo, the sheep beside the word Ovis (`app/web/ovis-logo.png`). The PNGs in `app/assets` are
+  logo drafts; `app/assets/ovis-sheep.png` is the sheep alone. The app's own pages show the
+  sheep (`app/web/ovis-sheep.svg`), as the hosted screens do; `app/web/ovis-logo.png`, the sheep beside the word Ovis,
+  is the Mac app's connect screen's (app/electron). The PNGs in `app/assets` are
   the sources for both platforms' icons and splash screens. After changing them, run
   `npx @capacitor/assets generate --ios --android --iconBackgroundColor '#2E3A59' --splashBackgroundColor '#12100e'`
   in `app/`, and put back `AndroidManifest.xml` if the tool reformatted it.
@@ -341,6 +400,116 @@ Still open:
   https, on iOS only: Android has no such delay.
 - Not tried: QR scanning (needs a camera), keyboard and IME in the app, a physical iPhone,
   Release signing.
+
+### The first screen
+
+With no PC to open, the app opens the hosted app's Connect a PC screen, `<hosted origin>/#pcs`, called
+home here: on a first launch, after Change PC or Forget, and from a PC's Connect a PC (choosing, which
+keeps that PC to go back to). A saved PC still opens directly at every start. Home opens as a PC's first
+page does, so it has the bridge, but it is not made the current PC: nothing is written until a PC is
+picked. The app's own page (`app/web/index.html`) stands in when home does not load. The decisions are
+pure functions, `Home.java` (`HomeTest`) and `app/ios/OvisHomeCore` (`swift test` there on a Mac);
+`MainActivity` and `HerdrBridgeViewController` only carry them out.
+
+What opens (`Home.screen`), first match:
+
+| When | Screen |
+|---|---|
+| Something waits that only the app's own page takes (a pairing link from outside the app, an SSH PC whose address another app holds, an SSH PC to manage) and no PC is to open | the app's own page |
+| The demo was asked for (`HerdrShell.openDemo`, or `demo` typed where an address goes) | the bundled demo |
+| A PC is current and the person is not choosing another | that PC |
+| Home failed in this process and was not tried again, or the build has `OVIS_APP_HOME=bundled` | the app's own page |
+| Otherwise | home |
+
+While home is up (`Home.on`):
+
+| State | Event | What happens |
+|---|---|---|
+| loading (cover: "Opening Ovis…", no Change PC) | the hosted app drew its own screen (`Home.drawn`) | the cover lifts: shown |
+| loading | the main frame failed, answered with an HTTP error, or was redirected to another origin | fallback |
+| loading | 8 s in front with no answer, or 20 s once a page had answered without becoming the hosted screen | fallback |
+| shown | a main-frame load failed, whenever (a PC's row pressed with the network gone, a later document that broke off) | fallback |
+| loading, shown | the web view arrived at a relay PC's page (`/s/<server_id>/…`, the page's own link) while the current PC is still the one home opened over | the hosted app becomes the current PC and choosing ends; that PC is saved by its scope once its page loaded; from here on the rules of a PC's page hold |
+| loading, shown | a PC picked through `HerdrShell.open` (Tailscale, SSH, an address) | that PC opens, as before |
+| loading, shown | the app is told to open something else (a PC picked, a notification tapped, Try again): left | nothing the page still does counts, and its clock stops |
+| loading, shown (iOS) | the page's web content process died | home once more from the start, cover and clock; a second death before it came up: fallback |
+| fallback, left | anything that still arrives | nothing |
+
+Home is up only when its page is the hosted app's and has drawn: it carries `<meta name="ovis-shell">`
+(the released front page and the next both do) and its `#root` holds what the client rendered, no longer
+index.html's loading spinner. An empty 200 or another page of that origin never lifts the cover, so the
+clock runs on to the fallback. Only time in front counts against it (`Home.Clock`): nothing is added
+while the app is behind another, though its timer may run on there.
+
+Fallback: the flag `homeFailed` is set, in memory only, and the app's own page comes up in a new web
+view (the old one goes, so a load that finishes late cannot take the person off what they type). The page
+reads `fallback` from `HerdrShell.getState` and says "Can't connect to the internet" at its top, with
+Try again, which calls `HerdrShell.goHome` (in a hosted-home build the page is the one column of what works offline,
+[above](#the-app-app)). Nothing else leads back to home by itself, so an offline phone
+stays on that page: the flag is cleared only by Try again, by a sign-in pressed there (below), or once a
+PC's page has loaded, after which the next Connect a PC tries home again. An app started again tries
+home. On iOS, in a hosted-home build, the app's own page is watched too (`Home.ownPageCover`,
+`Home.ownPageStalled`): until the page answers that it is up, a native cover says "Opening Ovis…" with
+Try again once a second and a half has passed, and the web view is built again after 6 s, then 12, 24
+and 48, so the page that stands in can never itself be a dark screen with nothing on it. That was seen in
+a just-created simulator on a starved Mac: every web view committed its page and its content process
+then ran nothing more, home first and the app's own page after it, with the app's main thread idle.
+
+The hosted app's front page asked for by its address is an attempt at home, not a PC (`Home.homeStart`):
+the sign-in buttons of the app's own page (a bundled-home build's tabs; the column has none) open
+`<hosted origin>/#sign-in=<provider>`, and the hosted origin typed or scanned opens `/#pcs`, through `HerdrShell.open`, which in a hosted-home build starts home at that fragment, keeps
+the current PC and falls back like any other attempt. A PC's page there (`/s/<server_id>/…`) still opens
+as a PC.
+
+Change PC where an SSH PC did not open (the cover's, error.html's) leads to the app's own page with that
+PC's Manage open (on the SSH tab in a bundled-home build), not to home: error.html sends the person to Manage
+there (Forget host key, Set up again), which the hosted screen has not. An SSH PC's tunnel failing while the person chooses another way does not put
+its error page over home or the app's own page: only over that PC's own page (`Home.pcShown`). The same
+rule keeps a page that is not a PC's from the current PC's push subscription on iOS (Android keys it by
+the page's own origin).
+
+Back (`Home.back`, the phone's Back on Android; `getState`'s `back` tells a page where its own back
+control leads, `"current"`, `"home"` or `""`): the page's own history first; with nothing behind it, home
+opened while choosing goes back to the current PC (`backToCurrent`); the app's own page goes back to the
+PC it was opened over when one is still current (a pairing link it refused), else to home when home
+handed over to it; the demo is left for the screen it was opened over, the current PC kept; otherwise Back
+leaves the app. The app's own page while choosing goes back to the PC at once, as it always did. An app
+killed while choosing opens the current PC at its next start, as before: choosing is kept in memory only.
+
+`HerdrShell` gained `goHome` and `openDemo` on both platforms, and `getState` the fields `home` (the
+page asking is home), `fallback`, `back` and `manage`. On home, `open` takes `https://demo/`, what the
+word `demo` becomes in the hosted screen's address field, as the bundled demo; the app's own page asks
+`openDemo` itself where it stands in for home. `openSshSetup`, and `OvisSsh.add` called by the hosted
+app's own page (the released front page does), bring the SSH setup up over home itself (see [PCs over
+SSH](#pcs-over-ssh)): Back or Cancel there is home again as it was, and the current PC is untouched. A pairing link tapped outside the app (Android) still waits for the app's own page, which
+checks it and opens its PC.
+
+`HerdrShell.identify` (both platforms) lets a PC's own page say which PC it is: its relay ID, as its own
+`/api/health` gives it to that page (`web_ui.server_id`, authenticated only; `""` once a health read names none, which
+drops the one kept), and its name (64 characters at most, counted as grapheme clusters on both platforms,
+`Home.capped`). The app keeps them (`ids`, and the name only where it keeps none) for the saved PC it shows, and only
+when the page loaded now is on that PC's own address (`Home.identifiedKey`): never for a relay PC's scope or the
+hosted app, never for another saved PC; iOS reads and writes them on the main thread, as it writes names elsewhere.
+`getState` hands `ids` to the app's own pages alone (the hosted app's origin and the bundled page, `Home.shownIds`),
+so home's My PCs lists a PC saved by the relay and by its Tailscale address, over SSH or at another address as one row.
+That is for the eye alone: a row with a relay way opens by the relay, never by a saved address. A PC's page reads no
+other PC's ID. A saved PC gains its ID the next time its page loads in an app with `identify`; an older entry has none
+until then and stays a row of its own. Any frame of a PC's page can call `identify` (on iOS Capacitor takes posts
+from any frame; on an Android WebView without `WEB_MESSAGE_LISTENER` every frame has the bridge), as it can `open` and
+`forget`: a frame that claims a wrong ID only puts that address on another PC's row, which it cannot open or rename.
+
+Known limits: the bridge's reach is what it is for every PC's page (on iOS by host and into subframes;
+on an Android WebView without `WEB_MESSAGE_LISTENER` every frame), and home adds no new kind of caller. On
+iOS the hosted page has to draw the way back from home while choosing (`backToCurrent`); a hosted page
+that does not leaves none. On Android a renderer that dies under home is Capacitor's to handle, as under
+any page.
+
+`OVIS_APP_HOME=bundled bun run build:web` builds an app whose first screen is its own page, as before
+home existed (`BuildConfig.HOME_HOSTED`, `OvisAppHome` in Info.plist, through the files
+`app/scripts/hosted-origin.ts` writes). The pages carry the value too (`APP_HOME` in `shell.js`), and the
+packaging checks that compare the hosted origin compare it as well, so the pages of one build are not
+packaged with the first screen of another. A build with `OVIS_APP_ACCOUNT=0` takes that too unless it sets
+`OVIS_APP_HOME=hosted`.
 
 ### Push in the app
 
@@ -486,8 +655,8 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   hosted shell). `MainActivity` takes only a link to a PC's scope (`PCStore.appLink`); one to
   another page of the hosted shell leaves the open page alone. A view of a PC (a file's `#read=`, a
   pane's `#pane=` or an older `?pane=`) opens that PC at that view when the app has it saved, and
-  otherwise leaves the open page alone too. A link to pair from (the scope alone or with its
-  `#offer=`) is kept in memory (`PCStore.link`) for the connect screen, which takes it once (`HerdrShellPlugin.takeLink`, which an activity showing a PC never answers, as its
+  otherwise leaves the open page alone too. A link to pair from (the scope alone, with its
+  `#offer=`, or with a provider's `#sign-in=`) is kept in memory (`PCStore.link`) for the connect screen, which takes it once (`HerdrShellPlugin.takeLink`, which an activity showing a PC never answers, as its
   page has the bridge too) and opens it as a scanned QR code, so `relayLink()` checks the offer the
   same way. A link handed back when the app is restored or started from Recents is not opened again. Until the link is verified, Android opens such links in the
   browser as before. The hosted shell also serves `apple-app-site-association` for the iOS app,
@@ -506,8 +675,10 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
 - The status and navigation bars take the page's `theme-color` (the client keeps it at its top
   bar's color), with icons that stand out on it: a document-start script sends it to an
   `OvisBars` listener open to the app's and the PC's origins. Until then, and on a WebView without
-  those features, they sit on the app's dark background (`colors.xml`), as does Android 12's own
-  launch screen (`windowSplashScreenBackground`).
+  those features, they sit on the app's own page's colour (`ovis_page` in `colors.xml`, white, or
+  `#181818` in `values-night`), as do the web view before a page paints, Android 12's own launch
+  screen (`windowSplashScreenBackground`) and the native cover; while the cover is up the bars keep
+  its colour, and the page's `theme-color` takes over once it lifts.
 - With 3-button navigation the page stays clear of the buttons, at the bottom or, on a phone in
   landscape, at the side. On a WebView that gives the page its safe areas itself (140 and later),
   Capacitor's SystemBars lets the page draw under the system bars and leaves the room to the CSS,
@@ -516,7 +687,7 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   pads its sides for a side bar itself. `MainActivity` keeps the WebView clear of the bars'
   tappable part (`WindowInsetsCompat.Type.tappableElement()`, which a pinned taskbar on a large
   screen has too), and the strip beside it shows the window's background: the page's
-  `theme-color` once the page has sent it, the app's dark background before. A gesture bar has no
+  `theme-color` once the page has sent it, the app's own page's colour before. A gesture bar has no
   tappable part, so the page still draws under it. A docked keyboard covers a bottom bar, and
   SystemBars keeps the page above both. A floating keyboard takes no bottom inset, so on WebView
   144 and later the bar is kept clear under it; before 144 SystemBars passes the page no bottom
@@ -602,11 +773,20 @@ Still open on Android:
 
 ### PCs over SSH
 
-The Android app can add a PC the person already reaches over SSH: **SSH** under **Add a PC** on
-the connect screen. The phone talks to the PC's sshd itself (ConnectBot's `sshlib`, BSD-3-Clause), with no Ovis
+The Android and iOS apps can add a PC the person already reaches over SSH: **SSH** under **Add a PC** on
+the connect screen (the iPhone's: [The iPhone's SSH](#the-iphones-ssh) below). The phone talks to the PC's sshd itself (ConnectBot's `sshlib`, BSD-3-Clause), with no Ovis
 relay, no account and no port open but SSH. A user guide is [ssh-from-phone.md](ssh-from-phone.md);
 the iOS plan is [ios-ssh-plan.md](ios-ssh-plan.md). Nothing in `server/` or `shared/` changes: the PC
 runs the Ovis it already has.
+
+Only the app's own pages add an SSH PC (`OvisSshPlugin.fromAppPage`); a PC's page, the hosted app's included,
+never gets that. The hosted app's SSH tab takes `user@host` in the phone app all the same: it calls
+`HerdrShell.openSshSetup`, which brings the SSH setup screen (Android's `SshSetupActivity`, the iPhone's sheet) up
+over that page with the login filled in (`SshPcs.login`; `MainActivity.openSshSetup`, `OvisSshPlugin.presentSetup`).
+The page gets nothing back but that the screen came up: the person adds the PC there, the keys staying on the
+native side, and Back or Cancel returns to the page as it was, nothing loaded again (Android's
+`SshSetupOverPageTest`); a PC added opens. An app without that method, and a browser, offer no SSH on the hosted
+page.
 
 How a page gets there (`app/android/app/src/main/java/sh/ovis/app/Ssh*.java`, `OvisSshPlugin`):
 
@@ -688,6 +868,59 @@ the PC out of reach, Ovis not installed (the install command) or not started (it
 command). The tunnel's 503 carries `X-Ovis-Ssh: <kind>`, so `MainActivity` keeps that reason rather
 than the bare status, and a stop while the page is up takes the page to `error.html` too.
 
+#### The iPhone's SSH
+
+The iOS app does the same with the same screens, words, kinds and commands, in Swift
+(`app/ios/OvisSshCore`, a local Swift package over [SwiftNIO SSH](https://github.com/apple/swift-nio-ssh),
+Apache-2.0, whose cryptography is CryptoKit; `app/ios/App/App/OvisSshPlugin.swift`, `SshSetupView.swift`,
+`SshWords.swift`). `swift test` in `app/ios/OvisSshCore` on a Mac runs its tests (no CI job runs them yet: a macOS job for them is a
+follow-up), over
+the Android app's `ssh-test-keys`; `SshFixtureTests` also runs against a real sshd when `OVIS_SSH_FIXTURE`
+names one (a throwaway `sshd -D -f <config>` run as yourself is enough). Where it differs:
+
+- iOS gives the loopback interface 127.0.0.1 alone, so each PC gets a port of its own,
+  `http://127.0.0.1:<47320 to 47619>` (`SshPcs.freeOrigin`, never one a removed PC had until all 300 were
+  handed out). Cookies do not separate ports, so the gate cookie is named for the port
+  (`ovis_ssh_gate_<port>`), and the tunnel also refuses a request another origin's page makes (an `Origin`
+  that is not its own, or `Sec-Fetch-Site` other than `same-origin` or `none`): another SSH PC's page, on
+  its own port, is same-site and would carry the cookie. The app never opens or navigates to 127.0.0.1 at a port
+  no SSH PC listens on, the tunnel refuses a redirect there, and a WebKit content rule list
+  (`OvisSsh.loopbackRules`, made again as SSH PCs come and go, before each web view) blocks every other load from
+  127.0.0.1 there, a picture or a script a page asks for included. `Sec-Fetch-Site` comes with iOS 16.4, so SSH is
+  offered from iOS 16.4 on (`OvisSsh.supported`; the plugin is not registered before it).
+- The gate is 256 random bits made when the PC is set up and kept sealed with it, as WKWebView's cookie store
+  is set asynchronously: it is put there (HttpOnly, SameSite=Strict, on that origin only) before the PC's
+  page loads (`HerdrBridgeViewController.reopen` → `OvisSsh.prepare`).
+- Secrets are sealed with AES-GCM under a 256-bit key in the Keychain, this device only
+  (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, never synced or backed up). The phone's own key is
+  ed25519, as on Android (its line `ssh-ed25519 … ovis-phone:<model>`).
+- Capacitor's iOS bridge lets any page call any plugin, so `DirectCallGate` drops every `OvisSsh` call
+  that does not come from the main frame of the app's own bundled pages (`capacitor://localhost`), and the
+  plugin refuses one that comes through while a PC's page is up.
+- Pasted keys: OpenSSH ed25519 and ECDSA keys, with a passphrase (bcrypt_pbkdf, aes-ctr) or without, and
+  PEM ECDSA keys. SwiftNIO SSH has no RSA, so an RSA key is refused with words that say so (the Android app
+  takes it). Signing in with a password uses SSH's `password` method only, not keyboard-interactive.
+- iOS suspends the app's sockets in the background: on return each tunnel listens again and pings its
+  connection (`SceneDelegate.sceneWillEnterForeground`), and a network change (`NWPathMonitor`) drops
+  every connection; the next request makes a new one, asking nothing.
+- Android's `FLAG_SECURE` has no iOS counterpart: the setup screen can be screenshotted.
+
+#### Tailscale SSH and the PCs a PC knows (both apps)
+
+- **Tailscale SSH, no key** (`auth` "tailscale"): the phone offers SSH's `none` method, which Tailscale SSH accepts
+  for a login its policy allows. In check mode it holds the sign-in and sends a user-auth banner,
+  "# To authenticate, visit: https://login.tailscale.com/a/…"; the setup screen shows that link (`checkLink`, only
+  `https://login.tailscale.com/`) with Open the link, and waits up to ten minutes. A reconnect has nobody to approve
+  it: the tunnel fails with `tailscale-check` and the link as its command, and `error.html` offers Open the link and
+  Try again. A login the policy does not cover is held silently by Tailscale (its own ssh waits the same), so the
+  screen waits until its deadline. The host key is still confirmed and pinned as for any SSH PC.
+- **The PCs a PC knows**: `OvisSsh.known` asks an SSH PC's own Ovis, over its tunnel's SSH connection as from its
+  loopback (`local` access, which `/api/machines/ssh-candidates` and `/api/machines` answer), and the connect
+  screen lists `knownLogins` (`app/web/shell.js`) on the SSH tab with Add: ssh config hosts by user@hostname (an alias
+  alone means nothing on the phone), Tailscale PCs as the first PC's user, and that PC's SSH PCs by target; those
+  already on the phone are left out. Only an SSH PC is asked: a relay or Tailscale-address PC gives the phone no
+  connection of its own to ask over.
+
 First install from the phone: where the account has no Ovis, the setup screen offers to install it.
 The PC flow's remote bundle (`scripts/build-remote-bundle.ts`) cannot serve the phone: it starts a
 bridge-only server, whose token only the PC that installed it has, with no app of its own to open.
@@ -759,6 +992,51 @@ so the apps' `OvisDirect` plugin opens it for the hosted app (`app/ios/App/App/O
   Android needs no permission while `targetSdkVersion` is below 37; at 37 add
   `ACCESS_LOCAL_NETWORK`. Android has no WebSocket library, so `DirectSocket.java` is a small
   `ws://` client of its own.
+
+## The app carries its client
+
+Decided 2026-11-24: the store apps (Android and iOS) carry the whole client, the hosted shell
+(`dist-shell`), and no longer load it from `https://app.ovis.sh`, which stays for browsers and the
+installed web app. Android keeps the origin `https://app.ovis.sh`, served from its own files; iOS
+moves to one of its own. A test build that loads a preview shell from the network stays, and is
+never uploaded to a store. Store builds are cut from a release tag's verified shell.
+
+The app and the client agree on one contract:
+
+- The app sets, at document start and before any page script, on every page it serves from its own
+  files: `window.__ovisAppShell = { bundled: true, platform: "android" | "ios", appVersion: "<versionName>", build: <versionCode> }`
+  (Android `addDocumentStartJavaScript`, iOS a `WKUserScript` at document start). Only the app's own
+  origin gets it, never a PC's page (an address, Tailscale, an SSH PC's loopback origin), which runs
+  that PC's own client. A build that loads the hosted or a preview shell sets nothing.
+- [`src/lib/appShell.ts`](../src/lib/appShell.ts) is the one place that reads it. Where it is absent
+  nothing changes. Where it says `bundled: true` the client:
+  - registers no service worker, and the first time it finds the ones a hosted build left (one per
+    PC's scope, any of which would open a PC's page from the hosted copy it kept), unregisters them,
+    deletes their caches and loads a page one of them served once more; IndexedDB and web storage,
+    which hold the pairings, stay (`retireServiceWorkers` in `src/lib/shellMode.ts`, `src/pwa.ts`);
+  - never reloads for a newer copy: a PC newer than the client opens in it, and the app-updated line
+    offers no reload (`src/lib/relay/updateFlow.ts`, `src/lib/updateNotes.ts`);
+  - is held to the oldest client the PC supports, `min_supported_client` in the relay `WELCOME`:
+    below it, that PC shows **Update the app** with one button to the store page for `platform`,
+    opened outside the app, and Back to the other PCs, which still open;
+  - counts its own origin as the app's where the hosted one was compared (the direct carrier's
+    plugin call, `directPageAllowed` in `src/lib/relay/directSocket.ts`; the plugin's own gate still
+    decides).
+- The demo is the page its own build marks (`window.__ovisDemo`, set by `site/demo/transport.ts`,
+  read by `src/lib/demo.ts`), not one at a `capacitor:` address: on iOS the app's own copy is at one
+  too. Settings' Change PC calls only a marked page the demo, and the header's route mark leaves out
+  only the app's demo.
+- Only the relay and the direct carrier name the floor: both speak Ovis Mux, whose `WELCOME` carries
+  it. A PC added by address, Tailscale or SSH loads its own client from the PC, so the two never
+  differ and nothing is compared.
+- The iOS copy's fetches and sockets carry `Origin: capacitor://app.ovis.sh`. Nothing on a PC or a
+  relay accepts the hosted origin by name, so nothing accepts this one either, and nothing had to
+  change: the relay reads no `Origin`; through it the PC gives every request its own origin
+  (`relayHeaders`); the direct carrier takes only a socket that names no origin, the plugin's; a
+  PC's own HTTP and WebSocket take only their own origin. Tests pin each for both origins and
+  `capacitor://localhost`, and a PC from 0.5.9 behaves the same.
+
+What a PC supports, and when the floor may rise: [The phone app's client](development.md#the-phone-apps-client).
 
 ## Risks and open questions
 

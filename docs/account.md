@@ -187,8 +187,18 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   code to cannot pair after it is gone. A device revoked while its request for a code is on its
   way starts none and is handed none (`401 unauthorized`). A code the PC itself started is held
   by no device.
+- **`bun scripts/plugin.ts add` shows no code that admits a device, but its sign-in code names the
+  account.** Whoever signs in with that code (or its QR code) first names the account the PC may join,
+  until that sign-in ends. So before anything is listed the command names the account that signed
+  in by the start of its id, says where to compare it, and lists what that account calls its PCs (its
+  own word, which a decoy account can copy); the person at the PC types yes, or the command
+  checks it against `--account`, which is the only way where no one can type at it. Only then does
+  it list the PC, and a device of that account, signed in with a sign-in of its own made in the last
+  10 minutes or proved with that sign-in's key ([In one press](#adding-a-pc)), adds it by pressing **Add** on the PC's card: the account's one-press admission
+  ([In one press](#adding-a-pc)), which the PC takes on its own key's proof. An admission by any other
+  account never binds it ([A PC with no screen](relay.md#a-pc-with-no-screen)).
 - **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
-  `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
+  `bun scripts/plugin.ts add --qr` ends in one QR code, and a signed-in device that scans it links
   itself as the PC's first member, so the PC joins that device's account. The code is therefore
   made only by that command, shown only on a terminal and cleared from it (`--print` writes it
   as plain lines that stay, wherever the output goes), kept for 30 minutes at most, and the
@@ -261,7 +271,7 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 hears of every change as `remote-pairings` on its event stream; each entry also carries `key`, the
 new device's P-256 key from its `PAIR_REQUEST`, bound by the commitment and the digits, and
 `vouched: true` for another PC of the account ([Adding a PC of your account](#adding-a-pc-of-your-account)). That member
-answers with `POST /api/relay/pairing` `{ "id", "decision", "digits" }`; `digits` is required to
+answers with `POST /api/relay/pairing` `{ "id", "decision", "digits" }` (except for a proven PC below); `digits` is required to
 approve, and a wrong pick answers 409 `wrong_digits` and ends the request. An approval answers
 `{ "ok": true, "device_id" }`: the id the new device's row takes once its person confirms too,
 `accountDeviceId(server_id, key)`, as every row a comparison makes.
@@ -276,13 +286,42 @@ it, only when all of these hold:
 2. that account's mailbox, pulled with the PC's server proof, holds an admission at most 10 minutes
    old naming exactly the key of this `PAIR_REQUEST`: the account service has seen this device
    signed in to the same account;
-3. the PC has at least one drive account member to approve it.
+3. the PC has at least one drive account member to approve it, or it has none yet (a first join).
 
 Such a comparison is shown to the account's members through the relay (`remote-pairings`, digits
 picked out of three, as always) and, so a one-PC owner is never stuck, to this PC's own window only
-(`GET /api/relay/joins`, its screen, loopback and not forwarded): listed there without its digits and
-without a pop-up, and approved only by the owner typing the six digits the new device shows
-(`POST /api/relay/join`); one wrong entry ends that join. It is never approved by itself.
+(`GET /api/relay/joins`, its screen, loopback and not forwarded, refused while the PC is locked):
+without its digits, one join at a time on a card that window shows by itself, whose field never takes
+the focus on its own, and approved only by the owner typing the six digits the new device shows
+(`POST /api/relay/join`); one wrong entry ends that join. **Not now** only hides the card in that
+window: the join lapses at its own deadline. It is never approved by itself. `ovis approve` in the
+PC's terminal (the same loopback, unforwarded request, with `x-herdr-machine` from the same origin)
+reads the same list and asks the same way: no digits shown, all six typed, one wrong entry ends that
+join, Enter by itself leaves it waiting, a locked or strict PC refuses and the command says so, and an
+input that is not a terminal approves nothing. On a machine several people log in to, set an access
+token: without one, any local OS account counts as this PC's own window and could approve a join
+(it would still need the six digits the asking device shows).
+
+A first join (a PC added in one press, its owner's first phone) has nobody else to approve it: this PC's
+own window alone shows it, as a card with the digits to compare and Allow / Decline (`POST /api/relay/join`
+with a `decision`), and no member that joins meanwhile may decide it. Its `PAIR_CHALLENGE` carries
+`approve_on` (`mac`, `windows`, `linux` or `pc`), so the phone says which PC to press Allow on. On a PC
+with no screen, its terminal stands in for that window: `ovis approve` lists a first join with the device's
+name, the account its admission came from and when it asked, never with its digits, and lets it in only
+when the six digits the device shows are typed there (`POST /api/relay/join` with `digits`, compared as
+for a members join: one wrong entry ends that join, and the device may ask again). `ovis add` asks the same
+way right after it added the PC ([A PC with no screen](relay.md#a-pc-with-no-screen)). That is the
+authority of the own window's Allow, not a new one: the request comes from a shell on this PC that reaches
+its loopback, unforwarded, as the owner (with the access token where there is one), which is what makes a
+window this PC's own, and it carries the digits only the asking device shows. The terminal asks for them
+typed where the window asks for a tap: nothing is approved there without them, an input that is not a
+terminal approves nothing, and no flag takes them. The asking device still needs a fresh admission in
+this PC's account (condition 2 above), so nobody away from this PC gains anything. A PC vouched
+for still needs a member. A key that a QR or code pairing waits with on this PC's screen shows in the same place in
+the PC's own window, with its fingerprint and one button, Confirm on this PC (`POST /api/account/confirm-page`, own
+window only): the server opens the local confirm page in a browser on this PC's desktop, as `ovis confirm` does, so
+the page's port stays in no answer. The page, with its same-user check, or the desktop app still decides it; no route
+of the server approves it. With no desktop to open it on, the window says to run `ovis confirm`.
 Anything else is refused before any prompt and not counted as a failed pairing. A PC takes at most 5
 such joins a minute; refused requests do not count toward them. A request whose admission the PC has
 not seen yet makes it pull its mailbox, at most once every 10 seconds, so a device that asks right
@@ -456,6 +495,7 @@ A client offers features in `HELLO`; a PC that supports them selects them in `WE
 | `pair-intent-pc` | this comparison pairs this PC only |
 | `pair-intent-account` | this comparison adds the device to the account |
 | `pair-intent-pc-vouched` | another PC of the account pairs with this PC only, vouched for by an admission ([Adding a PC of your account](#adding-a-pc-of-your-account)) |
+| `pair-pc-proof` | required with the vouched intent for a member tap; B can journal the join and verify A’s server identity in this SAS session. B selects the vouched intent only when this is offered too, so an older A that offers the intent alone reads B as a PC to update, and its `PAIR_REQUEST` is still refused |
 
 A client offering `pair-sas` offers at most one intent; a PC selects an intent only together with
 `pair-sas`, and only the one offered. A `HELLO` with more than one intent ends with `protocol_error`. A
@@ -500,11 +540,25 @@ With `?fresh=1` the PC first pulls its mailbox (a pull that starts after the req
 waiting there is counted, and adds `fresh`: true only when that pull read the whole mailbox
 without an error, for the PC's current account and relay identity. A PC whose account service is
 turned off (`off`) has no mailbox and answers `fresh: true`; one whose address is unusable does not.
+`waiting_for_add` is true while this PC's own window or CLI (`ovis add`, `ovis join`) asked for its
+one-press admission (`POST /api/account/one-press`) in the last 30 seconds and the service had none
+yet, or did not answer, and the PC is in no account: something here waits for **Add** on a device of
+the account. It is a yes or no only, never the account asked for. It lives in memory, so a restart
+ends it until the next ask.
 A device that waits to link reads one body, whatever the PC holds: `account` `null`, `members` 0,
 `unlinked` its own id alone, every other list empty, `enrolling` and `blocked_all` false. No
 mailbox is read for it, and `fresh` is ignored.
 
-`POST /api/account/relay-account` `{ "account" }`: the account this PC asks its relay pass under while it
+`POST /api/account/pc-proof` `{}`: `{ "server_id", "challenge_id", "proof" }`, this PC's own fresh
+answer to an account service challenge (`role` `account`, as for its mailbox), which Add this PC and
+`ovis login` send beside their `PUT /v1/pcs/{server_id}` at once: it is spent by that PUT and lapses
+after a minute. Only this PC's own window or CLI gets one (403 `owner_only` otherwise, as
+`one-press`); 503 `account_unavailable` when the service gave no challenge. The way back into an
+account after `ovis logout` is so a sign-in on the PC itself.
+
+`POST /api/account/relay-account` `{ "account" }` (or `{ "account": null }`, over a direct connection
+only and only on a PC in no account (409 `in_account` otherwise), which forgets the one named: `ovis
+join` puts back what it found): the account this PC asks its relay pass under while it
 has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
 screen, after it listed the PC), or through the relay only from a drive account member of that same
 account (`account_required` otherwise). Kept in `relay/account.json`; a
@@ -654,11 +708,19 @@ the PC in the account's directory and enrolls it ([Enrolling a PC](#enrolling-a-
 typed and nothing is approved on the PC. Because the code admits whoever holds it
 ([Who may admit a device](#who-may-admit-a-device)), the page guards it:
 
-- The QR code is for a PC in no account. On a PC that is in one the tab has no button and no QR
-  code, and asks the PC for no code: it says which account the PC is in (the one this browser is
-  signed in to, another one, or one it cannot tell while signed out) and that a device is added
-  by signing in to that account on it and opening the PC there. A device the PC does not know yet
-  is approved once, by a drive member of the PC picking its digits ([Introductions](#introductions)).
+- The QR code is for a PC in no account. On a PC that is in one the tab has no button, and asks the
+  PC for no code: it says which account the PC is in (the one this browser is signed in to,
+  another one, or one it cannot tell while signed out), and while the relay is online shows a QR
+  code of another kind, the PC's own page in the hosted app (`https://app.ovis.sh/s/<server_id>/`,
+  with `#sign-in=<provider>` when the account is this browser's own, naming how it signed in). It
+  carries no code, key or token, so it admits nobody by itself: the Ovis app (Android opens it as
+  an app link) or the phone's browser signs in to that account, comes back to the PC's page and
+  asks to join the PC as any device of the account does. A device the PC does not know yet is
+  approved once, by a drive member of the PC picking its digits ([Introductions](#introductions)).
+  A browser's sign-in comes back on the front page alone; the PC's ID rides in that sign-in's own
+  pending record (`pc`, beside its PKCE state), and the front page goes on to that PC's page only
+  when that very sign-in succeeded, before any launch. A sign-in that ends on the page itself (the
+  app's sheet) joins once the account's PCs are read.
   The page reads the PC's account as the tab opens and again at the press, and
   the PC itself refuses the code (`409 in_account`), so a page that read it a moment too early
   shows no QR code either: the refusal makes it look at the PC at once, and the notice below
@@ -686,9 +748,9 @@ typed and nothing is approved on the PC. Because the code admits whoever holds i
 - The QR code is shown alone. No code to type is made for it (`POST /api/relay/code` is not sent):
   a typed code would have the same power, putting the PC in the account of whoever types it at
   app.ovis.sh, and is far easier to read off a screen, a recording or a clipboard than a QR code
-  is to scan. Its six-digit code is its own, never one Phones and devices showed as digits, and
+  is to scan. Its six-digit code is its own, never one the Tailscale tab or Pair with a code showed as digits, and
   **New code** ends it and asks for the offer again (no `POST /api/devices/pair/start`). A device
-  without a camera pairs from Phones and devices → Without signing in, or the PC is added by signing in on it (below).
+  without a camera pairs with the code under the relay tab's Pair with a code, or the PC is added by signing in on it (below).
 - While the QR code is up, and while a notice is, the page reads `GET /api/account/status` and the
   device list every 3 seconds. When the PC goes from no account to one, by a scan or any other
   way (the PC then also takes the code back), the QR code gives way to which account, by its
@@ -744,7 +806,9 @@ until someone signs in on it; the steps below are then the way.
 1. On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay: sign in, then press
    **Add this PC to my account** (a page without that tab keeps **Sign in and add this PC** in its
    Account card, which does both in one press). A PC in no account is then added: the
-   PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens a
+   PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay, and as `os` the
+   system the browser runs, which the account's devices show while a listing a sign-in code made asks
+   to join; `ovis add` sends the PC's platform) and opens a
    pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. The PC is
    added only by a press of a button that says so. The link page's one button reads
    **Sign in and add this PC** only where the sign-in does add it (a PC in no account, its relay
@@ -798,7 +862,7 @@ until someone signs in on it; the steps below are then the way.
    opened, also end a code-less phone link opened meanwhile from **Add a connection**, and turn
    down a phone that was comparing digits through it: that link is asked for again before a phone
    can use it.
-2. On any device already in the account, the dashboard lists the PC as new in the account, with
+2. On any device already in the account, Add a PC lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
    person then **types the six digits the new PC shows** (not a tap: the directory's name is
@@ -814,13 +878,16 @@ until someone signs in on it; the steps below are then the way.
 The account service's Step 2 switch must also be on. **Add this PC to my account** then adds the PC
 with no other device and no digits, when the account service admits it: the browser on the PC's own page lists the PC
 (`PUT /v1/pcs`, as above), then asks `POST /v1/pcs/{server_id}/admit`. The service admits only a
-sign-in made in an app itself within the last 10 minutes with two-step sign-in set (unknown, as
-for a Google sign-in that does not say, is not enough), within a daily cap of PC adds per account,
-and writes who added it in the account's safety log. The one exception is an account's first PC:
-an account never used (no PC listed, added or removed before, and no device key ever registered,
-removed ones included, apart from one the admitting sign-in registered itself) admits its first PC in one press under any sign-in, since no other device
-exists to protect or tell. The PC's own page registers no device key, so a new user's first press
-meets it. The page then names the account it is signed
+sign-in made in an app itself (`own_sign_in_required` for a device code's) that is fresh, or proved
+with its key: made within the last 10 minutes, or older with a key proof (below; 403
+`session_not_fresh` without one), within a daily cap of PC adds per account (429
+`pc_add_cap`), and writes who added it in the account's safety log. It no longer asks for two-step
+sign-in, which most providers' sign-ins never say: an admission by a sign-in without it is kept as
+exempt, and a device that joins the account later is told of it (`admitted_before_you`). An account
+service from before that answers 403 `two_step_required` for a used account (one with a PC listed,
+added or removed before, or a device key ever registered, apart from one the admitting sign-in
+registered itself).
+The page then names the account it is signed
 in to for the PC (`POST /api/account/relay-account`) and presses `POST /api/account/one-press`
 `{ "account" }`. The PC takes it only from its owner here (a device through the relay gets
 `owner_only`, as does a Portal visitor or an open LAN window, and a watching one `read_only`), only for
@@ -836,41 +903,183 @@ own Settings signs in with a code typed on another device, which the service doe
 app's own sign-in, so a press there still ends in that wait; it adds the PC in one press once the PC
 page signs in on its own window.
 
+**Fresh, or proved with the sign-in's key.** Adding a PC asks for a sign-in from the last 10 minutes,
+or an older one that proves the key it registered with the service right after it was made (one key
+per sign-in, apart from the account key, made by WebCrypto as non-extractable and kept in this app's
+IndexedDB: `signin_key`, `src/lib/account/signInKey.ts`). The service asks it of the admit, a confirm
+(`PUT /v1/pcs/{server_id}` with `confirm: true`) and, where Step 2 is on, a `PUT` that lists a PC the
+account does not list yet (it holds a listing to that only once it turns that rule on; until then it
+judges a proof only when one is sent, and an old sign-in's listing without one goes through as
+before); upkeep of a listed PC and a device code's listing ask nothing.
+
+Only the phone app and app.ovis.sh register such a key, for a sign-in made there outside a pairing;
+there a sign-in this device made more than nine minutes ago by its own clock, or one saved before that
+time was kept, proves its key by itself on an add a person presses: the card's **Add** (the admit) and
+**Add and pair** (the listing, and the enrollment of the pairing it just made; opening a saved pairing
+signs nothing). On a PC's own window, in the desktop app, and for a sign-in made from a pairing screen
+there is no such key, and an old sign-in is asked to **Sign in again**, as before. The proof: the app
+asks `POST /v1/pcs/challenge` (`{}`) for `{ challenge_id, challenge, expires_in: 120 }`, a challenge
+for this sign-in alone that any use spends, and sends `key_proof: { challenge_id, signature }`, the
+key's ECDSA P-256 / SHA-256 signature (raw r then s, base64url) over `ovis-pc-add/1` and six fields,
+each a 4-byte big-endian length and its UTF-8 bytes: the purpose (`admit` or `list`), the account,
+the PC's `server_id`, the listing ID (the PC's current one in `GET /v1/pcs?include=unconfirmed`, `""`
+when the account lists none), the challenge ID and the challenge (`shared/account-records.ts`
+`pcAddSigningBytes`). A fresh sign-in sends none. One proof per press: a service without the route
+(404, one from before key proofs) gets none, a refusal of the field (400 `invalid_request`, the
+admit's body of such a service) is told as `session_not_fresh`, and a signature the service does not
+take is judged by the sign-in's age alone; each ends in **Sign in again**, as before. A listing sent
+again after no answer whose challenge was spent on the way (400 `challenge_invalid`) gets a new proof
+once. Where the listing itself is refused for the sign-in, the same offer stands in place: **Add this
+PC to my account** says to sign in again and offers it on the PC's own window and the desktop app,
+then presses again with the new sign-in, and a phone's **Add and pair** shows its sign-in screen and
+goes on with the same pairing after it. The proof binds the add to this browser profile, not to a
+person: a copied access or refresh token alone adds no PC, but a script running in the app's page, or
+a copy of the whole browser profile, still can.
+
+**Add on another device.** The admit also confirms a listing a device code made (unconfirmed until
+then), so the same admission adds a PC that signed in on the link page. Every device of the account
+whose sign-in is its own shows such a PC's card, **Add this PC to your account?**, with the name the
+PC gave itself, who is asking under it (the system its listing named and where the service saw that
+listing come from, `asking_os`, `asking_country` and `asking_city`: "Linux · Seoul, South Korea", only
+what is known), when it was listed and, for a listing that asks to join, the minutes left (at most
+10). That window is the service's (`asking_until`, 10 minutes from the sign-in code that listed the
+PC), and never longer than 10 minutes from the listing. Once it passed, or the admit answers 409
+`listing_expired`, the card says **This request ran out. To add this PC, start again on the PC.**,
+with **No** alone. An unconfirmed PC no window applies to (`asking_until` null: one a sign-in code
+listed while Step 2 was off, which may be a PC in use, or a service that names none) keeps the card
+as it was: **Add** and **No** for 10 minutes from its listing, then **Remove from my account**.
+**Add** reads the listing again and admits nothing when it is no longer the one on the card, then
+asks `POST /v1/pcs/{server_id}/admit` (with the key proof above when the sign-in is old), with **Sign
+in again** for `session_not_fresh` and `own_sign_in_required`, after which the add goes on; a 409
+`listing_changed`, or a `session_not_fresh` after which the listing reads as replaced (a proof signs
+the listing it read), reads the listing again and shows the one there now. The admit names the PC, not the listing, so a
+listing that replaces the card's in the moment between that read and the admit is admitted in its
+place; it is a listing of the same PC (its id derives from the PC's key), whose name may differ. An
+admit bound to the listing is the account service's to add. The card keeps a closed new-PC notice
+under the admission's time as the service answered it, which the directory's row repeats. **No**
+removes the listing, from a sign-in of any age: ending a listing that asks to join cuts nobody off (a
+service from before key proofs asks a fresh sign-in, and **No** then offers **Sign in again**). `ovis add` on that
+PC waits for that admission and takes it as above ([A PC with no screen](relay.md#a-pc-with-no-screen)).
+A PC's own page that signed in on the link page does not take it: its digit wait goes on, and the
+admission ends unused after its 10 minutes (the listing stays confirmed).
+
 **Sign in again from the wait.** When the service refuses the press for the sign-in itself
-(`two_step_required`, `session_not_fresh` or `own_sign_in_required`) and the page signs in its own way
-(the desktop app, the PC's own window), the wait offers **Sign in again** once. It signs in afresh
+(`session_not_fresh`: an old sign-in with no key to prove, or a service from before key proofs; or
+`own_sign_in_required`) and the page signs in its own way
+(the desktop app, the PC's own window), the wait offers **Sign in again** once. A sign-in without
+two-step (`two_step_required`) gets no such offer, since the same sign-in again is refused again:
+the wait says so, and that the PC is added from another device of the account (which shows a number
+to approve at the PC) or by scanning the PC's QR code, or in one press once two-step is on. It signs in afresh
 with the stored provider; the new sign-in is kept only for the same account and only while the wait
 still runs (Stop waiting in any window of the PC ends it). The press is then made again inside that
 wait: for the PC the wait listed (the PC's address must still answer for it, and nothing is listed
 again), with exactly the sign-in just made, never one another tab stored meanwhile. A second refusal
-leaves the plain wait, with no offer: the wait offers it once.
+leaves the wait with no offer (it offers it once) and says why that press added nothing.
 
 The account's other devices are told: the service sends them its usual push, and at the top of the
-opened Ovis a notice names the new PC, with **I didn't add this**, which removes it from the
+opened Ovis a notice names the new PC (only on a device that first signed in to the account before the
+PC was added, by that first sign-in's `signed_in_at`, kept on the device: a device that joins later finds it already
+in the account, and a later sign-in, such as Sign in again to remove the PC, keeps it told), with **I didn't add this**, which removes it from the
 account's list at once (`DELETE /v1/pcs/{server_id}`); its close button only hides it. The overview
 page shows neither: it lists the PC as any other, with no quick **Open** while it is new unless this
 device paired with it by hand (then **Open** is the person's own tap). A PC added under the first-PC
 exception is told, once, to the first devices that join the account after it (`admitted_before_you`
 on its directory entry), however much later. For 24 hours (`new_until` on its directory entry) the
 PC is marked new on them: it is never selected or opened by itself and no device signs in to it on
-its own, while a press on it opens it as usual. The account service admits the PC before the PC is
+its own. A load or a reload of its own page (where a tap on its row in My PCs leads) only puts up
+its join sheet. So does a launch that picks it, asking it nothing, when this device may sign in to
+it by the account's key; otherwise the launch asks to join it at once, as before. The press on that
+sheet (**Ask to join**) signs in with this device's registered key first, as a load does once the
+24 hours are over, so a PC that already let this device in from the account's list opens at once; a
+press made before the page has read the account's PCs waits for that read. When that is refused or cannot be tried (no key
+registered here, a PC that does not list this key or no longer admits it, one from before that way
+in), the same press sends the join request once, with no second press, and the join's screens
+follow as before; nothing tries the account's way again by itself. That join is the one a press
+sent before: the PC judges it as any other, so a key the account removed is never let back in, and
+a key the PC revoked comes back only when someone approves it on the PC's own window. A hold the PC
+answers is waited out, as for any such sign-in. The account service admits the PC before the PC is
 asked, so a press the PC then refuses (it restarted, was put in another account meanwhile, or was
 not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
 not in that account (in none, or in another one it joined meanwhile), and the page waits for the
 digits as before, and its notice says what to do if nobody added it. A PC bound this way leaves the
-account as soon as a snapshot read finds the account no longer lists it. Before recording the
+account as soon as a snapshot read finds the account no longer lists it, or its scoped completion
+receipt says the admitted listing was replaced. A bare relisting is not a new admission. The PC
+keeps the admission's `listing_id` in its binding and checks it with the service before a snapshot
+can release account rows and before granting a new account-only relay session. A positive answer
+stands for 60 seconds from when it was asked for, on a clock that only moves forward and on the PC's
+wall clock (either one outside the 60 seconds ends it), so a burst of sign-ins asks once and a
+removal refuses new sign-ins within a minute. A failed or negative answer is never kept, and a later
+check that brings no yes ends an earlier yes for the same listing. A sign-in's `AUTH_OK` is
+committed only while the answer it was let in by still stands; one that waited longer in the queue
+ends with `timeout`, and the device asks again. A snapshot read asks for itself once its last page
+is here and checked and its blocks are applied, the first read after one press included, and commits
+only while that answer stands; a read it refuses has still denied what its pages denied. Only a
+completion answer that names a strict UTC time counts as a yes, and one asked for before a later
+check failed is not kept. With no new sign-in, the PC checks at its normal
+five-minute mailbox poll, which is also when sessions already open end. An unavailable service, or
+one that has not answered a sign-in within 4 seconds, cannot authorize a new account-only connection
+and clears nothing: the device is refused with `account_unreachable` and says that the PC could not
+reach the account service. A client that did not offer `account-listing-errors-1` in HELLO gets
+`internal_error` instead, which forgets no key; so does one that knows none of the account codes
+while its row waits for a first read the service cannot give.
+
+While no whole read can be applied (an outage, or a listing the service does not confirm), the
+binding stays, and after one hour without one every row that stands on the account alone waits for
+the next read, its sessions closed: the account's listed rows, and the account's members kept in
+`devices.json` (a signed `add`, a member's remote approval), those made after the hour ended too. A
+pairing made at this PC is no such row and keeps working.
+
+After a start, every `devices.json` row whose key was not approved on this PC's screen waits for
+the first whole read, since a block may have been signed while the PC was off. A read that reached
+its last page with every block applied, but could let nothing more in because the listing was not
+confirmed, ends that wait for a pairing that is this PC's own (the ones a PC keeps when it leaves
+its account) and that nothing holds back; what such a row may do for the account, and every other
+row, waits on for a read that commits. With no read reaching its last page (the service down), they
+wait as before.
+
+A sign-in whose row only waits for a read (after a start, or once the hour has ended) is put off,
+never refused as a removed device's: `held` with `catching_up`, or `internal_error` to a client from
+before the account codes. A join a member approves from afar is asked about like a sign-in before
+any device is written. A member in `devices.json` that paired its key with a code of this PC and
+kept it through its link keeps its access through the hour; what it may do for the account waits.
+
+One press binds only when the admission names its listing (502 `listing_unnamed` otherwise). A
+binding made before 0.5.10 names none, and pins one from one of two sources. The completion receipt
+the PC kept from its bind, when the service still confirms that listing; the receipt is kept until
+the service takes it or answers 409 `listing_changed`. With no receipt, the service's own word: a
+mailbox answer asked `with_listing_id` says beside `listing_id` whether that listing stands on a
+one-press admission this PC took (`listing_admitted`). `true` beside a well-formed listing pins it,
+and it is then confirmed through `/v1/pc/complete` as every pinned listing is, so a PC added in one
+press on 0.5.9 stays in its account after the update with no add. `false`, beside a listing (a
+device listed the PC again with no press at the PC) or beside none, or a receipt the service
+refuses: the PC leaves the account as for an unlisting. Anything else says nothing and is never a
+no: the field missing (an account service from before it), a call that fails, an answer that does
+not parse, `true` beside no listing. Then the binding neither pins nor clears and is asked about
+again at the next sign-in or pull; meanwhile a device that stands on the account alone is refused
+`account_unreachable`, and a pairing made at this PC opens it. An admission as such is no evidence,
+since a device of the account can list the PC again and admit it with no press at the PC; nor is
+the account's current listing, which the PC's own mailbox pull would let it complete. While a PC
+that left this way, or that
+its account stopped listing, is owed its add at the PC (`pc_add_required`), a device that proves a
+key the PC knew as that account's is refused with `account_readd_required` (when it offered the
+feature) and keeps its key: **Add this PC to your account again**. That key is one a whole read
+numbered, for the row the account's list made of it, or the key of a `devices.json` row that left
+with the account (the journal's last entry of that row, `remove` with `unlisted`), and never one
+removed here or by the account. It is read when the sign-in is answered, so the device whose own
+sign-in made the PC ask and leave hears it too. Nobody else is told why. Before recording the
 `unlisted` clear, the PC ends account-only rows and removes membership from credentials whose
 recorded origin proves they paired here. Those pairings keep their keys and roles, including
 after an offline restart from either state folder. A pairing by code or digits counts as local
 only when this PC approved the current key; one an account member device started or approved
-does not qualify.
+does not qualify. A phone that paired with this PC's first-link code and linked with the key that
+code admitted counts as local too: it keeps that key and its role, and only its membership ends.
 The sibling's old membership or signed add does not restore the cleared binding. An imported or
 invalid origin does not qualify. Unlisting does not
 lift a lock, block, freeze, Revoke or tombstone.
 
-A wrong number ends that comparison; the person starts again from **Add** on the dashboard. A device without an account
-pairs with a QR code or pairing code behind **Start without signing in** on the sign-in screen, which
-leads to **Add a PC**.
+A wrong number ends that comparison; the person starts again from **Add** in Add a PC. A device without an account
+pairs with a QR code, or with **Pair with a code** in the **Ovis relay** tab of the front page's
+**Connect a PC**.
 
 ### Adding a PC of your account
 
@@ -885,19 +1094,22 @@ clients that do not identify a PC add can still use legacy code pairing. Full
 PC-to-PC key proof remains a follow-up. This limitation does not change the source
 PC's refusal or the Tailscale tab's SSH connection.
 
-**Add a connection → Ovis relay** on a PC (A) whose page is signed in, with A in that account, lists
-the account's other PCs: **Connect** for one already in A's machine list,
-**Add** for one that would pair, and "Update Ovis on that PC" or "Offline" with no button. **Add**
+The sidebar of a PC (A) whose page is signed in, with A in that account, lists the account's other
+PCs that A has not added yet, and adds one that would pair on its own ("Update Ovis on that PC" or
+"Offline" for one that would not); **Add a connection → Ovis relay** lists no PCs. An add
 makes A's server a paired device of that PC (B), as **Add a PC through the relay** with a link does,
-and A then lists B like any SSH PC, after a restart too. B's row is a plain drive row: A is never an
-account member, holds no account key and signs nothing ([rule 3](#rules)).
+and A then lists B like any SSH PC, after a restart too. B's row is a plain watch row: A is never an
+account member, holds no account key and signs nothing ([rule 3](#rules)), and it only watches B.
+That row stands for every device of A at once, so B could not revoke or block one of them that comes
+through A: B lets A read, never drive, until A tells B which device asks (a later change). A row made
+before this keeps its role.
 
 A's page cannot reach a relay (its `connect-src` is itself and the account service), so A's server
 does the relay work, and the page only vouches for it:
 
 1. `POST /api/machines/relay/account/check` `{ "pcs": [{ "server_id", "server_public_key", "relay", "name" }] }`
    (at most 32) answers each PC's `state`: `ready`, `outdated` or `offline`. A's server opens a relay
-   channel to each, offers `pair-sas` with `pair-intent-pc-vouched`, reads the PC's answer to `HELLO`
+   channel to each, offers `pair-sas` with `pair-intent-pc-vouched` and `pair-pc-proof`, reads the PC's answer to `HELLO`
    and closes before `PAIR_REQUEST`: nothing is counted there and no key is kept.
 2. **Add**: `POST /api/machines/relay/account/start` `{ "pc" }` checks the entry (its `server_id`
    must derive from `server_public_key`, its relay a `wss:` origin, not A itself, not already added),
@@ -908,36 +1120,116 @@ does the relay work, and the page only vouches for it:
    already read its admission, and B reads the account's admissions at most once every 10 seconds.
 3. The page posts an admission naming that `key` at B (`POST /v1/admissions`, as a signed-in device
    that joins does): the account service has seen a device signed in to this account ask.
-4. `POST /api/machines/relay/account/pair` `{ "ticket" }` compares digits with B through the relay
-   with `pair-intent-pc-vouched`, and answers newline-delimited JSON: `{ "digits" }` once B took the
-   request (the page shows them under "Approve on another device of your account"), then
+4. `POST /api/machines/relay/account/pair` `{ "ticket" }` proves A’s identity to B through the relay.
+   It answers newline-delimited JSON: `{ "waiting": true }` after A sends its proof, then
    `{ "machine" }` once B admitted A and A saved it as `POST /api/machines/relay` does, or
    `{ "error": { "code", "message" } }`. Closing the request (Cancel, closing the sheet) ends the
    comparison on B and keeps nothing: the key is written only on B's `AUTH_OK`. A ticket is good for
    one comparison, for 10 minutes, and one comparison runs per key: another window's Add of B while
    one runs gets 409 `account_pc_busy`, so B is asked once. A cancel that lands in the moment between B's `AUTH_OK` and A
    saving the PC leaves B a row for a key A dropped: nobody can sign in with it, B lists it as
-   "Ovis on <host>" (announced as every admission is), and **Revoke** on B removes it.
+   the name the member checked (announced as every admission is), and **Revoke** on B removes it.
 
-These routes are A's owner's, from a window direct to A that drives it: a device on the relay, a
+These routes are A's owner's, from a device that drives A: a window direct to A, or a device paired
+with A over the relay (the hosted shell at app.ovis.sh and the phone app reach A only that way). The
+admission comes from that device's own account sign-in, and a member still allows the named PC on B. A
 Portal visitor and an open LAN window get 403 `owner_only`, a watching device `read_only`, so none
-of them can have A pair itself with a PC they name. No person checks A's side of the comparison:
-A dials B by B's own key, checked against B's id, so a relay cannot stand in for B. B's side is the
-one a member checks, by picking the digits A's page shows.
+of them can have A pair itself with a PC they name.
 
-On B, `pair-intent-pc-vouched` is taken only under the gates of [joining through the
-account](#who-may-admit-a-device), whether or not B's pairing window is open: B belongs to an
-account, its mailbox holds an admission at most 10 minutes old naming exactly the key of this
-`PAIR_REQUEST`, and B has a drive account member to approve; it shares the 5 joins a minute.
-Anything else is refused before any prompt and not counted. The comparison is shown only to the
-account's members through the relay (`remote-pairings`, digits picked out of three), never to B's own
-windows, as **pair this PC** (`intent: "pc"`) naming A's server ("Ovis on <host>"), marked
-`vouched: true`, so the approver's app signs nothing for it (no `add`, no introduction) but still
-shows who is asking (Who is asking, from `GET /v1/admissions`) and approves only when the account
-service lists the admission for that key at B, as for an account join; signed out, it approves none.
-An approver from before the mark reads a plain request for B alone and signs nothing either. B's row is `added_by` the approver,
-with no `account`. Its failures (declined, a wrong pick, no answer in time) count on a path of their
-own. An older B selects no such intent: A says to update Ovis there and sends nothing more.
+A passes the same routes of a PC it lists on to it (`POST /api/machines/<B's id>/machines/relay/account/{check,start,pair}`,
+`pair`'s lines as they come, held up to 200 seconds), from the devices it takes its own routes from
+(`owner_only` and `read_only` as above). B answers them as any device that watches it: 403
+`read_only`, as it refuses every other write that comes through A. A device adds PCs to B by
+connecting to B itself.
+
+A pins B’s relay key as before. In the negotiated vouched session A includes its X25519 public key
+(hex `server_key`) alongside the per-pair P-256 key and SAS commitment in `PAIR_REQUEST`. B derives
+the source server ID from the X25519 key and reserves the only vouched slot on B. Its
+`PAIR_CHALLENGE.server_challenge` is a fresh serialized `server_challenge`. A answers in
+`PAIR_REVEAL.server_proof` with the existing X25519/HMAC server proof, under role `vouched-pc`,
+derived source ID, and the base64url Noise channel binding as `connection_id`. B consumes its
+expected answer on the first reveal and separately verifies the SAS commitment. Neither a replay nor
+a key supplied without proof produces a prompt. A confirms its side automatically; no digits appear.
+
+B checks its account, current member standing, key denials, and a fresh admission naming this
+P-256 key at B. A verified request counts towards the shared five joins per minute. Its
+`remote-pairings` entry has `intent: "pc"`, `vouched: true`, `choices: []`, and the
+`proven_server_id`; neither this ID nor the displayed name is taken from the admission. The
+member’s app uses its own authenticated `GET /v1/pcs` and local completed pairing in that account:
+the listed key, local pinned key, and proven ID must agree, and the service must have seen this PC
+pull this account’s mailbox (a valid `last_seen_at`). A new (`new_until`), unconfirmed,
+introduction-only, missing or unreadable listing offers **Deny** only. **Allow** re-reads the
+listing and admission under the same sign-in, then posts `{id, decision: "approve", proven_server_id,
+pc_label}` to B. The label is the name the member saw in the directory. The live member’s answer
+applies only to that pending request and identity. No account add is signed. B journals the WATCH
+row before publishing its usual paired-device notification; **Revoke** removes it. An older A,
+B without proof support or the journal, or a digit answer from an older approver cannot admit a PC
+this way. All other comparison paths still require their original digits.
+
+### Adding a PC over SSH
+
+From this PC's own window, signed in to the account this PC is in, Add PC over SSH can also add
+the other PC (B) to that account (Linux and macOS on both ends; a Windows B adds itself with its
+number). SSH only says which machine and OS user was reached; the account's one-press admission
+decides which account B may join. There, Add a connection's Ovis relay tab lists the PCs this PC can
+reach (its Tailscale login's PCs and its ssh config hosts); Add opens Add PC over SSH with that host.
+A row says **In your account** only for a PC that took its place there: the directory's `completed_at`
+(it completed its add) or `last_seen_at` (it pulled the account's mailbox, which a PC in no account
+never does). A PC only listed or admitted (an add stopped at the sign-in, say) keeps Add; one saved
+here already is added on that same entry (`machine_id`), not saved a second time. Settings → Devices
+and PCs words the account's PCs the same way: **In your account** once joined, **Waiting to be
+added** before.
+
+- **SSH.** Public keys only (the user's SSH config, key files and agent): no password or
+  keyboard-interactive login, and no reconnect key of this app's is used or enrolled. B's host key
+  must be known or confirmed in the dialog; a changed key is refused.
+- **B's own Ovis only.** The job lands only on an Ovis registered by B's user that is not a bridge
+  this app started (`managed_remote: false`, proved over its own credential); a bridge-only PC is
+  refused, and a PC without Ovis is offered the official installer (`install_ovis`). Nothing is
+  installed or started in its place.
+- **Inspect.** B's registration names its recovery socket (`recover_socket`). It is forwarded over
+  the job's connection into the connection's private folder, and `account_add_inspect` returns B's
+  ID, public key, advertised relay, label and account. The ID must derive from the key. That socket answers every
+  recovery act of B's owner, so the adding PC only ever sends `account_add_inspect` and `account_add_take` on it
+  (`server/account-add-channel.ts`), and closes the forward once take answers, on any error, and after ten minutes.
+  A take that got no answer (the connection dropped while B waited for its relay) is followed by one more inspect on
+  a forward of its own: B in the account answers as added (`unanswered: true`, its relay not known); with no answer
+  to that either, `409 take_unanswered`, and the window says B may have been added and to connect again to check,
+  never that it was not added.
+- **List and admit.** The window lists B (`PUT /v1/pcs/:id`) unless already listed, then admits it
+  (`POST /v1/pcs/:id/admit`) with the same stored sign-in. The service applies its usual rules:
+  an own sign-in, fresh or proved with its key ([In one press](#adding-a-pc)), and two-step unless the
+  account was never used. On `two_step_required` the window says to add B with the number on its Ovis
+  page. On `session_not_fresh` (this PC's own window registers no key, so an old sign-in is refused) or
+  `own_sign_in_required` it offers **Sign in again** in place, the page's own sign-in as the Settings
+  account section starts it; once signed in, the add goes on with exactly that sign-in over the same
+  connection, or, when that connection ended meanwhile, over a new one to the same PC; a new connection
+  whose inspect names another PC than the first adds nothing and says so.
+- **Take.** `POST /api/account/ssh-add` `{job_id, server_id}`, this PC's own window only. This PC
+  sends B only its own binding's account (`account_add_take`) over the same connection, while the
+  job's PC keeps the generation it had at inspect. B names itself for that account and takes the
+  admission on its own proof (`POST /v1/pc/admission`), as one press does. B already in that
+  account answers as added (the window still sends it the take when inspect found it there, so the
+  relay step below runs); B in another account binds nothing. A listing or an admission alone
+  never shows as added.
+- **Relay.** B is opened through its relay, which an Ovis installed over SSH never had turned on, so
+  B names the account again (a relay pass refused while B was unlisted is asked for again; a failed
+  write takes nothing back from the bind), turns the relay on as its own Settings switch does
+  (`RelayService.start`: saved as on, and a device gate still open closes) when it is off, and waits
+  up to 30 seconds for it to come online, as `ovis add` does. It turns it on when the take bound it,
+  and, for a B already in the account, only when its switch was never set (`relay/state.json`
+  absent): a relay its owner turned off stays off. Nothing else is turned on. A B that left the
+  account, or whose relay identity was reset, while it waited answers `not_listed` or
+  `identity_changed`. The take answers `{ account, relay: { phase, blocked } }`, and `POST
+  /api/account/ssh-add` passes it on (`relay: null` from an Ovis from before this). The window says
+  added only with `phase: "online"`; with a relay not online yet it says so and to run `ovis status`
+  there; for a B already in the account with its relay off, that its relay is turned off there; with
+  `relay: null`, that B is in the account and to update Ovis there to check its relay. A take that
+  binds nothing turns nothing on.
+- **Complete.** B asks its admission `with_listing_id` and, once bound, records its add complete
+  (`POST /v1/pc/complete` with a proof scoped to that account and listing). The receipt is kept on disk
+  and sent again after each pull until the service has it, so the directory's `completed_at` shows B
+  added rather than only listed. The own-window one press does the same.
 
 ### Introductions
 
@@ -1038,6 +1330,13 @@ is what authenticates the PC.
   drive access only: `by` is `"pc"` for a revoke on the PC itself (Revoke all, a reset relay
   identity), the device that revoked it through the app, or the member that signed an account
   `remove`.
+- A join (`device-paired`) waits on the PC, in `join-notices.json` beside `devices.json`, until a window sees it:
+  the PC's own window and each device that was here before the join open their machines event stream on the joins
+  nobody has seen yet (the newest three, within a week, of devices still here), never the new device's own; a
+  device paired later, a window the open LAN let in and any other window hear none. `POST /api/devices/joins/seen
+  { "event_id" }` from one of those windows that may drive the PC marks it seen for all (any other gets 404), and
+  every open stream is told `{ "type": "device-paired-seen", "event_id" }`. A watching window hides a join for
+  itself, in its own browser storage.
 - `GET /api/devices` adds `account`, `account_key` (the member's `relay_public_key`, which is public)
   and `added_by` to account members' rows, for a caller with drive access only; a watching device
   sees none of them.
@@ -1107,8 +1406,8 @@ These limits apply while Step 2 is on, which is the default.
 
 - **Lifting a block needs a two-step sign-in.** Only a device that is older than the block, and
   whose own sign-in has two-step sign-in set on the account, can lift a block from the app. A
-  Google sign-in whose two-step state the account cannot see ("Two-step sign-in not confirmed")
-  can block a device but cannot lift a block. If every device you still have is like that, lift
+  Google sign-in whose two-step state the account cannot see (its notices say only "Google
+  sign-in") can block a device but cannot lift a block. If every device you still have is like that, lift
   the block on the PC itself: run `ovis recover` to list what stands there, then
   `ovis recover --lift <block id>` for the one to lift. `ovis recover` asks you to confirm in
   that terminal.
@@ -1300,21 +1599,43 @@ Clients:
 | request | body | answer |
 |---|---|---|
 | `GET /v1/pcs` | | `{ "pcs": [{ "server_id", "label", "public_key", "relay", "added_at", "last_seen_at" }] }` |
-| `PUT /v1/pcs/{server_id}` | `{ "label", "public_key", "relay" }` | `{ "pc": … }`: adds or renames a PC in the directory. 400 `server_key_mismatch` unless `public_key` (X25519, 64 hex) gives `server_id` (`deriveServerId`), 400 `invalid_relay` unless `relay` is a `wss:` origin |
+| `PUT /v1/pcs/{server_id}` | `{ "label", "public_key", "relay", "challenge_id"?, "proof"? }` | `{ "pc": … }`: adds or renames a PC in the directory. 400 `server_key_mismatch` unless `public_key` (X25519, 64 hex) gives `server_id` (`deriveServerId`), 400 `invalid_relay` unless `relay` is a `wss:` origin. For 30 days after the PC left the account (`POST /v1/pcs/{server_id}/leave`, sent by `ovis logout` with the PC's proof), 409 `pc_left` with `left_at` unless the body carries the PC's own fresh proof (`/api/account/pc-proof`; 401 `proof_invalid` when it fails), which lists it again and ends the mark. The app then says **Sign in on this PC to add it again** |
 | `DELETE /v1/pcs/{server_id}` | | `204` |
 | `POST /v1/records` | `{ "server_ids": [...], "record" }` | `{ "queued": n }`: puts a signed record of the caller's account in that account's mailbox for each listed PC; the service checks only its shape and signature. 429 `mailbox_full` past 1000 records waiting for one PC |
 | `GET /v1/admissions` | | `{ "admissions": [{ "key", "label", "server_id", "at", "os", "country", "city" }] }`: this account's admissions of the last 10 minutes, with who is asking (below). Before it signs an `add` for a device a PC showed it, the approving client checks that PC and key are listed here |
 | `POST /v1/admissions` | `{ "server_id", "label", "key", "os"? }` | `{ "id" }`: the signed-in device says it waits at that PC with its account key (`key`); rings the account's other clients (push), and reaches that PC's mailbox for 10 minutes |
 | `POST /v1/signout` | | `204`: ends this sign-in's tokens |
+| `POST /v1/signout/all` | `{}` | `204`: ends every sign-in of the account, this one and device codes' included, and the codes not yet redeemed; rings the account's other clients. The PCs and registered device keys stay. 403 `reauth_required` unless this sign-in was made in the last 10 minutes; 403 `web_sign_in_required` for a device code's sign-in. Manage account offers it as **Sign out every device**: on `reauth_required` the phone app signs in again in place and goes on, and a browser signs in again by redirect, whose return goes on for the same account only |
 
-`DELETE /v1/pcs/{server_id}` is no lasting removal for a PC in use: a member device lists the PC
-again on its next connection to it (`enrollOwned`), and so does the PC's own waiting Add this PC
-screen. A PC the directory does not list gets no [relay pass](relay.md#relay-pass) (`not_listed`)
-and none of the account's later records. So the apps offer it only in a PC's own Settings →
-Devices and PCs, as **Remove from list**, and only for a PC the directory has not heard from for
-two days (`unusedPc` in [`src/components/AccountPcs.tsx`](../src/components/AccountPcs.tsx): its
-`last_seen_at`, or its `added_at` when it never pulled), with a confirm that says it revokes
-nothing and that the PC is listed again if it is used again.
+`DELETE /v1/pcs/{server_id}` removes the PC from the account for good, however it was added. The PC
+leaves the account at its next read of the account service: its snapshot is refused `not_listed`,
+or, when a device listed it again meanwhile, its mailbox names another listing than the one its
+account rows were let in under (a PC bound by a device's link keeps that listing's ID from its first
+whole read; one bound in one press asks about the listing it was admitted in). A device lists the PC
+only after its link is answered, so for ten minutes after a link bound it, or until its listing is
+named, a missing listing is no removal (`listing_due` in the binding). A link-bound PC lets more of
+the account in only when the mailbox call of that same pull, or of that same read, named the listing
+it keeps: with no mailbox answer or none named, the read still denies what its pages deny, drops the
+listed devices its snapshot names as removed, and widens nothing. An answer counts only for the
+binding and account it was asked for. Leaving ends the
+account's rows and keeps the pairings made at the PC ([Adding a PC](#adding-a-pc)). From then on the PC says so
+(`pc_add_required` in `GET /api/account/status`) and takes a first link only under a code it issued
+itself (its own window, `ovis add`), or from a device whose digits its own screen approved since it
+left (for a removal recorded by an older version: since this version first read it); one press at
+the PC brings it back too. A device it kept paired opens it as before and sends
+it no link, and a code that device asked for joins it to no account. When that device scans the
+code the PC issued itself, it pairs again with the key it already has there: its link brings the PC
+into the account, and the new row takes the place of the pairing it had (same key, a row that
+drives and is in no account), whose sessions end `auth_changed` with no removal told. An app whose
+new row the PC ends before its link passed opens the PC again with the record it had before the
+scan.
+No app lists a PC again by opening it: only the enrollment that brings a PC into the account writes
+its directory entry. A PC the directory does not list gets no [relay pass](relay.md#relay-pass)
+(`not_listed`) and none of the account's later records. The apps offer the removal in Settings →
+Devices and PCs → Manage account, as **Remove**, only for a PC the directory has not heard from for
+15 minutes (`offlinePc` in [`src/components/AccountManage.tsx`](../src/components/AccountManage.tsx)),
+on any page that has the sheet: a PC's own page, the hosted app and the phone apps. A confirm says
+the PC leaves the account once it is online again and is added again at the PC.
 
 Push (the doorbell), per signed-in device:
 
@@ -1338,7 +1659,7 @@ The PC, by server proof:
 | request | body | answer |
 |---|---|---|
 | `POST /v1/pc/challenge` | `{ "server_id", "public_key" }` | `{ "challenge_id", "frame" }` |
-| `POST /v1/pc/mailbox` | `{ "server_id", "challenge_id", "proof", "account", "ack" }` | `{ "records": [{ "seq", "record" }], "more", "admissions": [{ "key", "label", "at" }] }`: `admissions` lists that account's admissions for this PC made in the last 10 minutes, on every pull until they age out |
+| `POST /v1/pc/mailbox` | `{ "server_id", "challenge_id", "proof", "account", "ack" }` | `{ "records": [{ "seq", "record" }], "more", "admissions": [{ "key", "label", "at" }] }`: `admissions` lists that account's admissions for this PC made in the last 10 minutes, on every pull until they age out. Asked `with_listing_id: true`, it also answers `listing_id` (the listing it holds this PC under, null for none it confirms) and `listing_admitted` (whether that listing stands on a one-press admission this PC took; a service from before the field omits it) |
 
 `public_key` is the PC's relay key (64 hex); the service refuses it unless it gives `server_id`
 (`deriveServerId`). `frame` is a `server_challenge` (`serverChallenge` in
@@ -1362,6 +1683,40 @@ an account (the refusal may wait for the pull) from one in none (it never does).
 The `account` role keeps the two proofs apart: the relay verifies `control` and `data` only, so an
 answer the PC gave the account service is no use to the relay, and a relay's challenge passed on by
 the account service gets an answer the relay refuses.
+
+### PC invites
+
+A device signed in to the account can make an **invite** for a new PC, which joins with `ovis join`
+([relay.md](relay.md#a-pc-with-no-screen)) and no sign-in of its own. An invite is a key: the device
+makes a P-256 key pair, gives the account service the public key alone (`invite_key`), and shows the
+signed list's join line, which carries the private key (`shared/account-list-join.ts`:
+`ovis-join:1:` and the base64url of `{"v":1,"service","account","list","secret"}`; `list` is empty
+while the account has no signed member list). The service never holds anything that redeems an
+invite. It works once, for 15 minutes, and an account holds at most five open. Whoever gets the line
+can list a PC in the account for its devices to add, so a client acts only on a line whose `service`
+is its own account service, shows the account and gets a typed yes (or a matching `--account`)
+before it redeems it. The PC proves it holds the line by signing, with its private key,
+`ovis-invite-redeem/1` and then the account, its `server_id`, its relay key and the id of the
+challenge its own proof answers in the same request, each length-prefixed
+(`shared/account-list-invite.ts` `signInviteRedeem`): a captured signature redeems nothing else.
+
+| request | body | answer |
+|---|---|---|
+| `POST /v1/pc-invites` | `{ "invite_key", "auto"?, "key_proof"? }` | `{ "id", "account", "expires_at", "auto" }`: an own sign-in's; the device shows its line only after this answer, and only for its own account. A key is an invite once (409 `invite_key_used`). An auto invite is refused here with 429 `pc_add_cap` (and `retry-after`) while the account's daily one-press adds are used up. `auto` makes an invite whose PC is admitted at once, with no Add. `key_proof` (`{ "challenge_id", "signature" }`, from `POST /v1/pcs/challenge`, signed with this sign-in's device key) is needed only for a sign-in older than 10 minutes. 403 `own_sign_in_required`, 403 `session_not_fresh`, 400 `challenge_invalid`, 403 `frozen`, 409 `invites_full`, 429 `rate_limited`, 404 `not_found` (invites are off for the account), 400 `invalid_request` |
+| `POST /v1/pc-invites/redeem` | `{ "invite_key", "invite_signature", "server_id", "public_key", "relay", "label", "os"?, "challenge_id", "proof" }` | `{ "account", "listing_id", "auto", "card_until", "admission_until" }`: no bearer; `card_until` is when a plain invite's card stops offering Add, `admission_until` when an auto invite's admission stops waiting (ISO, the other null), the same for every rerun; the PC's proof answers a `POST /v1/pc/challenge` (`role` `account`, `connection_id` the challenge id, as for its mailbox), and `invite_signature` is checked against the invite's row (its account, never one the request names). One 400 `invite_invalid` for every dead, unknown or malformed invite and every signature that does not verify; a request that carries anything else (an `invite` line) is 400 `invalid_request`. Also 400 `invalid_request`, `server_key_mismatch`, `invalid_relay`, `invalid_label`, 401 `proof_invalid`, 409 `list_endpoint`, `directory_full`, `try_again`, 429 `pc_add_cap` (auto only, with `retry-after`; the invite stays open), 429 `rate_limited`, 404 `not_found`. The same PC and key asking again within the 15 minutes, while its listing is current, get the same answer |
+| `GET /v1/pc-invites` | | `{ "invites": [{ "id", "made_at", "expires_at", "auto", "device_no", "device_label", "yours", "used_at", "used_by": null \| { "server_id", "listing_id", "label", "os", "country", "city" } }] }`: open invites, and used ones for a day after their use. No line or key |
+| `DELETE /v1/pc-invites/{id}` | | 204, also for one revoked or expired; 409 `invite_used` once a PC used it (remove that PC instead); 404 `not_found` |
+
+After a plain invite's redeem, the PC's card (**Add this PC to your account?**) offers Add for 10
+minutes, and the PC asks `POST /v1/pc/admission` for it as after `ovis add`: 404 `no_admission`
+until a device presses Add, 409 `listing_expired` after the 10 minutes (the PC answers its own
+one-press ask with `listing_expired` then, and `ovis join` stops waiting); a new invite opens the
+card again. An auto invite's admission is there at once, for 10 minutes. An invite lives with the
+sign-in that made it: once that ends (a sign-out, a removed device or method, the account deleted),
+an unused invite redeems nothing (`invite_invalid`), and an auto admission not yet taken ends too
+(`no_admission`; the listing stays confirmed, and a rerun answers it with `admission_until` null). A
+PC that gives up leaves by its own proof (`POST /v1/pcs/{server_id}/leave`), which answers 204
+whether or not it was listed.
 
 ### Who is asking
 
@@ -1391,7 +1746,10 @@ the person started. Names are read as one plain line (no control or bidi charact
 showed: when the device asked again with another name, system or place, nothing is answered and the
 card shows the new details first.
 The link page's confirmation shows the PC's ("Asked by Desk (Linux), near Seoul, South Korea")
-with "continue only if you started this on your own PC".
+with "continue only if you started this on your own PC". A PC's listing that asks to join carries
+them too (`asking_os`, `asking_country`, `asking_city` on an unconfirmed PC of `GET /v1/pcs`; the
+system is the one its `PUT` named in `os`), and its card shows them under the PC's name as "Linux ·
+Seoul, South Korea", leaving out what is unknown ([Adding a PC](#adding-a-pc), "Add on another device").
 
 ## Errors
 
@@ -1405,7 +1763,7 @@ with "continue only if you started this on your own PC".
 | `tombstoned` | — | the key was removed through the account; only this PC can let it back in (a record outcome) |
 | `link_not_owner` | 403 | a link for another device, another PC, or a key that is not the row's |
 | `link_required` | 403 | the device paired with a code made for a PC in no account and has not linked itself into an account: it reads its own account status and sends its link, and gets nothing else |
-| `key_in_use` | 409 | a link to a key another row already has |
+| `key_in_use` | 409 | a link to a key another row already has; not the first link of a device that paired again with a code made for a PC in no account and kept its key, which replaces the row it had |
 | `introduction_unknown_key` | 404 | an introduction for a key no account member added on this PC |
 | `introduction_invalid` | 400 | an introduction's PC list does not parse, or a `server_id` does not derive from its key |
 | `introduction_none` | 404 | no introduction waits for this device |
@@ -1413,6 +1771,7 @@ with "continue only if you started this on your own PC".
 | `enrolling` | — | the PC waits for its first member's enrollment; an add waits too (a record outcome) |
 | `removal_pending` | — | the key is held: a waiting remove or an enrollment named it, or the waiting queue cannot be trusted (a record outcome) |
 | `in_account` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: this PC is in an account, so it makes no QR code that would put it in one |
+| `listing_expired` | 409 | `POST /api/account/one-press`: the listing a plain invite made is past its card's 10 minutes, so no Add can come for it; a new invite opens it again |
 | `no_account_named` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: no account was named for this PC (`relay-account`), so it makes no QR code yet |
 
 ## What this does not protect against
@@ -1440,8 +1799,8 @@ with "continue only if you started this on your own PC".
   own word ([How a device joined](#how-a-device-joined)): review them there, and revoke any device
   you don't recognize.
 - **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
-  list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
-  its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then
+  list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). Its row in
+  the sidebar pairs A with that PC, whose owner approves it there: A's machine list then
   holds a stranger's PC. It gets no access to A or to the account's PCs by that; what the person then
   types into its terminals goes to it. The prompt to approve shows on a device of the account only
   when the PC really is one of the account's: a request approved without that prompt is the sign.
@@ -1449,6 +1808,11 @@ with "continue only if you started this on your own PC".
   `ovis add` let in, say) can have the PC start a pairing code through its loopback address from
   a terminal pane, as the PC's own user: that code is held by no device, so it survives the
   device's removal.
+- **A script in the app's page, or a copy of the whole browser profile.** Past ten minutes a sign-in
+  adds a PC only with its own key's proof ([In one press](#adding-a-pc)), so a copied access or
+  refresh token alone adds none. The key is the app's non-extractable WebCrypto key in its
+  IndexedDB: a script running in the app's page, or a copy of the whole browser profile, can still
+  sign with it.
 - **Someone who gets a person to type their device code at GitHub** (device-code phishing, true of
   every RFC 8628 sign-in) gets a sign-in to that person's account: they can list, rename and remove
   its PCs in the directory, fill mailboxes, post admissions and spend the ring budget. They still

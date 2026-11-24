@@ -10,6 +10,8 @@ const RUN: Record<EntryName, () => Promise<unknown>> = {
   askpass: () => import("./ssh-askpass.ts"),
   "windows-launch": () => import("./windows-launch.ts"),
   "browser-mcp": () => import("./browser-mcp.ts").then((entry) => entry.runBrowserMcp()),
+  "approval-hook": () => import("./approvals/relay.ts").then((entry) => entry.runApprovalRelay()),
+  tui: () => import("../scripts/tui-entry.ts"),
 };
 
 const name = process.argv[2];
