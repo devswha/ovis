@@ -376,11 +376,14 @@ for it before they show or ask anything.
   only, `--account` or not. Then it lists this PC in the account ([Adding a PC](account.md#adding-a-pc))
   and waits: **Open Ovis on your phone or another PC and press Add for (this PC)**. Every device signed in
   to that account with a sign-in of its own shows this PC's card, **Add this PC to your account?**,
-  with the name the PC gave itself and when it was listed. **Add** there is the account's one-press
-  admission of this PC (`POST /v1/pcs/{server_id}/admit`, [In one press](account.md#adding-a-pc)): the
-  account service takes it from a sign-in made in that app within the last 10 minutes (an older one
-  gets **Sign in again**, and the add goes on after it), within the account's daily cap of such
-  adds, and tells the account's other devices. The command asks this PC every 6 seconds (every 15
+  with the name the PC gave itself, the system it runs (the command sends this PC's platform) and
+  roughly where it asked from, when it was listed and the minutes left. **Add** there is the
+  account's one-press admission of this PC (`POST /v1/pcs/{server_id}/admit`, [In one
+  press](account.md#adding-a-pc)): the account service takes it from a sign-in made in that app
+  within the last 10 minutes, or an older one that the phone app or app.ovis.sh proves by itself with
+  the key that sign-in registered (any other sign-in older than that gets **Sign in again**, and the
+  add goes on after it), within the account's daily cap of such adds, and tells the account's other
+  devices. The command asks this PC every 6 seconds (every 15
   after the account service did not answer it) to take that admission (`POST /api/account/one-press`
   with the account that signed in): the PC asks the account service itself, with its relay key's
   proof, so only an admission by that account, made for this PC's listing, binds it. Then the PC
@@ -390,8 +393,10 @@ for it before they show or ask anything.
   in, and the approve-here window that listing the PC opens is closed at once (`POST
   /api/relay/link/close`): no digits come through it. The wait lasts as long as the card offers
   **Add**: 10 minutes from when this PC was listed, so less for a listing an earlier run left, and
-  none for one listed more than 10 minutes ago, which the card offers to remove only (the command
-  says so). A PC the account lists as its own already (an **Add** pressed for an earlier run) shows
+  none for one listed more than 10 minutes ago, for which the card offers **No** or **Remove from my
+  account** only (the command says so). The account service counts its own 10 minutes from the
+  sign-in that listed the PC, a little before the listing, so an **Add** in the wait's last seconds may
+  be refused (`listing_expired`). A PC the account lists as its own already (an **Add** pressed for an earlier run) shows
   no card: the command takes that admission while it lasts, and after its 10 minutes says to run
   `add --approve` instead. When the run ends without the add (the 10 minutes, Ctrl+C, a SIGTERM, the terminal
   closing, a refusal at the PC), it first reads which account this PC is in (it may have taken the
@@ -1014,6 +1019,7 @@ What the app on the phone shows when a connection doesn't come up
 | This phone forgot … | **Forget this PC** on the new-identity screen removed the saved key; it pairs with nothing, so pairing again needs a new QR code from the PC itself. Forget never makes a forged link pairable: opened again, it is refused again |
 | Update needed | the PC speaks another relay protocol or mux version |
 | Update Ovis on … | the PC is older than the app supports ([Versions](#versions)) |
+| Update the app | the phone app's own copy of the client is older than the PC supports ([Versions](#versions)) |
 | This pairing link is damaged | the link's offer doesn't parse or names another PC than its path |
 
 ## Versions
@@ -1035,7 +1041,15 @@ can be apart.
   `server/relay/`; until then `bun scripts/relay-e2e-regression.ts --skew <tag>` runs that check
   by hand.
 - **Newer PC.** A PC newer than the app means the app's cached copy is out of date: the app checks
-  for a newer version of itself and reloads, once.
+  for a newer version of itself and reloads, once. The phone app's own copy of the client
+  ([native-app.md](native-app.md#the-app-carries-its-client)) never reloads: it opens the PC as it is.
+- **Oldest client.** `WELCOME`'s `min_supported_client` is the oldest client the PC supports,
+  `MIN_SUPPORTED_CLIENT_VERSION` in [`server/relay/client-floor.ts`](../server/relay/client-floor.ts),
+  now 0.4.20, on the relay and the direct carrier alike. The phone app's own copy below it stops at
+  **Update the app**, with its store's page; a hosted page reloads as for a newer PC. What it may be
+  raised to: [The phone app's client](development.md#the-phone-apps-client).
+  `bun scripts/relay-client-skew-regression.ts [<tag>]` runs an older client against this server (the browser lane
+  runs it too).
 
 ## Relay pass
 
