@@ -641,6 +641,9 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await press("Add");
       expect([pcAdmits(), held().entries.length]).toEqual([1, 2]);
       expect(list.view().pcs.map((row) => [row.endpoint, row.name?.label])).toEqual([[pc.endpoint, "PC"]]);
+      // a number was compared on both screens: this device's own record of its PCs says that it added this one
+      await settle();
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
       // the card is gone
       expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
     } finally { setPageAccountList(null); }
@@ -654,6 +657,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await press("Not the same");
       expect(text()).toContain("The numbers did not match. This PC was not added.");
       expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+      expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
       expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
     } finally { setPageAccountList(null); }
   });

@@ -4,6 +4,7 @@ import type { AccountList } from "../lib/account/accountList.ts";
 import { addPostedPc, numberWith, type AddNumber, type PostedPc } from "../lib/account/listAdd.ts";
 import { listNames } from "../lib/account/listGenesis.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { noteAct } from "../lib/account/seenPcs.ts";
 import { useT } from "../lib/i18n.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { addRefusal, numberRefusal } from "./pcAddRefusals.ts";
@@ -72,6 +73,8 @@ export function AddPcByNumber({ list, account, post, name, waitMs, onClose, onAd
     try {
       const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(name), null), { expect: { account, list: shown.post.list }, admit: async () => {} });
       if (!outcome.added) { setProblem(addRefusal(t, outcome).text); return; }
+      // Add where a number was compared on both screens: kept in this device's own record of its PCs (seenPcs.ts)
+      void noteAct(account, shown.post.endpoint, "added").catch(() => undefined);
       window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
       onAdded();
     } catch (error) {

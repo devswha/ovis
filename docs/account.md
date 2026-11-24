@@ -2126,8 +2126,8 @@ that it has a history by the time something does.
   one that only reached the relay, writes nothing.
 - **`how`**: what this device did itself for that PC that the account service could not have
   faked. `paired`: it paired with it at the PC (a QR, a code, the digits). `added`: the person
-  pressed Add for it where a number was compared on both screens or the PC's QR code was scanned
-  (nothing writes this yet). `ssh`: this device added it over SSH. `window`: the page is that
+  pressed Add for it where a number was compared on both screens (the card's Add with the
+  number, on an account with a signed list). `ssh`: this device added it over SSH. `window`: the page is that
   PC's own window. `none`: everything else, also one press of **Add** on the card of a PC that
   asked, where no number is compared: the service could have listed a PC of its own at that
   moment. It moves from `none` to one of the others, never back and never between them.

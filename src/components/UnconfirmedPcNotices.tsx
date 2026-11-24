@@ -6,6 +6,7 @@ import { listNames } from "../lib/account/listGenesis.ts";
 import { pageListReading } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
+import { noteAct } from "../lib/account/seenPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
@@ -272,6 +273,9 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
       admit: async () => { await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
     });
     if (!outcome.added) throw new AddRefused(outcome);
+    // The person pressed Add where a number was compared on both screens: kept in this device's own record of its PCs,
+    // by the relay key the number was worked out for. It only records: storage that is not there changes nothing.
+    void noteAct(session.account, shown.post.endpoint, "added").catch(() => undefined);
     setNumber(null);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
     onRemoved();
