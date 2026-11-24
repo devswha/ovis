@@ -28,7 +28,7 @@ import { setPcNewness, type PcNewness } from "./newPcHere.ts";
 import type { AccountView, Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
-import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
+import { ADMISSION_WAIT_MS, AddedToListError, ConsentChangedError, createAccountController } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
 import { refusalOf } from "./firstLink.ts";
@@ -1039,6 +1039,20 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       markedPairings.delete(attempt.offer.server_id);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
+      // The pairing was spent on adding the PC to the account's list: its row is gone, and the PC is opened anew as a
+      // PC of the list, with the key the list holds for this device. No pairing of this device's stands behind it.
+      if (error instanceof AddedToListError) {
+        markedPairings.delete(attempt.offer.server_id);
+        if (last !== attempt) return;
+        const key = account.listKey;
+        const { code: _spent, ...offer } = attempt.offer;
+        if (transport === opened) transport = null;
+        if (key !== null) { void connect({ offer, code: false, paired: true, listOpen: key }); return; }
+        // the list is not read on this page yet: the front page, where the PC has its row and a tap opens it
+        cancelAttempt();
+        void showFront();
+        return;
+      }
       if (linkRefused(opened, attempt, error)) return;
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment: "failed" });

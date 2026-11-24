@@ -7,7 +7,8 @@ import { listReading, pcsByList } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
 import { listNames } from "../account/listGenesis.ts";
-import { myPcs } from "../account/myPcs.ts";
+import { nameListToPc } from "../account/listNamed.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "../account/myPcs.ts";
 import { signInKey } from "../account/signInKey.ts";
 import { AccountService, AccountServiceError, AccountServiceUnreachableError, accountProvidersOf, indexedAccountService, offeredProviders, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
@@ -58,6 +59,17 @@ const wait = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((r
 class AnotherAccountError extends Error {
   constructor() { super("The sign-in is for another account"); this.name = "AnotherAccountError"; }
 }
+/**
+ * The pairing a scan made was spent on adding its PC to the account's signed list (account/listNamed.ts): the PC is
+ * in the list, the pairing's row is gone, and whoever holds the session opens the PC anew, as a PC of the list.
+ */
+export class AddedToListError extends Error {
+  constructor(readonly serverId: string) {
+    super("The PC was added to the account's list, and the pairing that named it is spent");
+    this.name = "AddedToListError";
+  }
+}
+
 /**
  * The sign-in a pairing's confirm was drawn for is no longer the one stored (another tab signed out, or in as someone
  * else): the pairing is not made, and the person is asked again.
@@ -645,7 +657,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled, signal });
     void done.finally(() => { mine.delete(stop); if (mine.size === 0 && stops.get(serverId) === mine) stops.delete(serverId); }).catch(() => {});
     // a link the PC refused leaves the session to whoever says why (shell.tsx), rather than opening the app over it
-    void done.then(settled, (error: unknown) => { if (refusalOf(error) === null) settled(); });
+    // (nor is the app opened over a session whose pairing was spent on adding the PC to the list: the shell opens it anew)
+    void done.then(settled, (error: unknown) => { if (refusalOf(error) === null && !(error instanceof AddedToListError)) settled(); });
     running.set(done, serverId);
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
@@ -770,6 +783,31 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           }
         }
         signal?.throwIfAborted();
+        // The pairing was made with the PC's own code for the account (a scanned QR), and this device may write its
+        // account's list: it names the list to the PC in place of the link, and signs the PC into the list with the
+        // card it takes over this session (account/listNamed.ts). A PC with no such call gets the link, as before.
+        if (posted !== undefined && fresh && lists !== null && lists.writer() !== null) {
+          const endpoint = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          const named = await nameListToPc({
+            fetch, list: lists, account: session.account, endpoint, names: listNames((device.name ?? serverId.slice(0, 8)).slice(0, 48), null),
+            admit: async () => { await account.forSignIn(session).admitPc(serverId, signal); }, ...(signal === undefined ? {} : { signal }),
+          });
+          if (named.outcome === "refused") {
+            // the PC's own refusals of that pairing are the link's (the code ended, the account did not confirm the device)
+            if (firstLinkRefusal(named.why, status.account)) throw new AccountPcError(409, named.why, null, true);
+            throw new AccountPcError(409, named.why);
+          }
+          if (named.outcome !== "none") {
+            // The PC is in the account's list, and the pairing that named it is spent: its row goes, and the PC is
+            // opened as any PC of the list is, with the key the list holds for this device (shell.tsx)
+            assertPairing(await store.get(serverId));
+            await store.remove(serverId);
+            window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+            await lists.sync().catch(() => undefined);
+            await refresh(false, true);
+            throw new AddedToListError(serverId);
+          }
+        }
         // in one transaction with a leave's mark (leave.ts): a link recorded here is in that leave's snapshot, and
         // none goes out once a leave of this key has begun, in any tab, or for a sign-in that has ended
         const link = newRecordId();
@@ -907,6 +945,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       await record("complete");
       return { state: "complete", ...(admitted === undefined ? {} : { admitted }) };
     } catch (error) {
+      // the pairing's row went with the PC's place in the list: nothing of it is left to mark
+      if (error instanceof AddedToListError) throw error;
       assertPairing(await store.get(serverId));
       if (error instanceof AccountServiceUnreachableError) unanswered = true;
       await record("failed");
