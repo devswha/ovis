@@ -40,6 +40,11 @@ async function placeInvite(w: ReturnType<typeof listWorld>, from: WorldDevice, a
   const at = Math.floor(w.clock.now / 1000);
   const placed = await signListEntry(w.held().state, { kind: "invite", key: invite.key, exp: at + seconds, uses: 1, auto, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
   await from.service.placeEntries(w.held().id, [placed.text], []);
+  // The account service holds five open invites at a time. Its own invite of this one is revoked here, which leaves the
+  // list's entry as it is: a test may so hold more open invites in the list than the service lets a person make.
+  const auth = { authorization: `Bearer ${from.session.access_token}` };
+  const open = await (await w.fake.fetch(`${w.origin}/v1/pc-invites`, { headers: auth })).json() as { invites?: { id: string }[] };
+  for (const { id } of open.invites ?? []) expect((await w.fake.fetch(`${w.origin}/v1/pc-invites/${id}`, { method: "DELETE", headers: auth })).status).toBe(204);
   return invite.key;
 }
 
