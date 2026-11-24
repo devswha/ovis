@@ -52,6 +52,8 @@ export interface Written {
   readonly entries: readonly string[];
   readonly wraps: readonly PlacedWrap[];
   readonly place: ListPlace;
+  /** The invite this request places, if it places one: the account service asks the sign-in's age, or a key proof, for it. */
+  readonly invite?: { readonly key: string; readonly auto: boolean };
 }
 
 /**
@@ -62,7 +64,7 @@ export type WriteStep<Why extends string> = { readonly request: Written } | { re
 
 export type WriteOutcome<Why extends string> =
   | { readonly written: true; readonly list: string; readonly place: ListPlace }
-  | { readonly written: false; readonly why: WriteRefusal | Why; readonly retryAfterMs: number | null };
+  | { readonly written: false; readonly why: WriteRefusal | Why; readonly retryAfterMs: number | null; /** The account service's own code, for a `refused` it gave. */ readonly code?: string };
 
 export const placeOf = (state: ListState): ListPlace => ({ seq: state.footing.seq, hash: state.footing.hash });
 
@@ -162,7 +164,7 @@ const unanswered = (error: unknown): boolean => error instanceof AccountServiceU
  */
 export async function writeToList<Why extends string = never>(list: AccountList, step: (writer: ListWriter) => Promise<WriteStep<Why>>, options: WriteOptions = {}): Promise<WriteOutcome<Why>> {
   const wait = options.wait ?? pause;
-  const refused = (why: WriteRefusal | Why, retryAfterMs: number | null = null): WriteOutcome<Why> => ({ written: false, why, retryAfterMs });
+  const refused = (why: WriteRefusal | Why, retryAfterMs: number | null = null, code?: string): WriteOutcome<Why> => ({ written: false, why, retryAfterMs, ...(code === undefined ? {} : { code }) });
   for (let tries = 0; tries < WRITE_TRIES; tries += 1) {
     const view = await list.sync();
     const writer = (options.writer ?? (() => list.writer()))();
@@ -193,7 +195,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
     let retryAfterMs: number | null = null;
     for (let sends = 0; sends < WRITE_RESENDS && !moved; sends += 1) {
       try {
-        await writer.service.placeEntries(writer.list, request.entries, request.wraps);
+        await writer.service.placeEntries(writer.list, request.entries, request.wraps, undefined, request.invite);
         if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };
       } catch (error) {
         if (error instanceof SignedOutError) throw error;
@@ -214,8 +216,8 @@ export async function writeToList<Why extends string = never>(list: AccountList,
           // The account service's clock says otherwise of an epoch, or of the entry's time, than this device's did. The
           // device signs nothing by the service's clock, and no second entry on a head that did not move: it says so
           if (said.status === 400 && said.code === "entry_refused"
-            && (said.reason === "epoch_not_needed" || said.reason === "epoch_stale" || said.reason === "epoch_no_use" || said.reason === "issued_at_ahead")) return refused("clock");
-          if (!(said.status === 409 && said.code === "head_moved")) return refused(said.status >= 500 ? "unreached" : "refused");
+            && (said.reason === "epoch_not_needed" || said.reason === "epoch_stale" || said.reason === "epoch_no_use" || said.reason === "issued_at_ahead" || said.reason === "exp_too_late")) return refused("clock");
+          if (!(said.status === 409 && said.code === "head_moved")) return said.status >= 500 ? refused("unreached") : refused("refused", null, said.code);
         }
       }
       // Placed, refused for a head that moved, or no answer at all: this device's own copy says which. The account
