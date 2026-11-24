@@ -318,6 +318,27 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(await device.store.get("session")).toEqual(other);
   });
 
+  it("F-M5: a browser removed from an account while another account's list holds its key says it cannot come back while signed in there", async () => {
+    const { w, device, shell, shown } = await twoAccounts();
+    shell.signOut(shown);
+    // the sign-out is over once what made it a member here is forgotten: the copy of this account's list goes
+    await until(async () => (await device.store.get("session")) === undefined && !(await device.list.follows(w.account)));
+    // the key stays: the other account's list holds this browser by it
+    const key = (await device.keys()).key;
+    expect(w.held().state.signers[key]?.ended).not.toBeNull();
+    // signed in again to the first account, its own read shows it out at once
+    const again: AccountSession = { ...device.session, access_token: w.fake.issueToken(w.account), refresh_token: "refresh-again", sign_in_id: "sign-in-again", signed_in_at: w.clock.now };
+    const signInKey = await newKey();
+    await device.store.set("session", again);
+    await device.store.set("signin_key", { account: w.account, sign_in_id: "sign-in-again", key: signInKey, no: w.fake.registerSessionKey(again.access_token, signInKey.public_spki, "Dana's laptop") });
+    // (the read ends this sign-in itself once it shows the browser out: SignedOutError for the read that was under way)
+    await shell.refresh(true);
+    await device.list.sync().catch(() => undefined);
+    await until(() => shell.state?.kind === "signed-out" && shell.state.notice !== undefined);
+    expect(shell.state).toEqual({ kind: "signed-out", error: null, notice: "This browser was removed from this account and cannot be added again while it is signed in to acct_other here. Sign out of that account in this browser first, or use another browser." });
+    expect((await device.keys()).key).toBe(key);
+  });
+
   it("M2: sign out every device posts nothing where its own read after the removal shows a device the question did not name", async () => {
     const { w, first, second } = await twoDevices();
     const pc = await addListPc(w, first, "Desk");

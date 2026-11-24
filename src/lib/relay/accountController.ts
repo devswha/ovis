@@ -346,9 +346,15 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (session === undefined || session.account !== gone) { await (departing === null ? lists.forget(gone) : lists.forget(gone, departing)); return; }
     invalidate();
     await account.forSignIn(session).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
+    // one account key serves every account of this browser: where another account's list still holds it, the key
+    // stays, and this account's list, which put it out for good, never lets it in again (a follow-up gives each account
+    // a key of its own). The person is told how to come back, rather than to ask for an Allow the list would refuse
+    const elsewhere = departing === null ? null : await lists.pinnedElsewhere(gone, departing).catch(() => null);
     await forgetMembership(accountStore, lists, session, departing);
     followed?.poke();
-    accountView = { kind: "signed-out", error: null, notice: t("This device was removed from your account. To use it again, sign in and allow it from another device.") };
+    accountView = { kind: "signed-out", error: null, notice: elsewhere !== null
+      ? t("This browser was removed from this account and cannot be added again while it is signed in to {account} here. Sign out of that account in this browser first, or use another browser.", { account: elsewhere.slice(0, 12) })
+      : t("This device was removed from your account. To use it again, sign in and allow it from another device.") };
     await changed();
   };
   const unwatch = lists === null ? undefined : watchRemoval(lists, (gone) => { void removedHere(gone).catch((error: unknown) => console.warn("Ovis: a removed device did not forget its account", error instanceof Error ? error.name : error)); });
@@ -445,7 +451,7 @@ export function createAccountController(mount: RelayShellMount, view: {
       unsure = out !== null && !out.removed && out.why === "unknown";
       if (out !== null && !out.removed && !unsure) { refused.why = out.why; throw new Error(`The list did not take this device's removal (${out.why})`); }
       // one account key serves every account of this device: where another account's list still holds it, it stays
-      const keeps = (key: string): Promise<boolean> => lists === null ? Promise.resolve(false) : lists.pinnedElsewhere(session.account, key);
+      const keeps = (key: string): Promise<boolean> => lists === null ? Promise.resolve(false) : lists.pinnedElsewhere(session.account, key).then((other) => other !== null);
       if (out === null || lists === null) return leaveAccount({ service: account, accountStore, relayStore: store, session, keeps });
       // the list took this device's removal, and the account service may have ended this sign-in in the same request:
       // what needs that sign-in may fail now, and the device finishes leaving by itself, from what it holds
@@ -628,10 +634,12 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (accountView?.kind === "signed-in" && accountView.deleteError !== undefined) { const { deleteError: _earlier, ...rest } = accountView; accountView = rest; }
     return Promise.resolve(from).then(async (session) => {
       if (session === undefined) throw new SignedOutError();
-      try { await deleteAccountOf({ service: account, accountStore, session }); }
+      // one account key serves every account of this device: where another account's list still holds it, it stays (H2)
+      const keeps = (key: string): Promise<boolean> => lists === null ? Promise.resolve(false) : lists.pinnedElsewhere(session.account, key).then((other) => other !== null);
+      try { await deleteAccountOf({ service: account, accountStore, session, keeps }); }
       catch (error) {
         if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !nativeSignInAvailable() || !current()) throw error;
-        await deleteAccountOf({ service: account, accountStore, session: await signInAgainInPlace(session, accountService, current, error) });
+        await deleteAccountOf({ service: account, accountStore, session: await signInAgainInPlace(session, accountService, current, error), keeps });
       }
       // the account is gone, and its list with it
       await lists?.forget(session.account).catch((error: unknown) => console.warn("Ovis: the account's list was not forgotten", error instanceof Error ? error.name : error));

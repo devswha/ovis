@@ -514,10 +514,11 @@ export interface AccountList {
    */
   forget(account: string, member?: string): Promise<void>;
   /**
-   * Whether a saved copy of another account's list than `account` is pinned to this member key and does not show it
-   * out: that account's list still holds this device by it. A copy that does not read counts as holding it.
+   * The other account than `account` whose saved copy of its list is pinned to this member key and does not show it
+   * out (that account's list still holds this device by it), or null for none. A copy that does not read counts as
+   * holding it.
    */
-  pinnedElsewhere(account: string, key: string): Promise<boolean>;
+  pinnedElsewhere(account: string, key: string): Promise<string | null>;
   /**
    * A member that let this device in handed it this place, over the PC the device compared digits with. It is kept
    * as an offer, and a round follows: the device follows that list only once the log shows its own key let in up to
@@ -1116,14 +1117,14 @@ export function accountList(options: AccountListOptions): AccountList {
         if (other === account) continue;
         const saved = await store.get("copy", other);
         if (saved === undefined) continue;
-        if (typeof saved !== "string") return true;
+        if (typeof saved !== "string") return other;
         const read = await readSave(saved);
-        if (!read.read) return true;
+        if (!read.read) return other;
         const { me, state } = read.copy;
         if (me.key !== key || me.endpoint !== null) continue;
-        if (state === null || (state.signers[key]?.ended ?? null) === null) return true;
+        if (state === null || (state.signers[key]?.ended ?? null) === null) return other;
       }
-      return false;
+      return null;
     },
     pcOfKey(key) {
       const endpoint = held?.copy == null || held.account !== shown.account ? null : pcOfKey(held.copy, key);

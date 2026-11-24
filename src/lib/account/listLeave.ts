@@ -113,7 +113,7 @@ export async function removeOthers(list: AccountList, account: string, confirmed
 export async function forgetMembership(accountStore: AccountStore, list: AccountList, session: AccountSession, member: string | null): Promise<boolean> {
   const departing = member ?? (await accountStore.key()).public_spki;
   // a copy that cannot be looked at may hold the key: it is kept
-  const elsewhere = await list.pinnedElsewhere(session.account, departing).catch(() => true);
+  const elsewhere = await list.pinnedElsewhere(session.account, departing).then((other) => other !== null, () => true);
   let mine = false;
   if (elsewhere) {
     await accountStore.update("session", (stored) => {
