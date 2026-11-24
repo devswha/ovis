@@ -255,6 +255,8 @@ export class ListFollow implements ListAuthority {
   private untilTimer: ReturnType<typeof setTimeout> | undefined;
   /** The removals of the list that this PC has kept as its own since this start, by the entry that made each. */
   private readonly applied = new Set<string>();
+  /** The keys whose removal's record this run wrote (deps.removed answered): what a mark for a removal waits for. */
+  private readonly kept = new Set<string>();
   /** When a person last named a list here, in milliseconds: for a while after it the PC reads often, as someone waits beside it. */
   private wantedAt: number | null = null;
   private readonly differences = new Set<string>();
@@ -274,6 +276,8 @@ export class ListFollow implements ListAuthority {
       await this.ready;
       await this.ensureCopy(scope);
       this.settle();
+      // after the rows and the removals' records were written: what the mark still owes is asked then
+      this.settleOwed();
     });
     this.timer = setInterval(() => this.tick(), LIST_TICK_MS);
     this.timer.unref?.();
@@ -283,6 +287,7 @@ export class ListFollow implements ListAuthority {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.deps.keys.close();
     if (this.untilTimer) clearTimeout(this.untilTimer);
     this.untilTimer = undefined;
   }
@@ -420,7 +425,9 @@ export class ListFollow implements ListAuthority {
     if (owed === null || scope === null || this.stopped) return;
     const state = this.copy?.state ?? null;
     const saved = !this.unsaved && !this.dirty;
-    const removed = owed.removed.filter((row) => !(saved && this.savedSeq !== null && this.savedSeq >= row.seq && state !== null && Object.hasOwn(state.signers, row.key) && state.signers[row.key]!.ended !== null));
+    // a removal: the saved copy reaches its place and shows the key out, and the removal's own record was written in
+    // this run (keepRemovals), which is what keeps the key out once the mark is gone
+    const removed = owed.removed.filter((row) => !(saved && this.kept.has(row.key) && this.savedSeq !== null && this.savedSeq >= row.seq && state !== null && Object.hasOwn(state.signers, row.key) && state.signers[row.key]!.ended !== null));
     const expired = owed.expired.filter((row) => !(this.savedAt !== null && this.savedAt >= row.until));
     if (removed.length === owed.removed.length && expired.length === owed.expired.length) return;
     if (removed.length === 0 && expired.length === 0) {
@@ -599,7 +606,7 @@ export class ListFollow implements ListAuthority {
     // a copy the disk did not take is offered to it again
     if (this.unsaved) void this.enqueue(() => { const bound = this.bound(); if (this.stopped) return; if (bound !== null && this.unsaved && this.copy !== null) this.unsaved = !this.persist(bound); this.settleOwed(); });
     else this.settleOwed();
-    if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); });
+    if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); this.settleOwed(); });
     // any PC that holds a list reads it by its own clock, one that only shadows too: a mailbox that names no list, or
     // does not answer, hides no entry. A PC whose account never had a list holds no copy and asks nothing
     const copy = this.copy;
@@ -929,6 +936,8 @@ export class ListFollow implements ListAuthority {
   }
 
   private async keysOf(scope: Scope): Promise<PcListKeys | null> {
+    // work that waited when the follower stopped makes no keys
+    if (this.stopped) return null;
     try {
       const keys = await this.deps.keys.keysFor(scope.serverId);
       this.keysState = "ready";
@@ -1032,8 +1041,9 @@ export class ListFollow implements ListAuthority {
       this.error = this.words(error);
       return;
     }
-    // the service answered every request of this read to its end, whatever it showed: one whole read
-    if (this.live(scope)) this.readWhole();
+    // one whole read: the service answered to the end, and the PC stands at the head the service shows. A page the PC
+    // refused, a tail the service withholds and a read that ran out of its requests are none
+    if (this.live(scope) && this.lastVerdict === "caught_up") this.readWhole();
   }
 
   /** The second lock for a `pc` entry: this PC's keys and its card for this list, at the account service, for ten minutes. */
@@ -1192,6 +1202,7 @@ export class ListFollow implements ListAuthority {
       if (this.applied.has(id + key)) continue;
       this.deps.removed(key, { id, at: readBody(entry.body).issued_at });
       this.applied.add(id + key);
+      this.kept.add(key);
     }
   }
 
