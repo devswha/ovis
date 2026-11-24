@@ -6,6 +6,8 @@ import {
   type FollowerCopy, type FollowRead, type ListPage,
 } from "../../../shared/account-list-follower.ts";
 import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
+import { accountList, type AccountList } from "./accountList.ts";
+import { memoryListLock } from "./listStore.ts";
 import { allowDevice } from "./listAllow.ts";
 import { GOSSIP_CALLS_PER_MINUTE, GOSSIP_SECONDS, gossipBudget, gossipWithPc, keepListGossip, type GossipSession } from "./listGossip.ts";
 import { removeListPc } from "./listRemove.ts";
@@ -244,6 +246,111 @@ describe("a device and the PC it has a session with say where the list stands", 
     const saved = await readSave(String(await second.lists.get("copy", w.account)));
     expect(saved.read && shownPcs(saved.copy).length).toBe(0);
     expect(second.list.holdsPc(desk.endpoint)).toBe(false);
+  });
+});
+
+/** Another tab of the same browser: its own page of the list over the same stores and the same sign-in. */
+function otherTab(w: World, of: WorldDevice): AccountList {
+  return accountList({
+    service: of.service, accountStore: of.store, listStore: of.lists, lock: memoryListLock(), now: () => w.clock.now,
+    names: () => ({ label: "Other tab", os: "ios" }), linkedPcs: async () => 0, genesis: () => "first-device", durable: async () => true,
+  });
+}
+
+const failingSaves = (of: WorldDevice) => spyOn(of.lists, "swap").mockImplementation(async () => { throw new DOMException("The disk is full", "QuotaExceededError"); });
+
+describe("what a PC's page leaves in this page, and in the other tabs", () => {
+  it("keeps a removal it could not save over a shorter copy another tab saved since, and writes it", async () => {
+    const { w, first, second, desk } = await account();
+    const held = w.held().head.seq;
+    w.fake.tamperList(w.held().id, { reader: { token: second.session.access_token }, withholdAfter: held });
+    await addListPc(w, first, "Laptop");
+    expect(await removeListPc(first.list, desk.endpoint, noWait)).toEqual({ removed: true });
+    const pc = await memoryPc(w, w.held().entries);
+    const tab = otherTab(w, second);
+    await tab.sync();
+    const ask = second.list.compare(gossipHead(pc.copy()))!;
+    const failing = failingSaves(second);
+    try {
+      expect(await second.list.takeFromPeer(servePage(pc.copy(), { list: ask.read!.list, after: ask.read!.after }, 256)!, ask.read)).toMatchObject({ saved: false });
+    } finally { failing.mockRestore(); }
+    expect(second.list.holdsPc(desk.endpoint)).toBe(false);
+    // the other tab is handed the first of those entries alone, and saves it
+    expect((await tab.takeFromPeer(servePage(pc.copy(), { list: ask.read!.list, after: held }, 1)!, null))?.saved).toBe(true);
+    // and the account service shows this device that shorter copy
+    w.fake.untamperList(w.held().id);
+    w.fake.tamperList(w.held().id, { reader: { token: second.session.access_token }, withholdAfter: held + 1 });
+    w.clock.now += 30_000;
+    await second.list.sync();
+    expect(second.list.holdsPc(desk.endpoint)).toBe(false);
+    const saved = await readSave(String(await second.lists.get("copy", w.account)));
+    expect(saved.read && shownPcs(saved.copy).map((row) => row.endpoint)).not.toContain(desk.endpoint);
+  });
+
+  it("keeps an alarm it could not save over an ordinary save another tab made since", async () => {
+    const { w, first, second } = await account();
+    const fork = await otherHistory(w, first);
+    await addListPc(w, second, "Laptop");
+    await first.list.sync();
+    const pc = await memoryPc(w, [w.held().entries[0]!, ...fork]);
+    const failing = failingSaves(first);
+    try {
+      expect((await gossipWithPc(pc.fetch, first.list, null, always)).end).toBe("alarm");
+    } finally { failing.mockRestore(); }
+    expect(first.list.view().status).toMatchObject({ trouble: "fork" });
+    // another tab saves what the account service shows next: a copy with no alarm
+    const tab = otherTab(w, first);
+    await addListPc(w, second, "Desk 2");
+    await tab.sync();
+    w.clock.now += 30_000;
+    await first.list.sync();
+    expect(first.list.view().status).toMatchObject({ trouble: "fork" });
+    expect(first.list.writer()).toBeNull();
+    const saved = await readSave(String(await first.lists.get("copy", w.account)));
+    expect(saved.read && saved.copy.alarm).toMatchObject({ code: "fork", source: "peer" });
+  });
+
+  it("installs a PC's page only for the sign-in it was begun under", async () => {
+    const { w, first, second, desk } = await account();
+    w.fake.tamperList(w.held().id, { reader: { token: second.session.access_token }, withholdAfter: w.held().head.seq });
+    await removeListPc(first.list, desk.endpoint, noWait);
+    const pc = await memoryPc(w, w.held().entries);
+    const ask = second.list.compare(gossipHead(pc.copy()))!;
+    const swap = second.lists.swap.bind(second.lists);
+    // while the page is being saved, another tab signs this browser in to an account with no list, and this page reads it
+    const hook = spyOn(second.lists, "swap").mockImplementation(async (...args: Parameters<typeof swap>) => {
+      hook.mockRestore();
+      await second.store.set("session", { ...second.session, account: "acct_lone", access_token: w.fake.issueToken("acct_lone"), refresh_token: "refresh-another", sign_in_id: "another" });
+      expect((await second.list.sync()).account).not.toBe(w.account);
+      return swap(...args);
+    });
+    expect(await second.list.takeFromPeer(servePage(pc.copy(), { list: ask.read!.list, after: ask.read!.after }, 256)!, ask.read)).toBeNull();
+    // nothing of the first account is shown or said to a PC under the second
+    expect(second.list.view().account).not.toBe(w.account);
+    expect(second.list.gossip()).toBeNull();
+  });
+
+  it("ends every writer handed out before an alarm: an Allow that waited for its claim signs and sends nothing", async () => {
+    const { w, first } = await account();
+    const fork = await otherHistory(w, first);
+    const pc = await memoryPc(w, [w.held().entries[0]!, ...fork]);
+    const newcomer = await w.device({ label: "Dana's laptop" });
+    await newcomer.list.sync();
+    const claims = Promise.withResolvers<void>();
+    const asked = Promise.withResolvers<void>();
+    first.wire.answer = async (request) => {
+      if (request.method === "GET" && new URL(request.url).pathname.endsWith("/claims")) { asked.resolve(); await claims.promise; }
+      return null;
+    };
+    const allow = allowDevice(first.list, { key: (await newcomer.keys()).key, label: "Dana's laptop", os: "macos" }, noWait);
+    await asked.promise;
+    // the alarm rises while the Allow waits for the account service's claims
+    expect((await gossipWithPc(pc.fetch, first.list, null, always)).end).toBe("alarm");
+    const placed = first.sent.filter((each) => each.route.endsWith("/entries")).length;
+    claims.resolve();
+    expect(await allow).toMatchObject({ allowed: false });
+    expect(first.sent.filter((each) => each.route.endsWith("/entries")).length).toBe(placed);
+    expect(await first.list.waiting()).toBeNull();
   });
 });
 
