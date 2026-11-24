@@ -76,7 +76,7 @@ Switching needs job control (the pane's terminal) and is not built for Windows.
 | `_keeper/client` | a client connected, with its number |
 | `_keeper/rejected` | a client reused an id it still has in flight, or sent a request while the real TUI had the pane |
 | `_keeper/oversize` | a line longer than 64 MiB was dropped (`dir`, `bytes`, `id`); a request among them is answered with an error so nobody waits for it (unless its id is longer than 64 KiB: then the note has no id) |
-| `_keeper/expired` | an approval the agent that asked it can no longer receive (it was ended for the real TUI, it exited, or the keeper restarted) (`_keeper/resolved` is written before an answer goes out, so an approval the agent received is never expired) |
+| `_keeper/expired` | an approval the agent that asked it can no longer receive, or one without a recorded delivery after restart |
 
 ## Ending and starting again
 
@@ -163,7 +163,7 @@ Switching needs job control (the pane's terminal) and is not built for Windows.
 | `_keeper/client` | a client connected, with its number |
 | `_keeper/rejected` | a client reused an id it still has in flight, or sent a request while the real TUI had the pane |
 | `_keeper/oversize` | a line longer than 64 MiB was dropped (`dir`, `bytes`, `id`); a request among them is answered with an error so nobody waits for it (unless its id is longer than 64 KiB: then the note has no id) |
-| `_keeper/expired` | an approval the agent that asked it can no longer receive (it was ended for the real TUI, it exited, or the keeper restarted) (`_keeper/resolved` is written before an answer goes out, so an approval the agent received is never expired) |
+| `_keeper/expired` | an approval the agent that asked it can no longer receive, or one without a recorded delivery after restart |
 
 ## Ending and starting again
 

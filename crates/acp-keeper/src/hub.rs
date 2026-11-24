@@ -4,9 +4,8 @@
 //! that client alone (a `to-client` row), so clients that count ids alike never get each other's
 //! answers. An agent request is archived under an id of the keeper's own too (`agent-N`), so an
 //! answer meant for one approval can never resolve a later one the agent asked under the same id.
-//! It is pending until the first answer arrives from a client (people answer in Ovis, never in the
-//! pane); that answer alone goes to the agent (under the agent's id), a `_keeper/resolved` note
-//! says who won, and a later answer is dropped with a `_keeper/dropped` note.
+//! Only the first answer from a client goes to the agent (under the agent's id). After the writer
+//! delivers it, a `_keeper/resolved` note says who won. A later answer gets a `_keeper/dropped` note.
 //!
 //! The switch: once the turn is over and nothing waits, F4 in the pane or a client's
 //! `_keeper/open_terminal` request asks for the agent's real TUI on the same conversation. The run
@@ -31,6 +30,8 @@ use crate::Opts;
 /// keeper already ended for the switch are dropped.
 pub enum Ev {
     Agent(u64, String),
+    AnswerWritten(u64, PendingAnswer),
+    AgentWriteFailed(u64, std::io::Error),
     Client {
         conn: u64,
         line: String,
@@ -45,6 +46,18 @@ pub enum Ev {
     Open(u64),
     Gone,
     Key(Key),
+}
+
+pub struct ToAgent {
+    pub bytes: Vec<u8>,
+    pub answer: Option<PendingAnswer>,
+}
+
+pub struct PendingAnswer {
+    key: String,
+    by: String,
+    option: Option<String>,
+    outcome: Option<String>,
 }
 
 /// A mode or model change from the screen or a client, shown in the header once the agent accepts it.
@@ -104,7 +117,7 @@ pub fn note(archive: &Archive, method: &str, params: Value) {
 
 pub struct Hub {
     archive: Arc<Archive>,
-    pub agent: Option<UnboundedSender<Vec<u8>>>,
+    pub agent: Option<UnboundedSender<ToAgent>>,
     pub model: Model,
     pub opts: Opts,
     resumed: bool,
@@ -118,6 +131,7 @@ pub struct Hub {
     own: HashMap<String, Own>,
     routes: HashMap<String, Route>,
     agent_ids: HashMap<String, Value>,
+    answering: HashSet<String>,
     client_ids: HashSet<(u64, String)>,
     prompts: HashSet<String>,
     pub quit: bool,
@@ -127,7 +141,7 @@ pub struct Hub {
 
 impl Hub {
     /// `resumed`: the session to load came from the archive, so a failed load opens a new one.
-    pub fn new(archive: Arc<Archive>, agent: UnboundedSender<Vec<u8>>, opts: Opts, resumed: bool, job_control: bool) -> Hub {
+    pub fn new(archive: Arc<Archive>, agent: UnboundedSender<ToAgent>, opts: Opts, resumed: bool, job_control: bool) -> Hub {
         // Ids the keeper makes up (`keeper-N`, `client-C-N`, `agent-N`) count on from the archive's
         // last row, so no id of an earlier run in the same ROOT is ever given out again.
         let next = archive.replay_from(1).map(|(_, _, last)| last).unwrap_or(0);
@@ -145,6 +159,7 @@ impl Hub {
             own: HashMap::new(),
             routes: HashMap::new(),
             agent_ids: HashMap::new(),
+            answering: HashSet::new(),
             client_ids: HashSet::new(),
             prompts: HashSet::new(),
             quit: false,
@@ -176,7 +191,7 @@ impl Hub {
         } else if !self.job_control {
             Some("the pane has no terminal with job control")
         } else if self.agent.is_none() {
-            Some("the agent has exited")
+            Some("the agent is not accepting requests")
         } else if self.resume_argv().is_none() {
             Some(if self.model.session.is_none() {
                 "no session yet"
@@ -210,6 +225,7 @@ impl Hub {
     /// Agent requests the ended agent can no longer receive an answer to: noted as expired, so
     /// clients close their cards, and any later answer is dropped.
     pub fn expire_pending(&mut self, reason: &str) {
+        self.answering.clear();
         for pending in std::mem::take(&mut self.model.pending) {
             self.agent_ids.remove(&pending.key);
             self.note_row("_keeper/expired", json!({"id": pending.id, "seq": pending.seq, "reason": reason}));
@@ -218,7 +234,7 @@ impl Hub {
 
     /// A new ACP agent after the real TUI: everything the old one had open is gone, and the same
     /// session is loaded (a new one opens when the agent cannot load it).
-    pub fn restarted(&mut self, agent: UnboundedSender<Vec<u8>>) {
+    pub fn restarted(&mut self, agent: UnboundedSender<ToAgent>) {
         self.fail_routes("the agent was ended for the real TUI");
         self.agent = Some(agent);
         self.own.clear();
@@ -237,22 +253,31 @@ impl Hub {
     }
 
     fn forward(&self, raw: &str) {
+        self.queue(raw, None);
+    }
+
+    fn queue(&self, raw: &str, answer: Option<PendingAnswer>) {
         if self.archive.append("to-agent", raw).is_none() {
             return;
         }
         if let Some(agent) = &self.agent {
             let mut bytes = raw.as_bytes().to_vec();
             bytes.push(b'\n');
-            let _ = agent.send(bytes);
+            let _ = agent.send(ToAgent { bytes, answer });
         }
     }
 
     /// The agent is gone: every client request still waiting for it gets an error, and requests
     /// sent from now on are answered the same way instead of waiting forever.
     pub fn agent_gone(&mut self) {
+        self.disconnect_agent("the agent has exited");
+    }
+
+    fn disconnect_agent(&mut self, reason: &str) {
         self.agent = None;
-        self.fail_routes("the agent has exited");
-        self.expire_pending("the agent that asked it has exited");
+        self.expire_pending(reason);
+        self.fail_routes(reason);
+        self.own.clear();
         self.prompts.clear();
         self.model.working = false;
     }
@@ -309,6 +334,19 @@ impl Hub {
             Ev::Agent(generation, text) => {
                 if generation == self.generation {
                     self.on_agent(text);
+                }
+            }
+            Ev::AnswerWritten(generation, answer) => {
+                if generation == self.generation {
+                    self.answer_written(answer);
+                }
+            }
+            Ev::AgentWriteFailed(generation, error) => {
+                if generation == self.generation {
+                    self.generation += 1;
+                    let reason = format!("could not write to the agent: {error}");
+                    self.disconnect_agent(&reason);
+                    self.model.agent_gone = Some(reason);
                 }
             }
             Ev::Client { conn, line } => self.on_client(conn, line),
@@ -520,7 +558,7 @@ impl Hub {
             }
             (Some(method), Some(id)) => {
                 if self.agent.is_none() {
-                    self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the agent has exited"}}));
+                    self.reply(conn, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the agent is not accepting requests"}}));
                     return;
                 }
                 self.client_ids.insert((conn, key_of(&id)));
@@ -555,8 +593,7 @@ impl Hub {
         }
     }
 
-    /// The resolved note is archived before the answer goes out: a keeper killed between the two
-    /// leaves an approval noted as answered, never one the agent got and the archive calls unanswered.
+    /// Reserve the first valid answer while the writer sends it; only its receipt resolves the card.
     fn answer(&mut self, key: &str, raw: &str, by: &str) {
         let mut answer: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
         let id: Value = serde_json::from_str(key).unwrap_or(Value::Null);
@@ -568,15 +605,32 @@ impl Hub {
             self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": "the agent that asked it is gone"}));
             return;
         }
-        let Some(pending) = self.model.resolve(key) else {
+        let Some(wire_id) = self.agent_ids.get(key).filter(|_| !self.answering.contains(key)) else {
             self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": "not pending (already answered or unknown)"}));
             return;
         };
         let option = answer.pointer("/result/outcome/optionId").and_then(Value::as_str).map(str::to_string);
         let outcome = answer.pointer("/result/outcome/outcome").and_then(Value::as_str).map(str::to_string);
+        answer["id"] = wire_id.clone();
+        self.answering.insert(key.to_string());
+        self.queue(
+            &answer.to_string(),
+            Some(PendingAnswer {
+                key: key.to_string(),
+                by: by.to_string(),
+                option,
+                outcome,
+            }),
+        );
+    }
+
+    fn answer_written(&mut self, PendingAnswer { key, by, option, outcome }: PendingAnswer) {
+        self.answering.remove(&key);
+        let Some(pending) = self.model.resolve(&key) else {
+            return;
+        };
+        self.agent_ids.remove(&key);
         self.note_row("_keeper/resolved", json!({"id": pending.id, "by": by, "optionId": option, "outcome": outcome, "seq": pending.seq}));
-        answer["id"] = self.agent_ids.remove(key).unwrap_or_else(|| pending.id.clone());
-        self.forward(&answer.to_string());
         let chosen = option.or(outcome).unwrap_or_else(|| "error".into());
         self.model.note(format!("승인 답함 ({by}): {chosen}"));
     }
@@ -602,7 +656,7 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
-    fn hub(dir: &std::path::Path) -> (Hub, UnboundedReceiver<Vec<u8>>) {
+    fn hub(dir: &std::path::Path) -> (Hub, UnboundedReceiver<ToAgent>) {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).unwrap();
         let (archive, _) = Archive::open(dir.join("archive.jsonl")).unwrap();
@@ -618,7 +672,7 @@ mod tests {
         hub.handle(Ev::Agent(0, json!({"jsonrpc": "2.0", "id": 1, "method": "session/request_permission", "params": {}}).to_string()));
         let id = hub.model.pending[0].id.clone();
         hub.handle(Ev::Agent(0, json!({"jsonrpc": "2.0", "id": id, "method": "fs/read_text_file", "params": {}}).to_string()));
-        let response: Value = serde_json::from_slice(&sent.try_recv().unwrap()).unwrap();
+        let response: Value = serde_json::from_slice(&sent.try_recv().unwrap().bytes).unwrap();
         assert_eq!(response["id"], id);
         let path = dir.join("archive.jsonl");
         drop(hub);
@@ -690,7 +744,7 @@ mod tests {
                 conn: 1,
                 line: json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string(),
             });
-            let forwarded: Value = serde_json::from_slice(&sent.try_recv().expect("forwarded to the agent")).unwrap();
+            let forwarded: Value = serde_json::from_slice(&sent.try_recv().expect("forwarded to the agent").bytes).unwrap();
             hub.handle(Ev::Agent(0, json!({"jsonrpc": "2.0", "id": forwarded["id"], "result": {}}).to_string()));
         };
         change(&mut hub, 5, "session/set_model", json!({"sessionId": "s", "modelId": "m2"}));

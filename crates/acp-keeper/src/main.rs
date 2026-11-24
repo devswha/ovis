@@ -24,7 +24,7 @@ use tokio::task::JoinHandle;
 
 use agent::{Agent, Io};
 use archive::{pump, Archive, Framed, Framer, MAX_LINE, PUSH};
-use hub::{Ev, Hub};
+use hub::{Ev, Hub, ToAgent};
 use status::{Mode, Status};
 
 pub struct Opts {
@@ -303,14 +303,19 @@ fn lock(root: &Path) -> Result<File, String> {
 
 /// Starts the ACP agent (generation `generation`): its stdin fed from the returned sender, its stdout
 /// framed into hub events by the returned reader task.
-async fn start_acp(opts: &Opts, stderr: &File, generation: u64, tx: &UnboundedSender<Ev>) -> std::io::Result<(Agent, UnboundedSender<Vec<u8>>, JoinHandle<()>)> {
+async fn start_acp(opts: &Opts, stderr: &File, generation: u64, tx: &UnboundedSender<Ev>) -> std::io::Result<(Agent, UnboundedSender<ToAgent>, JoinHandle<()>)> {
     let mut agent = Agent::spawn(&opts.command, &opts.args, &opts.cwd, Io::Pipes(stderr.try_clone()?), &opts.root).await?;
-    let (agent_tx, mut agent_rx) = unbounded_channel::<Vec<u8>>();
+    let (agent_tx, mut agent_rx) = unbounded_channel::<ToAgent>();
     let mut stdin = agent.child.stdin.take().expect("piped stdin");
+    let writes = tx.clone();
     tokio::spawn(async move {
-        while let Some(bytes) = agent_rx.recv().await {
-            if stdin.write_all(&bytes).await.is_err() {
+        while let Some(ToAgent { bytes, answer }) = agent_rx.recv().await {
+            if let Err(error) = stdin.write_all(&bytes).await {
+                let _ = writes.send(Ev::AgentWriteFailed(generation, error));
                 break;
+            }
+            if let Some(answer) = answer {
+                let _ = writes.send(Ev::AnswerWritten(generation, answer));
             }
         }
     });
@@ -713,7 +718,7 @@ async fn run(mut opts: Opts) -> i32 {
     while let Ok(ev) = rx.try_recv() {
         // a client's number is noted even when it connected just before the end, so the next keeper
         // in this ROOT numbers on past it
-        if matches!(ev, Ev::Agent(..) | Ev::Oversize { conn: None, .. } | Ev::Open(_)) {
+        if matches!(ev, Ev::Agent(..) | Ev::AnswerWritten(..) | Ev::AgentWriteFailed(..) | Ev::Oversize { conn: None, .. } | Ev::Open(_)) {
             hub.handle(ev);
         }
     }

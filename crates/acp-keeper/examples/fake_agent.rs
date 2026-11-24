@@ -114,7 +114,12 @@ fn main() {
                         }
                     }
                     "helpers" => helpers(words.next().unwrap_or(".")),
-                    "ask" => {
+                    "ask" | "ask-and-close-input" => {
+                        #[cfg(unix)]
+                        if text == "ask-and-close-input" {
+                            // SAFETY: this fixture owns its stdin; it stops reading after this row.
+                            assert_eq!(unsafe { libc::close(libc::STDIN_FILENO) }, 0);
+                        }
                         asked = Some(id);
                         send(
                             &mut out,
@@ -124,6 +129,11 @@ fn main() {
                                 "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}],
                             }}),
                         );
+                        if text == "ask-and-close-input" {
+                            loop {
+                                std::thread::park();
+                            }
+                        }
                         continue;
                     }
                     "answer-and-quit" => {

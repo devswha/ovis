@@ -65,6 +65,23 @@ fn an_archive_write_error_stops_the_keeper_and_its_agent() {
 }
 
 #[test]
+fn an_approval_answer_is_not_resolved_when_the_agent_closed_stdin() {
+    let root = Root::new("closed-input");
+    let _keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, "ask-and-close-input"));
+    let asked = client.wait("the approval", |r| method(r) == Some("session/request_permission"));
+    let id = &asked["msg"]["id"];
+    client.send(&json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "selected", "optionId": "allow"}}}));
+    let fate = client.wait("the approval's fate", |r| matches!(method(r), Some("_keeper/resolved" | "_keeper/expired")));
+    assert_eq!(method(&fate), Some("_keeper/expired"));
+    assert_eq!(&fate["msg"]["params"]["id"], id);
+    let answer = client.answer(json!(1));
+    assert_eq!(answer["msg"]["error"]["code"], -32603);
+}
+
+#[test]
 fn a_prompt_above_the_old_line_limit_reaches_the_agent() {
     let root = Root::new("big-prompt");
     let _keeper = Keeper::start(&root, &[]);
