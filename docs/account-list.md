@@ -954,14 +954,18 @@ that they are in one place when it is built:
 - **It never writes a member without a name because the list was left untidy.** `sealEpoch` says
   no after a removal, and also while an invite that a PC joins with by itself is past its `exp`
   unused, or a device that is in is past its `until`: whoever holds such a key still has the
-  current epoch's key. Before an entry that carries names the device then places what tidies up,
-  as the removal the kinds build: the `remove` of that invite's or device's key, then one `epoch`,
-  with the next key wrapped to whoever stays. After it comes the entry, with its names sealed
-  under the new epoch.
+  current epoch's key. The device then sends one request: a `remove` for every such key, one
+  `epoch`, then the entry with its names sealed under the epoch that request opens, and the new
+  key wrapped to everybody who is in after the whole of it, the newcomer included. With one such
+  key left in, the names are refused. Only when the account's requests are spent does the tidying
+  go first by itself (it is counted on its signer alone), and the entry after it.
 - **It opens an epoch only after a removal.** The account service takes an `epoch` entry only
-  while `sealEpoch` says no, and for an invite or a device whose time is over only directly after
-  its `remove`. A device never opens one for any other reason, and after a request that was not
-  placed it makes the next epoch's key anew: none of that request's wraps were kept.
+  where `sealEpoch` says no right before it (`epoch_not_needed` otherwise), and for an invite or a
+  device whose time is over only directly after its `remove` (`epoch_no_use`). A device never
+  opens one for any other reason, and after a request that was not placed it makes the next
+  epoch's key anew: none of that request's wraps were kept. The service judges by its own clock,
+  so right at an `exp` or an `until` its answer and the device's can differ for a moment:
+  `epoch_not_needed` and `epoch_stale` mean "read and sign again", not a fault.
 - **It dates an entry by its own clock, and no later than the account service's.** The service
   takes no entry dated more than ten minutes ahead of its clock, and the list's own time never
   goes back, so a device whose clock runs ahead uses the time the service's last answer carried.
