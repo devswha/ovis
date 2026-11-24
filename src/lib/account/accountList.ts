@@ -373,8 +373,12 @@ export interface AccountList {
    * that very entry, and until then it follows nothing. A device that follows a list already takes no offer.
    */
   adopt(offer: ListOffer): Promise<AccountListView>;
-  /** What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown another history. */
-  writer(): ListWriter | null;
+  /**
+   * What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown
+   * another history. `self`: for the removal of this device's own key, which a device of any power may sign (a
+   * borrowed browser that signs out): only the power is not asked, and the kinds refuse whatever else it would sign.
+   */
+  writer(options?: { readonly self?: boolean }): ListWriter | null;
   /** Whether this device's copy holds that entry at that place: its own entry is in its copy only once the log showed it. */
   holdsEntry(place: ListPlace): boolean;
   /** Where this device stands, to tell another member: the list id and the last entry a member signed in its copy; null while it follows none. */
@@ -834,13 +838,13 @@ export function accountList(options: AccountListOptions): AccountList {
       });
       return sync();
     },
-    writer() {
+    writer(options = {}) {
       const copy = held?.copy ?? null;
       const { status } = shown;
       if (held === null || copy === null || copy.state === null || ctx === null || ctx.account !== held.account || shown.account !== held.account) return null;
       if (status.at !== "following" || status.standing !== "in" || status.trouble === "fork" || status.trouble === "stuck") return null;
       const own = copy.state.signers[ctx.keys.key];
-      if (own === undefined || own.ended !== null || own.power !== "full") return null;
+      if (own === undefined || own.ended !== null || (own.power !== "full" && options.self !== true)) return null;
       const at = seconds();
       // the account service's clock as it stands now, by its last answer and the time this device counted since
       const theirs = serviceClock === null ? null : serviceClock.service + Math.max(0, at - serviceClock.device);

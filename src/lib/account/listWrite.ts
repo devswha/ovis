@@ -94,6 +94,19 @@ export async function signedWithEpoch(writer: ListWriter, current: EpochKey, bef
   return { entries: result.entries.map((entry) => entry.text), wraps: wrapped.wraps.map(({ member, wrap }) => ({ epoch: next.epoch.epoch, member, wrap: wrapToText(wrap) })), place: placeOf(result.state) };
 }
 
+export interface WriteOptions {
+  readonly wait?: (ms: number) => Promise<void>;
+  /** The writer to sign on, read after each read of the list: for a device's removal of its own key, `list.writer({ self: true })`. The list's own by default. */
+  readonly writer?: () => ListWriter | null;
+  /**
+   * The write is over once the account service took the request, and the list is not read after it. Only for a
+   * device's removal of its own key, after which it may be signed out and reads nothing: it then forgets its key
+   * whatever the list says, so an answer that lied leaves a key in the list that nobody holds. For any other write
+   * the device's own copy must show the entry.
+   */
+  readonly trustPlaced?: boolean;
+}
+
 /** The account service's own refusal of a request, as against no answer or a refresh that failed. */
 const refusalOf = (error: unknown): AccountServiceError | null => (error instanceof AccountServiceError && !(error instanceof AccountRefreshError) ? error : null);
 
@@ -106,12 +119,12 @@ const unanswered = (error: unknown): boolean => error instanceof AccountServiceU
  * apart from this device's, it reads and signs again, WRITE_TRIES times at most; while the service says it is
  * rebuilding the list, the same request goes again, WRITE_RESENDS times at most. Only a sign-in that ended throws.
  */
-export async function writeToList<Why extends string = never>(list: AccountList, step: (writer: ListWriter) => Promise<WriteStep<Why>>, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<WriteOutcome<Why>> {
+export async function writeToList<Why extends string = never>(list: AccountList, step: (writer: ListWriter) => Promise<WriteStep<Why>>, options: WriteOptions = {}): Promise<WriteOutcome<Why>> {
   const wait = options.wait ?? pause;
   const refused = (why: WriteRefusal | Why, retryAfterMs: number | null = null): WriteOutcome<Why> => ({ written: false, why, retryAfterMs });
   for (let tries = 0; tries < WRITE_TRIES; tries += 1) {
     const view = await list.sync();
-    const writer = list.writer();
+    const writer = (options.writer ?? (() => list.writer()))();
     if (writer === null) return refused(view.status.at === "following" && !view.reached ? "unreached" : "no_list");
     let request: Written;
     try {
@@ -160,6 +173,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
     }
     if (!placed && !again) return refused("busy", retryAfterMs);
     if (again) continue;
+    if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };
     // the answer is no word on what the list holds: the entries are placed once this device's own copy shows the last at its place
     await list.sync();
     if (list.holdsEntry(request.place)) return { written: true, list: writer.list, place: request.place };

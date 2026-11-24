@@ -1248,7 +1248,8 @@ once it goes by the list:
   whether the device keeps a copy of a list of that account, from its own store alone.
 - `adopt(place)`: takes the place a member handed this device. `writer()`: what an entry is signed
   on (the device's state, its keys, the epoch keys it holds), or none for a device that may not
-  sign. `gossip()` and `pageAfter(place, limit)`: where the device stands, and its entries after a
+  sign. A device of power `bound` has one only for the removal of its own key
+  (`writer({ self: true })`), which the signers' rules let any signer write. `gossip()` and `pageAfter(place, limit)`: where the device stands, and its entries after a
   place, for another member.
 - `subscribe`, `sync` (one read now), `due` (when the next read is due), `forget` (a person's reset).
 
