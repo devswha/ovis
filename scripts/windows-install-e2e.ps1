@@ -183,6 +183,8 @@ try {
         Assert-SignInStart 'the install line'
         Wait-Until { (Get-Json '/api/health').ok } 60 'the app to answer after the install line' | Out-Null
         $server = Get-HerdrServer
+        # at normal priority: a task's default would leave herdr, and every terminal it starts, below normal
+        Assert ("$($server.PriorityClass)" -eq 'Normal') "herdr the installer started must run at normal priority, not $($server.PriorityClass)"
         # -NoService takes the sign-in start away again, and leaves the herdr that runs as it is
         Write-Host 'e2e: installing again with -NoService'
         & $Installer -Ref $Ref -NoService
@@ -208,7 +210,7 @@ try {
         } else {
             Assert (-not $run.Threw -and $run.Said -match 'herdr was started in your desktop' -and $run.Said -notmatch 'Task Scheduler did not') "From session 0 the installer must start herdr in the desktop through its task: $($run.Said)"
             $server = Get-HerdrServer
-            Assert ((Test-ServerRunning) -and $server -and $server.SessionId -ne 0) "herdr started from session 0 must run in a desktop session, not $($server.SessionId)"
+            Assert ((Test-ServerRunning) -and $server -and $server.SessionId -ne 0 -and "$($server.PriorityClass)" -eq 'Normal') "herdr started from session 0 must run in a desktop session at normal priority, not session $($server.SessionId), $($server.PriorityClass)"
             Assert-SignInStart 'the install line from session 0'
             Wait-Until { (Get-Json '/api/health').ok } 60 'the app to answer after the install line from session 0' | Out-Null
             Write-Host "e2e: from session 0 the installer started herdr in desktop session $($server.SessionId)"

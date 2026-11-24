@@ -959,6 +959,21 @@ exit /b 0
     Remove-Item -LiteralPath (Split-Path $ovisHome), $fakeHerdrDir -Recurse -Force
     Write-Host 'PASS the launcher of the sign-in start: starts herdr only with Ovis installed and none running, in a user folder outside ASCII, finding herdr by name once its path is gone'
 
+    # INSTALL.md's background command for agents, as Windows PowerShell runs it, the installer replaced: Start-Process
+    # joins its arguments unquoted, so the command holds no double quote, and the log ends with install-exit=0 when the
+    # installer ends, or with install-exit=1 after what it said when it throws
+    $recipe = [regex]::Match((Get-Content -Raw (Join-Path $PSScriptRoot '..\INSTALL.md')), "(?m)^Start-Process powershell .* -ArgumentList '([^']*)'\r?$").Groups[1].Value
+    Assert ($recipe.Contains('irm https://ovis.sh/install.ps1 | iex') -and -not $recipe.Contains('"')) "control: INSTALL.md's recipe must run the installer, in one argument with no double quote: $recipe"
+    foreach ($case in @(@{ installer = 'Write-Output installed'; ends = 'install-exit=0' }, @{ installer = "throw 'the installer failed'"; ends = 'install-exit=1'; said = 'the installer failed' })) {
+        $log = Join-Path $ghStandIn 'recipe.log'
+        Remove-Item -LiteralPath $log, "$log.err" -Force -ErrorAction SilentlyContinue
+        $child = Microsoft.PowerShell.Management\Start-Process powershell -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -ArgumentList $recipe.Replace('irm https://ovis.sh/install.ps1 | iex', $case.installer) -PassThru
+        Assert ($child.WaitForExit(60000)) "INSTALL.md's recipe must end ($($case.ends))"
+        $lines = @(Get-Content -LiteralPath $log | Where-Object { "$_".Trim() })
+        Assert ($lines.Count -and "$($lines[-1])".Trim() -eq $case.ends -and (-not $case.said -or ($lines -join "`n").Contains($case.said))) "INSTALL.md's recipe must end its log with $($case.ends): $($lines -join ' / ') / err: $(Get-Content -Raw -LiteralPath "$log.err" -ErrorAction SilentlyContinue)"
+    }
+    Write-Host 'PASS the agent recipe in INSTALL.md ends its log with install-exit=0 or install-exit=1'
+
     # The star: mentioned once on a first install, asked only at a terminal, given only on "y".
     $mention = 'a GitHub star helps other herdr users find it'
     $question = 'star it now with the GitHub account'
