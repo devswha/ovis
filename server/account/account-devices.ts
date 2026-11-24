@@ -168,8 +168,9 @@ export class AccountDeviceStore implements AccountRowSource {
 
   /**
    * Read only, for the record of how long each key has been let in (witness.ts): every row that is out of its hold and
-   * stands, and whether it lets its key in right now. A row that waits for a whole read, or while Step 2 is off here,
-   * stands and lets nobody in. null for a file that cannot be used, which is no word that its rows are gone.
+   * stands, and whether it lets its key in right now, as `access` would. A row that waits for a whole read stands and
+   * lets nobody in, unless a release a person at this PC gave lets that row in meanwhile; with Step 2 off here no row
+   * does. null for a file that cannot be used, which is no word that its rows are gone.
    */
   witnessed(): readonly WitnessedRow[] | null {
     if (this.error !== null) return null;
@@ -177,7 +178,7 @@ export class AccountDeviceStore implements AccountRowSource {
     const off = this.ports.serviceStep2Off?.() === true;
     return this.file.devices.filter((row) => row.state === "live" && expiresAt(row) > now).map((row) => {
       const seen = row.last_signin_day === null ? NaN : Date.parse(row.last_signin_day);
-      return { key: row.key, lets: !off && !this.waiting.has(row.id), seen: Number.isFinite(seen) ? Math.floor(seen / 1000) : null };
+      return { key: row.key, lets: !off && (!this.waiting.has(row.id) || this.release(row) !== null), seen: Number.isFinite(seen) ? Math.floor(seen / 1000) : null };
     });
   }
 

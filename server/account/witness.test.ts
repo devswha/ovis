@@ -229,6 +229,44 @@ describe("the record of how long this PC has let each key in through its account
     expect(made.file().keys[PHONE]).toMatchObject({ wall: 3600, ran: 3600 });
   });
 
+  test("time in which the rows could not be read is not given back as time the PC was off at the next start", () => {
+    const made = recording();
+    made.world.rows = [lets(PHONE)];
+    made.witness.step();
+    made.pass(HOUR);
+    // the rows stop reading for five hours, and the PC is then restarted within a minute
+    made.world.rows = null;
+    for (let hour = 0; hour < 5; hour++) made.pass(HOUR);
+    made.witness.stop();
+    expect(made.file()).toMatchObject({ saved: (T0 + 6 * HOUR) / 1000, keys: { [PHONE]: { wall: 3600, ran: 3600 } } });
+    const again = recording(made.stateDir);
+    again.world.wall = T0 + 6 * HOUR + MINUTE;
+    again.world.rows = [lets(PHONE)];
+    again.witness.step();
+    expect(again.file().keys[PHONE]).toMatchObject({ wall: 3600 + 60, ran: 3600 });
+  });
+
+  test("a record that could not be deleted when the PC left its account is deleted at a later step", () => {
+    const made = recording();
+    made.world.rows = [lets(PHONE)];
+    made.witness.step();
+    made.world.scope = { account: null, serverId: SERVER };
+    made.world.rows = [];
+    const failing = spyOn(privateStateFs, "unlinkSync").mockImplementation(() => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); });
+    const said = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      made.pass(MINUTE);
+      made.pass(MINUTE);
+      expect(existsSync(made.path)).toBe(true);
+      expect(said).toHaveBeenCalledTimes(1);
+    } finally { failing.mockRestore(); said.mockRestore(); }
+    made.pass(MINUTE);
+    expect(existsSync(made.path)).toBe(false);
+    // and a file that is already gone is no failure
+    made.pass(MINUTE);
+    expect(made.witness.record()).toBeNull();
+  });
+
   test("it takes the time at least every five minutes while it runs, and once more when it stops", () => {
     expect(WITNESS_INTERVAL_MS).toBeLessThanOrEqual(5 * MINUTE);
     const made = recording();

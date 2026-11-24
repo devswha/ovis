@@ -10,9 +10,9 @@
  * and a minute, and across a restart by the gap since the last write, a day at most. What was not written at a crash
  * is lost, which only delays.
  */
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writePrivateState } from "../private-state.ts";
+import { privateStateFs, writePrivateState } from "../private-state.ts";
 
 export const ACCOUNT_WITNESS_FILE = "account-witness.json";
 /** How often the time that passed is taken and written: what a crash loses is less than five minutes. */
@@ -83,6 +83,8 @@ export class AccountWitness {
   private last: { readonly wall: number; readonly mono: number; readonly letting: ReadonlySet<string> } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private failed = false;
+  /** The file of an account this PC left is still on disk: its deletion failed, and is tried again at each step. */
+  private leftOver = false;
 
   constructor(private readonly deps: WitnessDeps) {
     this.path = join(deps.stateDir, ACCOUNT_WITNESS_FILE);
@@ -138,7 +140,9 @@ export class AccountWitness {
       this.held = { account: scope.account, serverId: scope.serverId, keys: this.loaded ? new Map() : this.load(scope.account, scope.serverId, wall) };
       this.loaded = true;
     }
-    if (rows === null) return;
+    // Rows that cannot be read count for no key, and the file still says when it was last written: the time since
+    // then is no time the PC was off, so a restart gives none of it back
+    if (rows === null) { this.write(); return; }
     const { keys } = this.held;
     const standing = new Map<string, number | null>();
     for (const row of rows) {
@@ -175,10 +179,17 @@ export class AccountWitness {
 
   /** The PC is in no account: the record goes with the binding. */
   private end(): void {
-    if (this.held === null && this.loaded) return;
+    if (this.held === null && this.loaded && !this.leftOver) return;
     this.held = null;
     this.loaded = true;
-    try { rmSync(this.path, { force: true }); } catch (error) { this.say(error); }
+    try {
+      privateStateFs.unlinkSync(this.path);
+      this.leftOver = this.failed = false;
+    } catch (error) {
+      // a file that is not there is deleted; any other failure is tried again at the next step
+      this.leftOver = (error as NodeJS.ErrnoException).code !== "ENOENT";
+      if (this.leftOver) this.say(error); else this.failed = false;
+    }
   }
 
   private write(): void {
