@@ -16,7 +16,7 @@ import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.
 import { isWssOrigin } from "./relay-offer.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
-import { isListKeyEncoding, isListPoint } from "./account-list-entry.ts";
+import { isListPoint } from "./account-list-entry.ts";
 import { verifyInviteRedeem } from "./account-list-invite.ts";
 
 export const CHALLENGE_TTL_MS = 60_000;
@@ -1897,7 +1897,7 @@ export class FakeAccountService {
       }
       // the writers' rule (the library's sealEpoch): names are sealed only under an epoch opened after the last entry that put
       // a member out; under an older one, whoever was put out still reads them
-      if ("sealed" in kind && kind.sealed !== null && sealEpoch(state) === null) {
+      if ("sealed" in kind && kind.sealed !== null && sealEpoch(state, Math.floor(this.now() / 1000)) === null) {
         return this.refusedAt(index, "service", "epoch_stale", "Names are sealed only under an epoch opened after the last removal: open the next epoch, or write this entry without names");
       }
       // carrying members in from before the list has no second lock yet, so the service places none
