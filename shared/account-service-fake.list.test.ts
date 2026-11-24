@@ -309,6 +309,26 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(refusal(await w.call("POST", "/v2/pc/list/log", { ...(await proof(w, pc)), proof: "{}", list }))).toBe("401 proof_invalid");
     });
 
+    test("a proven PC's calls are counted per server_id, past the limit 429 rate_limited with retry-after; off the switch nothing is spent", async () => {
+      const w = await world();
+      const { list } = await w.start();
+      const pc = machine();
+      await listPc(w, pc);
+      w.service.listLimits.pcCallsPerMinute = 2;
+      // off the switch the call is refused before the proof: its challenge is still good, and nothing is counted
+      w.service.listAccounts = "";
+      const kept = await proof(w, pc);
+      expect(refusal(await w.call("POST", "/v2/pc/list/log", { ...kept, list }))).toBe("404 not_found");
+      w.service.listAccounts = "*";
+      expect((await w.call("POST", "/v2/pc/list/log", { ...kept, list })).status).toBe(200);
+      expect((await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT })).status).toBe(200);
+      const limited = await pcCall(w, pc, "/v2/pc/list/log", { list });
+      expect([refusal(limited), limited.headers.get("retry-after")]).toEqual(["429 rate_limited", "60"]);
+      expect((await pcCall(w, machine(), "/v2/pc/list", { account: ACCOUNT })).status).toBe(404);
+      w.tick(MINUTE);
+      expect((await pcCall(w, pc, "/v2/pc/list/log", { list })).status).toBe(200);
+    });
+
     test("the log is paged by after and limit, says more while entries follow, and serves every entry as the text it was sent", async () => {
       const w = await world();
       const { list, head, first } = await w.start();
