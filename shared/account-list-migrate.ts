@@ -23,7 +23,7 @@
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { canonicalBase64Url, isListHash, verifySignature, writeFieldsUnder } from "./account-list-entry.ts";
 import {
-  CARD_SIGNATURE_CHARS, ListKindError, isListKey, listView, sealEpoch, signCard, signGenesis, signListEntry, wrapKeys,
+  CARD_SIGNATURE_CHARS, ListKindError, inviteRefusal, isListKey, listView, sealEpoch, signCard, signGenesis, signListEntry, wrapKeys,
   type ListNames, type ListSigner, type ListState, type Sealed, type WrittenEntry,
 } from "./account-list.ts";
 import { toBase64Url } from "./relay-pair-sas.ts";
@@ -165,9 +165,10 @@ export type NoMigration = "self_unlisted" | "self_removed" | "pcs_silent" | "no_
  * - `removed_at_pc`: a PC this device knows holds a removal against the key, whatever the service says.
  * - `unwitnessed`: a PC this device knows, and that answered, does not let the key in.
  * - `unknown_pc`: this device does not know the relay key by its own record.
+ * - `other_account`: the PC answered that it is in another account.
  * - `over_limit`: the list carries MIGRATION_CARRIED_MAX in, and these were in use least lately.
  */
-export type LeftOut = "form" | "removed" | "not_eligible" | "removed_at_pc" | "unwitnessed" | "unknown_pc" | "over_limit";
+export type LeftOut = "form" | "removed" | "not_eligible" | "removed_at_pc" | "unwitnessed" | "unknown_pc" | "other_account" | "over_limit";
 
 /** Whom the first device carries in, in the order of the entries, and whom it leaves out and why. */
 export interface MigrationPlan {
@@ -285,6 +286,7 @@ export function migrationPlan(known: MigrationKnown, tried: number): MigrationSt
     if (places.has(endpoint)) continue;
     places.add(endpoint);
     if (!ENDPOINT.test(endpoint)) leftPcs.push({ endpoint, why: "form" });
+    else if (pc.says !== null && pc.says.account !== known.account) leftPcs.push({ endpoint, why: "other_account" });
     else if (ownEvidence(pc)) pcs.push({ endpoint, names: pc.names });
     else leftPcs.push({ endpoint, why: "unknown_pc" });
   }
@@ -348,6 +350,16 @@ const ownKeys = (device: Pick<MigratingDevice, "signIn" | "member" | "enc">): bo
 
 const firstSigner = (state: ListState): string | null => Object.entries(state.signers).find(([, row]) => row.seq === 0)?.[0] ?? null;
 
+/**
+ * Whether what a member holds is only the beginning of a list's birth: the run of `carried` entries is not over,
+ * or the first signer has handed its place on and the `epoch` entry that ends its birth is not there yet. An
+ * honest log holds a birth whole or not at all, so nobody signs on such a state or follows it.
+ */
+function birthOpen(state: ListState): boolean {
+  const first = firstSigner(state);
+  return state.carrying || (first !== null && heirOf(state, first) !== null && state.epochs.length < 2);
+}
+
 /** Whether the key is a device that is in. */
 function deviceIn(state: ListState, key: string): boolean {
   const row = rowOf(state.signers, key);
@@ -377,7 +389,7 @@ function deviceIn(state: ListState, key: string): boolean {
 export async function signMigration(
   account: string, plan: Pick<MigrationPlan, "devices" | "pcs">, device: MigratingDevice, issued_at: number, seals: MigrationSeals,
 ): Promise<{ readonly list: string; readonly entries: readonly WrittenEntry[]; readonly state: ListState }> {
-  const own = [device.signIn.key, device.member.key];
+  const own = [device.signIn.key, device.member.key, device.enc];
   if (plan.devices.some(({ key }) => !isListKey(key) || own.includes(key)) || plan.pcs.some(({ endpoint }) => !ENDPOINT.test(endpoint)) || !ownKeys(device)) {
     throw new MigrationError("key_invalid", "A key of this list's birth is no key whose point is on the curve, is this device's own, or a relay key is out of form");
   }
@@ -429,7 +441,7 @@ export async function signRotation(state: ListState, device: Pick<MigratingDevic
   const row = rowOf(state.signers, device.signIn.key);
   if (row === null || !deviceIn(state, device.signIn.key) || row.power !== "full") throw new MigrationError("not_in", "This sign-in key is no device of this list that may hand its place on");
   if (rowOf(state.signers, device.member.key) !== null) throw new MigrationError("has_member", "The list has held this member key before");
-  if (state.carrying && row.seq !== 0) throw new MigrationError("run_open", "This is the beginning of a list's birth, not a list");
+  if (birthOpen(state) && row.seq !== 0) throw new MigrationError("run_open", "This is the beginning of a list's birth, not a list");
   const card = await signCard({ key: device.member.key, enc: device.enc, list: state.list, endpoint: null, invite: null }, device.member.privateKey);
   return await signListEntry(state, { kind: "device", key: device.member.key, power: "full", role: "drive", until: null, enc: device.enc, card, sealed, rotates: true }, device.signIn, issued_at);
 }
@@ -495,7 +507,7 @@ export function rekeys(before: ListState | null, after: ListState): Rekey[] {
  * - `first`: entry 0 is its sign-in key's, which is still in: it is shown the beginning of its own list's birth.
  * - `carried`: its sign-in key was carried in and is still in: it asks its PCs (joinVerdict), and then hands its
  *   place to its member key (signRotation).
- * - `member`: its member key is in. Nothing is left to do.
+ * - `member`: its member key is in, or its sign-in key is in by an ordinary entry. Nothing is left to do.
  * - `out`: one of its keys was in and none is: it was removed.
  * - `absent`: the list holds no key of its own: it asks to be let in as a new device does.
  *
@@ -513,23 +525,28 @@ export type DevicePlace =
 export function devicePlace(state: ListState, keys: { readonly signIn: string; readonly member: string }): DevicePlace {
   if (deviceIn(state, keys.member)) return { at: "member" };
   const row = rowOf(state.signers, keys.signIn);
-  if (row !== null && deviceIn(state, keys.signIn)) return row.seq === 0 ? { at: "first" } : { at: "carried", wait: state.carrying };
-  return row !== null || rowOf(state.signers, keys.member) !== null ? { at: "out" } : { at: "absent", wait: state.carrying };
+  if (row !== null && deviceIn(state, keys.signIn)) {
+    if (row.seq === 0) return { at: "first" };
+    // Only a key that a `carried` entry named has a hand-over to make; one an ordinary entry let in is simply in.
+    return rowOf(state.devices, keys.signIn)?.carried === true ? { at: "carried", wait: birthOpen(state) } : { at: "member" };
+  }
+  return row !== null || rowOf(state.signers, keys.member) !== null ? { at: "out" } : { at: "absent", wait: birthOpen(state) };
 }
 
 /**
  * Why a device that was carried in does not follow the list yet, the first that applies, in this order.
  *
  * - `stopped`: this build cannot place an entry of the list.
- * - `run_open`: what it was shown is the beginning of a birth, not a list.
  * - `carried_off_curve`: the list carries in a key that is no point of the curve; no PC follows such a list.
+ * - `run_open`: what it was shown is the beginning of a birth, not a list: the run is not over, or its `epoch`
+ *   entry is missing.
  * - `not_carried`: the list did not carry this device in (devicePlace says where it stands).
  * - `no_answer`: no PC it knows by its own record has answered for this account. It waits, and goes on as
  *   before the list.
  * - `other_list`: a PC it knows follows another list of the account (`pcs` names it). The way out is that PC's:
  *   it is removed from the account, or reset at the PC; the refusal clears when the PC is gone or agrees.
- * - `first_signer_removed`: a PC it knows holds a removal against the key that started the list, or against the
- *   key that one handed its place on to.
+ * - `first_signer_removed`: a PC it knows holds a removal against the key that started the list, or against a
+ *   key that one handed its place on to, however often.
  * - `first_signer_unknown`: a PC it knows, that follows no list yet, does not let the key that started the list
  *   in. The device does not follow the list and says so; it asks to be let in as a new device does.
  * - `pcs_silent`: every PC that answered agrees, and a PC it knows has not answered yet (`pcs`); `wait` is how
@@ -538,7 +555,7 @@ export function devicePlace(state: ListState, keys: { readonly signIn: string; r
  *   many seconds are left.
  */
 export type JoinRefusal =
-  | "stopped" | "run_open" | "carried_off_curve" | "not_carried" | "no_answer" | "other_list" | "first_signer_removed" | "first_signer_unknown" | "pcs_silent" | "first_signer_new";
+  | "stopped" | "carried_off_curve" | "run_open" | "not_carried" | "no_answer" | "other_list" | "first_signer_removed" | "first_signer_unknown" | "pcs_silent" | "first_signer_new";
 
 export type JoinVerdict =
   | { readonly pin: true }
@@ -561,8 +578,8 @@ export type JoinVerdict =
 export function joinVerdict(state: ListState, keys: { readonly signIn: string; readonly member: string }, pcs: readonly KnownPc[], tried: number): JoinVerdict {
   const no = (why: JoinRefusal, waits = false, wait: number | null = null, about: readonly string[] = []): JoinVerdict => ({ pin: false, why, waits, wait, pcs: [...about] });
   if (state.needs_replay !== undefined) return no("stopped");
-  if (state.carrying) return no("run_open", true);
   if (listView(state).devices.some((row) => row.carried && !isListKey(row.key))) return no("carried_off_curve");
+  if (birthOpen(state)) return no("run_open", true);
   const place = devicePlace(state, keys);
   const first = firstSigner(state);
   if (place.at !== "carried" || first === null) return no("not_carried");
@@ -573,8 +590,8 @@ export function joinVerdict(state: ListState, keys: { readonly signIn: string; r
   const other = answered.filter(({ says }) => says.pinned !== null && says.pinned !== state.list);
   if (other.length > 0) return no("other_list", false, null, other.map((pc) => pc.endpoint));
   const asked = answered.filter(({ says }) => says.pinned === null);
-  const heir = heirOf(state, first);
-  const removed = asked.filter(({ says }) => says.removed.includes(first) || (heir !== null && says.removed.includes(heir)));
+  const starter = deviceKeys(state, first);
+  const removed = asked.filter(({ says }) => starter.some((key) => says.removed.includes(key)));
   if (removed.length > 0) return no("first_signer_removed", false, null, removed.map((pc) => pc.endpoint));
   const waits = asked.map((pc) => ({ endpoint: pc.endpoint, wait: waitFor(pc.says.admits, first) }));
   const unknown = waits.filter((one) => one.wait === null);
@@ -765,11 +782,14 @@ function deviceKeys(state: ListState, key: string): string[] {
 
 /**
  * Whether a PC keeps a device out by a removal of its own: it holds one against a key the device has been in the
- * list by, whichever of them the device is in by now. A PC that follows a list asks this of every key the list
- * would let in, so a removal it holds is not undone by a hand-over.
+ * list by, whichever of them the device is in by now, or against a sign-in key that vouches for one of them. A
+ * PC that follows a list asks this of every key the list would let in, so a removal it holds is undone neither by
+ * a hand-over nor by the pin: it means after the pin what it meant before it (pinVerdict's `removed`).
  */
-export function heldOut(state: ListState, removed: readonly string[], key: string): boolean {
-  return deviceKeys(state, key).some((one) => removed.includes(one));
+export function heldOut(state: ListState, held: Pick<PcWitness, "removed" | "vouched">, key: string): boolean {
+  const keys = deviceKeys(state, key);
+  const vouching = held.vouched.filter((vouch) => keys.includes(vouch.key)).map((vouch) => vouch.device);
+  return [...keys, ...vouching].some((one) => held.removed.includes(one));
 }
 
 /**
@@ -792,7 +812,11 @@ export function heldOut(state: ListState, removed: readonly string[], key: strin
  * - `first_signer_removed`, `first_signer_unknown`, `first_signer_new`: the PC holds a removal against the device
  *   that started the list; or it does not know that device (it lets in none of its keys, and no key it lets in
  *   vouches for it); or it has for less than a day (`wait`). A list made by a key this PC never let in is never
- *   followed here, whoever names it.
+ *   followed here while that key is in, whoever names it. Once that device is out of the list, the PC follows
+ *   when it can place every signer that is in: it knows the signer's own device, or somebody it knows let the
+ *   signer in, through however many hands, without the first signer among them. A device that was carried in and
+ *   that this PC does not know, a PC whose keys the first device added, and an open invite it placed cannot be
+ *   placed.
  * - `run_open`: what the PC read is the beginning of a birth, not a list.
  */
 export type PinRefusal =
@@ -816,7 +840,10 @@ export type PinVerdict =
  *
  * 1. the session is signed in with such a key of the naming device itself, and the list holds the naming key as
  *    a device of power `full` that is in. A session carries no other device's naming;
- * 2. the device that started the list (entry 0's signer) is known at this PC too.
+ * 2. the device that started the list (entry 0's signer) is known at this PC too; or it is out of the list by
+ *    now, and the PC can place every signer that is in (a device it knows, or one let in by somebody it knows
+ *    without the first signer's hand in it). The phone that started a list may be replaced; what it let in must
+ *    not outlast it unseen.
  *
  * So a list made by a key this PC never let in is never followed here, whoever names it: not on the word of a
  * device that was fooled into it, and not on the word of the account service. And a PC that was off, or took
@@ -847,12 +874,39 @@ export function pinVerdict(state: ListState, naming: Naming, witness: PcWitness)
   if (wait > 0) return no("session_new", true, wait);
   if (!deviceIn(state, naming.key) || rowOf(state.signers, naming.key)?.power !== "full") return no("not_member");
   if (!own.includes(naming.session) && !vouchers(own).includes(naming.session)) return no("session_other_device");
+  /** How long until this PC knows the device of these keys: 0 for one it knows, null for one it does not let in by any key, its own or a vouching one. */
+  const knownIn = (keys: readonly string[]): number | null => {
+    const waits = [...keys, ...vouchers(keys)].flatMap((key) => { const one = waitFor(witness.rows, key); return one === null ? [] : [one]; });
+    return waits.length === 0 ? null : Math.min(...waits);
+  };
   const starter = deviceKeys(state, first);
-  const starters = [...starter, ...vouchers(starter)];
-  if (starters.some(removed)) return no("first_signer_removed");
-  const waits = starters.flatMap((key) => { const one = waitFor(witness.rows, key); return one === null ? [] : [one]; });
-  if (waits.length === 0) return no("first_signer_unknown");
-  if (Math.min(...waits) > 0) return no("first_signer_new", true, Math.min(...waits));
-  if (state.carrying) return no("run_open", true);
+  if (starter.some(removed) || vouchers(starter).some(removed)) return no("first_signer_removed");
+  /**
+   * Whether this PC can place a signer: it knows the signer's own device, or somebody it knows let the signer in,
+   * through however many hands, without the first signer among them.
+   */
+  const placed = (key: string): boolean => {
+    let at = key;
+    for (let steps = 0; steps <= state.footing.seq; steps += 1) {
+      const keys = deviceKeys(state, at);
+      if (keys.some((one) => starter.includes(one))) return false;
+      // A device this PC put out itself stays out here, which is no reason not to follow; it stands behind nobody it let in.
+      if (keys.some(removed) || vouchers(keys).some(removed)) return at === key;
+      if (rowOf(state.signers, at)?.as === "device" && knownIn(keys) === 0) return true;
+      // Who let this device, PC or invite in: the signer of the entry that added the first of its keys.
+      const by = keys.map((one) => rowOf(state.signers, one)?.by ?? null).find((one) => one !== null && !keys.includes(one)) ?? null;
+      if (by === null) return false;
+      at = by;
+    }
+    return false;
+  };
+  const known = knownIn(starter);
+  if (known !== 0) {
+    // The device that started the list is out of it: the list is still this PC's when everybody who is in is somebody it can place.
+    const stays = Object.entries(state.signers).filter(([key, row]) => row.ended === null && (row.as !== "invite" || inviteRefusal(state, key) === null)).map(([key]) => key);
+    const gone = !starter.some((key) => rowOf(state.signers, key)?.ended === null);
+    if (!(gone && stays.every(placed))) return known === null ? no("first_signer_unknown") : no("first_signer_new", true, known);
+  }
+  if (birthOpen(state)) return no("run_open", true);
   return { pin: true, admitted: [...new Set([first, ...carried])].sort() };
 }

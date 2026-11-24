@@ -881,7 +881,8 @@ PC with the key it has, and each device ends up in the list under a key that out
 placed together or not at all (`signMigration` signs them once, and the device sends those very
 entries until the service has taken them). Until then the account has no list in any sense, and
 the first device follows nothing. An honest log therefore never holds a part of a birth: a member
-that is shown one (`carrying` still true) waits, says so, and signs nothing on it.
+that is shown one (the run is not over, or the `epoch` entry that ends the birth is missing)
+waits, says so, and signs nothing on it.
 
 **Three rules keep the service's word out:**
 
@@ -1012,10 +1013,19 @@ guest's. The PC follows only when both hold:
 
 1. the session is signed in with such a key of the naming device itself, and the list holds the
    naming key as a device of power `full` that is in (a session carries no other device's naming);
-2. the device that started the list, entry 0's signer, is known at this PC too.
+2. the device that started the list, entry 0's signer, is known at this PC too; or it is out of
+   the list by now, and the PC can place every signer that is in: it knows the signer's own
+   device, or somebody it knows let the signer in, through however many hands, without the first
+   signer among them. The phone that started a list may be replaced; what it let in must not
+   outlast it unseen. A device that was carried in and that this PC does not know, a PC whose keys
+   the first device added, and an open invite it placed cannot be placed. A device this PC put out
+   itself is no obstacle (it stays out here), and stands behind nobody it let in.
 
-So a list made by a key this PC never let in is never followed here, whoever names it: not on the
-word of a device that was fooled into it, not on the word of a guest, and not on the service's.
+So a list made by a key this PC never let in is never followed here while that key is in, whoever
+names it: not on the word of a device that was fooled into it, not on the word of a guest, and not
+on the service's. Once such a key has removed itself and left only devices this PC knows, the PC
+follows: nobody is in who was not the person's, and what it cost is names, since the key that
+started the list held the first epoch's key.
 And a PC that was off, or took this release long after its account moved, follows the next time a
 device it knows opens it, with nobody at it and no record of what it once let in.
 
@@ -1039,7 +1049,8 @@ on as before the list and is asked again at the next naming. On a yes it pins wi
 The PC asks nothing of the other keys the list was born with; that was asked by the first device
 of the PCs it knows. A removal the PC holds against a device that is neither the naming one nor
 the one that started the list is no reason not to follow: that device stays out at this PC after
-the pin, by whichever key it is in (`heldOut`), so a hand-over undoes no removal.
+the pin, by whichever key it is in and whichever sign-in key vouches for it (`heldOut`), so
+neither a hand-over nor the pin undoes a removal.
 
 ### What is left
 
@@ -1056,7 +1067,9 @@ the pin, by whichever key it is in (`heldOut`), so a hand-over undoes no removal
   who was not in before, a device that asks a PC of the other list refuses and says which PC, and
   it is undone at that PC.
 - A PC that was off from before the move until after the device that started the list left the
-  account does not know who started it, and does not follow by itself: it is added again at the PC.
+  account follows all the same when it knows everybody who is in, or who let them in. It does not
+  while a device that was carried in, and that it does not let in, is still in the list: that
+  device hands over and vouches, or is removed, and the PC follows.
 - A carried device whose PCs no longer hold the first signer's key (that sign-in has changed, and
   no PC it knows follows the list yet) does not follow by itself: it asks to be let in.
 - Nobody signs a removal because the account service lists a key as gone or blocked. A carried key
