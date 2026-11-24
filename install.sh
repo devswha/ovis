@@ -635,6 +635,8 @@ closing_lines() {
 
 # kills a process and everything it started (ps -A -o pid= -o ppid= reads the same on Linux and macOS)
 kill_tree() {
+  # stopped before its children are listed, so it starts none between that list and its own kill
+  kill -STOP "$1" 2>/dev/null || true
   for kill_child in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v parent="$1" '$2 == parent { print $1 }'); do
     kill_tree "$kill_child"
   done
