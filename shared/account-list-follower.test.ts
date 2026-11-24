@@ -443,7 +443,7 @@ describe("taking pages", () => {
     }
   });
 
-  test("a read ends, whatever its pages say: a source that sends it back and forth for ever gets a set number of requests", async () => {
+  test("a read ends, whatever its pages say: a source that sends it back and forth is seen through, and a read makes a set number of requests at most", async () => {
     const log = await grow(BASE, [[owner, deviceOf(tablet)], [owner, epochOf(0)]]);
     const copy = await followed(upTo(log, 5), PC(desk, 1), { how: "added" });
     // Asked after an entry before its head, the source shows the next entry and says more follows; asked after its head, it says its head is another entry.
@@ -461,13 +461,14 @@ describe("taking pages", () => {
       [held, read] = [taken.copy, taken.read];
       verdicts.push(taken.verdict);
     }
-    // It ends with a verdict of its own, which is no full read: the member goes on at its next read, and may ask a peer.
-    expect([asked, read, [...new Set(verdicts)].sort(), at(verdicts, verdicts.length - 1), held.entries, held.alarm, held.read_at]).toEqual([READ_PAGES_MAX, null, ["more", "spent", "stuck"], "spent", log.texts.slice(0, 7), null, copy.read_at]);
-    // An honest read that needs more requests than one read makes goes on at the next read, from where it came to.
+    // It is seen through after a few requests: what the source said of where the two part came to contradict itself, and a page that narrows nothing ends the search.
+    expect([asked <= 6, read, at(verdicts, verdicts.length - 1), held.entries, held.alarm, held.read_at]).toEqual([true, null, "stuck", log.texts.slice(0, 7), null, copy.read_at]);
+    // A read that needs more requests than one read makes ends with a verdict of its own, which is no full read, and goes on at the next read from where it came to.
     let long = BASE;
     for (let index = 0; index < READ_PAGES_MAX + 6; index++) long = await add(long, owner, deviceOf(await spareKey(index)));
     const first = await reads(await followed(BASE, PC(desk, 1), { how: "added" }), serves(long, 1));
     expect([first.pages, lastOf(first), first.last.read, first.copy.entries.length, first.copy.read_at]).toEqual([READ_PAGES_MAX, "spent", null, BASE.texts.length + READ_PAGES_MAX, NOW]);
+    expect(first.verdicts.slice(0, -1).every((verdict) => verdict === "more")).toBe(true);
     const second = await reads(first.copy, serves(long, 1), "service", NOW + 30);
     expect([second.pages, lastOf(second), second.copy.entries, second.copy.read_at]).toEqual([6, "caught_up", long.texts, NOW + 30]);
     expect(takePage(copy, { ...startRead(copy, "service"), left: -1 }, pageOf(log, 5), NOW)).rejects.toThrow(RangeError);
@@ -575,12 +576,6 @@ describe("taking pages", () => {
     // Each as the list holds it now: the phone with the place of its removal, the owner still in the list and refused all the same.
     expect(went.last.changes.devices.removed.map((row) => row.ended)).toEqual([null, 6]);
     expect(went.last.changes.pcs.removed.map((row) => row.endpoint)).toEqual([E(1), E(2)]);
-    // It stopped right after more entries that no signer signed than a copy keeps: it keeps them all, since the entry it stopped at follows them, and its save reads.
-    let padded = behind;
-    for (let index = 0; index < LOOSE_ENTRIES_MAX + 4; index++) padded = await add(padded, mallory, epochOf(0));
-    const late = await reads(copy, serves(await addRaw(padded, eve, { kind: "later_kind", v: 2 })));
-    expect([lastOf(late), late.copy.entries.length, stateOf(late.copy).needs_replay?.seq, late.copy.stop !== null]).toEqual(["needs_newer_client", padded.texts.length, padded.texts.length, true]);
-    expect(await saved(late.copy)).toEqual(late.copy);
     // A member that stopped before the list showed what its pin asks for is stopped, not waiting: it reads no more by the clock either.
     const unmet = (await reads(pinned(stopping, PC(tower, 3), { how: "added" }), serves(stopping))).copy;
     expect([standing(unmet), followStep(unmet, NOW, { event: "tick", asked_at: null, busy: true }), followStep(unmet, NOW, { event: "doorbell" })]).toEqual(["stopped", { do: "wait", until: null }, { do: "wait", until: null }]);
@@ -599,8 +594,8 @@ describe("two members and a service that shows them two things", () => {
     expect([verdict(long, { list: OTHER.list, place: null }), verdict(long, null), verdict(long, { list: OTHER.list, place: gossipHead(long).place })]).toEqual(["not_my_list", "not_my_list", "not_my_list"]);
     // Only a verdict that asks carries a request: for what follows the member's head, or for the very entry the other stands at.
     expect(compareHeads(long, gossipHead(short)).read).toBeNull();
-    expect(compareHeads(short, gossipHead(long)).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: [] });
-    expect(compareHeads(long, { list: BASE.list, place: { seq: 3, hash: "ab".repeat(32) } }).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: [] });
+    expect(compareHeads(short, gossipHead(long)).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: [], common: 0, parted: null });
+    expect(compareHeads(long, { list: BASE.list, place: { seq: 3, hash: "ab".repeat(32) } }).read).toEqual({ source: "peer", list: BASE.list, after: 2, back: false, left: READ_PAGES_MAX - 1, carry: [], common: 0, parted: null });
     expect([compareHeads(long, { list: BASE.list, place: { seq: 0, hash: "ab".repeat(32) } }).read, compareHeads(long, { list: BASE.list, place: "x" } as unknown as ReturnType<typeof gossipHead>).read]).toEqual([null, null]);
   });
 
@@ -934,7 +929,7 @@ describe("what a page costs, and what a read costs", () => {
     expect([plain.result.verdict, plain.count]).toEqual(["caught_up", 1]);
   });
 
-  test("a read that a source keeps going ends with a verdict of its own, however it does it", async () => {
+  test("a source that sends a read under its footing and forward again does not keep it going", async () => {
     const real = await grow(BASE, [[owner, deviceOf(tablet)], [owner, epochOf(0)], [owner, epochOf(1)], [owner, epochOf(2)]]);
     const copy = await followed(real, PC(desk, 1), { how: "added" });
     const top = real.texts.length - 1;
@@ -960,7 +955,9 @@ describe("what a page costs, and what a read costs", () => {
         [held, ask] = [last.copy, last.read];
         pages++;
       }
-      expect({ name, pages, ask, verdict: last?.verdict, entries: held.entries, read_at: held.read_at, alarm: held.alarm }).toEqual({ name, pages: READ_PAGES_MAX, ask: null, verdict: "spent", entries: real.texts, read_at: copy.read_at, alarm: null });
+      // Each is seen through after a few requests: a page that narrows nothing of where the two part ends the search.
+      expect({ name, pages: pages <= 6, ask, verdict: last?.verdict, entries: held.entries, read_at: held.read_at, alarm: held.alarm })
+        .toEqual({ name, pages: true, ask: null, verdict: "stuck", entries: real.texts, read_at: copy.read_at, alarm: null });
     }
   });
 
@@ -1048,6 +1045,139 @@ describe("verdicts that say what happened", () => {
     expect([lastOf(exact), exact.copy.entries.length]).toEqual(["caught_up", BASE.texts.length + LOOSE_ENTRIES_MAX]);
     const over = await reads(copy, serves(await add(junk, mallory, epochOf(0))));
     expect([lastOf(over), over.last.code, over.copy.entries.length]).toEqual(["refused", "loose", BASE.texts.length + LOOSE_ENTRIES_MAX]);
+  });
+});
+
+describe("from the second read of the follower", () => {
+  /** A list that needs a later level (the owner's entry at 5), `loose` entries no signer signed, and one that a member that is behind cannot place. */
+  async function behindLog(loose: number): Promise<{ readonly behind: Log; readonly stopping: Log }> {
+    const behind = await addRaw(BASE, owner, { kind: "later_kind", v: 2 });
+    let padded = behind;
+    for (let index = 0; index < loose; index++) padded = await add(padded, mallory, epochOf(0));
+    return { behind, stopping: await addRaw(padded, eve, { kind: "later_kind", v: 2 }) };
+  }
+
+  test("a member that stopped keeps the very text it stopped at, whatever a later page shows in that place", async () => {
+    const { behind, stopping } = await behindLog(0);
+    const stopped = (await reads(await followed(behind, PC(desk, 1), { how: "added" }), serves(stopping))).copy;
+    const text = at(stopping.texts, 6);
+    expect(stopped.stop).toBe(text);
+    // The same body under a signature that is not its signer's: the hash is the same, since it covers the body alone.
+    const damaged = `${text.split(".")[0]}.${at(BASE.texts, 1).split(".")[1]}`;
+    const again = await takePage(stopped, { ...startRead(stopped, "service"), after: 5 }, { ...pageOf(stopping, 5), entries: [damaged] }, NOW);
+    expect([again.verdict, again.copy.stop === text, again.copy]).toEqual(["needs_newer_client", true, stopped]);
+    expect(await readSave(writeSave(again.copy))).toEqual({ read: true, copy: stopped, rebuilt: false });
+  });
+
+  test("whether a member that is behind stops does not depend on where the pages were cut", async () => {
+    // As many loose entries before the stop as a copy keeps: it reaches the stop and keeps them all. One more: it never reaches it.
+    for (const [loose, verdict, stands, kept] of [[LOOSE_ENTRIES_MAX, "needs_newer_client", "stopped", LOOSE_ENTRIES_MAX], [LOOSE_ENTRIES_MAX + 1, "refused", "in", LOOSE_ENTRIES_MAX], [LOOSE_ENTRIES_MAX + 4, "refused", "in", LOOSE_ENTRIES_MAX]] as const) {
+      const { behind, stopping } = await behindLog(loose);
+      const copy = await followed(behind, PC(desk, 1), { how: "added" });
+      const whole = await reads(copy, serves(stopping));
+      for (const limit of [1, 2, 3, 5, 16, 17, PAGE_ENTRIES_MAX]) {
+        const read = await reads(copy, serves(stopping, limit));
+        expect({ loose, limit, last: lastOf(read), standing: standing(read.copy), kept: read.copy.entries.length - behind.texts.length, copy: read.copy })
+          .toEqual({ loose, limit, last: verdict, standing: stands, kept, copy: whole.copy });
+        // Asked again, the same; and its save reads.
+        const again = await reads(read.copy, serves(stopping, limit));
+        expect({ loose, limit, last: lastOf(again), copy: again.copy }).toEqual({ loose, limit, last: verdict, copy: read.copy });
+      }
+    }
+  });
+
+  test("two members whose histories part far under their footings both get the alarm in one read, whatever the page size", async () => {
+    let common = BASE;
+    for (let index = 0; common.texts.length < 200; index++) common = await add(common, owner, epochOf(index));
+    // From place 200 on: one history by the owner and the phone, the other by the owner and the desk PC, each 150 entries more.
+    let [one, two] = [common, common];
+    for (let index = 0; index < 150; index++) {
+      one = await add(one, index === 1 ? phone : owner, epochOf(1000 + index));
+      two = await add(two, index === 1 ? desk : owner, epochOf(2000 + index));
+    }
+    const a = await followed(one, PC(desk, 1), { how: "added" });
+    const b = await followed(two, DEVICE(owner), { how: "genesis" });
+    for (const limit of [1, 3, PAGE_ENTRIES_MAX]) {
+      const mine = compareHeads(a, gossipHead(b));
+      const first = await reads(a, (ask) => servePage(b, ask, limit), "peer", NOW, mine.read ?? startRead(a, "peer"));
+      const theirs = compareHeads(b, gossipHead(a));
+      const second = await reads(b, (ask) => servePage(a, ask, limit), "peer", NOW, theirs.read ?? startRead(b, "peer"));
+      // No more requests than twice the doublings of the history, and a few.
+      const bound = 2 * Math.ceil(Math.log2(one.texts.length)) + 4;
+      expect({ limit, a: [lastOf(first), first.copy.alarm?.seq, first.pages <= bound], b: [lastOf(second), second.copy.alarm?.seq, second.pages <= bound] })
+        .toEqual({ limit, a: ["fork", 200, true], b: ["fork", 200, true] });
+    }
+    // The same from the account service, which shows the other history to the first of them: as long as its own, and longer.
+    const bound = 2 * Math.ceil(Math.log2(one.texts.length)) + 4;
+    for (const other of [two, await grow(two, [[owner, epochOf(3000)], [owner, epochOf(3001)], [owner, epochOf(3002)]])]) {
+      const served = await reads(a, serves(other, 1));
+      expect({ length: other.texts.length, last: lastOf(served), alarm: served.copy.alarm?.seq, pages: served.pages <= bound }).toEqual({ length: other.texts.length, last: "fork", alarm: 200, pages: true });
+    }
+    // Where the two part at the very place the service's head names, the member looks there first: two requests.
+    const near = await add(upTo(one, one.texts.length - 2), desk, epochOf(4000));
+    const looked = await reads(a, serves(near, 1));
+    expect([lastOf(looked), looked.copy.alarm?.seq, looked.pages]).toEqual(["fork", one.texts.length - 1, 2]);
+  }, 120_000);
+
+  test("a save reads only with the entry its allowed pin names at that place, as a page is taken only with it", async () => {
+    const log = await add(BASE, owner, deviceOf(tablet));
+    const copy = await followed(log, DEVICE(tablet), allowedAt(log));
+    const text = writeSave(copy);
+    const sum = (body: string) => bytesToHex(sha256(utf8ToBytes(`${LIST_SAVE_PREFIX}${body}`)));
+    const save = JSON.parse(text) as Record<string, unknown>;
+    // The pin's hash made that of entry 4, its place left at 5, and the sum made again.
+    save["pin"] = { hash: at(log.hashes, 4), how: "allowed", seq: 5 };
+    delete save["sum"];
+    const ordered = (value: unknown): string => (Array.isArray(value) ? `[${value.map(ordered).join(",")}]` : typeof value === "object" && value !== null
+      ? `{${Object.entries(value).sort(([x], [y]) => (x < y ? -1 : 1)).map(([name, member]) => `${JSON.stringify(name)}:${ordered(member)}`).join(",")}}` : JSON.stringify(value));
+    const edited = ordered({ ...save, sum: sum(ordered(save)) });
+    expect(await readSave(edited)).toEqual({ read: false, why: "broken" });
+    // A member with that pin, shown the same entries, takes none at that place.
+    const live = await reads(pinned(log, DEVICE(tablet), { how: "allowed", seq: 5, hash: at(log.hashes, 4) }), serves(log));
+    expect([lastOf(live), live.copy.entries]).toEqual(["stuck", BASE.texts]);
+    expect(await readSave(text)).toEqual({ read: true, copy, rebuilt: false });
+  });
+
+  test("a hint inside the loose tail does not refresh the last full read", async () => {
+    const one = await add(BASE, mallory, epochOf(0));
+    const two = await add(one, mallory, epochOf(0));
+    const copy = await followed(two, PC(desk, 1), { how: "added" }, NOW);
+    const heard = heardHead(copy, { list: two.list, head: headOf(one) }, NOW + 31);
+    expect([heard.verdict, heard.copy.read_at]).toEqual(["older", NOW]);
+    expect(followStep(heard.copy, NOW + 31, { event: "session", since: null })).toEqual({ do: "read_and_wait", until: NOW + 36 });
+    // So is the footing itself while the copy holds entries past it; only the member's own head is the same.
+    expect([heardHead(copy, { list: two.list, head: headOf(BASE) }, NOW + 31).verdict, heardHead(copy, { list: two.list, head: headOf(two) }, NOW + 31)]).toEqual(["older", { copy: { ...copy, read_at: NOW + 31, seen_at: NOW + 31 }, verdict: "same" }]);
+  });
+
+  test("a member whose entry 0 only a later level reads stops there: it reads no more, also after a restart, and goes on once its build reads it", async () => {
+    const first = await signed(null, owner, { ...placeOf(null, owner), kind: "genesis", v: 2, own: [] });
+    const fresh = pinned(first, DEVICE(owner), { how: "genesis" });
+    const taken = await takePage(fresh, startRead(fresh, "service"), pageOf(first, null), NOW);
+    expect([taken.verdict, taken.copy.entries, taken.copy.state, taken.copy.stop, standing(taken.copy)]).toEqual(["needs_newer_client", [], null, at(first.texts, 0), "stopped"]);
+    const restarted = await saved(taken.copy);
+    for (const copy of [taken.copy, restarted]) {
+      expect([standing(copy), followStep(copy, NOW, { event: "doorbell" }), followStep(copy, NOW, { event: "tick", asked_at: null, busy: true }), shownPcs(copy), opens(copy, owner)])
+        .toEqual(["stopped", { do: "wait", until: null }, { do: "wait", until: null }, [], "stopped"]);
+      // Whatever it is shown, it stays as it is.
+      const again = await takePage(copy, startRead(copy, "service"), pageOf(first, null), NOW);
+      expect([again.verdict, again.copy]).toEqual(["needs_newer_client", copy]);
+    }
+    // An entry that is not the pinned list's entry 0 is no stop a save may hold, and a member that holds entries has none before them.
+    const sum = (body: string) => bytesToHex(sha256(utf8ToBytes(`${LIST_SAVE_PREFIX}${body}`)));
+    const ordered = (value: unknown): string => (Array.isArray(value) ? `[${value.map(ordered).join(",")}]` : typeof value === "object" && value !== null
+      ? `{${Object.entries(value).sort(([x], [y]) => (x < y ? -1 : 1)).map(([name, member]) => `${JSON.stringify(name)}:${ordered(member)}`).join(",")}}` : JSON.stringify(value));
+    const withStop = (text: string, stop: string): string => {
+      const save = JSON.parse(text) as Record<string, unknown>;
+      save["stop"] = stop;
+      delete save["sum"];
+      return ordered({ ...save, sum: sum(ordered(save)) });
+    };
+    expect(await readSave(withStop(writeSave(taken.copy), at(BASE.texts, 0)))).toEqual({ read: false, why: "broken" });
+    // A build that reads the entry: here a pin for a list whose entry 0 this build reads, saved as stopped at it by a build that did not.
+    const readable = pinned(BASE, DEVICE(owner), { how: "genesis" });
+    const on = await readSave(withStop(writeSave(readable), at(BASE.texts, 0)));
+    expect(on).toMatchObject({ read: true, rebuilt: true, copy: { entries: [at(BASE.texts, 0)], stop: null } });
+    expect(on.read && standing(on.copy)).toBe("in");
   });
 });
 

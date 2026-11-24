@@ -590,6 +590,8 @@ before the member acts on it:
   any entry that does not hold, and a `genesis` of a level the build cannot read is
   `needs_newer_client`. In each case nothing of it is kept.
 - Before it is in, a member lets nobody in and shows no PC, though it holds entries.
+- A member whose entry 0 only a later level reads keeps that entry's text and stops there, as at
+  any entry its build cannot place: it reads no more until an update.
 - A device that was allowed takes, at the place of the head it was handed, no other entry: a log
   with another entry there is not the list it was let into.
 - A PC that was `migrated` never widens, all or nothing. A list whose first signer it never let in
@@ -622,7 +624,8 @@ holds after a read does not depend on where the pages were cut.
   entry put out. So an old part of the log served again undoes no removal.
 - A copy holds at most 20480 entries, and at most 16 past its footing: an honest log has none
   there, since each is an entry that no signer signed. Such entries let nobody in, are told to no
-  other member, and give way to what a member signs.
+  other member, and give way to what a member signs. A member stops for a newer client only at an
+  entry it holds every entry before: one that stands past those 16 it never comes to.
 - A read ends by itself, whatever its pages say: it makes at most 128 requests, and goes back to
   its footing once. What is left is asked at the member's next read, from where this one came to.
 - A page costs one check for each entry it shows, at most 256. Only a history that a member did
@@ -634,7 +637,8 @@ holds after a read does not depend on where the pages were cut.
   pin asks for, that is everybody it held.
 - A head the service names beside something else (a PC's mailbox answer) is only a hint to read,
   and only the service's: what another member says of where it stands is never a full read.
-  One that equals the member's own head counts as a full read; one behind its copy changes nothing,
+  One that equals the member's own head, the last entry it holds, counts as a full read; one behind
+  that changes nothing,
   and neither does a service that names no list: that is no hint, never the word that the list is
   gone.
 
@@ -644,7 +648,10 @@ holds after a read does not depend on where the pages were cut.
 raises no alarm; the member just takes nothing from that answer.
 
 A **fork** is proven. When an answer shows another history under the footing, the member looks for
-the place where the two part, asking from earlier places (twice as far back each time). At that
+the place where the two part: first at the place the answer's head names, then from earlier places,
+twice as far back each time, and once it has seen an entry both hold, half way between that and
+where they are known to have parted. So it finds the place in about twice as many requests as the
+history has doublings (some 30 for the longest list), whatever the size of the pages. At that
 place it replays its own history up to there with the shown entries after it. If a key that was a
 signer there signed on the other history, two histories are each backed by a member. An entry by a
 key that was no signer at that place, the account service's own included, proves nothing, and
@@ -756,7 +763,7 @@ name, no white space).
 | `footing` | the place (`seq`, `hash`) of the last entry a member signed; `null` before entry 0 |
 | `level` | the [level](#levels) of the build that saved |
 | `state` | [the state](#the-state) those entries gave that build; `null` before entry 0 |
-| `stop` | the text of the entry it stopped at for a newer client, or `null` |
+| `stop` | the text of the entry it stopped at for a newer client (entry 0's, for a member that holds no entry), or `null` |
 | `read_at` | when it last held everything the account service showed, or `null` |
 | `seen_at` | the latest hour its own clock showed when it took a page or a hint or noted the hour, or `null` |
 | `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `by`, `at`, and the `devices` and `pcs` it held then |
@@ -781,7 +788,7 @@ A build reads its own `v` and every earlier one, each by replay. A save reads wh
 | `form` | no JSON, a member missing, extra or out of form, or not the one form |
 | `version` | a later build's save: a later `v`, or entries that only a later level can place |
 | `sum` | the text is not the one that was written |
-| `broken` | the entries do not hold: one does not verify or does not continue the one before it, they end before the saved footing or show another entry there, entry 0 is not the pinned list's, is of another account or is not signed by whom the pin asks for, or the stopped entry is not the next one |
+| `broken` | the entries do not hold: one does not verify or does not continue the one before it, they end before the saved footing or show another entry there, entry 0 is not the pinned list's, is of another account or is not signed by whom the pin asks for, the entry at the place an `allowed` pin names is another, or the stopped entry is not the next one |
 
 The sum finds a damaged file. It does not stop whoever can write the member's store, who holds the
 member's private key too. A save that does not read is still a pin: only a person's reset at the
