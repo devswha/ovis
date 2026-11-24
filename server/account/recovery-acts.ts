@@ -34,7 +34,7 @@ const UNREADABLE = { error: "This PC cannot read its safety log, so nothing is c
 export interface AccountAddSeams {
   inspect(): { server_id: string; public_key: string; relay: string; label: string; account: string | null } | { refused: string; code: string };
   /** in `account`, with this PC's relay turned on and as it stood when it answered */
-  take(account: string, serverId: string, named?: { readonly list: string; readonly adder: string }): Promise<{ account: string; relay: AccountAddRelay } | ListTakeWaiting | { refused: string; code: string }>;
+  take(account: string, serverId: string, named?: { readonly list: string; readonly adder: string }): Promise<{ account: string; relay: AccountAddRelay; list_joined?: true } | ListTakeWaiting | { refused: string; code: string }>;
 }
 
 /** A take that named a list, while the list holds no entry that adds this PC: its card for that list, which the adding PC signs into one. */

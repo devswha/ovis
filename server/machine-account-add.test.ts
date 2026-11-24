@@ -273,7 +273,7 @@ test("a take that names the account's list keeps the forward open while that PC 
   expect(waiting).toEqual({ waiting: { key: expect.any(String), enc: expect.any(String), card: expect.any(String), endpoint, label: job.account_add!.label } });
   expect(closed).toEqual([]);
   await list.addPostedPc(endpoint);
-  expect(await manager.accountTake(job.id, job.account_add!.server_id, "acct_1", named)).toEqual({ account: "acct_1", relay: { phase: "connecting", blocked: null } });
+  expect(await manager.accountTake(job.id, job.account_add!.server_id, "acct_1", named)).toEqual({ account: "acct_1", relay: { phase: "connecting", blocked: null }, listJoined: true });
   expect(closed).toEqual([socket.path]);
   expect(socket.seen.map((request) => (request as { act: string }).act)).toEqual(["account_add_inspect", "account_add_take", "account_add_take"]);
   await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1", named)).rejects.toMatchObject({ code: "disconnected" });

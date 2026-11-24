@@ -169,7 +169,8 @@ test.skipIf(process.platform === "win32")("on a list account the adding PC names
   expect(job.phase).toBe("connected");
   await listAndAdmit(a.pc.account, job.account_add!);
   const added = await sshAdd(a.pc, job);
-  expect([added.status, added.body]).toEqual([200, { account: ACCOUNT, server_id: job.account_add!.server_id, relay: { phase: "online", blocked: null } }]);
+  // it joined the account's list by this add, which the window keeps as this device's own add
+  expect([added.status, added.body]).toEqual([200, { account: ACCOUNT, server_id: job.account_add!.server_id, relay: { phase: "online", blocked: null }, list_joined: true }]);
   // the other PC is in the account by the list, pinned from its first moment
   expect(b.devices.account()).toBe(ACCOUNT);
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, pinned_list: list.id, standing: "in" });
@@ -343,4 +344,16 @@ test.skipIf(process.platform === "win32")("a run that stopped after this PC sign
   expect([finished.status, finished.body.account]).toEqual([200, ACCOUNT]);
   expect(a.pc.account.accountList(ACCOUNT)!.head).toEqual(head);
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
+});
+
+test.skipIf(process.platform === "win32")("a PC the add puts in the list: the answer says it joined the list now; added again, it does not", async () => {
+  const a = await addingPc({ list: true });
+  const b = await otherPc(a.pc.account);
+  sshTo(recorded(b).path);
+  const job = await connected(a.pc);
+  await listAndAdmit(a.pc.account, job.account_add!);
+  expect((await sshAdd(a.pc, job)).body.list_joined).toBe(true);
+  // the same PC again: the list held it before this add
+  const again = await sshAdd(a.pc, await connected(a.pc));
+  expect([again.status, again.body.list_joined]).toEqual([200, undefined]);
 });

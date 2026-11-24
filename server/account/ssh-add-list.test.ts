@@ -65,7 +65,7 @@ test("a PC that cannot sign names no list to the other PC: no take goes, nothing
 
 test("the take names this PC's list and its own key; the card that comes back is signed with the name and relay key the inspect read", async () => {
   const made = fixture({ answers: [{ waiting: CARD }, ADDED] });
-  expect(await addOverSshByList(made.deps)).toEqual(ADDED);
+  expect(await addOverSshByList(made.deps)).toEqual({ ...ADDED, listJoined: true });
   expect(made.takes).toEqual([{ list: LIST, adder: ADDER }, { list: LIST, adder: ADDER }]);
   expect(made.signed).toEqual([CARD]);
   expect(made.ended()).toBe(0);
@@ -98,6 +98,19 @@ test("the other PC says it joined, and this PC's own copy, read again, does not 
     expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "take_unanswered" } });
     expect(made.looked).toEqual([ENDPOINT]);
   }
+});
+
+test("a PC that joined the list by this add is said to have joined it; one that was in it already is not", async () => {
+  const joined = fixture({ answers: [{ waiting: CARD }, ADDED] });
+  expect(await addOverSshByList(joined.deps)).toEqual({ ...ADDED, listJoined: true });
+  const there = fixture({ answers: [ADDED] });
+  expect(await addOverSshByList(there.deps)).toEqual(ADDED);
+});
+
+test("the account service's budget of additions: said as a time to wait, apart from an entry it refused", async () => {
+  const made = fixture({ answers: [{ waiting: CARD }], added: { refused: "refused", detail: "429 entry_budget" } });
+  expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_budget" } });
+  expect(made.ended()).toBe(1);
 });
 
 test("an entry this PC could not place ends the add there: the forward is closed and no second take goes", async () => {

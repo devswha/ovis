@@ -1309,8 +1309,8 @@ export class MachineManager {
    * own: `that_pc_old`.
    */
   async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true }>;
-  async accountTake(jobId: string, serverId: string, account: string, named: AccountAddNamed): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true } | { waiting: AccountAddCard }>;
-  async accountTake(jobId: string, serverId: string, account: string, named?: AccountAddNamed): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true } | { waiting: AccountAddCard }> {
+  async accountTake(jobId: string, serverId: string, account: string, named: AccountAddNamed): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true; listJoined?: true } | { waiting: AccountAddCard }>;
+  async accountTake(jobId: string, serverId: string, account: string, named?: AccountAddNamed): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true; listJoined?: true } | { waiting: AccountAddCard }> {
     const job = this.jobs.get(jobId);
     const reached = job?.accountAdd?.reached;
     if (!job || !reached || job.public.phase !== "connected") throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.");
@@ -1349,7 +1349,8 @@ export class MachineManager {
       return { waiting: { key, enc, card, endpoint: bytesToHex(importPublicKey(target.public_key)), label: target.label } };
     }
     if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
-    return { account, relay: accountAddRelay(answer.relay) };
+    // a take that named the list: that PC joined it by this take, not one that followed it already
+    return { account, relay: accountAddRelay(answer.relay), ...(named !== undefined && answer.list_joined === true ? { listJoined: true as const } : {}) };
   }
 
   /** The relay key, 64 hex, of the PC an account add's job reached, as its inspect read it over that job's connection; null for a job that reached none. */

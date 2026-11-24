@@ -360,7 +360,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (!machines) return fail("not_found", "This PC adds no other PCs", 404);
       // that PC waits up to ADDED_RELAY_ONLINE_MS for its relay after its press: more than the default budget of an API call
       context.timeout(request, 120);
-      let taken: { account: string; relay: AccountAddRelay | null; unanswered?: true };
+      let taken: { account: string; relay: AccountAddRelay | null; unanswered?: true; listJoined?: true };
       // A PC that follows its account's signed list adds another one by that list alone: it names the list and its own
       // key over the SSH channel and signs that PC's entry itself (ssh-add-list.ts). With no list, as ever
       const list = context.services.accountList;
@@ -379,7 +379,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }
       // this PC left or changed its account while that PC took it: that PC is in the account named then, and says so
       if (devices.account() !== taken.account) return fail("account_changed", "This PC's account changed while the other PC was being added.", 409);
-      return reply({ account: taken.account, server_id: target, relay: taken.relay, ...(taken.unanswered ? { unanswered: true as const } : {}) } satisfies AccountAddTaken);
+      return reply({ account: taken.account, server_id: target, relay: taken.relay, ...(taken.unanswered ? { unanswered: true as const } : {}),
+        ...("listJoined" in taken && taken.listJoined === true ? { list_joined: true as const } : {}) } satisfies AccountAddTaken);
     }
     case "/api/account/introduce": {
       setRequestRoute(pathname);

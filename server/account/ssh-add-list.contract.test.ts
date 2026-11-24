@@ -96,11 +96,12 @@ test.skipIf(process.platform === "win32")("once the list holds its entry signed 
   await listAndAdmit(b);
   expect(await takeByList(b, list.id, list.first.key)).toMatchObject({ state: "waiting" });
   await list.addPostedPc(endpointOf(b));
-  expect(await takeByList(b, list.id, list.first.key)).toEqual({ account: ACCOUNT, relay: { phase: "online", blocked: null } });
+  // it joined the list by this very take, and says so
+  expect(await takeByList(b, list.id, list.first.key)).toEqual({ account: ACCOUNT, relay: { phase: "online", blocked: null }, list_joined: true });
   expect(b.devices.account()).toBe(ACCOUNT);
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, pinned_list: list.id, standing: "in" });
   expect(relayPhase(b)).toBe("online");
-  // asked again (an answer that was lost): it is in, by that list, and says so
+  // asked again (an answer that was lost): it is in, by that list, and it did not join it by this take
   expect(await takeByList(b, list.id, list.first.key)).toEqual({ account: ACCOUNT, relay: { phase: "online", blocked: null } });
 });
 
@@ -176,7 +177,8 @@ test.skipIf(process.platform === "win32")("a PC in the account from before its l
   expect(await takeByList(b, list.id, list.first.key)).toMatchObject({ state: "waiting" });
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: false });
   await list.addPostedPc(endpointOf(b));
-  expect(await takeByList(b, list.id, list.first.key)).toEqual({ account: ACCOUNT, relay: { phase: "online", blocked: null } });
+  // in the account before, and in its list by this take: it says it joined the list now
+  expect(await takeByList(b, list.id, list.first.key)).toEqual({ account: ACCOUNT, relay: { phase: "online", blocked: null }, list_joined: true });
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, pinned_list: list.id, standing: "in" });
 });
 

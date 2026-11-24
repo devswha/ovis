@@ -162,7 +162,7 @@ const LIST_TAKE_REFUSALS: Readonly<Record<JoinRefusal, readonly [string, string,
  * list removed, names nothing.
  */
 export async function takeByList(services: PressServices & { readonly accountList: ListFollow | null }, account: string, serverId: string,
-  named: { readonly list: string; readonly adder: string }, onlineWithinMs = ADDED_RELAY_ONLINE_MS): Promise<TakeOutcome | ListTakeWaiting> {
+  named: { readonly list: string; readonly adder: string }, onlineWithinMs = ADDED_RELAY_ONLINE_MS): Promise<(TakeOutcome & { readonly list_joined?: true }) | ListTakeWaiting> {
   const { devices, relay, accountMailbox, accountList } = services;
   const identity = () => relay.currentIdentity()?.server_id ?? null;
   if (identity() !== serverId) return refuse("identity_changed", "This PC's relay identity changed since it was read. Add it again.", 409);
@@ -173,6 +173,8 @@ export async function takeByList(services: PressServices & { readonly accountLis
   if (devices.listRemovedFrom(account)) return refuse("list_removed", LIST_REMOVED_FROM, 409);
   // in no account: named for that account, as a take names it before it presses, so its relay pass is asked under it
   if (bound === null && !relay.setRelayAccount(account)) return refuse("invalid_account", "Name the account", 400);
+  // following that very list before this take: the take found it there, and joined it to nothing
+  const before = bound !== null && accountList.status().pinned_list === named.list;
   const joined = await accountList.joinList({ account, list: named.list, by: named.adder, live: () => identity() === serverId });
   if ("refused" in joined) {
     const [code, message, status] = LIST_TAKE_REFUSALS[joined.refused];
@@ -189,7 +191,7 @@ export async function takeByList(services: PressServices & { readonly accountLis
   const relayNow = await relayForAdd(relay, account, onlineWithinMs, bound === null);
   if (devices.account() !== account) return refuse("not_listed", "The account removed this PC while it was being added", 409);
   if (identity() !== serverId) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
-  return { account, relay: relayNow };
+  return { account, relay: relayNow, ...(before ? {} : { list_joined: true as const }) };
 }
 
 /**

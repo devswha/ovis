@@ -19,8 +19,11 @@ import type { AllowOutcome, AllowRefusal, ListFollow } from "./list-follow.ts";
 
 export interface SshListRefusal { readonly code: string; readonly message: string; readonly status: number }
 
-/** That PC in the account, as a take answers it: the same answer as an add with no list. */
-export type SshListTaken = { readonly account: string; readonly relay: AccountAddRelay | null; readonly unanswered?: true };
+/**
+ * That PC in the account, as a take answers it: the same answer as an add with no list, and `listJoined` where it joined
+ * the account's list by this add (its first answer was its card), not where the list held it already.
+ */
+export type SshListTaken = { readonly account: string; readonly relay: AccountAddRelay | null; readonly unanswered?: true; readonly listJoined?: true };
 
 export interface SshListDeps {
   /** That PC's relay key, 64 hex, as this PC's inspect read it over the add's SSH session: its card is held to it. */
@@ -75,6 +78,8 @@ function notAdded(outcome: Extract<AllowOutcome, { refused: AllowRefusal }>): { 
   if (CANNOT_SIGN.has(outcome.refused)) return refuse("list_cannot_add", cannotAdd(outcome.refused), 409);
   // no answer from the service: the entry may be in the list all the same, which only the log says
   if (outcome.refused === "service_away") return refuse("take_unanswered", words, 409);
+  // the account service takes no more additions to the list for now: the same add goes later
+  if (outcome.refused === "refused" && outcome.detail === "429 entry_budget") return refuse("list_budget", "Your account's list takes no more additions for now. Add that PC again later.", 409);
   return refuse("list_not_added", words, 409);
 }
 
@@ -117,7 +122,7 @@ export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken 
   for (let tried = 1; tried <= tries; tried++) {
     if (tried > 1) await wait(AFTER_PLACED_WAIT_MS);
     taken = await deps.take(named);
-    if (!("waiting" in taken)) return await seen(deps, taken);
+    if (!("waiting" in taken)) return await seen(deps, { ...taken, listJoined: true });
   }
   await deps.end();
   return refuse("list_unbound", UNBOUND, 409);
