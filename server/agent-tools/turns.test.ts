@@ -199,8 +199,13 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     if (!first || !asked) throw new Error("missing approval");
     expect(await first.client.answer(asked.keeperId, "always")).toBe("won");
     await call("wait", { session: a });
-    await call("send", { session: a, task: "widen" });
-    expect(await call("wait", { session: a })).toMatchObject({ state: { state: "done" } });
+    const previous = await call("result", { session: a });
+    const next = await call("send", { session: a, task: "widen" });
+    expect(next).toMatchObject({ accepted: true, duplicate: false });
+    expect(typeof next.turn_id).toBe("string");
+    expect(next.turn_id).not.toBe(previous.turn_id);
+    expect(await call("wait", { session: a, turn: next.turn_id })).toMatchObject({ state: { state: "done", turn: 2 } });
+    expect(await call("result", { session: a, turn: next.turn_id })).toMatchObject({ turn_id: next.turn_id, stop_reason: "end_turn", final_message: { text: "already allowed here" } });
     const b = await start("widen");
     expect(await call("wait", { session: b })).toMatchObject({ state: { state: "waiting_human" } });
     expect(acp.forPane(b)?.client.sessionMode).toBe("ask");
