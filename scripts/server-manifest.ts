@@ -34,6 +34,7 @@ export const releaseFile = (platform: ServerPlatform): string => `ovis-server-${
 export const PTY_ASSETS = ["linux-x64", "linux-arm64", "darwin-universal"] as const;
 export type PtyAsset = typeof PTY_ASSETS[number];
 export const ptyFile = (asset: PtyAsset): string => `ovis-pty-sidecar-${asset}`;
+const keeperFile = (asset: PtyAsset): string => `ovis-acp-keeper-${asset}`;
 /** The PTY host build a server platform runs, or null where there is none (Windows mirrors its panes). */
 export const ptyAssetFor = (platform: ServerPlatform): PtyAsset | null =>
   platform === "windows-x64" ? null : platform.startsWith("darwin-") ? "darwin-universal" : platform as PtyAsset;
@@ -51,8 +52,10 @@ export interface ServerManifest {
   dist: ReleaseAsset;
   /** the Rust PTY hosts, signed with the server: an installer runs no host but the one named here */
   pty: Record<PtyAsset, ReleaseAsset>;
+  /** Absent in releases before the keeper shipped. Its builds use the host's platform mapping. */
+  acpKeeper?: Record<PtyAsset, ReleaseAsset>;
 }
-const RELEASE_FILES = (): string[] => [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile)];
+const releaseFiles = (keepers: boolean): string[] => [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile), ...(keepers ? PTY_ASSETS.map(keeperFile) : [])];
 
 const root = resolve(import.meta.dir, "..");
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -88,7 +91,8 @@ export function sourceTrees(cwd = root): { server: string; shared: string } | { 
 
 /** Writes the manifest and the sums for the five binaries and the client archive in `dir`, and drops a signature an earlier manifest had. */
 export function writeManifest(dir: string, release: { version: string; sources: ServerManifest["sources"] }): ServerManifest {
-  const names = new Set(RELEASE_FILES());
+  const keepers = PTY_ASSETS.some((build) => existsSync(join(dir, keeperFile(build))));
+  const names = new Set(releaseFiles(keepers));
   const missing = [...names].filter((name) => !existsSync(join(dir, name)));
   if (missing.length > 0) throw new Error(`${dir} has no ${missing.join(", ")}`);
   const extra = readdirSync(dir).filter((name) => !names.has(name) && name !== MANIFEST && name !== SUMS && name !== SIGNATURE);
@@ -98,8 +102,10 @@ export function writeManifest(dir: string, release: { version: string; sources: 
     return { file, sha256: sha256(bytes), size: bytes.length };
   };
   const assets = Object.fromEntries(SERVER_PLATFORMS.map((platform) => [platform, asset(releaseFile(platform))])) as ServerManifest["assets"];
-  const pty = Object.fromEntries(PTY_ASSETS.map((build) => [build, asset(ptyFile(build))])) as ServerManifest["pty"];
-  const manifest: ServerManifest = { schema: MANIFEST_SCHEMA, version: release.version, sources: release.sources, assets, dist: asset(DIST_ARCHIVE), pty };
+  const native = (file: (build: PtyAsset) => string) => ({
+    "linux-x64": asset(file("linux-x64")), "linux-arm64": asset(file("linux-arm64")), "darwin-universal": asset(file("darwin-universal")),
+  });
+  const manifest: ServerManifest = { schema: MANIFEST_SCHEMA, version: release.version, sources: release.sources, assets, dist: asset(DIST_ARCHIVE), pty: native(ptyFile), ...(keepers ? { acpKeeper: native(keeperFile) } : {}) };
   rmSync(join(dir, SIGNATURE), { force: true });
   writeFileSync(join(dir, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(dir, SUMS), sumsOf(manifest));
@@ -143,7 +149,12 @@ export function signManifest(dir: string, privateKeyPem: string): string {
   return publicKeyOf(privateKeyPem);
 }
 
-const sumsOf = (manifest: ServerManifest): string => [...SERVER_PLATFORMS.map((platform) => manifest.assets[platform]), manifest.dist, ...PTY_ASSETS.map((build) => manifest.pty[build])].map(({ sha256: digest, file }) => `${digest}  ${file}\n`).join("");
+const entriesOf = (manifest: ServerManifest) => [
+  ...SERVER_PLATFORMS.map((platform) => [platform, manifest.assets[platform]] as const), ["client", manifest.dist] as const,
+  ...Object.entries(manifest.pty).map(([build, entry]) => [`PTY host ${build}`, entry] as const),
+  ...Object.entries(manifest.acpKeeper ?? {}).map(([build, entry]) => [`ACP keeper ${build}`, entry] as const),
+];
+const sumsOf = (manifest: ServerManifest): string => entriesOf(manifest).map(([, { sha256: digest, file }]) => `${digest}  ${file}\n`).join("");
 
 const sameKeys = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
@@ -167,7 +178,8 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
   if (typeof parsed === "object" && parsed !== null && "schema" in parsed && (parsed as Record<string, unknown>)["schema"] !== MANIFEST_SCHEMA) {
     return `${MANIFEST} is schema ${JSON.stringify((parsed as Record<string, unknown>)["schema"])}, and this reader knows only schema ${MANIFEST_SCHEMA}; a newer installer reads it`;
   }
-  if (!sameKeys(parsed, ["schema", "version", "sources", "assets", "dist", "pty"])) return `${MANIFEST} must hold exactly schema, version, sources, assets, dist and pty`;
+  const fields = ["schema", "version", "sources", "assets", "dist", "pty"];
+  if (!sameKeys(parsed, fields) && !sameKeys(parsed, [...fields, "acpKeeper"])) return `${MANIFEST} must hold exactly schema, version, sources, assets, dist and pty, optionally followed by acpKeeper`;
   if (typeof parsed["version"] !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(parsed["version"])) return `${MANIFEST} names no version`;
   const sources = parsed["sources"];
   if (!sameKeys(sources, ["server", "shared"]) || !Object.values(sources).every((tree) => typeof tree === "string" && /^[0-9a-f]{40}$/.test(tree))) return `${MANIFEST} must name exactly the git trees of server and shared`;
@@ -181,6 +193,13 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
   if (!sameKeys(pty, PTY_ASSETS)) return `${MANIFEST} must name exactly the Rust PTY hosts ${PTY_ASSETS.join(", ")}`;
   for (const build of PTY_ASSETS) {
     if (!isAsset(pty[build], ptyFile(build))) return `${build}: ${MANIFEST} must name ${ptyFile(build)}, its SHA-256 and its size, and nothing else`;
+  }
+  if ("acpKeeper" in parsed) {
+    const keepers = parsed["acpKeeper"];
+    if (!sameKeys(keepers, PTY_ASSETS)) return `${MANIFEST} must name exactly the ACP keepers ${PTY_ASSETS.join(", ")}`;
+    for (const build of PTY_ASSETS) {
+      if (!isAsset(keepers[build], keeperFile(build))) return `${build}: ${MANIFEST} must name ${keeperFile(build)}, its SHA-256 and its size, and nothing else`;
+    }
   }
   if (bytes.toString("utf8") !== `${JSON.stringify(parsed, null, 2)}\n`) return `${MANIFEST} is not in its canonical form (a duplicate key, other spacing or another encoding)`;
   return parsed as unknown as ServerManifest;
@@ -235,16 +254,16 @@ export function checkManifest(bytes: Buffer, signatureText: string, publicKey: s
 export function verifyRelease(dir: string, publicKey: string, expected: { version?: string } = {}): { ok: boolean; problems: string[] } {
   try {
     publicKeyObject(publicKey);
-    const allowed = new Set([...RELEASE_FILES(), MANIFEST, SIGNATURE, SUMS]);
     const present = readdirSync(dir);
-    const extra = present.filter((name) => !allowed.has(name));
-    if (extra.length > 0) return { ok: false, problems: [`${dir} holds files a release does not: ${extra.join(", ")}`] };
     const missing = [MANIFEST, SIGNATURE, SUMS].filter((name) => !present.includes(name));
     if (missing.length > 0) return { ok: false, problems: [`${dir} has no ${missing.join(", ")}`] };
     const manifest = checkManifest(readFileSync(join(dir, MANIFEST)), readFileSync(join(dir, SIGNATURE), "utf8"), publicKey, expected);
     if (typeof manifest === "string") return { ok: false, problems: [manifest] };
+    const allowed = new Set([...releaseFiles(manifest.acpKeeper !== undefined), MANIFEST, SIGNATURE, SUMS]);
+    const extra = present.filter((name) => !allowed.has(name));
+    if (extra.length > 0) return { ok: false, problems: [`${dir} holds files a release does not: ${extra.join(", ")}`] };
     const problems: string[] = [];
-    for (const [name, { file, sha256: digest, size }] of [...SERVER_PLATFORMS.map((platform) => [platform, manifest.assets[platform]] as const), ["client", manifest.dist] as const, ...PTY_ASSETS.map((build) => [`PTY host ${build}`, manifest.pty[build]] as const)]) {
+    for (const [name, { file, sha256: digest, size }] of entriesOf(manifest)) {
       if (!present.includes(file)) problems.push(`${name}: ${file} is missing`);
       else {
         const bytes = readFileSync(join(dir, file));

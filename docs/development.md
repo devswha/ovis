@@ -128,8 +128,10 @@ It also builds the server as one compiled binary per platform (`server-binary`, 
 rest of the release, `bun scripts/build-server.ts release`): `ovis-server-linux-x64`, `-linux-arm64`,
 `-darwin-arm64`, `-darwin-x64` and `-windows-x64.exe`, and the built client the installers unpack beside the binary,
 `ovis-dist.tar.gz` (from `bun run build`), with `ovis-server.json` (the version, the git trees of `server/` and
-`shared/`, each file's SHA-256 and size, and those of the three Rust PTY host binaries, which `server-binary` waits
-for and copies in: the binary installers run no host but the one named there), `ovis-server.SHA256SUMS` and `ovis-server.json.sig`, an Ed25519
+`shared/`, each file's SHA-256 and size, and those of the Rust PTY hosts and ACP keepers). The `pty` and
+`acpKeeper` sections each name `linux-x64`, `linux-arm64` and `darwin-universal`. Older schema 1 manifests
+have no `acpKeeper`; the installers still accept them and install no keeper. A missing or damaged keeper
+download disables ACP children, not the server or PTY host. The release also carries `ovis-server.SHA256SUMS` and `ovis-server.json.sig`, an Ed25519
 signature over the manifest's exact bytes. `server-binary-sign` signs on GitHub's runner: beside the key run only Bun,
 installed by the SHA-pinned `oven-sh/setup-bun`, and `scripts/server-manifest.ts`, which uses Node's built-ins; none
 of the repository's dependencies is installed there. `sign` refuses a key whose public half is not `RELEASE_PUBLIC_KEY`,
