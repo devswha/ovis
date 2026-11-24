@@ -2003,7 +2003,14 @@ move is never named to any PC.
   answers; on a yes it pins as `carried`, saves the copy and hands its place to its account key
   (`signRotation`, with the D11.2 link, one kept request per head). On a no that does not wait it
   says why, names the PCs, and asks to be let in as any new device does; it asks again at every
-  round, so the refusal clears when its cause does.
+  round, so the refusal clears when its cause does. Until its hand-over is placed it signs in to a
+  PC of the list with its sign-in key, the key the list holds it by (R-E), never the way from before.
+- **After a carried device joins** it keeps the PCs that agreed then, and for three days asks the
+  ones that were silent. Where a PC it knows says that it follows another list of the account, holds
+  a removal against the device that started the list, or (one that did not agree at the join) lets
+  that device in by none of its keys, it says so, names the list to no PC any more, and offers the
+  reset of its copy of the list (V4-6). After the reset it follows nothing, says why while a PC says
+  it, and asks to be let in as a new device does: a member's Allow hands it its own place.
 - **A saved copy** is the device's own when it was pinned under its account key, or under a
   sign-in key of its own that the list shows handed over to it, or under its sign-in key of now
   while the list still holds that key.
@@ -2017,6 +2024,11 @@ move is never named to any PC.
   brought in that is still in, each PC with Not me, which removes it from the list after a
   question; a device's Not me is the devices list's Remove. A carried device that refused the list
   says why. Nothing else.
+- **Limits.** A key this device blocked with Not me is left out by the device only while it keeps
+  that block unconfirmed; once the account service confirmed it, the device knows of it only by the
+  service's list of removed keys and by the PCs that applied it, whose answers leave the key out
+  wherever one of them holds the removal. A key the service lists as eligible again, and that no PC
+  this device asks has applied the block for, can so be carried.
 - **The QA twin** (`sh.ovis.app.previewqa`, which says so through `HerdrShell.appId`) multiplies
   the durations the device hands over (`known`, `tried`) by `localStorage["ovis-migrate-qa-scale"]`
   (1 to 86400). No other build reads it, and the pure constants never change; a PC scales its own

@@ -368,3 +368,57 @@ describe("a carried device before its hand-over is placed", () => {
     void world;
   });
 });
+
+describe("a device that followed a list its PCs turn out not to know (V4-6)", () => {
+  /** The laptop joins three days after its first try, going by the one PC that answered; the other was silent then. */
+  async function joinedOnOnePc() {
+    const moving = movingWorld();
+    const setting = await inUse(moving, { silent: true });
+    setting.phone.record(setting.phone.kept()!.pcs, moving.seconds() - MIGRATION_ANSWER_SECONDS);
+    await setting.phone.device.list.sync();
+    setting.laptop.record(setting.laptop.kept()!.pcs, moving.seconds() - MIGRATION_ANSWER_SECONDS);
+    const joined = await setting.laptop.device.list.sync();
+    expect(joined.status).toMatchObject({ at: "following", standing: "in" });
+    return { ...setting, joined };
+  }
+
+  test("it goes on asking the PC that was silent when it joined", async () => {
+    const { joined, silent } = await joinedOnOnePc();
+    expect(joined.status).toMatchObject({ at: "following", asks: [silent!.endpoint] });
+    expect(joined.status).not.toHaveProperty("doubt");
+  });
+
+  test("that PC lets in the key that started the list: nothing is wrong, and it is asked no more", async () => {
+    const { laptop, phone, silent, world, answer } = await joinedOnOnePc();
+    laptop.answers.set(world.account, silent!.endpoint, answer([{ key: phone.signIn }]));
+    const view = await laptop.device.list.sync();
+    expect(view.status).toMatchObject({ at: "following", standing: "in", trouble: null });
+    expect(view.status).not.toHaveProperty("doubt");
+    expect(view.status).not.toHaveProperty("asks");
+  });
+
+  test("that PC never let the key that started the list in: the device says so, names the list to no PC, and its reset leads to an Allow", async () => {
+    const { laptop, silent, pc, world, answer } = await joinedOnOnePc();
+    laptop.answers.set(world.account, silent!.endpoint, answer([]));
+    const view = await laptop.device.list.sync();
+    expect(view.status).toMatchObject({ at: "following", standing: "in", doubt: { why: "first_signer_unknown", pcs: [silent!.endpoint] } });
+    expect(await laptop.device.list.naming!({ session: laptop.signIn, endpoint: pc.endpoint, signIn: laptop.signIn })).toBeNull();
+    // the person resets this device's copy: it follows that list no more, says why, and asks to be let in as a new device does
+    await laptop.device.list.forget(world.account);
+    const reset = await laptop.device.list.sync();
+    expect(reset.status).toMatchObject({ at: "not_in", why: "not_mine", refused: { why: "first_signer_unknown", pcs: [silent!.endpoint] } });
+  });
+
+  test("a PC it knows follows another list of the account: the device says which", async () => {
+    const { laptop, pc, world } = await joinedOnOnePc();
+    laptop.answers.set(world.account, pc.endpoint, { account: world.account, pinned: "ab".repeat(32), admits: [], removed: [] });
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", doubt: { why: "other_list", pcs: [pc.endpoint] } });
+  });
+
+  test("a device that started the list, or was let in by an Allow, is asked nothing of this", async () => {
+    const { phone } = await joinedOnOnePc();
+    const view = await phone.device.list.sync();
+    expect(view.status).not.toHaveProperty("asks");
+    expect(view.status).not.toHaveProperty("doubt");
+  });
+});

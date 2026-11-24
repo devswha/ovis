@@ -5,7 +5,8 @@
  * keeps no list for the account, the entries 0 it signed and gave up, the place in a list that a member who let
  * this device in handed it, when it last read its copy in full, when it first held the entry of each PC that is new
  * to it, and for an account that was in use (listMigrate.ts) the birth it signed and has not seen placed, the last final
- * refusal of one, a carried device's hand-over, and the one-time notice of the move. In an IndexedDB database of its own,
+ * refusal of one, a carried device's hand-over and its check of the list against its PCs, and the one-time notice of
+ * the move. In an IndexedDB database of its own,
  * `ovis-account-list`: `ovis-account` (store.ts) stays at its one version, which a page of an older build still
  * opens, and a copy can grow to megabytes beside records that are read on every request.
  *
@@ -15,7 +16,7 @@
  * Every record is read back as `unknown`: whoever owns it reads it strictly and reports what is not in its form.
  */
 
-export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked", "dropped", "offer", "times", "seen", "sent", "birth", "move", "handover", "notice"] as const;
+export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked", "dropped", "offer", "times", "seen", "sent", "birth", "move", "handover", "notice", "joined"] as const;
 export type ListRecord = (typeof LIST_RECORDS)[number];
 
 /** Each call is one transaction. */

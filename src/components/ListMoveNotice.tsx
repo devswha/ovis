@@ -154,38 +154,56 @@ function knownName(account: string, endpoint: string): string | null {
 
 /**
  * On a device the list carried in, which did not join it (F5): why, naming the PCs that said so, and what to do. It
- * asks to be let in as a new device does meanwhile. A device that only waits on its PCs is told nothing.
+ * asks to be let in as a new device does meanwhile. And on one that followed it and whose PCs turn out not to know it
+ * (V4-6): why, and the reset of this device's copy, after which it asks to be let in the same way. A device that only
+ * waits on its PCs is told nothing.
  */
 export function ListJoinRefusal({ list = pageAccountList(), pcName, scrim = false }: { readonly list?: AccountList | null; readonly pcName?: (endpoint: string) => string | null; readonly scrim?: boolean }) {
   const t = useT();
   const view = useView(list);
   const [closed, setClosed] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
   const status = view?.status;
-  const refused = status?.at === "not_in" ? status.refused : undefined;
-  const shownFor = status?.at === "not_in" && refused !== undefined ? `${status.list}:${refused.why}:${refused.pcs.join(",")}` : null;
+  // what is said: a refusal of the list that carried this device in, or a doubt of the list it follows
+  const said = status?.at === "not_in" ? status.refused : status?.at === "following" ? status.doubt : undefined;
+  const followed = status?.at === "following";
+  const shownFor = status !== undefined && said !== undefined && (status.at === "not_in" || status.at === "following") ? `${status.at}:${status.list}:${said.why}:${said.pcs.join(",")}` : null;
   // Back is Close
-  usePhoneSheetBack(() => { setClosed(shownFor); }, shownFor !== null && closed !== shownFor && view?.account != null);
-  if (view === null || view.account === null || status === undefined || status.at !== "not_in" || status.refused === undefined || shownFor === null) return null;
+  usePhoneSheetBack(() => { if (resetting) return false; setClosed(shownFor); }, shownFor !== null && closed !== shownFor && view?.account != null);
+  if (list === null || view === null || view.account === null || said === undefined || shownFor === null || closed === shownFor) return null;
   const account = view.account;
-  if (closed === shownFor) return null;
-  const names = status.refused.pcs.map((endpoint) => (pcName ?? ((one: string) => knownName(account, one)))(endpoint)).filter((name): name is string => name !== null);
+  const names = said.pcs.map((endpoint) => (pcName ?? ((one: string) => knownName(account, one)))(endpoint)).filter((name): name is string => name !== null);
   const pcs = names.length === 0 ? t("One of your PCs") : names.join(", ");
-  const line = (() => {
-    switch (status.refused.why) {
+  const line = followed ? (() => {
+    switch (said.why) {
+      case "other_list": return t("{pc} follows another list of your account.", { pc: pcs });
+      case "first_signer_removed": return t("A PC of yours removed the device that made the list this device follows.");
+      default: return t("Your PCs do not know the device that made the list this device follows.");
+    }
+  })() : (() => {
+    switch (said.why) {
       case "other_list": return t("{pc} follows another list of your account, so this device did not join yours. Remove {pc} from your account, or reset it there; this device then joins by itself.", { pc: pcs });
       case "first_signer_removed": return t("A PC of yours removed the device that made your account's list, so this device did not join it.");
       case "first_signer_unknown": return t("Your PCs do not know the device that made your account's list, so this device did not join it.");
       default: return t("This device did not join your account's list.");
     }
   })();
-  const title = t("This device is not in your account's list");
+  const title = followed ? t("Your PCs do not know the list this device follows") : t("This device is not in your account's list");
+  // the reset forgets what this device keeps of the account's list, and nothing else: its keys and its sign-in stay
+  const reset = async (): Promise<void> => {
+    setResetting(true);
+    try { await list.forget(account); }
+    catch (error) { console.warn("Ovis: this device's copy of the account's list was not reset", error instanceof Error ? error.name : error); }
+    finally { setResetting(false); }
+  };
   const card = (
-    <div className="modal account-approval" role="alertdialog" aria-modal="true" aria-label={title} data-testid="list-join-refusal" data-why={status.refused.why}>
+    <div className="modal account-approval" role="alertdialog" aria-modal="true" aria-label={title} data-testid="list-join-refusal" data-why={said.why}>
       <h2 className="account-approval-title">{title}</h2>
       <p className="account-approval-error" role="alert">{line}</p>
-      <p className="account-approval-note">{t("Allow this device from a device that is in the list.")}</p>
+      <p className="account-approval-note">{followed ? t("Reset this device's copy of the list, then allow this device from a device that is in the list.") : t("Allow this device from a device that is in the list.")}</p>
       <div className="account-approval-actions">
-        <button type="button" className="btn" onClick={() => setClosed(shownFor)}>{t("Close")}</button>
+        <button type="button" className="btn" disabled={resetting} onClick={() => setClosed(shownFor)}>{t("Close")}</button>
+        {followed && <button type="button" className="btn btn-danger" disabled={resetting} onClick={() => reset()}>{t("Reset this device's list")}</button>}
       </div>
     </div>
   );

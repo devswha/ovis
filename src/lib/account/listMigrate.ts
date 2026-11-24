@@ -14,9 +14,9 @@
  *   or refused it for good: a refusal that is final lets the device plan again, never sooner than an hour later, and
  *   without the key or the PC a `403 not_carried` named (MoveRefusal).
  */
-import { linkBytes, ownEvidence, type KnownPc, type LetIn, type MigrationSeals, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
+import { heirOf, linkBytes, ownEvidence, type KnownPc, type LetIn, type MigrationSeals, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
 import { isListHash, isListKeyEncoding } from "../../../shared/account-list-entry.ts";
-import { namesFields, type ListNames } from "../../../shared/account-list.ts";
+import { namesFields, type ListNames, type ListState } from "../../../shared/account-list.ts";
 import { epochKeyCommitment, LIST_WRAP_TEXT_LENGTH, newEpochKey, nextEpoch, sealFields, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import type { AccountList, AccountListView } from "./accountList.ts";
@@ -345,9 +345,13 @@ export async function askWitness(fetch: PcFetch): Promise<PcAnswer | null> {
   }
 }
 
-/** Whether where the device stands waits on what its PCs answer: the start of a move, a carried device's join, or a refusal of one, which clears when its cause does. */
+/**
+ * Whether where the device stands waits on what its PCs answer: the start of a move, a carried device's join, a refusal
+ * of one, which clears when its cause does, or the check of a list a carried device follows against PCs silent at its join.
+ */
 export function waitsOnPcs(status: AccountListView["status"]): boolean {
-  return (status.at === "none" && status.why === "moving") || (status.at === "not_in" && (status.why === "carried" || status.refused !== undefined));
+  return (status.at === "none" && status.why === "moving") || (status.at === "not_in" && (status.why === "carried" || status.refused !== undefined))
+    || (status.at === "following" && (status.asks?.length ?? 0) > 0);
 }
 
 /**
@@ -370,7 +374,8 @@ export async function onPcSession(given: {
     // no answer here (a pairing's session, which a PC answers for its account's rows alone) takes no answer heard before
     if (said !== null || given.answers.get(account, endpoint) === undefined) given.answers.set(account, endpoint, said);
     if (said !== null) await list.sync().catch(() => undefined);
-    return;
+    // a device that follows its list goes on to name it below: only its check asked
+    if (view.status.at !== "following") return;
   }
   if (given.pinned) {
     if (view.status.at === "following" && view.status.standing === "in") await given.carriedKeys?.();
@@ -398,4 +403,67 @@ export async function ownRemovals(store: Pick<AccountStore, "get">, account: str
   const blocks = Object.values((await store.get("unsent_blocks")) ?? {}).filter((kept) => kept.account === account).flatMap((kept) => kept.records.map((record) => record.target));
   const removals = Object.values((await store.get("removals")) ?? {}).filter((record) => record.account === account).map((record) => record.key);
   return [...new Set([...blocks, ...removals])];
+}
+
+/** The keys the device that started a list has been in it by: entry 0's signer, and each key it handed its place on to. */
+function starterKeys(state: ListState): string[] {
+  const first = Object.entries(state.signers).find(([, row]) => row.seq === 0)?.[0];
+  if (first === undefined) return [];
+  const keys = [first];
+  for (let heir = heirOf(state, first); heir !== null && !keys.includes(heir); heir = heirOf(state, heir)) keys.push(heir);
+  return keys;
+}
+
+/** What a PC that answered says against a list a device follows (V4-6): the first that applies, with the PCs that say it. */
+export interface ListDoubt {
+  readonly why: "other_list" | "first_signer_removed" | "first_signer_unknown";
+  readonly pcs: readonly string[];
+}
+
+/**
+ * Whether a PC's answer agrees with the list a device follows: it follows that very list, or it follows none, lets the
+ * device that started the list in by one of its keys and holds no removal against any of them.
+ */
+export function pcAgrees(state: ListState, says: PcAnswer): boolean {
+  const starter = starterKeys(state);
+  if (says.pinned !== null) return says.pinned === state.list;
+  return !starter.some((key) => says.removed.includes(key)) && says.admits.some((row) => starter.includes(row.key));
+}
+
+/**
+ * What the PCs a device knows by its own record said in this run against the list it followed after its own join, the
+ * worst first (V4-6): one follows another list of the account (`other_list`); one that follows none holds a removal
+ * against the device that started the list (`first_signer_removed`); or one that follows none, and was not among those
+ * that agreed when the device joined (`agreed`), lets that device in by none of its keys (`first_signer_unknown`). Null
+ * where none says anything of the kind. Only PCs that answered for the list's account count.
+ */
+export function listDoubt(state: ListState, pcs: readonly KnownPc[], agreed: readonly string[]): ListDoubt | null {
+  const starter = starterKeys(state);
+  const answered = pcs.flatMap((pc) => (pc.says !== null && pc.says.account === state.account && ownEvidence(pc) ? [{ endpoint: pc.endpoint, says: pc.says }] : []));
+  const other = answered.filter(({ says }) => says.pinned !== null && says.pinned !== state.list);
+  if (other.length > 0) return { why: "other_list", pcs: other.map(({ endpoint }) => endpoint) };
+  const free = answered.filter(({ says }) => says.pinned === null);
+  const removed = free.filter(({ says }) => starter.some((key) => says.removed.includes(key)));
+  if (removed.length > 0) return { why: "first_signer_removed", pcs: removed.map(({ endpoint }) => endpoint) };
+  const unknown = free.filter(({ endpoint, says }) => !agreed.includes(endpoint) && !says.admits.some((row) => starter.includes(row.key)));
+  return unknown.length > 0 ? { why: "first_signer_unknown", pcs: unknown.map(({ endpoint }) => endpoint) } : null;
+}
+
+/**
+ * A carried device's join of its list, kept while it checks the list against the PCs it knows (V4-6): the list, when it
+ * joined (seconds, this device's clock), and the relay keys of the PCs that agreed then or since.
+ */
+export interface JoinedRecord {
+  readonly list: string;
+  readonly at: number;
+  readonly agreed: readonly string[];
+}
+
+export function joinedRecord(joined: JoinedRecord): unknown {
+  return { v: RECORD_VERSION, ...joined };
+}
+
+export function readJoined(value: unknown): JoinedRecord | null {
+  if (!isRecord(value) || value.v !== RECORD_VERSION || typeof value.list !== "string" || !isListHash(value.list) || !isSpan(value.at) || !texts(value.agreed)) return null;
+  return { list: value.list, at: value.at, agreed: value.agreed };
 }

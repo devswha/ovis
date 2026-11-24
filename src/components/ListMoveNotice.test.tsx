@@ -119,3 +119,20 @@ it("hands a carried device's key and name to the devices list's Remove (useNotMe
   await act(async () => { notMe[0]!.props.onClick(); notMe[1]!.props.onClick(); });
   expect(asked).toEqual([["K", "Laptop"], ["J", "A device of yours"]]);
 });
+
+it("tells a device whose PCs do not know the list it follows so, and offers the reset of its copy, which leads to an Allow (V4-6)", async () => {
+  const doubted: AccountListView = { ...following, status: { at: "following", list: LIST, standing: "in", head: 5, read_at: 1, trouble: null, doubt: { why: "first_signer_unknown", pcs: [E(1)] } } };
+  const forgot: string[] = [];
+  const list = { ...listWith(doubted, null).list, forget: async (account: string) => { forgot.push(account); } } as unknown as AccountList;
+  await act(async () => { renderer = create(<SettingsProvider><ListJoinRefusal list={list} pcName={() => "Desk"} /></SettingsProvider>); });
+  expect(text()).toContain("Your PCs do not know the list this device follows");
+  expect(text()).toContain("Your PCs do not know the device that made the list this device follows.");
+  const reset = renderer!.root.findAll((node) => node.type === "button" && node.props.children === "Reset this device's list")[0]!;
+  await act(async () => { await reset.props.onClick(); });
+  expect(forgot).toEqual([ACCOUNT]);
+  for (const [why, line] of [["other_list", "Desk follows another list of your account."], ["first_signer_removed", "A PC of yours removed the device that made the list this device follows."]] as const) {
+    const view: AccountListView = { ...doubted, status: { at: "following", list: LIST, standing: "in", head: 5, read_at: 1, trouble: null, doubt: { why, pcs: [E(1)] } } };
+    await act(async () => { renderer!.update(<SettingsProvider><ListJoinRefusal list={listWith(view, null).list} pcName={() => "Desk"} /></SettingsProvider>); });
+    expect(text()).toContain(line);
+  }
+});

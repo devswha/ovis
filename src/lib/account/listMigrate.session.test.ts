@@ -115,3 +115,20 @@ describe("what a PC answered stays for the run", () => {
     expect(answers.get(ACCOUNT, E(1))).toEqual(said);
   });
 });
+
+describe("a carried device that follows its list and still asks about it (V4-6)", () => {
+  test("asks the PC what it lets in, and names the list to it all the same", async () => {
+    const answers = pcAnswers();
+    const naming = { naming: { list: "a".repeat(64), key: KEY, signature: "s".repeat(86) }, vouches: [] };
+    const asking = { at: "following" as const, list: "a".repeat(64), standing: "in" as const, head: 3, read_at: null, trouble: null, asks: [E(1)] };
+    const said = { account: ACCOUNT, pinned: null, admits: [], removed: [] };
+    const wire = pcWire({ "GET /api/account/list/witness": json(said), "POST /api/account/list/name": json({ pinned: false, why: "session_new", wait: 60 }) });
+    const list = listOf(asking, naming);
+    await onPcSession({ list, answers, account: ACCOUNT, fetch: wire.fetch, endpoint: E(1), pinned: false, session: KEY, signIn: KEY });
+    expect(wire.asked.map((one) => `${one.method} ${one.path}`)).toEqual(["GET /api/account/list/witness", "POST /api/account/list/name"]);
+    expect(answers.get(ACCOUNT, E(1))).toEqual(said);
+    expect(list.synced).toBe(1);
+    expect(waitsOnPcs(asking)).toBe(true);
+    expect(waitsOnPcs({ ...asking, asks: [] })).toBe(false);
+  });
+});

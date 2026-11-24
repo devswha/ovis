@@ -21,13 +21,13 @@ import {
 import { LIST_WRAP_TEXT_LENGTH, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import {
-  devicePlace, heirOf, joinVerdict, MigrationError, migrationPlan, ownEvidence, signMigration, signNaming, signRotation, signVouch, standsFor,
+  devicePlace, heirOf, joinVerdict, MIGRATION_ANSWER_SECONDS, MigrationError, migrationPlan, ownEvidence, signMigration, signNaming, signRotation, signVouch, standsFor,
   type JoinRefusal, type MigrationKnown, type NoMigration, type SignedNaming, type SignedVouch,
 } from "../../../shared/account-list-migrate.ts";
 import { listNames, makeGenesis, type Genesis } from "./listGenesis.ts";
 import {
-  birthRecord, birthSeals, handOverRecord, knownPcs, MOVE_AGAIN_SECONDS, noticeRecord, notCarriedAt, pageAnswers, readBirth, readHandOver, readNotice, readRefusal, refusalRecord,
-  scaled, signLink, type KeptBirth, type MoveNoticeView, type PcAnswers,
+  birthRecord, birthSeals, handOverRecord, joinedRecord, knownPcs, listDoubt, MOVE_AGAIN_SECONDS, noticeRecord, notCarriedAt, pageAnswers, pcAgrees, readBirth, readHandOver,
+  readJoined, readNotice, readRefusal, refusalRecord, scaled, signLink, type KeptBirth, type ListDoubt, type MoveNoticeView, type PcAnswers,
 } from "./listMigrate.ts";
 import { clearTried, noteTried, readSeenPcs } from "./seenPcs.ts";
 import { deviceCard, deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
@@ -131,7 +131,13 @@ export type AccountListStatus =
   /** What this device saved was written by a later build of the app, which this one cannot read: it needs a newer app. Kept as it is. */
   | { readonly at: "newer_save" }
   /** `head`: the place of the last entry of the copy. `read_at`: when it last held all the account service showed, in seconds. */
-  | { readonly at: "following"; readonly list: string; readonly standing: Standing; readonly head: number; readonly read_at: number | null; readonly trouble: ListTrouble | null };
+  | {
+    readonly at: "following"; readonly list: string; readonly standing: Standing; readonly head: number; readonly read_at: number | null; readonly trouble: ListTrouble | null;
+    /** A device the move of its account carried in: what a PC it knows said against the list since it joined (V4-6). */
+    readonly doubt?: ListDoubt;
+    /** The PCs such a device still asks about the list, within three days of its join: those that were silent then. */
+    readonly asks?: readonly string[];
+  };
 
 /** A device of the account, as the verified list says. `name` is null where this device cannot open it. */
 export interface ListedDevice {
@@ -423,6 +429,8 @@ interface Held {
   readonly unread?: true;
   /** The round that gave this took pages of the log and left some: the next one goes on at once. */
   readonly behind?: true;
+  /** A carried device's check of its list against its PCs, from the last round that read them (V4-6). */
+  readonly check?: { readonly doubt: ListDoubt | null; readonly asks: readonly string[] };
 }
 
 /**
@@ -831,6 +839,7 @@ export function accountList(options: AccountListOptions): AccountList {
     const follows = (): AccountListStatus => ({
       at: "following", list: copy.list, standing: stands, head: copy.entries.length - 1, read_at: copy.read_at,
       trouble: worst([copy.alarm === null ? null : "fork", next.trouble, unsigned ? "unsigned" : null, wrongKey === account ? "wrong_key" : null]),
+      ...(next.check?.doubt == null ? {} : { doubt: next.check.doubt }), ...(next.check === undefined || next.check.asks.length === 0 ? {} : { asks: next.check.asks }),
     });
     if (stands !== "in") return { account, status: follows(), reached, devices: [], pcs: [] };
     const history = historyOf(copy);
@@ -1101,15 +1110,24 @@ export function accountList(options: AccountListOptions): AccountList {
       const own = pinList(null, { account, list: hint.list, me: { key: signIn.key, endpoint: null }, pin: { how: "genesis" } });
       return own.pinned ? { copy: own.copy } : null;
     }
-    if (place.at !== "carried") return null;
     const record = recordOf(account);
     const scale = scaleOf();
     const at = seconds();
     const pcs = knownPcs({ account, record, letIn: null, answers, names: () => null, now: at, scale });
+    // a device that handed its place on and keeps no copy (it reset the one its PCs did not know, V4-6): it asks to be let
+    // in, and says why while a PC it knows says it
+    if (place.at === "member") {
+      const doubt = listDoubt(state, pcs, []);
+      return doubt === null ? null : { without: { at: "not_in", list: hint.list, why: "not_mine", claim: await claim(bound, account, keys, hint.list, "unclaimed", signal), refused: doubt } };
+    }
+    if (place.at !== "carried") return null;
     if (record.tried === undefined) await tryNoted(account);
     const verdict = joinVerdict(state, { signIn: signIn.key, member: keys.key }, pcs, record.tried === undefined ? 0 : scaled(record.tried, at, scale));
     if (verdict.pin) {
       await tryEnded(account);
+      // what it goes on checking against: the PCs that agreed now; the others are asked about the list for three days more
+      const agreed = pcs.filter((pc) => pc.says !== null && pc.says.account === account && ownEvidence(pc) && pcAgrees(state, pc.says)).map((pc) => pc.endpoint);
+      await store.set("joined", account, joinedRecord({ list: state.list, at, agreed }));
       return { copy: got.copy };
     }
     if (verdict.waits) return waiting({ why: verdict.why, wait: verdict.wait === null ? null : Math.ceil(verdict.wait / scale), pcs: verdict.pcs });
@@ -1168,6 +1186,26 @@ export function accountList(options: AccountListOptions): AccountList {
       if (said.status === 409 && said.code === "head_moved") await store.set("handover", account, undefined);
       else await store.set("handover", account, handOverRecord({ ...kept, refused_at: at }));
     }
+  };
+
+  /**
+   * A carried device that follows its list checks it against what the PCs it knows say in this run (V4-6): a doubt
+   * when one says against it, and which PCs it still asks (those silent when it joined, for three days after the join).
+   * A PC that agrees is kept among those that did. Undefined for any other copy, or where the join was not kept.
+   */
+  const checkJoined = async (account: string, copy: FollowerCopy): Promise<Held["check"]> => {
+    if (copy.pin.how !== "carried" || copy.state === null) return undefined;
+    const joined = readJoined(await store.get("joined", account));
+    if (joined === null || joined.list !== copy.list) return undefined;
+    const { state } = copy;
+    const scale = scaleOf();
+    const at = seconds();
+    const pcs = knownPcs({ account, record: recordOf(account), letIn: null, answers, names: () => null, now: at, scale });
+    const agreed = [...new Set([...joined.agreed, ...pcs.filter((pc) => pc.says !== null && pc.says.account === account && ownEvidence(pc) && pcAgrees(state, pc.says)).map((pc) => pc.endpoint)])];
+    if (agreed.length !== joined.agreed.length) await store.set("joined", account, joinedRecord({ ...joined, agreed }));
+    const open = scaled(joined.at, at, scale) < MIGRATION_ANSWER_SECONDS;
+    const asks = open ? pcs.filter((pc) => pc.says === null && ownEvidence(pc) && !agreed.includes(pc.endpoint)).map((pc) => pc.endpoint) : [];
+    return { doubt: listDoubt(state, pcs, agreed), asks };
   };
 
   /** What a round does with the list the account service names (`named`: null for none); `loaded` is what this device saved. */
@@ -1273,9 +1311,10 @@ export function accountList(options: AccountListOptions): AccountList {
       await tryEnded(account);
     }
     if (fresh && carriedFrom !== null && copy.state !== null) await keepNotice(account, copy.state, carriedFrom);
-    // a carried device that follows its list hands its place on to its member key
+    // a carried device that follows its list hands its place on to its member key, and checks the list against its PCs
     if (copy.pin.how === "carried" && copy.state !== null) await handOver(bound, session, keys, copy, signal);
-    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}) };
+    const check = await checkJoined(account, copy);
+    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}), ...(check === undefined ? {} : { check }) };
   };
 
   const round = async (): Promise<AccountListView> => {
@@ -1582,7 +1621,8 @@ export function accountList(options: AccountListOptions): AccountList {
       const copy = held?.copy ?? null;
       const { status } = shown;
       if (copy === null || copy.state === null || ctx === null || ctx.account !== held?.account || shown.account !== held.account) return null;
-      if (status.at !== "following" || status.standing !== "in" || status.trouble !== null || !movedList(copy.state)) return null;
+      // nor a list a PC it knows says it does not know (V4-6)
+      if (status.at !== "following" || status.standing !== "in" || status.trouble !== null || status.doubt !== undefined || !movedList(copy.state)) return null;
       const member = { key: ctx.keys.key, privateKey: ctx.keys.signs };
       const naming = await signNaming(copy.state, { member, session: given.session, endpoint: given.endpoint });
       if (naming === null) return null;
