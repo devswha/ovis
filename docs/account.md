@@ -1874,8 +1874,10 @@ number is compared. The line never leaves `ovis join`: not to this PC's server, 
 - **When it is in.** A PC that joined by its list tells the account service its add is complete
   (`POST /v1/pc/complete`), once, so the account's page stops showing it as only listed. The listing
   that names is the one its own mailbox pull names, never an admission: an account with a list takes
-  none. Nothing waits for it, and a refusal of it only drops it: the list says the PC is in, not the
-  listing.
+  none. What it owes is on disk from the join on (`account-completion.json`, until a pull names the
+  listing, then as the receipt), so a PC that stops before its first pull sends it after its next
+  start; a binding that ended meanwhile owes nothing. Nothing waits for it, and a refusal of it only
+  drops it: the list says the PC is in, not the listing.
 - A PC that joined by itself is in the list and signs for nothing: it lets no device in
   ([A PC allows a device into the list](#a-pc-allows-a-device-into-the-list)).
 - A line that names no list adds a PC nowhere in an account that keeps one (`list_add`): the

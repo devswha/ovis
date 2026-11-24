@@ -267,7 +267,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
         if ("again" in outcome) return reply({ state: "again" });
         if ("refused" in outcome) return refusal(outcome.refused, "detail" in outcome ? outcome.detail : null);
         if ("waiting" in outcome) return reply({ state: "waiting", standing: outcome.waiting });
-        context.services.accountMailbox.joinedByList(account);
+        context.services.accountMailbox.joinedByList();
         return reply({ state: "added", account });
       };
       const invite = body.invite;
@@ -387,7 +387,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }
       const joined = await list.joinList({ account, list: id, by: peer.key });
       if ("joined" in joined) {
-        context.services.accountMailbox.joinedByList(account);
+        context.services.accountMailbox.joinedByList();
         return reply({ state: "added", account });
       }
       if ("refused" in joined) return fail(joined.refused === "removed" ? "list_removed" : joined.refused, JOIN_REFUSALS[joined.refused] ?? `This PC could not join the account's list (${joined.refused}).`, joined.refused === "unavailable" ? 503 : 409);

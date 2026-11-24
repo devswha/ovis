@@ -260,6 +260,11 @@ export interface ListFollowDeps {
    * binding the file holds after the write, which another Ovis on this folder may have made (`won` false). Throws when it cannot.
    */
   bind(account: string, list: string): ListBound;
+  /**
+   * This PC joined `account` by its list under the binding `bindId` (AccountMailbox.listJoined): what it then owes the
+   * account service, its completion, is kept on disk at once. Never throws.
+   */
+  joined?(account: string, bindId: string): void;
   /** Keeps with the binding `bindId`, on disk, that its list raised an alarm (PcAccountState.alarmList). False when it could not. */
   alarm?(bindId: string): boolean;
   /** Pins the binding `bindId` to `list`, on disk, for good (PcAccountState.pinToList). False when it could not. */
@@ -823,6 +828,8 @@ export class ListFollow implements ListAuthority {
         return { refused: "unavailable" };
       }
       if (!held.won) return await this.boundMeanwhile(held, account, list);
+      // the completion it owes the account service is on disk with the binding, before anything else can stop it
+      try { this.deps.joined?.(account, held.id); } catch { /* sent at no pull then: the account's page shows the PC as listed */ }
       // from here the PC is in the account, pinned to the list: the copy it read is its copy
       this.sync();
       this.bindId = held.id;

@@ -175,6 +175,69 @@ describe("a PC in no account is added to an account that keeps a signed list", (
     expect(refused).toBe(1);
   });
 
+  test("a PC that stops before any pull after its join still tells the account service, once, after it starts again", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    // no pull of this PC's mailbox is answered while it joins: nothing names its listing before it stops
+    made.hook.on = async (request, forward) => new URL(request.url).pathname === "/v1/pc/mailbox" ? new Response("away", { status: 503 }) : await forward();
+    await made.start();
+    await made.confirm((await compared(made, account)).phone);
+    await made.admit();
+    await account.addPostedPc(made.endpoint);
+    expect(await made.state()).toMatchObject({ state: "added" });
+    await made.services.accountMailbox.pull();
+    expect(made.pc.account.requests.some((line) => line.includes("/v1/pc/complete"))).toBe(false);
+    const kept = mkdtempSync(join(tmpdir(), "ovis-list-join-"));
+    keptDirs.push(kept);
+    cpSync(made.pc.stateDir, kept, { recursive: true, filter: (path) => !statSync(path).isSocket() });
+    await made.pc.close();
+    pcs.splice(pcs.indexOf(made.pc), 1);
+    // the same PC starts again, and the account service answers it
+    const named: string[] = [];
+    const completed: string[] = [];
+    const again = await pairingPc({ server: { accountOpensAll: true, platform: "linux", token: TOKEN }, startRelay: false,
+      prepare: (dir) => cpSync(kept, dir, { recursive: true }), accountFetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/v1/pc/complete") completed.push((await request.clone().json() as { listing_id: string }).listing_id);
+        const answer = await made.pc.account.fetch(request);
+        if (path === "/v1/pc/mailbox" && answer.ok) {
+          const listing = (await answer.clone().json() as { listing_id?: unknown }).listing_id;
+          if (typeof listing === "string") named.push(listing);
+        }
+        return answer;
+      } });
+    pcs.push(again);
+    const { services } = again.app.context;
+    await services.accountList!.settled();
+    expect(services.accountList!.status()).toMatchObject({ pinned: true, standing: "in", list: account.id });
+    await services.accountMailbox.pull();
+    await until(() => completed.length > 0, "No completion was sent after the start");
+    // once, with the listing its own pull named, and not again
+    await services.accountMailbox.pull();
+    expect(completed).toHaveLength(1);
+    expect(named).toContain(completed[0]!);
+    expect(made.pc.account.requests.some((line) => line.includes("/v1/pc/admission"))).toBe(false);
+  });
+
+  test("a join whose binding ended before any pull named its listing owes the account service nothing", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    made.hook.on = async (request, forward) => new URL(request.url).pathname === "/v1/pc/mailbox" ? new Response("away", { status: 503 }) : await forward();
+    await made.start();
+    await made.confirm((await compared(made, account)).phone);
+    await made.admit();
+    await account.addPostedPc(made.endpoint);
+    expect(await made.state()).toMatchObject({ state: "added" });
+    const receipt = join(made.pc.stateDir, "account-completion.json");
+    expect(JSON.parse(readFileSync(receipt, "utf8"))).toMatchObject({ account: ACCOUNT });
+    // the person revokes everything at the PC before the account service is reached again
+    expect(made.pc.devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    made.hook.on = null;
+    await made.services.accountMailbox.pull();
+    expect(JSON.parse(readFileSync(receipt, "utf8"))).toBeNull();
+    expect(made.pc.account.requests.some((line) => line.includes("/v1/pc/complete"))).toBe(false);
+  });
+
   test("a device the list holds opens the PC at once, and one only the account service names does not", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);

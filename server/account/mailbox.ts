@@ -204,13 +204,25 @@ function listingChanged(error: unknown): boolean {
   return error instanceof AccountServiceRefusal && error.path === "/v1/pc/complete" && error.status === 409 && error.code === "listing_changed";
 }
 
-function readCompletion(path: string | undefined): CompletionScope | null {
-  if (!path) return null;
+/**
+ * A PC that joined `account` by its list under the binding `list_bind_id` owes the account service its completion,
+ * and has no listing for it yet (AccountMailbox.listJoined): the receipt's file holds this until a pull names one. An
+ * Ovis that reads no such form takes the file for no receipt.
+ */
+type ListOwed = { readonly account: string; readonly list_bind_id: string };
+
+const BIND_ID = /^[0-9a-f]{32}$/;
+
+function readCompletion(path: string | undefined): { receipt: CompletionScope | null; owed: ListOwed | null } {
+  const none = { receipt: null, owed: null };
+  if (!path) return none;
   try {
-    const kept = JSON.parse(readFileSync(path, "utf8")) as Partial<Record<keyof CompletionScope, unknown>> | null;
-    return kept !== null && typeof kept === "object" && typeof kept.account === "string" && typeof kept.listing_id === "string" && LISTING_ID.test(kept.listing_id)
-      ? { account: kept.account, listing_id: kept.listing_id } : null;
-  } catch { return null; }
+    const kept = JSON.parse(readFileSync(path, "utf8")) as Partial<Record<keyof CompletionScope | keyof ListOwed, unknown>> | null;
+    if (kept === null || typeof kept !== "object" || typeof kept.account !== "string") return none;
+    if (typeof kept.listing_id === "string" && LISTING_ID.test(kept.listing_id)) return { receipt: { account: kept.account, listing_id: kept.listing_id }, owed: null };
+    if (typeof kept.list_bind_id === "string" && BIND_ID.test(kept.list_bind_id)) return { receipt: null, owed: { account: kept.account, list_bind_id: kept.list_bind_id } };
+    return none;
+  } catch { return none; }
 }
 
 export interface AccountMailboxOptions {
@@ -261,6 +273,8 @@ export class AccountMailbox {
 
   /** A bind's completion receipt the account service has not taken yet (account#57): sent again after each pull. */
   private completion: CompletionScope | null;
+  /** The completion this PC owes for a join by its list, before a pull named its listing (listJoined); on disk in the receipt's file. */
+  private listOwed: ListOwed | null;
 
   private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number; readonly seq: number } | null = null;
   /** What the pull under way read from its mailbox of this PC's listing in its account; undefined when it failed, or no link bound the PC. */
@@ -271,7 +285,7 @@ export class AccountMailbox {
   private listingCheck: { readonly key: string; readonly verdict: Promise<ListingVerdict> } | null = null;
 
   constructor(private readonly options: AccountMailboxOptions) {
-    this.completion = readCompletion(options.completionPath);
+    ({ receipt: this.completion, owed: this.listOwed } = readCompletion(options.completionPath));
     const pending = readPending(options.pendingPath);
     this.pending = pending ?? [];
     this.pendingError = pending === null ? `Cannot read ${options.pendingPath}: account adds wait until it is restored or fixed.` : null;
@@ -517,19 +531,24 @@ export class AccountMailbox {
   }
 
   /**
-   * This PC joined `account` by the account's signed list. The account's own page shows a PC as only listed until it is
-   * told the add is complete (POST /v1/pc/complete). The listing that receipt names is the one this PC's own mailbox
-   * pull names (`with_listing_id`), never an admission: an account with a list takes none (Part D11.9). So the next
-   * pull, which starts now, keeps the receipt with that listing, and sends it, once, kept and sent again as any
-   * receipt. Nothing waits for it, it lets nobody in and binds nothing, and it never throws.
+   * This PC joined `account` by the account's signed list under the binding `bindId`, and its copy holds it: it owes
+   * the account service the word that its add is complete (POST /v1/pc/complete), which the account's page waits
+   * for to show it as more than listed. The listing that receipt names is the one this PC's own mailbox pull names
+   * (`with_listing_id`), never an admission: an account with a list takes none (Part D11.9). So what is owed goes on
+   * disk now, in the receipt's file, and the next pull that names a listing turns it into the receipt, which is sent
+   * once and kept and sent again as any receipt until it is answered. A PC that stops before that pull sends it after
+   * its next start. Nothing waits for it, and it never throws.
    */
-  joinedByList(account: string): void {
-    this.listCompletion = account;
-    if (!this.stopped) void this.pull().catch(() => undefined);
+  listJoined(account: string, bindId: string): void {
+    this.listOwed = { account, list_bind_id: bindId };
+    this.completion = null;
+    this.writeCompletionFile(this.listOwed);
   }
 
-  /** The account this PC joined by its list and has not kept a completion receipt for yet (joinedByList). */
-  private listCompletion: string | null = null;
+  /** A join by the list was answered: the pull that turns what it owes into its receipt starts now. It never throws. */
+  joinedByList(): void {
+    if (!this.stopped) void this.pull().catch(() => undefined);
+  }
 
   private readonly listNames = new Map<string, { readonly list: string | null; readonly at: number }>();
 
@@ -665,10 +684,15 @@ export class AccountMailbox {
     await this.sendCompletion();
   }
 
-  /** The receipt goes on disk first: sendCompletion sends it, now or after a pull. */
+  /** The receipt goes on disk first: sendCompletion sends it, now or after a pull. It takes the place of what a join by the list owed. */
   private keepCompletion(scope: CompletionScope): void {
     this.completion = scope;
-    try { if (this.options.completionPath) writePrivateState(this.options.completionPath, this.completion); }
+    this.listOwed = null;
+    this.writeCompletionFile(scope);
+  }
+
+  private writeCompletionFile(value: CompletionScope | ListOwed | null): void {
+    try { if (this.options.completionPath) writePrivateState(this.options.completionPath, value); }
     catch (error) { console.error(`[account] the completion receipt could not be kept: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
@@ -685,6 +709,12 @@ export class AccountMailbox {
   }
 
   private async sendCompletion(): Promise<void> {
+    const owed = this.listOwed;
+    if (owed !== null && this.options.devices.linkBinding() !== owed.list_bind_id) {
+      // the binding that joined by its list is gone (Revoke all, its removal): nothing of it is owed any more
+      this.listOwed = null;
+      if (this.completion === null) this.writeCompletionFile(null);
+    }
     const scope = this.completion;
     const identity = this.options.identity();
     if (scope === null || !identity) return;
@@ -1008,9 +1038,9 @@ export class AccountMailbox {
         const asked = this.options.list?.scopeToken?.();
         const { entries, waiting, listing, list } = await this.page(identity, account, ack);
         if (page === 0 && linked !== null) this.drainedListing = { binding: linked, account, listing };
-        // a PC that joined by its list completes its add with the listing its own pull names (joinedByList)
-        if (page === 0 && typeof listing === "string" && this.listCompletion === account && this.options.devices.listFollowed()) {
-          this.listCompletion = null;
+        // a PC that joined by its list completes its add with the listing its own pull names (listJoined)
+        const owed = this.listOwed;
+        if (page === 0 && typeof listing === "string" && owed !== null && owed.account === account && owed.list_bind_id === linked && this.options.devices.listFollowed()) {
           this.keepCompletion({ account, listing_id: listing });
         }
         if (page === 0 && list !== undefined) this.tellList(account, list, asked);
