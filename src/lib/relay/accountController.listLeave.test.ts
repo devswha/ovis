@@ -186,6 +186,38 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(asked).not.toContain("POST /v1/signout/all");
   });
 
+  it("sign out every device says how many left when a device came in between the parts of the removal, and signs nobody out", async () => {
+    const { w, first, second } = await twoDevices();
+    const others = [second];
+    for (let index = 0; index < 15; index += 1) {
+      const device = await w.device({ label: `Tablet ${index + 1}` });
+      await device.list.sync();
+      const offer = await allowDevice(first.list, { key: (await device.keys()).key, label: `Tablet ${index + 1}`, os: "android" }, noWait);
+      if (!offer.allowed) throw new Error(offer.why);
+      await device.list.adopt(offer.offer);
+      others.push(device);
+    }
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    // once the first part is placed, the last device of the account lets a newcomer in before this device reads its part back
+    let placed = 0;
+    first.wire.answer = async (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries") || placed++ > 0) return null;
+      const answered = await w.fake.fetch(request);
+      const newcomer = await w.device({ label: "Newcomer" });
+      await newcomer.list.sync();
+      const last = others.at(-1)!;
+      await last.list.sync();
+      const offer = await allowDevice(last.list, { key: (await newcomer.keys()).key, label: "Newcomer", os: "android" }, noWait);
+      if (!offer.allowed) throw new Error(offer.why);
+      return answered;
+    };
+    asked = [];
+    expect(await shell.signOutEverywhere()).toBe("15 of 16 other devices left your account, then Newcomer came in since you asked. Ask again to go on.");
+    expect(asked).not.toContain("POST /v1/signout/all");
+  });
+
   it("Codex 6: a leave whose own removal counted finishes on this device when the account service ended its sign-in with it", async () => {
     const { w, second } = await twoDevices();
     const shell = shellOf(second);

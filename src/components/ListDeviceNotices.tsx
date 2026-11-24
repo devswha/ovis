@@ -20,7 +20,9 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
   const view = useListView(list);
   // the notices kept in the page's storage are read again after each change this page makes to them
   const [, setKept] = useState(0);
-  const [asked, setAsked] = useState<string | null>(null);
+  // Not me's question, by the key and name it was asked for: it stays up when its notice goes, as after a first part of
+  // its removal put the device out, to say what was done and to go on with the rest
+  const [asked, setAsked] = useState<{ readonly key: string; readonly name: string } | null>(null);
   const [removed, setRemoved] = useState<readonly string[]>([]);
   // only a device that may remove anybody is told: Not me is what the notice is for
   const writer = list?.writer() ?? null;
@@ -74,15 +76,15 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
             {role !== null && <span className="settings-hint">{role}</span>}
           </span>
           <div className="device-paired-actions">
-            <NotMeButton sending={asked === newcomer.key} onPress={() => setAsked(newcomer.key)} />
+            <NotMeButton sending={asked?.key === newcomer.key} onPress={() => setAsked({ key: newcomer.key, name })} />
             <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => close(newcomer.key, shown)}><X /></button>
           </div>
-          {asked === newcomer.key && (
-            <RemoveDialog list={active.list} view={active.view} removing={newcomer.key} name={name} ticked
-              onClose={() => setAsked(null)} onRemoved={(gone) => { setAsked(null); close(newcomer.key, shown); setRemoved((now) => [...now, gone]); }} />
-          )}
         </div>
       );
     })}
+    {asked !== null && (
+      <RemoveDialog list={active.list} view={active.view} removing={asked.key} name={asked.name} ticked
+        onClose={() => setAsked(null)} onRemoved={(gone) => { setAsked(null); close(asked.key, shown); setRemoved((now) => [...now, gone]); }} />
+    )}
   </>;
 }

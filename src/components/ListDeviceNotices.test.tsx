@@ -158,6 +158,31 @@ describe("the new-device notice of an account with a signed list", () => {
     expect(notices(root)).toEqual([]);
   });
 
+  it("keeps Not me's question up with what was done when its removal stops after a part that already put the device out", async () => {
+    const { w, phone, tablet, root } = await looked();
+    const stranger = await letIn(w, tablet, "Unknown laptop");
+    for (let index = 0; index < 15; index += 1) await letIn(w, stranger, `Stranger ${index + 1}`);
+    await read(phone);
+    // the first part of the removal is placed, the second is refused for the list's budget
+    let parts = 0;
+    phone.wire.answer = (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries")) return null;
+      parts += 1;
+      return parts === 1 ? null : Response.json({ error: { code: "entry_budget", message: "later" }, now: 1 }, { status: 429, headers: { "retry-after": "60" } });
+    };
+    await act(async () => { root.findAll((node) => node.type === "button" && textOf(node) === "Not me")[0]!.props.onClick(); });
+    expect(dialog(root).find((node) => node.props["data-testid"] === "came-in-through").findAll((node) => node.type === "input")).toHaveLength(15);
+    await act(async () => { dialog(root).find((node) => node.type === "button" && textOf(node) === "Remove").props.onClick(); });
+    await waitFor(() => parts >= 2 && root.findAll((node) => node.props.role === "alert").length > 0 || (parts >= 2 && root.findAll((node) => node.props.role === "alertdialog").length === 0));
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("15 of 16 were removed. Try again for the rest.");
+    // and goes on from there: the last one goes, with the epoch
+    phone.wire.answer = null;
+    await act(async () => { dialog(root).find((node) => node.type === "button" && textOf(node) === "Remove").props.onClick(); });
+    await waitFor(() => root.findAll((node) => node.props["data-testid"] === "list-device-notice-removed").length > 0);
+    expect(kinds(w.held().entries).slice(-2)).toEqual(["remove", "epoch"]);
+    expect(listView(w.held().state).devices.filter((row) => row.ended === null)).toHaveLength(2);
+  });
+
   it("tells a device that may not remove anybody nothing", async () => {
     const { w, phone, tablet } = await looked();
     await letIn(w, tablet, "Laptop");

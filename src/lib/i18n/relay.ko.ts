@@ -188,6 +188,7 @@ export const RELAY_KO: Record<string, string> = {
   "No device was signed out: the other devices could not be removed from your account. Try again.": "다른 기기를 계정에서 빼지 못해 아무 기기도 로그아웃하지 않았어요. 다시 시도하세요.",
   "{done} of {total} other devices left your account; the others did not. Try again.": "다른 기기 {total}대 중 {done}대만 계정에서 빠졌어요. 다시 시도하세요.",
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "확인한 뒤에 {names} 기기가 계정에 들어왔어요. 아무도 로그아웃하지 않았으니 다시 확인하세요.",
+  "{done} of {total} other devices left your account, then {names} came in since you asked. Ask again to go on.": "다른 기기 {total}대 중 {done}대가 계정에서 빠진 뒤 {names} 기기가 들어왔어요. 계속하려면 다시 확인하세요.",
   "This device cannot read your account's list. Update the app.": "이 기기에서 계정 명단을 읽을 수 없어요. 앱을 업데이트하세요.",
   "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "이 기기에서 계정 명단을 읽을 수 없어요. 이 기기에서 로그아웃했다가 다시 로그인한 뒤, 다른 기기에서 허용하세요.",
   "{name} was removed from your account": "{name} PC가 계정에서 제거됐어요",

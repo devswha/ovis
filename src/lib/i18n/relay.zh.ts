@@ -188,6 +188,7 @@ export const RELAY_ZH: Record<string, string> = {
   "No device was signed out: the other devices could not be removed from your account. Try again.": "未能从账户中移除其他设备，因此没有设备退出登录。请重试。",
   "{done} of {total} other devices left your account; the others did not. Try again.": "{total} 台其他设备中只有 {done} 台离开了你的账户。请重试。",
   "{names} came into your account since you asked. Nobody was signed out: ask again.": "确认之后 {names} 加入了你的账户。没有设备退出登录，请重新确认。",
+  "{done} of {total} other devices left your account, then {names} came in since you asked. Ask again to go on.": "{total} 台其他设备中有 {done} 台已离开你的账户，之后 {names} 加入了。要继续，请重新确认。",
   "This device cannot read your account's list. Update the app.": "此设备无法读取账户名单。请更新应用。",
   "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "此设备无法读取账户名单。请在此设备上退出后重新登录，然后在另一台设备上允许它。",
   "{name} was removed from your account": "{name} 已从你的账户中移除",

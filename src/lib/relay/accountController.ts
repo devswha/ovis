@@ -467,7 +467,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (outcome === null || outcome.removed) return null;
     if (outcome.why === "unconfirmed") {
       const names = (outcome.unconfirmed ?? []).map((key) => lists?.view().devices.find((device) => device.key === key)?.name?.label ?? t("Unnamed device"));
-      return t("{names} came into your account since you asked. Nobody was signed out: ask again.", { names: names.join(", ") });
+      // what parts placed before the newcomer was seen stays done, and is said
+      return outcome.placed > 0
+        ? t("{done} of {total} other devices left your account, then {names} came in since you asked. Ask again to go on.", { done: String(outcome.placed), total: String(total), names: names.join(", ") })
+        : t("{names} came into your account since you asked. Nobody was signed out: ask again.", { names: names.join(", ") });
     }
     if (outcome.placed > 0) return t("{done} of {total} other devices left your account; the others did not. Try again.", { done: String(outcome.placed), total: String(total) });
     if (outcome.why === "unknown") return t("Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.");
