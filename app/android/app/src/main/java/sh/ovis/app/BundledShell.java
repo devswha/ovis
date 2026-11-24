@@ -47,7 +47,7 @@ final class BundledShell {
     /** The page a bundled start opens first while a worker of the network's copy may be left (needsBoot): outside every PC's scope, which no worker controls. */
     static final String BOOT_PATH = "/_ovis/boot";
 
-    /** The cache the client keeps its fonts in (src/lib/userFonts.ts): kept, as no worker serves from it. */
+    /** The cache the client keeps its own files in (FILES_CACHE in src/lib/shellMode.ts, which a test holds this to): kept, as no worker serves from it. */
     static final String FILES_CACHE = "ovis-files-v1";
 
     private static final Pattern SCOPE_FILE = Pattern.compile("/s/[^/]+/(manifest\\.webmanifest|sw\\.js|~render)");

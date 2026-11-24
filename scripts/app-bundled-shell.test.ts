@@ -5,6 +5,7 @@ import { dirname, join, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { appShell, carried, indexAssets, packShell, provenanceOf, releaseTag, SHELL_ASSETS, shellPoliciesOf, shellSource, unpackRelease } from "../app/scripts/bundled-shell.ts";
 import { writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
+import { FILES_CACHE as CLIENT_FILES_CACHE } from "../src/lib/shellMode.ts";
 import { RENDER_PATH, SHELL_META, shellHeaders, shellPolicies } from "./shell-build.ts";
 
 describe("where a build takes the shell from", () => {
@@ -296,9 +297,10 @@ describe("the bundled shell's boot page", () => {
     expect(BOOT_PATH.startsWith("/s/")).toBe(false);
   });
 
-  it("keeps the client's own cache, the one no worker serves from", () => {
-    expect(readFileSync(join(import.meta.dir, "../src/lib/userFonts.ts"), "utf8")).toContain(`const CACHE = "${FILES_CACHE}";`);
-    expect(readFileSync(join(import.meta.dir, "../public/sw.js"), "utf8")).toContain(`const FILES = "${FILES_CACHE}";`);
+  it("keeps the client's own cache, the one no worker serves from, by the client's one name for it", () => {
+    // BundledShell.FILES_CACHE (which the boot page and the retiring worker keep) is the client's FILES_CACHE
+    expect(FILES_CACHE).toBe(CLIENT_FILES_CACHE);
+    expect(readFileSync(join(import.meta.dir, "../public/sw.js"), "utf8")).toContain(`const FILES = "${CLIENT_FILES_CACHE}";`);
   });
 });
 
