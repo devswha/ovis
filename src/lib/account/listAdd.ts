@@ -93,7 +93,7 @@ const unanswered = (error: unknown): boolean => error instanceof AccountServiceU
  * between them, can steer the number. The number is shown from the PC's answer on; the PC shows it once the reveal
  * checked out. Only a sign-in that ended, or a cancel, throws.
  */
-export async function numberWith(list: AccountList, post: PostedPc, options: { readonly signal?: AbortSignal; readonly wait?: (ms: number, signal?: AbortSignal) => Promise<void>; readonly now?: () => number } = {}): Promise<NumberOutcome> {
+export async function numberWith(list: AccountList, post: PostedPc, options: { readonly signal?: AbortSignal; readonly wait?: (ms: number, signal?: AbortSignal) => Promise<void>; readonly now?: () => number; /** how long to wait for the PC's answer, NUMBER_WAIT_MS unless a caller says */ readonly waitMs?: number } = {}): Promise<NumberOutcome> {
   const wait = options.wait ?? pause;
   const now = options.now ?? Date.now;
   const writer = list.writer();
@@ -111,7 +111,7 @@ export async function numberWith(list: AccountList, post: PostedPc, options: { r
   try { await writer.service.listAttempt(writer.list, post.endpoint, message, options.signal); } catch (error) { return refused(error); }
   // the PC's nonce, for this very commitment, read from the posts until it is there
   let theirs: Uint8Array | null = null;
-  const deadline = now() + NUMBER_WAIT_MS;
+  const deadline = now() + (options.waitMs ?? NUMBER_WAIT_MS);
   while (theirs === null) {
     let posts: readonly ListPost[];
     try { posts = await writer.service.listPosts(writer.list, options.signal); } catch (error) { return refused(error); }

@@ -6,6 +6,10 @@ import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { isNewAccountPc, type MyPc } from "../lib/account/myPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
+import { accountList } from "../lib/account/accountList.ts";
+import { askingPc, pcComparing, postPcKeys } from "../lib/account/accountList.test-helpers.ts";
+import { memoryListLock, memoryListStore } from "../lib/account/listStore.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
 import { AccountService } from "../lib/account/service.ts";
 import type { AccountOs } from "../../shared/account-asker.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
@@ -82,10 +86,10 @@ async function listedByItsOwnSignIn(): Promise<void> {
   expect(response.ok).toBe(true);
 }
 
-async function mount(): Promise<void> {
+async function mount(more: { numberWaitMs?: number } = {}): Promise<void> {
   if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
   await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now, onSignInAgain: (provider: AccountProvider) => { signInsAgain.push(provider); } }) }));
+    renderer = create(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now, onSignInAgain: (provider: AccountProvider) => { signInsAgain.push(provider); }, ...more }) }));
   });
   await settle();
 }
@@ -590,5 +594,74 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     await mount();
     expect(buttons()).toEqual([]);
     expect(fake.requests.filter((line) => line.startsWith("PUT ") || line.startsWith("DELETE "))).toHaveLength(1);
+  });
+});
+
+describe("a PC that asks to be added to an account with a signed list", () => {
+  /** This device is in its account's list, and a PC listed itself with a device code and posted its keys and its card for that list. */
+  async function listAccount() {
+    fake.listAccounts = "*";
+    await signIn();
+    await registerKey();
+    const pc = await askingPc();
+    let play: ReturnType<typeof pcComparing> | undefined;
+    // the PC answers as soon as the account service holds this device's commitment
+    service = new AccountService({ store, lock: memoryLock(), now: () => now, fetch: async (input: Request | string | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const answer = await fake.fetch(request.clone());
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt")) await play?.answer();
+      return answer;
+    } });
+    const list = accountList({ service, accountStore: store, listStore: memoryListStore(), lock: memoryListLock(), now: () => now, genesis: () => "always", durable: async () => true, names: () => ({ label: "Phone", os: "ios" }) });
+    await list.sync();
+    setPageAccountList(list);
+    const held = () => fake.accountList(ACCOUNT)!;
+    await postPcKeys(fake.fetch, ORIGIN, fake.issueToken(ACCOUNT, { device: true }), pc, held().id);
+    play = pcComparing({ fake, origin: ORIGIN } as unknown as Parameters<typeof pcComparing>[0], pc, held().id);
+    const pcAdmits = (): number => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length;
+    return { pc, play, list, held, pcAdmits };
+  }
+  const digitsShown = (): string => textOf(renderer!.root.findByProps({ className: "relay-shell-digits" })).replaceAll(" ", "");
+
+  it("shows the number both screens have before anything is added, and signs the PC into the list at the second Add", async () => {
+    const { pc, play, list, held, pcAdmits } = await listAccount();
+    try {
+      await mount();
+      await press("Add");
+      // the number, with what to do with it; nothing is admitted or signed yet
+      expect(await play.digits()).toBe(digitsShown());
+      expect(text()).toContain("Check that the PC shows this number and confirm it there, then Add");
+      expect(buttons()).toEqual(["Add", "Not the same"]);
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+      await press("Add");
+      expect([pcAdmits(), held().entries.length]).toEqual([1, 2]);
+      expect(list.view().pcs.map((row) => [row.endpoint, row.name?.label])).toEqual([[pc.endpoint, "PC"]]);
+      // the card is gone
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("adds nothing where the person says the numbers are not the same", async () => {
+    const { held, pcAdmits } = await listAccount();
+    try {
+      await mount();
+      await press("Add");
+      await press("Not the same");
+      expect(text()).toContain("The numbers did not match. This PC was not added.");
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("says so where the PC does not answer, and shows no number", async () => {
+    const { play, held, pcAdmits } = await listAccount();
+    try {
+      play.answer = async () => false;
+      await mount({ numberWaitMs: 0 });
+      await press("Add");
+      expect(text()).toContain("The PC did not answer. Start again on the PC.");
+      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+    } finally { setPageAccountList(null); }
   });
 });
