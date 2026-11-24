@@ -170,6 +170,22 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(await first.store.get("session")).toBeDefined();
   });
 
+  it("sign out every device signs nobody out while a request signed for an Allow waits at this head, and says an earlier change waits", async () => {
+    const { w, first } = await twoDevices();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    const laptop = await w.device({ label: "Laptop" });
+    await laptop.list.sync();
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    expect(await allowDevice(first.list, { key: (await laptop.keys()).key, label: "Laptop", os: "android" }, noWait)).toMatchObject({ allowed: false, why: "busy" });
+    w.fake.untamperList(w.held().id);
+    await first.list.sync();
+    asked = [];
+    expect(await shell.signOutEverywhere()).toBe("An earlier change is still waiting: try it again or cancel it first.");
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
+    expect(asked).not.toContain("POST /v1/signout/all");
+  });
+
   it("Codex 6: a leave whose own removal counted finishes on this device when the account service ended its sign-in with it", async () => {
     const { w, second } = await twoDevices();
     const shell = shellOf(second);

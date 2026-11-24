@@ -1317,7 +1317,9 @@ most while the list is rebuilding (one signature per place: while the device's o
 head the request was signed on, the same request goes again, and a new one is signed only on a new
 head). `list_stopped` is told in the words above; a request that got no answer while the log could
 not be read is "not known yet", never "not removed"; a refusal for the entry's time says the
-device's clock looks wrong; a copy that cannot be written to says so, with no retry offered; any
+device's clock looks wrong; a copy that cannot be written to says so, with no retry offered; a
+request this device signed for another change (an Allow) that still waits at this head is "An
+earlier change is still waiting: try it again or cancel it first", with nothing signed; any
 other failure is "could not be removed. Try again.", with nothing shown as done.
 
 **A write belongs to what it began with.** A removal is begun for one account, one list and the

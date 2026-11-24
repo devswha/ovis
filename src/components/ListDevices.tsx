@@ -51,6 +51,8 @@ function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true
   // the request went out and no answer came, and the log could not be read: it may have been placed
   if (outcome.why === "unknown") return t("Whether {name} was removed is not known yet. Look at the list again in a moment.", { name });
   if (outcome.why === "clock") return t("This device's clock looks wrong. Check its date and time, then try again.");
+  // a request this device signed for another change (an Allow, say) waits at this head: that change's card tries it again or cancels it
+  if (outcome.why === "waiting") return t("An earlier change is still waiting: try it again or cancel it first.");
   // the copy this device holds cannot be written to (two histories, a stopped list, one it cannot read): a retry says the same
   if (outcome.why === "blocked") return t("This device cannot change your account's list right now.");
   if (outcome.why === "changed") return t("Your sign-in changed while this was asked. Nothing was removed.");

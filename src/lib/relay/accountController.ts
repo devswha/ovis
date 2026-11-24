@@ -472,6 +472,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (outcome.placed > 0) return t("{done} of {total} other devices left your account; the others did not. Try again.", { done: String(outcome.placed), total: String(total) });
     if (outcome.why === "unknown") return t("Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.");
     if (outcome.why === "clock") return t("This device's clock looks wrong. Check its date and time, then try again.");
+    if (outcome.why === "waiting") return t("An earlier change is still waiting: try it again or cancel it first.");
     return outcome.why === "stopped" ? t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.")
       : t("No device was signed out: the other devices could not be removed from your account. Try again.");
   };

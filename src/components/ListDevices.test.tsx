@@ -203,6 +203,25 @@ describe("Manage account's devices from the account's signed list", () => {
     expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Whether Dana's tablet was removed is not known yet. Look at the list again in a moment.");
   });
 
+  it("says an earlier change still waits, and signs nothing, while a request signed for an Allow waits at this head", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    await letIn(w, first, "Dana's tablet");
+    const laptop = await w.device({ label: "Laptop" });
+    await laptop.list.sync();
+    // every placement is answered `409 head_moved` while the device's own read shows the same head: the Allow's request stays kept
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    expect(await allowDevice(first.list, { key: (await laptop.keys()).key, label: "Laptop", os: "android" }, { wait: async () => {} })).toMatchObject({ allowed: false, why: "busy" });
+    w.fake.untamperList(w.held().id);
+    const entries = w.held().entries.length;
+    const root = await mount(first);
+    await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
+    await confirm(root, "Remove");
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("An earlier change is still waiting: try it again or cancel it first.");
+    expect(w.held().entries).toHaveLength(entries);
+  });
+
   it("offers no Remove to a device that may not remove anybody", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });
