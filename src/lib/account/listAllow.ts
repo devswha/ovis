@@ -67,7 +67,8 @@ export async function allowDevice(list: AccountList, newcomer: Newcomer, options
   const outcome = await writeToList<"removed">(list, async (writer) => {
     const row = writer.state.signers[newcomer.key];
     // the list holds the key already: let in before (the place handed on is where this device stands now), or put out for good
-    if (row !== undefined) return row.ended !== null || row.as !== "device" ? { refused: "removed" } : { done: placeOf(writer.state) };
+    // (the place handed on is that of the entry that let it in, where this device's copy shows it)
+    if (row !== undefined) return row.ended !== null || row.as !== "device" ? { refused: "removed" } : { done: list.placeAt(row.seq) ?? placeOf(writer.state) };
     const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === newcomer.key);
     if (claim === undefined) return { refused: "not_claimed" };
     return { request: await written(writer, claim, names) };

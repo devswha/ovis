@@ -3,7 +3,7 @@ import { kindBody, listView, readKind, signListEntry, type ListKind } from "../.
 import { entryFromText, entryHash, entryToText, readBody, signEntry } from "../../../shared/account-list-entry.ts";
 import type { AccountListView } from "./accountList.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "./accountList.test-helpers.ts";
-import { ALLOW_RESENDS, ALLOW_TRIES, allowDevice, type AllowOutcome } from "./listAllow.ts";
+import { ALLOW_RESENDS, allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys } from "./listKeys.ts";
 import { memoryAccountStore } from "./store.ts";
 
@@ -141,11 +141,34 @@ describe("a list that moves, or a service that is busy, under an Allow", () => {
     expect(following(await second.list.adopt(offer))).toMatchObject({ standing: "in", head: 2 });
   });
 
-  it("gives up after its tries where the head keeps moving, and says so", async () => {
+  it("signs no second entry where the account service says the head moved and the device's own copy shows the same head: the same request goes again, and then it gives up", async () => {
     const { w, first, newcomer } = await twoDevices();
     w.fake.tamperList(w.held().id, { headMoved: true });
     expect(await allowDevice(first.list, newcomer, noWait)).toEqual({ allowed: false, why: "busy", retryAfterMs: null });
-    expect([placements(first).length, w.held().entries.length]).toEqual([ALLOW_TRIES, 1]);
+    expect([placements(first).length, w.held().entries.length]).toEqual([ALLOW_RESENDS, 1]);
+    expect(new Set(placements(first).map((each) => JSON.stringify(each.body!.entries))).size).toBe(1);
+  });
+
+  it("finds its entry in the log after an answer that was lost, and says that it is not known yet where the log cannot be read either", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    // the service placed the entry, and its answer never came
+    first.wire.answer = async (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries")) return null;
+      first.wire.answer = null;
+      await w.fake.fetch(request);
+      throw new TypeError("the answer was lost");
+    };
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    expect([placements(first).length, kinds(w.held().entries)]).toEqual([1, ["genesis", "device"]]);
+    expect(following(await second.list.adopt(offer)).standing).toBe("in");
+    // the same with the network gone after the request: nothing says "not added"
+    const third = await w.device({ label: "Laptop" });
+    await third.list.sync();
+    first.wire.answer = async (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) { await w.fake.fetch(request); first.wire.answer = () => { throw new TypeError("the network is down"); }; throw new TypeError("the answer was lost"); }
+      return null;
+    };
+    expect(await allowDevice(first.list, { key: (await third.keys()).key, label: "Laptop", os: null }, noWait)).toEqual({ allowed: false, why: "unknown", retryAfterMs: null });
   });
 
   it("sends the same request again while the service rebuilds the list, the same signatures, and is let in when it is done", async () => {
@@ -215,14 +238,57 @@ describe("an invite whose time is over, still in the list", () => {
     expect((await first.list.sync()).devices.map((row) => row.name?.label)).toEqual(["Dana's phone", "Dana's tablet"]);
   });
 
-  it("is judged by the account service's clock where this device's runs behind it: no newcomer is written without a name", async () => {
-    // this device's clock is twenty minutes behind the service's, so by its own the invite would still have time
+  it("is judged by this device's own clock, never the account service's: where the two differ the device signs once, and says that its clock looks wrong", async () => {
+    // this device's clock is twenty minutes behind the service's, so by its own the invite still has time
     const { w, first, second, newcomer } = await withStaleInvite(-20 * 60_000);
     await second.list.sync();
-    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
-    expect(kinds(w.held().entries).slice(2)).toEqual(["remove", "epoch", "device"]);
-    expect(placements(first).filter((each) => (each.body!.entries as unknown[]).length === 3)).toHaveLength(1);
-    expect((await second.list.adopt(offer)).devices.at(-1)!.name).toEqual({ label: "Dana's tablet", os: "android" });
+    const before = w.held().entries.length;
+    expect(await allowDevice(first.list, newcomer, noWait)).toEqual({ allowed: false, why: "clock", retryAfterMs: null });
+    // one request, signed once, with no removal the device's own clock does not call for; nothing was placed
+    const sent = placements(first).slice(-1).map((each) => kinds(each.body!.entries as string[]));
+    expect([sent, w.held().entries.length]).toEqual([[["device"]], before]);
+  });
+
+  it("puts nobody out whose time is not over by this device's own clock, whatever time the account service says it is", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    // a borrowed browser with an hour left
+    const browser = await w.device({ label: "A borrowed browser" });
+    await browser.list.sync();
+    const writer = first.list.writer()!;
+    const key = (await browser.keys()).key;
+    const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === key)!;
+    const until = writer.issued_at + 3600;
+    const borrowed = await signListEntry(writer.state, { kind: "device", key: claim.key, power: "bound", role: "drive", until, enc: claim.enc, card: claim.card, sealed: null, rotates: false }, { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+    await writer.service.placeEntries(writer.list, [borrowed.text], []);
+    // the service says it is two hours later than it is
+    first.wire.answer = async (request) => {
+      if (request.method !== "GET" || !new URL(request.url).pathname.endsWith("/mine")) return null;
+      const body = await (await w.fake.fetch(request)).json() as Record<string, unknown>;
+      return Response.json({ ...body, now: Math.floor(w.clock.now / 1000) + 7200 });
+    };
+    await second.list.sync();
+    allowed(await allowDevice(first.list, newcomer, noWait));
+    expect(kinds(w.held().entries).slice(2)).toEqual(["device"]);
+    expect(listView(w.held().state).devices.find((row) => row.key === key)).toMatchObject({ ended: null, until });
+  });
+});
+
+describe("a device whose list stands in its way", () => {
+  it("says that it cannot write, and never that the account has no list", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    await second.list.adopt(allowed(await allowDevice(first.list, newcomer, noWait)));
+    const third = await w.device({ label: "Laptop" });
+    await third.list.sync();
+    // the service shows another history that a member signed from entry 0 on: the device raises its alarm
+    const keys = await first.keys();
+    const list = w.held();
+    const body = kindBody({ issued_at: Math.floor(w.clock.now / 1000), list: list.id, prev: list.id, seq: 1, signer: keys.key }, { kind: "carried", endpoint: "ab".repeat(32), sealed: null });
+    w.fake.tamperList(list.id, { fork: [entryToText(await signEntry(body, keys.signs))] });
+    w.clock.now += 30_000;
+    expect(following(await first.list.sync()).trouble).toBe("fork");
+    const before = placements(first).length;
+    expect(await allowDevice(first.list, { key: (await third.keys()).key, label: "Laptop", os: null }, noWait)).toEqual({ allowed: false, why: "blocked", retryAfterMs: null });
+    expect(placements(first).length).toBe(before);
   });
 });
 
