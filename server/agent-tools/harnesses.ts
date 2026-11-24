@@ -19,23 +19,25 @@ export function resolveHarness(kind: string): HarnessCommand | null {
       return path ? { argv: [path, ...(kind === "gjc" ? ["--mode", "acp"] : ["acp"])] } : null;
     }
     case "copilot": {
+      // the file whose version is checked is the one that runs, whatever its link points to later
       const path = Bun.which(kind, { PATH: process.env["PATH"] });
-      return path ? { argv: [path, "--acp", "--stdio"] } : null;
+      return path ? { argv: [realpathSync(path), "--acp", "--stdio"] } : null;
     }
     case "claude": case "codex": {
       const adapter = adapters[kind];
       const path = Bun.which(adapter.command, { PATH: process.env["PATH"] }), found = Bun.which(kind, { PATH: process.env["PATH"] });
       if (!path || !found) return null;
-      // the file whose version is checked is the one that runs, whatever its link points to later
+      // the files whose versions are checked are the ones that run, whatever their links point to later
       const executable = realpathSync(found);
-      let dir = dirname(realpathSync(path));
+      const script = realpathSync(path);
+      let dir = dirname(script);
       while (dir !== dirname(dir)) {
         const file = join(dir, "package.json");
         if (existsSync(file)) {
           try {
             const pkg: unknown = JSON.parse(readFileSync(file, "utf8"));
             if (isRecord(pkg) && pkg.name === `@agentclientprotocol/${adapter.command}`) {
-              return (adapter.versions as readonly unknown[]).includes(pkg.version) ? { argv: [path, ...(kind === "claude" ? ["--hide-claude-auth"] : [])], env: { [adapter.pathVar]: executable } } : null;
+              return (adapter.versions as readonly unknown[]).includes(pkg.version) ? { argv: [script, ...(kind === "claude" ? ["--hide-claude-auth"] : [])], env: { [adapter.pathVar]: executable } } : null;
             }
           } catch { return null; }
         }

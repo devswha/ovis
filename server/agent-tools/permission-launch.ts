@@ -120,7 +120,7 @@ const ASK_RECIPES: Record<string, AskRecipe> = {
     ownRules: true,
     // Its `agent` mode asks for each write, command, fetch and MCP call; nothing here grants more. A `preToolUse` hook
     // of the person's or the folder's (`.github/hooks`) still answers for them. It starts no stdio MCP server from
-    // `session/new`, so the child has no ovis-agent tool and calls no agent itself.
+    // `session/new`, so the child has no ovis-agent MCP tool (the `ovis agent` shell command still reaches Ovis).
     launch: command => ({
       mode: "https://agentclientprotocol.com/protocol/session-modes#agent",
       argv: [...command.argv, "--no-auto-update"],

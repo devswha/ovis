@@ -37,14 +37,17 @@ the user's and the project's own approvals in place. Only the versions those run
   rules in the person's or the project's `rules/*.rules` (the adapter treats the folder as trusted),
   and an MCP server the person or the project set to `approve`.
 - **Copilot CLI 1.0.109**, also in its narrowest asking launch: its `agent` mode with `--no-auto-update`
-  and `COPILOT_ALLOW_ALL=false`, and none of its `--allow-*` switches. Writes, commands, web fetches
-  and MCP calls each come as a card. A `preToolUse` hook of the person's or in the folder's
+  and `COPILOT_ALLOW_ALL=false`, and none of its `--allow-*` switches. Writes, side-effecting commands,
+  web fetches and MCP calls each come as a card. A `preToolUse` hook of the person's or in the folder's
   `.github/hooks` still answers for them. Copilot starts no stdio MCP server from `session/new`, so
-  such a child has no `ovis-agent` tool and starts no agent itself.
+  such a child has no `ovis-agent` MCP tool; only the `ovis agent` shell command reaches Ovis from it.
 
 Settings names Codex and Copilot under
 **Agents they may call**: the allow rules a person set in them, a project folder's included,
 apply when they are called too.
+
+A task that begins with `/` is refused (`bad_request`): a harness may read it as one of its own
+commands, and Copilot's `/allow-all` turns every card off without changing its reported mode.
 
 A child in one of these launches may start a child in any of them, depth allowing: each asks as
 above. Cards offer only one-time choices. The child must report its mode over ACP before receiving a

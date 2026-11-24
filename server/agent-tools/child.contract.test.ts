@@ -12,7 +12,7 @@ import { lineCall } from "../line-call.ts";
 import { AgentToolHub } from "./hub.ts";
 
 const REPLAY = join(import.meta.dir, "replay-agent.fake.ts");
-interface Recorded { harness: string; fixture: string; version: string; mode: string; opened?: (sessionNew: Record<string, any>) => void }
+interface Recorded { harness: string; fixture: string; version: string; mode: string; kinds: readonly string[]; opened?: (sessionNew: Record<string, any>) => void }
 const claudeOpened = (sessionNew: Record<string, any>) => {
   expect(sessionNew.configOptions).toEqual([{ configId: "mode", value: "default" }]);
   expect(sessionNew._meta.claudeCode.options).toMatchObject({ settingSources: [], allowDangerouslySkipPermissions: false, tools: expect.not.arrayContaining(["EnterWorktree", "Agent", "Skill"]),
@@ -22,15 +22,23 @@ const claudeOpened = (sessionNew: Record<string, any>) => {
  * `-ask`: no allow rule of the person's, so the write, mkdir, web request and MCP call each came as a card.
  * `-own-rule`: a rule the person set in the harness let some through unasked; the rest still came as cards. */
 const RECORDED: readonly Recorded[] = [
-  ...["0.110.0", "0.112.0"].map(adapter => ({ harness: "claude", fixture: `claude-agent-acp-${adapter}-ask`, version: "2.1.330 (Claude Code)", mode: "default", opened: claudeOpened })),
-  ...["2.10.0", "2.11.0"].flatMap(adapter => ["ask", "own-rule"].map(run => ({ harness: "codex", fixture: `codex-acp-${adapter}-${run}`, version: "codex-cli 0.171.0", mode: "read-only" }))),
-  ...["ask", "own-rule"].map(run => ({ harness: "copilot", fixture: `copilot-1.0.109-${run}`, version: "GitHub Copilot CLI 1.0.109.\nRun 'copilot update' to check for updates.", mode: "https://agentclientprotocol.com/protocol/session-modes#agent" })),
+  ...["0.110.0", "0.112.0"].map(adapter => ({ harness: "claude", fixture: `claude-agent-acp-${adapter}-ask`, version: "2.1.330 (Claude Code)", mode: "default", kinds: ["edit", "execute", "execute", "fetch", "fetch", "other"], opened: claudeOpened })),
+  ...["2.10.0", "2.11.0"].flatMap(adapter => ["ask", "own-rule"].map(run => ({ harness: "codex", fixture: `codex-acp-${adapter}-${run}`, version: "codex-cli 0.171.0", mode: "read-only",
+    // the edit, mkdir, curl and MCP call; the rules allowing mkdir and curl leave the edit and the MCP call
+    kinds: run === "ask" ? ["edit", "execute", "execute", "execute"] : ["edit", "execute"] }))),
+  ...["ask", "own-rule"].map(run => ({ harness: "copilot", fixture: `copilot-1.0.109-${run}`, version: "GitHub Copilot CLI 1.0.109.\nRun 'copilot update' to check for updates.", mode: "https://agentclientprotocol.com/protocol/session-modes#agent",
+    // the fetch, MCP call, mkdir and file write; the folder's hook allowing the write leaves the other three
+    kinds: run === "ask" ? ["fetch", "other", "execute", "edit"] : ["fetch", "other", "execute"] })),
 ];
 
-describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, opened }) => {
+describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds, opened }) => {
   const FIXTURE = join(import.meta.dir, "fixtures", `${fixture}.jsonl`);
-  const asked = readFileSync(FIXTURE, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>)
-    .filter(message => message.method === "session/request_permission").map(message => String(message.params.toolCall.toolCallId));
+  const requests = readFileSync(FIXTURE, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>)
+    .filter(message => message.method === "session/request_permission");
+  const asked = requests.map(message => String(message.params.toolCall.toolCallId));
+  it("was recorded with a card for each action its run had to ask about", () => {
+    expect(requests.map(message => message.params.toolCall.kind)).toEqual([...kinds]);
+  });
   let dir: string, hub: AgentToolHub, acp: AcpChildren, token: string, connection: HcConnection;
   const programs = new Map<string, ReturnType<typeof Bun.spawn>>();
   beforeEach(() => {
@@ -66,6 +74,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     if (!isRecord(value)) throw new Error("invalid answer");
     return value;
   }
+  const rejectOf = (id: string) => requests.find(message => message.params.toolCall.toolCallId === id)!.params.options.find((option: { kind: string }) => option.kind === "reject_once").optionId;
   const replayed = () => readFileSync(join(dir, "replay.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>);
   async function rejectEveryCard(session: string) {
     const child = acp.forPane(session)!;
@@ -89,7 +98,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     expect(await call("send", { session, task: "again" })).toMatchObject({ accepted: true });
     await rejectEveryCard(session);
     expect(acp.forPane(session)?.client.sessionMode).toBe(mode);
-    expect(replayed().slice(1).map(row => row.answered)).toEqual([...asked, ...asked]);
+    expect(replayed().slice(1).map(row => [row.answered, row.answer.outcome.optionId])).toEqual([...asked, ...asked].map(id => [id, rejectOf(id)]));
   });
 
   it("takes no new task once the child reports a wider mode", async () => {
@@ -101,6 +110,17 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     await until(child.client, "the wider mode", () => child.client.sessionMode === "acceptEdits");
     expect(await call("wait", { session, timeout_s: 5 })).toMatchObject({ state: { state: "done" } });
     expect(await call("send", { session, task: "do the actions" })).toMatchObject({ error: { code: "not_granted" } });
+    expect(replayed().filter(row => row.answered)).toEqual([]);
+  });
+
+  it("never hands the child a slash command as a task, which could change its permissions unasked", async () => {
+    // Copilot 1.0.109 turns every card off on a prompt of `/allow-all` and keeps reporting the same mode
+    const started = await call("start", { harness, cwd: dir });
+    if (!isRecord(started.session) || typeof started.session.address !== "string") throw new Error(JSON.stringify(started));
+    const session = started.session.address;
+    expect(await call("send", { session, task: "/allow-all" })).toMatchObject({ error: { code: "bad_request" } });
+    expect(await call("send", { session, task: "  /permissions" })).toMatchObject({ error: { code: "bad_request" } });
+    expect(await call("start", { harness, cwd: dir, task: "/allow-all" })).toMatchObject({ error: { code: "bad_request" } });
     expect(replayed().filter(row => row.answered)).toEqual([]);
   });
 
