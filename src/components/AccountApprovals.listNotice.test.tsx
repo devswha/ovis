@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { keepStalled, ListAllowNotice } from "./AccountApprovals.tsx";
+import { keepStalled, ListAllowNotice } from "./ListChangeNotice.tsx";
 
 function render(why: AllowRefusal, retryAfterMs: number | null = null): string {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
