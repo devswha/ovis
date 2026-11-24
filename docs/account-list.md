@@ -451,7 +451,7 @@ every route in use.
   sets it first.
 - **Devices** call by bearer: `POST /v2/lists` (entry 0), `GET /v2/lists/mine`, and under
   `/v2/lists/{list}/`: `GET log?after=&limit=`, `GET wraps?member=`, `POST entries`, `POST claims`,
-  `GET claims`, `GET posts`. A write takes an app's own sign-in that no block freezes. A genesis and
+  `GET claims`, `GET posts`, `POST posts/{endpoint}/attempt`. A write takes an app's own sign-in that no block freezes. A genesis and
   a claim also take a sign-in made in the last ten minutes, or an older one with a key proof: a
   challenge of `POST /v1/pcs/challenge` (with `opensAll` on), signed by the key that sign-in
   registered over `pcAddSigningBytes` (`shared/account-records.ts`) with the purpose `list-genesis`,
@@ -459,18 +459,22 @@ every route in use.
   the listing.
 - **PCs** prove their relay key in the body of each call (a challenge of `POST /v1/pc/challenge`
   answered with the role `account`, one per call): `POST /v2/pc/list`, `/v2/pc/list/log`,
-  `/v2/pc/list/wraps`, `/v2/pc/list/entries` and `/v2/pc/list/keys`. A mailbox pull with
-  `with_list: true` also gets the list's id and head.
+  `/v2/pc/list/wraps`, `/v2/pc/list/entries`, `/v2/pc/list/keys` and `/v2/pc/list/attempt`. A
+  mailbox pull with `with_list: true` also gets the list's id and head.
+- **The number a person compares** when adding a PC rides on the PC's post: the adder opens an
+  attempt with its key and commitment, the PC answers it with its nonce once, the adder reveals.
+  The fake only carries them, as the service does; six openings per post in ten minutes.
 - **What a placement checks**, in order, nothing stored on a refusal: every text in its form, and
   the first at the head (`409 head_moved` names the head; a batch already in the log text for text
   is `200` with `placed: 0`); then entry by entry, that it holds and counts for the library
-  (`entry_refused` with its `outcome` and `reason`), and what only the service judges: no `carried`
-  yet, an `invite` only from a sign-in and not dated ahead of its clock, a `join` before its
-  invite's `exp` and only from the PC it names, the list's size; then the second lock (a `device`
-  needs a live claim of its key, a `pc` a live post of its keys by a PC the account lists, each
-  used up by the entry), the wraps, and the budget of additions. Two writers at one head: one is
-  placed. A batch whose every entry is a `remove` signed by a signer of the list spends that
-  signer's own counter instead of the account's requests.
+  (`entry_refused` with its `outcome` and `reason`), and what only the service judges: no names
+  until an epoch is open after the last removal (`epoch_stale`), no `carried` yet, an `invite` only
+  from a sign-in and not dated ahead of its clock, a `join` before its invite's `exp` and only from
+  the PC it names, the list's size; then the second lock (a `device` needs a live claim of its key,
+  a `pc` a live post of its keys by a PC the account lists, each used up by the entry, a `join` a
+  PC the account lists), the wraps, and the budget of additions. Two writers at one head: one is
+  placed. A batch whose every entry is a `remove` or an `epoch`, whose first entry is signed by a
+  signer of the list, spends that signer's own counter instead of the account's requests.
 - **Limits** are in `listLimits`, which a test may lower to reach `list_full`, `entry_budget` or a
   PC's calls a minute.
 - `accountList(account)` gives what the service holds, no lie applied: the list id, every entry's
