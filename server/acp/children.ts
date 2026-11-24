@@ -7,7 +7,7 @@
  * ever touched.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HcMethods } from "../herdr-core/hc-api.generated.ts";
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
@@ -107,6 +107,23 @@ function sessionOpens(client: KeeperClient, ms: number): Promise<"open" | "exite
     resolve(reached);
   });
   return promise;
+}
+
+/**
+ * Removes the ROOT of a keeper that may still be ending: it removes its own socket meanwhile, and Bun's recursive rmSync,
+ * when an entry goes while it walks the folder, stops without an error and leaves the folder and the entries after it.
+ * Each entry is removed on its own (one gone already is fine), then the folder; anything left after that throws.
+ */
+function removeRoot(root: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) rmSync(join(root, name), { recursive: true, force: true });
+  rmdirSync(root);
 }
 
 function owned(path: string, kind: "directory" | "file"): boolean {
@@ -224,7 +241,7 @@ export class AcpChildren {
   /** Kills the keeper's terminal (the keeper ends its agent with it); ROOT goes once the terminal is gone. */
   private async end(terminal: string, root: string): Promise<void> {
     await this.hc().call("terminal.kill", { terminal });
-    rmSync(root, { recursive: true, force: true });
+    removeRoot(root);
   }
 
   private async endFailedStart(terminal: string, root: string): Promise<void> {
