@@ -755,6 +755,36 @@ describe("a key the list holds, which this PC also holds by a pairing of its own
   });
 });
 
+describe("the reset that makes a removed PC a new one", () => {
+  // from this PC's own window: loopback, with no proxy between
+  const reset = (pc: Awaited<ReturnType<typeof pinnedPc>>, body: unknown) => {
+    const base = `http://127.0.0.1:${pc.fixture.app.port}`;
+    return fetch(`${base}/api/relay/reset-identity`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
+  };
+
+  test("names the identity the person was asked about: a second answer to an old question resets nothing", async () => {
+    const pc = await pinnedPc();
+    await pc.account.remove(pc.service.accountList(ACCOUNT)!.state.pcs[pc.endpoint]!.key!);
+    await pc.pull();
+    expect(pc.services.devices.account()).toBeNull();
+    const removed = { account: ACCOUNT, server_id: pc.serverId };
+    // not for a PC the list did not remove, and not for another identity than this PC has
+    const other = await reset(pc, { removed: { account: "acct_2", server_id: pc.serverId } });
+    expect([other?.status, ((await other!.json()) as { error: { code: string } }).error.code]).toEqual([409, "not_removed"]);
+    const wrong = await reset(pc, { removed: { account: ACCOUNT, server_id: "f".repeat(32) } });
+    expect([wrong?.status, ((await wrong!.json()) as { error: { code: string } }).error.code]).toEqual([409, "identity_changed"]);
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(pc.serverId);
+    // the first answer resets it
+    expect((await reset(pc, { removed }))?.status).toBe(200);
+    const next = pc.services.relay.currentIdentity()!.server_id;
+    expect(next).not.toBe(pc.serverId);
+    // the same answer again, from a second terminal that asked the same question: the PC it would reset is no longer that one
+    const again = await reset(pc, { removed });
+    expect([again?.status, ((await again!.json()) as { error: { code: string } }).error.code]).toEqual([409, "identity_changed"]);
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(next);
+  });
+});
+
 describe("a pin outlives this PC's own settings", () => {
   test("started with Step 2 turned off here, a pinned PC still follows its list: a member's signed add adds nobody", async () => {
     const pc = await pinnedPc();

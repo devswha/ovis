@@ -1952,10 +1952,18 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     if (press.relist === undefined || !canType || reader !== null) {
       throw new LocalError(`This PC was removed from this Ovis account. It can come back only as a new PC, which a person at this PC confirms: run ${cli(options)} add in a terminal on it.`);
     }
+    // the relay identity the question is about, read before it is asked: the reset names it, so a yes typed at a
+    // question that is no longer true (another terminal answered first, and the PC is a new one by now) resets nothing
+    const health = await api<{ web_ui?: { server_id?: unknown } }>("GET", "/api/health");
+    const removedAs = health.web_ui?.server_id;
+    if (typeof removedAs !== "string") throw new LocalError(`This PC was removed from this Ovis account, and the Ovis on it did not say which PC it is. Update it in Settings → Updates, then run ${cli(options)} add again.`);
     const line = await askLine(options, "This PC was removed from this Ovis account. It can come back only as a new PC: its relay identity is reset, so every device that opens it through the Ovis relay is let in again. Add it again as a new PC? Type yes: ");
     if (line === null || line.normalize("NFKC").trim().toLowerCase() !== "yes") throw new LocalError("This PC was removed from this Ovis account, and was not added again.");
     await press.unlist();
-    await api("POST", "/api/relay/reset-identity");
+    try { await api("POST", "/api/relay/reset-identity", { body: { removed: { account: press.signedIn, server_id: removedAs } } }); } catch (error) {
+      if (error instanceof LocalError && (error.code === "identity_changed" || error.code === "not_removed")) throw new LocalError(`This PC is no longer the one that question was about (it was reset already), so nothing was reset. Run ${cli(options)} status to see where it stands.`);
+      throw error;
+    }
     await press.relist();
     out(`${STEP_INDENT}This PC has a new relay identity, and is listed in your account again.\n`);
   };

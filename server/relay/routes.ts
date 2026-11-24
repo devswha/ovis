@@ -181,6 +181,18 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         setRequestRoute("/api/relay/reset-identity");
         // Reset ends every relay row: a PC under account policy requires the same local authority as Revoke all.
         if (context.services.devices.accountPolicyActive() && !local) return fail("local_required", "Resetting the relay identity is done at that PC", 403);
+        // `removed`: the reset that makes a PC its account's list removed a new one names the identity the person was
+        // asked about, and the account. It resets that identity alone: an answer to an old question, given after the
+        // PC was reset and added again, must not reset the PC it has become
+        const text = await request.text();
+        let named: unknown;
+        try { named = text === "" ? undefined : (JSON.parse(text) as { removed?: unknown } | null)?.removed; } catch { return fail("invalid_json", "request body must be JSON", 400); }
+        if (named !== undefined) {
+          const { account, server_id } = (typeof named === "object" && named !== null ? named : {}) as { account?: unknown; server_id?: unknown };
+          if (typeof account !== "string" || typeof server_id !== "string") return fail("invalid_reset", "Name the account and the relay identity that was removed from it", 400);
+          if (service.currentIdentity()?.server_id !== server_id) return fail("identity_changed", "This PC's relay identity is no longer the one that was to be reset.", 409);
+          if (!context.services.devices.listRemovedFrom(account)) return fail("not_removed", "That account's list did not remove this PC.", 409);
+        }
         const status = await service.resetIdentity();
         return reply(status, status.blocked ? 409 : 200);
       }

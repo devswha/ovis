@@ -1682,6 +1682,7 @@ describe("ovis link, on the PC itself", () => {
     let joinReads = 0;
     let deviceReads = 0;
     let resets = 0;
+    const resetBodies: unknown[] = [];
     const listCalls: { action: string; body: Record<string, unknown> }[] = [];
     let added = false;
     let signedOutBeforeAdded: boolean | undefined;
@@ -1724,7 +1725,9 @@ describe("ovis link, on the PC itself", () => {
         if (answer !== undefined && answer.ok && (await answer.clone().json() as { state?: string }).state === "added") state.account = "acct_1";
         return answer;
       }
-      if (path === "/api/relay/reset-identity" && options.reset !== undefined) { resets++; return options.reset(); }
+      if (path === "/api/relay/reset-identity" && options.reset !== undefined) { resets++; resetBodies.push(await request.json()); return options.reset(); }
+      // which PC this is, as its health says it
+      if (path === "/api/health" && options.reset !== undefined) return Response.json({ ok: true, web_ui: { server_id: pc.server_id } });
       if (path === "/api/account/one-press") {
         const body = await request.json() as { account?: unknown };
         if (typeof body.account !== "string") return refuse("invalid_account", "Name the account", 400);
@@ -1781,7 +1784,7 @@ describe("ovis link, on the PC itself", () => {
     const listed = () => service.pcs("acct_1").filter((entry) => entry.server_id === pc.server_id);
     // the sign-in ends with the run, whatever ended it
     const signedOut = (await service.fetch(new Request(`${SERVICE}/v1/session`, { headers: { authorization: `Bearer ${token}` } }))).status === 401;
-    return { code, text: out.join(""), askedAt, pressed, named, typed, service, pc, listed, signedOut, signedOutBeforeAdded, listCalls, resets: () => resets, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
+    return { code, text: out.join(""), askedAt, pressed, named, typed, service, pc, listed, signedOut, signedOutBeforeAdded, listCalls, resets: () => resets, resetBodies, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
   }
 
   // the id first, with where to compare it; the PCs as what that account lists, which a decoy account can copy
@@ -1985,11 +1988,20 @@ describe("ovis link, on the PC itself", () => {
         const run = await pressing({ ...removedOnce(adding()), said: (text, type) => { if (text.endsWith(QUESTION) || text.endsWith(NUMBER)) type("yes"); } });
         expect(run.code).toBe(0);
         expect(run.resets()).toBe(1);
+        // the reset names the identity and the account the question was about
+        expect(run.resetBodies).toEqual([{ removed: { account: "acct_1", server_id: run.pc.server_id } }]);
         expect(run.text).toContain("This PC has a new relay identity, and is listed in your account again.\n");
         // reset before it is listed again, and only then is the add started anew
         const reset = run.paths.indexOf("POST /api/relay/reset-identity");
         expect(run.paths.indexOf("POST /api/relay/link", reset)).toBeGreaterThan(reset);
         expect(run.paths.lastIndexOf("POST /api/account/list/add")).toBeGreaterThan(reset);
+      });
+
+      it("resets nothing when this PC is no longer the one the question was about", async () => {
+        const stale = { ...removedOnce(adding()), reset: () => Response.json({ error: { code: "identity_changed", message: "no longer that one" } }, { status: 409 }) };
+        const run = await pressing({ ...stale, said: (text, type) => { if (text.endsWith(QUESTION)) type("yes"); } });
+        expect(run.code).toBe(1);
+        expect(run.text).toContain("This PC is no longer the one that question was about (it was reset already), so nothing was reset.");
       });
 
       it("is not added again without that yes, and its relay identity stays", async () => {

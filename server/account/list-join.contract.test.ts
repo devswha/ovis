@@ -311,17 +311,48 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
   test("a plain invite: the PC posts its card, a device of the account adds it, and the PC joins by the list the line names", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
-    await redeemed(made, await account.invite({ auto: false }));
-    const waiting = await made.post("/api/account/list/join", { account: ACCOUNT, list: account.id });
+    const line = await redeemed(made, await account.invite({ auto: false }));
+    const named = { account: ACCOUNT, list: account.id, invite: line.key };
+    // the line names the list, so its holder shows that it holds it: the PC says what to sign
+    const asked = await made.post("/api/account/list/join", named);
+    expect(asked.body).toEqual({ state: "prove", challenge: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    const proof = await line.signRedeem({ server_id: made.serverId, public_key: made.endpoint, challenge_id: asked.body.challenge as string });
+    const waiting = await made.post("/api/account/list/join", { ...named, proof });
     expect(waiting.body).toEqual({ state: "waiting", standing: "waiting" });
     expect(made.pc.devices.account()).toBeNull();
     // a device chooses Add on the card of the PC that joined with its invite
     await made.admit();
     await account.addPostedPc(made.endpoint);
-    expect((await made.post("/api/account/list/join", { account: ACCOUNT, list: account.id })).body).toEqual({ state: "added", account: ACCOUNT });
+    expect((await made.post("/api/account/list/join", { ...named, proof })).body).toEqual({ state: "added", account: ACCOUNT });
     expect(made.binding()).toMatchObject({ account: ACCOUNT, list: account.id });
     expect(made.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
     expect(made.pc.account.accountList(ACCOUNT)!.state.pcs[made.endpoint]).toMatchObject({ how: "added" });
+  });
+
+  test("a list id alone names no list to this PC: without the line's signature for this PC and this list nothing is posted and nothing joined", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const line = await redeemed(made, await account.invite({ auto: false }));
+    const stranger = await readJoinLine((await account.invite({ auto: false })).line, { service: "https://account.test", followsLists: true });
+    const named = { account: ACCOUNT, list: account.id, invite: line.key };
+    const { challenge } = (await made.post("/api/account/list/join", named)).body as { challenge: string };
+    const posted = () => made.pc.account.accountList(ACCOUNT)!.posts.length;
+    for (const proof of [
+      // another line's signature, a signature for another PC, one for another challenge, and no signature at all
+      await stranger.signRedeem({ server_id: made.serverId, public_key: made.endpoint, challenge_id: challenge }),
+      await line.signRedeem({ server_id: "f".repeat(32), public_key: made.endpoint, challenge_id: challenge }),
+      await line.signRedeem({ server_id: made.serverId, public_key: made.endpoint, challenge_id: "0".repeat(32) }),
+      "A".repeat(86),
+    ]) {
+      const refused = await made.post("/api/account/list/join", { ...named, proof });
+      expect([refused.status, refused.body.error?.code]).toEqual([409, "line_unproven"]);
+    }
+    expect(posted()).toBe(0);
+    // a member's entry for this PC, if there were one, would join nothing either
+    expect(made.pc.devices.account()).toBeNull();
+    // the challenge is of this list and this PC's card: another list gives another
+    const other = await TestList.start(made.pc.account, OTHER);
+    expect(((await made.post("/api/account/list/join", { ...named, list: other.id })).body as { challenge: string }).challenge).not.toBe(challenge);
   });
 
   test("an invite for one PC to join by itself: the PC builds its join, the line signs it, the PC places it and joins, with nobody else awake", async () => {
@@ -409,7 +440,7 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
       const answer = await fetch(`${base}${path}`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-herdr-machine": "1", "x-forwarded-for": "100.64.0.9", ...own }, body: JSON.stringify({ account: ACCOUNT, list: account.id }) });
       expect(answer.status).toBe(403);
     }
-    const other = await made.post("/api/account/list/join", { account: OTHER, list: account.id });
+    const other = await made.post("/api/account/list/join", { account: OTHER, list: account.id, invite: account.first.key });
     expect([other.status, other.body.error?.code]).toEqual([409, "account_mismatch"]);
   });
 });

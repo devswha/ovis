@@ -298,8 +298,9 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
   const serviceFetch: Fetch = options.serviceFetch ?? fetch;
   const wait = options.wait ?? ((ms: number, abort: AbortSignal) => new Promise<void>((resolve, reject) => {
     // fixed wait: a pause before asking the account service again, as it asked
-    const timer = setTimeout(resolve, ms);
-    abort.addEventListener("abort", () => { clearTimeout(timer); reject(abort.reason); }, { once: true });
+    const stop = () => { clearTimeout(timer); reject(abort.reason); };
+    const timer = setTimeout(() => { abort.removeEventListener("abort", stop); resolve(); }, ms);
+    abort.addEventListener("abort", stop, { once: true });
   }));
   const command = `${cli(options)} join`;
   let status: { account: string | null };
@@ -449,9 +450,10 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
    * the account wrapped for the invite and only the line opens, is wrapped again for the PC, and its name sealed.
    */
   function byList(list: { readonly id: string; readonly signJoin: JoinLine["signJoin"]; readonly encryptionKey: CryptoKey }, auto: boolean) {
-    type State = { readonly state: "added" | "waiting" | "again" } | { readonly state: "body"; readonly body: string }
+    type State = { readonly state: "added" | "waiting" | "again" } | { readonly state: "body"; readonly body: string } | { readonly state: "prove"; readonly challenge: string }
       | { readonly state: "prepared"; readonly seq: number; readonly enc: string; readonly seal: { readonly epoch: number; readonly opens: string } | null; readonly wraps: readonly { readonly epoch: number; readonly wrap: string }[] };
     const scope = { account, list: list.id };
+    let wrongKeySaid = false;
     const itself = async (): Promise<State> => {
       const prepared = await api<State>("POST", "/api/account/list/join/prepare", { body: { ...scope, invite: invite.key } });
       if (prepared.state !== "prepared") return prepared;
@@ -462,6 +464,11 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
       if (seal !== null && held !== undefined) {
         try {
           const opened = await openWrap({ list: list.id, epoch: seal.epoch, commitment: seal.opens, wrap: wrapFromText(held.wrap), member: { key: invite.key, privateKey: list.encryptionKey } });
+          // the list commits to that key: one that does not give its commitment is the account service's doing
+          if (!opened.open && opened.why === "other_key" && !wrongKeySaid) {
+            wrongKeySaid = true;
+            out("The account service gave this PC a key to the list's names that the list does not commit to, so this PC joins without names. Tell the account's owner: the account service did this.\n");
+          }
           if (opened.open) {
             const own = await wrapEpochKey({ list: list.id, epoch: opened.value, member: enc });
             if (own !== null) wraps = [{ epoch: seal.epoch, member: enc, wrap: wrapToText(own) }];
@@ -474,14 +481,26 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
       const entry = entryToText(await list.signJoin(readBody(fromBase64Url(built.body))));
       return await api<State>("POST", "/api/account/list/join/place", { body: { ...scope, invite: invite.key, entry, ...wraps.length === 0 ? {} : { wraps } } });
     };
+    // An invite a person adds a PC with: the line names the list, so this command shows the PC that it holds the line.
+    // The PC says what to sign (made from the list and its own card); the line signs it for this account and this PC
+    let proof: string | null = null;
+    const plain = async (): Promise<State> => {
+      const named = { ...scope, invite: invite.key };
+      if (proof === null) {
+        const asked = await api<State>("POST", "/api/account/list/join", { body: named });
+        if (asked.state !== "prove") return asked;
+        proof = await invite.signRedeem({ server_id: listing.serverId, public_key: listing.entry.public_key, challenge_id: asked.challenge });
+      }
+      return await api<State>("POST", "/api/account/list/join", { body: { ...named, proof } });
+    };
     return async (): Promise<"added" | "none" | "slow" | "away" | "joined"> => {
       try {
-        const state = auto ? await itself() : await api<State>("POST", "/api/account/list/join", { body: scope });
+        const state = auto ? await itself() : await plain();
         return state.state === "added" ? "added" : "none";
       } catch (error) {
         if (signal.aborted) throw error;
         if (error instanceof AwayError) return "away";
-        if (error instanceof JoinLineSignError || error instanceof ListEntryError) throw new LocalError("The Ovis on this PC handed this command something that is no join of this invite, so nothing was signed.");
+        if (error instanceof JoinLineSignError || error instanceof ListEntryError || error instanceof InviteRedeemError) throw new LocalError("The Ovis on this PC handed this command something that is no join of this invite, so nothing was signed.");
         if (!(error instanceof LocalError)) throw error;
         if (error.status === 404 || error.status === 405) throw new LocalError(`This invite is for an account with a signed member list, which the Ovis running on this PC does not follow. Update it in Settings → Updates, then run ${command} again with a new invite.`);
         if (error.code === "in_account") return "joined";

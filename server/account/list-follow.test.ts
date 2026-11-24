@@ -539,3 +539,29 @@ describe("found in review", () => {
     expect(pc.list.status().posted_until).not.toBeNull();
   });
 });
+
+describe("a PC in no account joins by the list", () => {
+  test("is not said to have joined while the copy it read is not on disk; the next ask says so once it is", async () => {
+    const pc = await following();
+    pc.world.bound = false;
+    const named = { account: ACCOUNT, list: pc.account.id, by: null };
+    expect(await pc.list.joinList(named)).toEqual({ waiting: "waiting" });
+    await pc.account.addPostedPc(pc.endpoint);
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((_from, to) => {
+      if (String(to).endsWith(ACCOUNT_LIST_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+    });
+    try {
+      // bound and pinned by now, which is on disk with the binding; the copy is not
+      expect(await pc.list.joinList(named)).toEqual({ waiting: "in" });
+      expect(pc.world.pinned).toBe(pc.account.id);
+      expect(await pc.list.joinList(named)).toEqual({ waiting: "in" });
+    } finally { failing.mockRestore(); }
+    expect(await pc.list.joinList(named)).toMatchObject({ joined: { pinned: true, standing: "in" } });
+    pc.list.stop();
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.list.start();
+    await again.list.settled();
+    expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", head: pc.account.place });
+    expect(again.world.calls).toEqual([]);
+  });
+});

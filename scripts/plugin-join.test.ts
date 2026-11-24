@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { newInvite } from "../shared/account-list-join.ts";
+import { verifyInviteRedeem } from "../shared/account-list-invite.ts";
+import { newInvite, readJoinLine } from "../shared/account-list-join.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { importPublicKey, importSecretKey } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
@@ -69,6 +70,8 @@ interface Run {
   readonly made: string;
   readonly service: FakeAccountService;
   readonly serverId: string;
+  /** this PC's relay key, as its listing names it */
+  readonly endpoint: string;
   /** this PC's calls, as `METHOD /path` */
   readonly local: string[];
   /** the account service's calls, as `METHOD /path` */
@@ -225,7 +228,7 @@ async function joining(setup: Setup = {}): Promise<Run> {
     err: (text) => { err.push(text); heard(text); },
   });
   return {
-    code, out: out.join(""), err: err.join(""), line, made: madeLine, service, serverId: identity.server_id, local, calls, bodies, beforeQuestion, pressed, stateDir, state,
+    code, out: out.join(""), err: err.join(""), line, made: madeLine, service, serverId: identity.server_id, endpoint: bytesToHex(importPublicKey(identity.public_key)), local, calls, bodies, beforeQuestion, pressed, stateDir, state,
     listed: () => service.pcs(ACCOUNT).filter((entry) => entry.server_id === identity.server_id),
   };
 }
@@ -314,13 +317,20 @@ describe("ovis join: the invite", () => {
 
   describe("a line that names the account's signed list", () => {
     const LIST = "0f484e9226ad290aaac6dea9244aced4e2b7b97297ecd8d52d437a57c33e5383";
+    const CHALLENGE = "c0ffee00c0ffee00c0ffee00c0ffee00";
     /** this PC as one that follows lists: it says so, and answers the joins by the list as `joins` has them */
     const following = (joins: (count: number, body: Record<string, unknown>) => Response) => {
       const asked: Record<string, unknown>[] = [];
       return { asked, localAnswer: (path: string, request: Request): Promise<Response> | Response | undefined => {
         if (path === "/api/account/list" && request.method === "GET") return Response.json({ pinned: false });
         if (path !== "/api/account/list/join") return undefined;
-        return request.json().then((body) => { asked.push(body as Record<string, unknown>); return joins(asked.length, body as Record<string, unknown>); });
+        return request.json().then((body) => {
+          const sent = body as Record<string, unknown>;
+          // the first ask brings no proof: the PC says what the line is to sign
+          if (sent.proof === undefined) return Response.json({ state: "prove", challenge: CHALLENGE });
+          asked.push(sent);
+          return joins(asked.length, sent);
+        });
       } };
     };
 
@@ -336,7 +346,13 @@ describe("ovis join: the invite", () => {
       const pc = following((count) => Response.json(count < 3 ? { state: "waiting", standing: "waiting" } : { state: "added", account: "acct_1" }));
       const run = await joining({ inviteList: LIST, localAnswer: pc.localAnswer });
       expect(run.code).toBe(0);
-      expect(pc.asked).toEqual([{ account: "acct_1", list: LIST }, { account: "acct_1", list: LIST }, { account: "acct_1", list: LIST }]);
+      // each ask names the account, the list and the invite, and carries the line's signature over what the PC said to sign
+      expect(pc.asked).toHaveLength(3);
+      const { key } = await readJoinLine(run.made, { service: SERVICE, followsLists: true });
+      for (const ask of pc.asked) {
+        expect(ask).toEqual({ account: "acct_1", list: LIST, invite: key, proof: expect.stringMatching(/^[A-Za-z0-9_-]{86}$/) });
+        expect(await verifyInviteRedeem({ account: "acct_1", server_id: run.serverId, public_key: run.endpoint, challenge_id: CHALLENGE }, ask.proof, key)).toBe(true);
+      }
       expect(run.pressed).toEqual([]);
       expect(run.out).toContain("Added: this PC is in your account (acct_1)");
       expectNoInvite(run);

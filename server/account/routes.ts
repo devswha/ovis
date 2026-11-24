@@ -37,6 +37,7 @@ const JOIN_REFUSALS: Readonly<Record<string, string>> = {
   removed: LIST_REMOVED_FROM,
   unavailable: "This PC's relay identity, its list or its keys cannot be read or written.",
   other_adder: "The list holds this PC already, by another entry than this invite's.",
+  line_unproven: "The invite's line did not sign for this PC and this list.",
   not_read: "The account's list could not be read from the account service.",
   invite_unknown: "The account's list holds no such invite.",
   invite_revoked: "This invite was revoked.",
@@ -262,10 +263,19 @@ export async function handleAccountRequest(request: Request, pathname: string, c
         await context.services.accountMailbox.joinedByList(account);
         return reply({ state: "added", account });
       };
-      // a plain invite, or the ask again after a join was placed: the PC joins once the list holds its entry
-      if (pathname === "/api/account/list/join") return await ended(await list.joinList({ account, list: id, by: null }));
       const invite = body.invite;
       if (typeof invite !== "string") return fail("invalid_invite", "Name the invite by its key", 400);
+      // An invite a person adds a PC with: the PC joins once the list holds its entry. The line is what names the
+      // list, so the caller shows that it holds the line: first it is given what to sign, then it sends the signature
+      // with every ask. A list id alone, even from this PC's own window, names nothing
+      if (pathname === "/api/account/list/join") {
+        if (body.proof === undefined) {
+          const challenge = await list.lineChallenge(id);
+          return challenge === null ? refusal("unavailable") : reply({ state: "prove", challenge });
+        }
+        if (typeof body.proof !== "string") return fail("invalid_invite", "Send the line's signature", 400);
+        return await ended(await list.joinByLine({ account, list: id, invite, proof: body.proof }));
+      }
       if (pathname === "/api/account/list/join/prepare") {
         const prepared = await list.joinPrepare({ account, list: id, invite });
         return "prepared" in prepared ? reply({ state: "prepared", ...prepared.prepared }) : await ended(prepared);
