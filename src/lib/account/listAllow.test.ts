@@ -70,6 +70,24 @@ describe("a device that is in the list lets another in", () => {
     expect((await first.list.sync()).devices).toHaveLength(3);
   });
 
+  it("lets a newcomer whose sign-in ended while it took its place follow the list once it signs in again, under the account it was handed the place for", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    const signedIn = (await second.store.get("session"))!;
+    // the sign-in ended in another tab, or ran out, between the PC's answer and the place being taken
+    await second.store.set("session", undefined);
+    await second.list.adopt(offer, w.account);
+    // signed in to the same account again, the device reads its list and is in it: it waits to be let in no more
+    await second.store.set("session", { ...signedIn, access_token: w.fake.issueToken(w.account), sign_in_id: "signed-in-again" });
+    expect(following(await second.list.sync())).toMatchObject({ list: offer.list, standing: "in", trouble: null });
+    // a place kept for one account is no place in another's list
+    const other = listWorld("acct_other");
+    const stranger = await other.device({ label: "Stranger" });
+    await stranger.store.set("session", undefined);
+    await stranger.list.adopt(offer, w.account);
+    expect(await stranger.lists.get("offer", "acct_other")).toBeUndefined();
+  });
+
   it("answers the same for a key the list already holds, and signs nothing more", async () => {
     const { w, first, second, newcomer } = await twoDevices();
     const offer = allowed(await allowDevice(first.list, newcomer, noWait));

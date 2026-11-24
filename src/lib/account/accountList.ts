@@ -509,8 +509,10 @@ export interface AccountList {
    * A member that let this device in handed it this place, over the PC the device compared digits with. It is kept
    * as an offer, and a round follows: the device follows that list only once the log shows its own key let in up to
    * that very entry, and until then it follows nothing. A device that follows a list already takes no offer.
+   * `account`: the account the place was handed for (the join's own). A sign-in that ended meanwhile keeps the offer for
+   * that account, and the first round of a sign-in to it takes it up; without it, the offer is the stored sign-in's.
    */
-  adopt(offer: ListOffer): Promise<AccountListView>;
+  adopt(offer: ListOffer, account?: string): Promise<AccountListView>;
   /**
    * What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown
    * another history. `self`: for the removal of this device's own key, which a device of any power may sign (a
@@ -1140,15 +1142,16 @@ export function accountList(options: AccountListOptions): AccountList {
       if (writer === null || kept === null || !sameWaiting(request, { ...kept, account: writer.account })) return;
       await this.unkeep(writer.account, kept);
     },
-    async adopt(offer) {
+    async adopt(offer, account) {
       const session = await service.session();
       const read = readOffer({ v: RECORD_VERSION, ...offer });
-      if (session === undefined || read === null) return shown;
-      await lock(session.account, async () => {
+      const under = account ?? session?.account;
+      if (under === undefined || read === null) return shown;
+      await lock(under, async () => {
         // a device that follows a list keeps to it: a pin is one-way
-        if (await store.get("copy", session.account) === undefined) await store.set("offer", session.account, { v: RECORD_VERSION, ...read });
+        if (await store.get("copy", under) === undefined) await store.set("offer", under, { v: RECORD_VERSION, ...read });
       });
-      return sync();
+      return session !== undefined && session.account === under ? sync() : shown;
     },
     placeAt(seq) {
       const text = held?.copy?.entries[seq];

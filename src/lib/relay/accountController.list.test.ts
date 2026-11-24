@@ -427,6 +427,23 @@ describe("the hosted shell and the account's signed list", () => {
     expect(await card()).toBeUndefined();
   });
 
+  it("keeps the place a PC handed its join for the account the card was made for, also where the sign-in ended before it was taken", async () => {
+    await signIn("acct-one");
+    const LIST = "5c".repeat(32);
+    const { list, calls } = recordingList();
+    const waits: AccountListView = { account: "acct-one", reached: true, status: { at: "not_in", list: LIST, why: "not_mine", claim: "claimed" }, devices: [], pcs: [] };
+    list.view = () => waits;
+    list.sync = async () => waits;
+    list.adopt = async (offer, account) => { calls.push(`adopt ${offer.list} ${offer.seq} for ${account}`); return OFF; };
+    const account = controller(list);
+    const offer = { v: 1 as const, server_id: "a1".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+    expect((await account.prepare(offer, new AbortController().signal)).listCard).toMatchObject({ list: LIST });
+    // the sign-in ends between the PC's answer and the place being taken
+    await accountStore.set("session", undefined);
+    await account.takePlace({ id: LIST, seq: 4, hash: "ab".repeat(32) });
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${LIST} 4 for acct-one`]);
+  });
+
   it("follows no list where a test gives its own account store or fetch and no list", async () => {
     await signIn("acct-one");
     const account = controller();

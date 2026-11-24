@@ -577,6 +577,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * claim is resolved for the join by a read of the list made now, which also makes it again where it is due: a view
    * drawn before the page slept, or before its first read landed, says nothing of a claim that lasts ten minutes.
    */
+  /** The account each list a join brought this device's card for belongs to: the place a PC hands back is that account's. */
+  const cardAccounts = new Map<string, string>();
   const cardFor = async (session: AccountSession, key: AccountKey): Promise<{ readonly list: string; readonly enc: string; readonly card: string } | null> => {
     if (lists === null) return null;
     try {
@@ -587,6 +589,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       const keys = await deviceListKeys(accountStore);
       if (now === undefined || !sameSignIn(now, session) || keys.key !== key.public_spki) return null;
       const made = await deviceCard(keys, view.status.list);
+      cardAccounts.set(view.status.list, session.account);
       return { list: view.status.list, enc: made.enc, card: made.card };
     } catch (error) {
       console.warn("Ovis: this device's card for the account's list could not be made", error instanceof Error ? error.name : error);
@@ -599,7 +602,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    */
   const takePlace = async (place: { readonly id: string; readonly seq: number; readonly hash: string }): Promise<void> => {
     if (lists === null) return;
-    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }).catch((error: unknown) => {
+    // kept for the account the card was made for, also where that sign-in ended meanwhile: a sign-in to it again takes it up
+    await lists.adopt({ list: place.id, seq: place.seq, hash: place.hash }, cardAccounts.get(place.id)).catch((error: unknown) => {
       if (error instanceof SignedOutError) throw error;
       console.warn("Ovis: the place in the account's list was not taken", error instanceof Error ? error.name : error);
     });

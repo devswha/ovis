@@ -1465,8 +1465,9 @@ list](account.md#a-pc-allows-a-device-into-the-list)). The app's half is in
   the log ([The place handed over](#letting-a-device-in)). A PC that took the card and names no
   place is refused (`auth_failed`, `list_refused`) before anything is saved. No pairing is saved:
   that session serves nothing else, so the app closes it at once and opens the PC anew with the
-  key the list holds; where the place could not be taken (the sign-in ended meanwhile), the front
-  page.
+  key the list holds. A sign-in that ended meanwhile leaves the front page, and the place is kept for
+  the account the card was made for: a sign-in to that account again takes it up, and the device
+  follows the list from there without asking to join again.
 - **How long it waits.** The comparison's 90 seconds, and then as long as the PC keeps the join
   open for its entry after both sides said yes (90 seconds, the PC's `LIST_ALLOW_MS`: its own
   window's signing, or the half minute it waits for a member's entry and its last read).
