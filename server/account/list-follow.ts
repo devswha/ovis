@@ -253,8 +253,9 @@ export class ListFollow implements ListAuthority {
   private fileRead = false;
 
   private keysState: ListStatus["keys"] = null;
-  /** This PC's own keys, once read. */
+  /** This PC's own keys, once read, and the relay identity they were read for. */
   private held: PcListKeys | null = null;
+  private heldFor: string | null = null;
   private lastVerdict: string | null = null;
   private error: string | null = null;
   private postedAt: number | null = null;
@@ -1013,7 +1014,8 @@ export class ListFollow implements ListAuthority {
     this.differences.clear();
     this.lastVerdict = this.error = null;
     this.keysState = null;
-    this.held = null;
+    // the keys go with the relay identity, not with the binding: a PC that joins an account by its list has read them
+    // before the binding stood, and may sign for the list with them from its first moment
     this.postedAt = this.postedUntil = this.askedAt = this.untilAt = this.wantedAt = this.savedAt = null;
     this.dirty = false;
   }
@@ -1068,7 +1070,7 @@ export class ListFollow implements ListAuthority {
     if (scope.list === null || this.problem !== null) return;
     const held = this.copy?.list === scope.list ? this.copy : null;
     // the copy of a PC that reads as it should is asked nothing more: its keys were read when it was made
-    if (held !== null && this.held !== null && held.me.key === this.held.key && held.me.endpoint === scope.endpoint) return;
+    if (held !== null && this.held !== null && this.heldFor === scope.serverId && held.me.key === this.held.key && held.me.endpoint === scope.endpoint) return;
     const keys = await this.keysOf(scope);
     if (keys === null || !this.live(scope)) return;
     if (this.copy?.list === scope.list && this.copy.me.key === keys.key && this.copy.me.endpoint === scope.endpoint) return;
@@ -1081,6 +1083,7 @@ export class ListFollow implements ListAuthority {
       const keys = await this.deps.keys.keysFor(scope.serverId);
       this.keysState = "ready";
       this.held = keys;
+      this.heldFor = scope.serverId;
       return keys;
     } catch (error) {
       if (!(error instanceof ListKeysError)) throw error;
