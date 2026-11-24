@@ -751,6 +751,33 @@ describe("what a second reader found", () => {
   });
 });
 
+describe("a vouch is the word of both keys", () => {
+  test("a sign-in key this PC put out cannot hang its removal on somebody else's member key", async () => {
+    const made = await migrated(phone, plan([tablet]));
+    // The stranger's sign-in key is one this PC holds a removal against. Alone, it signs that the phone's member key is its own.
+    const bytes = vouchBytes({ account: ACCOUNT, list: made.list, key: phone.member.key, device: stranger.signIn.key });
+    const alone = toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, stranger.signIn.privateKey, new Uint8Array(bytes))));
+    const forged = [
+      { key: phone.member.key, device: stranger.signIn.key, signature: alone },
+      { key: phone.member.key, device: stranger.signIn.key, signature: alone, agreed: alone },
+      { key: phone.member.key, device: stranger.signIn.key, signature: alone, agreed: 5 },
+    ] as unknown as SignedVouch[];
+    const vouched = await heldVouches(ACCOUNT, made.list, forged);
+    expect(vouched).toEqual([]);
+    // So the phone still names its list there, it is still the first signer the PC knows, and it is not held out after the pin.
+    const held = witness([phone, tablet], { removed: [stranger.signIn.key], vouched });
+    expect(pinWord(pinVerdict(made.state, await named(made.state, phone, phone.signIn.key), held))).toBe("pin");
+    expect(pinWord(pinVerdict(made.state, await named(made.state, { ...tablet, member: tablet.signIn }, tablet.signIn.key), held))).toBe("pin");
+    expect(heldOut(made.state, held, phone.member.key)).toBe(false);
+    // A device's own vouch carries the member key's signature too, over the same bytes.
+    const now = await signedInAgain(phone);
+    const own = await signVouch(made.state, now);
+    if (own === null) throw new Error("no vouch");
+    expect([own.signature === own.agreed, (await heldVouches(ACCOUNT, made.list, [own])).length, (await heldVouches(ACCOUNT, made.list, [{ ...own, agreed: own.signature }])).length,
+      (await heldVouches(ACCOUNT, made.list, [{ ...own, signature: own.agreed }])).length]).toEqual([false, 1, 0, 0]);
+  });
+});
+
 describe("the vectors of migrate/", () => {
   const DIR = joinPath(import.meta.dir, "account-list-vectors", "migrate");
   interface Vector {

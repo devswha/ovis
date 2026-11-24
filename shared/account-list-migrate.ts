@@ -681,7 +681,12 @@ export async function heldNaming(account: string, endpoint: string, session: str
  * list by. It is the hand-over said again by the device's present sign-in: a PC that lets `device` in through the
  * account, and has for a day, so learns that the member `key` is a device it knows, though it never held the
  * sign-in key that the member key came from. Anyone may carry it, and the account service may keep it: it says
- * nothing but what its signature says.
+ * nothing but what its signatures say.
+ *
+ * It is the word of BOTH keys, over the same bytes: the sign-in key says the member key is its device's, and the
+ * member key agrees. A PC also holds a removal against a device by the sign-in key that vouches for it (heldOut),
+ * and a sign-in key alone must not be able to hang its own removal on somebody else's member key: a device this
+ * PC put out would so put any other out, the device that started the list among them.
  */
 export interface ListVouch {
   readonly account: string;
@@ -690,11 +695,12 @@ export interface ListVouch {
   readonly device: string;
 }
 
-/** A vouch as it travels: its two keys and the signature of `device`, 86 characters of base64url. The account and the list are the reader's own. */
+/** A vouch as it travels: its two keys, the signature of `device` and the signature of `key` (`agreed`) over the same bytes, each 86 characters of base64url. The account and the list are the reader's own. */
 export interface SignedVouch {
   readonly key: string;
   readonly device: string;
   readonly signature: string;
+  readonly agreed: string;
 }
 
 /** A vouch's bytes: `ovis-list-vouch/1` and the fields `account`, `device`, `key` and `list`, in the entry's field form. Refuses `entry_invalid` for a value out of its form. */
@@ -716,24 +722,26 @@ export function vouchBytes(vouch: ListVouch): Uint8Array {
 export async function signVouch(state: ListState, device: Pick<MigratingDevice, "signIn" | "member">): Promise<SignedVouch | null> {
   if (state.needs_replay !== undefined || !deviceIn(state, device.member.key) || device.signIn.key === device.member.key) return null;
   const bytes = vouchBytes({ account: state.account, list: state.list, key: device.member.key, device: device.signIn.key });
-  const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, device.signIn.privateKey, new Uint8Array(bytes))));
-  return { key: device.member.key, device: device.signIn.key, signature };
+  const by = async (key: CryptoKey): Promise<string> => toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, key, new Uint8Array(bytes))));
+  return { key: device.member.key, device: device.signIn.key, signature: await by(device.signIn.privateKey), agreed: await by(device.member.privateKey) };
 }
 
 /**
  * The vouches among those handed over that hold for this account and list: each signed by its own `device` key
- * over its bytes. One that is out of form, of another list or account, or signed by any other key (the member
- * key itself among them) is dropped: a member key that names a sign-in key proves nothing about that sign-in.
- * What a PC makes of them is pinVerdict's to say (`vouched`).
+ * and agreed by its own member `key`, over its bytes. One that is out of form, of another list or account, or
+ * that lacks either signature is dropped: a member key that names a sign-in key proves nothing about that
+ * sign-in, and a sign-in key that names a member key proves nothing about that member. What a PC makes of them
+ * is pinVerdict's to say (`vouched`).
  */
 export async function heldVouches(account: string, list: string, vouches: readonly SignedVouch[]): Promise<{ readonly key: string; readonly device: string }[]> {
   const held: { key: string; device: string }[] = [];
   for (const vouch of [...vouches]) {
     if (typeof vouch !== "object" || vouch === null) continue;
-    const { key, device, signature } = vouch;
-    const signed = typeof signature === "string" && signature.length === CARD_SIGNATURE_CHARS ? canonicalBase64Url(signature) : null;
+    const { key, device, signature, agreed } = vouch;
+    const read = (text: unknown): Uint8Array | null => (typeof text === "string" && text.length === CARD_SIGNATURE_CHARS ? canonicalBase64Url(text) : null);
+    const [signed, member] = [read(signature), read(agreed)];
     // A key that vouches for itself says nothing; what is no key is refused with the bytes.
-    if (signed === null || key === device) continue;
+    if (signed === null || member === null || key === device) continue;
     let bytes: Uint8Array;
     try {
       bytes = vouchBytes({ account, list, key, device });
@@ -741,7 +749,7 @@ export async function heldVouches(account: string, list: string, vouches: readon
       if (error instanceof ListKindError) continue;
       throw error;
     }
-    if (await verifySignature(bytes, signed, device)) held.push({ key, device });
+    if ((await verifySignature(bytes, signed, device)) && (await verifySignature(bytes, member, key))) held.push({ key, device });
   }
   return held;
 }

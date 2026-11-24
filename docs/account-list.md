@@ -978,14 +978,17 @@ the sign-in key's own word:
 ```
 bytes     = writeFieldsUnder("ovis-list-vouch/1", [account, device, key, list])     named fields, as a body's
 signature = ECDSA P-256 / SHA-256 by `device`, r || s, 86 base64url characters
-travels as { "key", "device", "signature" }
+agreed    = the same, by `key`, over the same bytes
+travels as { "key", "device", "signature", "agreed" }
 ```
 
-`device` is the registered sign-in key, which signs; `key` is the member key the same device is in
-the list by. A device signs one only for its own member key while that key is in (`signVouch`),
-anyone may carry it, and `heldVouches` keeps those that hold. A statement signed the other way
-round, by the member key over a sign-in key, proves nothing to a PC: any key can name a sign-in key
-that is not its own.
+`device` is the registered sign-in key; `key` is the member key the same device is in the list by.
+It is the word of both: the sign-in key says the member key is its device's, and the member key
+agrees. A device signs one only for its own member key while that key is in (`signVouch`), anyone
+may carry it, and `heldVouches` keeps those in which both signatures hold. Either alone proves
+nothing: any key can name a sign-in key that is not its own, and a sign-in key that names a member
+key could otherwise hang a removal a PC holds against it on that member (`heldOut`), so a device
+the PC put out would put any other out, the one that started the list among them.
 
 ### Naming the list to a PC (`ovis-list-name/1`)
 
