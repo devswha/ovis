@@ -16,6 +16,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { fromBase64Url } from "../../shared/relay-pair-sas.ts";
 import { listMember, TestList, type ListMember } from "./list.test-helpers.ts";
 import { ask, ended, pairingPc, signedInWith, vouchFor, type Body, type Pc } from "./pairing.test-helpers.ts";
+import { pressOnce } from "./one-press.ts";
 import { PcAccountState } from "./pc-binding.ts";
 
 const ACCOUNT = "acct_1";
@@ -595,6 +596,24 @@ describe("what stays as it was", () => {
     };
     const pressed = await made.post("/api/account/one-press", { account: ACCOUNT });
     expect([pressed.status, pressed.body.error?.code]).toEqual([409, "revoked"]);
+    expect(made.pc.devices.account()).toBeNull();
+  });
+
+  test("a relay identity that changes while one press still asks whether the account keeps a list makes that press bind nothing", async () => {
+    const made = await listedPc();
+    await made.admit();
+    const { relay } = made.services;
+    const before = relay.currentIdentity()!;
+    // from the PC's first question on, this PC answers to another relay identity: the account service's answers were for the old one
+    let changed = false;
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname === "/v2/pc/list") changed = true;
+      return await forward();
+    };
+    const services = { ...made.services, relay: Object.assign(Object.create(relay) as typeof relay, { currentIdentity: () => changed ? { ...before, server_id: "f".repeat(32) } : before }) };
+    const pressed = await pressOnce(services, ACCOUNT);
+    expect(changed).toBe(true);
+    expect(pressed).toMatchObject({ refused: { code: "identity_changed", status: 409 } });
     expect(made.pc.devices.account()).toBeNull();
   });
 
