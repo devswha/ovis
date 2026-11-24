@@ -27,7 +27,7 @@ export interface AcpTurn {
   error: string | null;
 }
 
-export type Row = { seq: number; dir: string; client?: number; raw: string };
+export type Row = { seq: number; dir: string; ts?: number; client?: number; raw: string };
 export type Message = { id?: unknown; method?: unknown; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: { code?: unknown; message?: unknown } };
 
 export const record = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -54,7 +54,7 @@ export function parseLine(line: string): { client: number } | { row: Row; messag
   try { message = JSON.parse(raw); } catch { return null; }
   const body = record(message);
   if (!body) return null;
-  return { row: { seq, dir, raw, ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message: body };
+  return { row: { seq, dir, raw, ...(typeof object["ts"] === "number" ? { ts: object["ts"] } : {}), ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message: body };
 }
 
 export function approval(row: Row, keeperId: string, params: Record<string, unknown>): AcpApproval {

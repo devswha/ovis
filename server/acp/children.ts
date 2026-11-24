@@ -12,7 +12,8 @@ import { join } from "node:path";
 import type { HcMethods } from "../herdr-core/hc-api.generated.ts";
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
-import { KeeperClient, keeperRunning } from "./client.ts";
+import { KeeperClient } from "./client.ts";
+import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
 
 type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list";
@@ -125,6 +126,13 @@ function harnessOf(root: string): string | null {
 }
 
 export class AcpChildren {
+  private readonly listeners = new Set<(child: AcpChild) => void>();
+
+  onStatus(listener: (child: AcpChild) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
   private readonly children = new Map<string, AcpChild>();
 
   constructor(private readonly dir: string, private readonly options: AcpChildrenOptions = {}) {}
@@ -205,9 +213,18 @@ export class AcpChildren {
 
   private add(child: AcpChild): AcpChild {
     this.children.set(child.id, child);
+    let state = child.client.status;
+    let plan = child.client.history.plan;
+    for (const listener of this.listeners) listener(child);
     // a keeper that ended by itself (Ctrl+Q in its pane, its terminal closed) takes its child along
     const off = child.client.onChange(() => {
-      if (!child.client.keeperGone || this.children.get(child.id) !== child) return;
+      if (this.children.get(child.id) !== child) return;
+      if (state !== child.client.status || plan !== child.client.history.plan || child.client.keeperGone) {
+        state = child.client.status;
+        plan = child.client.history.plan;
+        for (const listener of this.listeners) listener(child);
+      }
+      if (!child.client.keeperGone) return;
       off();
       this.children.delete(child.id);
       if (!keeperRunning(child.root)) rmSync(child.root, { recursive: true, force: true });
