@@ -1806,12 +1806,17 @@ neither a hand-over nor the pin undoes a removal.
   session and gets the PC's `{ account, pinned, admits, removed }` (docs/account.md, "How long a key
   has been let in").
 - **The naming.** `POST /api/account/list/name { naming: { list, key, signature }, vouches? }` from
-  the device's own session, signed in with its key (at most 16 vouches). The PC keeps the vouches
-  that hold per list (`account-list-vouches.json`, at most 4 lists and 64 vouches a list; it goes
-  with the binding), reads that list's log with its own proof (one read a list each 30 seconds),
-  and asks `pinVerdict` with its own record. It answers `{ pinned: true, list }` or `{ pinned: false,
+  the device's own session, signed in with its key (at most 16 vouches, and 30 calls a minute for
+  a key with the other session calls of the list). The PC keeps a vouch only between a device of
+  that list and a key it lets in through its account or holds a removal against, so links between
+  made-up keys take no place (`account-list-vouches.json`, at most 4 lists and 64 vouches a list;
+  the other lists' go at the pin, and the file goes with the binding and at an identity reset). It
+  reads that list's log with its own proof, at most once a list each 30 seconds, and follows only
+  on a read that reached the head the service shows. It asks `pinVerdict` with its own record and
+  the vouches it kept and was handed now. It answers `{ pinned: true, list }` or `{ pinned: false,
   why, wait }`, `why` one of the refusals above or `naming_invalid`, `named_here`, `not_read`,
-  `lists_full`, `unavailable`, `wait` in seconds of its own clock. On a yes it saves its copy, pinned
+  `lists_full`, `unavailable`, `wait` in seconds of its own clock. A PC that follows a list answers
+  `pinned: true` for that list alone, and `other_list` for any other. On a yes it saves its copy, pinned
   as `migrated`, and pins once the answer is out: the pin ends every session of the account's rows
   with `auth_changed`, the naming one among them, and its final `WELCOME` then names the list.
 - **After the pin** a device that hands its place on keeps its row, a removal of the PC's own

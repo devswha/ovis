@@ -174,6 +174,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     // the account and for how long (docs/account-list.md, "An account that was in use"): the device's own session, or
     // this PC's own window. Keys and durations only, and of removals the keys alone, never why
     if (peer.kind === "relay" && !devices.accountSession(peer.device.id, peer.key)) return fail("account_required", "Ask this from a device of this PC's account", 403);
+    // within the caller's calls a minute, with the list's other session calls
+    if (context.services.accountList?.peerBudget(peer.kind === "relay" ? `key ${peer.key}` : "direct") === false) return limited();
     const held = context.services.accountWitness?.admits() ?? null;
     const account = devices.account();
     if (account === null || held === null || held.account !== account) return fail("not_in_account", "This PC is in no account", 409);

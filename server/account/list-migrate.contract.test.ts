@@ -4,17 +4,18 @@
  * with the rows of that list once it follows it.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { signCard } from "../../shared/account-list.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
-import { ACCOUNT_LIST_FEATURE, FrameType } from "../../shared/relay-mux.ts";
+import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { bounded, relayAccountFixture, relayConnection, relayDevice, relayFixture, TestClock } from "../relay/test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
-import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE } from "./list-follow.ts";
+import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, forgetList } from "./list-follow.ts";
+import { ACCOUNT_WITNESS_FILE } from "./witness.ts";
 import { ACCOUNT_LIST_VOUCHES_FILE } from "./list-vouches.ts";
 import { MIGRATE_TIME_SCALE_ENV } from "./migrate-time.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
@@ -51,7 +52,9 @@ async function accountInUse() {
   service.opensAll = true;
   service.listAccounts = "*";
   service.listMigrateAccounts = "*";
-  const accountService = { url: "https://account.test", fetch: service.fetch };
+  /** How often the PC asked the account service for a page of its list's log. */
+  const reads = { log: 0 };
+  const accountService = { url: "https://account.test", fetch: async (request: Request) => { if (new URL(request.url).pathname === "/v2/pc/list/log") reads.log += 1; return await service.fetch(request); } };
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 });
   closes.push(() => fixture.close());
   const serverId = await registerSnapshotPc(service, fixture);
@@ -88,7 +91,7 @@ async function accountInUse() {
   const rowOf = (key: string) => services.accountRows!.rows().find((row) => row.key === key) ?? null;
   /** The PC looks at its clock, and does what that brings. */
   const settle = async () => { list.tick(); await list.settled(); };
-  return { time, service, fixture, member, serverId, services, endpoint, phone, tablet, witness, run, list, pull, signsIn, rowOf, settle };
+  return { time, service, fixture, member, serverId, services, endpoint, phone, tablet, witness, run, list, pull, signsIn, rowOf, settle, reads };
 }
 
 describe("what a PC tells a device of its account before the account moves", () => {
@@ -341,6 +344,117 @@ async function followsByMove() {
 
 type Card = { key: string; enc: string; card: string; endpoint: string; list: string };
 
+describe("the naming's bounds, and what the PC does not take for a list", () => {
+  /** The vouches file as another server of this folder, or an earlier run, left it for this binding: these lists tracked. */
+  const tracked = (pc: Awaited<ReturnType<typeof accountInUse>>, lists: readonly string[]) => {
+    const binding = (JSON.parse(readFileSync(join(pc.fixture.stateDir, "account-pc.json"), "utf8")) as { binding: { bind_id: string } }).binding;
+    writeFileSync(join(pc.fixture.stateDir, ACCOUNT_LIST_VOUCHES_FILE), JSON.stringify({ v: 1, server_id: pc.serverId, bind_id: binding.bind_id, lists: Object.fromEntries(lists.map((list) => [list, []])) }), { mode: 0o600 });
+  };
+
+  test("a person at the PC named another list: a device's naming does not take its place", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    expect(await pc.list.wantList("ab".repeat(32))).toMatchObject({ status: { want: "ab".repeat(32) } });
+    expect(await names(await sessionOf(pc, pc.phone), { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) })).toEqual({ pinned: false, why: "named_here", wait: null });
+  }, SLOW);
+
+  test("a PC that tracks four lists already takes no fifth, and the lists it tracked go once it follows one", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    const others = ["a1", "b2", "c3", "d4"].map((two) => two.repeat(32));
+    tracked(pc, others);
+    const naming = async () => ({ naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) });
+    expect(await names(await sessionOf(pc, pc.phone), await naming())).toEqual({ pinned: false, why: "lists_full", wait: null });
+    tracked(pc, others.slice(0, 1));
+    expect(await names(await sessionOf(pc, pc.phone), await naming())).toEqual({ pinned: true, list: born.id });
+    const kept = JSON.parse(readFileSync(join(pc.fixture.stateDir, ACCOUNT_LIST_VOUCHES_FILE), "utf8")) as { lists: Record<string, unknown> };
+    expect(Object.keys(kept.lists)).toEqual([born.id]);
+  }, SLOW);
+
+  test("one read of a named list each 30 seconds, and none that stops short of the head the service shows pins anything", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    // the service shows a head its log does not reach: the read never gets to it
+    pc.service.tamperList(born.id, { reader: { server_id: pc.serverId }, head: { seq: born.head.seq + 3, hash: "ab".repeat(32) } });
+    const body = { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) };
+    const before = pc.reads.log;
+    expect(await names(await sessionOf(pc, pc.phone), body)).toEqual({ pinned: false, why: "not_read", wait: null });
+    const once = pc.reads.log;
+    expect(once).toBeGreaterThan(before);
+    // asked again at once: no new read
+    expect(await names(await sessionOf(pc, pc.phone), body)).toEqual({ pinned: false, why: "not_read", wait: null });
+    expect(pc.reads.log).toBe(once);
+    pc.service.untamperList(born.id);
+    pc.time.advance(31_000);
+    expect(await names(await sessionOf(pc, pc.phone), body)).toEqual({ pinned: true, list: born.id });
+    expect(pc.reads.log).toBeGreaterThan(once);
+  }, SLOW);
+
+  test("on a staging run the wait the PC tells is in its own seconds, the factor taken back out", async () => {
+    const was = process.env[MIGRATE_TIME_SCALE_ENV];
+    process.env[MIGRATE_TIME_SCALE_ENV] = "60";
+    closes.push(() => { if (was === undefined) delete process.env[MIGRATE_TIME_SCALE_ENV]; else process.env[MIGRATE_TIME_SCALE_ENV] = was; });
+    const pc = await accountInUse();
+    const laptop = await migratingDevice("Laptop");
+    signIn(pc.service, ACCOUNT, laptop);
+    await pc.run(60_000);
+    pc.time.advance(JOIN_HOLD_MS);
+    expect(pc.services.accountRows!.access(accountDeviceId(pc.serverId, laptop.signIn.key))).toEqual({ ok: true });
+    await pc.run(10 * 60_000);
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet, laptop]), pc.time.seconds);
+    await pc.pull();
+    const told = await names(await sessionOf(pc, laptop), { naming: await born.naming(laptop, laptop.signIn.key, pc.endpoint, "signIn") });
+    // ten minutes by the record are ten hours at 60: a day is fourteen more, which is 14 minutes of this PC's own
+    expect(told).toMatchObject({ pinned: false, why: "session_new" });
+    expect((told as { wait: number }).wait).toBeGreaterThan(13 * 60);
+    expect((told as { wait: number }).wait).toBeLessThanOrEqual(86_400 / 60);
+  }, SLOW);
+
+  test("the vouches go when the PC leaves its account, and at a reset of its relay identity", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    const again = await signedInAgain(pc.phone);
+    signIn(pc.service, ACCOUNT, again);
+    await pc.run(60_000);
+    pc.time.advance(JOIN_HOLD_MS);
+    expect(pc.services.accountRows!.access(accountDeviceId(pc.serverId, again.signIn.key))).toEqual({ ok: true });
+    await names(await sessionOf(pc, again), { naming: await born.naming(again, again.signIn.key, pc.endpoint), vouches: [await born.vouch(again)] });
+    const file = join(pc.fixture.stateDir, ACCOUNT_LIST_VOUCHES_FILE);
+    expect(existsSync(file)).toBe(true);
+    pc.services.devices.revokeAll();
+    pc.list.status();
+    expect(existsSync(file)).toBe(false);
+    writeFileSync(file, "{}");
+    forgetList(pc.fixture.stateDir);
+    expect(existsSync(file)).toBe(false);
+  }, SLOW);
+
+  test("the WELCOME names the list only to a client that offered account-list-1, whatever else it offered", async () => {
+    const pc = await followsByMove();
+    const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    const seen: Record<string, unknown>[] = [];
+    link.onFrame = (frame) => { if (frame.type === FrameType.WELCOME) seen.push(frame.payload as unknown as Record<string, unknown>); };
+    await link.hello([ACCOUNT_OPENS_ALL_FEATURE]);
+    await link.flush();
+    expect(seen.some((welcome) => "list" in welcome)).toBe(false);
+  }, SLOW);
+
+  test("the PC's witness answer counts against the caller's calls a minute, and an answer writes nothing the timer would not", async () => {
+    const pc = await accountInUse();
+    const phone = await sessionOf(pc, pc.phone);
+    const file = join(pc.fixture.stateDir, ACCOUNT_WITNESS_FILE);
+    const written = statSync(file).mtimeMs;
+    const statuses: number[] = [];
+    for (let call = 0; call < 31; call++) statuses.push((await ask(phone, "/api/account/list/witness")).status);
+    expect([statuses.slice(0, 30).every((status) => status === 200), statuses[30]]).toEqual([true, 429]);
+    expect(statSync(file).mtimeMs).toBe(written);
+  }, SLOW);
+});
+
 describe("keys for a PC the list carried in as an endpoint", () => {
   test("a device that may add devices asks for the PC's card in its session, signs its pc entry and hands it over: the PC signs with its keys from then on", async () => {
     const pc = await followsByMove();
@@ -375,6 +489,25 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     expect(pc.list.status().reason).toContain("ovis add");
     // its devices are let in all the same
     expect(await pc.signsIn(pc.phone, "member")).toBe("drive");
+  }, SLOW);
+
+  test("such a PC is added by ovis add, its keys from the adder the person confirms", async () => {
+    const pc = await followsByMove();
+    const phone = await sessionOf(pc, pc.phone, "member");
+    const card = (await ask(phone, "/api/account/list/card", { method: "POST", body: {} })).body as Card;
+    const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.tablet.signIn, "hold");
+    expect((await pc.hand(phone, [entry])).status).toBe(200);
+    expect(pc.services.relay.setRelayAccount(ACCOUNT)).toBe(true);
+    expect((await pc.local("/api/account/list/add", { account: ACCOUNT })).status).toBe(200);
+  }, SLOW);
+
+  test("the card counts against the caller's calls a minute", async () => {
+    const pc = await followsByMove();
+    const phone = await sessionOf(pc, pc.phone, "member");
+    const statuses: number[] = [];
+    for (let call = 0; call < 31; call++) statuses.push((await ask(phone, "/api/account/list/card", { method: "POST", body: {} })).status);
+    // the account service bounds a PC's posts a minute too (503 then); this PC's own bound is the 31st call's 429
+    expect([statuses[0], statuses.slice(0, 30).includes(429), statuses[30]]).toEqual([200, false, 429]);
   }, SLOW);
 
   test("the list holds another key at this PC's relay key: the PC follows its list, signs nothing, and says so", async () => {
@@ -477,6 +610,15 @@ describe("after the pin, the rows the list makes", () => {
     expect(pc.services.devices.isTombstoned(pc.tablet.signIn.key)).toBe(false);
     expect(existsSync(join(pc.fixture.stateDir, ACCOUNT_LIST_OWED_FILE))).toBe(false);
     expect([published.mock.calls.length, announced.mock.calls.length]).toEqual([0, 0]);
+  }, SLOW);
+
+  test("a device the list removes after its hand-over is kept out here by every key it has been in by", async () => {
+    const pc = await pinnedToBirth();
+    await pc.born.handOver(pc.tablet);
+    await pc.pull();
+    await pc.born.remove(pc.tablet.member.key, pc.phone.member);
+    await pc.pull();
+    for (const key of [pc.tablet.member.key, pc.tablet.signIn.key]) expect(pc.services.devices.isTombstoned(key)).toBe(true);
   }, SLOW);
 
   test("a device this PC holds a removal against stays out by whichever of its keys it is in by", async () => {

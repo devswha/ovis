@@ -1680,12 +1680,15 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
 - **A device that hands its place on keeps its row.** In a list an account that was in use moved
   onto ([account-list.md](account-list.md), "An account that was in use"), each device is carried in
   by the key of its sign-in and hands its place to its account key by an entry of its own. This PC
-  moves that device's row to the new key, with its name, its age and its admission: no hold and no
-  notice, as it is the same device. Its session under the old key ends with `auth_changed`, and it
+  moves that device's row to the new key, with its name, its age and its admission: no new hold and
+  no notice, as it is the same device (a hold it is still in goes on). Its session under the old key ends with `auth_changed`, and it
   signs in again with the other. The old key is no removal: nothing is kept against it.
 - **A removal of this PC's own follows the device.** A device this PC holds a removal against (a
   Revoke here, a signed removal or block it applied) stays out by whichever key the list holds it
-  by, and by the key a sign-in key it put out vouched for (`heldOut`).
+  by, and by the key a sign-in key it put out vouched for (`heldOut`). A device the list removes
+  is kept as removed here by every key it has been in the list by. Not covered: a device that
+  signed in again after the move, that this PC put out by its new sign-in key, and that never
+  handed this PC the link of that key to its account key.
 - **A carried key that never handed over** (an app from before the list, still on the sign-in it
   was carried in by) is let in only while the account service's last whole snapshot of this run
   names it too. It is local and undone by the same word: no device signs a removal because the
@@ -2136,7 +2139,9 @@ its own record before it follows a list a device names to it. Nothing else decid
   from its own window, answers `{ account, pinned, admits: [{ key, wall, ran, idle }], removed }`:
   the keys the account's rows let in to drive right now, each with both counts in seconds and how
   long ago its row was last used here (by the day), and the keys this PC holds a removal against,
-  never why. A row that waits for a whole read lets nobody in and is not told. A device outside the
+  never why. A row that waits for a whole read lets nobody in and is not told. The counts are those
+  of the record's last step, which runs on its own timer, and a caller asks at most 30 times a
+  minute (`429 rate_limited`). A device outside the
   account is refused (`403 account_required`), a PC in no account answers `409 not_in_account`.
 - **A staging run.** `OVIS_LIST_MIGRATE_TIME_SCALE` (a whole number from 1 to 86400) multiplies the
   counts this PC hands over, to a device and to its own check of a naming, so a day passes in a

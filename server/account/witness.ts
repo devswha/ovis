@@ -127,13 +127,17 @@ export class AccountWitness {
    * is none of them; a pairing made at this PC never is. Null on a PC in no account, or whose rows cannot be read.
    */
   admits(): { readonly account: string; readonly admits: readonly LetIn[] } | null {
-    this.step();
+    // The counts as of the last step, which runs on its own timer: an answer takes one only when that is due, so no
+    // caller makes this PC write the file, or counts the minute of slack per step, more often than the timer does
+    if (this.last === null || this.mono() - this.last.mono >= WITNESS_INTERVAL_MS) this.step();
     const held = this.held;
     const last = this.last;
     if (held === null || last === null) return null;
+    // whom the rows let in right now, read only: a row that began to wait since the last step lets nobody in
+    const letting = new Set((this.deps.rows() ?? []).filter((row) => row.lets).map((row) => row.key));
     const scale = this.deps.scale ?? 1;
     const now = Math.floor(last.wall / 1000);
-    const admits = [...held.keys].filter(([key]) => last.letting.has(key)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    const admits = [...held.keys].filter(([key]) => letting.has(key)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([key, row]) => ({ key, wall: Math.floor(row.wall / 1000) * scale, ran: Math.floor(row.ran / 1000) * scale, idle: row.seen === null ? null : Math.max(0, now - row.seen) }));
     return { account: held.account, admits };
   }

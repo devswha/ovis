@@ -330,7 +330,7 @@ export class AccountDeviceStore implements AccountRowSource {
 
   /**
    * A device that handed its place on to another key of its own keeps its row here, under the key it is in by now: the
-   * same name, age and admission, with no hold and no notice, as it is the same device. Its sessions under the key it
+   * same name, age and admission, with no new hold and no notice, as it is the same device; a hold it is still in goes on. Its sessions under the key it
    * handed over end as a row that changed under them, and it signs in again with the other.
    */
   private move(moved: NonNullable<ListCommit["moved"]>, eligible: ReadonlyMap<string, SnapshotDevice>): void {
@@ -342,7 +342,8 @@ export class AccountDeviceStore implements AccountRowSource {
       this.ports.closeSessions(row.id, "list");
       this.waiting.delete(row.id);
       const id = accountDeviceId(this.serverId, to);
-      this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate === row ? { ...row, id, key: to, state: "live", hold_until: null } : candidate) });
+      // the same device: a hold it is still in goes on
+      this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate === row ? { ...row, id, key: to } : candidate) });
     }
   }
 

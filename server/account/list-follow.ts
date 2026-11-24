@@ -962,10 +962,11 @@ export class ListFollow implements ListAuthority {
       const scope = this.bound();
       if (scope === null) return no("unavailable");
       await this.ready;
-      if (this.isPinned && scope.list !== null) return { pinned: true, list: scope.list };
-      if (this.problem !== null || this.removedFrom(scope.account)) return no("unavailable");
       const naming = await heldNaming(scope.account, scope.endpoint, given.session, given.naming);
       if (naming === null) return no("naming_invalid");
+      // a PC that follows a list says so of that list alone: any other is one it does not follow
+      if (this.isPinned && scope.list !== null) return naming.list === scope.list ? { pinned: true, list: scope.list } : no("other_list");
+      if (this.problem !== null || this.removedFrom(scope.account)) return no("unavailable");
       if (this.want !== null && this.want !== naming.list) return no("named_here");
       const keys = await this.keysOf(scope);
       if (keys === null || !this.live(scope)) return no("unavailable");
@@ -975,15 +976,20 @@ export class ListFollow implements ListAuthority {
       if (read === null || state === null) return no("not_read");
       const witness = this.deps.witness?.() ?? null;
       if (witness === null || witness.account !== scope.account) return no("unavailable");
-      // the vouches of a list of this account are kept, whatever comes of this naming: the next one may need them
+      const holds = this.deps.holdsRemoval;
+      // A link says something here only between a device of this list and a key this PC lets in through its account or
+      // holds a removal against: one between keys made up a moment ago takes no place. Those of a list of this account are
+      // kept, whatever comes of this naming, since the next one may need them, and count in this one whether kept or not
+      const letIn = new Set(witness.rows.map((row) => row.key));
+      const handed = state.account !== scope.account ? [] : (await heldVouches(scope.account, naming.list, given.vouches)).filter((vouch) =>
+        Object.hasOwn(state.signers, vouch.key) && state.signers[vouch.key]!.as === "device" && (letIn.has(vouch.device) || witness.removed.includes(vouch.device) || holds?.(vouch.device) === true));
       if (state.account === scope.account) {
-        const held = await heldVouches(scope.account, naming.list, given.vouches);
         let kept: "kept" | "full";
-        try { kept = this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, naming.list, held); } catch { return no("unavailable"); }
+        try { kept = this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, naming.list, handed); } catch { return no("unavailable"); }
         if (kept === "full") return no("lists_full");
       }
-      const vouched = this.vouchedFor(naming.list);
-      const holds = this.deps.holdsRemoval;
+      const held = this.vouchedFor(naming.list);
+      const vouched = [...held, ...handed.filter((vouch) => !held.some((one) => one.key === vouch.key && one.device === vouch.device))];
       const removed = [...new Set([...witness.removed, ...[...Object.keys(state.signers), ...vouched.map((vouch) => vouch.device), naming.session].filter((key) => holds?.(key) === true)])];
       const verdict = pinVerdict(state, naming, { account: scope.account, rows: witness.rows, removed, vouched });
       // a wait is told in seconds of this PC's own clock: on a staging run the record's durations were multiplied
@@ -2445,9 +2451,13 @@ export class ListFollow implements ListAuthority {
       const entry = entryFromText(text);
       const id = entryHash(entry.body);
       if (this.applied.has(id + key)) continue;
-      this.deps.removed(key, { id, at: readBody(entry.body).issued_at });
-      this.applied.add(id + key);
-      this.kept.add(key);
+      // and every key it handed its place on from: the device is out by all of them, also once this PC reads a snapshot again
+      for (const one of [key, ...handedFrom(copy.state, key)]) {
+        if (this.applied.has(id + one)) continue;
+        this.deps.removed(one, { id, at: readBody(entry.body).issued_at });
+        this.applied.add(id + one);
+        this.kept.add(one);
+      }
     }
   }
 
@@ -2550,6 +2560,18 @@ async function copied(target: FollowerCopy, source: FollowerCopy, now: number): 
     read = result.verdict === "more" || result.verdict === "asks_after" ? result.read : null;
   }
   return copy;
+}
+
+/** The keys that handed their place on, however many times, down to `key`. */
+function handedFrom(state: ListState, key: string): string[] {
+  return Object.keys(state.signers).filter((from) => {
+    let at: string | null = from;
+    for (let steps = 0; at !== null && steps <= state.footing.seq; steps += 1) {
+      at = heirOf(state, at);
+      if (at === key) return true;
+    }
+    return false;
+  });
 }
 
 /** The keys a `carried` entry named that are in by themselves: they never handed their place on. */
