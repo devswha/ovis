@@ -29,6 +29,15 @@ import { VouchedPcApproval } from "./VouchedPcApproval.tsx";
  */
 export const restsOnAdmission = (request: RemotePairingRequest | undefined): boolean => request?.intent === "account" || request?.vouched === true;
 
+/**
+ * What the card says where an approval ended before the PC said that the new device confirmed (NotConfirmedError). A
+ * join that brought its card waits for its person's press. One that brought none is a pairing of that PC's own: no
+ * device is ever told that it confirmed, so it is approved on that PC's own screen.
+ */
+export function unconfirmedReason(t: (key: string, vars?: Record<string, string>) => string, request: RemotePairingRequest, device: string, pc: string): string {
+  return request.list === true ? t("First press “The numbers match” on {device}", { device }) : t("Approve {device} on {pc}'s own screen", { device, pc });
+}
+
 export function AccountApprovals({ pairings }: { pairings: readonly RemotePairingRequest[] }) {
   // The devices this PC let in that the account's list did not take, each kept until it is let in or closed. They are
   // held here, above whichever card the next request draws, so a request for another PC (VouchedPcApproval) takes none
@@ -148,7 +157,7 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
       // this PC lets devices in by the account's list alone, and this device cannot write that list: nothing was approved
       if (error instanceof ListAllowError) throw new Error(stalledReason(t, error.why, error.retryAfterMs));
       // nor where the new device's person has not said yet that the numbers match
-      if (error instanceof NotConfirmedError) throw new Error(t("First press “The numbers match” on {device}", { device: deviceName }));
+      if (error instanceof NotConfirmedError) throw new Error(unconfirmedReason(t, request, deviceName, where.pcName));
       if (error instanceof AdmissionChangedError) {
         // Approve waits again until the new details are read (and the card's pick is cleared with them)
         setAsker(null);

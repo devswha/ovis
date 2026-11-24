@@ -1520,7 +1520,9 @@ list](account.md#a-pc-allows-a-device-into-the-list)). The app's half is in
   signs. So for a join the PC marks `list` (or on a session for which it selected
   `account-list-1`), the card holds **Approve** until the PC says that the new device's person
   pressed **The numbers match** there (`confirmed`), and says so: **First press “The numbers
-  match” on {device}**. A device that gives up before that is nobody's member. Nothing is
+  match” on {device}**. A join on such a PC that brought no card is a pairing of that PC's own,
+  which no device is ever told was confirmed: its card says **Approve {device} on {pc}'s own
+  screen**. A device that gives up before that is nobody's member. Nothing is
   approved either where the approver cannot write its list, and the card says why. Then the
   approval, and right after it the device's entry: signed, placed, and handed to the PC as a
   page where the PC takes one from this session; where it takes none it reads the entry from the
