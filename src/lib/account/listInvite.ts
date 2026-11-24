@@ -102,9 +102,10 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
     const request = options.auto ? await signedNamed(writer, null, invite.key, kind) : await signedOn(writer, [kind(null)]);
     return { ...request, invite: { key: invite.key, auto: options.auto } };
   };
+  const named = { ...options, operation: `invite:${options.auto ? "auto" : "plain"}` };
   const outcome = options.auto
-    ? await writeNamed<Invite, "service">(list, prepare, sign, options)
-    : await writeToList<"service">(list, async (writer) => { const ready = await prepare(writer); return "go" in ready ? { request: await sign(writer, ready.go) } : ready; }, options);
+    ? await writeNamed<Invite, "service">(list, prepare, sign, named)
+    : await writeToList<"service">(list, async (writer) => { const ready = await prepare(writer); return "go" in ready ? { request: await sign(writer, ready.go) } : ready; }, named);
   if (outcome.written && held.invite !== null) {
     const row = list.writer()?.state.invites[held.invite.key];
     if (row !== undefined) return { made: true, invite: { ...held.invite, exp: row.exp, auto: options.auto } };
@@ -167,7 +168,7 @@ export async function revokeInvite(list: AccountList, key: string, options: Pick
     // with the epoch this request opens anyway, as many of the keys over their time as one request holds beside them
     const lapsed = lapsedRemovals(state, clock).filter((each) => !(each.kind === "remove" && "ends" in each && each.ends === key)).slice(0, WRITE_ENTRIES_MAX - 2);
     return { request: await signedWithEpoch(writer, current, [remove, ...lapsed]) };
-  }, options);
+  }, { ...options, operation: `revoke:${key}` });
   if (!outcome.written) return { revoked: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
   await endAtService(list, key);
   return { revoked: true };

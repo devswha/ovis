@@ -1186,7 +1186,14 @@ this page or another, whatever is asked for by then. Two pages that sign at one 
 request, the first, and the other page's signature is never sent. The request is let go only
 when the account service's own refusal proved that it placed nothing, and a request kept from
 before that is placed or let go makes way for what was asked: it is signed on the head that
-follows. Within one call the request goes again, with the same signatures, three
+follows. **A request that waits is its own change's to send again, never another's**: it goes
+again by Try again on its card or when the same change is tried again. Any other change first
+reads the log: the head moved, and the kept request is over; the head did not move, and while the
+kept request is younger than ten minutes the other change is refused with **An earlier change is
+still waiting: try it again or cancel it first**, and the card of the earlier change is shown,
+with **Try again** and **Cancel**. Past ten minutes, or at Cancel, it is let go and the other
+change is signed: an attempt its writer left behind is no fork. So an Allow that stalled is never
+placed, later, by an unrelated Remove. Within one call the request goes again, with the same signatures, three
 times at most, while the device's own copy shows the head it was signed on: while the service
 says it is rebuilding the list (`503 list_rebuilding`) or asks for the request again, after an
 answer that never came, and while the log does not show the entry. Another entry is signed only

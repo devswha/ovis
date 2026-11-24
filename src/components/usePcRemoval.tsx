@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import { shellAccountActions, type FreshSignIn } from "../lib/account/hostedSignIn.ts";
 import { pageListPc } from "../lib/account/listPcs.ts";
 import { removeListPc } from "../lib/account/listRemove.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { forgetSeenPc } from "../lib/account/seenPcs.ts";
@@ -28,7 +29,11 @@ export class ListPcRemovalError extends Error {
 
 /** What to say of a removal that failed: what the list said where that tells the person more, the surface's own words otherwise. */
 export function pcRemovalFailure(error: unknown, t: ReturnType<typeof useT>, otherwise: string): string {
-  return error instanceof ListPcRemovalError && error.why === "stopped" ? t("The account service cannot change the list right now.") : otherwise;
+  if (!(error instanceof ListPcRemovalError)) return otherwise;
+  if (error.why === "stopped") return t("The account service cannot change the list right now.");
+  // a request signed for an earlier change still waits: that one is tried again or cancelled first, on its own card
+  if (error.why === "waiting") return t("An earlier change is still waiting: try it again or cancel it first.");
+  return otherwise;
 }
 
 type Asked = {
@@ -74,6 +79,7 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
     if (list !== null && endpoint !== null && status?.at === "following") {
       // for the account and the list whose row the person pressed: another tab's sign-in changes neither under it
       const outcome = await removeListPc(list, endpoint, { expect: { account: session.account, list: status.list } });
+      if (!outcome.removed && outcome.why === "waiting") window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT));
       if (!outcome.removed) throw new ListPcRemovalError(outcome.why);
       await removed(serverId, "list");
       return true;

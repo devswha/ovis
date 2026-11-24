@@ -111,7 +111,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
     view: listView, subscribe: () => () => {}, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
     shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), writer: () => null, placeAt: () => null,
     holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
-    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {},
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
   };
   const mountAt = (entryUrl: string) => { loads++; return mountRelayShell({
     container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore, ...(label === undefined ? {} : { label }), ...(accountList === undefined ? {} : { accountList }),
