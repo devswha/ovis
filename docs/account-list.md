@@ -1161,6 +1161,10 @@ the device asks with), and only then:
 1. It reads the list, so that it signs on what the log holds now. The write belongs to the account
    the approval was begun under and to the list of this first read: a sign-in another tab changed
    meanwhile ends it with nothing signed, and never leads to the way of an account with no list.
+   Whether the device goes by a list at all is read from what it holds itself (the copy in its
+   own store): with none, the approval goes as before lists, at once, and waits for no answer
+   about lists. With one, the device never takes the ways from before lists, whatever its
+   standing: put out, stopped, alarmed or unread each say so before anything goes to the PC.
 2. It takes the newcomer's card from the claims the service lists
    (`GET /v2/lists/{list}/claims`), for the key whose digits were compared. The key comes from
    the comparing, never from that answer; the card proves itself, and an entry whose card is not
@@ -1172,9 +1176,24 @@ the device asks with), and only then:
 4. It places the request with the epoch key wrapped to the newcomer
    (`POST /v2/lists/{list}/entries`).
 5. It reads the list again. The newcomer is in when the device's own copy shows the entry at its
-   place, whatever the service answered to the placement.
+   place, whatever the service answered to the placement, and still holds the newcomer's key as
+   in: where another member put it out meanwhile, nothing more is signed for it.
 
-**One signature per place.** The request as signed goes again, with the same signatures, three
+**One signature per place.** A request is kept in the device's own store, under the account, the
+member key and the head it was signed on, before it is sent. While the device's copy shows that
+head, that request is the only one that goes: from this call or a later one (**Try again**), from
+this page or another, whatever is asked for by then. Two pages that sign at one head keep one
+request, the first, and the other page's signature is never sent. The request is let go only
+when the account service's own refusal proved that it placed nothing, and a request kept from
+before that is placed or let go makes way for what was asked: it is signed on the head that
+follows. **A request that waits is its own change's to send again, never another's**: it goes
+again by Try again on its card or when the same change is tried again. Any other change first
+reads the log: the head moved, and the kept request is over; the head did not move, and while the
+kept request is younger than ten minutes the other change is refused with **An earlier change is
+still waiting: try it again or cancel it first**, and the card of the earlier change is shown,
+with **Try again** and **Cancel**. Past ten minutes, or at Cancel, it is let go and the other
+change is signed: an attempt its writer left behind is no fork. So an Allow that stalled is never
+placed, later, by an unrelated Remove. Within one call the request goes again, with the same signatures, three
 times at most, while the device's own copy shows the head it was signed on: while the service
 says it is rebuilding the list (`503 list_rebuilding`) or asks for the request again, after an
 answer that never came, and while the log does not show the entry. Another entry is signed only
@@ -1187,12 +1206,17 @@ request goes again, or, where the log cannot be read either, it says that it is 
 whether the device is in the account. It never says "added to this PC only" for that. A placement
 waits thirty seconds for its answer, and the read of the claims as long.
 
-**Whose clock.** Whether an invite's or a device's time is over, and so whether a removal and a
-new epoch go first, is judged by the device's own clock, held against the floor it saved and the
-list's own time, and the entry is dated by that clock. The account service's clock decides
-nothing and is never signed: a service that said "tomorrow" could otherwise make a member sign a
-removal that nothing undoes. Where the service refuses a request for its time or its epoch, the
-device signs nothing else and says that its clock looks wrong.
+**Whose clock.** Two clocks, two jobs. What is *signed* (the time an entry is dated, whose time
+is over and so whether a removal and a new epoch go first, what is sealed and wrapped) goes by the
+device's own clock as it is now, held against the list's own time and nothing else. The latest
+time the device saved (its floor) is not used for it: a floor that a date set ahead once pushed
+forward would otherwise sign the removal of a key whose time is not over, and a removal cannot be
+undone. The floor is for what can be undone: whom the device lets in, refuses and shows as over.
+A device whose clock reads more than ten minutes under its own floor cannot tell which of the two
+is wrong: it signs nobody out for a time that is over, so no epoch is opened and the newcomer
+comes in with no name until a later writer seals one. The account service's clock decides nothing
+and is never signed. Where the service refuses a request for its time or its epoch, the device
+signs nothing else and says that its clock looks wrong.
 
 **No request over sixteen entries.** The request that lets a device in holds the removal of
 everybody who is over their time, the epoch and the device. Where more are over their time than
@@ -1221,7 +1245,9 @@ pairing ends that), and then follows that list when the log shows its own key le
 before it: an entry that lets it in only after the place it was handed is not what the member
 vouched for. The copy is saved before the place is forgotten, so a save that fails keeps the
 place. A log that ends before that place, or shows another entry there, is followed by nobody:
-the device keeps the place it was handed and reads again at its own pace. So a new device takes
+the device keeps the place it was handed and reads again at its own pace. Being handed a place
+ends the search for one and says nothing more: the new device says **In your account** only once
+its own copy shows it in. So a new device takes
 the list from a member, through the one PC it compared digits with, and never from the account
 service. A device that follows a list takes no place from anybody. A PC that does not carry the
 place yet (it keeps the introduction's PCs and drops what else it is sent) hands the new device

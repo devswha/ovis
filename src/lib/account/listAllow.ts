@@ -49,13 +49,16 @@ export async function allowDevice(list: AccountList, newcomer: Newcomer, options
    * (`changed`), and never leads to the way of an account with no list.
    */
   readonly account?: string;
-  /** how long the read of the claims waits; a test's own */
+  /** how long the read of the claims, and one placement, wait; a test's own */
   readonly claimsMs?: number;
+  readonly placeMs?: number;
 } = {}): Promise<AllowOutcome> {
   const names = listNames(newcomer.label, newcomer.os);
   let bound: string | undefined;
-  // read at every try of every round: the list is fixed from the first writer on
-  const held = { account: options.account ?? "", get list(): string | undefined { return bound; } };
+  // The account the Allow began under: the one it was asked for, or the one this page's list was drawn for when it
+  // was called. Read at every try of every round, with the list of the first writer.
+  const began = options.account ?? list.view().account ?? undefined;
+  const held = { account: began ?? "", get list(): string | undefined { return bound; } };
   const outcome = await writeNamed<ListClaim, "removed">(list, async (writer) => {
     bound ??= writer.list;
     const row = writer.state.signers[newcomer.key];
@@ -65,9 +68,12 @@ export async function allowDevice(list: AccountList, newcomer: Newcomer, options
     const claim = (await writer.service.listClaims(writer.list, AbortSignal.timeout(options.claimsMs ?? CLAIMS_MS))).find((each) => each.key === newcomer.key);
     return claim === undefined ? { refused: "not_claimed" } : { go: claim };
   }, (writer, claim) => signedNamed(writer, names, claim.enc, (sealed): ListKind => ({ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed, rotates: false })),
-  { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.account === undefined ? {} : { expect: held }) });
+  { operation: `allow:${newcomer.key}`, ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.placeMs === undefined ? {} : { placeMs: options.placeMs }), ...(began === undefined ? {} : { expect: held }) });
   // a device that is in no list of the account it was asked for is not "an account with no list"
-  if (!outcome.written && outcome.why === "no_list" && options.account !== undefined && list.view().account !== options.account) return { allowed: false, why: "changed", retryAfterMs: null };
-  return outcome.written ? { allowed: true, offer: { list: outcome.list, seq: outcome.place.seq, hash: outcome.place.hash } }
-    : { allowed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
+  if (!outcome.written && outcome.why === "no_list" && began !== undefined && list.view().account !== began) return { allowed: false, why: "changed", retryAfterMs: null };
+  if (!outcome.written) return { allowed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
+  // The entry is in this device's copy. So is whatever came after it: where another member put the newcomer out
+  // meanwhile, the copy just read says so, and nothing more is signed for a key the list holds no more.
+  if (!list.view().devices.some((device) => device.key === newcomer.key)) return { allowed: false, why: "removed", retryAfterMs: null };
+  return { allowed: true, offer: { list: outcome.list, seq: outcome.place.seq, hash: outcome.place.hash } };
 }

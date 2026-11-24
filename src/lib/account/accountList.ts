@@ -11,11 +11,11 @@
  * What the two differ in is recorded (listShadow.ts).
  */
 import { hexToBytes } from "@noble/hashes/utils.js";
-import type { ListNames, ListRole, ListState } from "../../../shared/account-list.ts";
+import { listClock, type ListNames, type ListRole, type ListState } from "../../../shared/account-list.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import { entryFromText, entryHash, isListHash, ListEntryError, readBody, type SignerPower } from "../../../shared/account-list-entry.ts";
 import {
-  followStep, gossipHead, heardHead, memberClock, pcOfKey, pinList, READ_PAGES_MAX, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
+  followStep, gossipHead, heardHead, pcOfKey, pinList, READ_PAGES_MAX, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
   type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type ListHead, type ListPage as PeerPage, type SaveRefusal, type Standing,
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH, type EpochKey } from "../../../shared/account-list-seal.ts";
@@ -324,6 +324,28 @@ function readTimes(value: unknown, list: string): { readonly read_at: number | n
 
 const later = (a: number | null, b: number | null): number | null => a === null ? b : b === null ? a : Math.max(a, b);
 
+/** How far under the latest time it saved a device's clock may read before it signs nobody out for a time that is over. */
+const ADRIFT_SECONDS = 600;
+
+/** A kept request (KeptRequest) as its record holds it; null for none, one out of form, or one that was let go. */
+function readKept(value: unknown): KeptRequest | null {
+  if (typeof value !== "string") return null;
+  let read: unknown;
+  try { read = JSON.parse(value); } catch { return null; }
+  if (!isRecord(read) || read.v !== RECORD_VERSION || read.let_go === true) return null;
+  const place = (at: unknown): { seq: number; hash: string } | null => isRecord(at) && typeof at.seq === "number" && Number.isSafeInteger(at.seq) && at.seq >= 0 && typeof at.hash === "string" && isListHash(at.hash) ? { seq: at.seq, hash: at.hash } : null;
+  const [on, last] = [place(read.on), place(read.place)];
+  const { list, key, entries, wraps } = read;
+  if (typeof list !== "string" || !isListHash(list) || typeof key !== "string" || on === null || last === null) return null;
+  if (!Array.isArray(entries) || entries.length === 0 || !entries.every((text) => typeof text === "string") || !Array.isArray(wraps)) return null;
+  if (!wraps.every((wrap) => isRecord(wrap) && typeof wrap.epoch === "number" && typeof wrap.member === "string" && typeof wrap.wrap === "string")) return null;
+  return { list, key, on, entries: entries as string[], wraps: wraps as KeptRequest["wraps"], place: last, for: typeof read.for === "string" ? read.for : null, at: typeof read.at === "number" && Number.isSafeInteger(read.at) ? read.at : 0 };
+}
+
+/** Whether a kept request was signed by `writer`'s key on the very head `writer` holds. */
+const sameHead = (kept: KeptRequest, writer: ListWriter): boolean =>
+  kept.list === writer.list && kept.key === writer.keys.key && kept.on.seq === writer.state.footing.seq && kept.on.hash === writer.state.footing.hash;
+
 /** One account's list in this page's memory. */
 interface Held {
   readonly account: string;
@@ -375,7 +397,33 @@ export interface ListWriter {
   readonly clock: number;
   /** The time an entry is dated, in seconds: the device's own clock. */
   readonly issued_at: number;
+  /**
+   * This device's clock reads more than ten minutes under the latest time it saved. It cannot tell which of the two
+   * is wrong, so it signs nobody out for a time that is over (no clean-up removal); what a person asked for goes on.
+   */
+  readonly adrift: boolean;
   readonly service: AccountService;
+}
+
+/**
+ * A request this device signed for a place of its list and has not seen placed. It is the one signature for that
+ * place: kept in the device's own store before it is sent, and sent again, by this page or another, by this call or
+ * a later one, until the device's own copy shows a new head or the account service proved that it placed nothing.
+ */
+export interface KeptRequest {
+  readonly list: string;
+  /** The member key that signed it. */
+  readonly key: string;
+  /** The head it was signed on. */
+  readonly on: { readonly seq: number; readonly hash: string };
+  readonly entries: readonly string[];
+  readonly wraps: readonly { readonly epoch: number; readonly member: string; readonly wrap: string }[];
+  /** The place of its last entry. */
+  readonly place: { readonly seq: number; readonly hash: string };
+  /** What it was signed for (WriteOptions.operation); null where the writer named nothing. */
+  readonly for: string | null;
+  /** When it was kept, in seconds, by this device's clock. */
+  readonly at: number;
 }
 
 /** A place in a list as a member hands it to a device it let in: the list id and the member's own head. */
@@ -398,9 +446,22 @@ export interface AccountList {
   sync(options?: { /** read the log past this device's head whatever head the account service names: after a write whose outcome only the log says */ readonly read?: boolean }): Promise<AccountListView>;
   /**
    * Whether this device keeps a copy of a list of the account, read from its own store alone: it then goes by that
-   * list from the first thing it draws, before the account service said anything.
+   * list, before the account service said anything and whatever it says.
    */
   follows(account: string): Promise<boolean>;
+  /** The request this device signed on the head `writer` holds and has not seen placed (KeptRequest); null where it kept none for that head. */
+  kept(writer: ListWriter): Promise<KeptRequest | null>;
+  /**
+   * Keeps `request` as the one signed on `writer`'s head, before it is sent, and answers the request that stands for
+   * that head: this one, or the one another page kept first, which is then the one to send.
+   */
+  keep(writer: ListWriter, request: Pick<KeptRequest, "entries" | "wraps" | "place" | "for">): Promise<KeptRequest>;
+  /** Lets `request` go: the account service proved that it placed nothing of it, or its time ran out, so another may be signed on that head. */
+  unkeep(account: string, request: KeptRequest): Promise<void>;
+  /** The request kept for the head this device holds now, if one still waits: what it is for, and when it was kept (seconds, this device's clock). */
+  waiting(): Promise<{ readonly for: string | null; readonly at: number } | null>;
+  /** Lets the request that waits go, at the person's word (Cancel): another change may then be signed on that head. */
+  cancel(): Promise<void>;
   view(): AccountListView;
   /** Hears each view that differs from the one before. */
   subscribe(listener: (view: AccountListView) => void): () => void;
@@ -1025,6 +1086,38 @@ export function accountList(options: AccountListOptions): AccountList {
         publish({ ...shown, devices: shown.devices.map((row) => ({ ...row, name: null })), pcs: shown.pcs.map((row) => ({ ...row, name: null })) });
       }
     },
+    async kept(writer) {
+      const kept = readKept(await store.get("sent", writer.account));
+      return kept !== null && sameHead(kept, writer) ? kept : null;
+    },
+    async keep(writer, request) {
+      const mine: KeptRequest = { list: writer.list, key: writer.keys.key, on: { seq: writer.state.footing.seq, hash: writer.state.footing.hash }, entries: request.entries, wraps: request.wraps, place: request.place, for: request.for, at: writer.issued_at };
+      const text = JSON.stringify({ v: RECORD_VERSION, ...mine });
+      for (let tries = 0; tries < SAVE_TRIES; tries += 1) {
+        const before = await store.get("sent", writer.account);
+        const standing = readKept(before);
+        // another page signed for this place first: its request is the one signature, and this page's is never sent
+        if (standing !== null && sameHead(standing, writer)) return standing;
+        if (await store.swap("sent", writer.account, typeof before === "string" ? before : undefined, text)) return mine;
+      }
+      throw new StaleCopyError();
+    },
+    async unkeep(account, request) {
+      const before = await store.get("sent", account);
+      const standing = readKept(before);
+      if (typeof before !== "string" || standing === null || standing.place.hash !== request.place.hash || standing.on.hash !== request.on.hash) return;
+      await store.swap("sent", account, before, JSON.stringify({ v: RECORD_VERSION, ...standing, let_go: true }));
+    },
+    async waiting() {
+      const writer = this.writer({ self: true });
+      const kept = writer === null ? null : await this.kept(writer);
+      return kept === null ? null : { for: kept.for, at: kept.at };
+    },
+    async cancel() {
+      const writer = this.writer({ self: true });
+      const kept = writer === null ? null : await this.kept(writer);
+      if (writer !== null && kept !== null) await this.unkeep(writer.account, kept);
+    },
     async adopt(offer) {
       const session = await service.session();
       const read = readOffer({ v: RECORD_VERSION, ...offer });
@@ -1054,8 +1147,9 @@ export function accountList(options: AccountListOptions): AccountList {
         // Whose time is over is judged by this device's own clock, held against the floor it saved and the list's own
         // time, and an entry is dated by that clock: never by the account service's, which could otherwise make a
         // member sign a removal, or a time, that nothing undoes
-        clock: memberClock(copy, at),
+        clock: listClock(copy.state, at, null),
         issued_at: at,
+        adrift: copy.seen_at !== null && at < copy.seen_at - ADRIFT_SECONDS,
       };
     },
     holdsEntry(place) {

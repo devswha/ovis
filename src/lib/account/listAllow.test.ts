@@ -399,6 +399,105 @@ describe("an invite whose time is over, still in the list", () => {
   });
 });
 
+describe("what an Allow answers for a key the list holds no more, and what it keeps of what it signed", () => {
+  it("lets nobody in whom another member put out before this device read its entry back: the copy just read says so", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    allowed(await allowDevice(first.list, newcomer, noWait));
+    await second.list.adopt({ list: w.held().id, seq: w.held().head.seq, hash: w.held().head.hash });
+    const third = await w.device({ label: "Laptop" });
+    await third.list.sync();
+    const laptop = { key: (await third.keys()).key, label: "Laptop", os: null };
+    // the service places the laptop's entry, and before the first device reads it back the second puts the laptop out
+    first.wire.answer = async (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries")) return null;
+      first.wire.answer = null;
+      const answer = await w.fake.fetch(request);
+      await second.list.sync();
+      const writer = second.list.writer()!;
+      const removal = await signListEntry(writer.state, { kind: "remove", ends: laptop.key }, { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+      await writer.service.placeEntries(writer.list, [removal.text], []);
+      return answer;
+    };
+    expect(await allowDevice(first.list, laptop, noWait)).toEqual({ allowed: false, why: "removed", retryAfterMs: null });
+    expect(kinds(w.held().entries).slice(-2)).toEqual(["device", "remove"]);
+  });
+
+  it("signs once for a place, also from two pages of one device at the same head: the second sends what the first kept", async () => {
+    const { w, first, newcomer } = await twoDevices();
+    // two pages of one device share its stores, so its keys and the request it keeps
+    const writer = first.list.writer()!;
+    const signed: string[] = [];
+    // both pages stand at the same head and sign before either has sent anything
+    const sign = async (label: string) => {
+      const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === newcomer.key)!;
+      const entry = await signListEntry(writer.state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: false }, { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at + (label === "second" ? 1 : 0));
+      signed.push(entry.text);
+      return first.list.keep(writer, { entries: [entry.text], wraps: [], place: { seq: entry.state.footing.seq, hash: entry.state.footing.hash }, for: `allow:${newcomer.key}` });
+    };
+    const [one, two] = [await sign("first"), await sign("second")];
+    expect(signed[0]).not.toBe(signed[1]);
+    // the one kept first stands for that head: the second page's own signature is never sent
+    expect([one.entries, two.entries]).toEqual([[signed[0]!], [signed[0]!]]);
+    expect((await first.list.kept(writer))?.entries).toEqual([signed[0]!]);
+    // and the Allow that follows sends that very request
+    allowed(await allowDevice(first.list, newcomer, noWait));
+    expect(w.held().entries[1]).toBe(signed[0]!);
+  });
+
+  it("signs another request on the same head only after the account service proved that it placed nothing", async () => {
+    const { w, first, newcomer } = await twoDevices();
+    const texts = () => placements(first).map((each) => (each.body!.entries as string[])[0]!);
+    // a budget: the service's own refusal, with nothing placed. The request is let go
+    first.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ error: { code: "entry_budget", message: "x" } }, { status: 429, headers: { "retry-after": "60" } }) : null;
+    expect(await allowDevice(first.list, newcomer, noWait)).toMatchObject({ allowed: false, why: "budget" });
+    first.wire.answer = null;
+    w.clock.now += 1_000;
+    allowed(await allowDevice(first.list, newcomer, noWait));
+    // two requests went out for that place, one after the other was refused, and the list holds the second
+    expect([new Set(texts()).size, w.held().entries[1]]).toEqual([2, texts().at(-1)]);
+  });
+
+  it("sends the same request again where the account service asks to try again, and says that its clock looks wrong where the service dates the entry ahead", async () => {
+    const { w, first, newcomer } = await twoDevices();
+    let asked = 0;
+    first.wire.answer = (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries")) return null;
+      asked += 1;
+      return asked === 1 ? Response.json({ error: { code: "try_again", message: "x" } }, { status: 409 }) : null;
+    };
+    allowed(await allowDevice(first.list, newcomer, noWait));
+    const sent = placements(first);
+    expect([sent.length, sent[1]!.body]).toEqual([2, sent[0]!.body]);
+    // an entry the service dates ahead of its own clock: nothing else is signed, and the card says the clock looks wrong
+    const third = await w.device({ label: "Laptop" });
+    await third.list.sync();
+    first.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ error: { code: "entry_refused", message: "x", reason: "issued_at_ahead", outcome: "service", index: 0 } }, { status: 400 }) : null;
+    const before = placements(first).length;
+    expect(await allowDevice(first.list, { key: (await third.keys()).key, label: "Laptop", os: null }, noWait)).toEqual({ allowed: false, why: "clock", retryAfterMs: null });
+    expect(placements(first).length).toBe(before + 1);
+  });
+
+  it("puts nobody out for a time that is over while its clock reads far under the time it last saved: the newcomer comes in with no name", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const keys = await first.keys();
+    const invite = await deviceListKeys(memoryAccountStore());
+    const at = Math.floor(w.clock.now / 1000);
+    const placed = await signListEntry(w.held().state, { kind: "invite", key: invite.key, exp: at + 900, uses: 1, auto: true, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+    await first.service.placeEntries(w.held().id, [placed.text], []);
+    w.clock.now += 16 * 60_000;
+    await first.list.sync();
+    // the device's clock was an hour ahead for one read, and is right again: it reads far under the time it saved
+    await first.lists.set("times", w.account, { v: 1, list: w.held().id, read_at: at + 4600, seen_at: at + 4600 });
+    await second.list.sync();
+    allowed(await allowDevice(first.list, newcomer, noWait));
+    // no removal and no epoch: one entry, with no name sealed
+    expect(kinds(w.held().entries)).toEqual(["genesis", "invite", "device"]);
+    expect((readKind(readBody(entryFromText(w.held().entries[2]!).body)) as Extract<ListKind, { kind: "device" }>).sealed).toBeNull();
+  });
+});
+
 describe("a device whose list stands in its way", () => {
   it("says that it cannot write, and never that the account has no list", async () => {
     const { w, first, second, newcomer } = await twoDevices();
@@ -421,6 +520,25 @@ describe("a device whose list stands in its way", () => {
     w.fake.tamperList(list.id, { fork: other });
     w.clock.now += 30_000;
     expect(following(await first.list.sync()).trouble).toBe("fork");
+    const before = placements(first).length;
+    expect(await allowDevice(first.list, { key: (await third.keys()).key, label: "Laptop", os: null }, noWait)).toEqual({ allowed: false, why: "blocked", retryAfterMs: null });
+    expect(placements(first).length).toBe(before);
+  });
+});
+
+describe("a device whose copy is stopped at an entry nobody signed", () => {
+  it("writes nothing while the account service shows it another history under what it holds", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    await second.list.adopt(allowed(await allowDevice(first.list, newcomer, noWait)));
+    const third = await w.device({ label: "Laptop" });
+    await third.list.sync();
+    // an entry at a place this device holds, signed by a key that is no member's: no fork, and the copy is stuck there
+    const stranger = await deviceListKeys(memoryAccountStore());
+    const list = w.held();
+    const lie = await signEntry(kindBody({ issued_at: Math.floor(w.clock.now / 1000), list: list.id, prev: list.id, seq: 1, signer: stranger.key }, { kind: "remove", endpoint: "ab".repeat(32) }), stranger.signs);
+    w.fake.tamperList(list.id, { fork: [entryToText(lie)] });
+    w.clock.now += 30_000;
+    expect(following(await first.list.sync()).trouble).toBe("stuck");
     const before = placements(first).length;
     expect(await allowDevice(first.list, { key: (await third.keys()).key, label: "Laptop", os: null }, noWait)).toEqual({ allowed: false, why: "blocked", retryAfterMs: null });
     expect(placements(first).length).toBe(before);

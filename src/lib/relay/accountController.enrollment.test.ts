@@ -137,7 +137,7 @@ describe("account enrollment ownership", () => {
     let listRead = options.list !== "unread";
     const accountList: AccountList | undefined = options.list === undefined ? undefined : {
       sync: async () => { listRead = true; return options.list === "unanswered" ? unanswered : listView; }, follows: async () => true, view: () => options.list === "unanswered" ? unanswered : listRead ? listView : unread, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
-      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView, writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
+      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView, writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
     };
     const open = async (target: RelayOffer = offer) => { const transport = target.server_id === offer.server_id ? new Admitted(offer) : new Peer(target); transports.push(transport); return transport; };
     const controller = () => createAccountController({
@@ -213,7 +213,10 @@ describe("account enrollment ownership", () => {
         const opened = await run.open();
         const fetch = opened.fetch.bind(opened);
         opened.fetch = async (path: string) => { asked.push(path); return fetch(path); };
-        expect(await run.controller.enroll(opened, run.original.server_id, false)).toMatchObject({ state: "complete" });
+        const said = await run.controller.enroll(opened, run.original.server_id, false);
+        // a device that still waits to be let into the list says nothing of the account: "In your account" is for one its own copy shows in
+        if (list === "waiting") expect(said).toBe("local");
+        else expect(said).toMatchObject({ state: "complete" });
         expect({ puts: run.putPcs, links: run.links(), enrolled: asked.includes("/api/account/enroll") }).toEqual({ puts: [], links: 0, enrolled: false });
         expect(await rowSays(run)).not.toContain("incomplete");
         // the pairing is what it was
