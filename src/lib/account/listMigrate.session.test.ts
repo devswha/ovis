@@ -104,3 +104,14 @@ describe("a session to a PC that follows the list", () => {
     expect(asked).toBe(1);
   });
 });
+
+describe("what a PC answered stays for the run", () => {
+  test("a session that gets no answer (a pairing's, which the PC does not answer) leaves an answer heard before", async () => {
+    const answers = pcAnswers();
+    const said = { account: ACCOUNT, pinned: null, admits: [], removed: [] };
+    answers.set(ACCOUNT, E(1), said);
+    const list = listOf({ at: "none", why: "moving", move: { why: "too_new", wait: 10, asks: [] } });
+    await onPcSession({ list, answers, account: ACCOUNT, fetch: pcWire({ "GET /api/account/list/witness": json({ error: { code: "account_required" } }, 403) }).fetch, endpoint: E(1), pinned: false, session: KEY, signIn: KEY });
+    expect(answers.get(ACCOUNT, E(1))).toEqual(said);
+  });
+});

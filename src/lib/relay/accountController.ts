@@ -1,5 +1,6 @@
 import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE } from "../../../shared/relay-mux.ts";
-import { importPublicKey } from "../../../shared/relay-e2ee.ts";
+import { exportPublicKey, importPublicKey } from "../../../shared/relay-e2ee.ts";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList, type ListOffer } from "../account/accountList.ts";
@@ -343,14 +344,15 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       let heard = false;
       for (const endpoint of due) {
         askedPcs.set(endpoint, Date.now());
-        const paired = saved.find((device) => device.device_id !== null && hexOf(device.server_public_key) === endpoint);
-        const row = accountView?.kind === "signed-in" ? accountView.pcs?.find((pc) => pc.join !== undefined && hexOf(pc.join.server_public_key) === endpoint) : undefined;
+        // through the account with this sign-in's key first: a PC answers for its account's rows, not for a pairing made
+        // at it; a saved pairing only where the directory gives no way through the account
+        const row = directory.find((pc) => pc.public_key === endpoint && pc.relay !== null);
         const openKey = listedFor?.epoch === generation ? listedFor.openKey : null;
-        const way = paired !== undefined ? { offer: offerOf(paired), options: { store } }
-          : row?.join !== undefined && openKey !== null ? (() => {
-            const offer = { v: 1 as const, server_id: row.server_id, ...row.join, name: row.name };
-            return { offer, options: { store: withAccountDevice(store, accountDevice(offer, openKey.key)), accountOpensAll: true } };
-          })() : null;
+        const paired = saved.find((device) => device.device_id !== null && hexOf(device.server_public_key) === endpoint);
+        const way = row !== undefined && row.relay !== null && openKey !== null ? (() => {
+          const offer = { v: 1 as const, server_id: row.server_id, server_public_key: exportPublicKey(hexToBytes(endpoint)), relay: row.relay, name: row.label };
+          return { offer, options: { store: withAccountDevice(store, accountDevice(offer, openKey.key)), accountOpensAll: true } };
+        })() : paired !== undefined ? { offer: offerOf(paired), options: { store } } : null;
         if (way === null) continue;
         let opened: RelayTransport | null = null;
         try {

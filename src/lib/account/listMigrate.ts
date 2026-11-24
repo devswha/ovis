@@ -366,7 +366,8 @@ export async function onPcSession(given: {
   if (view.account !== account || !ENDPOINT.test(endpoint)) return;
   if (waitsOnPcs(view.status)) {
     const said = await askWitness(given.fetch);
-    given.answers.set(account, endpoint, said);
+    // no answer here (a pairing's session, which a PC answers for its account's rows alone) takes no answer heard before
+    if (said !== null || given.answers.get(account, endpoint) === undefined) given.answers.set(account, endpoint, said);
     if (said !== null) await list.sync().catch(() => undefined);
     return;
   }

@@ -59,11 +59,11 @@ describe("the shell's sessions and the move of an account onto its list", () => 
   beforeEach(() => { browser = createShellTestPage(); accountStore = memoryAccountStore(); });
   afterEach(() => { for (const each of made.splice(0)) each.dispose(); browser.dispose(); });
 
-  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>) => {
+  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>, pcs: unknown[] = []) => {
     const made_ = createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE, accountList: list,
       ...(open === undefined ? {} : { open: open as never }),
-      accountFetch: async (input) => new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs: [] }) : Response.json({ error: { code: "not_found" } }, { status: 404 }),
+      accountFetch: async (input) => new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs }) : Response.json({ error: { code: "not_found" } }, { status: 404 }),
       renderApp: () => ({ render() {}, unmount() {} }),
     }, { active: () => true, changed: async () => {}, outdated: () => new Set() });
     made.push(made_);
@@ -133,5 +133,28 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     tell();
     await settle();
     expect(opened).toHaveLength(1);
+  });
+
+  it("asks a PC through the account with this sign-in's key where the directory names it, before any saved pairing", async () => {
+    const signedIn = await signIn("acct-through");
+    const pc = pcKeys();
+    const at = Math.floor(Date.now() / 1000) - 40 * DAY;
+    globalThis.localStorage.setItem("ovis:seen-pcs:acct-through", JSON.stringify({ v: 1, account: "acct-through", pcs: { [pc.endpoint]: { since: at, last: at, how: "paired" } } }));
+    const paired = { server_id: pc.serverId, device_id: "dev-1", private_key: (await newKey()).private_key, public_spki: "spki", label: "Phone", server_public_key: pc.offerKey, relay: "wss://relay.test" } as RelayDevice;
+    const store: ShellDeviceStore = { ...empty, get: async (id) => (id === pc.serverId ? paired : undefined), list: async () => [paired] };
+    const asking = sessionOf({ answers: { "GET /api/account/list/witness": { account: "acct-through", pinned: null, admits: [], removed: [] } } });
+    const opened: { offer: { server_id: string; server_public_key: string }; options: Record<string, unknown> }[] = [];
+    const waiting = (): AccountListView => ({ account: "acct-through", reached: true, status: { at: "none", why: "moving", move: { why: "pcs_silent", wait: 60, asks: [pc.endpoint] } }, devices: [], pcs: [] });
+    const { list, tell } = listIn(waiting);
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const account = controller(list, store, async (offer, options) => { opened.push({ offer: offer as never, options }); return asking.opened; }, [row]);
+    await account.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.offer).toMatchObject({ server_id: pc.serverId, server_public_key: pc.offerKey });
+    expect(opened[0]!.options.accountOpensAll).toBe(true);
+    expect(await (opened[0]!.options.store as ShellDeviceStore).get(pc.serverId)).toMatchObject({ public_spki: signedIn });
   });
 });
