@@ -76,6 +76,7 @@ export class ChildTurns {
     return row.held || child.client.terminalReady ? refuse("taken_over", "A person holds this child.") : answer("state", { session: row.terminal, state: childState(child, row) });
   }
   result(child: AcpChild, row: ToolChild, id: unknown) {
+    if (child.client.status === "unknown") return refuse("taken_over", "ACP does not own this conversation.");
     const state = childState(child, row);
     const turn = id === undefined ? row.turns.at(-1) : row.turns.find(t => `${row.id}.${t.n}` === id);
     if (id !== undefined && !turn) return refuse("unknown_session", "Unknown turn.");

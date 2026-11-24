@@ -52,6 +52,12 @@ export class HarnessView {
     const session = String(args.session);
     if (session.includes("/")) return refuse("unknown_session", "Only sessions on this PC can be read.");
     const child = this.acp.forPane(session), row = this.ledger.children.get(session);
+    let uncertain = false;
+    const observe = () => { uncertain ||= this.acp.forPane(session) !== child || child?.client.status === "unknown"; };
+    const off = child?.client.onChange(observe);
+    try {
+    observe();
+    if (uncertain) return refuse("taken_over", "ACP does not own this conversation.");
     const state = async () => {
       if (child) return childState(child, row);
       const read = await readPrompt(session);
@@ -81,6 +87,9 @@ export class HarnessView {
         end_from: "reader", answer_from: "reader", stop_reason: "unknown", usage: null, error: null, model: null, turn_id: null }) : answer("transcript", { session, items, next: history.cursor ?? null });
     }
     const after = await state();
+    observe();
+    if (uncertain) return refuse("taken_over", "ACP ownership changed during the read.");
     return after.state === "waiting_human" || child && !child.client.connected ? stateOnly(after) : output;
+    } finally { off?.(); }
   }
 }

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,6 +97,18 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     const responses = await Promise.all(waits);
     expect(responses.filter(r => isRecord(r.state) && r.state.state === "waiting_human")).toHaveLength(8);
     expect(child.client.turn?.running).toBe(true);
+  });
+  it("does not even open the transcript when the keeper cannot prove ACP ownership", async () => {
+    const session = await start("echo test");
+    await call("wait", { session });
+    const child = acp.forPane(session);
+    if (!child) throw new Error("missing child");
+    Object.defineProperty(child.client, "status", { configurable: true, value: "unknown" });
+    const read = spyOn(child.client.history, "page");
+    try {
+      expect(await call("read", { session, what: "transcript" })).toMatchObject({ error: { code: "taken_over" } });
+      expect(read).not.toHaveBeenCalled();
+    } finally { Reflect.deleteProperty(child.client, "status"); read.mockRestore(); }
   });
   it("a person's cancel holds the child until release", async () => {
     const session = await start("hold");
