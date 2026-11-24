@@ -65,6 +65,8 @@ export const LIST_ALLOW_TRIES = 4;
 export const LIST_ALLOW_MS = 90_000;
 /** How long it waits before it sends the same Allow again to a service that is busy with the list. */
 export const LIST_ALLOW_RETRY_MS = 1_000;
+/** The longest one try waits because the account service asked it to (its `retry-after`). */
+const LIST_ALLOW_RETRY_MAX_MS = 10_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
 export const LIST_DEVICE_LABEL = "Device";
 
@@ -129,7 +131,7 @@ export interface ListStatus {
  * `service_away`, `head_lost`: it could not be placed in LIST_ALLOW_TRIES tries. `not_in_list`: nobody at this PC
  * decided, and no entry lets the device in.
  */
-export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "unavailable" | "held_here" | "not_written" | "refused" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
+export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
 
 /** The device a PC is asked to let into its list: its member key, its encryption key, its card for the list, and the name it gave. */
 export interface AllowedDevice { readonly key: string; readonly enc: string; readonly card: string; readonly label: string }
@@ -230,7 +232,6 @@ export class ListFollow implements ListAuthority {
   /** The device that is being let in through this PC right now: its row comes in with no join hold. */
   private allowing: string | null = null;
   /** How far the account service's clock is ahead of this PC's, in seconds, by its last answer. */
-  private serviceAhead = 0;
   /** The clock (`seen_at`) of the copy as it was last saved. */
   private savedAt: number | null = null;
   /** The copy in memory holds what the file does not: its last save failed. It is acted on all the same, and saved again at the next tick. */
@@ -535,9 +536,15 @@ export class ListFollow implements ListAuthority {
       if (keys === null || this.problem !== null) return no("unavailable");
       if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
       await this.read(scope);
-      let request: { readonly entries: readonly string[]; readonly wraps: readonly { epoch: number; member: string; wrap: string }[] } | null = null;
-      let last: AllowRefusal = "head_lost";
+      // One signature per place: the request as it was signed, and the head it was signed on. It is sent again as it
+      // is while this PC's own copy shows that head; another is signed only once the copy shows a new one
+      let request: { readonly onHead: string; readonly entries: readonly string[]; readonly wraps: readonly { epoch: number; member: string; wrap: string }[] } | null = null;
+      let last: AllowRefusal = sign ? "head_lost" : "not_in_list";
+      // how long the next try waits; nothing waits after the last one
+      let wait = 0;
       for (let tries = 0; tries < LIST_ALLOW_TRIES; tries++) {
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        wait = 0;
         if (!this.live(scope)) return no("unavailable");
         const copy = this.copy;
         if (copy === null || copy.state === null) return no("unavailable");
@@ -545,34 +552,44 @@ export class ListFollow implements ListAuthority {
         // in already: this PC's own entry that the log now shows, or one a member placed
         const place = placeOf(copy, device);
         if (place !== null) return { allowed: place };
-        if (!sign) return no("not_in_list");
+        if (!sign) {
+          // a member allowed it and signs the entry itself: the PC waits a few seconds for that entry to reach its copy
+          // (the member hands it over, or the account service shows it), and signs nothing
+          wait = LIST_ALLOW_RETRY_MS;
+          await this.read(scope);
+          continue;
+        }
         const cannot = keys.key !== copy.me.key ? "unavailable" : cannotAllow(copy);
         if (cannot !== null) return no(cannot);
-        if (request === null) {
-          try { request = await this.writeAllow(copy, state, device, keys); } catch (error) {
+        if (request === null || request.onHead !== state.footing.hash) {
+          try { request = { onHead: state.footing.hash, ...await this.writeAllow(copy, state, device, keys) }; } catch (error) {
             if (error instanceof ListWriteError) return no("not_written", error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome);
             if (error instanceof ListKindError) return no("not_written", "entry_invalid");
             throw error;
           }
         }
+        // what this PC itself holds against the device, and its own place in the account, are read again right before
+        // each submission: a lock or a removal that came while the entry was prepared signs nobody in
+        if (!this.live(scope) || !this.isPinned) return no("unavailable");
+        if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
         try {
           await this.deps.call("/v2/pc/list/entries", { list: copy.list, entries: request.entries, ...(request.wraps.length > 0 ? { wraps: request.wraps } : {}) });
         } catch (error) {
           if (!(error instanceof AccountServiceRefusal)) {
             // no answer: it may be placed all the same, which only the log says
             last = "service_away";
-            request = null;
             await this.read(scope);
             continue;
           }
-          if (error.status === 409 && error.code === "head_moved") { last = "head_lost"; request = null; await this.read(scope); continue; }
-          if (error.status === 409 && error.code === "try_again") { last = "head_lost"; continue; }
-          if (error.status === 503 && error.code === "list_rebuilding") { last = "service_away"; await new Promise((resolve) => setTimeout(resolve, LIST_ALLOW_RETRY_MS)); continue; }
+          const asked = error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_ALLOW_RETRY_MAX_MS);
+          if (error.status === 409 && error.code === "head_moved") { last = "head_lost"; await this.read(scope); continue; }
+          if (error.status === 409 && error.code === "try_again") { last = "head_lost"; wait = asked; continue; }
+          if (error.status === 503 && error.code === "list_rebuilding") { last = "service_away"; wait = asked; continue; }
           if (error.status === 503 && error.code === "list_stopped") return no("list_stopped");
-          return no("refused", `${error.status}${error.code === null ? "" : ` ${error.code}`}`);
+          if (error.status === 403 && error.code === "not_claimed") return no("not_claimed");
+          return no("refused", `${error.status}${error.code !== null && REFUSAL_CODE.test(error.code) ? ` ${error.code}` : ""}`);
         }
         // placed: the device is in once this PC's own copy shows the entry, never on the answer
-        request = null;
         await this.read(scope);
       }
       const place = this.live(scope) && this.copy !== null ? placeOf(this.copy, device) : null;
@@ -582,9 +599,11 @@ export class ListFollow implements ListAuthority {
 
   /** The `device` entry of an Allow on the copy's footing, with the wrap of the names' key for the newcomer when this PC holds that key. */
   private async writeAllow(copy: FollowerCopy, state: ListState, device: AllowedDevice, keys: PcListKeys) {
-    // by the account service's clock when this PC's own is far from it: the list's own time moves with what a member writes
-    const now = this.seconds() + (Math.abs(this.serviceAhead) > 120 ? this.serviceAhead : 0);
-    const seal = sealEpoch(state, now);
+    // By this PC's own clock, never the account service's: the list's own time moves with what a member signs, so a
+    // service that says tomorrow must not make this PC sign tomorrow, which would end every borrowed device at once
+    // and could not be undone. Whether names may be sealed is judged on the clock held against its saved floor
+    const now = this.seconds();
+    const seal = sealEpoch(state, Math.max(now, copy.seen_at ?? 0));
     const epochKey = seal === null ? null : await this.epochKey(copy, state, seal.epoch, keys);
     let sealed: Sealed | null = null;
     const wraps: { epoch: number; member: string; wrap: string }[] = [];
@@ -928,7 +947,6 @@ export class ListFollow implements ListAuthority {
     try {
       while (read !== null && this.live(scope)) {
         const answer = await this.deps.call("/v2/pc/list/log", { list: read.list, ...(read.after === null ? {} : { after: read.after }) });
-        if (typeof answer.now === "number" && Number.isSafeInteger(answer.now)) this.serviceAhead = answer.now - this.seconds();
         const result = await takePage(copy, read, answer as unknown as ListPage, this.seconds());
         copy = result.copy;
         this.lastVerdict = result.code === null ? result.verdict : `${result.verdict} ${result.code}`;
