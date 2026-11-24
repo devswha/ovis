@@ -293,6 +293,8 @@ const BASE: Record<string, string> = {
   "The PC could not be removed. Try again.": "PC를 제거하지 못했어요. 다시 시도하세요.",
   "Add this PC to your account?": "이 PC를 내 계정에 추가할까요?",
   "Add this PC to your account? (joined with your invite)": "이 PC를 내 계정에 추가할까요? (내 초대로 참여함)",
+  "Add this PC to your account? (joined with an invite of your account)": "이 PC를 내 계정에 추가할까요? (내 계정의 초대로 참여함)",
+  "Add this PC to your account? (joined with the invite from {device})": "이 PC를 내 계정에 추가할까요? ({device}에서 만든 초대로 참여함)",
   "Name the PC gave itself: \"{name}\"": "이 PC 이름: \"{name}\"",
   "A PC was added to your account with a sign-in code at {time}.": "{time}에 로그인 코드로 PC가 계정에 추가됐어요.",
   "Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.": "방금 그 PC를 직접 추가하기 시작했고 그 PC에 나온 코드를 입력했을 때만 추가하세요. 다른 사람이 코드를 줬거나 직접 시작하지 않았다면 아니요를 누르세요.",

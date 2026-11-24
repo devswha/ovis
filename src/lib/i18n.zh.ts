@@ -297,6 +297,8 @@ const BASE: Record<string, string> = {
   "The PC could not be removed. Try again.": "无法移除这台电脑。请重试。",
   "Add this PC to your account?": "要把这台电脑添加到你的账号吗？",
   "Add this PC to your account? (joined with your invite)": "要将此 PC 添加到你的账户吗？（通过你的邀请加入）",
+  "Add this PC to your account? (joined with an invite of your account)": "要将此 PC 添加到你的账户吗？（通过你账户的邀请加入）",
+  "Add this PC to your account? (joined with the invite from {device})": "要将此 PC 添加到你的账户吗？（通过 {device} 创建的邀请加入）",
   "Name the PC gave itself: \"{name}\"": "这台电脑的名称：\"{name}\"",
   "A PC was added to your account with a sign-in code at {time}.": "{time} 有电脑通过登录码添加到了你的账号。",
   "Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.": "只有你自己刚开始添加那台电脑，并输入了它显示的代码，才添加它。如果代码是别人给你的，或者不是你发起的，请点“不”。",

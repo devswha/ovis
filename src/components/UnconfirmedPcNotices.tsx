@@ -11,7 +11,7 @@ import { noteAct } from "../lib/account/seenPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
-import { useT } from "../lib/i18n.ts";
+import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { NewPcNotice } from "./NewPcNotices.tsx";
 import { addRefusal, numberRefusal, refusal, type Problem } from "./pcAddRefusals.ts";
@@ -153,6 +153,14 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
       {tellConfirmed && confirmed.map((pc) => <NewPcNotice key={`${session.account}:new:${pc.server_id}`} pc={pc} session={session} dismissalKey={newPcNoticeKey(session.account, pc)} />)}
     </>
   );
+}
+
+/** The question for a PC that joined with an invite of the account: whose invite it was, where this device can read that. */
+export function invitedTitle(t: Translate, invited: Pick<InvitedPc, "by">, members: readonly { readonly key: string; readonly self: boolean; readonly name: { readonly label: string } | null }[] = pageAccountList()?.view().devices ?? []): string {
+  const placer = members.find((device) => device.key === invited.by);
+  if (placer?.self === true) return t("Add this PC to your account? (joined with your invite)");
+  const name = placer?.name?.label;
+  return name === undefined ? t("Add this PC to your account? (joined with an invite of your account)") : t("Add this PC to your account? (joined with the invite from {device})", { device: name });
 }
 
 function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, onSignInAgain, onConfirmed, onRemoved }: {
@@ -328,7 +336,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     <div className="update-notice is-paired device-notice" role="status" data-unconfirmed-pc={pc.server_id} {...(asking ? { "data-asking": young ? "open" : "ran-out" } : {})}>
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
-        {young && <span>{invited === null ? t("Add this PC to your account?") : t("Add this PC to your account? (joined with your invite)")}</span>}
+        {young && <span>{invited === null ? t("Add this PC to your account?") : invitedTitle(t, invited)}</span>}
         {number !== null && young && (
           <>
             <span>{t("Check that the PC shows this number and confirm it there, then Add")}</span>

@@ -22,7 +22,8 @@ import { accountOpenablePcs } from "../lib/relay/pcPick.ts";
 import { readSeenPcs } from "../lib/account/seenPcs.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
-import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
+import { translate } from "../lib/i18n.ts";
+import { invitedTitle, UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 
 const ORIGIN = "https://account.ovis.sh";
 const ACCOUNT = "acct_owner";
@@ -681,8 +682,8 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
       carried = { invite: made.invite.key, invite_proof: await line.signRedeem({ server_id: pc.server_id, public_key: pc.endpoint, challenge_id: lineChallenge(held().id, pc) }) };
       await mount();
-      // the card says where the PC comes from, by the device's own check of the line's signature
-      expect(text()).toContain("joined with your invite");
+      // the card says where the PC comes from, by the device's own check of the line's signature: this device made the invite
+      expect(text()).toContain("Add this PC to your account? (joined with your invite)");
       const before = held().entries.length;
       await press("Add");
       expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
@@ -693,6 +694,14 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await settle();
       expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
     } finally { setPageAccountList(null); }
+  });
+
+  it("says whose invite the PC joined with: this device's, another device's by its name, or the account's where no name can be read", () => {
+    const t = (key: string, vars?: Record<string, string | number>): string => translate("en", key, vars);
+    const members = [{ key: "mine", self: true, name: { label: "Dana's Mac" } }, { key: "phone", self: false, name: { label: "Dana's phone" } }, { key: "unnamed", self: false, name: null }];
+    expect(invitedTitle(t, { by: "mine" }, members)).toBe("Add this PC to your account? (joined with your invite)");
+    expect(invitedTitle(t, { by: "phone" }, members)).toBe("Add this PC to your account? (joined with the invite from Dana's phone)");
+    for (const by of ["unnamed", "gone", null]) expect(invitedTitle(t, { by }, members)).toBe("Add this PC to your account? (joined with an invite of your account)");
   });
 
   it("asks for the number, as for any PC that asks, where the invite's proof is another PC's", async () => {

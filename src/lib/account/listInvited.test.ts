@@ -35,7 +35,7 @@ describe("a PC that joined with an invite a device of the account made", () => {
   it("is offered for Add only where the line itself signed for that PC's card, for an invite the list holds open that waits for Add", async () => {
     const { w, first, invite, pc } = await invited();
     const post = await posted(w, first, invite, pc);
-    expect((await invitedPcs(first.list, [post], w.clock.now)).map((each) => [each.endpoint, each.invite])).toEqual([[pc.endpoint, invite.key]]);
+    expect((await invitedPcs(first.list, [post], w.clock.now)).map((each) => [each.endpoint, each.invite, each.by])).toEqual([[pc.endpoint, invite.key, (await first.keys()).key]]);
   });
 
   it("is not offered on the account service's word: a post with no proof, another PC's proof, or a proof for another list", async () => {

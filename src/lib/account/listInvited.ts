@@ -34,6 +34,8 @@ export function lineChallenge(list: string, pc: { readonly key: string; readonly
 export interface InvitedPc extends PostedPc {
   /** The invite's public key. */
   readonly invite: string;
+  /** The key of the member that placed the invite, as the list holds it. */
+  readonly by: string | null;
 }
 
 /**
@@ -58,7 +60,7 @@ export async function invitedPcs(list: AccountList, posts: readonly ListPost[], 
     try {
       signed = await verifyInviteRedeem({ account: writer.account, server_id: post.server_id, public_key: post.endpoint, challenge_id: lineChallenge(writer.list, post) }, post.invite_proof, post.invite);
     } catch { signed = false; }
-    if (signed) found.push({ list: writer.list, endpoint: post.endpoint, server_id: post.server_id, key: post.key, enc: post.enc, card: post.card, invite: post.invite });
+    if (signed) found.push({ list: writer.list, endpoint: post.endpoint, server_id: post.server_id, key: post.key, enc: post.enc, card: post.card, invite: post.invite, by: open.get(post.invite)?.by ?? null });
   }
   return found;
 }
