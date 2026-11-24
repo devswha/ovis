@@ -39,6 +39,9 @@ import { parsePiAsk } from "./dialogs/pi-ask.ts";
 import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
+import { withRecord } from "./dialogs/record.ts";
+import { titleStatus } from "./agent-identity.ts";
+import { recordFor, withAgentRecord } from "./record-cards.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
@@ -687,7 +690,7 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
   if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
   const agent = labelledAgent(pane.agent) ?? "";
-  const status = pane.agent_status;
+  const status = waitStatus(pane, agent);
   const turns = answerTurns.get(paneId) ?? 0;
   const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal, true);
   if (known.stale) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
@@ -708,6 +711,14 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   return { agent, status, prompt, pane, panes, snapshot, screen: fallback.screen, inputUnverified: known.inputUnverified };
 }
 
+/**
+ * The pane's status as its agent says it: Letta says it waits for the user's approval only in its own title
+ * (agent-identity.ts `titleStatus`), which herdr-core does not take for a status, as the session's rows do.
+ */
+function waitStatus(pane: HerdrPane, agent: string): HerdrPane["agent_status"] {
+  return titleStatus(agent, pane.terminal_title) === "blocked" ? "blocked" : pane.agent_status;
+}
+
 async function fallbackCard(paneId: string, agent: string, status: string | undefined, known: { prompt: InteractivePrompt | null; screen?: string; suppressFallback?: true }): Promise<{ prompt: InteractivePrompt | null; screen: string } | null> {
   // A custom form just answered can close before Herdr stops reporting blocked. Its hint may
   // outlive the widget, but that is no input to offer as fallback keys. Known next steps still
@@ -726,7 +737,7 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
     || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
-  return { prompt: parseFallbackPrompt(agent, screen), screen };
+  return { prompt: await withAgentRecord(paneId, agent, parseFallbackPrompt(agent, screen), screen), screen };
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
@@ -1204,7 +1215,7 @@ async function readKnownPrompt(
   if (agent === "pi" && approvalDialog(prompt) === null && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc" && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
-    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
+    if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: await withAgentRecord(paneId, agent, fallback, screen), screen };
   }
   const count = agent === "codex" && prompt === null ? queuedQuestionCount(screen) : 0;
   let settled: InteractivePrompt | undefined;
@@ -1428,7 +1439,7 @@ export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], optio
   if (agent === "pi") return undefined;
   const known = await readKnownPrompt(pane.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, options.openCodeState, undefined, false, false, options.ompLookups);
   if (known.stale) return undefined;
-  const shown = contentId(known.prompt ?? (await fallbackCard(pane.pane_id, agent, pane.agent_status, known))?.prompt ?? null) ?? null;
+  const shown = contentId(known.prompt ?? (await fallbackCard(pane.pane_id, agent, waitStatus(pane, agent), known))?.prompt ?? null) ?? null;
   const draft = agent === "opencode" ? (options.answers ?? defaultOpenCodeState).entries.get(pane.pane_id)?.draft : undefined;
   return shown !== null && draft ? `${shown}\0${JSON.stringify(draft)}` : shown;
 }
@@ -2083,7 +2094,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
           if (responder.startsWith("fallback")) {
             if (!asks()) return false;
-            const card = parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen));
+            const drawn = parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen));
+            // a card with its record's command is that request's: the screen must still show it, with nothing else changed
+            const record = parsed.record === undefined ? undefined : recordFor(agent);
+            const card = drawn && record ? withRecord(drawn, parsed.record!, screen, record) : drawn;
             return card?.id === parsed.id && (!onCursor || card.selectedIndex === cursor);
           }
           if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
