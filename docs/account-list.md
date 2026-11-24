@@ -409,12 +409,16 @@ every route in use.
   answered with the role `account`, one per call): `POST /v2/pc/list`, `/v2/pc/list/log`,
   `/v2/pc/list/wraps`, `/v2/pc/list/entries` and `/v2/pc/list/keys`. A mailbox pull with
   `with_list: true` also gets the list's id and head.
-- **What a placement checks**, in order, nothing stored on a refusal: each text holds and the first
-  stands at the head (`409 head_moved` names the head; a batch already in the log text for text is
-  `200` with `placed: 0`); each entry counts for the library (`entry_refused` with its `outcome`
-  and `reason`); the service's clock for invites; the second lock (a `device` needs a live claim of
-  its key, a `pc` a live post of its keys by a PC the account lists, a `join` the PC it names on
-  the PC route); the wraps; the size and the budget. Two writers at one head: one is placed.
+- **What a placement checks**, in order, nothing stored on a refusal: every text in its form, and
+  the first at the head (`409 head_moved` names the head; a batch already in the log text for text
+  is `200` with `placed: 0`); then entry by entry, that it holds and counts for the library
+  (`entry_refused` with its `outcome` and `reason`), and what only the service judges: no `carried`
+  yet, an `invite` only from a sign-in and not dated ahead of its clock, a `join` before its
+  invite's `exp` and only from the PC it names, the list's size; then the second lock (a `device`
+  needs a live claim of its key, a `pc` a live post of its keys by a PC the account lists, each
+  used up by the entry), the wraps, and the budget of additions. Two writers at one head: one is
+  placed. A batch whose every entry is a `remove` signed by a signer of the list spends that
+  signer's own counter instead of the account's requests.
 - **Limits** are in `listLimits`, which a test may lower to reach `list_full`, `entry_budget` or a
   PC's calls a minute.
 - `accountList(account)` gives what the service holds: the list id, every entry's text, the head

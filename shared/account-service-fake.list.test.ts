@@ -169,9 +169,11 @@ describe("the fake account service's list routes (Part D)", () => {
         expect([refusal(answered), typeof answered.body.now]).toEqual(["404 not_found", "number"]);
       }
       for (const [path, body] of [["/v2/pc/list", { account: ACCOUNT }], ["/v2/pc/list/log", { list }], ["/v2/pc/list/wraps", { list, member: w.owner.enc }],
-        ["/v2/pc/list/entries", { list, entries: ["x.y"] }], ["/v2/pc/list/keys", { list, key: "k", enc: "e", card: "c" }]] as const) {
+        ["/v2/pc/list/entries", { list, entries: ["x.y"] }], ["/v2/pc/list/keys", { list, key: "k", enc: "e", card: "c".repeat(86) }]] as const) {
         expect(refusal(await pcCall(w, pc, path, body))).toBe("404 not_found");
       }
+      // with only some accounts named, a missing sign-in is not told apart from an account that is not named
+      expect(refusal(await w.call("GET", "/v2/lists/mine"))).toBe("404 not_found");
       expect((await pull(w, pc)).list).toBeNull();
       w.service.listAccounts = ` acct_2, ${ACCOUNT} `;
       expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.list).toBe(list);
@@ -227,6 +229,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const good = await sign(owner, at0, genesisOf(owner), w.seconds());
       expect(refusal(await post("not an entry"))).toBe("400 entry_malformed");
       expect((await post("not an entry")).body.error?.index).toBe(0);
+      expect(refusal(await post(`${good.text}=`))).toBe("400 entry_malformed");
       const flipped = entryFromText(good.text);
       const changed = new Uint8Array(flipped.body);
       changed[20] = changed[20]! ^ 1;
@@ -238,7 +241,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect([refusal(notGenesis), notGenesis.body.error?.outcome, notGenesis.body.error?.reason]).toEqual(["400 entry_refused", "no_effect", "entry_invalid"]);
       expect(refusal(await post((await sign(owner, at0, genesisOf(owner, "acct_2"), w.seconds())).text))).toBe("403 account_mismatch");
       for (const [wraps, index] of [
-        [[{ epoch: 0, member: owner.enc, wrap: WRAP(1) }, { epoch: 0, member: owner.enc, wrap: WRAP(2) }], 1],
+        [[{ epoch: 0, member: owner.enc, wrap: WRAP(1) }, { epoch: 1, member: owner.enc, wrap: WRAP(2) }], 1],
         [[{ epoch: 1, member: owner.enc, wrap: WRAP(1) }], 0],
         [[{ epoch: 0, member: owner.key, wrap: WRAP(1) }], 0],
         [[{ epoch: 0, member: owner.enc, wrap: WRAP(1).slice(1) }], 0],
@@ -248,8 +251,11 @@ describe("the fake account service's list routes (Part D)", () => {
         expect([refusal(refused), refused.body.error?.index]).toEqual(["400 wrap_invalid", index]);
       }
       expect(refusal(await post(good.text, [{ epoch: 0, member: owner.enc }]))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: good.text, account: ACCOUNT }, w.token))).toBe("400 invalid_request");
       expect(w.service.accountList(ACCOUNT)).toBeNull();
-      expect((await post(good.text, [])).status).toBe(201);
+      // two wraps for one place: the first is stored, the second dropped without an error
+      expect((await post(good.text, [{ epoch: 0, member: owner.enc, wrap: WRAP(1) }, { epoch: 0, member: owner.enc, wrap: WRAP(2) }])).status).toBe(201);
+      expect((await w.call("GET", `/v2/lists/${good.head.hash}/wraps?member=${owner.enc}`, undefined, w.token)).body.wraps).toEqual([{ epoch: 0, wrap: WRAP(1) }]);
     });
 
     test("the second lock: an app's own sign-in, not frozen, made in the last ten minutes or proving its registered key", async () => {
@@ -268,14 +274,19 @@ describe("the fake account service's list routes (Part D)", () => {
       const phone = await newKey();
       const stale = staleSignIn(w, phone);
       expect(refusal(await post(stale))).toBe("403 session_not_fresh");
-      const values = (slot: string) => (id: string, challenge: string) => ["list-genesis", ACCOUNT, list, slot, id, challenge];
-      // a proof by another key, or over another list's id or slot, proves nothing
-      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, await newKey(), values("")) }))).toBe("403 session_not_fresh");
-      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, values("x")) }))).toBe("403 session_not_fresh");
-      expect(refusal(await post(stale, { key_proof: { challenge_id: "0".repeat(32), signature: "A".repeat(86) } }))).toBe("400 challenge_invalid");
+      const values = (purpose: string, over: string, slot = "") => (id: string, challenge: string) => [purpose, ACCOUNT, over, slot, id, challenge];
+      // a proof for another purpose, another list or another slot, or by a key this sign-in did not register, proves nothing
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-claim", list)) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-genesis", OPENS(4))) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-genesis", list, "x")) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, await newKey(), values("list-genesis", list)) }))).toBe("403 session_not_fresh");
+      // a proof is spent by its first use, whatever came of it
+      const spent = await keyProof(w, stale, phone, values("list-genesis", list));
+      const other = await sign(owner, { seq: 0, list: "", prev: "" }, genesisOf(owner), w.seconds() + 1);
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: other.text, key_proof: spent }, stale))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: spent }))).toBe("400 challenge_invalid");
       expect(refusal(await post(stale, { key_proof: { challenge_id: "0".repeat(32) } }))).toBe("400 invalid_request");
-      const proved = await keyProof(w, stale, phone, values(""));
-      expect((await post(stale, { key_proof: proved })).status).toBe(201);
+      expect((await post(stale, { key_proof: await keyProof(w, stale, phone, values("list-genesis", list)) })).status).toBe(201);
     });
   });
 
@@ -341,7 +352,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect([page.body.after, page.body.entries, page.body.more]).toEqual([1, all.slice(2, 4), true]);
       expect((await w.log(list, "?after=5")).body).toMatchObject({ entries: [], more: false });
       expect((await w.log(list, "?after=99")).body).toMatchObject({ entries: [], more: false, head: placed.head });
-      for (const query of ["?after=-1", "?after=01", "?limit=0", "?limit=257", "?after=1&after=2", "?page=1", "?after="]) expect(refusal(await w.log(list, query))).toBe("400 invalid_request");
+      for (const query of ["?after=-1", "?after=01", "?after=x", "?limit=0", "?limit=257", "?limit=1&x=1", "?after="]) expect(refusal(await w.log(list, query))).toBe("400 invalid_request");
       // the same body with the other spelling of its signature (r || n-s) is another text: not the one in the log
       const n = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
       const entry = entryFromText(placed.texts[0]!);
@@ -403,6 +414,8 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(await refusedAt([[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, sealed(1))]])).toEqual(["400 entry_refused", 1, "no_effect", "epoch_other"]);
       const phone = await newKey();
       expect(await refusedAt([[w.owner, await deviceOf(phone, list, false, await cardOf(stranger, list))]])).toEqual(["400 entry_refused", 0, "no_effect", "card_invalid"]);
+      // carrying members in has no second lock yet: the service places no carried entry
+      expect(await refusedAt([[w.owner, { kind: "carried", key: phone.key, role: "drive", sealed: sealed() }]])).toEqual(["400 entry_refused", 0, "service", "carried_not_open"]);
       // a kind of a level above the service's: cannot_read
       const raised: EntryBody = { issued_at: w.seconds(), kind: "later_kind", list, prev: head.hash, seq: 1, signer: w.owner.key, v: 2, own: [] };
       const later = await w.place(list, [entryToText(await signEntry(raised, w.owner.pair.privateKey))]);
@@ -475,27 +488,30 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await w.place(list, over.texts)).status).toBe(200);
     });
 
-    test("a batch of removals alone spends its sign-in's own budget, not the account's requests", async () => {
+    test("removals alone by a signer of the list spend that signer's own counter, so a spent account still removes", async () => {
       const w = await world();
       const { list, head } = await w.start();
-      w.service.listLimits.removalsPerWindow = 1;
       const phone = await newKey();
       const tablet = await newKey();
       await w.claim(list, phone);
-      const other = w.service.issueToken(ACCOUNT);
-      await w.claim(list, tablet, other);
+      await w.claim(list, tablet, w.service.issueToken(ACCOUNT));
       const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)], [w.owner, await deviceOf(tablet, list)]], w.seconds());
       expect((await w.place(list, added.texts)).status).toBe(200);
-      const first = await chain(list, added.head, [[w.owner, removeOf(phone)]], w.seconds());
-      expect((await w.place(list, first.texts)).status).toBe(200);
-      const second = await chain(list, first.head, [[w.owner, removeOf(tablet)]], w.seconds());
+      // the account's sign-ins spend all its requests
+      while ((await w.call("GET", "/v2/lists/mine", undefined, w.token)).status === 200);
+      const epoch = await w.place(list, (await chain(list, added.head, [[w.owner, epochOf(0)]], w.seconds())).texts);
+      expect(refusal(epoch)).toBe("429 rate_limited");
+      // a removal whose first entry verifies under a signer of the list is counted apart, under that signer
+      const removed = await chain(list, added.head, [[w.owner, removeOf(phone)]], w.seconds());
+      expect((await w.place(list, removed.texts)).status).toBe(200);
+      // a removal nobody of the list signed spends the account's, so it buys no way past the limit
+      const forged = await chain(list, removed.head, [[await newKey(), removeOf(tablet)]], w.seconds());
+      expect(refusal(await w.place(list, forged.texts))).toBe("429 rate_limited");
+      w.service.listLimits.removalsPerWindow = 1;
+      const second = await chain(list, removed.head, [[w.owner, removeOf(tablet)]], w.seconds());
       expect(refusal(await w.place(list, second.texts))).toBe("429 rate_limited");
-      // another sign-in carries the same signed removal
-      expect((await w.place(list, second.texts, undefined, other)).status).toBe(200);
-      // the account spent four requests (the genesis, two claims, the additions) and none on the removals
-      let allowed = 0;
-      while ((await w.call("GET", "/v2/lists/mine", undefined, w.token)).status === 200) allowed += 1;
-      expect(allowed).toBe(600 - 4);
+      w.tick(10 * MINUTE);
+      expect((await w.place(list, second.texts)).status).toBe(200);
     });
 
     test("a placement rings the account's other subscribed devices", async () => {
@@ -581,11 +597,16 @@ describe("the fake account service's list routes (Part D)", () => {
       const proof = await keyProof(w, stale, signedIn, (id, challenge) => ["list-claim", ACCOUNT, list, phone.key, id, challenge]);
       expect((await w.claim(list, phone, stale, { key_proof: proof })).status).toBe(200);
       expect(refusal(await w.claim(list, phone, stale, { key_proof: proof }))).toBe("400 challenge_invalid");
+      const claimed = async () => (await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims?.map(({ key }) => key);
       const other = w.service.issueToken(ACCOUNT);
-      expect((await w.claim(list, phone, other)).status).toBe(200);
       w.tick(1000);
       expect((await w.claim(list, tablet, other)).status).toBe(200);
-      expect((await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims?.map(({ key }) => key)).toEqual([phone.key, tablet.key]);
+      expect(await claimed()).toEqual([phone.key, tablet.key]);
+      // one claim per key: another sign-in's claim of it takes it over, and drops that sign-in's earlier claim
+      expect((await w.claim(list, phone, other)).status).toBe(200);
+      expect(await claimed()).toEqual([phone.key]);
+      expect(refusal(await w.claim(list, phone, other, { card: "A".repeat(85) }))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/claims`, { key: "nokey", enc: phone.enc, card: await cardOf(phone, list) }, other))).toBe("400 invalid_request");
     });
 
     test("a rotation asks the claim of the new key", async () => {
@@ -620,6 +641,8 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(refusal(await w.place(list, added.texts))).toBe("403 not_posted");
       await listPc(w, pc);
       expect((await w.place(list, added.texts)).status).toBe(200);
+      // the post is used up by the entry it let in
+      expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts).toEqual([]);
     });
 
     test("a join is placed only through the PC route, by the PC whose relay key it names", async () => {
@@ -635,11 +658,16 @@ describe("the fake account service's list routes (Part D)", () => {
       expect([refusal(byDevice), byDevice.body.error?.index]).toEqual(["403 pc_proof_required", 0]);
       // another PC, not in the list, has no right to the route for a join that names another
       expect(refusal(await pcCall(w, machine(), "/v2/pc/list/entries", { list, entries: joined.texts }))).toBe("404 not_found");
+      // what is out of form is refused as such before the PC's right is judged
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list/entries", { list, entries: ["x.y"] }))).toBe("400 entry_malformed");
       expect((await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts })).body).toMatchObject({ head: joined.head, placed: 1 });
       // now in the list, the PC places what it is given; a join naming another relay key is still not its to place
       const other = machine();
       const second = await chain(list, joined.head, [[pool, await joinOf(await newKey(), list, other.endpoint, pool)]], w.seconds());
       expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: second.texts }))).toBe("403 pc_proof_required");
+      // an invite lets a PC in with nobody else awake: a PC's key alone places none
+      const invite = await chain(list, joined.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: invite.texts }))).toBe("403 sign_in_required");
     });
   });
 
