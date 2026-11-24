@@ -805,6 +805,42 @@ describe("parseClaudeTranscript", () => {
     expect(turnStarts(Buffer.from(lines.join("\n") + "\n"), "claude-transcript")).toHaveLength(3);
   });
 
+  it("keeps literal human prompts reading like a stop mark and settles dispatched Code Mode scripts on stop", () => {
+    const assistant = (block: object, stop: string | null, ts: string) => JSON.stringify({ type: "assistant", timestamp: ts, message: { role: "assistant", stop_reason: stop, content: [block] } });
+    const lines = [
+      // human string prompt (even without origin/permissionMode, e.g. older transcript)
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:00.000Z", message: { role: "user", content: "[Request interrupted by user]" } }),
+      // human array prompt with origin/permissionMode
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:01.000Z", origin: { kind: "human" }, permissionMode: "default", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } }),
+      // multi-block prompt containing the literal string alongside another text block
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:02.000Z", message: { role: "user", content: [{ type: "text", text: "Why did it say:" }, { type: "text", text: "[Request interrupted by user]" }] } }),
+      // human queued_command carrying the literal string
+      JSON.stringify({ type: "attachment", timestamp: "2026-11-22T06:00:03.000Z", attachment: { type: "queued_command", commandMode: "prompt", origin: { kind: "human" }, prompt: "[Request interrupted by user]" } }),
+      // Bash approval feedback beside a successful tool_result (no origin/permissionMode)
+      assistant({ type: "tool_use", id: "b1", name: "Bash", input: { command: "echo hi" } }, "tool_use", "2026-11-22T06:00:10.000Z"),
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:00:11.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "b1", content: "hi" }, { type: "text", text: "[Request interrupted by user]" }] } }),
+      // dispatched Code Mode REPL interrupted by Esc before any later prompt
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:01:00.000Z", origin: { kind: "human" }, permissionMode: "default", message: { role: "user", content: "run script" } }),
+      assistant({ type: "tool_use", id: "r1", name: "REPL", input: { code: "sleep 10" } }, "tool_use", "2026-11-22T06:01:01.000Z"),
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:01:02.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "r1", content: "(dispatched #1)" }] } }),
+      JSON.stringify({ type: "user", timestamp: "2026-11-22T06:01:03.000Z", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } }),
+    ];
+    const turns = parseClaudeTranscript(lines.join("\n"));
+    expect(turns.map((turn) => [turn.role, turn.parts.map((part) => part.kind === "notice" ? `${part.source}: ${part.text}` : part.kind === "text" ? part.text : part.kind === "tool" ? `${part.kind}:${part.state}:${part.output}` : part.kind)])).toEqual([
+      ["user", ["[Request interrupted by user]"]],
+      ["user", ["[Request interrupted by user]"]],
+      ["user", ["Why did it say:\n[Request interrupted by user]"]],
+      ["user", ["[Request interrupted by user]"]],
+      ["assistant", ["tool:ok:hi"]],
+      ["user", ["[Request interrupted by user]"]],
+      ["user", ["run script"]],
+      ["assistant", ["tool:ok:(dispatched #1)"]],
+      ["user", ["stopped: Stopped"]],
+    ]);
+    // All five real human user entries (3 literal prompts + approval feedback + "run script") open turns; the stop mark does not.
+    expect(turnStarts(Buffer.from(lines.join("\n") + "\n"), "claude-transcript")).toHaveLength(5);
+  });
+
   it("keeps a notice joined from long lines within the notice's length", () => {
     const info = (content: string, ts: string) => JSON.stringify({ type: "system", subtype: "informational", content, timestamp: ts });
     const [turn] = parseClaudeTranscript([
