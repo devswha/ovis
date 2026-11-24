@@ -110,6 +110,7 @@ const BASE: Record<string, string> = {
   "Not the same": "数字が違います",
   "The numbers did not match. This PC was not added.": "数字が一致しませんでした。この PC は追加されていません。",
   "The PC did not answer. Start again on the PC.": "PC が応答しませんでした。PC でやり直してください。",
+  "Waiting for the PC…": "PC の応答を待っています…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "この PC への試行が多すぎます。数分後に PC でやり直してください。",
   "That number ran out. Press Add for a new one.": "数字の有効期限が切れました。「追加」を押して新しい数字を表示してください。",
   "Too many devices were added just now. Try again in a few minutes.": "デバイスの追加が短時間に多すぎます。数分後にもう一度お試しください。",

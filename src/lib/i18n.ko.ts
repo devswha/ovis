@@ -108,6 +108,7 @@ const BASE: Record<string, string> = {
   "Not the same": "숫자가 달라요",
   "The numbers did not match. This PC was not added.": "숫자가 일치하지 않았어요. 이 PC는 추가되지 않았어요.",
   "The PC did not answer. Start again on the PC.": "PC가 응답하지 않았어요. PC에서 다시 시작하세요.",
+  "Waiting for the PC…": "PC 응답 기다리는 중…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "이 PC에 너무 여러 번 시도했어요. 몇 분 뒤 PC에서 다시 시작하세요.",
   "That number ran out. Press Add for a new one.": "숫자의 유효 시간이 지났어요. 추가를 눌러 새 숫자를 받으세요.",
   "Too many devices were added just now. Try again in a few minutes.": "방금 기기를 너무 많이 추가했어요. 몇 분 뒤에 다시 시도하세요.",

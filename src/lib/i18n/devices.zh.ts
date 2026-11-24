@@ -346,4 +346,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "A PC not in the list": "不在列表中的电脑",
   "user@host or address": "user@host 或地址",
   "Enter an SSH address, such as user@host.": "请输入 SSH 地址，例如 user@host。",
+  "Update Ovis on this PC": "请更新这台 PC 上的 Ovis",
 };

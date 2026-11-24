@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
-import { pagePcs } from "../lib/account/listPcs.ts";
+import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
+import { pageListReading, pagePcs } from "../lib/account/listPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
 import { AccountService, type DirectoryPc } from "../lib/account/service.ts";
@@ -15,6 +16,7 @@ import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
 import { DEVICES_CHANGED_EVENT, inRelayShell } from "../lib/useRelay.ts";
 import { signInOfAccount } from "./AccountPcs.tsx";
+import { AddPcByNumber } from "./AddPcByNumber.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 import { pcRemovalFailure, usePcRemoval } from "./usePcRemoval.tsx";
@@ -142,8 +144,23 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     if (how === "directory" && inRelayShell()) await (await loadRelayShell()).forgetSavedPc(serverId).catch(() => undefined);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
+  // The PCs that posted their keys for the list, where this device may add one to it: a row the list does not hold
+  // yet offers Add for such a PC, and says to update one that posted nothing. null: not read, so neither is said
+  const [posts, setPosts] = useState<readonly PostedPc[] | null>(null);
+  const [adding, setAdding] = useState<{ readonly pc: DirectoryPc; readonly post: PostedPc } | null>(null);
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
-  const read = useCallback(() => service.listPcs().then((listed) => setPcs(pagePcs(account, listed)), () => setPcs("failed")), [service, account]);
+  const read = useCallback(async () => {
+    let shown: readonly DirectoryPc[];
+    try { shown = pagePcs(account, await service.listPcs()); } catch { setPcs("failed"); return; }
+    setPcs(shown);
+    const list = pageAccountList();
+    // only a device that may write the list adds a PC to it
+    if (list === null || pageListReading(account) !== "in" || list.writer() === null || !shown.some((pc) => pc.not_in_list === true)) { setPosts(null); return; }
+    setPosts(await postedPcs(list).catch((error: unknown) => {
+      console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
+      return null;
+    }));
+  }, [service, account]);
   useEffect(() => {
     void read();
     const changed = () => { void read(); };
@@ -162,11 +179,13 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
           : pcs.map((pc) => {
             // a PC the list holds that the account service gives no way to: off, as far as this device can tell, and removable
             const off = offlinePc(pc, now) || (pc.by_list === true && pc.relay === null);
+            const post = pc.not_in_list === true && !watching ? posts?.find((each) => each.server_id === pc.server_id) : undefined;
             return (
               <li key={pc.server_id} className="account-manage-row" data-pc-id={pc.server_id}>
                 <StatusDot state={off ? "offline" : "ready"} />
                 <span className="visually-hidden">{off ? t("Offline") : t("Online")}</span>
-                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}</span>}</span>
+                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}{posts !== null && post === undefined && !watching ? ` · ${t("Update Ovis on this PC")}` : ""}</span>}</span>
+                {post !== undefined && <button type="button" className="btn account-head-btn" data-action="add-pc" onClick={() => setAdding({ pc, post })}>{t("Add|account pc")}</button>}
                 {/* a PC in use lists itself again on its next pull: only an offline one is offered, whatever its age */}
                 {off && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked(pc)}>{t("Remove")}</button>}
               </li>
@@ -174,6 +193,9 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
           })}
       </ul>
       {removal.prompt !== null && <p className="settings-condition">{removal.prompt}</p>}
+      {adding !== null && pageAccountList() !== null && (
+        <AddPcByNumber list={pageAccountList()!} account={account} post={adding.post} name={adding.pc.label} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
+      )}
       {asked !== null && (
         <ConfirmDialog title={t("Remove {name} from your account?", { name: asked.label })}
           body={t("{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.", { name: asked.label })}

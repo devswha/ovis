@@ -46,6 +46,12 @@ class FakeService {
 await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountService: FakeService }));
 // a PC that leaves by an entry of the account's list: what the page asks of the list, and whether it forgot a pairing for it
 await mock.module("../lib/account/listRemove.ts", () => ({ removeListPc: async (_list: unknown, endpoint: string, options: { expect?: { account: string; list: string } }) => { calls.push(`list-remove ${endpoint} for ${options.expect?.account} ${options.expect?.list}`); return { removed: true }; } }));
+// the PCs that posted their keys for the list, as the page reads them, and the number dialog it opens for one
+let posted: { server_id: string }[] | Error = [];
+const ListAdd = await import("../lib/account/listAdd.ts");
+await mock.module("../lib/account/listAdd.ts", () => ({ ...ListAdd, postedPcs: async () => { if (posted instanceof Error) throw posted; return posted; } }));
+await mock.module("./AddPcByNumber.tsx", () => ({ AddPcByNumber: (props: { post: { server_id: string }; name: string; account: string; onAdded: () => void }) =>
+  createElement("div", { "data-testid": "add-pc-number", "data-post": props.post.server_id, "data-name": props.name, "data-account": props.account, onClick: props.onAdded }) }));
 let inShell = false;
 await mock.module("../lib/useRelay.ts", () => ({ ...UseRelay, inRelayShell: () => inShell }));
 await mock.module("../lib/relay.ts", () => ({ ...Relay, loadRelayShell: async () => ({ forgetSavedPc: async (id: string) => { calls.push(`forget pairing ${id}`); } }) }));
@@ -153,7 +159,7 @@ describe("Manage account's devices and PCs", () => {
     const listed = (n: string, label: string) => ({ endpoint: n.repeat(64), server_id: n.repeat(32), how: "added" as const, allows: true, name: { label, os: null }, seq: 1, by: null, new_at: null });
     let view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [], pcs: [listed("c", "Laptop"), listed("a", "Desk")] };
     const heard: (() => void)[] = [];
-    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; } } as unknown as AccountList);
+    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; }, writer: () => null } as unknown as AccountList);
     inShell = true;
     try {
       // the directory routes Desk (heard from lately) and names Dead box alone; the list holds Laptop with no route
@@ -176,6 +182,37 @@ describe("Manage account's devices and PCs", () => {
       await act(async () => { await press(root, "Remove"); });
       expect(calls).toEqual([`remove ${"b".repeat(32)}`, `forget pairing ${"b".repeat(32)}`]);
     } finally { setPageAccountList(null); inShell = false; }
+  });
+
+  it("on a row the list does not hold yet, offers Add for a PC that posted its keys for the list and says to update one that did not", async () => {
+    const LIST = "5c".repeat(32);
+    const view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [],
+      pcs: [{ endpoint: "a".repeat(64), server_id: "a".repeat(32), how: "added", allows: true, name: { label: "Desk", os: null }, seq: 1, by: null, new_at: null }] };
+    let writes = true;
+    setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => (writes ? {} : null) } as unknown as AccountList);
+    try {
+      pcs = [{ ...pcs[0]!, public_key: "a".repeat(64), relay: "wss://relay.example" }, pcs[1]!,
+        { server_id: "d".repeat(32), label: "Old box", public_key: null, relay: null, added_at: ago(60), last_seen_at: ago(1) }] as Service.DirectoryPc[];
+      // Dead box posted for the list; Old box runs a build from before lists
+      posted = [{ server_id: "b".repeat(32) }];
+      const root = await mount();
+      expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box · Not in your account's list yetAddRemove", "OnlineOld box · Not in your account's list yet · Update Ovis on this PC"]);
+      await act(async () => { action(root, "add-pc").props.onClick(); });
+      const number = root.find((node) => node.props["data-testid"] === "add-pc-number");
+      expect([number.props["data-post"], number.props["data-name"], number.props["data-account"]]).toEqual(["b".repeat(32), "Dead box", "acct"]);
+      await act(async () => { number.props.onClick(); });
+      expect(root.findAll((node) => node.props["data-testid"] === "add-pc-number")).toEqual([]);
+      // a watching device adds nothing, and is told nothing it could do about it
+      await act(async () => { renderer?.unmount(); });
+      const watching = await mount({ watching: true });
+      expect(rows(watching, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box · Not in your account's list yet", "OnlineOld box · Not in your account's list yet"]);
+      // where the posts could not be read, or this device may not write the list, neither is said
+      for (const unread of [() => { posted = new Error("503 from the service"); }, () => { posted = []; writes = false; }]) {
+        unread();
+        await act(async () => { renderer?.unmount(); });
+        expect(rows(await mount(), "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box · Not in your account's list yetRemove", "OnlineOld box · Not in your account's list yet"]);
+      }
+    } finally { setPageAccountList(null); posted = []; }
   });
 
   it("keeps the confirm up with a retry line when the removal fails", async () => {

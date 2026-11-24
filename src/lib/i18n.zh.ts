@@ -112,6 +112,7 @@ const BASE: Record<string, string> = {
   "Not the same": "数字不一样",
   "The numbers did not match. This PC was not added.": "数字不一致。这台 PC 没有被添加。",
   "The PC did not answer. Start again on the PC.": "PC 没有响应。请在 PC 上重新开始。",
+  "Waiting for the PC…": "正在等待电脑响应…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "对这台 PC 的尝试次数过多。请几分钟后在 PC 上重新开始。",
   "That number ran out. Press Add for a new one.": "这个数字已过期。请点添加获取新的数字。",
   "Too many devices were added just now. Try again in a few minutes.": "刚才添加的设备太多。请过几分钟再试。",

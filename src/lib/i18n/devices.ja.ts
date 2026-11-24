@@ -346,4 +346,5 @@ export const DEVICES_JA: Record<string, string> = {
   "A PC not in the list": "一覧にない PC",
   "user@host or address": "user@host またはアドレス",
   "Enter an SSH address, such as user@host.": "user@host のような SSH アドレスを入力してください。",
+  "Update Ovis on this PC": "この PC の Ovis を更新してください",
 };

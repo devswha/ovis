@@ -1301,6 +1301,14 @@ read the entry. The pairing that named the list is spent then: its row goes, and
 as any PC of the list, with the key the list holds for the device. A PC with no such call (it
 follows no list, or is from before lists) gets the link, as before.
 
+**A PC the account names that the list does not hold yet.** Such a PC keeps its row, marked **Not
+in your account's list yet** (see [PCs of a list account](#pcs-of-a-list-account)). In Settings, on a
+device that may write the list, the row offers **Add** when the PC posted its keys for the list,
+which a PC that runs a build with lists does by itself: the same number, confirmed at the PC, then
+**Add**, with no admission asked for, since the account lists the PC already. A PC that posted
+nothing runs a build from before lists, and its row says **Update Ovis on this PC**. A device that
+only watches, or one that may not write the list, is offered neither.
+
 Either way the entry is signed through the one write loop of
 [Letting a device in](#letting-a-device-in), for the account and the list the card was shown for.
 

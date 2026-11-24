@@ -9,9 +9,10 @@ import { pageAccountList } from "../lib/account/pageList.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
-import { useT, type Translate } from "../lib/i18n.ts";
+import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { NewPcNotice } from "./NewPcNotices.tsx";
+import { addRefusal, numberRefusal, refusal, type Problem } from "./pcAddRefusals.ts";
 import { usePcRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
@@ -31,8 +32,6 @@ const PENDING_ADD = "ovis:confirm-pc";
 /** the add pressed before a Sign in again: that PC, and the listing its card showed when the service gave one (account#67) */
 type PendingAdd = { readonly server_id: string; readonly listing_id?: string };
 type Listing = { readonly session: AccountSession; readonly pcs: readonly DirectoryPc[]; readonly pending: PendingAdd | null };
-/** `signInAgain`: a fresh own sign-in may pass it */
-type Problem = { readonly text: string; readonly signInAgain: boolean };
 
 function takePendingAdd(account: string): PendingAdd | null {
   try {
@@ -65,7 +64,6 @@ function askerLine(asker: AccountAsker | undefined, language: string): string | 
   return parts.length === 0 ? null : parts.join(" · ");
 }
 
-/** the admit refusals about the sign-in alone (docs/account.md) say so, with Sign in again: a fresh own sign-in may pass them */
 /** No number came for a PC that asks to be added (listAdd.ts). */
 class NumberError extends Error {
   constructor(readonly why: NumberRefusal) {
@@ -79,37 +77,6 @@ class AddRefused extends Error {
   constructor(readonly outcome: Extract<AddPcOutcome, { readonly added: false }>) {
     super(`The PC was not added to the account's list (${outcome.why})`);
     this.name = "AddRefused";
-  }
-}
-
-function numberRefusal(t: Translate, why: NumberRefusal): string {
-  switch (why) {
-    case "silent": case "gone": return t("The PC did not answer. Start again on the PC.");
-    case "spent": return t("Too many tries for this PC. Start again on the PC in a few minutes.");
-    default: return t("The PC could not be added. Try again.");
-  }
-}
-
-function addRefusal(t: Translate, outcome: Extract<AddPcOutcome, { readonly added: false }>): Problem {
-  // the account service's own word on the admission, as for an Add without a list
-  if (outcome.why === "admit") return refusal(t, new AccountServiceError(403, outcome.code ?? "refused", ""));
-  switch (outcome.why) {
-    case "stopped": return { text: t("The account service cannot change the list right now."), signInAgain: false };
-    case "clock": return { text: t("This device's clock looks wrong. Check its date and time, then try again."), signInAgain: false };
-    case "blocked": return { text: t("This device cannot change your account's list right now."), signInAgain: false };
-    case "unknown": return { text: t("The account service did not answer. Try again to check."), signInAgain: false };
-    default: return { text: t("The PC could not be added. Try again."), signInAgain: false };
-  }
-}
-
-function refusal(t: Translate, error: Error): Problem {
-  switch (error instanceof AccountServiceError ? error.code : null) {
-    case "session_not_fresh": return { text: t("Sign in again to add it: your sign-in is more than ten minutes old."), signInAgain: true };
-    case "own_sign_in_required": return { text: t("Sign in on this device to add it."), signInAgain: true };
-    case "pc_add_cap": return { text: t("This account has added as many PCs as it can today. Try again later."), signInAgain: false };
-    // an account service from before 2026-11-23 still asks a used account's admit for two-step, which signing in again does not give
-    case "two_step_required": return { text: t("This account has no two-step sign-in to add it here. Add it with the number on the PC's screen."), signInAgain: false };
-    default: return { text: t("The PC could not be added. Try again."), signInAgain: false };
   }
 }
 
