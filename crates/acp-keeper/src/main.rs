@@ -365,7 +365,7 @@ impl ChildSignal {
 
 async fn wait_for(agent: &mut Option<Agent>) -> std::io::Result<std::process::ExitStatus> {
     match agent {
-        Some(agent) => agent.child.wait().await,
+        Some(agent) => agent.wait().await,
         None => std::future::pending().await,
     }
 }
@@ -582,9 +582,8 @@ async fn run(mut opts: Opts) -> i32 {
                 hub.model.agent_gone = Some(format!("{text} · Ctrl+Q: 닫기"));
                 hub.agent_gone();
                 exited = Some(result);
-                // Now, while the reaped agent's group number cannot have been handed out again.
                 if let Some(agent) = acp.take() {
-                    agent.sweep().await;
+                    agent.stop_remaining_scope().await;
                 }
                 if !tty {
                     break;
@@ -593,7 +592,7 @@ async fn run(mut opts: Opts) -> i32 {
             result = wait_for(&mut tui) => {
                 let ran = ms(tui_started);
                 if let Some(agent) = tui.take() {
-                    agent.sweep().await;
+                    agent.stop_remaining_scope().await;
                 }
                 take_pane_back(&mut status, &gate, job_control);
                 let code = result.as_ref().ok().and_then(|s| s.code());
@@ -635,8 +634,11 @@ async fn run(mut opts: Opts) -> i32 {
             hub.mode_note("terminal", "start", json!({"argv": argv}));
             hub.agent = None;
             if let Some(mut agent) = acp.take() {
-                let _ = tokio::time::timeout(Duration::from_millis(800), agent.child.wait()).await;
-                let _ = agent.stop(Duration::from_millis(1500)).await;
+                if tokio::time::timeout(Duration::from_millis(800), agent.wait()).await.is_err() {
+                    let _ = agent.stop(Duration::from_millis(1500)).await;
+                } else {
+                    agent.stop_remaining_scope().await;
+                }
             }
             if let Some(task) = reader.take() {
                 let _ = tokio::time::timeout(Duration::from_millis(500), task).await;

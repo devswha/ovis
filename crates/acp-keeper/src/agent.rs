@@ -26,10 +26,14 @@ pub struct Agent {
     pub child: Child,
     pub pid: u32,
     pub scope: Option<String>,
+    #[cfg(unix)]
+    child_signal: tokio::signal::unix::Signal,
 }
 
 impl Agent {
     pub async fn spawn(command: &str, args: &[String], cwd: &str, io: Io, root: &Path) -> std::io::Result<Agent> {
+        #[cfg(unix)]
+        let child_signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
         let scope = scope_for(root).await;
         let mut cmd = match &scope {
             Some(unit) => {
@@ -82,13 +86,32 @@ impl Agent {
         if foreground && pid > 0 {
             hand_terminal(pid as libc::pid_t);
         }
-        Ok(Agent { child, pid, scope })
+        Ok(Agent {
+            child,
+            pid,
+            scope,
+            #[cfg(unix)]
+            child_signal,
+        })
+    }
+
+    pub async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        #[cfg(unix)]
+        {
+            // Keep the exited child unreaped until the group has been signalled. Reaping can
+            // release its PID (and thus its group number) for reuse by an unrelated process.
+            while !child_status(self.pid, libc::WEXITED)? {
+                self.child_signal.recv().await;
+            }
+            self.signal_group(Signal::Kill);
+        }
+        self.child.wait().await
     }
 
     /// Ends the agent and everything it started: SIGTERM to its group, SIGKILL after `grace`.
     pub async fn stop(&mut self, grace: Duration) -> std::io::Result<ExitStatus> {
         self.signal_group(Signal::Term);
-        let status = match tokio::time::timeout(grace, self.child.wait()).await {
+        let status = match tokio::time::timeout(grace, self.wait()).await {
             Ok(status) => status,
             Err(_) => {
                 self.signal_group(Signal::Kill);
@@ -96,13 +119,12 @@ impl Agent {
                 self.child.wait().await
             }
         };
-        self.sweep().await;
+        self.stop_remaining_scope().await;
         status
     }
 
-    /// After the agent ended: whatever it left behind in its group and its scope.
-    pub async fn sweep(&self) {
-        self.signal_group(Signal::Kill);
+    /// The scope can contain helpers that left the agent's process group.
+    pub async fn stop_remaining_scope(&self) {
         if let Some(unit) = &self.scope {
             stop_scope(unit).await;
         }
@@ -114,7 +136,7 @@ impl Agent {
             Signal::Term => libc::SIGTERM,
             Signal::Kill => libc::SIGKILL,
         };
-        if self.pid > 0 {
+        if self.child.id().is_some() && self.pid > 0 {
             unsafe { libc::kill(-(self.pid as libc::pid_t), signal) };
         }
     }
@@ -180,13 +202,30 @@ fn hand_terminal(pgid: libc::pid_t) {
     }
 }
 
+#[cfg(unix)]
+fn child_status(pid: u32, status: libc::c_int) -> std::io::Result<bool> {
+    loop {
+        // SAFETY: waitid may write a siginfo_t to this aligned, writable buffer. Its zeroed PID
+        // also represents no child status when WNOHANG returns successfully without an event.
+        let ready = unsafe {
+            let mut info = std::mem::zeroed::<libc::siginfo_t>();
+            let result = libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, status | libc::WNOHANG | libc::WNOWAIT);
+            (result == 0).then(|| info.si_pid() != 0)
+        };
+        if let Some(ready) = ready {
+            return Ok(ready);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
 /// Whether `pid` (a child of the keeper) is stopped, as a TUI is after Ctrl+Z; the stop is not consumed.
 #[cfg(target_os = "linux")]
 pub fn stopped(pid: u32) -> bool {
-    unsafe {
-        let mut info = std::mem::zeroed::<libc::siginfo_t>();
-        libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WSTOPPED | libc::WNOHANG | libc::WNOWAIT) == 0 && info.si_pid() != 0
-    }
+    child_status(pid, libc::WSTOPPED).unwrap_or(false)
 }
 
 #[cfg(not(target_os = "linux"))]
