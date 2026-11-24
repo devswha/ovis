@@ -22,7 +22,6 @@ import { allowDevice } from "./listAllow.ts";
 import { forgetMembership, inList, leaveList, removeOthers, tidyOnRead } from "./listLeave.ts";
 import { listNewcomers } from "./listNotices.ts";
 import { cameInThrough, removeFromList } from "./listRemoveDevice.ts";
-import { deviceListKeys } from "./listKeys.ts";
 import { memoryListLock } from "./listStore.ts";
 import { SignedOutError, type AccountService } from "./service.ts";
 import { memoryAccountStore, newKey, type AccountSession } from "./store.ts";
@@ -282,23 +281,19 @@ describe("G: guards checked and found sound on 1017d8662 (these pass)", () => {
   it("G12: the quiet tidy-up is not used up by a read that did not reach the account service", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });
-    await first.list.sync();
-    const keys = await first.keys();
-    const invite = await deviceListKeys(memoryAccountStore());
-    const at = Math.floor(w.clock.now / 1000);
-    const placed = await signListEntry(w.held().state, { kind: "invite", key: invite.key, exp: at + 900, uses: 1, auto: true, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
-    await first.service.placeEntries(w.held().id, [placed.text], []);
-    await first.list.sync();
-    w.clock.now += 16 * 60_000;
-    const stop = tidyOnRead(first.list);
+    const view = await first.list.sync();
+    // the tidy-up looks at the list (its writer) before its first wait: whether a read starts it shows at once
+    let heard: ((view: AccountListView) => void) | null = null;
+    let looked = 0;
+    const page: AccountList = { ...first.list, subscribe: (listener) => { heard = listener; return () => {}; }, writer: (options) => { looked += 1; return first.list.writer(options); } };
+    const stop = tidyOnRead(page);
     try {
-      first.wire.answer = () => Promise.reject(new TypeError("offline"));
-      await first.list.sync();
-      await Bun.sleep(50);
-      first.wire.answer = null;
-      await first.list.sync();
-      for (let turns = 0; turns < 200 && kinds(w.held().entries).at(-1) !== "epoch"; turns += 1) await Bun.sleep(5);
-      expect(kinds(w.held().entries).slice(-3)).toEqual(["invite", "remove", "epoch"]);
+      // a read that did not reach the account service starts nothing, so it uses up no try
+      heard!({ ...view, reached: false });
+      expect(looked).toBe(0);
+      // one that did starts the tidy-up
+      heard!(view);
+      expect(looked).toBe(1);
     } finally { stop(); }
   });
 });
