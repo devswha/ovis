@@ -57,3 +57,15 @@ it("clears the account store only while it holds the key that left: a sign-in an
   expect(await accountStore.get("session")).toMatchObject({ sign_in_id: "sign-in-b" });
   expect((await accountStore.key()).public_spki).toBe(replacement!);
 });
+
+it("keeps the account key where another account's saved list still holds it, and ends only this sign-in", async () => {
+  const accountStore = memoryAccountStore();
+  const key = await accountStore.key();
+  const from = session("a");
+  await accountStore.set("session", from);
+  let asked: string | undefined;
+  await leaveAccount({ service: serviceListing([]), accountStore, relayStore: new MemoryDeviceStore(), session: from, keeps: async (held) => { asked = held; return true; } });
+  expect(asked).toBe(key.public_spki);
+  expect((await accountStore.key()).public_spki).toBe(key.public_spki);
+  expect(await accountStore.get("session")).toBeUndefined();
+});

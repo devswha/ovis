@@ -67,16 +67,32 @@ export async function removeOthers(list: AccountList, account: string, confirmed
  * Forgets what made this device a member of `session`'s account: its account key (and its encryption key with it),
  * the sign-in, and its copy of the list. Only while the store still holds that sign-in, or none, and the key the
  * device was a member with (`member`, where known), checked in the same transaction (the lead's X3): a sign-in and a
- * key that took their place since, and the copy that goes with them, stay. A pairing this device made keeps its own
- * copy of the key, as it does at every sign-out. Answers whether anything was forgotten.
+ * key that took their place since, and the copy that goes with them, stay. The copy goes only while it is pinned to
+ * that key, compared in the transaction that drops it. A pairing this device made keeps its own copy of the key, as
+ * it does at every sign-out.
+ *
+ * The device has one account key for every account it signs in to: where another account's saved copy still holds
+ * it, the keys stay, and only this sign-in and this account's copy go. (The two are kept in two databases, so the
+ * look at the other copies is made right before the keys would be cleared, not in that transaction.) Answers whether
+ * anything was forgotten.
  */
 export async function forgetMembership(accountStore: AccountStore, list: AccountList, session: AccountSession, member: string | null): Promise<boolean> {
+  const departing = member ?? (await accountStore.key()).public_spki;
+  // a copy that cannot be looked at may hold the key: it is kept
+  const elsewhere = await list.pinnedElsewhere(session.account, departing).catch(() => true);
   let mine = false;
-  await accountStore.clear((current) => !sameSignIn(current, session), {
-    unsent: () => true,
-    only: (stored, key) => (mine = (stored === undefined || sameSignIn(stored, session)) && (member === null || key === undefined || key.public_spki === member)),
-  });
-  if (mine) await list.forget(session.account);
+  if (elsewhere) {
+    await accountStore.update("session", (stored) => {
+      mine = stored === undefined || sameSignIn(stored, session);
+      return stored !== undefined && sameSignIn(stored, session) ? undefined : stored;
+    });
+  } else {
+    await accountStore.clear((current) => !sameSignIn(current, session), {
+      unsent: () => true,
+      only: (stored, key) => (mine = (stored === undefined || sameSignIn(stored, session)) && (member === null || key === undefined || key.public_spki === member)),
+    });
+  }
+  if (mine) await list.forget(session.account, departing);
   return mine;
 }
 

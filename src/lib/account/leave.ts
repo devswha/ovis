@@ -24,7 +24,11 @@ export interface LeaveResult {
  * `session` is the sign-in the person left from, read when they asked: every call is made for it
  * alone, so a sign-in made meanwhile is never sent removals, signed out or forgotten.
  */
-export async function leaveAccount(options: { service: AccountService; accountStore: AccountStore; relayStore: ShellDeviceStore; session: AccountSession; now?: () => number }): Promise<LeaveResult> {
+export async function leaveAccount(options: {
+  service: AccountService; accountStore: AccountStore; relayStore: ShellDeviceStore; session: AccountSession; now?: () => number;
+  /** Whether another account's saved list still holds this account key as this device's: the key then stays, and only this sign-in ends. */
+  keeps?: (key: string) => Promise<boolean>;
+}): Promise<LeaveResult> {
   const { session } = options;
   const service = options.service.forSignIn(session);
   const key = await options.accountStore.key();
@@ -73,8 +77,11 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   catch (error) { console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error); }
   // the account's PCs tombstone this key: never sign in with it again (a kept pairing holds its own copy of the key)
   // unsent blocks stay: only the service's answer takes one away (S32-1)
-  // and only while the store still holds the key that left: a key another tab made since, for a sign-in of its own, stays
-  await options.accountStore.clear((current) => !sameSignIn(current, session), { unsent: () => true, only: (_stored, held) => held === undefined || held.public_spki === key.public_spki });
+  // and only while the store still holds the key that left: a key another tab made since, for a sign-in of its own, stays.
+  // Where another account's list still holds the key (one key serves every account of this device), it stays too
+  if (await (options.keeps?.(key.public_spki) ?? Promise.resolve(false)).catch(() => true)) {
+    await options.accountStore.update("session", (current) => current !== undefined && sameSignIn(current, session) ? undefined : current);
+  } else await options.accountStore.clear((current) => !sameSignIn(current, session), { unsent: () => true, only: (_stored, held) => held === undefined || held.public_spki === key.public_spki });
   return { remove, unconfirmed };
 }
 

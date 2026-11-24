@@ -482,8 +482,17 @@ export interface AccountList {
    * one stood and no older log passes for the list. The wraps are asked for again then.
    */
   dropNames(account: string): Promise<void>;
-  /** A person's reset, or the device left the account: forgets everything kept for the account. */
-  forget(account: string): Promise<void>;
+  /**
+   * A person's reset, or the device left the account: forgets everything kept for the account. With `member`, only
+   * where the saved copy is pinned to that member key, compared with the very copy that is dropped: a copy that a
+   * member which took this one's place keeps (another tab signed in again) stays, and so does one that does not read.
+   */
+  forget(account: string, member?: string): Promise<void>;
+  /**
+   * Whether a saved copy of another account's list than `account` is pinned to this member key and does not show it
+   * out: that account's list still holds this device by it. A copy that does not read counts as holding it.
+   */
+  pinnedElsewhere(account: string, key: string): Promise<boolean>;
   /**
    * A member that let this device in handed it this place, over the PC the device compared digits with. It is kept
    * as an offer, and a round follows: the device follows that list only once the log shows its own key let in up to
@@ -1051,6 +1060,20 @@ export function accountList(options: AccountListOptions): AccountList {
     holdsPc(endpoint) {
       return shown.pcs.some((pc) => pc.endpoint === endpoint);
     },
+    async pinnedElsewhere(account, key) {
+      for (const other of await store.accounts()) {
+        if (other === account) continue;
+        const saved = await store.get("copy", other);
+        if (saved === undefined) continue;
+        if (typeof saved !== "string") return true;
+        const read = await readSave(saved);
+        if (!read.read) return true;
+        const { me, state } = read.copy;
+        if (me.key !== key || me.endpoint !== null) continue;
+        if (state === null || (state.signers[key]?.ended ?? null) === null) return true;
+      }
+      return false;
+    },
     pcOfKey(key) {
       const endpoint = held?.copy == null || held.account !== shown.account ? null : pcOfKey(held.copy, key);
       return endpoint !== null && shown.pcs.some((pc) => pc.endpoint === endpoint) ? endpoint : null;
@@ -1164,10 +1187,24 @@ export function accountList(options: AccountListOptions): AccountList {
       const copy = held?.copy ?? null;
       return copy === null || copy.state === null ? null : servePage(copy, { list: copy.list, after }, limit);
     },
-    async forget(account) {
+    async forget(account, member) {
       // the round under way for the account ends here, rather than be waited for: it holds the account's lock
       if (roundStop?.account === account) roundStop.stop.abort(new DOMException("The account's list is forgotten", "AbortError"));
-      await lock(account, () => store.drop(account));
+      const dropped = await lock(account, async () => {
+        if (member === undefined) return store.drop(account);
+        // the copy that goes is the one read here, pinned to the key that left: dropped only while it is still that text
+        for (let tries = 0; tries < 3; tries += 1) {
+          const saved = await store.get("copy", account);
+          // none is kept: what this page holds of it is stale, and nothing else is the departing member's to drop
+          if (saved === undefined) return true;
+          if (typeof saved !== "string") return false;
+          const read = await readSave(saved);
+          if (!read.read || read.copy.me.key !== member || read.copy.me.endpoint !== null) return false;
+          if (await store.drop(account, saved)) return true;
+        }
+        return false;
+      });
+      if (!dropped) return;
       if (held?.account === account) held = null;
       if (wrongKey === account) wrongKey = null;
       if (claimedAt?.account === account) claimedAt = null;

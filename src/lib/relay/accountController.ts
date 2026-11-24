@@ -322,7 +322,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // the key the list put out: a key that took its place since is not forgotten with it
     const departing = memberKey?.public_spki ?? null;
     const session = await account.session().catch(() => undefined);
-    if (session === undefined || session.account !== gone) { await lists.forget(gone); return; }
+    // the copy that shows this device out goes, and only while it is pinned to the key it was put out with
+    if (session === undefined || session.account !== gone) { await (departing === null ? lists.forget(gone) : lists.forget(gone, departing)); return; }
     invalidate();
     await account.forSignIn(session).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
     await forgetMembership(accountStore, lists, session, departing);
@@ -385,6 +386,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // an enrollment of this tab stops here; one still linking, here or in another tab, is in the leave's snapshot (leave.ts)
     for (const serverId of running.values()) cancelEnrollment(serverId);
     let departing: string | undefined;
+    /** The key this device was a member with: the copy that goes is the one pinned to it. */
+    let departingKey: string | undefined;
     /** Why the list did not take this device's own removal, where it did not. */
     const refused: { why: string | null } = { why: null };
     return from.then(async (session) => {
@@ -393,12 +396,15 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // a device that is in its account's list puts itself out of it first; where the list does not take that, nothing is left
       leavingList = session.account;
       const member = lists === null ? null : scopeOf(lists.view())?.member ?? null;
+      departingKey = member ?? (await accountStore.key()).public_spki;
       const out = lists === null ? null : await leaveList(lists, session.account);
       if (out !== null && !out.removed) { refused.why = out.why; throw new Error(`The list did not take this device's removal (${out.why})`); }
-      if (out === null || lists === null) return leaveAccount({ service: account, accountStore, relayStore: store, session });
+      // one account key serves every account of this device: where another account's list still holds it, it stays
+      const keeps = (key: string): Promise<boolean> => lists === null ? Promise.resolve(false) : lists.pinnedElsewhere(session.account, key);
+      if (out === null || lists === null) return leaveAccount({ service: account, accountStore, relayStore: store, session, keeps });
       // the list took this device's removal, and the account service may have ended this sign-in in the same request:
       // what needs that sign-in may fail now, and the device finishes leaving by itself, from what it holds
-      try { return await leaveAccount({ service: account, accountStore, relayStore: store, session }); }
+      try { return await leaveAccount({ service: account, accountStore, relayStore: store, session, keeps }); }
       catch (error) {
         console.warn("Ovis: this device left the account's list; it forgets its account here", error instanceof Error ? error.name : error);
         await forgetMembership(accountStore, lists, session, member);
@@ -412,7 +418,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // the PCs kept for the account that left; another that signed in meanwhile keeps its own
       dropKnownPcs(departing);
       // the device left with its account key: what it kept of the account's list is no longer its own
-      if (departing !== undefined) await lists?.forget(departing).catch((error: unknown) => console.warn("Ovis: the account's list was not forgotten", error instanceof Error ? error.name : error));
+      if (departing !== undefined) await lists?.forget(departing, departingKey).catch((error: unknown) => console.warn("Ovis: the account's list was not forgotten", error instanceof Error ? error.name : error));
       followed?.poke();
       if (epoch === generation) { accountView = { kind: "signed-out", error: message }; await changed(); }
       return { left: true, message };

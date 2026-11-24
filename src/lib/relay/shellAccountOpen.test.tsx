@@ -109,7 +109,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
     sync: async () => { listReads.push(Date.now()); listed.read?.(); return listView(); }, follows: async () => true,
     view: listView, subscribe: () => () => {}, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
-    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), writer: () => null, placeAt: () => null,
+    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => false, adopt: async () => listView(), writer: () => null, placeAt: () => null,
     holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
     kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
   };

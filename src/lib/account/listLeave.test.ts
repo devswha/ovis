@@ -174,3 +174,35 @@ describe("what the Codex read of P13 found about leaving", () => {
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
   });
 });
+
+describe("what the second Codex read of P13 found about leaving", () => {
+  it("H2: forgetting one account's membership keeps the keys another account's saved copy is pinned to, and forgets only the leaving account's copy", async () => {
+    const w = listWorld();
+    const device = await w.device({ label: "Dana's laptop" });
+    expect(inList(await device.list.sync(), w.account)).toBe(true);
+    const key = (await device.keys()).key;
+    // the same browser signs in to a second account and is in its list with the same account key
+    const other: AccountSession = { ...device.session, account: "acct_other", access_token: w.fake.issueToken("acct_other"), sign_in_id: "sign-in-other", signed_in_at: w.clock.now };
+    const signInKey = await newKey();
+    await device.store.set("session", other);
+    await device.store.set("signin_key", { account: "acct_other", sign_in_id: "sign-in-other", key: signInKey, no: w.fake.registerSessionKey(other.access_token, signInKey.public_spki, "Dana's laptop") });
+    expect(inList(await device.list.sync(), "acct_other")).toBe(true);
+    // it signs out of the second account: its sign-in is gone, and its membership there is forgotten
+    await device.store.set("session", undefined);
+    await forgetMembership(device.store, device.list, other, key);
+    expect((await device.keys()).key).toBe(key);
+    expect(await device.list.follows("acct_other")).toBe(false);
+    expect(await device.list.follows(w.account)).toBe(true);
+  });
+
+  it("M4: forgets a copy of the account's list only where it is pinned to the key that left: a replacement member's copy stays", async () => {
+    const { w, second } = await twoDevices();
+    const departing = (await second.keys()).key;
+    const saved = await second.lists.get("copy", w.account);
+    expect(saved).toBeDefined();
+    await second.list.forget(w.account, "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEanotherkeyofareplacementmember");
+    expect(await second.lists.get("copy", w.account)).toBe(saved);
+    await second.list.forget(w.account, departing);
+    expect(await second.lists.get("copy", w.account)).toBeUndefined();
+  });
+});
