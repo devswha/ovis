@@ -172,17 +172,106 @@ function withFileLock<T>(path: string, work: () => T): T {
   const deadline = performance.now() + LOCK_WAIT_MS;
   let held = false;
   for (;;) {
-    try { closeSync(openSync(lock, "wx", 0o600)); held = true; break; } catch (error) {
-      // a folder that takes no lock file takes no write either: the write below says so
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") break;
+    try { closeSync(bindingFs.openSync(lock, "wx", 0o600)); held = true; break; } catch (error) {
+      // nothing is written without the lock: a folder that takes no lock file ends the write with an error
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new Error(`${path} cannot be locked (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
       let age = Number.POSITIVE_INFINITY;
       try { age = wallNow() - statSync(lock).mtimeMs; } catch { /* gone meanwhile: taken at the next turn */ }
-      if (age > LOCK_STALE_MS) { try { unlinkSync(lock); } catch { /* another server took it over */ } continue; }
+      // a lock left by a server that ended while it wrote is taken over. One that cannot be deleted is waited for
+      // like any other, and no longer: the wait ends in an error, never in a loop
+      if (age > LOCK_STALE_MS) { try { bindingFs.unlinkSync(lock); continue; } catch (gone) { if ((gone as NodeJS.ErrnoException).code === "ENOENT") continue; } }
       if (performance.now() >= deadline) throw new Error(`${path} is being written by another Ovis on this PC`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
   }
-  try { return work(); } finally { if (held) { try { unlinkSync(lock); } catch { /* already gone */ } } }
+  try { return work(); } finally { if (held) { try { bindingFs.unlinkSync(lock); } catch { /* already gone */ } } }
+}
+
+/** What the lock is made and deleted with and the file read with: one place, so a test can make a lock that will not go and a read that fails. */
+export const bindingFs = { openSync, unlinkSync, readFileSync };
+
+/**
+ * The document a file holds now; null only when there is no file. A file that is there and cannot be read, or does
+ * not read as this PC's account state, throws: it is never taken for no document, since a write made on that word
+ * would replace whatever the file holds (a pin another server wrote) with what this server remembers.
+ */
+function docOnDisk(path: string): PcDoc | null {
+  let text: string;
+  try { text = bindingFs.readFileSync(path, "utf8"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`${path} cannot be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
+  }
+  let parsed: ReturnType<typeof parseDoc>;
+  try { parsed = parseDoc(JSON.parse(text)); } catch { throw new Error(`${path} is not JSON`); }
+  if (typeof parsed === "string") throw new Error(`${path} cannot be trusted: ${parsed}`);
+  const { counterOnly: _counterOnly, ...doc } = parsed;
+  return doc;
+}
+
+/** What tells one state of a file from the next without reading it. */
+const stamp = (path: string): string | null => {
+  try { const { mtimeMs, size, ino } = statSync(path); return `${mtimeMs} ${size} ${ino}`; } catch { return null; }
+};
+
+const standingIn = (doc: PcDoc): AccountBinding | null => {
+  const { binding } = doc;
+  return binding !== null && binding.pending !== true && !doc.clears.some((clear) => clear.bind_id === binding.bind_id) ? binding : null;
+};
+
+/**
+ * What a server may write over the file as it is on disk (`disk`), when it held `base` and meant to write `next`.
+ * Two Ovis servers can run on one state folder, so what one holds in memory may be older than the file:
+ * - a clear the file holds is never lost, and a binding it holds cleared never comes back from memory;
+ * - a pin the file holds, and an alarm beside it, are never lost;
+ * - a write that touches no binding leaves the file's binding as it is;
+ * - a write that would end, on the account service's word, a binding the file holds pinned is refused
+ *   (PinnedOnDiskError): only an act at the PC, or the list's own removal of the PC, ends a pinned binding;
+ * - the counters never go back, and a number given is one the file had not given.
+ */
+function reconciled(base: PcDoc, next: PcDoc, disk: PcDoc | null, path: string): PcDoc {
+  if (disk === null) return next;
+  const clears = mergeClears(disk.clears, next.clears);
+  const cleared = (binding: AccountBinding | null) => binding !== null && clears.some((clear) => clear.bind_id === binding.bind_id);
+  const pinOf = (binding: AccountBinding | null) => binding !== null && binding.pending !== true && binding.list !== undefined ? binding : null;
+  const diskPin = cleared(disk.binding) ? null : pinOf(standingIn(disk));
+  const same = (a: AccountBinding | null, b: AccountBinding | null) => JSON.stringify(a) === JSON.stringify(b);
+  let binding: AccountBinding | null;
+  if (same(base.binding, next.binding)) {
+    // this write is about something else: the binding is the file's when the file holds a standing one, else the one
+    // this server holds, unless a clear ends it
+    binding = disk.binding !== null && !cleared(disk.binding) ? disk.binding : cleared(next.binding) ? null : next.binding;
+  } else if (next.binding === null) {
+    // this server ends the binding it held. One the file holds pinned is ended only by an act at the PC or by its list
+    const ended = base.binding === null ? undefined : next.clears.find((clear) => clear.bind_id === base.binding!.bind_id);
+    const pin = pinOf(standingIn(disk));
+    if (pin !== null && base.binding?.bind_id === pin.bind_id && ended !== undefined && ended.reason === "unlisted" && ended.removed_as === undefined) {
+      throw new PinnedOnDiskError(`${path} holds this PC pinned to its account's list: nothing but an act at this PC, or the list itself, ends that`);
+    }
+    // another binding the file holds meanwhile is not this server's to end
+    binding = disk.binding !== null && disk.binding.bind_id !== base.binding?.bind_id && !cleared(disk.binding) ? disk.binding : null;
+  } else if (cleared(next.binding)) {
+    binding = cleared(disk.binding) ? null : disk.binding;
+  } else if (disk.binding !== null && !cleared(disk.binding) && disk.binding.bind_id !== next.binding.bind_id) {
+    // the file holds another standing binding than the one this server means to write: the file's stands
+    binding = disk.binding;
+  } else {
+    binding = next.binding;
+    if (diskPin !== null && diskPin.bind_id === binding.bind_id) {
+      if (binding.list !== undefined && binding.list !== diskPin.list) throw new PinnedOnDiskError(`${path} holds this PC pinned to another list`);
+      binding = { ...binding, list: diskPin.list, ...(diskPin.list_alarm === true || binding.list_alarm === true ? { list_alarm: true as const } : {}) };
+    }
+  }
+  const step = (now: number, was: number, held: number) => Math.max(now, held + Math.max(0, now - was));
+  const doc: PcDoc = {
+    ...next, binding, clears,
+    next_admit: step(next.next_admit, base.next_admit, disk.next_admit),
+    gen: step(next.gen, base.gen, disk.gen),
+    others_ever: next.others_ever || disk.others_ever,
+    first: next.first ?? disk.first,
+  };
+  if (disk.evidence_written === true) doc.evidence_written = true;
+  if (JSON.stringify(next.service_step2) === JSON.stringify(base.service_step2) && disk.service_step2 !== undefined) doc.service_step2 = disk.service_step2;
+  return doc;
 }
 
 /** A write that would end, on the account service's word, a binding the file on disk holds pinned: refused, whoever holds an older document. */
@@ -246,7 +335,8 @@ export class PcAccountState {
     state.fresh = false;
     state.upgradingFrom = false;
     state.siblingBinding = null;
-    state.siblingOwed = null;
+    // what the file is as this handle reads it: looking again costs nothing until it changes (refresh)
+    state.seen = stamp(state.path);
     let text: string;
     try { text = readFileSync(state.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") state.problem = `Cannot read ${state.path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
@@ -334,11 +424,11 @@ export class PcAccountState {
    * lists among its clears never stands, and two standing bindings to different accounts fail closed. The clears of
    * both are kept here; the count stays this folder's own. A file that cannot be read fails closed (S19).
    *
-   * `bringList`: called before this folder takes a pin it did not hold, with the pin. It brings what the pin is good for
-   * into this folder (the PC's list keys and its copy of the list) and answers null, or why it could not: a folder
-   * never holds a pin without them, and never drops a pin the PC has, so it then fails closed with nothing written.
+   * A pin is never taken from the other folder: the list knows this PC by the keys in the folder that pinned, and that
+   * folder holds the copy and what it owes. A folder whose other folder holds a pin it does not hold itself is closed
+   * (it lets only this PC itself in and writes nothing of its own), and says which folder holds the pin.
    */
-  takeSibling(siblingDir: string, bringList?: (pin: { readonly bind_id: string; readonly list: string }) => string | null): void {
+  takeSibling(siblingDir: string): void {
     if (this.problem !== null) return;
     const path = join(realFolder(siblingDir), ADMISSION_FILE);
     let parsed: ReturnType<typeof parseDoc>;
@@ -353,12 +443,10 @@ export class PcAccountState {
     const mine = standing(this.doc.binding);
     const theirs = standing(parsed.binding);
     if (mine !== null && theirs !== null && mine.account !== theirs.account) { this.problem = `${this.path} and ${path} bind this PC to two accounts`; return; }
-    // one binding in both folders is pinned to a list in both once it is in either: the pin is one-way for the PC, not for a folder
     if (mine !== null && theirs !== null && mine.bind_id === theirs.bind_id && mine.list !== undefined && theirs.list !== undefined && mine.list !== theirs.list) { this.problem = `${this.path} and ${path} pin this PC to two lists`; return; }
     const shared = mine !== null && theirs !== null && mine.bind_id === theirs.bind_id;
-    const pinned = shared && mine.list === undefined && theirs.list !== undefined ? { ...mine, list: theirs.list } : mine;
-    // an alarm either folder kept is the binding's
-    const own = shared && pinned !== null && pinned.list !== undefined && theirs.list_alarm === true && pinned.list_alarm !== true ? { ...pinned, list_alarm: true as const } : pinned;
+    // an alarm either folder kept for a pin both hold is the binding's
+    const own = shared && mine.list !== undefined && theirs.list === mine.list && theirs.list_alarm === true && mine.list_alarm !== true ? { ...mine, list_alarm: true as const } : mine;
     this.siblingBinding = theirs;
     const doc = { ...this.doc, binding: own, clears, others_ever: this.doc.others_ever || parsed.others_ever };
     const sharedStep2 = (binding: AccountBinding | null) => {
@@ -372,52 +460,39 @@ export class PcAccountState {
     const activeBinding = own ?? theirs;
     const activeStep2 = sharedStep2(activeBinding);
     if (activeStep2) doc.service_step2 = activeStep2;
+    // A pin the other folder holds and this one does not: this folder takes no part in the account. The list knows
+    // this PC by the keys of the folder that pinned, which also holds the copy and what it owes; a second copy of
+    // them here could disagree with it. It is decided here, before anything is written: a closed folder writes nothing, to itself or to the other
+    if (theirs !== null && theirs.list !== undefined && !(mine !== null && mine.bind_id === theirs.bind_id && mine.list === theirs.list)) {
+      this.problem = `This PC is pinned to its account's signed list in ${realFolder(siblingDir)}, and this copy of Ovis (${realFolder(join(this.path, ".."))}) does not hold that pin. Use Ovis from ${realFolder(siblingDir)}`;
+      return;
+    }
     // Both folders keep the clears and the service opt-out for the binding they hold.
     const siblingStep2 = sharedStep2(theirs);
     // the other folder learns a clear it does not hold, and a list's removal where it holds the same binding's clear without it
     const siblingLacks = parsed.clears.length !== clears.length
       || clears.some((clear) => clear.removed_as !== undefined && !parsed.clears.some((held) => held.bind_id === clear.bind_id && held.removed_as !== undefined));
     if (siblingLacks || (siblingStep2 && JSON.stringify(siblingStep2) !== JSON.stringify(parsed.service_step2))) {
-      const siblingDoc: PcDoc = { ...parsed, clears, binding: standing(parsed.binding) ?? (parsed.binding?.pending === true && !clears.some((clear) => clear.bind_id === parsed.binding!.bind_id) ? parsed.binding : null) };
-      if (siblingStep2) siblingDoc.service_step2 = siblingStep2;
-      try { writePrivateState(path, onDisk(siblingDoc)); } catch (error) {
+      try {
+        // under that file's own lock, onto what it holds at that moment: a pin, a binding or a clear a server in that
+        // folder wrote since this one read it is kept
+        withFileLock(path, () => {
+          const current = docOnDisk(path) ?? parsed;
+          const merged = mergeClears(current.clears, clears);
+          const kept = current.binding !== null && !merged.some((clear) => clear.bind_id === current.binding!.bind_id) ? current.binding : null;
+          const written: PcDoc = { ...current, clears: merged, binding: kept };
+          if (siblingStep2) written.service_step2 = siblingStep2;
+          writePrivateState(path, onDisk(written));
+        });
+      } catch (error) {
         this.problem = `${path} cannot learn this PC's account denials (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
-    }
-    // The binding that stands in this folder after this: its own, or the other's where it holds none (P12; a folder
-    // with no file takes it at its migration). A pin that this folder's own standing binding does not hold already
-    // comes with the keys and the copy, or not at all: also into a folder with no file, and where the other folder's
-    // pin takes the place of one this folder held for a binding that was cleared
-    const effective = own ?? theirs;
-    if (effective !== null && effective.list !== undefined && !(mine !== null && mine.bind_id === effective.bind_id && mine.list === effective.list)) {
-      const problem = bringList?.({ bind_id: effective.bind_id, list: effective.list }) ?? null;
-      // closed for this reason alone, with nothing written: tried again by itself (retrySibling)
-      if (problem !== null) { this.problem = problem; this.siblingOwed = { dir: siblingDir, bringList }; return; }
     }
     if (this.fresh) { this.doc = doc; return; }
     if (own === null && theirs !== null) { doc.binding = theirs; doc.first = this.doc.first ?? parsed.first; }
     if (JSON.stringify(doc) !== JSON.stringify(this.doc)) this.write(doc);
   }
-
-  /**
-   * This folder is closed only because the other folder's pin could not be taken with its keys and its copy: the take
-   * is tried again, and the folder opens by itself, with no restart, once the three can be read together. True when
-   * it opened. A folder with no account state of its own takes the binding at a start (its migration), so it stays
-   * closed until then.
-   */
-  retrySibling(): boolean {
-    const owed = this.siblingOwed;
-    if (owed === null || this.problem === null || this.fresh) return false;
-    const before = this.problem;
-    this.problem = null;
-    this.siblingOwed = null;
-    try { this.takeSibling(owed.dir, owed.bringList); } catch (error) { this.problem = `${before} (${error instanceof Error ? error.message : String(error)})`; this.siblingOwed = owed; }
-    if (this.problem !== null) { this.siblingOwed ??= owed; return false; }
-    for (const listener of this.bindingListeners) listener();
-    return true;
-  }
-  private siblingOwed: { readonly dir: string; readonly bringList: Parameters<PcAccountState["takeSibling"]>[1] } | null = null;
 
   /**
    * The migration's check, before any row is touched: the rows' accounts. Rows of two accounts name no binding to
@@ -582,9 +657,9 @@ export class PcAccountState {
   admit(from: OriginFrom, how: OriginHow, by: string | null, now: number): RowOrigin {
     // nothing is numbered before the one-time migration has run (T50): it decides where the count starts
     if (this.fresh) throw new Error(`${this.path}: the rows from before the upgrade are not migrated yet`);
-    const admitNo = this.doc.next_admit;
-    this.write({ ...this.doc, next_admit: admitNo + 1 });
-    return { from, how, by, admit_no: admitNo, at: new Date(now).toISOString() };
+    this.write({ ...this.doc, next_admit: this.doc.next_admit + 1 });
+    // the number the file had not given: another server of this folder may have given numbers since this one read it
+    return { from, how, by, admit_no: this.doc.next_admit - 1, at: new Date(now).toISOString() };
   }
 
   serviceStep2Off(): boolean {
@@ -613,56 +688,39 @@ export class PcAccountState {
     const before = committedId(this.doc.binding);
     const pinned = this.doc.binding?.list;
     withFileLock(this.path, () => {
-      // read, then write, as one turn: a pin another server of this folder wrote meanwhile is never written over
-      const doc = this.withPinOnDisk(next);
+      // read, reconcile, write, as one turn: what another server of this folder wrote meanwhile is never written over
+      const doc = reconciled(this.doc, next, docOnDisk(this.path), this.path);
       writePrivateState(this.path, onDisk(doc));
       this.doc = doc;
+      this.seen = stamp(this.path);
     });
     if (before !== committedId(this.doc.binding) || pinned !== this.doc.binding?.list) for (const listener of this.bindingListeners) listener();
   }
 
-  /** The standing binding the file on disk holds pinned to a list, or null: also for a file that does not read, which the write then replaces as before. */
-  private pinOnDisk(): (AccountBinding & { readonly list: string }) | null {
-    try {
-      const doc = parseDoc(JSON.parse(readFileSync(this.path, "utf8")));
-      if (typeof doc === "string") return null;
-      const { binding } = doc;
-      return binding !== null && binding.pending !== true && binding.list !== undefined && !doc.clears.some((clear) => clear.bind_id === binding.bind_id) ? { ...binding, list: binding.list } : null;
-    } catch { return null; }
-  }
-
   /**
-   * `doc` as it may be written over the file that is on disk now. Another Ovis server on this folder may have pinned
-   * the binding since this one read the file (two can run on one state folder): the pin, and an alarm kept beside it,
-   * are taken over into what is written, and into this server's own document. A write that would end that binding
-   * on the account service's word, or drop it unnamed, is refused (PinnedOnDiskError): only an act at the PC, or the
-   * list's own removal of the PC, ends a pinned binding.
+   * Takes into memory what another Ovis server on this folder wrote since this one read the file: a pin and its
+   * alarm, and a clear of the binding this one still holds. Called at the moments that matter (before an unlisting,
+   * before a read of the account's snapshot admits anybody) and every few seconds, so a second server decides as a
+   * pinned PC, or as one that left its account, without waiting for a write of its own. It writes nothing; a file that
+   * does not read changes nothing.
    */
-  private withPinOnDisk(doc: PcDoc): PcDoc {
-    const disk = this.pinOnDisk();
-    if (disk === null) return doc;
-    const kept = (binding: AccountBinding): AccountBinding => ({ ...binding, list: disk.list, ...(disk.list_alarm === true || binding.list_alarm === true ? { list_alarm: true as const } : {}) });
-    const { binding } = doc;
-    if (binding !== null && binding.bind_id === disk.bind_id) {
-      if (binding.list !== undefined && binding.list !== disk.list) throw new PinnedOnDiskError(`${this.path} holds this PC pinned to another list`);
-      return { ...doc, binding: kept(binding) };
-    }
-    const clear = doc.clears.find((candidate) => candidate.bind_id === disk.bind_id);
-    if (clear !== undefined && (clear.reason !== "unlisted" || clear.removed_as !== undefined)) return doc;
-    if (this.doc.binding?.bind_id === disk.bind_id) this.doc = { ...this.doc, binding: kept(this.doc.binding) };
-    throw new PinnedOnDiskError(`${this.path} holds this PC pinned to its account's list: nothing but an act at this PC, or the list itself, ends that`);
+  refresh(): void {
+    if (this.problem !== null || this.fresh) return;
+    // nothing is read while the file is the one this server last read or wrote
+    const now = stamp(this.path);
+    if (now === null || now === this.seen) return;
+    let disk: PcDoc | null;
+    try { disk = docOnDisk(this.path); } catch { return; }
+    this.seen = now;
+    if (disk === null) return;
+    let doc: PcDoc;
+    try { doc = reconciled(this.doc, this.doc, disk, this.path); } catch { return; }
+    // told as a write of this server's own is: for another binding, or a pin, and for nothing else the file holds
+    const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
+    const changed = committedId(doc.binding) !== committedId(this.doc.binding) || doc.binding?.list !== this.doc.binding?.list;
+    this.doc = doc;
+    if (changed) for (const listener of this.bindingListeners) listener();
   }
-
-  /**
-   * Takes over a pin (and its alarm) that another Ovis server on this folder wrote for the binding this one holds,
-   * so that what this server decides next it decides as a pinned PC. Writes nothing.
-   */
-  adoptPin(): void {
-    const disk = this.pinOnDisk();
-    const binding = this.doc.binding;
-    if (disk === null || binding === null || binding.bind_id !== disk.bind_id || (binding.list === disk.list && (binding.list_alarm === true || disk.list_alarm !== true))) return;
-    if (binding.list !== undefined && binding.list !== disk.list) return;
-    this.doc = { ...this.doc, binding: { ...binding, list: disk.list, ...(disk.list_alarm === true || binding.list_alarm === true ? { list_alarm: true as const } : {}) } };
-    for (const listener of this.bindingListeners) listener();
-  }
+  /** The file as this server last read or wrote it (stamp); null before either. */
+  private seen: string | null = null;
 }
