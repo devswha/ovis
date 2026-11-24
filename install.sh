@@ -942,14 +942,14 @@ checked_keeper_manifest() {
 # Each optional native binary gets its own probe and record. Never remove its sibling on failure.
 binary_helper() {
   case "$1" in
-    pty) helper_name=ovis-pty-sidecar helper_label="Rust PTY host" helper_probe=rust_host_runs helper_fetch=fetch without="terminals are mirrored" ;;
-    acpKeeper) helper_name=ovis-acp-keeper helper_label="ACP keeper" helper_probe=keeper_runs helper_fetch=keeper_fetch without="ACP children are unavailable" ;;
+    pty) helper_dir="$stage/bin" helper_name=ovis-pty-sidecar helper_label="Rust PTY host" helper_probe=rust_host_runs helper_fetch=fetch without="terminals are mirrored" ;;
+    acpKeeper) helper_dir="$keeper_work" helper_name=ovis-acp-keeper helper_label="ACP keeper" helper_probe=keeper_runs helper_fetch=keeper_fetch without="ACP children are unavailable" ;;
     *) return 1 ;;
   esac
   case "$platform" in
     linux-x64 | linux-arm64) build=$platform ;;
     darwin-*) build=darwin-universal ;;
-    *) return 0 ;;
+    *) return 1 ;;
   esac
   if [ "$1" = pty ]; then
     native_manifest=ovis-server.json
@@ -958,31 +958,46 @@ binary_helper() {
     native_manifest=ovis-acp-keeper-server.json
     if ! checked_keeper_manifest; then
       say "no verified $native_manifest for this release, so $without"
-      return 0
+      return 1
     fi
     manifest_entry "$verify_dir/$native_manifest" "$build"
   fi
-  target="$stage/bin/$helper_name"
+  target="$helper_dir/$helper_name"
   if [ "$entry_file" != "$helper_name-$build" ] || [ -z "$entry_sha" ] || [ -z "$entry_size" ]; then
     say "the signed $native_manifest names no $helper_label for $platform, so $without"
-    return 0
+    return 1
   fi
-  if ! mkdir -p "$stage/bin" || ! "$helper_fetch" "$at/$entry_file" "$target" "$entry_size" || [ "$(wc -c <"$target" | tr -d ' ')" != "$entry_size" ] ||
+  if ! mkdir -p "$helper_dir" || ! "$helper_fetch" "$at/$entry_file" "$target" "$entry_size" || [ "$(wc -c <"$target" | tr -d ' ')" != "$entry_size" ] ||
     [ "$(sha256 "$target")" != "$entry_sha" ]; then
     rm -f "$target"
     say "the $helper_label did not download or does not match its SHA-256 and size in $native_manifest, so it is not run and $without"
-    return 0
+    return 1
   fi
   if ! chmod 755 "$target" || ! "$helper_probe" "$target"; then
     rm -f "$target"
     say "the $helper_label does not run on this PC, so $without"
-    return 0
+    return 1
   fi
   if ! printf '{"sha256":"%s","version":"%s"}\n' "$entry_sha" "$version" >"$target.json"; then
     rm -f "$target" "$target.json"
     say "could not record the $helper_label, so $without"
+    return 1
   fi
 }
+
+# A failed or interrupted optional download is never inside the release being activated.
+stage_keeper() (
+  keeper_work=$(mktemp -d "$OVIS_HOME/releases/.keeper-XXXXXX") || { say "could not stage the optional keeper"; return 0; }
+  verify_dir=$keeper_work
+  keeper_end=$(($(date +%s) + 12))
+  if bounded 12 binary_helper acpKeeper; then
+    mkdir -p "$stage/bin" && mv -f "$keeper_work/ovis-acp-keeper.json" "$stage/bin/ovis-acp-keeper.json" &&
+      mv -f "$keeper_work/ovis-acp-keeper" "$stage/bin/ovis-acp-keeper" || say "could not install the optional keeper"
+  else
+    say "no verified ACP keeper installed"
+  fi
+  rm -rf "$keeper_work" || say "could not clean optional keeper files at $keeper_work"
+)
 
 # One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, a folder whose pid file, created only where none is,
 # holds this shell's pid. Released on every exit, a signal's included; only kill -9 leaves it, stale.
@@ -1096,9 +1111,8 @@ install_binary() {
   [ -z "$(find "$stage/dist" ! -type f ! -type d)" ] || refuse "ovis-dist.tar.gz unpacked something other than files and folders"
   [ -f "$stage/dist/index.html" ] || refuse "ovis-dist.tar.gz holds no index.html"
   rm -f "$stage/ovis-dist.tar.gz"
-  binary_helper pty
-  keeper_end=$(($(date +%s) + 12))
-  bounded 12 binary_helper acpKeeper || say "ACP keeper unavailable within its install budget; continuing without it"
+  binary_helper pty || :
+  stage_keeper
   rm -rf "$verify_dir"
   release_name="$version-${stage##*.stage-}"
   mv "$stage" "$OVIS_HOME/releases/$release_name" || refuse "could not move the checked release into place"

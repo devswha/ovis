@@ -1,6 +1,6 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,7 +31,7 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
     ["shell", installer, installServer, false], ["plugin", null, installServer, false],
     ...(old ? [["previous shell", old.shell, old.install, true], ["previous plugin", null, old.install, true]] as const : []),
   ] as const) {
-    it.each(legacy ? ["good"] : ["good", "linked asset", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
+    it.each(legacy ? ["good"] : ["good", "cleanup failure", "linked asset", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
       `${via}: %s keeper never takes down the server or PTY host`, async (state) => {
         const root = mkdtempSync(join(scratch, "pc-"));
         const probe = keeper.replace("echo", `: > "${join(root, "ran")}"; echo`);
@@ -40,7 +40,7 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
         for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), "#!/bin/sh\necho running\n");
         for (const build of PTY_ASSETS) {
           writeFileSync(join(dir, `ovis-pty-sidecar-${build}`), host);
-          if (state !== "old manifest") writeFileSync(join(dir, `ovis-acp-keeper-${build}`), state === "wrong program" ? host : probe);
+          if (state !== "old manifest") writeFileSync(join(dir, `ovis-acp-keeper-${build}`), ["wrong program", "cleanup failure"].includes(state) ? host : probe);
         }
         writeFileSync(join(root, "index.html"), "<title>Ovis</title>");
         expect(Bun.spawnSync(["tar", "-czf", join(dir, DIST_ARCHIVE), "-C", root, "index.html"]).exitCode).toBe(0);
@@ -64,13 +64,22 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
         if (state === "wrong hash" || state === "old manifest") writeFileSync(asset, probe.replace("ROOT", "FAKE"));
         const releases = pathToFileURL(root).href;
         const home = join(root, ".local/share/ovis");
+        if (state === "cleanup failure" && shell) writeFileSync(join(root, "rm"), '#!/bin/sh\ncase "$*" in *"/.keeper-"*|*"/ovis-acp-keeper") echo "fixture cleanup denied" >&2; exit 1;; esac\nexec /bin/rm "$@"\n', { mode: 0o755 });
         if (shell) {
           if (!Bun.which("node")) symlinkSync(process.execPath, join(root, "node"));
           const result = Bun.spawnSync(["sh", "-c", `${shell}\nos=linux; arch=x64; platform=linux-x64; install_binary ${version}`],
             { env: { HOME: root, PATH: `${root}:${process.env["PATH"]}`, TMPDIR: tmpdir(), OVIS_RELEASES_URL: releases } });
           expect(result.exitCode, result.stderr.toString()).toBe(0);
         } else {
-          expect((await install({ home, releases, version, publicKey: key.publicKey, platform: "linux-x64" })).installed).toBe(true);
+          const remove = fs.rmSync;
+          const failure = state === "cleanup failure" ? spyOn(fs, "rmSync").mockImplementation((path, options) => {
+            if (String(path).includes("/.keeper-") || String(path).endsWith("/ovis-acp-keeper")) throw new Error("fixture cleanup denied");
+            remove(path, options);
+          }) : null;
+          try {
+            expect((await install({ home, releases, version, publicKey: key.publicKey, platform: "linux-x64" })).installed).toBe(true);
+            if (failure) expect(failure).toHaveBeenCalled();
+          } finally { failure?.mockRestore(); }
         }
         const bin = join(home, "bin");
         expect(Bun.spawnSync([join(bin, "ovis-server")]).stdout.toString()).toBe("running\n");

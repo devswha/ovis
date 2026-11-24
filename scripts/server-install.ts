@@ -275,7 +275,7 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
         rmSync(target + ".json", { force: true });
         native.push("the Rust PTY host was not taken (" + (error instanceof Error ? error.message : String(error)) + "); terminals are mirrored");
       }
-      native.push(await installKeeper(bin, build, { at, version, publicKey, serverBytes: manifestBytes, fetchFile: options.fetchFile }));
+      native.push(await installKeeper(bin, build, { releases, at, version, publicKey, serverBytes: manifestBytes, fetchFile: options.fetchFile }));
     } else native.push("no native helpers on this platform");
     await options.inWindow?.();
     // the release bin names now: a server started from it may still run, so it stays until the next install
